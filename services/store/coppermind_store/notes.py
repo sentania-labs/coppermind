@@ -24,7 +24,13 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import (
+    DBAPIError,
+    DataError,
+    IntegrityError,
+    ProgrammingError,
+    SQLAlchemyError,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coppermind import frontmatter as fm
@@ -111,7 +117,9 @@ class LocalStore:
                         size_bytes=len(data),
                         mtime=now,
                         frontmatter=_jsonable(frontmatter),
-                        schema_version=int(frontmatter.get(schema.role("schema_version_key"), 1)),
+                        schema_version=_as_int(
+                            frontmatter.get(schema.role("schema_version_key"), 1)
+                        ),
                         type=_text(frontmatter.get(schema.role("type_key"))),
                         context=_text(frontmatter.get(schema.role("context_key"))),
                         account=_text(frontmatter.get(schema.role("account_key"))),
@@ -133,6 +141,15 @@ class LocalStore:
                 # so saying otherwise would send the operator after the wrong
                 # thing.
                 raise PathCollision(relative) from exc
+            if isinstance(exc, DataError | ProgrammingError) or (
+                isinstance(exc, DBAPIError)
+                and str(getattr(exc.orig, "sqlstate", "")).startswith("22")
+            ):
+                if created:
+                    target.unlink(missing_ok=True)
+                raise ValidationFailed(
+                    ["request contains a value the metadata store cannot accept"]
+                ) from exc
             if isinstance(exc, SQLAlchemyError | OSError):
                 # A connection refused by asyncpg arrives here as a bare
                 # OSError. The filesystem write raises its own typed error
@@ -284,6 +301,10 @@ def _as_date(value: Any) -> date | None:
         except ValueError:
             return None
     return None
+
+
+def _as_int(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 1
 
 
 def _jsonable(value: Any) -> Any:

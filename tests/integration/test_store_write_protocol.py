@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 
+import httpx
 import pytest
 import sqlalchemy as sa
+from coppermind_api.main import create_app as create_api_app
 from coppermind_store.control import ControlState
 from coppermind_store.fs import content_hash
 from coppermind_store.notes import LocalStore
@@ -171,6 +173,49 @@ async def test_create_projections_ignore_role_values_that_are_not_lists(
     async with session_factory() as session:
         row = (await session.execute(sa.select(Note).where(Note.id == note.id))).scalar_one()
     assert row.tags == []
+
+
+async def test_schema_version_projection_defaults_when_role_is_not_an_integer(
+    store: LocalStore, control: ControlState, session_factory
+):
+    changed = default_schema()
+    for definition in changed.keys:
+        if definition.name == "schema_version":
+            definition.kind = "string"
+            definition.default = "v2"
+    control.store.write("schema", changed.model_dump(mode="json"), if_revision=1)
+
+    note = await store.create_note(CreateNote(title="String schema version"))
+
+    assert note.frontmatter["schema_version"] == "v2"
+    assert (store.notes_root / note.path).is_file()
+    async with session_factory() as session:
+        row = (await session.execute(sa.select(Note).where(Note.id == note.id))).scalar_one()
+    assert row.schema_version == 1
+
+
+async def test_public_create_rejects_unstorable_metadata_without_leaving_a_file(
+    store: LocalStore,
+):
+    app = create_api_app()
+    app.state.store = store
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://api"
+    ) as client:
+        response = await client.post(
+            "/v1/notes",
+            content='{"title":"Weekly","frontmatter":{"weight":1e999}}',
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"] == "validation_error"
+    assert body["errors"] == ["request contains a value the metadata store cannot accept"]
+    assert "unavailable" not in body["message"]
+    assert "retry" not in body["message"]
+    assert list(store.notes_root.rglob("*.md")) == []
 
 
 async def test_a_row_that_outlived_its_file_is_a_collision_not_an_outage(store: LocalStore):
