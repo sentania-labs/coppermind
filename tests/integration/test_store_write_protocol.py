@@ -19,6 +19,7 @@ from coppermind.store_protocol import (
     MetadataUnavailable,
     NotesFilesystemUnavailable,
     NotFound,
+    PathCollision,
     ValidationFailed,
 )
 
@@ -148,3 +149,19 @@ async def test_the_mirror_reads_the_schema_version_by_role_not_by_name(
     async with session_factory() as session:
         row = (await session.execute(sa.select(Note).where(Note.id == note.id))).scalar_one()
         assert row.schema_version == 2
+
+
+async def test_a_row_that_outlived_its_file_is_a_collision_not_an_outage(store: LocalStore):
+    """A note deleted on a device leaves a row behind until reconciliation runs.
+
+    Creating the same title again then hits the unique path constraint. That is
+    the notes filesystem and the mirror disagreeing, not PostgreSQL being away,
+    and answering `metadata_unavailable` would send the operator after a
+    database that is healthy.
+    """
+    first = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    (store.notes_root / first.path).unlink()
+
+    with pytest.raises(PathCollision) as raised:
+        await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    assert raised.value.existing_path == first.path

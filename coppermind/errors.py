@@ -12,7 +12,7 @@ sync supervisor share the vocabulary without carrying a server dependency.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from coppermind.store_protocol import (
     MetadataUnavailable,
@@ -30,17 +30,30 @@ METADATA_UNAVAILABLE_MESSAGE = (
 )
 
 NOTES_FILESYSTEM_UNAVAILABLE_MESSAGE = (
-    "the notes filesystem could not be written; no note was created and readiness reports "
-    "the same fault"
+    "the notes filesystem could not be written; this write did not succeed and can be "
+    "retried once the volume is healthy"
 )
+
+STORE_UNAVAILABLE_MESSAGE = (
+    "the store could not be reached; the notes filesystem is untouched and this operation "
+    "can be retried once it returns"
+)
+
+# Which contract an envelope is being built for. The public surface carries no
+# cause text, because it is unauthenticated in this slice and a raw operating
+# system error names container paths. The internal surface keeps the cause,
+# because `HttpStoreClient` reads it back to rebuild the typed error. Public is
+# the default so a new caller cannot leak by forgetting to say.
+Surface = Literal["public", "internal"]
 
 
 def envelope(code: str, message: str, **extra: Any) -> dict[str, Any]:
     return {"error": code, "message": message, **extra}
 
 
-def to_http(error: StoreError) -> tuple[int, dict[str, Any]]:
+def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dict[str, Any]]:
     """Map a typed store error onto its status code and error envelope."""
+    cause = {"detail": str(error)} if surface == "internal" else {}
     if isinstance(error, NotFound):
         return 404, envelope("not_found", str(error), note_id=error.note_id)
     if isinstance(error, ValidationFailed):
@@ -51,8 +64,8 @@ def to_http(error: StoreError) -> tuple[int, dict[str, Any]]:
         return 503, envelope("metadata_unavailable", METADATA_UNAVAILABLE_MESSAGE)
     if isinstance(error, NotesFilesystemUnavailable):
         return 503, envelope(
-            "notes_filesystem_unavailable", NOTES_FILESYSTEM_UNAVAILABLE_MESSAGE, detail=str(error)
+            "notes_filesystem_unavailable", NOTES_FILESYSTEM_UNAVAILABLE_MESSAGE, **cause
         )
     if isinstance(error, StoreUnavailable):
-        return 503, envelope("store_unavailable", str(error))
+        return 503, envelope("store_unavailable", STORE_UNAVAILABLE_MESSAGE, **cause)
     return 500, envelope("internal_error", "unexpected store error")

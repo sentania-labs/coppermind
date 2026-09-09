@@ -12,9 +12,12 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException
 
+from coppermind.errors import envelope
 from coppermind.health import Check, Health, Readiness
 from coppermind.logging import configure_logging, get_logger
 from coppermind.settings import Wiring
@@ -23,6 +26,9 @@ from coppermind_api import __version__
 from coppermind_api.v1.notes import router as notes_router
 
 SERVICE = "coppermind-api"
+
+# Codes for the answers the framework raises before a route is reached.
+_CODES = {404: "not_found", 405: "method_not_allowed"}
 
 log = get_logger(SERVICE)
 
@@ -61,6 +67,9 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Registered on Starlette's HTTPException rather than FastAPI's subclass so
+    # that routing 404s and 405s, which Starlette raises directly, answer in the
+    # documented envelope too.
     @app.exception_handler(HTTPException)
     async def _envelope_handler(_: Request, exc: HTTPException) -> JSONResponse:
         """Keep the error envelope flat instead of nesting it under `detail`."""
@@ -68,7 +77,19 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             return JSONResponse(status_code=exc.status_code, content=exc.detail)
         return JSONResponse(
             status_code=exc.status_code,
-            content={"error": "error", "message": str(exc.detail)},
+            content=envelope(_CODES.get(exc.status_code, "error"), str(exc.detail)),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _request_validation_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+        """A malformed request body is the same shape as a schema violation."""
+        problems = [
+            f"{'.'.join(str(part) for part in error['loc'][1:])}: {error['msg']}".lstrip(": ")
+            for error in exc.errors()
+        ]
+        return JSONResponse(
+            status_code=422,
+            content=envelope("validation_error", "; ".join(problems), errors=problems),
         )
 
     @app.get("/healthz", response_model=Health, tags=["operations"])

@@ -113,7 +113,23 @@ def test_creating_a_note_answers_201_with_an_etag_and_a_location(client):
 
 def test_a_note_needs_a_title(client):
     test_client, _ = client
-    assert test_client.post("/v1/notes", json={"title": ""}).status_code == 422
+    response = test_client.post("/v1/notes", json={"title": ""})
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"] == "validation_error"
+    assert body["errors"] == ["title: String should have at least 1 character"]
+
+
+def test_an_unknown_path_answers_in_the_documented_envelope(client):
+    """The envelope is every non-2xx answer, including the ones routing raises."""
+    test_client, _ = client
+    missing = test_client.get("/v1/nothing-here")
+    assert missing.status_code == 404
+    assert missing.json()["error"] == "not_found"
+
+    wrong_method = test_client.delete("/healthz")
+    assert wrong_method.status_code == 405
+    assert wrong_method.json()["error"] == "method_not_allowed"
 
 
 def test_reading_a_note_returns_the_document_and_its_etag(client):
@@ -160,6 +176,10 @@ def test_a_filesystem_failure_does_not_blame_the_database(client):
     assert body["error"] == "notes_filesystem_unavailable"
     assert "notes filesystem could not be written" in body["message"]
     assert "notes filesystem is unaffected" not in body["message"]
+    # The public surface has no authentication in this slice, so it must not
+    # repeat the operating system's reason, which names container paths.
+    assert "detail" not in body
+    assert "Read-only file system" not in response.text
 
 
 def test_a_missing_note_reports_the_identifier_it_was_asked_for(client):

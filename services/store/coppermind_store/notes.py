@@ -24,7 +24,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import sqlalchemy as sa
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coppermind import frontmatter as fm
@@ -119,6 +119,12 @@ class LocalStore:
                         updated_at=now,
                     )
                 )
+        except IntegrityError as exc:
+            # The path is unique in the mirror, so this is a row that outlived
+            # its file: the note was deleted on a device and no reconciler has
+            # cleared the row yet. PostgreSQL is healthy, so saying otherwise
+            # would send the operator after the wrong thing.
+            raise PathCollision(relative) from exc
         except (SQLAlchemyError, OSError) as exc:
             # A connection refused by asyncpg arrives here as a bare OSError.
             # The filesystem write raises its own typed error above, so what

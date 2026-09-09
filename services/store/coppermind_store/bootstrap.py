@@ -73,7 +73,6 @@ def run(wiring: Wiring | None = None) -> int:
     _ensure_dir(settings.notes_dir, uid, gid, 0o755)
     _ensure_dir(settings.sources_dir, uid, gid, 0o755)
     _ensure_dir(settings.state_dir, uid, gid, 0o755)
-    _ensure_dir(settings.state_dir / "history", uid, gid, 0o755)
     _ensure_dir(settings.state_dir / "internal", uid, gid, 0o700)
     # 0755 on the directory so the bundled PostgreSQL, which runs as a different
     # user, can traverse it to reach its own password file. The secrecy is in

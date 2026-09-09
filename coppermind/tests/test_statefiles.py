@@ -45,17 +45,6 @@ def test_a_stale_write_is_refused_rather_than_silently_winning(tmp_path: Path):
     assert raised.value.current_revision == 2
 
 
-def test_the_previous_revision_is_kept_so_a_bad_edit_is_recoverable(tmp_path: Path):
-    state = store(tmp_path)
-    state.ensure("settings", default_settings().model_dump(mode="json"))
-    body = state.read("settings").body
-    body["notes"]["review_folder"] = "Inbox"
-    state.write("settings", body, if_revision=1)
-    kept = list(state.history_dir.glob("settings.*"))
-    assert [p.name for p in kept] == ["settings.1.yaml"]
-    assert "Review" in kept[0].read_text(encoding="utf-8")
-
-
 def test_hash_bearing_files_are_not_world_readable(tmp_path: Path):
     state = store(tmp_path)
     state.ensure("keys", {"keys": []})

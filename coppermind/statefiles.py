@@ -6,9 +6,7 @@ of `/data` complete: restoring it restores the operator's configuration along
 with the notes, and PostgreSQL can be dropped and rebuilt from it.
 
 Every file carries `schema_version` and `revision`. A write states the revision
-it is replacing, so two Admin tabs cannot silently overwrite each other, and
-the previous revision is kept under `/data/state/history/` so a bad edit is
-recoverable without a backup.
+it is replacing, so two Admin tabs cannot silently overwrite each other.
 """
 
 from __future__ import annotations
@@ -31,8 +29,6 @@ STATE_FILES: dict[str, str] = {
     "keys": "json",
     "admin": "json",
 }
-
-HISTORY_KEEP = 50
 
 
 class RevisionConflict(Exception):
@@ -68,7 +64,6 @@ class StateStore:
 
     def __init__(self, state_dir: Path) -> None:
         self.state_dir = state_dir
-        self.history_dir = state_dir / "history"
 
     def path_for(self, name: str) -> Path:
         try:
@@ -96,16 +91,13 @@ class StateStore:
         """
         path = self.path_for(name)
         current = self.read(name) if path.exists() else None
-        if current is not None:
-            if if_revision is None or if_revision != current.revision:
-                raise RevisionConflict(current.revision)
-            self._archive(name, current, path)
+        if current is not None and (if_revision is None or if_revision != current.revision):
+            raise RevisionConflict(current.revision)
         next_revision = 1 if current is None else current.revision + 1
 
         record = {"schema_version": int(body.get("schema_version", 1)), "revision": next_revision}
         record.update({k: v for k, v in body.items() if k not in {"schema_version", "revision"}})
         atomic_write_text(path, _dump(path, record), mode=_mode_for(name))
-        self._trim_history(name)
         return StateFile(name, next_revision, record)
 
     def ensure(self, name: str, body: dict[str, Any]) -> StateFile:
@@ -117,28 +109,6 @@ class StateStore:
         if self.path_for(name).exists():
             return self.read(name)
         return self.write(name, body, if_revision=None)
-
-    def _archive(self, name: str, current: StateFile, path: Path) -> None:
-        self.history_dir.mkdir(parents=True, exist_ok=True)
-        archived = self.history_dir / f"{name}.{current.revision}{path.suffix}"
-        atomic_write_text(archived, path.read_text(encoding="utf-8"), mode=_mode_for(name))
-
-    def _trim_history(self, name: str) -> None:
-        if not self.history_dir.exists():
-            return
-        kept = sorted(
-            self.history_dir.glob(f"{name}.*"),
-            key=lambda p: _revision_of(p, name),
-        )
-        for stale in kept[:-HISTORY_KEEP]:
-            stale.unlink(missing_ok=True)
-
-
-def _revision_of(path: Path, name: str) -> int:
-    try:
-        return int(path.name[len(name) + 1 :].split(".")[0])
-    except ValueError:
-        return 0
 
 
 def _mode_for(name: str) -> int:

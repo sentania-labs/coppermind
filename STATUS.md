@@ -33,8 +33,7 @@ vertical path proved end to end, then widened.
   untouched and still fully editable. Starting PostgreSQL brings everything
   back with no intervention.
 - Control state files are revisioned. A write states the revision it replaces
-  and is refused if the file moved on; the previous revision is kept under
-  `/data/state/history/`.
+  and is refused if the file moved on.
 - CI: lint, types, unit tests, compose validity and the no-em-dash rule;
   PostgreSQL backed integration tests; dependency, secret and repository
   scans; one image build per service as an OCI tarball with provenance and an

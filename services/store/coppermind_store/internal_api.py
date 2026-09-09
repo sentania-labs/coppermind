@@ -25,7 +25,7 @@ def _store(request: Request) -> LocalStore:
 
 
 def _failure(error: StoreError) -> JSONResponse:
-    status_code, body = to_http(error)
+    status_code, body = to_http(error, surface="internal")
     return JSONResponse(status_code=status_code, content=body)
 
 

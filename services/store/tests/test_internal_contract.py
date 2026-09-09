@@ -16,7 +16,7 @@ from coppermind_store.internal_api import router as internal_router
 from fastapi import FastAPI
 
 from coppermind.store_client import HttpStoreClient
-from coppermind.store_protocol import NotFound, RawNote
+from coppermind.store_protocol import NotesFilesystemUnavailable, NotFound, RawNote
 
 TOKEN = "internal-test-token"
 
@@ -77,3 +77,19 @@ async def test_a_missing_note_comes_back_as_the_same_typed_error():
         await client.aclose()
     assert raised.value.note_id == note_id
     assert str(raised.value) == f"no note with id {note_id}"
+
+
+async def test_the_internal_surface_keeps_the_cause_the_public_one_hides():
+    """The client rebuilds the typed error with the operating system's reason.
+
+    The same error answers the public API with a fixed message, because that
+    surface is unauthenticated and the reason names container paths.
+    """
+    cause = "[Errno 30] Read-only file system: '/data/notes/Review'"
+    client = connected(OneNoteStore(error=NotesFilesystemUnavailable(cause)))
+    try:
+        with pytest.raises(NotesFilesystemUnavailable) as raised:
+            await client.read_raw("01K4Q8Z3N7V2X9M1B5C6D8E0F2")
+    finally:
+        await client.aclose()
+    assert str(raised.value) == cause
