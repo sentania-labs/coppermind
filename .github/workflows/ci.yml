@@ -1,0 +1,216 @@
+# Placement, decided per the lab's CI rule rather than by habit: this
+# repository is public, nothing here touches the lab, and every job either
+# needs a Docker daemon (image build, compose smoke) or needs nothing special.
+# So every job runs on a GitHub-hosted runner and nothing uses `runs-on: lab`.
+# Deploying Coppermind is lab-deployment's job, on the far side of publication.
+#
+# Gates, in order: checks (lint, types, unit tests, compose validity, house
+# rules) -> integration (real PostgreSQL) and scan (dependencies, secrets,
+# repository) -> image (build once per service as an OCI tarball, scan it) ->
+# smoke (bring the stack up from those exact images and run the storyline).
+#
+# Publication and release come with the last pull request of this slice; there
+# is deliberately no publish job yet, so no run of this workflow can push an
+# image anywhere.
+#
+# Every scanner and check is invoked through `make`, so a developer runs
+# exactly what CI runs.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  TRIVY_VERSION: v0.74.0
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+      - run: make setup
+      - run: make check
+
+  # The store's real behaviour needs a real database: the write protocol, the
+  # order of the filesystem write and the commit, and what happens when the
+  # database is not there.
+  integration:
+    needs: checks
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: coppermind
+          POSTGRES_PASSWORD: coppermind
+          POSTGRES_DB: coppermind_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U coppermind -d coppermind_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+      - run: make setup
+      - run: make test-integration
+
+  # Dependency vulnerabilities (pip-audit), committed secrets (gitleaks over
+  # full history) and repository misconfiguration (trivy fs over the
+  # Dockerfiles, the compose files and this workflow).
+  scan:
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # gitleaks scans history, not just the tip
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          cache: true
+      - run: make setup
+      - run: make scan
+
+  # Pull requests only: refuses newly introduced dependencies with known HIGH+
+  # advisories before they reach main.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+
+  # One build per service, as an OCI tarball carrying provenance and an SBOM.
+  # The tarball is the artifact the smoke job runs, so what is smoke tested is
+  # byte for byte what a later publish job would push.
+  image:
+    needs: [checks, scan]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [store, api]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          cache: true
+      - name: Install skopeo
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+
+      # The identity is decided before the build, so the running product
+      # reports the tag it was built from and not a guess.
+      - name: Compute build identity
+        id: identity
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/*) VERSION="$GITHUB_REF_NAME" ;;
+            refs/heads/main) VERSION="main-${GITHUB_SHA::7}" ;;
+            *) VERSION="dev-${GITHUB_SHA::7}" ;;
+          esac
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build once (OCI tarball with provenance and SBOM)
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: services/${{ matrix.service }}/Dockerfile
+          tags: coppermind/${{ matrix.service }}:ci
+          outputs: type=oci,dest=${{ runner.temp }}/${{ matrix.service }}.tar
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          build-args: |
+            BUILD_VERSION=${{ steps.identity.outputs.version }}
+            BUILD_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.identity.outputs.built_at }}
+
+      # The digest under test is the index digest recorded in the tarball. It
+      # must match what buildx reported, or the artifact is not the build.
+      - name: Record tested digest and load for scanning
+        run: |
+          DIGEST="$(tar -xOf "$RUNNER_TEMP/${{ matrix.service }}.tar" index.json | jq -r '.manifests[0].digest')"
+          case "$DIGEST" in sha256:*) ;; *) echo "no index digest in tarball: '$DIGEST'"; exit 1 ;; esac
+          if [ "$DIGEST" != "${{ steps.build.outputs.digest }}" ]; then
+            echo "tarball index digest $DIGEST differs from buildx digest ${{ steps.build.outputs.digest }}"; exit 1
+          fi
+          echo "tested digest: $DIGEST"
+          skopeo copy "oci-archive:$RUNNER_TEMP/${{ matrix.service }}.tar" \
+            "docker-daemon:coppermind/${{ matrix.service }}:ci"
+
+      - name: Scan image
+        run: make scan-image IMAGE=coppermind/${{ matrix.service }}:ci
+
+      # Uploaded only after the scan passed, so the artifact is the validated
+      # image and nothing else.
+      - name: Upload tested image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-oci-${{ matrix.service }}
+          path: ${{ runner.temp }}/${{ matrix.service }}.tar
+          retention-days: 3
+          overwrite: true
+          compression-level: 0 # layers are already compressed
+          if-no-files-found: error
+
+  # Seen working, not merely green: the stack comes up from the tested images
+  # with no manual setup, a note created through the API is read back off the
+  # volume as a file, readiness fails honestly with PostgreSQL stopped, and
+  # everything recovers when it returns.
+  smoke:
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install skopeo
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: image-oci-*
+          path: ${{ runner.temp }}/images
+          merge-multiple: true
+      - name: Load the tested images
+        run: |
+          for service in store api; do
+            skopeo copy "oci-archive:$RUNNER_TEMP/images/$service.tar" \
+              "docker-daemon:coppermind/$service:ci"
+          done
+          docker image ls coppermind/store:ci coppermind/api:ci
+      - name: Smoke the compose stack
+        env:
+          COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
+        run: bash ci/smoke.sh
+      - name: Stack logs
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs || true
