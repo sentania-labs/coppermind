@@ -41,10 +41,14 @@ def test_keys_are_written_in_schema_order_with_a_persons_own_keys_after_them():
     assert names[-1] == "aliases"
 
 
-def test_null_valued_schema_keys_are_omitted():
-    frontmatter = build(frontmatter={"account": None, "aliases": ["mine"]})
+def test_null_known_keys_are_omitted_and_null_unknown_keys_are_preserved():
+    frontmatter = build(
+        frontmatter={"account": None, "aliases": ["mine"], "cssclasses": None}
+    )
     assert "account" not in frontmatter
     assert frontmatter["aliases"] == ["mine"]
+    assert "cssclasses" in frontmatter
+    assert frontmatter["cssclasses"] is None
 
 
 def test_a_dated_type_gets_a_date_prefixed_filename():

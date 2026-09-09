@@ -26,8 +26,8 @@ from coppermind.store_protocol import (
 )
 
 METADATA_UNAVAILABLE_MESSAGE = (
-    "the metadata database is unavailable; the notes filesystem is unaffected and this "
-    "operation can be retried once it returns"
+    "the metadata database is unavailable; a note file may already have been written and "
+    "reconciliation converges the notes filesystem once it returns"
 )
 
 NOTES_FILESYSTEM_UNAVAILABLE_MESSAGE = (

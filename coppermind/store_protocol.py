@@ -49,9 +49,8 @@ class ValidationFailed(StoreError):
 class MetadataUnavailable(StoreError):
     """PostgreSQL is unreachable, so this operation cannot be served.
 
-    The notes filesystem is untouched and fully usable while this is raised.
-    Reconciliation converges anything that changed on disk once PostgreSQL
-    returns.
+    A note file may already have been written when this is raised. Reconciliation
+    converges the notes filesystem once PostgreSQL returns.
     """
 
 

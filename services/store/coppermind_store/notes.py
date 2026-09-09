@@ -244,6 +244,7 @@ def _build_frontmatter(
         values[date_key] = _today(settings).isoformat()
 
     ordered: dict[str, Any] = {}
+    known_keys = {definition.name for definition in schema.keys}
     for definition in schema.keys:
         if definition.name in values and values[definition.name] is not None:
             value = values[definition.name]
@@ -255,7 +256,7 @@ def _build_frontmatter(
             ordered[definition.name] = value
     # Keys the schema does not know about are kept, after the known ones.
     for key, value in values.items():
-        if key not in ordered and value is not None:
+        if key not in known_keys:
             ordered[key] = value
     return ordered
 
