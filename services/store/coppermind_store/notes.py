@@ -72,6 +72,8 @@ class LocalStore:
         problems = schema.validate_frontmatter(frontmatter)
         if problems:
             raise ValidationFailed(problems)
+        sources = frontmatter.get(schema.role("sources_key"), [])
+        tags = frontmatter.get(schema.role("tags_key"), [])
 
         folder = sanitize_folder(settings.notes.review_folder)
         folder_path = resolve(self.notes_root, folder)
@@ -115,7 +117,7 @@ class LocalStore:
                         account=_text(frontmatter.get(schema.role("account_key"))),
                         date=_as_date(frontmatter.get(schema.role("date_key"))),
                         reviewed=bool(frontmatter.get(schema.role("reviewed_key"), False)),
-                        tags=[str(t) for t in frontmatter.get(schema.role("tags_key"), []) or []],
+                        tags=[str(tag) for tag in tags] if isinstance(tags, list) else [],
                         state="ok",
                         first_seen_at=now,
                         updated_at=now,
@@ -148,7 +150,7 @@ class LocalStore:
             content_hash=digest,
             size_bytes=len(data),
             updated_at=now,
-            sources=[str(s) for s in frontmatter.get(schema.role("sources_key"), []) or []],
+            sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
 
     async def get_note(self, note_id: NoteId) -> NoteDocument:

@@ -150,6 +150,29 @@ async def test_the_mirror_reads_the_schema_version_by_role_not_by_name(
         assert row.schema_version == 2
 
 
+async def test_create_projections_ignore_role_values_that_are_not_lists(
+    store: LocalStore, control: ControlState, session_factory
+):
+    changed = default_schema()
+    for definition in changed.keys:
+        if definition.name in {"sources", "tags"}:
+            definition.kind = "string"
+            definition.default = None
+    control.store.write("schema", changed.model_dump(mode="json"), if_revision=1)
+
+    note = await store.create_note(
+        CreateNote(
+            title="String roles",
+            frontmatter={"sources": "source-1", "tags": "operations"},
+        )
+    )
+
+    assert note.sources == []
+    async with session_factory() as session:
+        row = (await session.execute(sa.select(Note).where(Note.id == note.id))).scalar_one()
+    assert row.tags == []
+
+
 async def test_a_row_that_outlived_its_file_is_a_collision_not_an_outage(store: LocalStore):
     """A note deleted on a device leaves a row behind until reconciliation runs.
 

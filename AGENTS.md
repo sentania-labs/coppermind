@@ -44,9 +44,10 @@ db-down` needs Docker.
   `SELECT 1` before touching the filesystem on purpose: without it a database
   outage would surface at commit, after a file had already been created.
 - **The bundled PostgreSQL runs as uid 999 and the Coppermind images as 1000.**
-  The bootstrap writes the password file owner 999, group 1000, mode 0640, and
-  the secrets directory 0755 so PostgreSQL can traverse it. Tightening either
-  breaks the stack at startup.
+  Bootstrap writes the database password owner 1000, group 1000, mode 0644.
+  PostgreSQL reads it through the world bit. Bootstrap creates the credential;
+  runtime access is limited to the postgres, migrate and store mounts, so
+  isolation comes from volume placement rather than ownership or mode.
 - **`grep` patterns over frontmatter need `-F`.** `sources: []` is an
   unterminated bracket expression as a basic regular expression.
 

@@ -52,9 +52,14 @@ def test_wiring_assembles_a_url_from_a_password_file(tmp_path: Path):
     # A character that has to be percent encoded, because a generated password
     # containing one must not change how the URL parses.
     password.write_text("pa/ss word\n", encoding="utf-8")
-    wiring = Wiring(db_password_file=password, db_host="db", db_name="cm", db_user="cm")
+    wiring = Wiring(
+        db_password_file=password,
+        db_host="db",
+        db_name="cm",
+        db_user="cm:ops/team",
+    )
     assert wiring.database_url_for("asyncpg") == (
-        "postgresql+asyncpg://cm:pa%2Fss%20word@db:5432/cm"
+        "postgresql+asyncpg://cm%3Aops%2Fteam:pa%2Fss word@db:5432/cm"
     )
 
 

@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import URL, make_url
 
 MIB = 1024 * 1024
 GIB = 1024 * MIB
@@ -239,13 +239,16 @@ class Wiring(BaseSettings):
                 )
             if url.username is None:
                 raise ValueError("COPPERMIND_DATABASE_URL must include a database user")
-            return url.set(
+            url = url.set(
                 drivername=f"{url.get_backend_name()}+{driver}", password=self._password()
-            ).render_as_string(hide_password=False)
-        from urllib.parse import quote
-
-        password = quote(self._password(), safe="")
-        return (
-            f"postgresql+{driver}://{self.db_user}:{password}"
-            f"@{self.db_host}:{self.db_port}/{self.db_name}"
-        )
+            )
+        else:
+            url = URL.create(
+                drivername=f"postgresql+{driver}",
+                username=self.db_user,
+                password=self._password(),
+                host=self.db_host,
+                port=self.db_port,
+                database=self.db_name,
+            )
+        return url.render_as_string(hide_password=False)

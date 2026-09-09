@@ -1,6 +1,7 @@
 """The one-shot that makes a clean checkout runnable with no manual setup."""
 
 from pathlib import Path
+from stat import S_IMODE
 
 from coppermind_store.bootstrap import run
 
@@ -31,6 +32,12 @@ def test_the_internal_token_is_not_readable_by_anyone_else(tmp_path: Path):
     wiring = wiring_for(tmp_path)
     run(wiring)
     assert wiring.internal_token_file.stat().st_mode & 0o077 == 0
+
+
+def test_the_database_password_uses_the_projected_secret_mode(tmp_path: Path):
+    wiring = wiring_for(tmp_path)
+    run(wiring)
+    assert S_IMODE(wiring.db_password_file.stat().st_mode) == 0o644
 
 
 def test_running_twice_never_rotates_a_secret_or_resets_a_setting(tmp_path: Path):
