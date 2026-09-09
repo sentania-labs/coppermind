@@ -43,7 +43,6 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     NotFound,
     PathCollision,
-    RawNote,
     ValidationFailed,
 )
 from coppermind_store.control import ControlState
@@ -83,6 +82,7 @@ class LocalStore:
         text = fm.compose(frontmatter, _body_with_heading(request.title, request.body))
         data = text.encode("utf-8")
 
+        created = False
         try:
             async with transaction(self.session_factory) as session:
                 # Force the connection before touching the filesystem. SQLAlchemy
@@ -95,6 +95,7 @@ class LocalStore:
                     raise PathCollision(relative) from exc
                 except OSError as exc:
                     raise NotesFilesystemUnavailable(str(exc)) from exc
+                created = True
 
                 now = datetime.now(tz=UTC)
                 digest = content_hash(data)
@@ -119,17 +120,28 @@ class LocalStore:
                         updated_at=now,
                     )
                 )
-        except IntegrityError as exc:
-            # The path is unique in the mirror, so this is a row that outlived
-            # its file: the note was deleted on a device and no reconciler has
-            # cleared the row yet. PostgreSQL is healthy, so saying otherwise
-            # would send the operator after the wrong thing.
-            raise PathCollision(relative) from exc
-        except (SQLAlchemyError, OSError) as exc:
-            # A connection refused by asyncpg arrives here as a bare OSError.
-            # The filesystem write raises its own typed error above, so what
-            # is left at this level is the database and only the database.
-            raise MetadataUnavailable(str(exc)) from exc
+        except BaseException as exc:
+            # Anything that fails after the exclusive create takes the file
+            # back out. The exclusive create is what proves this call owns
+            # that path, so removing it destroys nothing a person wrote, and
+            # without it a refused write would leave a note on every device
+            # that the caller was told was never created.
+            if created:
+                target.unlink(missing_ok=True)
+            if isinstance(exc, IntegrityError):
+                # The path is unique in the mirror, so this is a row that
+                # outlived its file: the note was deleted on a device and no
+                # reconciler has cleared the row yet. PostgreSQL is healthy,
+                # so saying otherwise would send the operator after the wrong
+                # thing.
+                raise PathCollision(relative) from exc
+            if isinstance(exc, SQLAlchemyError | OSError):
+                # A connection refused by asyncpg arrives here as a bare
+                # OSError. The filesystem write raises its own typed error
+                # above, so what is left at this level is the database and
+                # only the database.
+                raise MetadataUnavailable(str(exc)) from exc
+            raise
 
         return NoteDocument(
             id=note_id,
@@ -159,16 +171,6 @@ class LocalStore:
             size_bytes=len(data),
             updated_at=datetime.fromtimestamp(path.stat().st_mtime, tz=UTC),
             sources=[str(s) for s in frontmatter.get(schema.role("sources_key"), []) or []],
-        )
-
-    async def read_raw(self, note_id: NoteId) -> RawNote:
-        relative, path = await self._locate(note_id)
-        data = path.read_bytes()
-        return RawNote(
-            id=note_id,
-            path=relative,
-            text=data.decode("utf-8"),
-            content_hash=content_hash(data),
         )
 
     async def _locate(self, note_id: NoteId) -> tuple[str, Path]:

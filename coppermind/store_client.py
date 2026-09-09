@@ -9,8 +9,6 @@ network.
 
 from __future__ import annotations
 
-from urllib.parse import unquote
-
 import httpx
 
 from coppermind.store_protocol import (
@@ -21,7 +19,6 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     NotFound,
     PathCollision,
-    RawNote,
     StoreUnavailable,
     ValidationFailed,
 )
@@ -57,15 +54,6 @@ class HttpStoreClient:
     async def get_note(self, note_id: NoteId) -> NoteDocument:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/notes/{note_id}")
         return NoteDocument.model_validate(response.json())
-
-    async def read_raw(self, note_id: NoteId) -> RawNote:
-        response = await self._send("GET", f"{INTERNAL_PREFIX}/notes/{note_id}/raw")
-        return RawNote(
-            id=note_id,
-            path=unquote(response.headers.get("X-Coppermind-Path", "")),
-            text=response.text,
-            content_hash=response.headers.get("ETag", "").strip('"'),
-        )
 
     async def is_ready(self) -> bool:
         """True when the store reports itself ready. Never raises."""

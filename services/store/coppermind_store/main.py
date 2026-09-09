@@ -13,11 +13,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import sqlalchemy as sa
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.exceptions import HTTPException
 
 from coppermind.db.session import make_engine, make_session_factory
+from coppermind.errors import code_for_status, envelope
 from coppermind.health import Check, Health, Readiness
 from coppermind.logging import configure_logging, get_logger
 from coppermind.settings import Wiring
@@ -36,6 +39,7 @@ log = get_logger(SERVICE)
 def create_app(wiring: Wiring | None = None) -> FastAPI:
     settings = wiring or Wiring()
     configure_logging(SERVICE, settings.log_level)
+    version = settings.running_version(__version__)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -59,7 +63,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Coppermind store",
-        version=__version__,
+        version=version,
         description=(
             "Internal contract of the store, the only writer of the notes filesystem. "
             "Not a public surface."
@@ -67,6 +71,9 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Registered on Starlette's HTTPException rather than FastAPI's subclass so
+    # that routing 404s and 405s, which Starlette raises directly, answer in the
+    # documented envelope too.
     @app.exception_handler(HTTPException)
     async def _envelope_handler(_: Request, exc: HTTPException) -> JSONResponse:
         """Keep the error envelope flat instead of nesting it under `detail`."""
@@ -74,12 +81,24 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             return JSONResponse(status_code=exc.status_code, content=exc.detail)
         return JSONResponse(
             status_code=exc.status_code,
-            content={"error": "error", "message": str(exc.detail)},
+            content=envelope(code_for_status(exc.status_code), str(exc.detail)),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _request_validation_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+        """A malformed request body is the same shape as a schema violation."""
+        problems = [
+            f"{'.'.join(str(part) for part in error['loc'][1:])}: {error['msg']}".lstrip(": ")
+            for error in exc.errors()
+        ]
+        return JSONResponse(
+            status_code=422,
+            content=envelope("validation_error", "; ".join(problems), errors=problems),
         )
 
     @app.get("/healthz", response_model=Health)
     async def healthz() -> Health:
-        return Health(service=SERVICE, version=__version__)
+        return Health(service=SERVICE, version=version)
 
     @app.get("/readyz")
     async def readyz(request: Request) -> JSONResponse:

@@ -39,6 +39,9 @@ RUN uv sync --frozen --no-dev --package coppermind-api \
     && rm -f /usr/local/bin/uv \
     && rm -rf /usr/local/lib/python3.12/site-packages/pip* /usr/local/bin/pip*
 
+# The build identity the running service reports, not just the image labels.
+ENV COPPERMIND_BUILD_VERSION="${BUILD_VERSION}"
+
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin coppermind
 USER 1000
 EXPOSE 8080

@@ -47,8 +47,17 @@ STORE_UNAVAILABLE_MESSAGE = (
 Surface = Literal["public", "internal"]
 
 
+# Codes for the answers a web framework raises before a route is reached, so
+# both services name them the same way.
+STATUS_CODES = {404: "not_found", 405: "method_not_allowed"}
+
+
 def envelope(code: str, message: str, **extra: Any) -> dict[str, Any]:
     return {"error": code, "message": message, **extra}
+
+
+def code_for_status(status_code: int) -> str:
+    return STATUS_CODES.get(status_code, "error")
 
 
 def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dict[str, Any]]:

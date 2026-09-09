@@ -160,6 +160,11 @@ class Wiring(BaseSettings):
 
     log_level: str = "INFO"
 
+    # The image build stamps the tag it built from here. A checkout run
+    # straight from the working tree leaves it unset and reports the package
+    # version instead, so neither form claims to be something it is not.
+    build_version: str | None = None
+
     # Ownership the bootstrap one-shot applies. Every Coppermind image runs
     # as uid 1000 so the store, the Git helper and the sync client can all
     # write the same volume. The bundled PostgreSQL image runs as 999 and
@@ -167,6 +172,10 @@ class Wiring(BaseSettings):
     run_uid: int = 1000
     run_gid: int = 1000
     postgres_uid: int = 999
+
+    def running_version(self, package_version: str) -> str:
+        """The version a service reports on `/healthz` and in its OpenAPI document."""
+        return self.build_version or package_version
 
     @property
     def notes_dir(self) -> Path:

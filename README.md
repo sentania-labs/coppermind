@@ -41,11 +41,10 @@ a real file on the `data` volume:
 docker compose exec store cat "/data/notes/Review/2026-09-08 Ameren Architecture Sync.md"
 ```
 
-Read it back, as a document or as the file itself:
+Read it back as a document:
 
 ```bash
 curl -sS http://127.0.0.1:8080/v1/notes/<id>
-curl -sS -H 'Accept: text/markdown' http://127.0.0.1:8080/v1/notes/<id>
 ```
 
 The generated OpenAPI document is at `http://127.0.0.1:8080/openapi.json`.

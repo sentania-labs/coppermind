@@ -94,20 +94,9 @@ class NoteDocument(BaseModel):
     sources: list[str] = Field(default_factory=list)
 
 
-class RawNote(BaseModel):
-    """The exact bytes on disk, for the indexer and for `text/markdown` reads."""
-
-    id: NoteId
-    path: str
-    text: str
-    content_hash: ETag
-
-
 class Store(Protocol):
     """What the API, the curator and the indexer are allowed to ask for."""
 
     async def create_note(self, request: CreateNote) -> NoteDocument: ...
 
     async def get_note(self, note_id: NoteId) -> NoteDocument: ...
-
-    async def read_raw(self, note_id: NoteId) -> RawNote: ...

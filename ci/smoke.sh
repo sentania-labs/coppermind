@@ -72,9 +72,7 @@ code="$(curl -sS -o "$fetched" -w '%{http_code}' "$API/v1/notes/$note_id")"
 [ "$code" = "200" ] || { cat "$fetched"; fail "get returned $code, expected 200"; }
 fetched_hash="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["content_hash"])' "$fetched")"
 [ "$fetched_hash" = "$etag" ] || fail "content hash changed between create and read"
-curl -sS -H 'Accept: text/markdown' "$API/v1/notes/$note_id" | head -1 | grep -Fqx -- "---" \
-    || fail "the markdown view does not start with a frontmatter block"
-ok "the note reads back with the same ETag, as JSON and as Markdown"
+ok "the note reads back with the same ETag"
 
 review_count() { compose exec -T store sh -c 'ls -1 /data/notes/Review | wc -l' | tr -d "[:space:]"; }
 before_outage="$(review_count)"

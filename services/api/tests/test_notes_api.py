@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from coppermind_api import __version__
 from coppermind_api.deps import store
 from coppermind_api.main import create_app
 from fastapi.testclient import TestClient
@@ -21,7 +22,6 @@ from coppermind.store_protocol import (
     NoteDocument,
     NotesFilesystemUnavailable,
     NotFound,
-    RawNote,
     ValidationFailed,
 )
 
@@ -55,16 +55,6 @@ class FakeStore:
             raise self.error
         return NOTE
 
-    async def read_raw(self, note_id: str) -> RawNote:
-        if self.error:
-            raise self.error
-        return RawNote(
-            id=NOTE.id,
-            path=NOTE.path,
-            text="---\nid: x\n---\n# Title\n",
-            content_hash=NOTE.content_hash,
-        )
-
     async def is_ready(self) -> bool:
         return self.error is None
 
@@ -89,6 +79,27 @@ def test_health_says_the_process_is_up(client):
     response = test_client.get("/healthz")
     assert response.status_code == 200
     assert response.json()["service"] == "coppermind-api"
+
+
+def api_app(tmp_path: Path, build_version: str | None = None):
+    token = tmp_path / "internal-token"
+    token.write_text("test-token\n", encoding="utf-8")
+    return create_app(
+        Wiring(
+            internal_token_file=token,
+            store_url="http://store.invalid:8081",
+            build_version=build_version,
+        )
+    )
+
+
+def test_healthz_reports_the_version_the_image_was_built_from(tmp_path: Path):
+    """CI stamps the tag it built from; a working tree run reports the package version."""
+    with TestClient(api_app(tmp_path)) as plain:
+        assert plain.get("/healthz").json()["version"] == __version__
+
+    with TestClient(api_app(tmp_path, build_version="v1.2.0")) as stamped:
+        assert stamped.get("/healthz").json()["version"] == "v1.2.0"
 
 
 def test_readiness_follows_the_store(client):
@@ -138,14 +149,6 @@ def test_reading_a_note_returns_the_document_and_its_etag(client):
     assert response.status_code == 200
     assert response.headers["etag"] == '"sha256:abc"'
     assert response.json()["id"] == NOTE.id
-
-
-def test_asking_for_markdown_returns_the_file_itself(client):
-    test_client, _ = client
-    response = test_client.get(f"/v1/notes/{NOTE.id}", headers={"Accept": "text/markdown"})
-    assert response.status_code == 200
-    assert response.text.startswith("---")
-    assert response.headers["content-type"].startswith("text/markdown")
 
 
 def test_a_missing_note_is_a_404_in_the_error_envelope(client):

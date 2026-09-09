@@ -21,9 +21,8 @@ vertical path proved end to end, then widened.
   a numbered suffix). Frontmatter carries `schema_version`, `id`, `date`,
   `type`, `context`, `account`, `reviewed` and `sources`, with defaults
   applied for anything the caller omitted.
-- `GET /v1/notes/{id}` returns the note as a document, or as the file itself
-  with `Accept: text/markdown`. Both carry `ETag: "sha256:<hash of the file
-  bytes>"`.
+- `GET /v1/notes/{id}` returns the note as a document, carrying
+  `ETag: "sha256:<hash of the file bytes>"`.
 - The store is the only writer of the notes filesystem, reachable only over
   the internal contract on `:8081` with a bearer token. The API holds no
   state and calls it.

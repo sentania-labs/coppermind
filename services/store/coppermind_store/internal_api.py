@@ -7,10 +7,8 @@ process and `HttpStoreClient` in the API are interchangeable.
 
 from __future__ import annotations
 
-from urllib.parse import quote
-
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse
 
 from coppermind.errors import to_http
 from coppermind.store_protocol import CreateNote, NoteDocument, StoreError
@@ -50,20 +48,4 @@ async def get_note(note_id: str, request: Request) -> Response:
         return _failure(error)
     return JSONResponse(
         content=note.model_dump(mode="json"), headers={"ETag": f'"{note.content_hash}"'}
-    )
-
-
-@router.get("/notes/{note_id}/raw")
-async def read_raw(note_id: str, request: Request) -> Response:
-    try:
-        raw = await _store(request).read_raw(note_id)
-    except StoreError as error:
-        return _failure(error)
-    # Header values are latin-1 on the wire, and a note path may hold any
-    # Unicode a title survives, so the path travels percent encoded and the
-    # client decodes it.
-    return PlainTextResponse(
-        content=raw.text,
-        media_type="text/markdown; charset=utf-8",
-        headers={"ETag": f'"{raw.content_hash}"', "X-Coppermind-Path": quote(raw.path)},
     )

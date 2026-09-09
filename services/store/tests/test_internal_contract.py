@@ -1,9 +1,9 @@
 """The internal contract, driven end to end by the client that speaks it.
 
 `LocalStore` and `HttpStoreClient` are interchangeable only if what the store
-puts on the wire is what the client reads back off it. These tests run the
-real internal router against the real client over an in process transport, so
-an encoding that survives one side and not the other fails here rather than in
+puts on the wire is what the client reads back off it. These tests run the real
+internal router against the real client over an in process transport, so an
+error shape that survives one side and not the other fails here rather than in
 production.
 """
 
@@ -11,31 +11,32 @@ from __future__ import annotations
 
 import httpx
 import pytest
+from coppermind_store import __version__
 from coppermind_store.auth import InternalAuth
 from coppermind_store.internal_api import router as internal_router
+from coppermind_store.main import create_app
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from coppermind.settings import Wiring
 from coppermind.store_client import HttpStoreClient
-from coppermind.store_protocol import NotesFilesystemUnavailable, NotFound, RawNote
+from coppermind.store_protocol import NotesFilesystemUnavailable, NotFound
 
 TOKEN = "internal-test-token"
+NOTE_ID = "01K4Q8Z3N7V2X9M1B5C6D8E0F2"
 
 
-class OneNoteStore:
-    """A store that answers with the note it was given, or raises."""
+class RaisingStore:
+    """A store that answers every call with the error it was given."""
 
-    def __init__(self, raw: RawNote | None = None, error: Exception | None = None) -> None:
-        self.raw = raw
+    def __init__(self, error: Exception) -> None:
         self.error = error
 
-    async def read_raw(self, note_id: str) -> RawNote:
-        if self.error:
-            raise self.error
-        assert self.raw is not None
-        return self.raw
+    async def get_note(self, note_id: str) -> None:
+        raise self.error
 
 
-def connected(store: OneNoteStore) -> HttpStoreClient:
+def connected(store: RaisingStore) -> HttpStoreClient:
     app = FastAPI()
     app.state.auth = InternalAuth(TOKEN)
     app.state.store = store
@@ -43,40 +44,16 @@ def connected(store: OneNoteStore) -> HttpStoreClient:
     return HttpStoreClient("http://store", TOKEN, transport=httpx.ASGITransport(app=app))
 
 
-async def test_a_path_outside_latin_1_survives_the_markdown_read():
-    """A note titled in Japanese reads back as Markdown with its path intact.
-
-    Header values go on the wire as latin-1, so an unencoded path made the
-    store fail while building the response and the caller saw a 503 for a note
-    that was there all along.
-    """
-    raw = RawNote(
-        id="01K4Q8Z3N7V2X9M1B5C6D8E0F2",
-        path="Review/会議メモ.md",
-        text="---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# 会議メモ\n",
-        content_hash="sha256:abc",
-    )
-    client = connected(OneNoteStore(raw=raw))
-    try:
-        read = await client.read_raw(raw.id)
-    finally:
-        await client.aclose()
-    assert read.path == "Review/会議メモ.md"
-    assert read.text == raw.text
-    assert read.content_hash == "sha256:abc"
-
-
 async def test_a_missing_note_comes_back_as_the_same_typed_error():
     """The client rebuilds `NotFound` with the identifier, not with the message."""
-    note_id = "01K4Q8Z3N7V2X9M1B5C6D8E0F2"
-    client = connected(OneNoteStore(error=NotFound(note_id)))
+    client = connected(RaisingStore(NotFound(NOTE_ID)))
     try:
         with pytest.raises(NotFound) as raised:
-            await client.read_raw(note_id)
+            await client.get_note(NOTE_ID)
     finally:
         await client.aclose()
-    assert raised.value.note_id == note_id
-    assert str(raised.value) == f"no note with id {note_id}"
+    assert raised.value.note_id == NOTE_ID
+    assert str(raised.value) == f"no note with id {NOTE_ID}"
 
 
 async def test_the_internal_surface_keeps_the_cause_the_public_one_hides():
@@ -86,10 +63,58 @@ async def test_the_internal_surface_keeps_the_cause_the_public_one_hides():
     surface is unauthenticated and the reason names container paths.
     """
     cause = "[Errno 30] Read-only file system: '/data/notes/Review'"
-    client = connected(OneNoteStore(error=NotesFilesystemUnavailable(cause)))
+    client = connected(RaisingStore(NotesFilesystemUnavailable(cause)))
     try:
         with pytest.raises(NotesFilesystemUnavailable) as raised:
-            await client.read_raw("01K4Q8Z3N7V2X9M1B5C6D8E0F2")
+            await client.get_note(NOTE_ID)
     finally:
         await client.aclose()
     assert str(raised.value) == cause
+
+
+def store_app(tmp_path, build_version: str | None = None):
+    token = tmp_path / "internal-token"
+    token.write_text(f"{TOKEN}\n", encoding="utf-8")
+    return create_app(
+        Wiring(
+            data_dir=tmp_path / "data",
+            internal_token_file=token,
+            database_url="postgresql://coppermind:coppermind@127.0.0.1:5999/absent",
+            build_version=build_version,
+        )
+    )
+
+
+def test_an_unknown_internal_route_answers_in_the_documented_envelope(tmp_path):
+    """Routing raises these before any route runs, so they bypass a route handler."""
+    with TestClient(store_app(tmp_path)) as client:
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        missing = client.get("/internal/v1/nothing-here", headers=headers)
+        assert missing.status_code == 404
+        assert missing.json()["error"] == "not_found"
+
+        wrong_method = client.delete("/internal/v1/notes", headers=headers)
+        assert wrong_method.status_code == 405
+        assert wrong_method.json()["error"] == "method_not_allowed"
+
+
+def test_a_malformed_create_body_answers_as_a_validation_error(tmp_path):
+    with TestClient(store_app(tmp_path)) as client:
+        response = client.post(
+            "/internal/v1/notes",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={"body": "no title"},
+        )
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"] == "validation_error"
+    assert body["errors"] == ["title: Field required"]
+
+
+def test_healthz_reports_the_version_the_image_was_built_from(tmp_path):
+    """CI stamps the tag it built from; a working tree run reports the package version."""
+    with TestClient(store_app(tmp_path)) as plain:
+        assert plain.get("/healthz").json()["version"] == __version__
+
+    with TestClient(store_app(tmp_path, build_version="v1.2.0")) as stamped:
+        assert stamped.get("/healthz").json()["version"] == "v1.2.0"

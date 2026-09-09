@@ -17,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
-from coppermind.errors import envelope
+from coppermind.errors import code_for_status, envelope
 from coppermind.health import Check, Health, Readiness
 from coppermind.logging import configure_logging, get_logger
 from coppermind.settings import Wiring
@@ -26,9 +26,6 @@ from coppermind_api import __version__
 from coppermind_api.v1.notes import router as notes_router
 
 SERVICE = "coppermind-api"
-
-# Codes for the answers the framework raises before a route is reached.
-_CODES = {404: "not_found", 405: "method_not_allowed"}
 
 log = get_logger(SERVICE)
 
@@ -44,6 +41,7 @@ only process that writes those files.
 def create_app(wiring: Wiring | None = None) -> FastAPI:
     settings = wiring or Wiring()
     configure_logging(SERVICE, settings.log_level)
+    version = settings.running_version(__version__)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -62,7 +60,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Coppermind",
-        version=__version__,
+        version=version,
         description=DESCRIPTION,
         lifespan=lifespan,
     )
@@ -77,7 +75,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             return JSONResponse(status_code=exc.status_code, content=exc.detail)
         return JSONResponse(
             status_code=exc.status_code,
-            content=envelope(_CODES.get(exc.status_code, "error"), str(exc.detail)),
+            content=envelope(code_for_status(exc.status_code), str(exc.detail)),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -94,7 +92,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
 
     @app.get("/healthz", response_model=Health, tags=["operations"])
     async def healthz() -> Health:
-        return Health(service=SERVICE, version=__version__)
+        return Health(service=SERVICE, version=version)
 
     @app.get("/readyz", tags=["operations"])
     async def readyz(request: Request) -> JSONResponse:

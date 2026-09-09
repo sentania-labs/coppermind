@@ -47,6 +47,9 @@ RUN uv sync --frozen --no-dev --package coppermind-store \
     && rm -f /usr/local/bin/uv \
     && rm -rf /usr/local/lib/python3.12/site-packages/pip* /usr/local/bin/pip*
 
+# The build identity the running service reports, not just the image labels.
+ENV COPPERMIND_BUILD_VERSION="${BUILD_VERSION}"
+
 # uid 1000 is shared by every image that touches the notes filesystem, so the
 # store, the Git helper and the Obsidian Sync client all own what they write.
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin coppermind \

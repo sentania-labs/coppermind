@@ -64,9 +64,7 @@ async def test_a_note_reads_back_by_its_identifier(store: LocalStore):
     assert fetched.id == created.id
     assert fetched.path == "Review/Runbook.md"
     assert fetched.content_hash == created.content_hash
-
-    raw = await store.read_raw(created.id)
-    assert raw.text == (store.notes_root / created.path).read_text(encoding="utf-8")
+    assert fetched.body in (store.notes_root / created.path).read_text(encoding="utf-8")
 
 
 async def test_an_unknown_identifier_is_a_miss_not_an_error(store: LocalStore):
@@ -165,3 +163,7 @@ async def test_a_row_that_outlived_its_file_is_a_collision_not_an_outage(store: 
     with pytest.raises(PathCollision) as raised:
         await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
     assert raised.value.existing_path == first.path
+    # The refused write must not leave its file behind. It would sync to every
+    # device, and a read of the first identifier would then serve the second
+    # note's content under the first note's name.
+    assert list(store.notes_root.rglob("*.md")) == []

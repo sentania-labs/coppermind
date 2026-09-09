@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, Response
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi import APIRouter, Depends, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from coppermind.store_client import HttpStoreClient
@@ -67,21 +67,9 @@ async def create_note(
 
 
 @router.get("/{note_id}", response_model=NoteDocument)
-async def get_note(
-    note_id: str,
-    accept: str = Header(default="application/json"),
-    client: HttpStoreClient = Depends(store),
-) -> Response:
-    """Return a note as a document, or as the exact file with `Accept: text/markdown`."""
-    wants_markdown = "text/markdown" in accept
+async def get_note(note_id: str, client: HttpStoreClient = Depends(store)) -> Response:
+    """Return a note as a document, with the ETag of the file's bytes."""
     try:
-        if wants_markdown:
-            raw = await client.read_raw(note_id)
-            return PlainTextResponse(
-                content=raw.text,
-                media_type="text/markdown; charset=utf-8",
-                headers={"ETag": f'"{raw.content_hash}"'},
-            )
         note = await client.get_note(note_id)
     except StoreError as error:
         return failure(error)
