@@ -60,12 +60,17 @@ in the tree, so do not read the absence as a decision to leave it out.
   request.
 - **Ingest.** `POST /v1/ingest`, source bundles, revisions, idempotency and
   the generated source projections.
-- **Reconciliation.** Nothing yet notices a file created, edited, moved or
-  deleted on a device. A note edited in Obsidian will not be reflected in the
-  API, and a note deleted there leaves a row behind. A read whose row points
-  at a file that now carries a different identifier answers 404 `not_found`
-  rather than another note's content. Until the reconciler lands, treat the
-  API as the way to create notes.
+- **Reconciliation.** Nothing yet notices a file created, moved or deleted on
+  a device. An edit in place is the exception and does read back: a note read
+  by its identifier is parsed from the file every time, so a body or
+  frontmatter change made in Obsidian is reflected on the next read. What
+  needs the reconciler is anything that invalidates or lacks the mirrored
+  path. A note created on a device has no row and cannot be read by
+  identifier at all; a note moved, renamed or deleted there leaves a row
+  pointing nowhere, and the read answers 404 `not_found`. So does a read whose
+  row points at a file that now carries a different identifier, rather than
+  serving another note's content. Until the reconciler lands, treat the API as
+  the way to create notes.
 - **Conflict protection on writes.** There is no `PUT` or `PATCH` yet, so
   conditional writes are not defined at all: reads carry an `ETag`, but no
   surface reads an `If-Match` header.

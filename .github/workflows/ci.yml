@@ -214,10 +214,13 @@ jobs:
               "docker-daemon:coppermind/$service:ci"
             docker image ls "coppermind/$service:ci"
           done
+      # Through the make target, not the script, so this job runs exactly what a
+      # developer runs. The target already honours COMPOSE_FILES, which is the
+      # only thing CI needs to vary.
       - name: Smoke the compose stack
         env:
           COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
-        run: bash ci/smoke.sh
+        run: make smoke
       - name: Stack logs
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs || true
