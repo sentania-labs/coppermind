@@ -78,7 +78,8 @@ class SyncSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     plan: SyncPlan = "standard"
-    # Null means "derive from the plan", which is what a fresh install does.
+    # Null marks these overrides as unset. Ingest derives plan limits when its
+    # consumer lands.
     max_file_bytes: int | None = None
     max_total_bytes: int | None = None
     device_name: str = "coppermind-server"
@@ -116,8 +117,8 @@ class LimitSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ingest_max_bytes: int = 25 * MIB
-    # Null means "the sync file ceiling", so an attachment is never accepted
-    # that Obsidian Sync would then refuse to carry to a device.
+    # Null marks this override as unset. Attachment ingest derives the sync
+    # file ceiling when its consumer lands.
     attachment_max_bytes: int | None = None
 
 

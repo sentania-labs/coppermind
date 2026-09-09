@@ -51,7 +51,7 @@ from coppermind.store_protocol import (
     ValidationFailed,
 )
 from coppermind_store.control import ControlState
-from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
+from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, is_note_file, resolve
 
 
 class LocalStore:
@@ -219,7 +219,7 @@ class LocalStore:
             # The mirrored path leaves the notes filesystem, so the store
             # refuses to follow it. Nothing servable is there.
             raise NotFound(note_id) from exc
-        if not path.is_file():
+        if not is_note_file(path):
             # The row outlived the file, which happens when a note is deleted
             # on a device. Reconciliation clears the row; until then, this is
             # honestly a miss rather than a server error.
@@ -255,7 +255,7 @@ def _build_frontmatter(
             ordered[definition.name] = value
     # Keys the schema does not know about are kept, after the known ones.
     for key, value in values.items():
-        if key not in ordered:
+        if key not in ordered and value is not None:
             ordered[key] = value
     return ordered
 

@@ -200,8 +200,18 @@ def test_an_unreachable_store_reports_an_unknown_in_flight_write(client):
     assert response.status_code == 503
     body = response.json()
     assert body["error"] == "store_unavailable"
-    assert "outcome of an in-flight write is unknown" in body["message"]
+    assert "if this was a write, its outcome is unknown" in body["message"]
     assert "notes filesystem is untouched" not in body["message"]
+
+
+def test_an_unreachable_store_read_uses_operation_neutral_wording(client):
+    test_client, fake = client
+    fake.error = StoreUnavailable("connection refused")
+    response = test_client.get(f"/v1/notes/{NOTE.id}")
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"] == "store_unavailable"
+    assert "if this was a write, its outcome is unknown" in body["message"]
 
 
 def test_a_missing_note_reports_the_identifier_it_was_asked_for(client):

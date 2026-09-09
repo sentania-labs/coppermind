@@ -36,8 +36,8 @@ NOTES_FILESYSTEM_UNAVAILABLE_MESSAGE = (
 )
 
 STORE_UNAVAILABLE_MESSAGE = (
-    "the store could not be reached; the outcome of an in-flight write is unknown and "
-    "reconciliation converges notes filesystem changes once the store returns"
+    "the store could not be reached; if this was a write, its outcome is unknown and "
+    "reconciliation converges the notes filesystem once the store returns"
 )
 
 # Which contract an envelope is being built for. The public surface carries no

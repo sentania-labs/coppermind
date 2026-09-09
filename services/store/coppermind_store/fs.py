@@ -7,7 +7,10 @@ root, and nothing here accepts a path that would escape it.
 from __future__ import annotations
 
 import hashlib
+import stat
 from pathlib import Path
+
+from coppermind.store_protocol import NotesFilesystemUnavailable
 
 NOTE_SUFFIX = ".md"
 
@@ -28,9 +31,24 @@ def resolve(root: Path, relative: str) -> Path:
 
 def existing_stems(folder: Path) -> list[str]:
     """Note filename stems already present in `folder`."""
-    if not folder.is_dir():
+    try:
+        if not stat.S_ISDIR(folder.stat().st_mode):
+            return []
+        return [entry.stem for entry in folder.iterdir() if is_note_file(entry)]
+    except FileNotFoundError:
         return []
-    return [entry.stem for entry in folder.iterdir() if entry.is_file()]
+    except OSError as exc:
+        raise NotesFilesystemUnavailable(str(exc)) from exc
+
+
+def is_note_file(path: Path) -> bool:
+    """Return whether `path` is a file, with typed filesystem failures."""
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise NotesFilesystemUnavailable(str(exc)) from exc
 
 
 def is_writable(root: Path) -> tuple[bool, str]:

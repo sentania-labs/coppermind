@@ -130,6 +130,32 @@ async def test_a_filesystem_failure_reports_the_filesystem_not_the_database(stor
         os.chmod(store.notes_root, original)
 
 
+async def test_an_unreadable_review_folder_reports_the_filesystem_on_create(store: LocalStore):
+    if os.geteuid() == 0:
+        pytest.skip("root ignores the directory mode this test relies on")
+    review = store.notes_root / "Review"
+    review.mkdir()
+    review.chmod(0)
+    try:
+        with pytest.raises(NotesFilesystemUnavailable):
+            await store.create_note(CreateNote(title="Unreadable review folder"))
+    finally:
+        review.chmod(0o755)
+
+
+async def test_an_unreadable_note_path_reports_the_filesystem_on_read(store: LocalStore):
+    if os.geteuid() == 0:
+        pytest.skip("root ignores the directory mode this test relies on")
+    note = await store.create_note(CreateNote(title="Unreadable note path"))
+    review = (store.notes_root / note.path).parent
+    review.chmod(0)
+    try:
+        with pytest.raises(NotesFilesystemUnavailable):
+            await store.get_note(note.id)
+    finally:
+        review.chmod(0o755)
+
+
 async def test_the_mirror_reads_the_schema_version_by_role_not_by_name(
     wiring, session_factory, control: ControlState
 ):
