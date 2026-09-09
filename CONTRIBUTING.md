@@ -85,6 +85,9 @@ repository root as the build context. `ci/` holds the scripts CI and you both
 run. `tests/` holds what crosses a service boundary; a service's own tests
 live beside it.
 
+The shared package deliberately carries declarations named by the approved plan ahead of
+their consuming slices; check that plan before raising an unused-declaration finding.
+
 ## Decisions
 
 Numbered records under `docs/decisions/`, never renumbered and never reused.

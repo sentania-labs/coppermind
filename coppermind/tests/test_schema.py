@@ -4,22 +4,6 @@ from pydantic import ValidationError
 from coppermind.schema import FrontmatterSchema, default_schema
 
 
-def test_the_shipped_schema_covers_every_role():
-    schema = default_schema()
-    for role in (
-        "id_key",
-        "date_key",
-        "type_key",
-        "context_key",
-        "account_key",
-        "reviewed_key",
-        "sources_key",
-        "tags_key",
-        "schema_version_key",
-    ):
-        assert schema.key(schema.role(role)) is not None
-
-
 def test_a_schema_missing_a_required_role_is_rejected():
     body = default_schema().model_dump(mode="json")
     del body["roles"]["sources_key"]

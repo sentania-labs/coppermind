@@ -23,16 +23,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
 MIB = 1024 * 1024
-GIB = 1024 * MIB
 
 SyncPlan = Literal["standard", "plus"]
-
-# File and total size ceilings Obsidian Sync enforces per plan. An explicit
-# value in the sync section overrides the derived one.
-PLAN_LIMITS: dict[str, tuple[int, int]] = {
-    "standard": (5 * MIB, 1 * GIB),
-    "plus": (200 * MIB, 10 * GIB),
-}
 
 
 class GeneralSettings(BaseModel):
@@ -96,11 +88,6 @@ class SyncSettings(BaseModel):
     file_types: list[str] = Field(default_factory=lambda: ["image", "audio", "video", "pdf"])
     sync_configs: list[str] = Field(default_factory=list)
 
-    def effective_limits(self) -> tuple[int, int]:
-        """Return (max file bytes, max total bytes) after applying the plan."""
-        plan_file, plan_total = PLAN_LIMITS[self.plan]
-        return (self.max_file_bytes or plan_file, self.max_total_bytes or plan_total)
-
 
 class CuratorSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -156,10 +143,6 @@ class ProductSettings(BaseModel):
     events: EventSettings = Field(default_factory=EventSettings)
     limits: LimitSettings = Field(default_factory=LimitSettings)
     admin: AdminSettings = Field(default_factory=AdminSettings)
-
-    def attachment_limit_bytes(self) -> int:
-        max_file, _ = self.sync.effective_limits()
-        return self.limits.attachment_max_bytes or max_file
 
 
 def default_settings() -> ProductSettings:

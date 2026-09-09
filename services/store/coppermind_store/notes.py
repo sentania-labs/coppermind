@@ -12,8 +12,8 @@ Write protocol, in this order, for every mutation:
 The commit is last on purpose: a crash between steps 3 and 4 leaves the file
 on disk with no row, and the filesystem is the truth, so reconciliation brings
 PostgreSQL up to date on its next pass. It never leaves a row pointing at a
-file that does not exist, and a client retry cannot create a duplicate note
-for the same write.
+file that does not exist. A retry after an ambiguous failure can leave a
+second copy that reconciliation surfaces.
 """
 
 from __future__ import annotations

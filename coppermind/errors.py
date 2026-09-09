@@ -31,13 +31,13 @@ METADATA_UNAVAILABLE_MESSAGE = (
 )
 
 NOTES_FILESYSTEM_UNAVAILABLE_MESSAGE = (
-    "the notes filesystem could not be written; this write did not succeed and can be "
+    "the notes filesystem could not be read or written; this operation did not succeed and can be "
     "retried once the volume is healthy"
 )
 
 STORE_UNAVAILABLE_MESSAGE = (
-    "the store could not be reached; the notes filesystem is untouched and this operation "
-    "can be retried once it returns"
+    "the store could not be reached; the outcome of an in-flight write is unknown and "
+    "reconciliation converges notes filesystem changes once the store returns"
 )
 
 # Which contract an envelope is being built for. The public surface carries no

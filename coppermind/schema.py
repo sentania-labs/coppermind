@@ -67,9 +67,6 @@ class FrontmatterSchema(BaseModel):
             raise ValueError(f"schema roles reference undefined keys: {', '.join(unknown)}")
         return self
 
-    def key(self, name: str) -> KeyDefinition | None:
-        return next((k for k in self.keys if k.name == name), None)
-
     def role(self, role: str) -> str:
         """Return the key name playing `role`."""
         try:

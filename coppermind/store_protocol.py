@@ -73,11 +73,11 @@ class NoteUnparseable(StoreError):
 
 
 class NotesFilesystemUnavailable(StoreError):
-    """The notes filesystem could not be written, so this operation failed.
+    """The notes filesystem could not be read or written.
 
-    Raised when the write itself fails: the volume is read only, the disk is
-    full, or the mount is gone. PostgreSQL is not implicated, and `/readyz`
-    reports the same half as not ok.
+    Raised when a file operation fails because the volume is read only, the
+    disk is full, permissions deny access, or the mount is gone. PostgreSQL is
+    not implicated, and `/readyz` reports the same half as not ok.
     """
 
 

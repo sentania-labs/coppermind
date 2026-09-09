@@ -22,6 +22,7 @@ from coppermind.store_protocol import (
     NoteDocument,
     NotesFilesystemUnavailable,
     NotFound,
+    StoreUnavailable,
     ValidationFailed,
 )
 
@@ -184,12 +185,23 @@ def test_a_filesystem_failure_does_not_blame_the_database(client):
     assert response.status_code == 503
     body = response.json()
     assert body["error"] == "notes_filesystem_unavailable"
-    assert "notes filesystem could not be written" in body["message"]
+    assert "notes filesystem could not be read or written" in body["message"]
     assert "notes filesystem is unaffected" not in body["message"]
     # The public surface has no authentication in this slice, so it must not
     # repeat the operating system's reason, which names container paths.
     assert "detail" not in body
     assert "Read-only file system" not in response.text
+
+
+def test_an_unreachable_store_reports_an_unknown_in_flight_write(client):
+    test_client, fake = client
+    fake.error = StoreUnavailable("request timed out")
+    response = test_client.post("/v1/notes", json={"title": "During a timeout"})
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"] == "store_unavailable"
+    assert "outcome of an in-flight write is unknown" in body["message"]
+    assert "notes filesystem is untouched" not in body["message"]
 
 
 def test_a_missing_note_reports_the_identifier_it_was_asked_for(client):

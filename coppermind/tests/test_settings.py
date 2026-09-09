@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from coppermind.settings import GIB, MIB, ProductSettings, Wiring, default_settings
+from coppermind.settings import ProductSettings, Wiring, default_settings
 
 
 def test_a_fresh_install_runs_on_shipped_defaults():
@@ -13,21 +13,6 @@ def test_a_fresh_install_runs_on_shipped_defaults():
     assert settings.general.timezone == "America/Chicago"
     assert settings.git.enabled is True
     assert settings.reconcile.scan_interval_s == 60
-
-
-def test_sync_limits_follow_the_plan_unless_they_are_set():
-    standard = ProductSettings()
-    assert standard.sync.effective_limits() == (5 * MIB, 1 * GIB)
-
-    plus = ProductSettings.model_validate({"sync": {"plan": "plus"}})
-    assert plus.sync.effective_limits() == (200 * MIB, 10 * GIB)
-
-    override = ProductSettings.model_validate({"sync": {"max_file_bytes": 1234}})
-    assert override.sync.effective_limits()[0] == 1234
-
-
-def test_the_attachment_limit_never_exceeds_what_sync_can_carry():
-    assert ProductSettings().attachment_limit_bytes() == 5 * MIB
 
 
 def test_settings_survive_a_round_trip_through_a_file_body():
