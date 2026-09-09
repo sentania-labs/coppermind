@@ -7,8 +7,8 @@ small set of services put things into it, file them and make them findable.
 Nothing in Coppermind owns your notes in a way you could not walk away from:
 the files are the product, and everything else is rebuildable from them.
 
-Architecture specification v0.3 is the design contract. The decisions that
-shaped it are in [docs/decisions](docs/decisions).
+The design contract is the decision records in
+[docs/decisions](docs/decisions): what was chosen, what was rejected, and why.
 
 ## Quickstart
 

@@ -49,6 +49,13 @@ services:
   # Bundled PostgreSQL. It holds mirrored and derived state only: every row
   # can be rebuilt from /data, which is why losing it is an outage and not a
   # data loss. The password is a file, never an environment value.
+  #
+  # Deliberately not behind a `bundled-db` profile. Compose reads `.env` and
+  # not `.env.example`, so a profile would leave a clean checkout with no
+  # database and an operator with a file to copy before anything runs, which
+  # breaks the quickstart this file exists to be. The services already accept
+  # an external PostgreSQL through COPPERMIND_DATABASE_URL; expressing that
+  # choice in compose arrives with the deployment work.
   postgres:
     image: postgres:16@sha256:c1b3783309b6499c795eed7c20135a1a4d25cae1b575c3d52c6f536129a1b109
     restart: unless-stopped
