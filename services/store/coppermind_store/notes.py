@@ -26,9 +26,7 @@ from zoneinfo import ZoneInfo
 import sqlalchemy as sa
 from sqlalchemy.exc import (
     DBAPIError,
-    DataError,
     IntegrityError,
-    ProgrammingError,
     SQLAlchemyError,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -141,9 +139,8 @@ class LocalStore:
                 # so saying otherwise would send the operator after the wrong
                 # thing.
                 raise PathCollision(relative) from exc
-            if isinstance(exc, DataError | ProgrammingError) or (
-                isinstance(exc, DBAPIError)
-                and str(getattr(exc.orig, "sqlstate", "")).startswith("22")
+            if isinstance(exc, DBAPIError) and str(getattr(exc.orig, "sqlstate", "")).startswith(
+                "22"
             ):
                 if created:
                     target.unlink(missing_ok=True)
@@ -172,7 +169,13 @@ class LocalStore:
 
     async def get_note(self, note_id: NoteId) -> NoteDocument:
         relative, path = await self._locate(note_id)
-        data = path.read_bytes()
+        try:
+            data = path.read_bytes()
+            mtime = path.stat().st_mtime
+        except FileNotFoundError as exc:
+            raise NotFound(note_id) from exc
+        except OSError as exc:
+            raise NotesFilesystemUnavailable(str(exc)) from exc
         try:
             frontmatter, body = fm.parse(data.decode("utf-8"))
         except (fm.FrontmatterError, UnicodeDecodeError) as exc:
@@ -189,7 +192,7 @@ class LocalStore:
             body=body,
             content_hash=content_hash(data),
             size_bytes=len(data),
-            updated_at=datetime.fromtimestamp(path.stat().st_mtime, tz=UTC),
+            updated_at=datetime.fromtimestamp(mtime, tz=UTC),
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
 

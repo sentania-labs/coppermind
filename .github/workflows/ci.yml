@@ -94,10 +94,12 @@ jobs:
       - run: make setup
       - run: make scan
 
-  # Pull requests only: refuses newly introduced dependencies with known HIGH+
-  # advisories before they reach main. It is here to match the organization CI
-  # reference repository, which carries this job on every repository, rather
-  # than as an addition specific to this one.
+  # Deliberately redundant with make scan-deps, which checks every known
+  # advisory on every push and pull request. This pull-request-only job checks
+  # only newly introduced HIGH+ advisories, so it is strictly weaker and
+  # changes no outcome. It stays for consistency across the organization's
+  # repositories, not because it catches anything extra. Reviewed and
+  # confirmed on 2026-09-09.
   #
   # Findings appear in the job log rather than as a pull request comment: the
   # workflow deliberately does not grant `pull-requests: write`, and the job
