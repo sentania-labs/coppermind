@@ -71,12 +71,6 @@ in the tree, so do not read the absence as a decision to leave it out.
 
 ## Known gaps in what is here
 
-- `docs/decisions/001-interview-outcome.md` is committed verbatim, as the
-  record of the interview as it happened. Its Q5 row says Admin is a route
-  group in the API. The captain's approval of 2026-09-09 amended that: Admin
-  stays a separate service and image. The amendment wins, the code follows the
-  amendment, and a follow-up decision record should capture the change rather
-  than editing a record of something that was said.
 - Bring-your-own PostgreSQL is wired in the settings (`COPPERMIND_DATABASE_URL`
   and the `COPPERMIND_DB_*` values) but the compose file only ships the bundled
   instance. The plan puts a profile around it; a profile that has to be turned
