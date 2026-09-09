@@ -63,8 +63,11 @@ class NoteUnparseable(StoreError):
     """
 
     def __init__(self, note_id: str, reason: str) -> None:
+        # The reason quotes the lines of the file the parser choked on, so it
+        # is note content and never belongs in the message. It is carried as an
+        # attribute for the internal surface and the store's log.
         super().__init__(
-            f"the frontmatter of note {note_id} could not be parsed ({reason}); "
+            f"the frontmatter of note {note_id} could not be parsed; "
             "Coppermind has not modified the file"
         )
         self.note_id = note_id

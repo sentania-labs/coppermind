@@ -41,8 +41,9 @@ STORE_UNAVAILABLE_MESSAGE = (
 )
 
 # Which contract an envelope is being built for. The public surface carries no
-# cause text, because it is unauthenticated in this slice and a raw operating
-# system error names container paths. The internal surface keeps the cause,
+# cause text, because it is unauthenticated in this slice, a raw operating
+# system error names container paths, and a parser error quotes the note's own
+# frontmatter. The internal surface keeps the cause,
 # because `HttpStoreClient` reads it back to rebuild the typed error. Public is
 # the default so a new caller cannot leak by forgetting to say.
 Surface = Literal["public", "internal"]
@@ -71,9 +72,11 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
     if isinstance(error, PathCollision):
         return 409, envelope("path_collision", str(error), existing_path=error.existing_path)
     if isinstance(error, NoteUnparseable):
-        return 409, envelope(
-            "note_unparseable", str(error), note_id=error.note_id, reason=error.reason
-        )
+        # The reason quotes the frontmatter lines the parser failed on, so it is
+        # the caller's note content and it goes behind the same surface split
+        # the other causes use. The public envelope never carries note text.
+        why = {"reason": error.reason} if surface == "internal" else {}
+        return 409, envelope("note_unparseable", str(error), note_id=error.note_id, **why)
     if isinstance(error, MetadataUnavailable):
         return 503, envelope("metadata_unavailable", METADATA_UNAVAILABLE_MESSAGE)
     if isinstance(error, NotesFilesystemUnavailable):

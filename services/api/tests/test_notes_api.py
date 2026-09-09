@@ -21,6 +21,7 @@ from coppermind.store_protocol import (
     MetadataUnavailable,
     NoteDocument,
     NotesFilesystemUnavailable,
+    NoteUnparseable,
     NotFound,
     StoreUnavailable,
     ValidationFailed,
@@ -240,3 +241,40 @@ def test_a_schema_violation_comes_back_as_422_with_the_reasons(client):
     response = test_client.post("/v1/notes", json={"title": "Missing account"})
     assert response.status_code == 422
     assert response.json()["errors"] == ["account: required when context is one of customer"]
+
+
+def test_an_unparseable_note_never_returns_the_notes_own_text(client):
+    """The public envelope carries none of the broken note's frontmatter.
+
+    The parser's reason quotes the lines it choked on, so it is the caller's
+    note content. Two things make publishing it wrong: this surface has no
+    authentication in this slice and an operator setting can put it on an
+    interface, and the error is raised before the identifier guard can run, so
+    a stale mirror row can serve lines from a note the caller never named.
+
+    The assertion is on the absence of that text rather than on the presence of
+    a particular sentence, so rewording the message later cannot make this test
+    pass while the content leaks again.
+    """
+    test_client, fake = client
+    secret_lines = ["account: AcmeCorp Confidential", "tags: [unclosed", "salary_band: L7"]
+    reason = (
+        'while parsing a flow sequence\n  in "<unicode string>", line 5, column 7:\n'
+        "    tags: [unclosed\n          ^ (line: 5)\n"
+        "expected ',' or ']', but got ':'\n"
+        '  in "<unicode string>", line 6, column 9:\n    account: AcmeCorp Confidential\n'
+    )
+    fake.error = NoteUnparseable(NOTE.id, reason)
+
+    response = test_client.get(f"/v1/notes/{NOTE.id}")
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "note_unparseable"
+    assert body["note_id"] == NOTE.id
+    # Nothing of the file's own content reaches the caller, in any field.
+    served = response.text
+    for line in secret_lines:
+        assert line not in served
+    assert "reason" not in body
+    assert "unicode string" not in served

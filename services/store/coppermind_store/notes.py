@@ -36,6 +36,7 @@ from coppermind.atomicio import create_exclusive_bytes
 from coppermind.db.models import Note
 from coppermind.db.session import transaction
 from coppermind.ids import new_id
+from coppermind.logging import get_logger
 from coppermind.naming import note_stem, sanitize_folder, unique_stem
 from coppermind.schema import FrontmatterSchema
 from coppermind.settings import ProductSettings
@@ -52,6 +53,8 @@ from coppermind.store_protocol import (
 )
 from coppermind_store.control import ControlState
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, is_note_file, resolve
+
+log = get_logger("coppermind-store")
 
 
 class LocalStore:
@@ -181,6 +184,14 @@ class LocalStore:
         except (fm.FrontmatterError, UnicodeDecodeError) as exc:
             # A person broke this file on a device. That is not a fault of the
             # store, and the answer says so rather than blaming Coppermind.
+            # The parser's reason quotes the offending lines, so it goes to the
+            # log and the internal surface and never to the public envelope.
+            log.warning(
+                "note frontmatter could not be parsed",
+                note_id=note_id,
+                path=relative,
+                reason=str(exc),
+            )
             raise NoteUnparseable(note_id, str(exc)) from exc
         schema = self.control.schema()
         carried_id = frontmatter.get(schema.role("id_key"))
