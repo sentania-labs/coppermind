@@ -31,8 +31,9 @@ vertical path proved end to end, then widened.
 - Honest readiness. With PostgreSQL stopped: `/readyz` answers 503 and names
   the failing check, note writes and reads answer 503 `metadata_unavailable`,
   a refused write leaves no file behind, and the notes filesystem is
-  untouched and still fully editable. Starting PostgreSQL brings everything
-  back with no intervention.
+  untouched and still fully editable. Starting PostgreSQL brings API
+  operations back with no intervention; what changed in the notes filesystem
+  during the outage waits for the reconciler under "Not built yet".
 - Control state files are revisioned. A write states the revision it replaces
   and is refused if the file moved on. Readiness loads both of them, so a
   hand edit the models reject takes the store out of rotation with the file
@@ -61,8 +62,10 @@ in the tree, so do not read the absence as a decision to leave it out.
   the generated source projections.
 - **Reconciliation.** Nothing yet notices a file created, edited, moved or
   deleted on a device. A note edited in Obsidian will not be reflected in the
-  API, and a note deleted there leaves a row behind. Until the reconciler
-  lands, treat the API as the way to create notes.
+  API, and a note deleted there leaves a row behind. A read whose row points
+  at a file that now carries a different identifier answers 404 `not_found`
+  rather than another note's content. Until the reconciler lands, treat the
+  API as the way to create notes.
 - **Conflict protection on writes.** There is no `PUT` or `PATCH` yet, so
   conditional writes are not defined at all: reads carry an `ETag`, but no
   surface reads an `If-Match` header.
@@ -92,7 +95,10 @@ in the tree, so do not read the absence as a decision to leave it out.
 - Nothing repairs a note whose frontmatter a person broke. Reads of it answer
   409 `note_unparseable` and the file is left exactly as it is; putting it
   right means editing it on a device, because the reconciler and Admin are not
-  here yet.
+  here yet. The identifier that answer names is the one asked for, and a stale
+  mirror row can point at a different note's file, so with an unreconciled
+  rename the wrong note is named. The file's own bytes never reach the answer;
+  issue #2 tracks the rest.
 - The store reads `settings.yaml` and `schema.yaml` on every call rather than
   caching them. Correct, and cheap at this size; it becomes a cache with an
   invalidation event when `settings.changed` exists.
