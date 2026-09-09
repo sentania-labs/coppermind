@@ -60,6 +60,13 @@ def test_the_body_gets_the_title_as_its_h1():
     assert _body_with_heading("Title", "") == "# Title\n"
 
 
+def test_internal_whitespace_in_a_title_is_collapsed_before_layout():
+    request = CreateNote(title="Ameren sync\n  second\tline")
+    body = _body_with_heading(request.title, "")
+    assert request.title == "Ameren sync second line"
+    assert _title_of(body, Path("unused.md")) == request.title
+
+
 def test_the_requested_title_wins_over_a_heading_the_body_carries():
     """One note reports one title, whether it was just created or read back."""
     composed = _body_with_heading("Ameren Sync", "# Quarterly Review\n\ntext\n")

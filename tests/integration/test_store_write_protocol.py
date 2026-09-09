@@ -190,7 +190,7 @@ async def test_a_note_a_person_broke_on_a_device_is_not_our_error(store: LocalSt
     assert path.read_text(encoding="utf-8") == before.replace("\n---\n", "\n", 1)
 
 
-async def test_schema_invalid_frontmatter_is_not_projected_as_a_document(store: LocalStore):
+async def test_schema_deviation_does_not_corrupt_the_sources_projection(store: LocalStore):
     created = await store.create_note(
         CreateNote(title="Runbook", frontmatter={"type": "reference"})
     )
@@ -198,9 +198,9 @@ async def test_schema_invalid_frontmatter_is_not_projected_as_a_document(store: 
     changed = path.read_text(encoding="utf-8").replace("sources: []", "sources: source-1")
     path.write_text(changed, encoding="utf-8")
 
-    with pytest.raises(NoteUnparseable) as raised:
-        await store.get_note(created.id)
-    assert "sources: expected a list" in str(raised.value)
+    fetched = await store.get_note(created.id)
+    assert fetched.frontmatter["sources"] == "source-1"
+    assert fetched.sources == []
     assert path.read_text(encoding="utf-8") == changed
 
 

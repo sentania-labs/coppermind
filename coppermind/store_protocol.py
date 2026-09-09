@@ -97,7 +97,7 @@ class CreateNote(BaseModel):
     @field_validator("title", mode="before")
     @classmethod
     def normalize_title(cls, value: Any) -> Any:
-        return value.strip() if isinstance(value, str) else value
+        return " ".join(value.split()) if isinstance(value, str) else value
 
 
 class NoteDocument(BaseModel):

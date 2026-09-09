@@ -230,9 +230,6 @@ class Wiring(BaseSettings):
         A supplied `database_url` carries no password. Its driver is replaced
         and the credential file supplies the password for every database.
         """
-        from urllib.parse import quote
-
-        password = quote(self._password(), safe="")
         if self.database_url:
             url = make_url(self.database_url)
             if url.password is not None:
@@ -240,13 +237,14 @@ class Wiring(BaseSettings):
                     "COPPERMIND_DATABASE_URL must not contain a password; "
                     "use COPPERMIND_DB_PASSWORD_FILE"
                 )
-            rendered = url.set(drivername=f"{url.get_backend_name()}+{driver}").render_as_string(
-                hide_password=False
-            )
-            credentials, separator, location = rendered.rpartition("@")
-            if not separator:
+            if url.username is None:
                 raise ValueError("COPPERMIND_DATABASE_URL must include a database user")
-            return f"{credentials}:{password}@{location}"
+            return url.set(
+                drivername=f"{url.get_backend_name()}+{driver}", password=self._password()
+            ).render_as_string(hide_password=False)
+        from urllib.parse import quote
+
+        password = quote(self._password(), safe="")
         return (
             f"postgresql+{driver}://{self.db_user}:{password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"

@@ -161,9 +161,7 @@ class LocalStore:
             # store, and the answer says so rather than blaming Coppermind.
             raise NoteUnparseable(note_id, str(exc)) from exc
         schema = self.control.schema()
-        problems = schema.validate_frontmatter(frontmatter)
-        if problems:
-            raise NoteUnparseable(note_id, "; ".join(problems))
+        sources = frontmatter.get(schema.role("sources_key"), [])
         return NoteDocument(
             id=note_id,
             path=relative,
@@ -173,7 +171,7 @@ class LocalStore:
             content_hash=content_hash(data),
             size_bytes=len(data),
             updated_at=datetime.fromtimestamp(path.stat().st_mtime, tz=UTC),
-            sources=[str(s) for s in frontmatter.get(schema.role("sources_key"), []) or []],
+            sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
 
     async def _locate(self, note_id: NoteId) -> tuple[str, Path]:

@@ -71,7 +71,9 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
     if isinstance(error, PathCollision):
         return 409, envelope("path_collision", str(error), existing_path=error.existing_path)
     if isinstance(error, NoteUnparseable):
-        return 409, envelope("note_unparseable", str(error), note_id=error.note_id)
+        return 409, envelope(
+            "note_unparseable", str(error), note_id=error.note_id, reason=error.reason
+        )
     if isinstance(error, MetadataUnavailable):
         return 503, envelope("metadata_unavailable", METADATA_UNAVAILABLE_MESSAGE)
     if isinstance(error, NotesFilesystemUnavailable):

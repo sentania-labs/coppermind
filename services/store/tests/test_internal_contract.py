@@ -27,6 +27,7 @@ from coppermind.store_protocol import (
     CreateNote,
     NoteDocument,
     NotesFilesystemUnavailable,
+    NoteUnparseable,
     NotFound,
     StoreError,
     StoreUnavailable,
@@ -123,6 +124,19 @@ async def test_a_missing_note_comes_back_as_the_same_typed_error():
         await client.aclose()
     assert raised.value.note_id == NOTE_ID
     assert str(raised.value) == f"no note with id {NOTE_ID}"
+
+
+async def test_an_unparseable_note_round_trips_without_nesting_its_message():
+    reason = "frontmatter has no closing delimiter"
+    client = connected(RaisingStore(NoteUnparseable(NOTE_ID, reason)))
+    try:
+        with pytest.raises(NoteUnparseable) as raised:
+            await client.get_note(NOTE_ID)
+    finally:
+        await client.aclose()
+    assert raised.value.note_id == NOTE_ID
+    assert raised.value.reason == reason
+    assert str(raised.value).count("the frontmatter of note") == 1
 
 
 async def test_the_internal_surface_keeps_the_cause_the_public_one_hides():

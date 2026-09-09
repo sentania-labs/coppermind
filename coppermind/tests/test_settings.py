@@ -60,13 +60,13 @@ def test_wiring_assembles_a_url_from_a_password_file(tmp_path: Path):
 
 def test_a_supplied_url_uses_the_credential_file_and_requested_driver(tmp_path: Path):
     password = tmp_path / "postgres-password"
-    password.write_text("external secret\n", encoding="utf-8")
+    password.write_text("external/secret\n", encoding="utf-8")
     wiring = Wiring(database_url="postgresql://cm@db.example:5432/cm", db_password_file=password)
     assert wiring.database_url_for("psycopg") == (
-        "postgresql+psycopg://cm:external%20secret@db.example:5432/cm"
+        "postgresql+psycopg://cm:external%2Fsecret@db.example:5432/cm"
     )
     assert wiring.database_url_for("asyncpg") == (
-        "postgresql+asyncpg://cm:external%20secret@db.example:5432/cm"
+        "postgresql+asyncpg://cm:external%2Fsecret@db.example:5432/cm"
     )
 
 
