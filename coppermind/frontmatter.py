@@ -14,6 +14,7 @@ frontmatter survives a Coppermind write untouched.
 from __future__ import annotations
 
 import io
+import re
 from typing import Any
 
 from ruamel.yaml import YAML
@@ -23,7 +24,35 @@ DELIMITER = "---"
 
 
 class FrontmatterError(ValueError):
-    """The file does not carry parseable frontmatter."""
+    """The file does not carry parseable frontmatter.
+
+    The message quotes the parser, which quotes the note, so it is the
+    person's own content and belongs only where note content belongs.
+    `category`, `line` and `column` are content free by construction, which
+    makes them the parts an operational log may carry. The position is
+    counted inside the frontmatter block, not the whole file.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str,
+        line: int | None = None,
+        column: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.line = line
+        self.column = column
+
+
+_WORD_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
+
+
+def _category(exc: YAMLError) -> str:
+    """Name a parse failure from its type alone, so it cannot carry content."""
+    return _WORD_BOUNDARY.sub("_", type(exc).__name__.removesuffix("Error")).lower()
 
 
 def _yaml() -> YAML:
@@ -48,7 +77,7 @@ def split(text: str) -> tuple[str, str]:
     rest = rest.lstrip("\r").removeprefix("\n")
     end = _find_closing_delimiter(rest)
     if end is None:
-        raise FrontmatterError("frontmatter block is never closed")
+        raise FrontmatterError("frontmatter block is never closed", category="unterminated_block")
     block = rest[:end]
     after = rest[end:]
     after = after.split("\n", 1)[1] if "\n" in after else ""
@@ -72,11 +101,17 @@ def parse(text: str) -> tuple[dict[str, Any], str]:
     try:
         loaded = _yaml().load(block)
     except YAMLError as exc:
-        raise FrontmatterError(str(exc)) from exc
+        mark = getattr(exc, "problem_mark", None)
+        raise FrontmatterError(
+            str(exc),
+            category=_category(exc),
+            line=getattr(mark, "line", None),
+            column=getattr(mark, "column", None),
+        ) from exc
     if loaded is None:
         return {}, body
     if not isinstance(loaded, dict):
-        raise FrontmatterError("frontmatter is not a mapping")
+        raise FrontmatterError("frontmatter is not a mapping", category="not_a_mapping")
     return loaded, body
 
 

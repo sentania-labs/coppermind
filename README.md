@@ -61,8 +61,11 @@ The generated OpenAPI document is at `http://127.0.0.1:8080/openapi.json`.
 Health is honest. `/healthz` says the process is up; `/readyz` says the
 service can do its job. Stop PostgreSQL and `/readyz` answers 503 and says
 why, note writes and reads answer 503 `metadata_unavailable`, and the notes
-filesystem itself carries on unaffected. Start it again and everything
-converges without intervention.
+filesystem itself carries on unaffected. Start it again and API operations
+recover on their own, with no restart and nothing to clear by hand. What was
+changed in the notes filesystem while PostgreSQL was down is a separate
+matter: nothing notices it yet, and it waits for the reconciler that a later
+pull request in this slice delivers.
 
 ## Working on it
 

@@ -184,13 +184,17 @@ class LocalStore:
         except (fm.FrontmatterError, UnicodeDecodeError) as exc:
             # A person broke this file on a device. That is not a fault of the
             # store, and the answer says so rather than blaming Coppermind.
-            # The parser's reason quotes the offending lines, so it goes to the
-            # log and the internal surface and never to the public envelope.
+            # The parser's reason quotes the offending lines, so it is the
+            # person's own note content: it reaches the internal surface, which
+            # the store alone answers, and never the log or the public
+            # envelope. Logs are collected and shipped, and an unauthenticated
+            # read can trigger this, so the log gets only what the type of the
+            # failure and its position say.
             log.warning(
                 "note frontmatter could not be parsed",
                 note_id=note_id,
                 path=relative,
-                reason=str(exc),
+                **_parse_failure_fields(exc),
             )
             raise NoteUnparseable(note_id, str(exc)) from exc
         schema = self.control.schema()
@@ -243,6 +247,22 @@ class LocalStore:
             # honestly a miss rather than a server error.
             raise NotFound(note_id)
         return relative, path
+
+
+def _parse_failure_fields(exc: fm.FrontmatterError | UnicodeDecodeError) -> dict[str, Any]:
+    """Describe a parse failure without repeating any of the note back.
+
+    The category names the kind of failure from the exception type, and the
+    position says where to look. Neither can carry a key, a value or a line of
+    the file, which the parser's own message does.
+    """
+    if isinstance(exc, fm.FrontmatterError):
+        return {
+            "category": exc.category,
+            "frontmatter_line": exc.line,
+            "frontmatter_column": exc.column,
+        }
+    return {"category": "undecodable_bytes", "byte_offset": exc.start}
 
 
 def _build_frontmatter(

@@ -7,7 +7,9 @@ root, and nothing here accepts a path that would escape it.
 from __future__ import annotations
 
 import hashlib
+import os
 import stat
+import tempfile
 from pathlib import Path
 
 from coppermind.store_protocol import NotesFilesystemUnavailable
@@ -61,12 +63,19 @@ def is_writable(root: Path) -> tuple[bool, str]:
     Used by readiness. A volume that mounted read only, or that a fresh
     Longhorn claim left owned by root, is the failure this catches, and it is
     worth reporting as not ready rather than failing on the first write.
+
+    The probe is created exclusively under a name nothing else holds, and only
+    that file is removed. A fixed name would truncate and then delete whatever
+    a person already had at that path, inside the one directory this service
+    exists to protect.
     """
     try:
         root.mkdir(parents=True, exist_ok=True)
-        probe = root / ".coppermind-write-probe"
-        probe.write_text("", encoding="utf-8")
-        probe.unlink()
+        handle, probe = tempfile.mkstemp(prefix=".coppermind-write-probe.", dir=root)
+        try:
+            os.close(handle)
+        finally:
+            os.unlink(probe)
     except OSError as exc:
         return False, str(exc)
     return True, ""
