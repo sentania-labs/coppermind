@@ -50,10 +50,10 @@ def create_exclusive_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> Non
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        _fsync_dir(path.parent)
     except BaseException:
         path.unlink(missing_ok=True)
         raise
-    _fsync_dir(path.parent)
 
 
 def _fsync_dir(directory: Path) -> None:

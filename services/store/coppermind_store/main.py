@@ -20,10 +20,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException
 
 from coppermind.db.session import make_engine, make_session_factory
-from coppermind.errors import code_for_status, envelope
+from coppermind.errors import code_for_status, envelope, to_http
 from coppermind.health import Check, Health, Readiness
 from coppermind.logging import configure_logging, get_logger
 from coppermind.settings import Wiring
+from coppermind.store_protocol import StoreError
 from coppermind_store import __version__
 from coppermind_store.auth import InternalAuth
 from coppermind_store.control import ControlState
@@ -95,6 +96,16 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             status_code=422,
             content=envelope("validation_error", "; ".join(problems), errors=problems),
         )
+
+    # Anything that is not a typed store error still answers in the documented
+    # envelope. Without this Starlette answers plain text, the client cannot
+    # read it, and a store that is up and answering gets reported to the
+    # operator as unreachable.
+    @app.exception_handler(Exception)
+    async def _unexpected_handler(_: Request, exc: Exception) -> JSONResponse:
+        log.exception("unhandled error on the internal contract", error=str(exc))
+        status_code, body = to_http(StoreError(str(exc)), surface="internal")
+        return JSONResponse(status_code=status_code, content=body)
 
     @app.get("/healthz", response_model=Health)
     async def healthz() -> Health:

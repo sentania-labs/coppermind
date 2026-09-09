@@ -77,4 +77,4 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
         )
     if isinstance(error, StoreUnavailable):
         return 503, envelope("store_unavailable", STORE_UNAVAILABLE_MESSAGE, **cause)
-    return 500, envelope("internal_error", "unexpected store error")
+    return 500, envelope("internal_error", "unexpected store error", **cause)

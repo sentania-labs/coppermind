@@ -98,6 +98,10 @@ jobs:
   # advisories before they reach main. It is here to match the organization CI
   # reference repository, which carries this job on every repository, rather
   # than as an addition specific to this one.
+  #
+  # Findings appear in the job log rather than as a pull request comment: the
+  # workflow deliberately does not grant `pull-requests: write`, and the job
+  # fails the build on a high severity advisory either way.
   dependency-review:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -106,7 +110,6 @@ jobs:
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
-          comment-summary-in-pr: on-failure
 
   # One build per service, as an OCI tarball carrying provenance and an SBOM.
   # The tarball is the artifact the smoke job runs, so what is smoke tested is

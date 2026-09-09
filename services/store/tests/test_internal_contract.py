@@ -22,7 +22,14 @@ from fastapi.testclient import TestClient
 
 from coppermind.settings import Wiring
 from coppermind.store_client import HttpStoreClient
-from coppermind.store_protocol import NoteDocument, NotesFilesystemUnavailable, NotFound
+from coppermind.store_protocol import (
+    CreateNote,
+    NoteDocument,
+    NotesFilesystemUnavailable,
+    NotFound,
+    StoreError,
+    StoreUnavailable,
+)
 
 TOKEN = "internal-test-token"
 NOTE_ID = "01K4Q8Z3N7V2X9M1B5C6D8E0F2"
@@ -179,3 +186,54 @@ def test_healthz_reports_the_version_the_image_was_built_from(tmp_path):
 
     with TestClient(store_app(tmp_path, build_version="v1.2.0")) as stamped:
         assert stamped.get("/healthz").json()["version"] == "v1.2.0"
+
+
+def broken_settings_app(tmp_path):
+    """A store whose `settings.yaml` an operator edited into something invalid.
+
+    Editing files under `/data/state` is the only configuration surface this
+    slice has, so this is an ordinary operator action rather than an exotic one.
+    """
+    token = tmp_path / "internal-token"
+    token.write_text(f"{TOKEN}\n", encoding="utf-8")
+    state = tmp_path / "data" / "state"
+    state.mkdir(parents=True)
+    (state / "settings.yaml").write_text(
+        "schema_version: 1\nrevision: 1\nsync:\n  plan: gold\n", encoding="utf-8"
+    )
+    return create_app(
+        Wiring(
+            data_dir=tmp_path / "data",
+            internal_token_file=token,
+            database_url="postgresql://coppermind:coppermind@127.0.0.1:5999/absent",
+        )
+    )
+
+
+def test_an_unexpected_error_answers_in_the_documented_envelope(tmp_path):
+    """A control file the settings model rejects used to escape as plain text."""
+    app = broken_settings_app(tmp_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/internal/v1/notes",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={"title": "During a bad settings edit"},
+        )
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["error"] == "internal_error"
+
+
+async def test_a_store_that_answered_is_never_reported_unreachable(tmp_path):
+    """A 503 saying the store could not be reached, beside a 200 readiness, is a lie."""
+    app = broken_settings_app(tmp_path)
+    with TestClient(app):
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        client = HttpStoreClient("http://store", TOKEN, transport=transport)
+        try:
+            with pytest.raises(StoreError) as raised:
+                await client.create_note(CreateNote(title="During a bad settings edit"))
+        finally:
+            await client.aclose()
+    assert not isinstance(raised.value, StoreUnavailable)
+    assert "sync.plan" in str(raised.value)

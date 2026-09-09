@@ -21,6 +21,7 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     NotFound,
     PathCollision,
+    StoreError,
     StoreUnavailable,
     ValidationFailed,
 )
@@ -102,4 +103,7 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         return NotesFilesystemUnavailable(payload.get("detail", message))
     if code == "metadata_unavailable" or response.status_code == 503:
         return MetadataUnavailable(message)
-    return StoreUnavailable(f"store returned {response.status_code}: {message}")
+    # This is only reached because the store answered, so it is not
+    # unreachable. Saying otherwise would point the operator at a store that
+    # is up while the real cause sits in its log.
+    return StoreError(payload.get("detail", f"store returned {response.status_code}: {message}"))
