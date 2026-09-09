@@ -10,7 +10,11 @@ rules run before anything is written:
   suffixed so they cannot collide with a device.
 - Trailing dots and spaces are stripped, which Windows silently does itself.
 - The stem is capped at 120 characters so a deep folder path stays inside the
-  260 character limit older Windows tooling still enforces.
+  260 character limit older Windows tooling still enforces, and separately at
+  252 bytes of UTF-8 so the filename with its ".md" suffix fits the 255 byte
+  component limit ext4, APFS and NTFS impose. A CJK or emoji title satisfies
+  the character cap long before the byte one, and truncation never splits a
+  code point.
 - A name that already exists, compared case insensitively because Windows and
   macOS compare that way, gains a " (2)", " (3)" and so on.
 

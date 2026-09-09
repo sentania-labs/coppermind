@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,8 @@ def test_a_readiness_check_leaves_every_existing_file_alone(tmp_path: Path):
 
 
 def test_readiness_reports_a_notes_filesystem_it_cannot_write(tmp_path: Path):
+    if os.geteuid() == 0:
+        pytest.skip("root ignores the directory mode this test relies on")
     root = tmp_path / "notes"
     root.mkdir(mode=0o500)
     ok, detail = is_writable(root)
