@@ -212,8 +212,8 @@ jobs:
           for service in store api; do
             skopeo copy "oci-archive:$RUNNER_TEMP/images/$service.tar" \
               "docker-daemon:coppermind/$service:ci"
+            docker image ls "coppermind/$service:ci"
           done
-          docker image ls coppermind/store:ci coppermind/api:ci
       - name: Smoke the compose stack
         env:
           COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
