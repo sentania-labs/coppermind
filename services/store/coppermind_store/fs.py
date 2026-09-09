@@ -34,7 +34,11 @@ def existing_stems(folder: Path) -> list[str]:
     try:
         if not stat.S_ISDIR(folder.stat().st_mode):
             return []
-        return [entry.stem for entry in folder.iterdir() if is_note_file(entry)]
+        return [
+            entry.stem
+            for entry in folder.iterdir()
+            if entry.suffix == NOTE_SUFFIX and is_note_file(entry)
+        ]
     except FileNotFoundError:
         return []
     except OSError as exc:

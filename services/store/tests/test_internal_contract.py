@@ -173,6 +173,21 @@ def store_app(tmp_path, build_version: str | None = None):
     return create_app(store_wiring(tmp_path, build_version))
 
 
+def test_internal_notes_reject_missing_and_wrong_bearer_tokens(tmp_path):
+    with TestClient(store_app(tmp_path)) as client:
+        for headers in ({}, {"Authorization": "Bearer wrong-token"}):
+            response = client.post(
+                "/internal/v1/notes",
+                headers=headers,
+                json={"title": "Unauthorized write"},
+            )
+            assert response.status_code == 401
+            assert response.json() == {
+                "error": "unauthorized",
+                "message": "a valid internal bearer token is required",
+            }
+
+
 def test_an_unknown_internal_route_answers_in_the_documented_envelope(tmp_path):
     """Routing raises these before any route runs, so they bypass a route handler."""
     with TestClient(store_app(tmp_path)) as client:

@@ -22,6 +22,7 @@ def test_existing_stems_lists_what_a_collision_would_hit(tmp_path: Path):
     folder = tmp_path / "Review"
     folder.mkdir()
     (folder / "Notes.md").write_text("", encoding="utf-8")
+    (folder / "Diagram.png").write_bytes(b"image")
     assert existing_stems(folder) == ["Notes"]
     assert existing_stems(tmp_path / "missing") == []
 
