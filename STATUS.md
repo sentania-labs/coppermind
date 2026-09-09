@@ -17,10 +17,12 @@ vertical path proved end to end, then widened.
 - `POST /v1/notes` creates a note. It lands as a Markdown file in the notes
   filesystem, under the review folder, named by the portable naming rules
   (date prefix for dated types, Windows-reserved characters and device names
-  handled, NFC normalised, 120 character cap, case-insensitive collision gets
-  a numbered suffix). Frontmatter carries `schema_version`, `id`, `date`,
-  `type`, `context`, `account`, `reviewed` and `sources`, with defaults
-  applied for anything the caller omitted.
+  handled, NFC normalised, 120 character cap, case-insensitive collision with
+  another note gets a numbered suffix). Frontmatter carries the shipped
+  schema's keys: `schema_version`, `id`, `date`, `type`, `context`,
+  `reviewed`, `sources` and `tags`, with defaults applied for anything the
+  caller omitted, plus `account`, which the schema requires on a customer
+  note.
 - `GET /v1/notes/{id}` returns the note as a document, carrying
   `ETag: "sha256:<hash of the file bytes>"`.
 - The store is the only writer of the notes filesystem, reachable only over
