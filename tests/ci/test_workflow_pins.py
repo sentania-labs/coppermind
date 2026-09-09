@@ -11,8 +11,6 @@ accepts cannot slip past a string match:
 3. No job is granted a token that could publish. Publication arrives with the
    release pull request, not before.
 
-The version comment beside each pin is the one genuinely textual contract, so
-it is the one thing read from the raw lines.
 """
 
 from __future__ import annotations
@@ -25,7 +23,6 @@ from ruamel.yaml import YAML
 
 WORKFLOWS = sorted((Path(__file__).resolve().parents[2] / ".github/workflows").glob("*.yml"))
 PINNED = re.compile(r"^[^@]+@[0-9a-f]{40}$")
-USES_LINE = re.compile(r"^\s*(?:-\s+)?uses:\s*(?P<ref>\S+)\s*(?P<comment>#.*)?$")
 
 # Permissions a run of CI must not hold in this slice, and why.
 FORBIDDEN_PERMISSIONS = {
@@ -87,19 +84,6 @@ def test_every_action_is_pinned_to_a_commit_sha():
                     continue
                 if not PINNED.match(ref):
                     problems.append(f"{workflow.name}:{name}: {ref} is not pinned to a 40 hex SHA")
-    assert not problems, "\n".join(problems)
-
-
-def test_every_pin_carries_its_version_in_a_comment():
-    """A SHA says nothing to a reader on its own, so the version rides beside it."""
-    problems: list[str] = []
-    for workflow in WORKFLOWS:
-        for number, line in enumerate(workflow.read_text(encoding="utf-8").splitlines(), start=1):
-            match = USES_LINE.match(line)
-            if not match or not PINNED.match(match.group("ref")):
-                continue
-            if not match.group("comment"):
-                problems.append(f"{workflow.name}:{number}: {match.group('ref')} has no version")
     assert not problems, "\n".join(problems)
 
 

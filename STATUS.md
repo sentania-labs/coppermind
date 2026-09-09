@@ -76,6 +76,10 @@ in the tree, so do not read the absence as a decision to leave it out.
   on in a `.env` file would break the "no manual setup" rule, so the bundled
   instance is simply the default and the external path arrives with the
   deployment work.
+- A note file removed outside the store leaves its row behind, because
+  nothing reconciles the mirror yet. Creating a note with that title again
+  answers 409 `path_collision` every time until the reconciler lands or the
+  row is cleared by hand.
 - The store reads `settings.yaml` and `schema.yaml` on every call rather than
   caching them. Correct, and cheap at this size; it becomes a cache with an
   invalidation event when `settings.changed` exists.

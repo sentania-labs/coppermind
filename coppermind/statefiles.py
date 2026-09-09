@@ -72,9 +72,6 @@ class StateStore:
             raise ValueError(f"unknown state file {name!r}") from exc
         return self.state_dir / f"{name}.{extension}"
 
-    def exists(self, name: str) -> bool:
-        return self.path_for(name).exists()
-
     def read(self, name: str) -> StateFile:
         """Read a state file. Raises FileNotFoundError when it was never written."""
         path = self.path_for(name)

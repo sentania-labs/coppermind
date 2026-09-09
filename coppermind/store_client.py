@@ -9,6 +9,8 @@ network.
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import httpx
 
 from coppermind.store_protocol import (
@@ -24,6 +26,16 @@ from coppermind.store_protocol import (
 )
 
 INTERNAL_PREFIX = "/internal/v1"
+
+
+def _segment(value: str) -> str:
+    """Encode a value that is one path segment and nothing else.
+
+    An identifier arrives from a caller, so without this a `?` or a `#` in it
+    would be reparsed as a query or a fragment and the store would be asked
+    for a different note than the one requested.
+    """
+    return quote(value, safe="")
 
 
 class HttpStoreClient:
@@ -52,7 +64,7 @@ class HttpStoreClient:
         return NoteDocument.model_validate(response.json())
 
     async def get_note(self, note_id: NoteId) -> NoteDocument:
-        response = await self._send("GET", f"{INTERNAL_PREFIX}/notes/{note_id}")
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/notes/{_segment(note_id)}")
         return NoteDocument.model_validate(response.json())
 
     async def is_ready(self) -> bool:

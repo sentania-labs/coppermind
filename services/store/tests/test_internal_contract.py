@@ -9,6 +9,8 @@ production.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import httpx
 import pytest
 from coppermind_store import __version__
@@ -20,10 +22,20 @@ from fastapi.testclient import TestClient
 
 from coppermind.settings import Wiring
 from coppermind.store_client import HttpStoreClient
-from coppermind.store_protocol import NotesFilesystemUnavailable, NotFound
+from coppermind.store_protocol import NoteDocument, NotesFilesystemUnavailable, NotFound
 
 TOKEN = "internal-test-token"
 NOTE_ID = "01K4Q8Z3N7V2X9M1B5C6D8E0F2"
+NOTE = NoteDocument(
+    id=NOTE_ID,
+    path="Review/Runbook.md",
+    title="Runbook",
+    frontmatter={"id": NOTE_ID},
+    body="# Runbook\n",
+    content_hash="sha256:abc",
+    size_bytes=11,
+    updated_at=datetime(2026, 9, 8, tzinfo=UTC),
+)
 
 
 class RaisingStore:
@@ -36,12 +48,61 @@ class RaisingStore:
         raise self.error
 
 
-def connected(store: RaisingStore) -> HttpStoreClient:
+class OneNoteStore:
+    """A store holding exactly one note, so a lookup by any other id misses."""
+
+    def __init__(self, note: NoteDocument) -> None:
+        self.note = note
+        self.asked_for: list[str] = []
+
+    async def get_note(self, note_id: str) -> NoteDocument:
+        self.asked_for.append(note_id)
+        if note_id != self.note.id:
+            raise NotFound(note_id)
+        return self.note
+
+
+def connected(store: RaisingStore | OneNoteStore) -> HttpStoreClient:
     app = FastAPI()
     app.state.auth = InternalAuth(TOKEN)
     app.state.store = store
     app.include_router(internal_router)
     return HttpStoreClient("http://store", TOKEN, transport=httpx.ASGITransport(app=app))
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    ["#anything", "?q=1", " and more"],
+    ids=["fragment", "query", "space"],
+)
+async def test_an_identifier_is_never_reparsed_as_part_of_the_url(suffix: str):
+    """An id is one path segment. A `#` or `?` in it used to truncate the lookup.
+
+    The store then answered 200 for the note whose id was the prefix, so the
+    public surface returned a note under an identifier nobody asked for.
+    """
+    store = OneNoteStore(NOTE)
+    client = connected(store)
+    try:
+        with pytest.raises(NotFound):
+            await client.get_note(NOTE_ID + suffix)
+    finally:
+        await client.aclose()
+    assert store.asked_for == [NOTE_ID + suffix]
+
+
+async def test_an_identifier_that_is_only_punctuation_is_a_miss_not_an_outage():
+    """`?` alone used to build a URL ending in `/notes/`, which redirects.
+
+    The client could not read that redirect as a typed error, so a healthy
+    store answered 503 `store_unavailable` next to a 200 `/readyz`.
+    """
+    client = connected(OneNoteStore(NOTE))
+    try:
+        with pytest.raises(NotFound):
+            await client.get_note("?")
+    finally:
+        await client.aclose()
 
 
 async def test_a_missing_note_comes_back_as_the_same_typed_error():

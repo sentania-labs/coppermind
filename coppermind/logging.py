@@ -15,7 +15,16 @@ import structlog
 
 
 def configure_logging(service: str, level: str = "INFO") -> None:
-    logging.basicConfig(format="%(message)s", stream=sys.stdout, level=level.upper())
+    """Configure JSON logging on stdout at `level`.
+
+    An unrecognised level falls back to INFO and says so rather than raising.
+    `COPPERMIND_LOG_LEVEL` is an operator knob that compose forwards to every
+    service, so a typo in it must not stop the stack from coming up.
+    """
+    names = logging.getLevelNamesMapping()
+    requested = level.upper()
+    resolved = names.get(requested, logging.INFO)
+    logging.basicConfig(format="%(message)s", stream=sys.stdout, level=resolved)
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -25,13 +34,17 @@ def configure_logging(service: str, level: str = "INFO") -> None:
             structlog.processors.format_exc_info,
             structlog.processors.JSONRenderer(),
         ],
-        wrapper_class=structlog.make_filtering_bound_logger(
-            logging.getLevelNamesMapping()[level.upper()]
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(resolved),
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )
     structlog.contextvars.bind_contextvars(service=service)
+    if requested not in names:
+        get_logger(service).warning(
+            "log level not understood, using INFO",
+            requested=level,
+            known=sorted(names),
+        )
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
