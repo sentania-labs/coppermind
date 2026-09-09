@@ -298,6 +298,26 @@ async def test_schema_deviation_does_not_corrupt_the_sources_projection(store: L
     assert path.read_text(encoding="utf-8") == changed
 
 
+async def test_a_row_whose_file_is_now_another_note_is_a_miss(store: LocalStore):
+    """Deleting one note on a device and renaming another onto its filename.
+
+    Nothing reconciles the mirror yet, so the first row still names that path.
+    The read must answer a miss rather than the second note's body, frontmatter
+    and content hash under the first note's identifier.
+    """
+    runbook = await store.create_note(
+        CreateNote(title="Runbook", frontmatter={"type": "reference"})
+    )
+    meeting = await store.create_note(
+        CreateNote(title="Meeting", frontmatter={"type": "reference"})
+    )
+    (store.notes_root / runbook.path).unlink()
+    (store.notes_root / meeting.path).rename(store.notes_root / runbook.path)
+
+    with pytest.raises(NotFound):
+        await store.get_note(runbook.id)
+
+
 async def test_a_row_pointing_outside_the_notes_filesystem_is_refused(
     store: LocalStore, session_factory
 ):

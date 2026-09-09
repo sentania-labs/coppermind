@@ -183,6 +183,13 @@ class LocalStore:
             # store, and the answer says so rather than blaming Coppermind.
             raise NoteUnparseable(note_id, str(exc)) from exc
         schema = self.control.schema()
+        carried_id = frontmatter.get(schema.role("id_key"))
+        if carried_id is not None and str(carried_id) != note_id:
+            # The row outlived the file it named, because a note was deleted on
+            # a device and another was renamed into its place. Serving this file
+            # would answer a different note under the requested identifier, so
+            # the honest answer is a miss until reconciliation clears the row.
+            raise NotFound(note_id)
         sources = frontmatter.get(schema.role("sources_key"), [])
         return NoteDocument(
             id=note_id,
