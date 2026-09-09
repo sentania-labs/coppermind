@@ -84,7 +84,8 @@ def unique_stem(stem: str, taken: Iterable[str]) -> str:
         return stem
     suffix = 2
     while True:
-        candidate = f"{stem} ({suffix})"
+        tail = f" ({suffix})"
+        candidate = f"{stem[: MAX_STEM_LENGTH - len(tail)].rstrip()}{tail}"
         if candidate.casefold() not in lowered:
             return candidate
         suffix += 1

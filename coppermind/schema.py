@@ -11,9 +11,9 @@ code change.
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 KeyKind = Literal["string", "int", "date", "bool", "enum", "list"]
 
@@ -53,6 +53,19 @@ class FrontmatterSchema(BaseModel):
     schema_version: int = 1
     keys: list[KeyDefinition]
     roles: dict[str, str]
+
+    @model_validator(mode="after")
+    def validate_roles(self) -> Self:
+        missing = [role for role in ROLE_NAMES if role not in self.roles]
+        if missing:
+            raise ValueError(f"schema is missing required roles: {', '.join(missing)}")
+        key_names = {definition.name for definition in self.keys}
+        unknown = [
+            f"{role}={self.roles[role]}" for role in ROLE_NAMES if self.roles[role] not in key_names
+        ]
+        if unknown:
+            raise ValueError(f"schema roles reference undefined keys: {', '.join(unknown)}")
+        return self
 
     def key(self, name: str) -> KeyDefinition | None:
         return next((k for k in self.keys if k.name == name), None)

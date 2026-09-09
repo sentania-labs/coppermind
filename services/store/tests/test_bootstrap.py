@@ -10,9 +10,8 @@ from coppermind.settings import Wiring
 def wiring_for(tmp_path: Path) -> Wiring:
     return Wiring(
         data_dir=tmp_path / "data",
-        secrets_dir=tmp_path / "secrets",
-        internal_token_file=tmp_path / "secrets" / "internal-token",
-        db_password_file=tmp_path / "secrets" / "postgres-password",
+        internal_token_file=tmp_path / "internal" / "internal-token",
+        db_password_file=tmp_path / "postgres" / "postgres-password",
     )
 
 

@@ -33,7 +33,7 @@ x-api-image: &api-image
 services:
 
   # Runs once per `up` and exits 0. Root only long enough to hand /data and
-  # the secrets volume to uid 1000, which every Coppermind image runs as.
+  # the credential volumes to uid 1000, which every Coppermind image runs as.
   # Idempotent: a second run keeps existing secrets and existing settings.
   bootstrap:
     <<: *store-image
@@ -42,7 +42,8 @@ services:
     environment: *wiring
     volumes:
       - data:/data
-      - secrets:/run/coppermind
+      - internal-token:/run/coppermind/internal
+      - postgres-password:/run/coppermind/postgres
     restart: "no"
 
   # Bundled PostgreSQL. It holds mirrored and derived state only: every row
@@ -54,10 +55,10 @@ services:
     environment:
       POSTGRES_DB: coppermind
       POSTGRES_USER: coppermind
-      POSTGRES_PASSWORD_FILE: /run/coppermind/postgres-password
+      POSTGRES_PASSWORD_FILE: /run/coppermind/postgres/postgres-password
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - secrets:/run/coppermind:ro
+      - postgres-password:/run/coppermind/postgres:ro
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -75,7 +76,7 @@ services:
     command: ["alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
     environment: *wiring
     volumes:
-      - secrets:/run/coppermind:ro
+      - postgres-password:/run/coppermind/postgres:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,12 +89,14 @@ services:
     environment: *wiring
     volumes:
       - data:/data
-      - secrets:/run/coppermind:ro
+      - internal-token:/run/coppermind/internal:ro
+      - postgres-password:/run/coppermind/postgres:ro
     depends_on:
       migrate:
         condition: service_completed_successfully
 
-  # The public contract. Stateless, mounts no volume, calls the store.
+  # The public contract. Stateless, mounts only its internal credential, and
+  # calls the store.
   # Bound to loopback: this slice has no API authentication yet, so the
   # quickstart does not put it on a network interface.
   api:
@@ -101,7 +104,7 @@ services:
     restart: unless-stopped
     environment: *wiring
     volumes:
-      - secrets:/run/coppermind:ro
+      - internal-token:/run/coppermind/internal:ro
     ports:
       - "${COPPERMIND_API_BIND:-127.0.0.1:8080}:8080"
     depends_on:
@@ -113,4 +116,5 @@ volumes:
   # control state files.
   data:
   pgdata:
-  secrets:
+  internal-token:
+  postgres-password:

@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # `"sha256:<hex of the file bytes>"`. A move does not change it; a change to
 # the bytes, including a frontmatter write back, does.
@@ -88,13 +88,16 @@ class StoreUnavailable(StoreError):
 class CreateNote(BaseModel):
     """Create a note in the notes filesystem."""
 
-    title: str
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, description="The note's H1 and filename basis.")
     body: str = ""
     frontmatter: dict[str, Any] = Field(default_factory=dict)
-    # Relative to the notes filesystem root. Defaults to the review folder,
-    # which is where anything that has not been read yet belongs.
-    folder: str | None = None
-    created_by: str = "api"
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def normalize_title(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
 
 
 class NoteDocument(BaseModel):

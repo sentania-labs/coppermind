@@ -53,8 +53,8 @@ ENV COPPERMIND_BUILD_VERSION="${BUILD_VERSION}"
 # uid 1000 is shared by every image that touches the notes filesystem, so the
 # store, the Git helper and the Obsidian Sync client all own what they write.
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin coppermind \
-    && mkdir -p /data /run/coppermind \
-    && chown coppermind:coppermind /data /run/coppermind
+    && mkdir -p /data /run/coppermind/internal /run/coppermind/postgres \
+    && chown -R coppermind:coppermind /data /run/coppermind
 USER 1000
 EXPOSE 8081
 VOLUME ["/data"]

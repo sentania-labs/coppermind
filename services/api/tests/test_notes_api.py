@@ -114,12 +114,12 @@ def test_readiness_follows_the_store(client):
 
 def test_creating_a_note_answers_201_with_an_etag_and_a_location(client):
     test_client, fake = client
-    response = test_client.post("/v1/notes", json={"title": "Ameren Architecture Sync"})
+    response = test_client.post("/v1/notes", json={"title": "  Ameren Architecture Sync  "})
     assert response.status_code == 201
     assert response.headers["etag"] == '"sha256:abc"'
     assert response.headers["location"] == f"/v1/notes/{NOTE.id}"
     assert response.json()["path"] == NOTE.path
-    assert fake.created is not None and fake.created.created_by == "api"
+    assert fake.created is not None and fake.created.title == "Ameren Architecture Sync"
 
 
 def test_a_note_needs_a_title(client):
@@ -129,6 +129,13 @@ def test_a_note_needs_a_title(client):
     body = response.json()
     assert body["error"] == "validation_error"
     assert body["errors"] == ["title: String should have at least 1 character"]
+
+
+def test_a_note_title_cannot_be_only_whitespace(client):
+    test_client, _ = client
+    response = test_client.post("/v1/notes", json={"title": "   "})
+    assert response.status_code == 422
+    assert response.json()["error"] == "validation_error"
 
 
 def test_an_unknown_path_answers_in_the_documented_envelope(client):

@@ -16,9 +16,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 MIB = 1024 * 1024
 GIB = 1024 * MIB
@@ -34,11 +36,24 @@ PLAN_LIMITS: dict[str, tuple[int, int]] = {
 
 
 class GeneralSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     timezone: str = "America/Chicago"
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"unknown timezone {value!r}") from exc
+        return value
 
 
 class NotesSettings(BaseModel):
     """Folder layout of the notes filesystem. Every name is renameable."""
+
+    model_config = ConfigDict(extra="forbid")
 
     review_folder: str = "Review"
     trash_folder: str = "_Trash"
@@ -49,12 +64,16 @@ class NotesSettings(BaseModel):
 
 
 class ReconcileSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     scan_interval_s: int = 60
     quiet_period_s: int = 30
     full_rehash_daily_at: str = "03:30"
 
 
 class GitSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = True
     debounce_s: int = 60
     poll_interval_s: int = 300
@@ -64,6 +83,8 @@ class GitSettings(BaseModel):
 
 
 class SyncSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     plan: SyncPlan = "standard"
     # Null means "derive from the plan", which is what a fresh install does.
     max_file_bytes: int | None = None
@@ -82,23 +103,31 @@ class SyncSettings(BaseModel):
 
 
 class CuratorSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = True
     sweep_interval_s: int = 300
     inbox_only: bool = True
 
 
 class IndexerSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = True
     language: str = "english"
     reconcile_interval_s: int = 600
 
 
 class EventSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     retention_days: int = 7
     poll_fallback_s: int = 5
 
 
 class LimitSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     ingest_max_bytes: int = 25 * MIB
     # Null means "the sync file ceiling", so an attachment is never accepted
     # that Obsidian Sync would then refuse to carry to a device.
@@ -106,11 +135,15 @@ class LimitSettings(BaseModel):
 
 
 class AdminSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     session_hours: int = 12
 
 
 class ProductSettings(BaseModel):
     """The whole of `settings.yaml`, with the defaults a fresh install runs on."""
+
+    model_config = ConfigDict(extra="forbid")
 
     schema_version: int = 1
     general: GeneralSettings = Field(default_factory=GeneralSettings)
@@ -140,8 +173,6 @@ class Wiring(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="COPPERMIND_", extra="ignore")
 
     data_dir: Path = Path("/data")
-    secrets_dir: Path = Path("/run/coppermind")
-
     # Where the API and the workers reach the store.
     store_url: str = "http://store:8081"
     store_timeout_s: float = 30.0
@@ -154,9 +185,9 @@ class Wiring(BaseSettings):
     db_port: int = 5432
     db_name: str = "coppermind"
     db_user: str = "coppermind"
-    db_password_file: Path = Path("/run/coppermind/postgres-password")
+    db_password_file: Path = Path("/run/coppermind/postgres/postgres-password")
 
-    internal_token_file: Path = Path("/run/coppermind/internal-token")
+    internal_token_file: Path = Path("/run/coppermind/internal/internal-token")
 
     log_level: str = "INFO"
 
@@ -167,11 +198,9 @@ class Wiring(BaseSettings):
 
     # Ownership the bootstrap one-shot applies. Every Coppermind image runs
     # as uid 1000 so the store, the Git helper and the sync client can all
-    # write the same volume. The bundled PostgreSQL image runs as 999 and
-    # needs to read its own password file.
+    # write the same volume.
     run_uid: int = 1000
     run_gid: int = 1000
-    postgres_uid: int = 999
 
     def running_version(self, package_version: str) -> str:
         """The version a service reports on `/healthz` and in its OpenAPI document."""
@@ -198,16 +227,26 @@ class Wiring(BaseSettings):
     def database_url_for(self, driver: str) -> str:
         """Return the SQLAlchemy URL for `driver` ("asyncpg" or "psycopg").
 
-        A `database_url` supplied by the deployer wins, with its driver
-        replaced so the same value serves both the services and alembic.
+        A supplied `database_url` carries no password. Its driver is replaced
+        and the credential file supplies the password for every database.
         """
-        if self.database_url:
-            scheme, _, rest = self.database_url.partition("://")
-            base = scheme.split("+", 1)[0]
-            return f"{base}+{driver}://{rest}"
         from urllib.parse import quote
 
         password = quote(self._password(), safe="")
+        if self.database_url:
+            url = make_url(self.database_url)
+            if url.password is not None:
+                raise ValueError(
+                    "COPPERMIND_DATABASE_URL must not contain a password; "
+                    "use COPPERMIND_DB_PASSWORD_FILE"
+                )
+            rendered = url.set(drivername=f"{url.get_backend_name()}+{driver}").render_as_string(
+                hide_password=False
+            )
+            credentials, separator, location = rendered.rpartition("@")
+            if not separator:
+                raise ValueError("COPPERMIND_DATABASE_URL must include a database user")
+            return f"{credentials}:{password}@{location}"
         return (
             f"postgresql+{driver}://{self.db_user}:{password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"

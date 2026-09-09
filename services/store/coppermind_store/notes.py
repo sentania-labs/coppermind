@@ -18,10 +18,10 @@ for the same write.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, tzinfo
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -73,7 +73,7 @@ class LocalStore:
         if problems:
             raise ValidationFailed(problems)
 
-        folder = sanitize_folder(request.folder or settings.notes.review_folder)
+        folder = sanitize_folder(settings.notes.review_folder)
         folder_path = resolve(self.notes_root, folder)
         stem = _stem_for(request.title, frontmatter, schema, settings)
         stem = unique_stem(stem, existing_stems(folder_path))
@@ -122,14 +122,9 @@ class LocalStore:
                     )
                 )
         except BaseException as exc:
-            # Anything that fails after the exclusive create takes the file
-            # back out. The exclusive create is what proves this call owns
-            # that path, so removing it destroys nothing a person wrote, and
-            # without it a refused write would leave a note on every device
-            # that the caller was told was never created.
-            if created:
-                target.unlink(missing_ok=True)
             if isinstance(exc, IntegrityError):
+                if created:
+                    target.unlink(missing_ok=True)
                 # The path is unique in the mirror, so this is a row that
                 # outlived its file: the note was deleted on a device and no
                 # reconciler has cleared the row yet. PostgreSQL is healthy,
@@ -166,6 +161,9 @@ class LocalStore:
             # store, and the answer says so rather than blaming Coppermind.
             raise NoteUnparseable(note_id, str(exc)) from exc
         schema = self.control.schema()
+        problems = schema.validate_frontmatter(frontmatter)
+        if problems:
+            raise NoteUnparseable(note_id, "; ".join(problems))
         return NoteDocument(
             id=note_id,
             path=relative,
@@ -269,17 +267,8 @@ def _title_of(body: str, path: Path) -> str:
 
 
 def _today(settings: ProductSettings) -> date:
-    """Today in the operator's timezone.
-
-    An unknown zone falls back to UTC rather than refusing the write: a note
-    with a date one day out is recoverable, a rejected note is not.
-    """
-    zone: tzinfo
-    try:
-        zone = ZoneInfo(settings.general.timezone)
-    except (ZoneInfoNotFoundError, ValueError):
-        zone = UTC
-    return datetime.now(tz=zone).date()
+    """Today in the operator's timezone."""
+    return datetime.now(tz=ZoneInfo(settings.general.timezone)).date()
 
 
 def _text(value: Any) -> str | None:

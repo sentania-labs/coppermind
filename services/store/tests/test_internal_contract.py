@@ -15,6 +15,7 @@ import httpx
 import pytest
 from coppermind_store import __version__
 from coppermind_store.auth import InternalAuth
+from coppermind_store.control import ControlState
 from coppermind_store.internal_api import router as internal_router
 from coppermind_store.main import create_app
 from fastapi import FastAPI
@@ -140,17 +141,22 @@ async def test_the_internal_surface_keeps_the_cause_the_public_one_hides():
     assert str(raised.value) == cause
 
 
-def store_app(tmp_path, build_version: str | None = None):
+def store_wiring(tmp_path, build_version: str | None = None):
     token = tmp_path / "internal-token"
     token.write_text(f"{TOKEN}\n", encoding="utf-8")
-    return create_app(
-        Wiring(
-            data_dir=tmp_path / "data",
-            internal_token_file=token,
-            database_url="postgresql://coppermind:coppermind@127.0.0.1:5999/absent",
-            build_version=build_version,
-        )
+    password = tmp_path / "postgres-password"
+    password.write_text("coppermind\n", encoding="utf-8")
+    return Wiring(
+        data_dir=tmp_path / "data",
+        internal_token_file=token,
+        database_url="postgresql://coppermind@127.0.0.1:5999/absent",
+        db_password_file=password,
+        build_version=build_version,
     )
+
+
+def store_app(tmp_path, build_version: str | None = None):
+    return create_app(store_wiring(tmp_path, build_version))
 
 
 def test_an_unknown_internal_route_answers_in_the_documented_envelope(tmp_path):
@@ -188,26 +194,18 @@ def test_healthz_reports_the_version_the_image_was_built_from(tmp_path):
         assert stamped.get("/healthz").json()["version"] == "v1.2.0"
 
 
-def broken_settings_app(tmp_path):
+def broken_settings_app(tmp_path, body: str | None = None):
     """A store whose `settings.yaml` an operator edited into something invalid.
 
     Editing files under `/data/state` is the only configuration surface this
     slice has, so this is an ordinary operator action rather than an exotic one.
     """
-    token = tmp_path / "internal-token"
-    token.write_text(f"{TOKEN}\n", encoding="utf-8")
     state = tmp_path / "data" / "state"
     state.mkdir(parents=True)
     (state / "settings.yaml").write_text(
-        "schema_version: 1\nrevision: 1\nsync:\n  plan: gold\n", encoding="utf-8"
+        body or "schema_version: 1\nrevision: 1\nsync:\n  plan: gold\n", encoding="utf-8"
     )
-    return create_app(
-        Wiring(
-            data_dir=tmp_path / "data",
-            internal_token_file=token,
-            database_url="postgresql://coppermind:coppermind@127.0.0.1:5999/absent",
-        )
-    )
+    return create_app(store_wiring(tmp_path))
 
 
 def test_an_unexpected_error_answers_in_the_documented_envelope(tmp_path):
@@ -257,6 +255,34 @@ def test_a_control_file_the_models_reject_makes_the_store_report_not_ready(tmp_p
     assert control["ok"] is False
     assert "settings.yaml" in control["detail"]
     assert "sync.plan" in control["detail"]
+
+
+def test_an_unknown_setting_makes_readiness_name_the_rejected_key(tmp_path):
+    app = broken_settings_app(
+        tmp_path,
+        "schema_version: 1\nrevision: 1\nnotes:\n  review_fodler: Inbox\n",
+    )
+    with TestClient(app) as client:
+        response = client.get("/readyz")
+    assert response.status_code == 503
+    control = next(check for check in response.json()["checks"] if check["name"] == "control_state")
+    assert "notes.review_fodler" in control["detail"]
+
+
+def test_a_missing_schema_role_makes_readiness_name_the_role(tmp_path):
+    wiring = store_wiring(tmp_path)
+    control = ControlState(wiring.state_dir)
+    control.ensure_defaults()
+    body = dict(control.store.read("schema").body)
+    body["roles"].pop("sources_key")
+    control.store.write("schema", body, if_revision=1)
+    with TestClient(create_app(wiring)) as client:
+        response = client.get("/readyz")
+    assert response.status_code == 503
+    control_check = next(
+        check for check in response.json()["checks"] if check["name"] == "control_state"
+    )
+    assert "sources_key" in control_check["detail"]
 
 
 def test_a_healthy_store_reports_its_control_files_as_ready(tmp_path):

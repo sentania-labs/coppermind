@@ -44,6 +44,13 @@ wait_for_status 200 "$API/readyz"
 curl -sS "$API/readyz"; echo
 ok "/healthz and /readyz answer 200"
 
+step "credentials are limited to the services that need them"
+compose exec -T api test ! -r /run/coppermind/postgres/postgres-password \
+    || fail "the API can read the PostgreSQL password"
+compose exec -T store test -r /run/coppermind/postgres/postgres-password \
+    || fail "the store cannot read the PostgreSQL password"
+ok "the API cannot read the database password and the store can"
+
 step "create a note through the API"
 created="$(mktemp)"
 code="$(curl -sS -o "$created" -w '%{http_code}' -X POST "$API/v1/notes" \

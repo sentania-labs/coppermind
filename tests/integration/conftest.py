@@ -25,7 +25,7 @@ from coppermind.db.session import make_engine, make_session_factory
 from coppermind.settings import Wiring
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_URL = "postgresql://coppermind:coppermind@127.0.0.1:5433/coppermind_test"
+DEFAULT_URL = "postgresql://coppermind@127.0.0.1:5433/coppermind_test"
 
 
 def _base_url() -> str:
@@ -33,10 +33,16 @@ def _base_url() -> str:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def migrated_database() -> Iterator[str]:
+def migrated_database(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     """Bring the test database to the current migration head, once."""
     url = _base_url()
-    environment = {**os.environ, "COPPERMIND_DATABASE_URL": url}
+    password = tmp_path_factory.mktemp("database") / "postgres-password"
+    password.write_text("coppermind\n", encoding="utf-8")
+    environment = {
+        **os.environ,
+        "COPPERMIND_DATABASE_URL": url,
+        "COPPERMIND_DB_PASSWORD_FILE": str(password),
+    }
     subprocess.run(
         [sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"],
         cwd=REPO_ROOT,
@@ -49,7 +55,9 @@ def migrated_database() -> Iterator[str]:
 
 @pytest.fixture
 def wiring(tmp_path: Path) -> Wiring:
-    return Wiring(data_dir=tmp_path / "data", database_url=_base_url())
+    password = tmp_path / "postgres-password"
+    password.write_text("coppermind\n", encoding="utf-8")
+    return Wiring(data_dir=tmp_path / "data", database_url=_base_url(), db_password_file=password)
 
 
 @pytest.fixture

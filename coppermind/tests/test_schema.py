@@ -1,4 +1,7 @@
-from coppermind.schema import default_schema
+import pytest
+from pydantic import ValidationError
+
+from coppermind.schema import FrontmatterSchema, default_schema
 
 
 def test_the_shipped_schema_covers_every_role():
@@ -15,6 +18,20 @@ def test_the_shipped_schema_covers_every_role():
         "schema_version_key",
     ):
         assert schema.key(schema.role(role)) is not None
+
+
+def test_a_schema_missing_a_required_role_is_rejected():
+    body = default_schema().model_dump(mode="json")
+    del body["roles"]["sources_key"]
+    with pytest.raises(ValidationError, match="sources_key"):
+        FrontmatterSchema.model_validate(body)
+
+
+def test_a_schema_role_pointing_at_an_undefined_key_is_rejected():
+    body = default_schema().model_dump(mode="json")
+    body["roles"]["sources_key"] = "source_ids"
+    with pytest.raises(ValidationError, match="sources_key=source_ids"):
+        FrontmatterSchema.model_validate(body)
 
 
 def test_a_fresh_install_has_working_defaults():

@@ -53,6 +53,13 @@ def test_collisions_are_compared_the_way_windows_and_macos_compare():
     assert unique_stem("Notes", ["Other"]) == "Notes"
 
 
+def test_a_collision_suffix_stays_inside_the_stem_limit():
+    stem = "A" * MAX_STEM_LENGTH
+    candidate = unique_stem(stem, [stem])
+    assert candidate.endswith(" (2)")
+    assert len(candidate) == MAX_STEM_LENGTH
+
+
 def test_a_folder_cannot_escape_the_notes_filesystem():
     assert sanitize_folder("../../etc") == "etc"
     assert sanitize_folder("Work/Customers/Ameren") == "Work/Customers/Ameren"

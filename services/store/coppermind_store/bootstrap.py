@@ -6,9 +6,9 @@ pre-created secret:
 
 - `/data` gains its notes, sources and state trees, owned by uid 1000, which
   every Coppermind image runs as.
-- `/run/coppermind` gains an internal bearer token and a PostgreSQL password,
-  both generated here and never printed, never committed and never passed as
-  an environment value.
+- Separate credential directories gain an internal bearer token and a
+  PostgreSQL password, both generated here and never printed, never committed
+  and never passed as an environment value.
 - The control state files arrive at revision 1 with their shipped defaults, so
   Admin opens on working settings rather than an empty form.
 
@@ -73,16 +73,11 @@ def run(wiring: Wiring | None = None) -> int:
     _ensure_dir(settings.notes_dir, uid, gid, 0o755)
     _ensure_dir(settings.sources_dir, uid, gid, 0o755)
     _ensure_dir(settings.state_dir, uid, gid, 0o755)
-    # 0755 on the directory so the bundled PostgreSQL, which runs as a different
-    # user, can traverse it to reach its own password file. The secrecy is in
-    # the file modes below, not in the directory.
-    _ensure_dir(settings.secrets_dir, uid, gid, 0o755)
+    _ensure_dir(settings.internal_token_file.parent, uid, gid, 0o755)
+    _ensure_dir(settings.db_password_file.parent, uid, gid, 0o755)
 
     created_token = _ensure_secret(settings.internal_token_file, uid, gid, 0o600)
-    # The bundled PostgreSQL image reads its password file as its own user
-    # (uid 999), and the Coppermind services read it as uid 1000. Owner 999,
-    # group 1000, mode 0640 lets exactly those two and nobody else.
-    created_password = _ensure_secret(settings.db_password_file, settings.postgres_uid, gid, 0o640)
+    created_password = _ensure_secret(settings.db_password_file, uid, gid, 0o644)
 
     control = ControlState(settings.state_dir)
     control.ensure_defaults()
@@ -91,7 +86,7 @@ def run(wiring: Wiring | None = None) -> int:
 
     print(
         "bootstrap complete: "
-        f"data={settings.data_dir} secrets={settings.secrets_dir} "
+        f"data={settings.data_dir} "
         f"internal_token={'generated' if created_token else 'kept'} "
         f"postgres_password={'generated' if created_password else 'kept'}",
         flush=True,

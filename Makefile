@@ -27,7 +27,7 @@ test:
 # PostgreSQL backed tests. `make db-up` starts a throwaway server on 5433 so
 # this never touches a running stack's database.
 test-integration:
-	COPPERMIND_TEST_DATABASE_URL=$${COPPERMIND_TEST_DATABASE_URL:-postgresql://coppermind:coppermind@127.0.0.1:5433/coppermind_test} \
+	COPPERMIND_TEST_DATABASE_URL=$${COPPERMIND_TEST_DATABASE_URL:-postgresql://coppermind@127.0.0.1:5433/coppermind_test} \
 		uv run pytest -q tests/integration
 
 db-up:

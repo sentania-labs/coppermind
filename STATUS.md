@@ -77,7 +77,8 @@ in the tree, so do not read the absence as a decision to leave it out.
 ## Known gaps in what is here
 
 - Bring-your-own PostgreSQL is wired in the settings (`COPPERMIND_DATABASE_URL`
-  and the `COPPERMIND_DB_*` values) but the compose file only ships the bundled
+  without a password, `COPPERMIND_DB_PASSWORD_FILE`, and the other
+  `COPPERMIND_DB_*` values) but the compose file only ships the bundled
   instance. The plan puts a profile around it; a profile that has to be turned
   on in a `.env` file would break the "no manual setup" rule, so the bundled
   instance is simply the default and the external path arrives with the

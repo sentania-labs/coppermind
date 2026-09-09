@@ -11,11 +11,8 @@ database from the notes filesystem.
 
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, Depends, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
 
 from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import CreateNote, NoteDocument, StoreError
@@ -25,38 +22,10 @@ from coppermind_api.errors import failure
 router = APIRouter(prefix="/v1/notes", tags=["notes"])
 
 
-class CreateNoteRequest(BaseModel):
-    """Create a note in the notes filesystem."""
-
-    title: str = Field(min_length=1, description="The note's H1 and the basis of its filename.")
-    body: str = Field(default="", description="Markdown body, without the H1.")
-    frontmatter: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Frontmatter keys to set. Anything omitted takes its schema default.",
-    )
-    folder: str | None = Field(
-        default=None,
-        description=(
-            "Folder relative to the notes filesystem root. Defaults to the review folder "
-            "from settings."
-        ),
-    )
-
-
 @router.post("", status_code=201, response_model=NoteDocument)
-async def create_note(
-    payload: CreateNoteRequest, client: HttpStoreClient = Depends(store)
-) -> Response:
+async def create_note(payload: CreateNote, client: HttpStoreClient = Depends(store)) -> Response:
     try:
-        note = await client.create_note(
-            CreateNote(
-                title=payload.title,
-                body=payload.body,
-                frontmatter=payload.frontmatter,
-                folder=payload.folder,
-                created_by="api",
-            )
-        )
+        note = await client.create_note(payload)
     except StoreError as error:
         return failure(error)
     return JSONResponse(
