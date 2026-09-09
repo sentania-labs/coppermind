@@ -1,0 +1,70 @@
+# Workspace root and the shared package in one file. `coppermind/` is the
+# package every service image installs; `services/*` are the workspace members
+# that depend on it. One toolchain configuration (ruff, mypy, pytest) covers
+# the whole repository so a developer and CI run the same checks.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "coppermind"
+version = "0.1.0.dev0"
+description = "Shared package for Coppermind: ids, frontmatter, naming, schema, settings, state files, store contract"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+readme = "README.md"
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "ruamel.yaml>=0.18",
+    "python-ulid>=2.7",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "psycopg[binary]>=3.2",
+    "alembic>=1.13",
+    "structlog>=24.2",
+    "httpx>=0.27",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "pip-audit>=2.7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["coppermind"]
+
+[tool.uv.workspace]
+members = ["services/api", "services/store"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI dependencies idiomatically use Depends(...) and Header(...) as defaults.
+"services/api/coppermind_api/*.py" = ["B008"]
+"services/api/coppermind_api/v1/*.py" = ["B008"]
+"services/store/coppermind_store/*.py" = ["B008"]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+explicit_package_bases = true
+exclude = ["coppermind/db/migrations/"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# Unit tests only. `tests/integration` needs a PostgreSQL server and is run
+# explicitly by `make test-integration`.
+testpaths = ["coppermind/tests", "services/api/tests", "services/store/tests", "tests/ci"]
+addopts = "--import-mode=importlib"

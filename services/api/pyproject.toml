@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "coppermind-api"
+version = "0.1.0.dev0"
+description = "Coppermind API: the public contract, stateless, calls the store"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "coppermind",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
+[tool.uv.sources]
+coppermind = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["coppermind_api"]
