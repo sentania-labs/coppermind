@@ -58,10 +58,6 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - secrets:/run/coppermind:ro
-    # Published only on loopback, and only so an operator can look. Nothing in
-    # the stack reaches PostgreSQL through the host.
-    ports:
-      - "${COPPERMIND_POSTGRES_BIND:-127.0.0.1:5432}:5432"
     depends_on:
       bootstrap:
         condition: service_completed_successfully

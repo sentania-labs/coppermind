@@ -95,7 +95,9 @@ jobs:
       - run: make scan
 
   # Pull requests only: refuses newly introduced dependencies with known HIGH+
-  # advisories before they reach main.
+  # advisories before they reach main. It is here to match the organization CI
+  # reference repository, which carries this job on every repository, rather
+  # than as an addition specific to this one.
   dependency-review:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

@@ -9,6 +9,8 @@ network.
 
 from __future__ import annotations
 
+from urllib.parse import unquote
+
 import httpx
 
 from coppermind.store_protocol import (
@@ -16,10 +18,10 @@ from coppermind.store_protocol import (
     MetadataUnavailable,
     NoteDocument,
     NoteId,
+    NotesFilesystemUnavailable,
     NotFound,
     PathCollision,
     RawNote,
-    StoreStatus,
     StoreUnavailable,
     ValidationFailed,
 )
@@ -30,11 +32,19 @@ INTERNAL_PREFIX = "/internal/v1"
 class HttpStoreClient:
     """The store, reached over the internal contract."""
 
-    def __init__(self, base_url: str, token: str, *, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        *,
+        timeout: float = 30.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {token}"},
             timeout=timeout,
+            transport=transport,
         )
 
     async def aclose(self) -> None:
@@ -52,14 +62,10 @@ class HttpStoreClient:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/notes/{note_id}/raw")
         return RawNote(
             id=note_id,
-            path=response.headers.get("X-Coppermind-Path", ""),
+            path=unquote(response.headers.get("X-Coppermind-Path", "")),
             text=response.text,
             content_hash=response.headers.get("ETag", "").strip('"'),
         )
-
-    async def status(self) -> StoreStatus:
-        response = await self._send("GET", f"{INTERNAL_PREFIX}/status")
-        return StoreStatus.model_validate(response.json())
 
     async def is_ready(self) -> bool:
         """True when the store reports itself ready. Never raises."""
@@ -92,6 +98,8 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         return PathCollision(payload.get("existing_path", message))
     if code == "validation_error":
         return ValidationFailed(payload.get("errors", [message]))
+    if code == "notes_filesystem_unavailable":
+        return NotesFilesystemUnavailable(payload.get("detail", message))
     if code == "metadata_unavailable" or response.status_code == 503:
         return MetadataUnavailable(message)
     return StoreUnavailable(f"store returned {response.status_code}: {message}")

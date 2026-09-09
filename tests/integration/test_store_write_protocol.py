@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 import sqlalchemy as sa
+from coppermind_store.control import ControlState
 from coppermind_store.fs import content_hash
 from coppermind_store.notes import LocalStore
 
 from coppermind import frontmatter as fm
 from coppermind.db.models import Note
 from coppermind.ids import is_valid_id
+from coppermind.schema import default_schema
 from coppermind.store_protocol import (
     CreateNote,
     MetadataUnavailable,
+    NotesFilesystemUnavailable,
     NotFound,
     ValidationFailed,
 )
@@ -106,15 +111,40 @@ async def test_a_read_during_an_outage_reports_the_outage(unreachable_store: Loc
         await unreachable_store.get_note("01K4Q8Z3N7V2X9M1B5C6D8E0F2")
 
 
-async def test_status_reports_both_halves_of_readiness(
-    store: LocalStore, unreachable_store: LocalStore
-):
-    await store.create_note(CreateNote(title="Counted"))
-    healthy = await store.status()
-    assert healthy.notes_filesystem.ok is True
-    assert healthy.metadata.ok is True
-    assert healthy.note_count == 1
+async def test_a_filesystem_failure_reports_the_filesystem_not_the_database(store: LocalStore):
+    """A write that cannot land is not a database outage and must not say it is.
 
-    degraded = await unreachable_store.status()
-    assert degraded.notes_filesystem.ok is True
-    assert degraded.metadata.ok is False
+    A read only notes volume used to surface as `metadata_unavailable`, which
+    pointed the operator at PostgreSQL and contradicted readiness.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root ignores the directory mode this test relies on")
+    original = store.notes_root.stat().st_mode
+    os.chmod(store.notes_root, 0o555)
+    try:
+        with pytest.raises(NotesFilesystemUnavailable):
+            await store.create_note(CreateNote(title="During a remount"))
+    finally:
+        os.chmod(store.notes_root, original)
+
+
+async def test_the_mirror_reads_the_schema_version_by_role_not_by_name(
+    wiring, session_factory, control: ControlState
+):
+    """Renaming the schema version key in Admin keeps the mirror row correct."""
+    renamed = default_schema()
+    for definition in renamed.keys:
+        if definition.name == "schema_version":
+            definition.name = "format_version"
+            definition.default = 2
+    renamed.roles["schema_version_key"] = "format_version"
+    control.store.write("schema", renamed.model_dump(mode="json"), if_revision=1)
+
+    wiring.notes_dir.mkdir(parents=True, exist_ok=True)
+    store = LocalStore(wiring.notes_dir, control, session_factory)
+    note = await store.create_note(CreateNote(title="Renamed key"))
+
+    assert note.frontmatter["format_version"] == 2
+    async with session_factory() as session:
+        row = (await session.execute(sa.select(Note).where(Note.id == note.id))).scalar_one()
+        assert row.schema_version == 2

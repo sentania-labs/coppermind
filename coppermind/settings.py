@@ -142,12 +142,6 @@ class Wiring(BaseSettings):
     data_dir: Path = Path("/data")
     secrets_dir: Path = Path("/run/coppermind")
 
-    # Bind addresses and ports.
-    api_host: str = "0.0.0.0"
-    api_port: int = 8080
-    store_host: str = "0.0.0.0"
-    store_port: int = 8081
-
     # Where the API and the workers reach the store.
     store_url: str = "http://store:8081"
     store_timeout_s: float = 30.0

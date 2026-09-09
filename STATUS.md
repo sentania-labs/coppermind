@@ -58,7 +58,8 @@ in the tree, so do not read the absence as a decision to leave it out.
   API, and a note deleted there leaves a row behind. Until the reconciler
   lands, treat the API as the way to create notes.
 - **Conflict protection on writes.** There is no `PUT` or `PATCH` yet, so
-  `If-Match` is defined in the contract but not yet exercised.
+  conditional writes are not defined at all: reads carry an `ETag`, but no
+  surface reads an `If-Match` header.
 - **The Git helper, Obsidian Sync, the curator and the indexer.** No history,
   no sync, no filing by rules, no search.
 - **Admin.** A separate service and image in the design, not a route group in

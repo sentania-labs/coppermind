@@ -36,20 +36,18 @@ from coppermind.naming import note_stem, sanitize_folder, unique_stem
 from coppermind.schema import FrontmatterSchema
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
-    ComponentStatus,
     CreateNote,
     MetadataUnavailable,
     NoteDocument,
     NoteId,
+    NotesFilesystemUnavailable,
     NotFound,
     PathCollision,
     RawNote,
-    StoreStatus,
     ValidationFailed,
 )
-from coppermind_store import __version__
 from coppermind_store.control import ControlState
-from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, is_writable, resolve
+from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
 
 
 class LocalStore:
@@ -95,6 +93,8 @@ class LocalStore:
                     create_exclusive_bytes(target, data)
                 except FileExistsError as exc:
                     raise PathCollision(relative) from exc
+                except OSError as exc:
+                    raise NotesFilesystemUnavailable(str(exc)) from exc
 
                 now = datetime.now(tz=UTC)
                 digest = content_hash(data)
@@ -107,7 +107,7 @@ class LocalStore:
                         size_bytes=len(data),
                         mtime=now,
                         frontmatter=_jsonable(frontmatter),
-                        schema_version=int(frontmatter.get("schema_version", 1)),
+                        schema_version=int(frontmatter.get(schema.role("schema_version_key"), 1)),
                         type=_text(frontmatter.get(schema.role("type_key"))),
                         context=_text(frontmatter.get(schema.role("context_key"))),
                         account=_text(frontmatter.get(schema.role("account_key"))),
@@ -120,6 +120,9 @@ class LocalStore:
                     )
                 )
         except (SQLAlchemyError, OSError) as exc:
+            # A connection refused by asyncpg arrives here as a bare OSError.
+            # The filesystem write raises its own typed error above, so what
+            # is left at this level is the database and only the database.
             raise MetadataUnavailable(str(exc)) from exc
 
         return NoteDocument(
@@ -160,23 +163,6 @@ class LocalStore:
             path=relative,
             text=data.decode("utf-8"),
             content_hash=content_hash(data),
-        )
-
-    async def status(self) -> StoreStatus:
-        writable, detail = is_writable(self.notes_root)
-        metadata = ComponentStatus(ok=True)
-        note_count: int | None = None
-        try:
-            async with self.session_factory() as session:
-                counted = await session.execute(sa.select(sa.func.count()).select_from(Note))
-                note_count = int(counted.scalar_one())
-        except (SQLAlchemyError, OSError) as exc:
-            metadata = ComponentStatus(ok=False, detail=str(exc))
-        return StoreStatus(
-            version=__version__,
-            notes_filesystem=ComponentStatus(ok=writable, detail=detail),
-            metadata=metadata,
-            note_count=note_count,
         )
 
     async def _locate(self, note_id: NoteId) -> tuple[str, Path]:
@@ -253,8 +239,6 @@ def _stem_for(
 def _body_with_heading(title: str, body: str) -> str:
     heading = f"# {title}".rstrip()
     text = body.lstrip("\n")
-    if text.startswith("# "):
-        return text if text.endswith("\n") else text + "\n"
     composed = f"{heading}\n\n{text}" if text else f"{heading}\n"
     return composed if composed.endswith("\n") else composed + "\n"
 

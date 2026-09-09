@@ -55,6 +55,15 @@ class MetadataUnavailable(StoreError):
     """
 
 
+class NotesFilesystemUnavailable(StoreError):
+    """The notes filesystem could not be written, so this operation failed.
+
+    Raised when the write itself fails: the volume is read only, the disk is
+    full, or the mount is gone. PostgreSQL is not implicated, and `/readyz`
+    reports the same half as not ok.
+    """
+
+
 class StoreUnavailable(StoreError):
     """The store service itself could not be reached."""
 
@@ -94,18 +103,6 @@ class RawNote(BaseModel):
     content_hash: ETag
 
 
-class ComponentStatus(BaseModel):
-    ok: bool
-    detail: str = ""
-
-
-class StoreStatus(BaseModel):
-    version: str
-    notes_filesystem: ComponentStatus
-    metadata: ComponentStatus
-    note_count: int | None = None
-
-
 class Store(Protocol):
     """What the API, the curator and the indexer are allowed to ask for."""
 
@@ -114,5 +111,3 @@ class Store(Protocol):
     async def get_note(self, note_id: NoteId) -> NoteDocument: ...
 
     async def read_raw(self, note_id: NoteId) -> RawNote: ...
-
-    async def status(self) -> StoreStatus: ...

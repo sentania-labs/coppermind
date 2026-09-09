@@ -19,6 +19,7 @@ from coppermind.store_protocol import (
     CreateNote,
     MetadataUnavailable,
     NoteDocument,
+    NotesFilesystemUnavailable,
     NotFound,
     RawNote,
     ValidationFailed,
@@ -147,6 +148,28 @@ def test_a_database_outage_is_a_clean_503_that_says_the_files_are_fine(client):
     body = response.json()
     assert body["error"] == "metadata_unavailable"
     assert "notes filesystem is unaffected" in body["message"]
+
+
+def test_a_filesystem_failure_does_not_blame_the_database(client):
+    """A read only volume is its own fault, and readiness says the same half."""
+    test_client, fake = client
+    fake.error = NotesFilesystemUnavailable("[Errno 30] Read-only file system")
+    response = test_client.post("/v1/notes", json={"title": "During a remount"})
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"] == "notes_filesystem_unavailable"
+    assert "notes filesystem could not be written" in body["message"]
+    assert "notes filesystem is unaffected" not in body["message"]
+
+
+def test_a_missing_note_reports_the_identifier_it_was_asked_for(client):
+    """The message names the id once, not twice, and the envelope carries it."""
+    test_client, fake = client
+    fake.error = NotFound(NOTE.id)
+    response = test_client.get(f"/v1/notes/{NOTE.id}")
+    body = response.json()
+    assert body["note_id"] == NOTE.id
+    assert body["message"] == f"no note with id {NOTE.id}"
 
 
 def test_a_schema_violation_comes_back_as_422_with_the_reasons(client):

@@ -1,6 +1,7 @@
 """How a note becomes a file: frontmatter order, the filename and the body."""
 
 from datetime import date
+from pathlib import Path
 
 from coppermind_store.notes import _body_with_heading, _build_frontmatter, _stem_for, _title_of
 
@@ -59,8 +60,11 @@ def test_the_body_gets_the_title_as_its_h1():
     assert _body_with_heading("Title", "") == "# Title\n"
 
 
-def test_a_body_that_already_has_its_own_h1_is_left_alone():
-    assert _body_with_heading("Title", "# Their heading\n") == "# Their heading\n"
+def test_the_requested_title_wins_over_a_heading_the_body_carries():
+    """One note reports one title, whether it was just created or read back."""
+    composed = _body_with_heading("Ameren Sync", "# Quarterly Review\n\ntext\n")
+    assert composed == "# Ameren Sync\n\n# Quarterly Review\n\ntext\n"
+    assert _title_of(composed, Path("Ameren Sync.md")) == "Ameren Sync"
 
 
 def test_the_title_is_read_back_from_the_h1(tmp_path):
