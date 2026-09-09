@@ -1,0 +1,127 @@
+# Coppermind quickstart and CI fixture.
+#
+#   docker compose up -d
+#
+# That is the whole setup. The bootstrap one-shot creates the volumes,
+# generates the internal token and the PostgreSQL password, and writes the
+# control state files with their shipped defaults, so nothing has to be hand
+# populated before the stack runs.
+#
+# Image tags here track `latest` on purpose: this file is the quickstart.
+# Anything that deploys Coppermind for real pins a version or a digest in its
+# own repository, never here.
+name: coppermind
+
+# Wiring the deployer may override from `.env`. Compose does not put `.env`
+# into a container by itself, so anything an operator is told they can set has
+# to be forwarded here or it silently does nothing.
+x-wiring: &wiring
+  COPPERMIND_LOG_LEVEL: ${COPPERMIND_LOG_LEVEL:-INFO}
+
+x-store-image: &store-image
+  image: ghcr.io/sentania-labs/coppermind/store:latest
+  build:
+    context: .
+    dockerfile: services/store/Dockerfile
+
+x-api-image: &api-image
+  image: ghcr.io/sentania-labs/coppermind/api:latest
+  build:
+    context: .
+    dockerfile: services/api/Dockerfile
+
+services:
+
+  # Runs once per `up` and exits 0. Root only long enough to hand /data and
+  # the credential volumes to uid 1000, which every Coppermind image runs as.
+  # Idempotent: a second run keeps existing secrets and existing settings.
+  bootstrap:
+    <<: *store-image
+    user: "0:0"
+    command: ["python3", "-m", "coppermind_store.bootstrap"]
+    environment: *wiring
+    volumes:
+      - data:/data
+      - internal-token:/run/coppermind/internal
+      - postgres-password:/run/coppermind/postgres
+    restart: "no"
+
+  # Bundled PostgreSQL. It holds mirrored and derived state only: every row
+  # can be rebuilt from /data, which is why losing it is an outage and not a
+  # data loss. The password is a file, never an environment value.
+  #
+  # Deliberately not behind a `bundled-db` profile. Compose reads `.env` and
+  # not `.env.example`, so a profile would leave a clean checkout with no
+  # database and an operator with a file to copy before anything runs, which
+  # breaks the quickstart this file exists to be. The services already accept
+  # an external PostgreSQL through COPPERMIND_DATABASE_URL; expressing that
+  # choice in compose arrives with the deployment work.
+  postgres:
+    image: postgres:16@sha256:c1b3783309b6499c795eed7c20135a1a4d25cae1b575c3d52c6f536129a1b109
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: coppermind
+      POSTGRES_USER: coppermind
+      POSTGRES_PASSWORD_FILE: /run/coppermind/postgres/postgres-password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - postgres-password:/run/coppermind/postgres:ro
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coppermind -d coppermind"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # One-shot migrations, from the store image so the schema and the code that
+  # depends on it are always the same build.
+  migrate:
+    <<: *store-image
+    command: ["alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
+    environment: *wiring
+    volumes:
+      - postgres-password:/run/coppermind/postgres:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # The only writer of the notes filesystem. Exactly one replica, always.
+  store:
+    <<: *store-image
+    restart: unless-stopped
+    environment: *wiring
+    volumes:
+      - data:/data
+      - internal-token:/run/coppermind/internal:ro
+      - postgres-password:/run/coppermind/postgres:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # The public contract. Stateless, mounts only its internal credential, and
+  # calls the store.
+  # Bound to loopback: this slice has no API authentication yet, so the
+  # quickstart does not put it on a network interface.
+  api:
+    <<: *api-image
+    restart: unless-stopped
+    environment: *wiring
+    volumes:
+      - internal-token:/run/coppermind/internal:ro
+    ports:
+      - "${COPPERMIND_API_BIND:-127.0.0.1:8080}:8080"
+    depends_on:
+      store:
+        condition: service_healthy
+
+volumes:
+  # Everything a backup needs: the notes filesystem, source bundles and the
+  # control state files.
+  data:
+  pgdata:
+  internal-token:
+  postgres-password:

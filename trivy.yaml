@@ -1,0 +1,15 @@
+# Trivy settings shared by `make scan-fs`, `make scan-image` and CI. The
+# Makefile is the only caller; do not pass these flags on the command line.
+severity:
+  - HIGH
+  - CRITICAL
+# Fail the gate on any finding at or above the severities listed.
+exit-code: 1
+vulnerability:
+  # A CVE with no fixed version available cannot be acted on by a bump. It is
+  # reported on demand, not gated on.
+  ignore-unfixed: true
+scan:
+  skip-dirs:
+    - "**/.venv"
+    - "**/node_modules"

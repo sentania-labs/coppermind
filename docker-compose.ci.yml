@@ -1,0 +1,28 @@
+# CI overlay. Used with the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
+#
+# One difference from the quickstart today: images come from the tarballs the
+# image job built and tested, so the smoke test exercises exactly what would be
+# published, never a fresh build.
+#
+# The reconciler's pull request adds a `tools` container here, mounting the
+# data volume so CI can edit the notes filesystem behind the store's back the
+# way a person editing on a device does. There is nothing for it to prove yet.
+services:
+
+  bootstrap:
+    image: coppermind/store:ci
+    build: !reset null
+
+  migrate:
+    image: coppermind/store:ci
+    build: !reset null
+
+  store:
+    image: coppermind/store:ci
+    build: !reset null
+
+  api:
+    image: coppermind/api:ci
+    build: !reset null
