@@ -55,6 +55,23 @@ class MetadataUnavailable(StoreError):
     """
 
 
+class NoteUnparseable(StoreError):
+    """The note file is on disk but its frontmatter cannot be read.
+
+    Raised when a person edited the file on a device and left the frontmatter
+    malformed. The request was fine and the store is healthy; it is the stored
+    file that cannot be served, and Coppermind never rewrites it.
+    """
+
+    def __init__(self, note_id: str, reason: str) -> None:
+        super().__init__(
+            f"the frontmatter of note {note_id} could not be parsed ({reason}); "
+            "Coppermind has not modified the file"
+        )
+        self.note_id = note_id
+        self.reason = reason
+
+
 class NotesFilesystemUnavailable(StoreError):
     """The notes filesystem could not be written, so this operation failed.
 

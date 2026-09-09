@@ -32,7 +32,13 @@ vertical path proved end to end, then widened.
   untouched and still fully editable. Starting PostgreSQL brings everything
   back with no intervention.
 - Control state files are revisioned. A write states the revision it replaces
-  and is refused if the file moved on.
+  and is refused if the file moved on. Readiness loads both of them, so a
+  hand edit the models reject takes the store out of rotation with the file
+  and the failing field named, rather than reporting ready while every note
+  operation fails.
+- A note whose frontmatter was broken while editing on a device reads back as
+  409 `note_unparseable`, naming the note and saying Coppermind did not modify
+  the file.
 - CI: lint, types, unit tests, compose validity and the no-em-dash rule;
   PostgreSQL backed integration tests; dependency, secret and repository
   scans; one image build per service as an OCI tarball with provenance and an
@@ -80,6 +86,10 @@ in the tree, so do not read the absence as a decision to leave it out.
   nothing reconciles the mirror yet. Creating a note with that title again
   answers 409 `path_collision` every time until the reconciler lands or the
   row is cleared by hand.
+- Nothing repairs a note whose frontmatter a person broke. Reads of it answer
+  409 `note_unparseable` and the file is left exactly as it is; putting it
+  right means editing it on a device, because the reconciler and Admin are not
+  here yet.
 - The store reads `settings.yaml` and `schema.yaml` on every call rather than
   caching them. Correct, and cheap at this size; it becomes a cache with an
   invalidation event when `settings.changed` exists.

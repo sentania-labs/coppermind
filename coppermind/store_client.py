@@ -19,6 +19,7 @@ from coppermind.store_protocol import (
     NoteDocument,
     NoteId,
     NotesFilesystemUnavailable,
+    NoteUnparseable,
     NotFound,
     PathCollision,
     StoreError,
@@ -97,6 +98,8 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         return NotFound(payload.get("note_id", message))
     if code == "path_collision":
         return PathCollision(payload.get("existing_path", message))
+    if code == "note_unparseable":
+        return NoteUnparseable(payload.get("note_id", ""), message)
     if code == "validation_error":
         return ValidationFailed(payload.get("errors", [message]))
     if code == "notes_filesystem_unavailable":

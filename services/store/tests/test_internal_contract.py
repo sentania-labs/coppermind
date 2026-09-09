@@ -237,3 +237,31 @@ async def test_a_store_that_answered_is_never_reported_unreachable(tmp_path):
             await client.aclose()
     assert not isinstance(raised.value, StoreUnavailable)
     assert "sync.plan" in str(raised.value)
+
+
+def test_a_control_file_the_models_reject_makes_the_store_report_not_ready(tmp_path):
+    """A false green is the worst answer: every note operation fails behind it.
+
+    The process itself stays up, so the operator can still read `/healthz` and
+    the log to find out which edit did it.
+    """
+    app = broken_settings_app(tmp_path)
+    with TestClient(app) as client:
+        assert client.get("/healthz").status_code == 200
+        response = client.get("/readyz")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["ready"] is False
+    control = next(check for check in body["checks"] if check["name"] == "control_state")
+    assert control["ok"] is False
+    assert "settings.yaml" in control["detail"]
+    assert "sync.plan" in control["detail"]
+
+
+def test_a_healthy_store_reports_its_control_files_as_ready(tmp_path):
+    with TestClient(store_app(tmp_path)) as client:
+        body = client.get("/readyz").json()
+    control = next(check for check in body["checks"] if check["name"] == "control_state")
+    assert control["ok"] is True
+    assert control["detail"] == ""

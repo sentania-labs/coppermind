@@ -118,9 +118,15 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         With PostgreSQL stopped this reports not ready and says so. The notes
         filesystem stays readable and writable by Obsidian Sync throughout; it
         is the API surface that steps back, not the notes.
+
+        The control files count too. Every note operation loads them first, so
+        a settings or schema file the models reject breaks the whole surface,
+        and reporting ready next to that would be a false green.
         """
         writable, detail = is_writable(request.app.state.wiring.notes_dir)
         checks = [Check(name="notes_filesystem", ok=writable, detail=detail)]
+        control_detail = _control_state_problem(request.app.state.store.control)
+        checks.append(Check(name="control_state", ok=not control_detail, detail=control_detail))
         try:
             async with request.app.state.engine.connect() as connection:
                 await connection.execute(sa.text("SELECT 1"))
@@ -135,6 +141,20 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
 
     app.include_router(internal_router)
     return app
+
+
+def _control_state_problem(control: ControlState) -> str:
+    """Describe the first control file that will not load, or return an empty string.
+
+    These are the two calls every note operation makes before it does anything
+    else, so what they do here is what they will do there.
+    """
+    for filename, load in (("settings.yaml", control.settings), ("schema.yaml", control.schema)):
+        try:
+            load()
+        except Exception as exc:  # noqa: BLE001 - readiness reports faults, never raises them
+            return f"{filename}: {' '.join(str(exc).split())}"
+    return ""
 
 
 app = create_app()

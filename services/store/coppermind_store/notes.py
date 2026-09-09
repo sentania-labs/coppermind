@@ -41,6 +41,7 @@ from coppermind.store_protocol import (
     NoteDocument,
     NoteId,
     NotesFilesystemUnavailable,
+    NoteUnparseable,
     NotFound,
     PathCollision,
     ValidationFailed,
@@ -158,8 +159,12 @@ class LocalStore:
     async def get_note(self, note_id: NoteId) -> NoteDocument:
         relative, path = await self._locate(note_id)
         data = path.read_bytes()
-        text = data.decode("utf-8")
-        frontmatter, body = fm.parse(text)
+        try:
+            frontmatter, body = fm.parse(data.decode("utf-8"))
+        except (fm.FrontmatterError, UnicodeDecodeError) as exc:
+            # A person broke this file on a device. That is not a fault of the
+            # store, and the answer says so rather than blaming Coppermind.
+            raise NoteUnparseable(note_id, str(exc)) from exc
         schema = self.control.schema()
         return NoteDocument(
             id=note_id,
@@ -190,7 +195,12 @@ class LocalStore:
             raise MetadataUnavailable(str(exc)) from exc
         if relative is None:
             raise NotFound(note_id)
-        path = resolve(self.notes_root, relative)
+        try:
+            path = resolve(self.notes_root, relative)
+        except ValueError as exc:
+            # The mirrored path leaves the notes filesystem, so the store
+            # refuses to follow it. Nothing servable is there.
+            raise NotFound(note_id) from exc
         if not path.is_file():
             # The row outlived the file, which happens when a note is deleted
             # on a device. Reconciliation clears the row; until then, this is

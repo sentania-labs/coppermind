@@ -18,6 +18,7 @@ from coppermind.store_protocol import (
     CreateNote,
     MetadataUnavailable,
     NotesFilesystemUnavailable,
+    NoteUnparseable,
     NotFound,
     PathCollision,
     ValidationFailed,
@@ -167,3 +168,40 @@ async def test_a_row_that_outlived_its_file_is_a_collision_not_an_outage(store: 
     # device, and a read of the first identifier would then serve the second
     # note's content under the first note's name.
     assert list(store.notes_root.rglob("*.md")) == []
+
+
+async def test_a_note_a_person_broke_on_a_device_is_not_our_error(store: LocalStore):
+    """Editing in Obsidian and syncing back is the round trip this slice proves.
+
+    A malformed frontmatter block used to come back as an unexpected store
+    error, blaming Coppermind for the person's own file.
+    """
+    created = await store.create_note(
+        CreateNote(title="Runbook", frontmatter={"type": "reference"})
+    )
+    path = store.notes_root / created.path
+    before = path.read_text(encoding="utf-8")
+    path.write_text(before.replace("\n---\n", "\n", 1), encoding="utf-8")
+
+    with pytest.raises(NoteUnparseable) as raised:
+        await store.get_note(created.id)
+    assert raised.value.note_id == created.id
+    assert "has not modified the file" in str(raised.value)
+    assert path.read_text(encoding="utf-8") == before.replace("\n---\n", "\n", 1)
+
+
+async def test_a_row_pointing_outside_the_notes_filesystem_is_refused(
+    store: LocalStore, session_factory
+):
+    """A mirrored path that escapes the root is a refusal, not a server error."""
+    created = await store.create_note(
+        CreateNote(title="Runbook", frontmatter={"type": "reference"})
+    )
+    async with session_factory() as session:
+        await session.execute(
+            sa.update(Note).where(Note.id == created.id).values(path="../outside.md")
+        )
+        await session.commit()
+
+    with pytest.raises(NotFound):
+        await store.get_note(created.id)
