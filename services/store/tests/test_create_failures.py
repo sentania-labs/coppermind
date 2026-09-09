@@ -2,14 +2,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
 
-import pytest
-from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
-
 import coppermind_store.notes as notes_module
-from coppermind.settings import Wiring
-from coppermind.store_protocol import CreateNote, MetadataUnavailable
+import pytest
 from coppermind_store.control import ControlState
 from coppermind_store.notes import LocalStore
+from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
+
+from coppermind.settings import Wiring
+from coppermind.store_protocol import CreateNote, MetadataUnavailable
 
 
 class SessionWithLostCommitResult:

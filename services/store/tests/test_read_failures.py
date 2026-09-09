@@ -2,11 +2,11 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from coppermind_store.control import ControlState
+from coppermind_store.notes import LocalStore
 
 from coppermind.settings import Wiring
 from coppermind.store_protocol import NotesFilesystemUnavailable, NotFound
-from coppermind_store.control import ControlState
-from coppermind_store.notes import LocalStore
 
 NOTE_ID = "01K4Q8Z3N7V2X9M1B5C6D8E0F2"
 NOTE_BYTES = b"---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\nsources: []\n---\n# Runbook\n"
