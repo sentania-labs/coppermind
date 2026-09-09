@@ -167,14 +167,24 @@ def test_a_missing_note_is_a_404_in_the_error_envelope(client):
     assert response.json()["error"] == "not_found"
 
 
-def test_a_database_outage_reports_possible_file_creation(client):
+def test_a_database_outage_write_uses_operation_neutral_wording(client):
     test_client, fake = client
     fake.error = MetadataUnavailable("connection refused")
     response = test_client.post("/v1/notes", json={"title": "During an outage"})
     assert response.status_code == 503
     body = response.json()
     assert body["error"] == "metadata_unavailable"
-    assert "a note file may already have been written" in body["message"]
+    assert "if this was a write, its outcome is unknown" in body["message"]
+
+
+def test_a_database_outage_read_uses_operation_neutral_wording(client):
+    test_client, fake = client
+    fake.error = MetadataUnavailable("connection refused")
+    response = test_client.get(f"/v1/notes/{NOTE.id}")
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"] == "metadata_unavailable"
+    assert "if this was a write, its outcome is unknown" in body["message"]
 
 
 def test_a_filesystem_failure_does_not_blame_the_database(client):
