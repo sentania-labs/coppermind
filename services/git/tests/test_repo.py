@@ -128,6 +128,24 @@ def test_a_repository_that_tracked_device_state_stops_tracking_it_and_keeps_the_
     assert "by hand, with device state" in run_git(notes, "log", "--format=%s")
 
 
+def test_an_adopted_exclude_file_with_non_utf8_bytes_keeps_them(tmp_path: Path, run_git: RunGit):
+    notes = tmp_path / "notes"
+    write(notes / "note.md", "text\n")
+    run_git(notes, "init", "--quiet")
+    exclude = notes / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    exclude.write_bytes(b"# mine\ncaf\xe9.private\n")
+    (notes / "caf\udce9.private").write_bytes(b"not for history\n")
+
+    repo = NotesRepo(notes)
+    repo.ensure(DEFAULTS)
+    repo.commit(DEFAULTS, repo.stage(DEFAULTS))
+
+    assert exclude.read_bytes().startswith(b"# mine\ncaf\xe9.private\n")
+    assert EXCLUDE_BEGIN.encode() in exclude.read_bytes()
+    assert tracked(run_git, notes) == {"note.md"}
+
+
 def test_the_managed_exclude_block_moves_nothing_else():
     mine = "# mine\n*.bak\n"
     block = exclude_block(DEFAULTS)

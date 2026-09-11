@@ -106,7 +106,7 @@ status_json="$(compose exec -T git cat /data/state/git/status.json)"
 printf '%s\n' "$status_json"
 python3 -c 'import json,sys; s=json.loads(sys.argv[1]); assert s["last_commit_sha"]==sys.argv[2] and s["last_error"] is None, s' \
     "$status_json" "$second" || fail "the status file does not report the latest commit cleanly"
-notes_git log --format='%h %s' | head -n 5
+notes_git log --max-count=5 --format='%h %s'
 ok "the edit is recorded on top of unchanged history and the status file agrees"
 
 printf '\nfailure storylines passed\n'

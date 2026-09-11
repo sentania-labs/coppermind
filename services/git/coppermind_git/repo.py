@@ -106,7 +106,7 @@ def write_atomically(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as handle:
             handle.write(text)
         os.chmod(temp, 0o644)
         os.replace(temp, path)
@@ -193,7 +193,13 @@ class NotesRepo:
             self._opened = True
 
         exclude = git_dir / "info" / "exclude"
-        current = exclude.read_text(encoding="utf-8") if exclude.is_file() else ""
+        # Git stores filenames as bytes, so a person's own rules may not be
+        # UTF-8; surrogateescape carries those bytes through unchanged.
+        current = (
+            exclude.read_text(encoding="utf-8", errors="surrogateescape")
+            if exclude.is_file()
+            else ""
+        )
         wanted = merge_block(current, exclude_block(settings))
         if wanted != current:
             write_atomically(exclude, wanted)
