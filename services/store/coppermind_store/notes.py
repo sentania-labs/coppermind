@@ -197,39 +197,33 @@ class LocalStore:
         The path comes from the mirror, so with PostgreSQL away the write is
         refused before the file is read, let alone written.
 
-        Under the note's lock: hash the file as it is now and refuse the write
-        if that is not the ETag the caller read. Then issue the row update
-        before writing the file and commit after it. The order keeps the two
-        properties a create has: a value the metadata store rejects, or a
-        database that went away, is refused before the file changes, and a
-        crash between the write and the commit leaves the file as the truth,
-        with a row that reconciliation brings up to date.
+        Under the note's lock: check the file is still this note at the ETag
+        the caller read, and write back the keys sent unchanged with the types
+        that file gives them. Then issue the row update, check the file again
+        and write it with nothing awaited between that compare and the write,
+        and commit last. The order keeps the two properties a create has: a
+        value the metadata store rejects, or a database that went away, is
+        refused before the file changes, and a crash between the write and
+        the commit leaves the file as the truth, with a row that
+        reconciliation brings up to date.
         """
         schema = self.control.schema()
-        frontmatter = _replacement_frontmatter(request, schema, note_id)
-        problems = schema.validate_frontmatter(frontmatter)
+        sent = _replacement_frontmatter(request, schema, note_id)
+        problems = schema.validate_frontmatter(sent)
         if problems:
             raise ValidationFailed(problems)
         body = _terminated(request.body)
-        data = fm.compose(frontmatter, body).encode("utf-8")
-        sources = frontmatter.get(schema.role("sources_key"), [])
 
         relative, path = await self._locate(note_id)
         async with self._lock_for(note_id):
+            current = _frontmatter_at(note_id, relative, path, schema, if_match)
+            frontmatter = _keeping_types(sent, current)
+            data = fm.compose(frontmatter, body).encode("utf-8")
+            sources = frontmatter.get(schema.role("sources_key"), [])
+            now = datetime.now(tz=UTC)
+            digest = content_hash(data)
             try:
                 async with transaction(self.session_factory) as session:
-                    current, _ = _read(note_id, path)
-                    current_hash = content_hash(current)
-                    if current_hash != if_match:
-                        raise VersionConflict(current_hash)
-                    # The bytes match what the caller read, and a read by this
-                    # identifier is what handed them that ETag; the guard is
-                    # still applied so a hash computed some other way cannot
-                    # overwrite another note's file through a stale row.
-                    _parse(note_id, relative, current, schema)
-
-                    now = datetime.now(tz=UTC)
-                    digest = content_hash(data)
                     await session.execute(
                         sa.update(Note)
                         .where(Note.id == note_id)
@@ -245,6 +239,7 @@ class LocalStore:
                             updated_at=now,
                         )
                     )
+                    _frontmatter_at(note_id, relative, path, schema, if_match)
                     try:
                         atomic_write_bytes(path, data)
                     except OSError as exc:
@@ -337,6 +332,23 @@ def _parse(
     return frontmatter, body
 
 
+def _frontmatter_at(
+    note_id: NoteId, relative: str, path: Path, schema: FrontmatterSchema, if_match: ETag
+) -> dict[str, Any]:
+    """The frontmatter of a located note whose file still hashes to `if_match`.
+
+    The identity check comes before the compare, so a row whose file is now
+    another note is a miss whatever ETag was sent, not a conflict naming the
+    other note's hash.
+    """
+    current, _ = _read(note_id, path)
+    frontmatter, _ = _parse(note_id, relative, current, schema)
+    current_hash = content_hash(current)
+    if current_hash != if_match:
+        raise VersionConflict(current_hash)
+    return frontmatter
+
+
 def _read(note_id: NoteId, path: Path) -> tuple[bytes, float]:
     """The bytes and mtime of a located note, with typed filesystem failures."""
     try:
@@ -410,6 +422,21 @@ def _replacement_frontmatter(
         raise ValidationFailed([f"{id_key}: the identifier of a note cannot be changed"])
     values[id_key] = note_id
     return _ordered(values, schema)
+
+
+def _keeping_types(frontmatter: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    """The frontmatter to write, with each key sent back unchanged as the file holds it.
+
+    A read hands out a date as text, so a key nobody edited comes back as a
+    string. Writing the file's own value keeps it a date for Obsidian and
+    keeps the untouched key out of what Obsidian Sync pushes to every device.
+    """
+    return {
+        key: current[key]
+        if key in current and _jsonable(value) == _jsonable(current[key])
+        else value
+        for key, value in frontmatter.items()
+    }
 
 
 def _ordered(values: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any]:

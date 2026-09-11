@@ -370,3 +370,19 @@ def test_a_replace_body_must_be_the_document_shape(client):
     assert response.status_code == 422
     assert response.json()["error"] == "validation_error"
     assert fake.replaced is None
+
+
+@pytest.mark.parametrize("missing", ["frontmatter", "body"])
+def test_a_replace_missing_half_of_the_document_is_refused(client, missing):
+    """Leaving the body out of an edit must not erase it, nor the frontmatter."""
+    test_client, fake = client
+    document = {"frontmatter": dict(NOTE.frontmatter), "body": NOTE.body}
+    del document[missing]
+    response = test_client.put(
+        f"/v1/notes/{NOTE.id}", json=document, headers={"If-Match": '"sha256:abc"'}
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"] == "validation_error"
+    assert body["errors"] == [f"{missing}: Field required"]
+    assert fake.replaced is None

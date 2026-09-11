@@ -131,13 +131,15 @@ class ReplaceNote(BaseModel):
     note, edit it and send it back whole; the fields that describe the file
     rather than its content (`id`, `path`, `title`, `content_hash` and so on)
     are ignored on the way in. The frontmatter is written exactly as sent,
-    validated against the schema, with the identifier the store keeps.
+    validated against the schema, with the identifier the store keeps. Both
+    fields are required: a partial document is refused, never read as an
+    empty body or an empty frontmatter block.
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    frontmatter: dict[str, Any] = Field(default_factory=dict)
-    body: str = ""
+    frontmatter: dict[str, Any]
+    body: str
 
 
 class NoteDocument(BaseModel):

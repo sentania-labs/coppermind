@@ -175,7 +175,7 @@ async def test_a_version_conflict_round_trips_with_the_current_etag():
     client = connected(RaisingStore(VersionConflict("sha256:newer")))
     try:
         with pytest.raises(VersionConflict) as raised:
-            await client.replace_note(NOTE_ID, ReplaceNote(), "sha256:abc")
+            await client.replace_note(NOTE_ID, ReplaceNote(frontmatter={}, body=""), "sha256:abc")
     finally:
         await client.aclose()
     assert raised.value.current_etag == "sha256:newer"
@@ -185,10 +185,11 @@ async def test_a_matching_etag_replaces_and_a_stale_one_is_refused_over_the_wire
     """What the client puts in `If-Match` is what the store compares."""
     client = connected(OneNoteStore(NOTE))
     try:
-        replaced = await client.replace_note(NOTE_ID, ReplaceNote(body="# Edited\n"), "sha256:abc")
+        edit = ReplaceNote(frontmatter={}, body="# Edited\n")
+        replaced = await client.replace_note(NOTE_ID, edit, "sha256:abc")
         assert replaced.body == "# Edited\n"
         with pytest.raises(VersionConflict):
-            await client.replace_note(NOTE_ID, ReplaceNote(), "sha256:stale")
+            await client.replace_note(NOTE_ID, edit, "sha256:stale")
     finally:
         await client.aclose()
 
@@ -198,7 +199,7 @@ async def test_an_empty_etag_is_refused_as_a_missing_precondition():
     client = connected(OneNoteStore(NOTE))
     try:
         with pytest.raises(PreconditionRequired):
-            await client.replace_note(NOTE_ID, ReplaceNote(), "")
+            await client.replace_note(NOTE_ID, ReplaceNote(frontmatter={}, body=""), "")
     finally:
         await client.aclose()
 

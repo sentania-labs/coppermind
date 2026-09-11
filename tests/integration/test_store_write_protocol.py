@@ -12,6 +12,7 @@ from coppermind_api.main import create_app as create_api_app
 from coppermind_store.control import ControlState
 from coppermind_store.fs import content_hash
 from coppermind_store.notes import LocalStore
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from coppermind import frontmatter as fm
 from coppermind.db.models import Note
@@ -374,15 +375,17 @@ async def test_a_current_etag_replaces_the_file_first_and_the_row_second(
 ):
     """Read, edit on a device, read again, write with the fresh ETag: it lands.
 
-    The file is rewritten in place under the same identifier and path, the
-    date stays a YAML date rather than becoming a quoted string, and the
-    mirror row follows the file.
+    The file is rewritten in place under the same identifier and path, dates
+    stay YAML dates rather than becoming quoted strings, including a key the
+    schema does not know, and the mirror row follows the file.
     """
     created = await store.create_note(
         CreateNote(title="Ameren Architecture Sync", body="## Key points\n", frontmatter=MEETING)
     )
     path = store.notes_root / created.path
-    path.write_bytes(path.read_bytes().replace(b"reviewed: false", b"reviewed: true"))
+    path.write_bytes(
+        path.read_bytes().replace(b"reviewed: false", b"reviewed: true\ndue: 2026-09-10")
+    )
     current = await store.get_note(created.id)
     assert current.content_hash != created.content_hash
 
@@ -397,6 +400,7 @@ async def test_a_current_etag_replaces_the_file_first_and_the_row_second(
     assert frontmatter["id"] == created.id
     assert frontmatter["reviewed"] is True
     assert b"date: 2026-09-08\n" in on_disk
+    assert b"due: 2026-09-10\n" in on_disk
     assert body.endswith("- Corrected on review\n")
     async with session_factory() as session:
         row = (await session.execute(sa.select(Note).where(Note.id == created.id))).scalar_one()
@@ -407,6 +411,32 @@ async def test_a_current_etag_replaces_the_file_first_and_the_row_second(
     with pytest.raises(VersionConflict) as raised:
         await store.replace_note(created.id, edited(current), current.content_hash)
     assert raised.value.current_etag == replaced.content_hash
+
+
+async def test_an_edit_delivered_while_the_row_update_waits_is_not_overwritten(
+    store: LocalStore, session_factory, monkeypatch
+):
+    """T-CE-1 at its narrowest: the device edit lands while PostgreSQL is being asked."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    on_device = path.read_bytes().replace(b"reviewed: false", b"reviewed: true")
+    execute = AsyncSession.execute
+
+    async def delivered_during_the_update(self, statement, *args, **kwargs):
+        result = await execute(self, statement, *args, **kwargs)
+        if isinstance(statement, sa.Update):
+            path.write_bytes(on_device)
+        return result
+
+    monkeypatch.setattr(AsyncSession, "execute", delivered_during_the_update)
+    with pytest.raises(VersionConflict) as raised:
+        await store.replace_note(created.id, edited(created), created.content_hash)
+
+    assert raised.value.current_etag == content_hash(on_device)
+    assert path.read_bytes() == on_device
+    async with session_factory() as session:
+        row = (await session.execute(sa.select(Note).where(Note.id == created.id))).scalar_one()
+    assert row.content_hash == created.content_hash
 
 
 async def test_two_writers_holding_the_same_etag_cannot_both_win(store: LocalStore):
@@ -461,15 +491,21 @@ async def test_a_replace_keeps_the_identifier_and_checks_the_schema(store: Local
 async def test_a_replace_of_a_row_whose_file_is_now_another_note_is_a_miss(
     store: LocalStore,
 ):
-    """A hash computed off the volume must not overwrite another note's file."""
+    """A miss whatever the ETag, and the other note's file is untouched.
+
+    The ETag from the earlier read must not come back as a conflict naming
+    the other note's hash, and a hash computed off the volume must not
+    overwrite that note.
+    """
     runbook = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
     meeting = await store.create_note(CreateNote(title="Meeting", frontmatter=MEETING))
     (store.notes_root / runbook.path).unlink()
     (store.notes_root / meeting.path).rename(store.notes_root / runbook.path)
     swapped = (store.notes_root / runbook.path).read_bytes()
 
-    with pytest.raises(NotFound):
-        await store.replace_note(runbook.id, edited(runbook), content_hash(swapped))
+    for etag in (runbook.content_hash, content_hash(swapped)):
+        with pytest.raises(NotFound):
+            await store.replace_note(runbook.id, edited(runbook), etag)
     assert (store.notes_root / runbook.path).read_bytes() == swapped
 
 

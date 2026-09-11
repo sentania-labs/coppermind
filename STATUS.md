@@ -30,7 +30,10 @@ vertical path proved end to end, then widened.
   that `If-Match` names the ETag the file has now. The body is the document
   shape a read returns, so a client reads, edits and sends it back; the
   identifier and the path are kept, and the frontmatter is validated against
-  the schema. Without `If-Match` the answer is 428 `precondition_required`.
+  the schema. Both `frontmatter` and `body` are required, so a request
+  missing either answers 422 `validation_error` rather than erasing it. A
+  key sent back unchanged keeps the YAML type it has in the file, so a date
+  stays a date. Without `If-Match` the answer is 428 `precondition_required`.
   With an ETag the file no longer hashes to, because another client wrote it
   or a person edited it on a device, the answer is 409 `version_conflict`
   carrying `current_version`, and the file is untouched. The compare and the

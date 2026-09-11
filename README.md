@@ -50,7 +50,8 @@ curl -sS http://127.0.0.1:8080/v1/notes/<id>
 Edit it: send the document back with `If-Match` carrying the `ETag` the read
 returned. Without the header the answer is 428. If the file changed since the
 read, on any device, the answer is 409 `version_conflict` naming the current
-ETag and nothing is written.
+ETag and nothing is written. Send both `frontmatter` and `body`: leaving either
+out answers 422 `validation_error` and the note is unchanged.
 
 ```bash
 curl -sS -X PUT http://127.0.0.1:8080/v1/notes/<id> \
