@@ -77,7 +77,8 @@ change falls under (software, live infrastructure, or knowledge).
 
 ## Where things live
 
-`coppermind/` is the shared package every image installs: identifiers, the
+`coppermind/` is the shared package the images install (the Git helper alone
+does without it): identifiers, the
 note file format, portable naming, the frontmatter schema, product settings,
 control state files, the store contract and its HTTP client, and the database
 models and migrations. `services/<name>/` is one image each, built with the
