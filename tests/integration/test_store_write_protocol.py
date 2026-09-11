@@ -413,6 +413,22 @@ async def test_a_current_etag_replaces_the_file_first_and_the_row_second(
     assert raised.value.current_etag == replaced.content_hash
 
 
+async def test_a_value_corrected_from_1_to_true_lands_as_true(store: LocalStore):
+    """A file carrying `reviewed: 1` corrected to `reviewed: true` is written as true."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    path.write_bytes(path.read_bytes().replace(b"reviewed: false", b"reviewed: 1"))
+    current = await store.get_note(created.id)
+
+    replaced = await store.replace_note(
+        created.id, edited(current, reviewed=True), current.content_hash
+    )
+
+    frontmatter, _ = fm.parse(path.read_bytes().decode("utf-8"))
+    assert frontmatter["reviewed"] is True
+    assert replaced.frontmatter["reviewed"] is True
+
+
 async def test_an_edit_delivered_while_the_row_update_waits_is_not_overwritten(
     store: LocalStore, session_factory, monkeypatch
 ):

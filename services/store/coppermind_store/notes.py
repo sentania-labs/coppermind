@@ -28,6 +28,7 @@ by Obsidian Sync, is refused rather than overwriting the newer bytes.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -433,7 +434,7 @@ def _keeping_types(frontmatter: dict[str, Any], current: dict[str, Any]) -> dict
     """
     return {
         key: current[key]
-        if key in current and _jsonable(value) == _jsonable(current[key])
+        if key in current and json.dumps(_jsonable(value)) == json.dumps(_jsonable(current[key]))
         else value
         for key, value in frontmatter.items()
     }
