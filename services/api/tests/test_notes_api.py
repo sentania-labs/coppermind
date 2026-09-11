@@ -23,8 +23,10 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     NoteUnparseable,
     NotFound,
+    ReplaceNote,
     StoreUnavailable,
     ValidationFailed,
+    VersionConflict,
 )
 
 NOTE = NoteDocument(
@@ -38,6 +40,14 @@ NOTE = NoteDocument(
     updated_at=datetime(2026, 9, 8, tzinfo=UTC),
 )
 
+REPLACED = NOTE.model_copy(
+    update={
+        "body": "# Ameren Architecture Sync\n\n- Corrected on review\n",
+        "content_hash": "sha256:def",
+        "size_bytes": 71,
+    }
+)
+
 
 class FakeStore:
     """Satisfies the part of the store contract this slice uses."""
@@ -45,6 +55,7 @@ class FakeStore:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
         self.created: CreateNote | None = None
+        self.replaced: tuple[str, ReplaceNote, str] | None = None
 
     async def create_note(self, request: CreateNote) -> NoteDocument:
         if self.error:
@@ -56,6 +67,12 @@ class FakeStore:
         if self.error:
             raise self.error
         return NOTE
+
+    async def replace_note(self, note_id: str, request: ReplaceNote, if_match: str) -> NoteDocument:
+        if self.error:
+            raise self.error
+        self.replaced = (note_id, request, if_match)
+        return REPLACED
 
     async def is_ready(self) -> bool:
         return self.error is None
@@ -278,3 +295,78 @@ def test_an_unparseable_note_never_returns_the_notes_own_text(client):
         assert line not in served
     assert "reason" not in body
     assert "unicode string" not in served
+
+
+def test_replacing_a_note_needs_an_if_match_header(client):
+    """A write conditional on nothing is refused before the store is asked."""
+    test_client, fake = client
+    response = test_client.put(f"/v1/notes/{NOTE.id}", json=NOTE.model_dump(mode="json"))
+    assert response.status_code == 428
+    body = response.json()
+    assert body["error"] == "precondition_required"
+    assert "If-Match" in body["message"]
+    assert fake.replaced is None
+
+
+def test_replacing_a_note_with_a_current_etag_answers_200_and_the_new_etag(client):
+    """The document a read returns is what gets sent back, edited.
+
+    The quotes HTTP puts around an ETag are stripped before the store sees
+    it, and the fields that describe the file rather than its content are
+    ignored on the way in rather than rejected.
+    """
+    test_client, fake = client
+    edited = NOTE.model_dump(mode="json")
+    edited["body"] = REPLACED.body
+    edited["frontmatter"]["reviewed"] = True
+    response = test_client.put(
+        f"/v1/notes/{NOTE.id}", json=edited, headers={"If-Match": '"sha256:abc"'}
+    )
+    assert response.status_code == 200
+    assert response.headers["etag"] == '"sha256:def"'
+    assert response.json()["content_hash"] == "sha256:def"
+    assert fake.replaced is not None
+    note_id, request, if_match = fake.replaced
+    assert note_id == NOTE.id
+    assert if_match == "sha256:abc"
+    assert request.body == REPLACED.body
+    assert request.frontmatter["reviewed"] is True
+
+
+def test_a_stale_etag_answers_409_naming_the_current_version(client):
+    test_client, fake = client
+    fake.error = VersionConflict("sha256:newer")
+    response = test_client.put(
+        f"/v1/notes/{NOTE.id}",
+        json={"frontmatter": {}, "body": ""},
+        headers={"If-Match": '"sha256:abc"'},
+    )
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "version_conflict"
+    assert body["current_version"] == "sha256:newer"
+    assert "read it again" in body["message"]
+
+
+def test_a_replace_during_a_database_outage_is_a_503(client):
+    test_client, fake = client
+    fake.error = MetadataUnavailable("connection refused")
+    response = test_client.put(
+        f"/v1/notes/{NOTE.id}",
+        json={"frontmatter": {}, "body": ""},
+        headers={"If-Match": '"sha256:abc"'},
+    )
+    assert response.status_code == 503
+    assert response.json()["error"] == "metadata_unavailable"
+
+
+def test_a_replace_body_must_be_the_document_shape(client):
+    test_client, fake = client
+    response = test_client.put(
+        f"/v1/notes/{NOTE.id}",
+        json={"frontmatter": "not a mapping", "body": ""},
+        headers={"If-Match": '"sha256:abc"'},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"] == "validation_error"
+    assert fake.replaced is None

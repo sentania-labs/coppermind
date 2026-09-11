@@ -1,4 +1,4 @@
-"""Creating and reading notes: the local implementation of the store contract.
+"""Creating, reading and replacing notes: the local implementation of the store contract.
 
 Write protocol, in this order, for every mutation:
 
@@ -6,18 +6,28 @@ Write protocol, in this order, for every mutation:
 2. Open the metadata transaction. A PostgreSQL outage stops here, before
    anything is written, so a write returns a clean 503 and leaves no orphan
    file behind.
-3. Create the file exclusively, fsync it, and hash the bytes that landed.
-4. Upsert the metadata row and commit.
+3. Write the file (exclusively for a create, atomically over the old bytes for
+   a replace), fsync it, and hash the bytes that landed.
+4. Upsert the metadata row and commit. A replace issues its row update before
+   step 3 so a value PostgreSQL rejects is refused before the file changes;
+   the commit still comes after the write.
 
-The commit is last on purpose: a crash between steps 3 and 4 leaves the file
-on disk with no row, and the filesystem is the truth, so reconciliation brings
-PostgreSQL up to date on its next pass. It never leaves a row pointing at a
-file that does not exist. A retry after an ambiguous failure can leave a
-second copy that reconciliation surfaces.
+The commit is last on purpose: a crash between the write and the commit
+leaves the file on disk with no row, or with a row describing the previous
+bytes, and the filesystem is the truth, so reconciliation brings PostgreSQL up
+to date on its next pass. It never leaves a row pointing at a file that does
+not exist. A retry after an ambiguous failure can leave a second copy that
+reconciliation surfaces.
+
+A replace is conditional: the caller names the ETag it read, and the compare
+against the file's current hash happens under a per-note lock immediately
+before the write, so a stale client, or one racing a person's edit delivered
+by Obsidian Sync, is refused rather than overwriting the newer bytes.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -32,7 +42,7 @@ from sqlalchemy.exc import (
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coppermind import frontmatter as fm
-from coppermind.atomicio import create_exclusive_bytes
+from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes
 from coppermind.db.models import Note
 from coppermind.db.session import transaction
 from coppermind.ids import new_id
@@ -42,6 +52,7 @@ from coppermind.schema import FrontmatterSchema
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
     CreateNote,
+    ETag,
     MetadataUnavailable,
     NoteDocument,
     NoteId,
@@ -49,7 +60,10 @@ from coppermind.store_protocol import (
     NoteUnparseable,
     NotFound,
     PathCollision,
+    ReplaceNote,
+    StoreError,
     ValidationFailed,
+    VersionConflict,
 )
 from coppermind_store.control import ControlState
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, is_note_file, resolve
@@ -69,6 +83,10 @@ class LocalStore:
         self.notes_root = notes_root
         self.control = control
         self.session_factory = session_factory
+        # One lock per note that has been written through this process. The
+        # store is exactly one process, which is what makes an in-process lock
+        # a sufficient guard for the compare-and-swap.
+        self._locks: dict[str, asyncio.Lock] = {}
 
     async def create_note(self, request: CreateNote) -> NoteDocument:
         settings = self.control.settings()
@@ -80,7 +98,6 @@ class LocalStore:
         if problems:
             raise ValidationFailed(problems)
         sources = frontmatter.get(schema.role("sources_key"), [])
-        tags = frontmatter.get(schema.role("tags_key"), [])
 
         folder = sanitize_folder(settings.notes.review_folder)
         folder_path = resolve(self.notes_root, folder)
@@ -118,15 +135,7 @@ class LocalStore:
                         size_bytes=len(data),
                         mtime=now,
                         frontmatter=_jsonable(frontmatter),
-                        schema_version=_as_int(
-                            frontmatter.get(schema.role("schema_version_key"), 1)
-                        ),
-                        type=_text(frontmatter.get(schema.role("type_key"))),
-                        context=_text(frontmatter.get(schema.role("context_key"))),
-                        account=_text(frontmatter.get(schema.role("account_key"))),
-                        date=_as_date(frontmatter.get(schema.role("date_key"))),
-                        reviewed=bool(frontmatter.get(schema.role("reviewed_key"), False)),
-                        tags=[str(tag) for tag in tags] if isinstance(tags, list) else [],
+                        **_mirror_columns(frontmatter, schema),
                         state="ok",
                         first_seen_at=now,
                         updated_at=now,
@@ -142,21 +151,12 @@ class LocalStore:
                 # so saying otherwise would send the operator after the wrong
                 # thing.
                 raise PathCollision(relative) from exc
-            if isinstance(exc, DBAPIError) and str(getattr(exc.orig, "sqlstate", "")).startswith(
-                "22"
-            ):
-                if created:
-                    target.unlink(missing_ok=True)
-                raise ValidationFailed(
-                    ["request contains a value the metadata store cannot accept"]
-                ) from exc
-            if isinstance(exc, SQLAlchemyError | OSError):
-                # A connection refused by asyncpg arrives here as a bare
-                # OSError. The filesystem write raises its own typed error
-                # above, so what is left at this level is the database and
-                # only the database.
-                raise MetadataUnavailable(str(exc)) from exc
-            raise
+            typed = _metadata_failure(exc)
+            if typed is None:
+                raise
+            if isinstance(typed, ValidationFailed) and created:
+                target.unlink(missing_ok=True)
+            raise typed from exc
 
         return NoteDocument(
             id=note_id,
@@ -172,39 +172,9 @@ class LocalStore:
 
     async def get_note(self, note_id: NoteId) -> NoteDocument:
         relative, path = await self._locate(note_id)
-        try:
-            data = path.read_bytes()
-            mtime = path.stat().st_mtime
-        except FileNotFoundError as exc:
-            raise NotFound(note_id) from exc
-        except OSError as exc:
-            raise NotesFilesystemUnavailable(str(exc)) from exc
-        try:
-            frontmatter, body = fm.parse(data.decode("utf-8"))
-        except (fm.FrontmatterError, UnicodeDecodeError) as exc:
-            # A person broke this file on a device. That is not a fault of the
-            # store, and the answer says so rather than blaming Coppermind.
-            # The parser's reason quotes the offending lines, so it is the
-            # person's own note content: it reaches the internal surface, which
-            # the store alone answers, and never the log or the public
-            # envelope. Logs are collected and shipped, and an unauthenticated
-            # read can trigger this, so the log gets only what the type of the
-            # failure and its position say.
-            log.warning(
-                "note frontmatter could not be parsed",
-                note_id=note_id,
-                path=relative,
-                **_parse_failure_fields(exc),
-            )
-            raise NoteUnparseable(note_id, str(exc)) from exc
+        data, mtime = _read(note_id, path)
         schema = self.control.schema()
-        carried_id = frontmatter.get(schema.role("id_key"))
-        if carried_id is not None and str(carried_id) != note_id:
-            # The row outlived the file it named, because a note was deleted on
-            # a device and another was renamed into its place. Serving this file
-            # would answer a different note under the requested identifier, so
-            # the honest answer is a miss until reconciliation clears the row.
-            raise NotFound(note_id)
+        frontmatter, body = _parse(note_id, relative, data, schema)
         sources = frontmatter.get(schema.role("sources_key"), [])
         return NoteDocument(
             id=note_id,
@@ -217,6 +187,92 @@ class LocalStore:
             updated_at=datetime.fromtimestamp(mtime, tz=UTC),
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
+
+    async def replace_note(
+        self, note_id: NoteId, request: ReplaceNote, if_match: ETag
+    ) -> NoteDocument:
+        """Replace a note's frontmatter and body if it still hashes to `if_match`.
+
+        The identifier and the path are kept: a replace never renames or moves.
+        The path comes from the mirror, so with PostgreSQL away the write is
+        refused before the file is read, let alone written.
+
+        Under the note's lock: hash the file as it is now and refuse the write
+        if that is not the ETag the caller read. Then issue the row update
+        before writing the file and commit after it. The order keeps the two
+        properties a create has: a value the metadata store rejects, or a
+        database that went away, is refused before the file changes, and a
+        crash between the write and the commit leaves the file as the truth,
+        with a row that reconciliation brings up to date.
+        """
+        schema = self.control.schema()
+        frontmatter = _replacement_frontmatter(request, schema, note_id)
+        problems = schema.validate_frontmatter(frontmatter)
+        if problems:
+            raise ValidationFailed(problems)
+        body = _terminated(request.body)
+        data = fm.compose(frontmatter, body).encode("utf-8")
+        sources = frontmatter.get(schema.role("sources_key"), [])
+
+        relative, path = await self._locate(note_id)
+        async with self._lock_for(note_id):
+            try:
+                async with transaction(self.session_factory) as session:
+                    current, _ = _read(note_id, path)
+                    current_hash = content_hash(current)
+                    if current_hash != if_match:
+                        raise VersionConflict(current_hash)
+                    # The bytes match what the caller read, and a read by this
+                    # identifier is what handed them that ETag; the guard is
+                    # still applied so a hash computed some other way cannot
+                    # overwrite another note's file through a stale row.
+                    _parse(note_id, relative, current, schema)
+
+                    now = datetime.now(tz=UTC)
+                    digest = content_hash(data)
+                    await session.execute(
+                        sa.update(Note)
+                        .where(Note.id == note_id)
+                        .values(
+                            title=_title_of(body, path),
+                            content_hash=digest,
+                            size_bytes=len(data),
+                            mtime=now,
+                            frontmatter=_jsonable(frontmatter),
+                            **_mirror_columns(frontmatter, schema),
+                            state="ok",
+                            state_reason=None,
+                            updated_at=now,
+                        )
+                    )
+                    try:
+                        atomic_write_bytes(path, data)
+                    except OSError as exc:
+                        raise NotesFilesystemUnavailable(str(exc)) from exc
+            except BaseException as exc:
+                typed = _metadata_failure(exc)
+                if typed is None:
+                    raise
+                raise typed from exc
+
+        return NoteDocument(
+            id=note_id,
+            path=relative,
+            title=_title_of(body, path),
+            frontmatter=_jsonable(frontmatter),
+            body=body,
+            content_hash=digest,
+            size_bytes=len(data),
+            updated_at=now,
+            sources=[str(source) for source in sources] if isinstance(sources, list) else [],
+        )
+
+    def _lock_for(self, note_id: NoteId) -> asyncio.Lock:
+        """The lock serialising writes to one note. Only asked for a located note."""
+        lock = self._locks.get(note_id)
+        if lock is None:
+            lock = self._locks[note_id] = asyncio.Lock()
+        return lock
 
     async def _locate(self, note_id: NoteId) -> tuple[str, Path]:
         """Return the note's relative path and its absolute path.
@@ -249,6 +305,62 @@ class LocalStore:
         return relative, path
 
 
+def _parse(
+    note_id: NoteId, relative: str, data: bytes, schema: FrontmatterSchema
+) -> tuple[dict[str, Any], str]:
+    """Parse a located note's bytes and check they are that note's."""
+    try:
+        frontmatter, body = fm.parse(data.decode("utf-8"))
+    except (fm.FrontmatterError, UnicodeDecodeError) as exc:
+        # A person broke this file on a device. That is not a fault of the
+        # store, and the answer says so rather than blaming Coppermind.
+        # The parser's reason quotes the offending lines, so it is the
+        # person's own note content: it reaches the internal surface, which
+        # the store alone answers, and never the log or the public
+        # envelope. Logs are collected and shipped, and an unauthenticated
+        # read can trigger this, so the log gets only what the type of the
+        # failure and its position say.
+        log.warning(
+            "note frontmatter could not be parsed",
+            note_id=note_id,
+            path=relative,
+            **_parse_failure_fields(exc),
+        )
+        raise NoteUnparseable(note_id, str(exc)) from exc
+    carried_id = frontmatter.get(schema.role("id_key"))
+    if carried_id is not None and str(carried_id) != note_id:
+        # The row outlived the file it named, because a note was deleted on
+        # a device and another was renamed into its place. Serving this file
+        # would answer a different note under the requested identifier, so
+        # the honest answer is a miss until reconciliation clears the row.
+        raise NotFound(note_id)
+    return frontmatter, body
+
+
+def _read(note_id: NoteId, path: Path) -> tuple[bytes, float]:
+    """The bytes and mtime of a located note, with typed filesystem failures."""
+    try:
+        return path.read_bytes(), path.stat().st_mtime
+    except FileNotFoundError as exc:
+        raise NotFound(note_id) from exc
+    except OSError as exc:
+        raise NotesFilesystemUnavailable(str(exc)) from exc
+
+
+def _metadata_failure(exc: BaseException) -> StoreError | None:
+    """The typed error a database failure maps to, or None if it is not one.
+
+    A connection refused by asyncpg arrives as a bare OSError. The filesystem
+    writes raise their own typed errors where they happen, so what reaches
+    this level is the database and only the database.
+    """
+    if isinstance(exc, DBAPIError) and str(getattr(exc.orig, "sqlstate", "")).startswith("22"):
+        return ValidationFailed(["request contains a value the metadata store cannot accept"])
+    if isinstance(exc, SQLAlchemyError | OSError):
+        return MetadataUnavailable(str(exc))
+    return None
+
+
 def _parse_failure_fields(exc: fm.FrontmatterError | UnicodeDecodeError) -> dict[str, Any]:
     """Describe a parse failure without repeating any of the note back.
 
@@ -272,15 +384,36 @@ def _build_frontmatter(
     note_id: str,
 ) -> dict[str, Any]:
     """Merge the caller's frontmatter over the schema defaults, in key order."""
-    supplied = dict(request.frontmatter)
     values: dict[str, Any] = schema.defaults()
-    values.update(supplied)
+    values.update(request.frontmatter)
     values[schema.role("id_key")] = note_id
     values.setdefault(schema.role("schema_version_key"), 1)
     date_key = schema.role("date_key")
     if not values.get(date_key):
         values[date_key] = _today(settings).isoformat()
+    return _ordered(values, schema)
 
+
+def _replacement_frontmatter(
+    request: ReplaceNote, schema: FrontmatterSchema, note_id: str
+) -> dict[str, Any]:
+    """The caller's frontmatter as sent, carrying the identifier the store keeps.
+
+    No defaults are filled in: a replace lands what was sent, and the schema
+    says whether that is a complete note. The document a read returns already
+    carries every key, so a read, edit, write round trip needs nothing added.
+    """
+    values = dict(request.frontmatter)
+    id_key = schema.role("id_key")
+    carried_id = values.get(id_key)
+    if carried_id is not None and str(carried_id) != note_id:
+        raise ValidationFailed([f"{id_key}: the identifier of a note cannot be changed"])
+    values[id_key] = note_id
+    return _ordered(values, schema)
+
+
+def _ordered(values: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any]:
+    """Known keys in schema order with their kinds applied, then the rest as given."""
     ordered: dict[str, Any] = {}
     known_keys = {definition.name for definition in schema.keys}
     for definition in schema.keys:
@@ -299,6 +432,20 @@ def _build_frontmatter(
     return ordered
 
 
+def _mirror_columns(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any]:
+    """The columns of the mirror row that project individual frontmatter keys."""
+    tags = frontmatter.get(schema.role("tags_key"), [])
+    return {
+        "schema_version": _as_int(frontmatter.get(schema.role("schema_version_key"), 1)),
+        "type": _text(frontmatter.get(schema.role("type_key"))),
+        "context": _text(frontmatter.get(schema.role("context_key"))),
+        "account": _text(frontmatter.get(schema.role("account_key"))),
+        "date": _as_date(frontmatter.get(schema.role("date_key"))),
+        "reviewed": bool(frontmatter.get(schema.role("reviewed_key"), False)),
+        "tags": [str(tag) for tag in tags] if isinstance(tags, list) else [],
+    }
+
+
 def _stem_for(
     title: str,
     frontmatter: dict[str, Any],
@@ -315,7 +462,12 @@ def _body_with_heading(title: str, body: str) -> str:
     heading = f"# {title}".rstrip()
     text = body.lstrip("\n")
     composed = f"{heading}\n\n{text}" if text else f"{heading}\n"
-    return composed if composed.endswith("\n") else composed + "\n"
+    return _terminated(composed)
+
+
+def _terminated(body: str) -> str:
+    """A body that ends with a newline, or is empty."""
+    return body if not body or body.endswith("\n") else body + "\n"
 
 
 def _title_of(body: str, path: Path) -> str:

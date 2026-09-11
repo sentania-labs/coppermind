@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import httpx
@@ -23,7 +24,9 @@ from coppermind.store_protocol import (
     NoteUnparseable,
     NotFound,
     PathCollision,
+    ReplaceNote,
     ValidationFailed,
+    VersionConflict,
 )
 
 MEETING = {
@@ -333,3 +336,173 @@ async def test_a_row_pointing_outside_the_notes_filesystem_is_refused(
 
     with pytest.raises(NotFound):
         await store.get_note(created.id)
+
+
+def edited(note, **frontmatter) -> ReplaceNote:
+    """The document a read returned, sent back with a line added and keys changed."""
+    return ReplaceNote(
+        frontmatter={**note.frontmatter, **frontmatter},
+        body=note.body + "\n- Corrected on review\n",
+    )
+
+
+async def test_a_stale_etag_cannot_overwrite_an_edit_made_on_a_device(
+    store: LocalStore, session_factory
+):
+    """T-CE-1. A person edits the file between the client's read and its write.
+
+    The client's ETag names bytes that are no longer there, so the write is
+    refused with the ETag the file has now, and the person's edit survives.
+    """
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    on_device = path.read_bytes().replace(b"reviewed: false", b"reviewed: true")
+    path.write_bytes(on_device)
+
+    with pytest.raises(VersionConflict) as raised:
+        await store.replace_note(created.id, edited(created), created.content_hash)
+
+    assert raised.value.current_etag == content_hash(on_device)
+    assert path.read_bytes() == on_device
+    async with session_factory() as session:
+        row = (await session.execute(sa.select(Note).where(Note.id == created.id))).scalar_one()
+    assert row.content_hash == created.content_hash
+
+
+async def test_a_current_etag_replaces_the_file_first_and_the_row_second(
+    store: LocalStore, session_factory
+):
+    """Read, edit on a device, read again, write with the fresh ETag: it lands.
+
+    The file is rewritten in place under the same identifier and path, the
+    date stays a YAML date rather than becoming a quoted string, and the
+    mirror row follows the file.
+    """
+    created = await store.create_note(
+        CreateNote(title="Ameren Architecture Sync", body="## Key points\n", frontmatter=MEETING)
+    )
+    path = store.notes_root / created.path
+    path.write_bytes(path.read_bytes().replace(b"reviewed: false", b"reviewed: true"))
+    current = await store.get_note(created.id)
+    assert current.content_hash != created.content_hash
+
+    replaced = await store.replace_note(created.id, edited(current), current.content_hash)
+
+    assert replaced.id == created.id
+    assert replaced.path == created.path
+    on_disk = path.read_bytes()
+    assert content_hash(on_disk) == replaced.content_hash
+    assert replaced.content_hash != current.content_hash
+    frontmatter, body = fm.parse(on_disk.decode("utf-8"))
+    assert frontmatter["id"] == created.id
+    assert frontmatter["reviewed"] is True
+    assert b"date: 2026-09-08\n" in on_disk
+    assert body.endswith("- Corrected on review\n")
+    async with session_factory() as session:
+        row = (await session.execute(sa.select(Note).where(Note.id == created.id))).scalar_one()
+    assert row.content_hash == replaced.content_hash
+    assert row.reviewed is True
+    assert row.size_bytes == len(on_disk)
+
+    with pytest.raises(VersionConflict) as raised:
+        await store.replace_note(created.id, edited(current), current.content_hash)
+    assert raised.value.current_etag == replaced.content_hash
+
+
+async def test_two_writers_holding_the_same_etag_cannot_both_win(store: LocalStore):
+    """The compare and the write are one step under the note's lock."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    first = ReplaceNote(frontmatter=created.frontmatter, body="# Runbook\n\nfirst\n")
+    second = ReplaceNote(frontmatter=created.frontmatter, body="# Runbook\n\nsecond\n")
+
+    outcomes = await asyncio.gather(
+        store.replace_note(created.id, first, created.content_hash),
+        store.replace_note(created.id, second, created.content_hash),
+        return_exceptions=True,
+    )
+
+    winners = [outcome for outcome in outcomes if not isinstance(outcome, BaseException)]
+    losers = [outcome for outcome in outcomes if isinstance(outcome, VersionConflict)]
+    assert len(winners) == 1 and len(losers) == 1
+    on_disk = (store.notes_root / created.path).read_bytes()
+    assert content_hash(on_disk) == winners[0].content_hash == losers[0].current_etag
+
+
+async def test_a_replace_during_an_outage_is_refused_before_the_file_is_touched(
+    store: LocalStore, unreachable_store: LocalStore
+):
+    """Both stores share the notes filesystem; only the second has lost PostgreSQL."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+
+    with pytest.raises(MetadataUnavailable):
+        await unreachable_store.replace_note(created.id, edited(created), created.content_hash)
+    assert path.read_bytes() == before
+
+
+async def test_a_replace_keeps_the_identifier_and_checks_the_schema(store: LocalStore):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationFailed) as changed_id:
+        await store.replace_note(
+            created.id, edited(created, id="01K4Q8Z3N7V2X9M1B5C6D8E0F2"), created.content_hash
+        )
+    assert changed_id.value.errors == ["id: the identifier of a note cannot be changed"]
+
+    with pytest.raises(ValidationFailed) as missing_account:
+        await store.replace_note(created.id, edited(created, account=None), created.content_hash)
+    assert any("account" in problem for problem in missing_account.value.errors)
+    assert path.read_bytes() == before
+
+
+async def test_a_replace_of_a_row_whose_file_is_now_another_note_is_a_miss(
+    store: LocalStore,
+):
+    """A hash computed off the volume must not overwrite another note's file."""
+    runbook = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    meeting = await store.create_note(CreateNote(title="Meeting", frontmatter=MEETING))
+    (store.notes_root / runbook.path).unlink()
+    (store.notes_root / meeting.path).rename(store.notes_root / runbook.path)
+    swapped = (store.notes_root / runbook.path).read_bytes()
+
+    with pytest.raises(NotFound):
+        await store.replace_note(runbook.id, edited(runbook), content_hash(swapped))
+    assert (store.notes_root / runbook.path).read_bytes() == swapped
+
+
+async def test_public_replace_carries_the_etag_in_both_directions(store: LocalStore):
+    """The public route against the real store: 428, then 409, then 200."""
+    app = create_api_app()
+    app.state.store = store
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    path.write_bytes(path.read_bytes().replace(b"reviewed: false", b"reviewed: true"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://api"
+    ) as client:
+        read = await client.get(f"/v1/notes/{created.id}")
+        document = read.json()
+        document["body"] += "\n- Corrected on review\n"
+
+        unconditional = await client.put(f"/v1/notes/{created.id}", json=document)
+        assert unconditional.status_code == 428
+
+        stale = await client.put(
+            f"/v1/notes/{created.id}",
+            json=document,
+            headers={"If-Match": f'"{created.content_hash}"'},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["error"] == "version_conflict"
+        assert f'"{stale.json()["current_version"]}"' == read.headers["etag"]
+
+        fresh = await client.put(
+            f"/v1/notes/{created.id}", json=document, headers={"If-Match": read.headers["etag"]}
+        )
+        assert fresh.status_code == 200
+        assert fresh.headers["etag"] == f'"{content_hash(path.read_bytes())}"'
+        assert fresh.headers["etag"] != read.headers["etag"]

@@ -29,8 +29,11 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     NoteUnparseable,
     NotFound,
+    PreconditionRequired,
+    ReplaceNote,
     StoreError,
     StoreUnavailable,
+    VersionConflict,
 )
 
 TOKEN = "internal-test-token"
@@ -56,6 +59,9 @@ class RaisingStore:
     async def get_note(self, note_id: str) -> None:
         raise self.error
 
+    async def replace_note(self, note_id: str, request: ReplaceNote, if_match: str) -> None:
+        raise self.error
+
 
 class OneNoteStore:
     """A store holding exactly one note, so a lookup by any other id misses."""
@@ -68,6 +74,15 @@ class OneNoteStore:
         self.asked_for.append(note_id)
         if note_id != self.note.id:
             raise NotFound(note_id)
+        return self.note
+
+    async def replace_note(self, note_id: str, request: ReplaceNote, if_match: str) -> NoteDocument:
+        self.asked_for.append(note_id)
+        if note_id != self.note.id:
+            raise NotFound(note_id)
+        if if_match != self.note.content_hash:
+            raise VersionConflict(self.note.content_hash)
+        self.note = self.note.model_copy(update={"body": request.body})
         return self.note
 
 
@@ -155,6 +170,39 @@ async def test_the_internal_surface_keeps_the_cause_the_public_one_hides():
     assert str(raised.value) == cause
 
 
+async def test_a_version_conflict_round_trips_with_the_current_etag():
+    """The client hands back the ETag the file has now, so a caller can re-read."""
+    client = connected(RaisingStore(VersionConflict("sha256:newer")))
+    try:
+        with pytest.raises(VersionConflict) as raised:
+            await client.replace_note(NOTE_ID, ReplaceNote(), "sha256:abc")
+    finally:
+        await client.aclose()
+    assert raised.value.current_etag == "sha256:newer"
+
+
+async def test_a_matching_etag_replaces_and_a_stale_one_is_refused_over_the_wire():
+    """What the client puts in `If-Match` is what the store compares."""
+    client = connected(OneNoteStore(NOTE))
+    try:
+        replaced = await client.replace_note(NOTE_ID, ReplaceNote(body="# Edited\n"), "sha256:abc")
+        assert replaced.body == "# Edited\n"
+        with pytest.raises(VersionConflict):
+            await client.replace_note(NOTE_ID, ReplaceNote(), "sha256:stale")
+    finally:
+        await client.aclose()
+
+
+async def test_an_empty_etag_is_refused_as_a_missing_precondition():
+    """A blank `If-Match` is no precondition, and the store says so before writing."""
+    client = connected(OneNoteStore(NOTE))
+    try:
+        with pytest.raises(PreconditionRequired):
+            await client.replace_note(NOTE_ID, ReplaceNote(), "")
+    finally:
+        await client.aclose()
+
+
 def store_wiring(tmp_path, build_version: str | None = None):
     token = tmp_path / "internal-token"
     token.write_text(f"{TOKEN}\n", encoding="utf-8")
@@ -199,6 +247,18 @@ def test_an_unknown_internal_route_answers_in_the_documented_envelope(tmp_path):
         wrong_method = client.delete("/internal/v1/notes", headers=headers)
         assert wrong_method.status_code == 405
         assert wrong_method.json()["error"] == "method_not_allowed"
+
+
+def test_an_internal_replace_without_if_match_answers_428(tmp_path):
+    """The internal surface refuses the same thing the public one does."""
+    with TestClient(store_app(tmp_path)) as client:
+        response = client.put(
+            f"/internal/v1/notes/{NOTE_ID}",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={"frontmatter": {}, "body": ""},
+        )
+    assert response.status_code == 428
+    assert response.json()["error"] == "precondition_required"
 
 
 def test_a_malformed_create_body_answers_as_a_validation_error(tmp_path):

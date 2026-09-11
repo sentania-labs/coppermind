@@ -56,6 +56,11 @@ until the helper honours it.
   isolation comes from volume placement rather than ownership or mode.
 - **`grep` patterns over frontmatter need `-F`.** `sources: []` is an
   unterminated bracket expression as a basic regular expression.
+- **Conditional writes are guarded by an in-process lock.** `LocalStore`
+  compares `If-Match` against the file under a per-note `asyncio.Lock`, which
+  is only a guard while the store is one process: one uvicorn worker, one
+  replica. Adding `--workers` to the store's Dockerfile or a second replica
+  reopens the race the lock closes.
 
 ## Maintaining this file
 
