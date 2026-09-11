@@ -58,8 +58,8 @@ notes_git rev-parse --git-dir >/dev/null 2>&1 || fail "/data/notes is not a repo
 ok "/data/notes/.git exists and names no remote"
 
 step "stop the helper, then change notes behind its back"
-compose stop git
 before="$(head_or_none)"
+compose stop git
 created="$(mktemp)"
 code="$(curl -sS -o "$created" -w '%{http_code}' -X POST "$API/v1/notes" \
     -H 'Content-Type: application/json' \

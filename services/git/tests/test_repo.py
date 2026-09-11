@@ -143,7 +143,7 @@ def test_the_managed_exclude_block_moves_nothing_else():
     assert renamed.count(EXCLUDE_BEGIN) == 1
 
 
-def test_a_restored_repository_cannot_block_redirect_or_run_code_in_a_snapshot(
+def test_a_restored_repository_cannot_block_redirect_or_run_hooks_in_a_snapshot(
     tmp_path: Path, run_git: RunGit
 ):
     notes = tmp_path / "notes"

@@ -8,7 +8,8 @@ helper's own guard rails instead of trusting that repository's configuration:
 - `safe.directory` names this work tree, so a restored volume with a different
   owner still works;
 - hooks and the filesystem monitor are off and signing is never attempted, so
-  nothing a restored `.git` carries is executed and no key is ever needed;
+  neither runs from a restored `.git` and no key is ever needed; clean and
+  process filter drivers that a restored repository configures still apply;
 - discovery stops at the work tree, so a missing `.git` is never mistaken for a
   repository further up.
 

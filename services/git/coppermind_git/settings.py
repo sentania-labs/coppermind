@@ -42,6 +42,8 @@ def load(path: Path) -> HelperSettings:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return HelperSettings()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise SettingsError(f"{path.name} could not be read: {exc}") from exc
     try:
         document = YAML(typ="safe").load(text)
     except YAMLError as exc:

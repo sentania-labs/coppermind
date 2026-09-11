@@ -64,3 +64,15 @@ def test_an_unusable_value_is_named(tmp_path: Path, text: str, names: str):
     path.write_text(text, encoding="utf-8")
     with pytest.raises(SettingsError, match=names):
         load(path)
+
+
+def test_a_file_that_cannot_be_read_or_decoded_is_a_settings_error(tmp_path: Path):
+    latin1 = tmp_path / "settings.yaml"
+    latin1.write_bytes("git:\n  identity_name: Zoë\n".encode("latin-1"))
+    with pytest.raises(SettingsError, match="could not be read"):
+        load(latin1)
+
+    unreadable = tmp_path / "directory" / "settings.yaml"
+    unreadable.mkdir(parents=True)
+    with pytest.raises(SettingsError, match="could not be read"):
+        load(unreadable)
