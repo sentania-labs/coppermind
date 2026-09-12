@@ -45,10 +45,10 @@ vertical path proved end to end, then widened.
 - Honest readiness. With PostgreSQL stopped: `/readyz` answers 503 and names
   the failing check, note creates, replaces and reads answer 503
   `metadata_unavailable`, a refused write leaves no file behind and touches no
-  existing one, and the notes filesystem is
-  untouched and still fully editable. Starting PostgreSQL brings API
-  operations back with no intervention; what changed in the notes filesystem
-  during the outage waits for the reconciler under "Not built yet".
+  existing one, and the notes filesystem is untouched and still fully
+  editable. Starting PostgreSQL brings API operations back with no
+  intervention; what changed in the notes filesystem during the outage waits
+  for the reconciler under "Not built yet".
 - Control state files are revisioned. A write states the revision it replaces
   and is refused if the file moved on. Readiness loads both of them, so a
   hand edit the models reject takes the store out of rotation with the file
@@ -103,14 +103,16 @@ in the tree, so do not read the absence as a decision to leave it out.
   identifier at all; a note moved, renamed or deleted there leaves a row
   pointing nowhere, and the read answers 404 `not_found`. So does a read whose
   row points at a file that now carries a different identifier, rather than
-  serving another note's content. Until the reconciler lands, treat the API as
+  serving another note's content. A replace of such a note answers the same
+  404, whatever ETag it carries. Until the reconciler lands, treat the API as
   the way to create notes.
 - **Frontmatter patching.** `PUT` takes the JSON document shape only; the
   `text/markdown` whole-file body and `PATCH /v1/notes/{id}/frontmatter` do
   not exist yet. A replace rewrites the frontmatter block from what was sent,
-  so a comment a person left between the keys does not survive it; the patch
-  is the minimal-diff path for a one-key change such as marking a note
-  reviewed.
+  so the keys land in the schema's order with any key the schema does not
+  know after them, and neither a hand order nor a comment a person left
+  between the keys survives it; the patch is the minimal-diff path for a
+  one-key change such as marking a note reviewed.
 - **Obsidian Sync, the curator and the indexer.** No sync, no filing by
   rules, no search.
 - **History through the API.** Nothing reads Git history or restores a note
