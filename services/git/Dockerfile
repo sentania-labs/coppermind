@@ -19,9 +19,12 @@ LABEL org.opencontainers.image.title="coppermind-git" \
       org.opencontainers.image.revision="${BUILD_SHA}" \
       org.opencontainers.image.created="${BUILD_DATE}"
 
-# Git from the base image's distribution, so its security fixes arrive with a
-# base image bump.
+# Git from the base image's distribution, so its security fixes arrive with the
+# distribution's. The base image is pinned by digest so a rebuild is
+# reproducible, which also freezes its packages as they were the day that image
+# was published; the upgrade is what keeps the image scan clean in between.
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
