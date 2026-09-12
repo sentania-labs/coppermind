@@ -14,6 +14,7 @@ make db-up test-integration db-down    # the PostgreSQL backed tests
 make scan                              # dependency, secret and repository scans
 make up                                # the stack, on 127.0.0.1:8080
 make smoke                             # the compose storyline end to end
+make failure                           # helpers stopped and started with edits between
 make down                              # stop; `make clean` also drops volumes
 ```
 
@@ -78,13 +79,12 @@ change falls under (software, live infrastructure, or knowledge).
 ## Where things live
 
 `coppermind/` is the shared package the images install (the Git helper alone
-does without it): identifiers, the
-note file format, portable naming, the frontmatter schema, product settings,
-control state files, the store contract and its HTTP client, and the database
-models and migrations. `services/<name>/` is one image each, built with the
-repository root as the build context. `ci/` holds the scripts CI and you both
-run. `tests/` holds what crosses a service boundary; a service's own tests
-live beside it.
+does without it): identifiers, the note file format, portable naming, the
+frontmatter schema, product settings, control state files, the store contract
+and its HTTP client, and the database models and migrations. `services/<name>/`
+is one image each, built with the repository root as the build context. `ci/`
+holds the scripts CI and you both run. `tests/` holds what crosses a service
+boundary; a service's own tests live beside it.
 
 The shared package deliberately carries declarations named by the approved plan ahead of
 their consuming slices; check that plan before raising an unused-declaration finding.

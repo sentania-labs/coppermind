@@ -46,6 +46,8 @@ vertical path proved end to end, then widened.
 - Git history of the notes filesystem, from the separate `git` helper image
   (added 2026-09-11). On first start it makes `/data/notes` a repository, or
   adopts one already there and keeps its history, branch and `.gitignore`.
+  The only configuration of its own it writes is a marked block at the end of
+  `.git/info/exclude`; rules already in that file are kept byte for byte.
   After that it records changes by itself: it scans every
   `git.poll_interval_s` (300 seconds) and commits a change once it has been
   quiet for `git.debounce_s` (60 seconds), as `Coppermind
