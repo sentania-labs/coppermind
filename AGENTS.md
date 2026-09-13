@@ -44,7 +44,11 @@ until the helper honours it.
 - **Frontmatter is edited in ruamel round trip mode, never loaded and dumped.**
   A dump reorders keys and drops comments, and Obsidian Sync would then push
   every rewritten file to every device. `coppermind/frontmatter.py` and its
-  tests hold the line.
+  tests hold the line. One deliberate, accepted exception: the full-document
+  replace (`PUT /v1/notes/{id}`, `replace_note`) composes the frontmatter
+  block from what was sent, so a comment between the keys and a hand-arranged
+  key order do not survive it. Every other edit of a note file stays round
+  trip.
 - **SQLAlchemy connects lazily**, so a transaction that has not issued any SQL
   will not notice that PostgreSQL is gone. `LocalStore.create_note` issues a
   `SELECT 1` before touching the filesystem on purpose: without it a database
