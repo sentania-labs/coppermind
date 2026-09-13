@@ -1,7 +1,7 @@
 # STATUS
 
 What works against `main` today. Updated 2026-09-11. Every claim here was
-checked against a running compose stack, not against CI alone.
+checked against a running compose stack on that date, not against CI alone.
 
 This is the first slice of the build. The shape is deliberately narrow: one
 vertical path proved end to end, then widened.
@@ -26,15 +26,29 @@ vertical path proved end to end, then widened.
   note.
 - `GET /v1/notes/{id}` returns the note as a document, carrying
   `ETag: "sha256:<hash of the file bytes>"`.
+- `PUT /v1/notes/{id}` replaces a note's frontmatter and body on the condition
+  that `If-Match` names the ETag the file has now. The body is the document
+  shape a read returns, so a client reads, edits and sends it back; the
+  identifier and the path are kept, and the frontmatter is validated against
+  the schema. Both `frontmatter` and `body` are required, so a request
+  missing either answers 422 `validation_error` rather than erasing it. A
+  key sent back unchanged keeps the YAML type it has in the file, so a date
+  stays a date. Without `If-Match` the answer is 428 `precondition_required`.
+  With an ETag the file no longer hashes to, because another client wrote it
+  or a person edited it on a device, the answer is 409 `version_conflict`
+  carrying `current_version`, and the file is untouched. The compare and the
+  write happen under a per-note lock in the store, so two writers holding
+  the same ETag cannot both win.
 - The store is the only writer of the notes filesystem, reachable only over
   the internal contract on `:8081` with a bearer token. The API holds no
   state and calls it.
 - Honest readiness. With PostgreSQL stopped: `/readyz` answers 503 and names
-  the failing check, note writes and reads answer 503 `metadata_unavailable`,
-  a refused write leaves no file behind, and the notes filesystem is
-  untouched and still fully editable. Starting PostgreSQL brings API
-  operations back with no intervention; what changed in the notes filesystem
-  during the outage waits for the reconciler under "Not built yet".
+  the failing check, note creates, replaces and reads answer 503
+  `metadata_unavailable`, a refused write leaves no file behind and touches no
+  existing one, and the notes filesystem is untouched and still fully
+  editable. Starting PostgreSQL brings API operations back with no
+  intervention; what changed in the notes filesystem during the outage waits
+  for the reconciler under "Not built yet".
 - Control state files are revisioned. A write states the revision it replaces
   and is refused if the file moved on. Readiness loads both of them, so a
   hand edit the models reject takes the store out of rotation with the file
@@ -89,11 +103,16 @@ in the tree, so do not read the absence as a decision to leave it out.
   identifier at all; a note moved, renamed or deleted there leaves a row
   pointing nowhere, and the read answers 404 `not_found`. So does a read whose
   row points at a file that now carries a different identifier, rather than
-  serving another note's content. Until the reconciler lands, treat the API as
+  serving another note's content. A replace of such a note answers the same
+  404, whatever ETag it carries. Until the reconciler lands, treat the API as
   the way to create notes.
-- **Conflict protection on writes.** There is no `PUT` or `PATCH` yet, so
-  conditional writes are not defined at all: reads carry an `ETag`, but no
-  surface reads an `If-Match` header.
+- **Frontmatter patching.** `PUT` takes the JSON document shape only; the
+  `text/markdown` whole-file body and `PATCH /v1/notes/{id}/frontmatter` do
+  not exist yet. A replace rewrites the frontmatter block from what was sent,
+  so the keys land in the schema's order with any key the schema does not
+  know after them, and neither a hand order nor a comment a person left
+  between the keys survives it; the patch is the minimal-diff path for a
+  one-key change such as marking a note reviewed.
 - **Obsidian Sync, the curator and the indexer.** No sync, no filing by
   rules, no search.
 - **History through the API.** Nothing reads Git history or restores a note

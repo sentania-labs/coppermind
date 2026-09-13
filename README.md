@@ -47,6 +47,24 @@ Read it back as a document:
 curl -sS http://127.0.0.1:8080/v1/notes/<id>
 ```
 
+Edit it: send the document back with `If-Match` carrying the `ETag` the read
+returned. Without the header the answer is 428. If the file changed since the
+read, on any device, the answer is 409 `version_conflict` naming the current
+ETag and nothing is written. Send both `frontmatter` and `body`: leaving either
+out answers 422 `validation_error` and the note is unchanged.
+
+```bash
+curl -sS -X PUT http://127.0.0.1:8080/v1/notes/<id> \
+  -H 'Content-Type: application/json' \
+  -H 'If-Match: "sha256:<the ETag the read returned>"' \
+  -d '{
+        "frontmatter": {"schema_version": 1, "date": "2026-09-08", "type": "meeting",
+                        "context": "customer", "account": "Ameren", "reviewed": true,
+                        "sources": [], "tags": []},
+        "body": "# Ameren Architecture Sync\n\n## Key points\n- Target architecture agreed\n- Corrected on review\n"
+      }'
+```
+
 The generated OpenAPI document is at `http://127.0.0.1:8080/openapi.json`.
 
 Nobody has to touch Git for the notes filesystem to have a history. A few
