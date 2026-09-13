@@ -31,6 +31,20 @@ head_or_none() { notes_git rev-parse -q --verify HEAD 2>/dev/null || echo none; 
 # Stands in for a person editing on a device: a write the store did not make.
 device() { compose exec -T store sh -c "$1" sh "${@:2}"; }
 
+# Where history stood once the helper was stopped. Taken after the stop on
+# purpose: a baseline read while the helper still runs can be overtaken by a
+# commit of its own, and the next wait would then return that commit instead of
+# the catch-up one. The helper is stopped here, so its status file is the only
+# thing that can answer, and the store container is what reads the volume.
+baseline_after_stop() {
+    compose exec -T store cat /data/state/git/status.json 2>/dev/null \
+        | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("last_commit_sha") or "none")
+except ValueError:
+    print("none")'
+}
+
 wait_for_commit_after() {
     local before="$1" now=""
     for _ in $(seq 1 150); do
@@ -58,8 +72,8 @@ notes_git rev-parse --git-dir >/dev/null 2>&1 || fail "/data/notes is not a repo
 ok "/data/notes/.git exists and names no remote"
 
 step "stop the helper, then change notes behind its back"
-before="$(head_or_none)"
 compose stop git
+before="$(baseline_after_stop)"
 created="$(mktemp)"
 code="$(curl -sS -o "$created" -w '%{http_code}' -X POST "$API/v1/notes" \
     -H 'Content-Type: application/json' \
@@ -92,13 +106,15 @@ ok "commit $first holds the note and none of .obsidian, .trash, _Trash or _Sourc
 step "edit the note while the helper is stopped again"
 root="$(notes_git rev-list --max-parents=0 HEAD)"
 compose stop git
+before_second="$(baseline_after_stop)"
 device 'printf "%s\n" "- edited on a device while the helper was stopped" >> "/data/notes/$1"' "$note_path"
 compose start git
-second="$(wait_for_commit_after "$first")"
+second="$(wait_for_commit_after "$before_second")"
 notes_git show --format='%h %s' "$second" -- "$note_path"
 
 step "history survived both restarts and carries the edit"
-[ "$(notes_git rev-parse "$second~1")" = "$first" ] || fail "the new commit does not follow the old one"
+[ "$(notes_git rev-parse "$second~1")" = "$before_second" ] \
+    || fail "the new commit does not follow the history that was already there"
 [ "$(notes_git rev-list --max-parents=0 HEAD)" = "$root" ] || fail "the root commit changed"
 notes_git show "$second" -- "$note_path" | grep -Fqx -- "+- edited on a device while the helper was stopped" \
     || fail "the commit does not carry the edited line"
