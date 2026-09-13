@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Deliberately not a dependency of the shared `coppermind` package: that
+# package carries the database drivers, and this helper never talks to
+# PostgreSQL. It reads the two settings sections it needs on its own.
+[project]
+name = "coppermind-git"
+version = "0.1.0.dev0"
+description = "Coppermind Git helper: records the history of the notes filesystem"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "ruamel.yaml>=0.18",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["coppermind_git"]

@@ -2,11 +2,11 @@
 # CI never hand-copies a command; if a gate changes, it changes here.
 SHELL := /bin/bash
 .PHONY: setup lint typecheck test test-integration check \
-        image image-store image-api up down logs smoke \
+        image image-store image-api image-git up down logs smoke failure \
         scan scan-deps scan-secrets scan-fs scan-image \
         compose-check prose-check db-up db-down clean
 
-SERVICES ?= store api
+SERVICES ?= store api git
 COMPOSE := docker compose
 COMPOSE_CI := docker compose -f docker-compose.yml -f docker-compose.ci.yml
 
@@ -72,6 +72,13 @@ image-api:
 		--build-arg BUILD_DATE=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
 		-t coppermind/api:local .
 
+image-git:
+	docker build -f services/git/Dockerfile \
+		--build-arg BUILD_VERSION=$${BUILD_VERSION:-dev} \
+		--build-arg BUILD_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) \
+		--build-arg BUILD_DATE=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+		-t coppermind/git:local .
+
 up:
 	$(COMPOSE) up -d
 
@@ -84,6 +91,10 @@ logs:
 # The compose storyline. COMPOSE_FILES lets CI point it at the tested images.
 smoke:
 	COMPOSE_FILES="$${COMPOSE_FILES:--f docker-compose.yml}" bash ci/smoke.sh
+
+# Helpers stopped and started with edits in between; takes a few minutes.
+failure:
+	COMPOSE_FILES="$${COMPOSE_FILES:--f docker-compose.yml}" bash ci/failure.sh
 
 clean: down db-down
 	-$(COMPOSE) down -v

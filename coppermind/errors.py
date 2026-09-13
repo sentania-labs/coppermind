@@ -6,8 +6,8 @@ it, the API speaks it, and `HttpStoreClient` turns it back into the typed
 errors of the store contract. Defining it once is what stops the two surfaces
 from drifting into two different error shapes.
 
-This module deliberately imports no web framework: the Git helper and the
-sync supervisor share the vocabulary without carrying a server dependency.
+This module deliberately imports no web framework: the sync supervisor shares
+the vocabulary without carrying a server dependency.
 """
 
 from __future__ import annotations

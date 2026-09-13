@@ -10,6 +10,7 @@ resolution-markers = [
 members = [
     "coppermind",
     "coppermind-api",
+    "coppermind-git",
     "coppermind-store",
 ]
 
@@ -412,6 +413,17 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
+
+[[package]]
+name = "coppermind-git"
+version = "0.1.0.dev0"
+source = { editable = "services/git" }
+dependencies = [
+    { name = "ruamel-yaml" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "ruamel-yaml", specifier = ">=0.18" }]
 
 [[package]]
 name = "coppermind-store"
