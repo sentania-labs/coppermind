@@ -107,6 +107,7 @@ step "edit the note while the helper is stopped again"
 root="$(notes_git rev-list --max-parents=0 HEAD)"
 compose stop git
 before_second="$(baseline_after_stop)"
+# shellcheck disable=SC2016
 device 'printf "%s\n" "- edited on a device while the helper was stopped" >> "/data/notes/$1"' "$note_path"
 compose start git
 second="$(wait_for_commit_after "$before_second")"
