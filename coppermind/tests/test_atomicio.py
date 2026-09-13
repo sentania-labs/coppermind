@@ -13,7 +13,12 @@ from pathlib import Path
 import pytest
 
 from coppermind import atomicio
-from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes
+from coppermind.atomicio import (
+    atomic_write_bytes,
+    commit_staged,
+    create_exclusive_bytes,
+    stage_bytes,
+)
 
 
 @pytest.fixture
@@ -68,4 +73,29 @@ def test_a_failed_atomic_write_leaves_neither_the_target_nor_a_temporary(
     with pytest.raises(OSError):
         atomic_write_bytes(target, b"revision: 1\n")
     assert not target.exists()
+    assert list(target.parent.iterdir()) == []
+
+
+def test_staged_bytes_are_durable_before_the_rename_and_gone_after_it(tmp_path: Path):
+    """A caller can check the target between staging and the rename.
+
+    The staged file is complete beside the target, the target is untouched
+    until the rename, and nothing temporary is left in the directory after.
+    """
+    target = tmp_path / "Review" / "Runbook.md"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"# Old\n")
+    staged = stage_bytes(target, b"# New\n")
+    assert staged.parent == target.parent and staged.name.startswith(".Runbook.md.")
+    assert staged.read_bytes() == b"# New\n"
+    assert target.read_bytes() == b"# Old\n"
+    commit_staged(staged, target)
+    assert target.read_bytes() == b"# New\n"
+    assert list(target.parent.iterdir()) == [target]
+
+
+def test_a_failed_stage_leaves_no_temporary(tmp_path: Path, failing_fsync):
+    target = tmp_path / "Review" / "Runbook.md"
+    with pytest.raises(OSError):
+        stage_bytes(target, b"# New\n")
     assert list(target.parent.iterdir()) == []

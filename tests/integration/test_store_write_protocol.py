@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 
+import coppermind_store.notes as notes_module
 import httpx
 import pytest
 import sqlalchemy as sa
@@ -558,3 +559,32 @@ async def test_public_replace_carries_the_etag_in_both_directions(store: LocalSt
         assert fresh.status_code == 200
         assert fresh.headers["etag"] == f'"{content_hash(path.read_bytes())}"'
         assert fresh.headers["etag"] != read.headers["etag"]
+
+
+async def test_an_edit_that_lands_while_the_new_bytes_are_staged_is_not_overwritten(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """Obsidian Sync writes the file after the first compare passed.
+
+    The new bytes are staged before the last compare, so the write that lands
+    during staging is seen by that compare: the replace is refused with the
+    hash of the edit, the edit stays on disk, and no staged file is left in
+    the folder for Obsidian Sync to carry to every device.
+    """
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    on_device = path.read_bytes().replace(b"reviewed: false", b"reviewed: true")
+    real_stage = notes_module.stage_bytes
+
+    def stage_after_a_device_write(target, data, **kwargs):
+        path.write_bytes(on_device)
+        return real_stage(target, data, **kwargs)
+
+    monkeypatch.setattr(notes_module, "stage_bytes", stage_after_a_device_write)
+
+    with pytest.raises(VersionConflict) as raised:
+        await store.replace_note(created.id, edited(created), created.content_hash)
+
+    assert raised.value.current_etag == content_hash(on_device)
+    assert path.read_bytes() == on_device
+    assert sorted(entry.name for entry in path.parent.iterdir()) == [path.name]

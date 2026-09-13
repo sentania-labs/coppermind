@@ -43,7 +43,7 @@ from sqlalchemy.exc import (
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coppermind import frontmatter as fm
-from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes
+from coppermind.atomicio import commit_staged, create_exclusive_bytes, stage_bytes
 from coppermind.db.models import Note
 from coppermind.db.session import transaction
 from coppermind.ids import new_id
@@ -200,13 +200,13 @@ class LocalStore:
 
         Under the note's lock: check the file is still this note at the ETag
         the caller read, and write back the keys sent unchanged with the types
-        that file gives them. Then issue the row update, check the file again
-        and write it with nothing awaited between that compare and the write,
-        and commit last. The order keeps the two properties a create has: a
-        value the metadata store rejects, or a database that went away, is
-        refused before the file changes, and a crash between the write and
-        the commit leaves the file as the truth, with a row that
-        reconciliation brings up to date.
+        that file gives them. Then issue the row update, stage the new bytes
+        beside the file, check the file once more and rename the staged bytes
+        over it with nothing but that check between the two, and commit last.
+        The order keeps the two properties a create has: a value the metadata
+        store rejects, or a database that went away, is refused before the
+        file changes, and a crash between the rename and the commit leaves the
+        file as the truth, with a row that reconciliation brings up to date.
         """
         schema = self.control.schema()
         sent = _replacement_frontmatter(request, schema, note_id)
@@ -240,11 +240,7 @@ class LocalStore:
                             updated_at=now,
                         )
                     )
-                    _frontmatter_at(note_id, relative, path, schema, if_match)
-                    try:
-                        atomic_write_bytes(path, data)
-                    except OSError as exc:
-                        raise NotesFilesystemUnavailable(str(exc)) from exc
+                    _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
             except BaseException as exc:
                 typed = _metadata_failure(exc)
                 if typed is None:
@@ -331,6 +327,38 @@ def _parse(
         # the honest answer is a miss until reconciliation clears the row.
         raise NotFound(note_id)
     return frontmatter, body
+
+
+def _replace_if_unchanged(
+    note_id: NoteId,
+    relative: str,
+    path: Path,
+    data: bytes,
+    schema: FrontmatterSchema,
+    if_match: ETag,
+) -> None:
+    """Rename `data` over the note's file only if it still hashes to `if_match`.
+
+    The new bytes are staged and made durable first, so what stands between
+    the last compare and the rename is the compare itself. The per-note lock
+    cannot exclude Obsidian Sync writing the same file, and there is no
+    conditional rename to ask the filesystem for, so this is the narrowest
+    window a replace can have. A refused or failed replace leaves no staged
+    file behind.
+    """
+    try:
+        staged = stage_bytes(path, data)
+    except OSError as exc:
+        raise NotesFilesystemUnavailable(str(exc)) from exc
+    try:
+        _frontmatter_at(note_id, relative, path, schema, if_match)
+        commit_staged(staged, path)
+    except OSError as exc:
+        staged.unlink(missing_ok=True)
+        raise NotesFilesystemUnavailable(str(exc)) from exc
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
 
 
 def _frontmatter_at(
