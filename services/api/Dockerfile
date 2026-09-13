@@ -15,6 +15,14 @@ LABEL org.opencontainers.image.title="coppermind-api" \
       org.opencontainers.image.revision="${BUILD_SHA}" \
       org.opencontainers.image.created="${BUILD_DATE}"
 
+# The base image is pinned by digest so a rebuild is reproducible, which also
+# means it freezes the distribution packages as they were the day that image
+# was published. Applying the distribution's security updates here is what
+# keeps the image scan clean between base image rebuilds.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=ghcr.io/astral-sh/uv:0.10.12@sha256:72ab0aeb448090480ccabb99fb5f52b0dc3c71923bffb5e2e26517a1c27b7fec /uv /usr/local/bin/uv
 
 WORKDIR /app

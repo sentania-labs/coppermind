@@ -30,6 +30,12 @@ x-api-image: &api-image
     context: .
     dockerfile: services/api/Dockerfile
 
+x-git-image: &git-image
+  image: ghcr.io/sentania-labs/coppermind/git:latest
+  build:
+    context: .
+    dockerfile: services/git/Dockerfile
+
 services:
 
   # Runs once per `up` and exits 0. Root only long enough to hand /data and
@@ -117,6 +123,22 @@ services:
     depends_on:
       store:
         condition: service_healthy
+
+  # Keeps the history of the notes filesystem in /data/notes/.git: polls, and
+  # commits what has settled. It writes nothing but `.git` and its status file,
+  # holds no credential, and has no network at all, so it cannot push anywhere.
+  # It needs only the volume, not the store, and carries on while the store or
+  # PostgreSQL is down.
+  git:
+    <<: *git-image
+    restart: unless-stopped
+    environment: *wiring
+    network_mode: none
+    volumes:
+      - data:/data
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
 
 volumes:
   # Everything a backup needs: the notes filesystem, source bundles and the

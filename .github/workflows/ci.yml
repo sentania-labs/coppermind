@@ -122,7 +122,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [store, api]
+        service: [store, api, git]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -209,7 +209,7 @@ jobs:
           merge-multiple: true
       - name: Load the tested images
         run: |
-          for service in store api; do
+          for service in store api git; do
             skopeo copy "oci-archive:$RUNNER_TEMP/images/$service.tar" \
               "docker-daemon:coppermind/$service:ci"
             docker image ls "coppermind/$service:ci"
@@ -221,6 +221,12 @@ jobs:
         env:
           COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
         run: make smoke
+      # On the same stack: the Git helper catches up on edits made while it
+      # was stopped, keeps its history, and keeps excluded folders out of it.
+      - name: Failure storylines
+        env:
+          COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
+        run: make failure
       - name: Stack logs
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs || true

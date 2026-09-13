@@ -1,6 +1,7 @@
 # Workspace root and the shared package in one file. `coppermind/` is the
-# package every service image installs; `services/*` are the workspace members
-# that depend on it. One toolchain configuration (ruff, mypy, pytest) covers
+# package the service images install; `services/*` are the workspace members,
+# one image each (the Git helper alone does without the shared package). One
+# toolchain configuration (ruff, mypy, pytest) covers
 # the whole repository so a developer and CI run the same checks.
 [build-system]
 requires = ["hatchling"]
@@ -39,7 +40,7 @@ dev = [
 packages = ["coppermind"]
 
 [tool.uv.workspace]
-members = ["services/api", "services/store"]
+members = ["services/api", "services/store", "services/git"]
 
 [tool.ruff]
 target-version = "py312"
@@ -66,5 +67,11 @@ exclude = ["coppermind/db/migrations/"]
 asyncio_mode = "auto"
 # Unit tests only. `tests/integration` needs a PostgreSQL server and is run
 # explicitly by `make test-integration`.
-testpaths = ["coppermind/tests", "services/api/tests", "services/store/tests", "tests/ci"]
+testpaths = [
+    "coppermind/tests",
+    "services/api/tests",
+    "services/store/tests",
+    "services/git/tests",
+    "tests/ci",
+]
 addopts = "--import-mode=importlib"

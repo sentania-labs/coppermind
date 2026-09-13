@@ -33,6 +33,12 @@ matters, and CI calls the same targets: see the [Makefile](Makefile) for the
 list. `make check` is what the `checks` job runs; `make db-up test-integration
 db-down` needs Docker.
 
+`services/git` alone does not depend on the shared package, so its image
+carries no database drivers and survives settings sections it does not know.
+It reads its own settings keys; `services/git/tests/test_settings.py` holds its
+defaults equal to `coppermind.settings`, so a new `git.*` setting fails there
+until the helper honours it.
+
 ## Sharp edges found the hard way
 
 - **Frontmatter is edited in ruamel round trip mode, never loaded and dumped.**

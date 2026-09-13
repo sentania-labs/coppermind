@@ -1,7 +1,7 @@
 # STATUS
 
-What works against `main` today. Updated 2026-09-09. Every claim here was
-checked against a running compose stack on that date, not against CI alone.
+What works against `main` today. Updated 2026-09-11. Every claim here was
+checked against a running compose stack, not against CI alone.
 
 This is the first slice of the build. The shape is deliberately narrow: one
 vertical path proved end to end, then widened.
@@ -43,12 +43,31 @@ vertical path proved end to end, then widened.
 - A note whose frontmatter was broken while editing on a device reads back as
   409 `note_unparseable`, naming the note and saying Coppermind did not modify
   the file.
+- Git history of the notes filesystem, from the separate `git` helper image
+  (added 2026-09-11). On first start it makes `/data/notes` a repository, or
+  adopts one already there and keeps its history, branch and `.gitignore`.
+  The only configuration of its own it writes is a marked block at the end of
+  `.git/info/exclude`; rules already in that file are kept byte for byte.
+  After that it records changes by itself: it scans every
+  `git.poll_interval_s` (300 seconds) and commits a change once it has been
+  quiet for `git.debounce_s` (60 seconds), as `Coppermind
+  <coppermind@localhost>`, with a `Coppermind snapshot` subject and the
+  changed files listed. A start scans at once, so edits made while it was
+  stopped land about a minute later on top of the existing history.
+  `.obsidian/`, `.trash/`, the trash and sources folders and the store's
+  temporary files never enter history, even against a `!` rule in a person's
+  own `.gitignore`; control state and credentials live under `/data/state`,
+  outside the repository. It has no network, no credential and no remote, and
+  keeps working with the store and PostgreSQL down. It reports through
+  `/data/state/git/status.json`, whose age is its container health check.
+  `ci/failure.sh` proves the catch-up, the history and the exclusions against
+  the tested images.
 - CI: lint, types, unit tests, compose validity and the no-em-dash rule;
   PostgreSQL backed integration tests; dependency, secret and repository
   scans; one image build per service as an OCI tarball with provenance and an
-  SBOM, scanned; and a compose smoke run of the whole storyline above against
-  those exact images. Every action is pinned to a commit SHA, and a test
-  enforces that.
+  SBOM, scanned; and a compose smoke run of the whole storyline above, plus
+  the Git helper's failure storyline, against those exact images. Every action
+  is pinned to a commit SHA, and a test enforces that.
 
 ## Not built yet
 
@@ -75,8 +94,10 @@ in the tree, so do not read the absence as a decision to leave it out.
 - **Conflict protection on writes.** There is no `PUT` or `PATCH` yet, so
   conditional writes are not defined at all: reads carry an `ETag`, but no
   surface reads an `If-Match` header.
-- **The Git helper, Obsidian Sync, the curator and the indexer.** No history,
-  no sync, no filing by rules, no search.
+- **Obsidian Sync, the curator and the indexer.** No sync, no filing by
+  rules, no search.
+- **History through the API.** Nothing reads Git history or restores a note
+  from it yet; `docker compose exec git git -C /data/notes log` is the way in.
 - **Admin.** A separate service and image in the design, not a route group in
   the API. Nothing exists yet, so settings are edited as files under
   `/data/state` for now, which is exactly the state the design says is not
@@ -105,6 +126,13 @@ in the tree, so do not read the absence as a decision to leave it out.
   mirror row can point at a different note's file, so with an unreconciled
   rename the wrong note is named. The file's own bytes never reach the answer;
   issue #2 tracks the rest.
+- The Git helper polls; there is no filesystem event watcher. With the
+  shipped settings a change is recorded within about six minutes, and a note
+  edited for a long stretch without a 60 second pause lands as one snapshot
+  when the editing stops.
+- An existing repository that already tracked `.obsidian/`, `.trash/` or the
+  trash or sources folder stops tracking them in the helper's first snapshot.
+  The files stay on disk and in the earlier commits.
 - The store reads `settings.yaml` and `schema.yaml` on every call rather than
   caching them. Correct, and cheap at this size; it becomes a cache with an
   invalidation event when `settings.changed` exists.

@@ -49,12 +49,20 @@ curl -sS http://127.0.0.1:8080/v1/notes/<id>
 
 The generated OpenAPI document is at `http://127.0.0.1:8080/openapi.json`.
 
+Nobody has to touch Git for the notes filesystem to have a history. A few
+minutes after a change settles, it is a commit:
+
+```bash
+docker compose exec git git -C /data/notes log --stat
+```
+
 ## What is running
 
 | Service | Does | State |
 |---|---|---|
 | `api` | the public contract on `:8080` | none; it calls the store |
 | `store` | the only process that writes the notes filesystem | `/data`, one replica always |
+| `git` | records the history of the notes filesystem; no network, no credential | `/data/notes/.git`, one replica always |
 | `postgres` | mirrored and derived state, rebuildable from `/data` | `pgdata` volume |
 | `bootstrap`, `migrate` | one-shot, run on every `up` and exit | none |
 
@@ -72,12 +80,13 @@ delivers.
 ## Working on it
 
 ```bash
-make setup            # uv workspace: shared package plus both services
+make setup            # uv workspace: shared package plus the services
 make check            # lint, types, unit tests, compose validity, house rules
 make db-up test-integration db-down   # the PostgreSQL backed tests
 make scan             # dependency, secret and repository scans, as CI runs them
-make image            # build both images locally
+make image            # build the images locally
 make smoke            # the compose storyline end to end
+make failure          # helpers stopped and started with edits in between
 ```
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the bar for a pull request.
