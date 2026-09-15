@@ -66,23 +66,22 @@ class SourceClaimMissing(StoreError):
         self.external_source_id = external_source_id
 
 
-class DescriptiveCorrectionUnsupported(StoreError):
-    """The artifacts replay but a field describing them was corrected.
+class IncompleteRevision(StoreError):
+    """A revision directory is on disk that the manifest does not record.
 
-    Correcting `captured_at`, `metadata`, `source_type` or `origin` without
-    changing an artifact is not supported yet, so the request is refused
-    rather than accepted and silently discarded. Nothing was written and the
-    stored source is exactly as it was.
+    An earlier revision write was interrupted between creating the directory
+    and recording the revision, so the bundle holds files nothing references.
+    The volume is healthy. Nothing was written and nothing was removed,
+    because deciding whether those files matter is the operator's call.
     """
 
-    def __init__(self, fields: list[str]) -> None:
+    def __init__(self, path: str) -> None:
         super().__init__(
-            "the artifacts are unchanged but the stored source differs in "
-            + ", ".join(fields)
-            + "; correcting a field that describes a source without changing an artifact is not "
-            "supported yet, so nothing was written"
+            f"the source bundle holds the revision directory {path}, which its manifest does not "
+            "record, so an earlier revision write was interrupted; nothing was written and "
+            "nothing was removed. Inspect that directory, remove it, then retry"
         )
-        self.fields = fields
+        self.path = path
 
 
 class PayloadTooLarge(StoreError):
@@ -268,9 +267,21 @@ class IngestRequest(BaseModel):
 
 
 class CreatedSource(BaseModel):
+    """The source this ingest created, revised or replayed.
+
+    `unstored_fields` names what the request sent differently from what is
+    stored and this increment does not keep. A source is identified by its
+    artifact bytes alone, so a correction to `captured_at`, `metadata`,
+    `source_type`, `origin` or an artifact `mime_type` with the bytes
+    unchanged has nowhere to land yet. Naming it is what keeps the answer
+    honest instead of discarding the correction in silence. It is empty on
+    every other answer.
+    """
+
     id: SourceId
     revision: int = Field(ge=1)
     created: bool
+    unstored_fields: list[str] = Field(default_factory=list)
 
 
 class CreatedNote(BaseModel):

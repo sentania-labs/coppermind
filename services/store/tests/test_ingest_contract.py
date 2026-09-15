@@ -10,7 +10,7 @@ from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import (
     CreatedNote,
     CreatedSource,
-    DescriptiveCorrectionUnsupported,
+    IncompleteRevision,
     IngestRequest,
     IngestResult,
     PayloadTooLarge,
@@ -104,7 +104,7 @@ async def test_replay_answers_200_over_the_internal_contract():
         (PayloadTooLarge(1024), PayloadTooLarge),
         (SourcesFilesystemUnavailable("read only"), SourcesFilesystemUnavailable),
         (SourceClaimMissing("plaud", "recording-1"), SourceClaimMissing),
-        (DescriptiveCorrectionUnsupported(["captured_at"]), DescriptiveCorrectionUnsupported),
+        (IncompleteRevision("01K4Q8Z2A0P1Q2R3S4T5U6V7W8/r0002"), IncompleteRevision),
     ],
 )
 async def test_ingest_errors_keep_their_type_over_http(error, expected):
@@ -119,10 +119,10 @@ async def test_ingest_errors_keep_their_type_over_http(error, expected):
     assert str(raised.value) == str(error)
 
 
-async def test_a_refused_correction_answers_409_with_the_fields_it_names():
-    """The refusal is a conflict an automation can read, never a 503."""
+async def test_a_leftover_revision_directory_answers_409_naming_it():
+    """An interrupted revision write is a conflict an operator can act on, never a 503."""
     store = FakeStore()
-    store.error = DescriptiveCorrectionUnsupported(["captured_at", "origin"])
+    store.error = IncompleteRevision("01K4Q8Z2A0P1Q2R3S4T5U6V7W8/r0002")
     async with httpx.AsyncClient(
         base_url="http://store", transport=httpx.ASGITransport(app=app_for(store))
     ) as client:
@@ -133,8 +133,27 @@ async def test_a_refused_correction_answers_409_with_the_fields_it_names():
         )
     assert response.status_code == 409
     body = response.json()
-    assert body["error"] == "descriptive_correction_unsupported"
-    assert body["fields"] == ["captured_at", "origin"]
+    assert body["error"] == "incomplete_revision"
+    assert body["path"] == "01K4Q8Z2A0P1Q2R3S4T5U6V7W8/r0002"
+
+
+async def test_unstored_fields_survive_the_internal_contract():
+    """The caller learns what was not stored whether it holds a store or a client."""
+    store = FakeStore()
+    store.result = RESULT.model_copy(
+        update={
+            "source": RESULT.source.model_copy(
+                update={"created": False, "unstored_fields": ["captured_at", "mime_type"]}
+            ),
+            "note": RESULT.note.model_copy(update={"created": False}),
+        }
+    )
+    client = connected(store)
+    try:
+        result = await client.ingest(REQUEST)
+    finally:
+        await client.aclose()
+    assert result.source.unstored_fields == ["captured_at", "mime_type"]
 
 
 async def test_a_missing_claim_answers_409_naming_the_external_id():

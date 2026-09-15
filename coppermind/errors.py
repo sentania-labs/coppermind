@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from coppermind.store_protocol import (
-    DescriptiveCorrectionUnsupported,
+    IncompleteRevision,
     MetadataUnavailable,
     NotesFilesystemUnavailable,
     NoteUnparseable,
@@ -89,8 +89,8 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
             provider=error.provider,
             external_source_id=error.external_source_id,
         )
-    if isinstance(error, DescriptiveCorrectionUnsupported):
-        return 409, envelope("descriptive_correction_unsupported", str(error), fields=error.fields)
+    if isinstance(error, IncompleteRevision):
+        return 409, envelope("incomplete_revision", str(error), path=error.path)
     if isinstance(error, PayloadTooLarge):
         return 413, envelope("payload_too_large", str(error), limit_bytes=error.limit_bytes)
     if isinstance(error, VersionConflict):

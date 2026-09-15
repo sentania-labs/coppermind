@@ -16,8 +16,8 @@ import httpx
 from coppermind.api_keys import ApiKeySet
 from coppermind.store_protocol import (
     CreateNote,
-    DescriptiveCorrectionUnsupported,
     ETag,
+    IncompleteRevision,
     IngestRequest,
     IngestResult,
     MetadataUnavailable,
@@ -144,8 +144,8 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         return SourceClaimMissing(
             payload.get("provider", ""), payload.get("external_source_id", "")
         )
-    if code == "descriptive_correction_unsupported":
-        return DescriptiveCorrectionUnsupported(payload.get("fields", []))
+    if code == "incomplete_revision":
+        return IncompleteRevision(payload.get("path", message))
     if code == "payload_too_large":
         return PayloadTooLarge(payload.get("limit_bytes", 0))
     if code == "sources_filesystem_unavailable":

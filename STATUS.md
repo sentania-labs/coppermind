@@ -61,12 +61,20 @@ vertical path proved end to end, then widened.
   revision. Changed artifact content appends an immutable numbered revision
   and answers 200 without rewriting the Review note or changing its reviewed
   state. The response carries real `created` values for both records and the
-  source revision. A payload whose artifacts are unchanged while
-  `captured_at`, `metadata`, `source_type` or `origin` differs is refused with
-  409 `descriptive_correction_unsupported` naming the differing fields:
-  correcting those fields alone is not built yet, and the store refuses rather
-  than accepting a correction it would discard. Nothing is written and the
-  stored source is untouched.
+  source revision. A payload whose artifacts are unchanged while a field
+  describing them differs (`captured_at`, `metadata`, `source_type`, `origin`
+  or an artifact's `mime_type`) is still a replay: 200, `created: false`, the
+  same source and note identifiers, one note. Storing a correction to those
+  fields is not built in this increment, so the answer names every one of them
+  in `source.unstored_fields` rather than discarding it in silence. A caller
+  that reads an empty `unstored_fields` knows the stored source matches what
+  it sent. Keeping those corrections arrives with the remaining source
+  capabilities under "Not built yet".
+  An interrupted revision write can leave a numbered revision directory that
+  `manifest.json` does not record. The next ingest of changed artifacts for
+  that source answers 409 `incomplete_revision` naming the directory, rather
+  than a 503 blaming a healthy volume. It removes nothing: the operator
+  inspects `/data/sources/<source_id>/<rNNNN>/`, removes it, then retries.
   `uq_sources_provider_external_id` remains the database mirror's second
   guard, and it now answers in its own voice: an ingest that finds no claim
   file while the mirror still holds that `provider` plus `external_source_id`
@@ -82,7 +90,9 @@ vertical path proved end to end, then widened.
   the filesystem writes answers 503 `metadata_unavailable` and rolls the rows
   back, but retains the complete bundle, Review note and external-id claim.
   A retry resolves from the claim and completed files, repairs a missing
-  mirror when needed, and cannot create a duplicate. A submitted body over
+  mirror when needed, and cannot create a duplicate. That repair runs on the
+  replay path, so a retry carrying a corrected capture time still rebuilds the
+  rows and then reports the correction as unstored. A submitted body over
   `limits.ingest_max_bytes`
   (25 MiB by default, settable like every other setting) answers 413
   `payload_too_large` before filesystem or database writes. The API preserves
@@ -156,7 +166,12 @@ vertical path proved end to end, then widened.
 Everything below is planned and has a place in the design. None of it exists
 in the tree, so do not read the absence as a decision to leave it out.
 
-- **Remaining source capabilities.** Generated source projections into the
+- **Remaining source capabilities.** Storing a correction to a field that
+  describes a source (`captured_at`, `metadata`, `source_type`, `origin` or an
+  artifact `mime_type`) is not built; today those are reported back as
+  unstored. Keeping them means recording them per revision, which costs keys
+  in `manifest.json`, a manifest `schema_version` bump and columns on
+  `source_revisions`. Generated source projections into the
   notes filesystem and tombstoning a source are not built. Tombstones in particular have no
   columns in the mirror and no keys in `manifest.json`, so adding them costs
   a migration of its own and a manifest `schema_version` bump.
@@ -203,11 +218,13 @@ in the tree, so do not read the absence as a decision to leave it out.
   instance is simply the default and the external path arrives with the
   deployment work.
 - Correcting only a field that describes a source (`captured_at`,
-  `metadata`, `source_type` or `origin`) has no path yet: the ingest is
-  refused with 409 `descriptive_correction_unsupported` rather than kept. An
-  automation that stamps a fresh capture time on every retry therefore gets
-  that refusal instead of the replay it expects, so a retry of an uncertain
-  answer must resend the payload it originally sent, timestamps included.
+  `metadata`, `source_type`, `origin` or an artifact `mime_type`) is reported
+  and not stored. The ingest succeeds as a replay and names the fields in
+  `source.unstored_fields`, but the manifest and the mirror keep the values
+  they already had, so an automation that means to correct one of them must
+  wait for the storage chunk under "Remaining source capabilities". An
+  automation that stamps a fresh capture time on every retry sees
+  `unstored_fields: ["captured_at"]` on every retry and nothing else changes.
 - A note file removed outside the store leaves its row behind, because
   nothing reconciles the mirror yet. Creating a note with that title again
   answers 409 `path_collision` every time until the reconciler lands or the

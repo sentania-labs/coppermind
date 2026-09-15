@@ -3,9 +3,11 @@
 A deterministic filesystem claim owns each external identifier. Artifact
 files are exclusive and each revision is recorded in `manifest.json` only
 after its files are durable. The linked Review note is created once and is
-never part of a replay or revision write. A write-phase failure removes
-incomplete files; a commit failure retains complete files so the next retry
-can resolve through the claim and repair the database mirror.
+never part of a replay or revision write. A write-phase failure removes what
+that attempt created; a commit failure retains complete files so the next
+retry can resolve through the claim and repair the database mirror. A process
+killed mid-write can still leave a revision directory the manifest does not
+record, which the next ingest names and leaves alone rather than deleting.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ from coppermind.store_protocol import (
     CreatedNote,
     CreatedSource,
     CreateNote,
-    DescriptiveCorrectionUnsupported,
+    IncompleteRevision,
     IngestArtifact,
     IngestRequest,
     IngestResult,
@@ -276,29 +278,36 @@ async def _ingest_existing(
     ):
         raise StoreError("the external-id claim and source manifest disagree")
 
-    current_revision = _positive_int(manifest.get("current_revision"), "current_revision")
-    current = _manifest_revision(manifest, current_revision)
-    replaying = current.get("content_identity") == identity
-    if replaying:
-        differing = _descriptive_differences(request, manifest, current)
-        if differing:
-            raise DescriptiveCorrectionUnsupported(differing)
-
     note_id, note_path, note_snapshot = await _linked_note(store, session, source_id, schema)
     await _ensure_mirror(session, manifest, note_id, note_path, note_snapshot, schema)
 
-    if replaying:
+    current_revision = _positive_int(manifest.get("current_revision"), "current_revision")
+    current = _manifest_revision(manifest, current_revision)
+    if current.get("content_identity") == identity:
         return IngestResult(
-            source=CreatedSource(id=source_id, revision=current_revision, created=False),
+            source=CreatedSource(
+                id=source_id,
+                revision=current_revision,
+                created=False,
+                unstored_fields=_descriptive_differences(
+                    request, manifest, current, artifact_metadata
+                ),
+            ),
             note=CreatedNote(id=note_id, path=note_path, created=False),
         )
 
     revision = current_revision + 1
     now = datetime.now(tz=UTC)
     revision_path = source_path / f"r{revision:04d}"
-    manifest_written = False
     try:
         revision_path.mkdir(parents=False, exist_ok=False)
+    except FileExistsError as exc:
+        raise IncompleteRevision(f"{source_id}/{revision_path.name}") from exc
+    except OSError as exc:
+        raise SourcesFilesystemUnavailable(str(exc)) from exc
+
+    manifest_written = False
+    try:
         for artifact, data in artifacts:
             create_exclusive_bytes(revision_path / artifact.name, data)
         revisions = list(manifest.get("revisions", []))
@@ -346,14 +355,17 @@ async def _ingest_existing(
 
 
 def _descriptive_differences(
-    request: IngestRequest, manifest: dict[str, Any], current: dict[str, Any]
+    request: IngestRequest,
+    manifest: dict[str, Any],
+    current: dict[str, Any],
+    artifact_metadata: list[dict[str, Any]],
 ) -> list[str]:
-    """The fields describing a source that differ from what is stored.
+    """The fields describing a source that this replay sent differently.
 
-    A source is identified by its artifact bytes, so these fields cannot make
-    a revision of their own. Naming the ones that differ is what turns a
-    correction the store cannot keep into a refusal rather than a silent
-    discard.
+    A source is identified by its artifact bytes, so none of these can make a
+    revision of their own and this increment keeps none of them. Naming the
+    ones that differ is what makes the replay answer honest rather than a
+    silent discard.
     """
     differing = []
     if not _same_instant(request.source.captured_at, current.get("captured_at")):
@@ -364,6 +376,11 @@ def _descriptive_differences(
         differing.append("source_type")
     if request.source.origin != manifest.get("origin"):
         differing.append("origin")
+    stored_types = {
+        str(item.get("name")): item.get("mime_type") for item in current.get("artifacts", [])
+    }
+    if any(item["mime_type"] != stored_types.get(item["name"]) for item in artifact_metadata):
+        differing.append("mime_type")
     return differing
 
 

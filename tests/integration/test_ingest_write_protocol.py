@@ -15,7 +15,7 @@ from coppermind_store.notes import LocalStore
 from coppermind import frontmatter as fm
 from coppermind.db.models import Note, NoteSource, Source, SourceArtifact, SourceRevision
 from coppermind.store_protocol import (
-    DescriptiveCorrectionUnsupported,
+    IncompleteRevision,
     IngestRequest,
     MetadataUnavailable,
     PathCollision,
@@ -345,11 +345,13 @@ async def test_replay_cannot_overwrite_a_concurrent_note_edit(
     assert note_path.read_text(encoding="utf-8") == edited
 
 
-async def test_a_descriptive_correction_alone_is_refused_and_writes_nothing(
+async def test_a_descriptive_correction_alone_replays_and_reports_what_was_not_stored(
     store: LocalStore, session_factory
 ):
-    """A source is its artifact bytes, so a describing field cannot be revised yet."""
+    """A source is its artifact bytes, so a describing field is reported, not kept."""
     first = await store.ingest(sample())
+    note_path = store.notes_root / first.note.path
+    note_path.write_text(fm.patch(note_path.read_text(encoding="utf-8"), {"reviewed": True}))
     before = {
         path.relative_to(store.notes_root.parent): path.read_bytes()
         for path in store.notes_root.parent.rglob("*")
@@ -361,18 +363,26 @@ async def test_a_descriptive_correction_alone_is_refused_and_writes_nothing(
     corrected.source.metadata["language"] = "en-US"
     corrected.source.origin = "Plaud NotePin (office)"
     corrected.source.source_type = "document"
+    replay = await store.ingest(corrected)
 
-    with pytest.raises(DescriptiveCorrectionUnsupported) as raised:
-        await store.ingest(corrected)
-
-    assert sorted(raised.value.fields) == ["captured_at", "metadata", "origin", "source_type"]
+    assert replay.source.id == first.source.id
+    assert replay.source.revision == 1
+    assert replay.source.created is False
+    assert replay.note.id == first.note.id
+    assert replay.note.created is False
+    assert sorted(replay.source.unstored_fields) == [
+        "captured_at",
+        "metadata",
+        "origin",
+        "source_type",
+    ]
     after = {
         path.relative_to(store.notes_root.parent): path.read_bytes()
         for path in store.notes_root.parent.rglob("*")
         if path.is_file()
     }
     assert after == before
-    assert not (store.sources_root / first.source.id / "r0002").exists()
+    assert len(list(store.notes_root.rglob("*.md"))) == 1
     async with session_factory() as session:
         source = await session.get(Source, first.source.id)
         assert source.current_revision == 1
@@ -382,17 +392,89 @@ async def test_a_descriptive_correction_alone_is_refused_and_writes_nothing(
         assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 1
 
 
-async def test_one_corrected_describing_field_is_named_on_its_own(store: LocalStore):
-    """The refusal names what differs, so an operator is not left guessing."""
-    await store.ingest(sample())
+async def test_a_corrected_mime_type_is_reported_rather_than_silently_discarded(
+    store: LocalStore,
+):
+    """The artifact bytes are the identity, so a mime type correction is not kept either."""
+    first = await store.ingest(sample())
+    source_root = store.sources_root / first.source.id
     corrected = sample()
-    corrected.source.origin = "Plaud NotePin (office)"
+    corrected.source.artifacts[0].mime_type = "text/markdown"
 
-    with pytest.raises(DescriptiveCorrectionUnsupported) as raised:
-        await store.ingest(corrected)
+    replay = await store.ingest(corrected)
 
-    assert raised.value.fields == ["origin"]
-    assert "origin" in str(raised.value)
+    assert replay.source.created is False
+    assert replay.source.unstored_fields == ["mime_type"]
+    manifest = json.loads((source_root / "manifest.json").read_text(encoding="utf-8"))
+    stored = {item["name"]: item["mime_type"] for item in manifest["revisions"][0]["artifacts"]}
+    assert stored["transcript.txt"] == "text/plain"
+
+
+async def test_a_fully_identical_replay_reports_nothing_unstored(store: LocalStore):
+    await store.ingest(sample())
+    replay = await store.ingest(sample())
+    assert replay.source.created is False
+    assert replay.source.unstored_fields == []
+
+
+async def test_a_corrected_retry_after_a_commit_failure_still_repairs_the_mirror(
+    store: LocalStore, session_factory, monkeypatch: pytest.MonkeyPatch
+):
+    """The retry an automation actually sends must not leave the mirror empty."""
+    real_transaction = sources_module.transaction
+
+    @asynccontextmanager
+    async def fail_at_commit(factory):
+        async with real_transaction(factory) as session:
+            yield session
+            raise sa.exc.OperationalError("COMMIT", {}, OSError("connection lost"))
+
+    monkeypatch.setattr(sources_module, "transaction", fail_at_commit)
+    with pytest.raises(MetadataUnavailable):
+        await store.ingest(sample())
+    async with session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 0
+
+    monkeypatch.setattr(sources_module, "transaction", real_transaction)
+    retried = sample()
+    retried.source.captured_at = datetime.fromisoformat("2026-09-08T16:30:00-05:00")
+    replay = await store.ingest(retried)
+
+    assert replay.source.created is False
+    assert replay.source.revision == 1
+    assert replay.source.unstored_fields == ["captured_at"]
+    assert replay.note.created is False
+    async with session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 1
+        assert await session.scalar(sa.select(sa.func.count()).select_from(SourceRevision)) == 1
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 1
+        link = (await session.execute(sa.select(NoteSource))).scalar_one()
+        assert link.note_id == replay.note.id
+        assert link.source_id == replay.source.id
+
+
+async def test_a_leftover_revision_directory_is_named_and_left_alone(
+    store: LocalStore, session_factory
+):
+    """An interrupted revision write is an operator's call, not a volume outage."""
+    first = await store.ingest(sample())
+    orphan = store.sources_root / first.source.id / "r0002"
+    orphan.mkdir()
+    (orphan / "transcript.txt").write_text("half a revision", encoding="utf-8")
+
+    changed = sample()
+    changed.source.artifacts[0].content = "Scott: corrected source content"
+    with pytest.raises(IncompleteRevision) as raised:
+        await store.ingest(changed)
+
+    assert raised.value.path == f"{first.source.id}/r0002"
+    assert (orphan / "transcript.txt").read_text(encoding="utf-8") == "half a revision"
+    manifest = json.loads(
+        (store.sources_root / first.source.id / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["current_revision"] == 1
+    async with session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(SourceRevision)) == 1
 
 
 async def test_a_missing_claim_over_a_surviving_row_is_refused_not_an_outage(
