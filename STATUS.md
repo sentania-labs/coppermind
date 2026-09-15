@@ -290,12 +290,12 @@ vertical path proved end to end, then widened.
   read, so a note the captain files into it himself is followed there like a
   note in any other folder.
   Obsidian Sync does not exclude the folder. Git excludes it, and the two agree
-  on its name by construction: the Store writes to the sanitised name while the
-  Git helper, which carries none of the shared package, excludes the configured
-  name as given, so settings validation refuses any `notes.sources_folder` the
-  Store would rewrite (a leading dot, a trailing space, a character it strips)
-  and refuses an empty one, which would scatter projections through the notes
-  filesystem root, rather than let the projections enter Git history. That agreement
+  on its name by construction: both the Store and the Git helper, which carries
+  none of the shared package, use the configured name exactly as given, so
+  settings validation refuses any `notes.sources_folder` the Store would have to
+  rewrite (a leading dot, a trailing space, a character it strips) and refuses
+  an empty one, which would scatter projections through the notes filesystem
+  root, rather than let the projections enter Git history. That agreement
   covers the folder in force, not a folder that used to be in force, so do not
   rename `notes.sources_folder` once sources have been ingested: nothing moves
   the pages already generated, they stay under the old name, the Git helper

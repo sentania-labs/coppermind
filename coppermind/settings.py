@@ -62,11 +62,11 @@ class NotesSettings(BaseModel):
     def validate_sources_folder(cls, value: str) -> str:
         """Refuse a name the Store and the Git helper would resolve differently.
 
-        The Store writes projections to the sanitised name while the Git helper,
-        which carries none of this package, excludes the configured name as it
-        is given. A value the two spell differently would put every generated
-        transcript into Git history, so it is refused here rather than accepted
-        and split.
+        The Store writes projections to the name as configured, and the Git
+        helper, which carries none of this package, excludes that same name as
+        it is given. A value either of them would spell differently would put
+        every generated transcript into Git history, so it is refused here
+        rather than accepted and split.
         """
         portable = sanitize_folder(value)
         if not portable:
