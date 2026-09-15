@@ -245,6 +245,33 @@ def test_the_session_cookie_lasts_the_browser_session_not_the_row(fresh):
     assert "expires" not in issued
 
 
+def test_a_settings_file_admin_cannot_read_names_the_file_and_the_key(fresh):
+    """The docs send the operator to hand-edit settings.yaml, so it can be wrong."""
+    client, wiring, sessions = fresh
+    claim(client)
+    settings_file = wiring.state_dir / "settings.yaml"
+
+    settings_file.write_text(
+        settings_file.read_text(encoding="utf-8").replace("session_hours: 12", "session_hours: 0"),
+        encoding="utf-8",
+    )
+    refused = login(client)
+    assert refused.status_code == 500
+    assert str(settings_file) in refused.text
+    assert "admin.session_hours" in refused.text
+    assert not sessions.tokens
+
+    settings_file.write_text("schema_version: 1\nrevision: 1\nadmin:\n  bogus: 1\n", "utf-8")
+    mistyped = login(client)
+    assert mistyped.status_code == 500
+    assert "admin.bogus" in mistyped.text
+
+    settings_file.unlink()
+    missing = login(client)
+    assert missing.status_code == 500
+    assert str(settings_file) in missing.text
+
+
 def test_a_session_database_outage_answers_503_rather_than_failing(fresh):
     client, _, sessions = fresh
     claim(client)

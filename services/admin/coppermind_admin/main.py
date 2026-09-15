@@ -6,10 +6,12 @@ import html
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from pathlib import Path
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from pydantic import ValidationError
 from starlette.datastructures import URL
 from starlette.middleware.base import RequestResponseEndpoint
 
@@ -114,6 +116,26 @@ def without_marker(url: URL) -> str:
     return f"{cleaned.path}?{cleaned.query}" if cleaned.query else cleaned.path
 
 
+def rejected_keys(error: Exception) -> str:
+    if isinstance(error, ValidationError):
+        return ", ".join(".".join(str(part) for part in item["loc"]) for item in error.errors())
+    return str(error)
+
+
+def settings_unreadable(path: Path, problem: str) -> HTMLResponse:
+    return HTMLResponse(
+        page(
+            "Settings unreadable",
+            f"""<h1>Admin cannot read its settings</h1>
+<p class="error">{html.escape(str(path))} could not be read, so Admin cannot start a session.</p>
+<p>What it rejected: {html.escape(problem)}</p>
+<p class="muted">Correct that file and log in again. Nothing else was changed, and the rest of
+Coppermind keeps running on the settings it already loaded.</p>""",
+        ),
+        status_code=500,
+    )
+
+
 def unavailable() -> HTMLResponse:
     return HTMLResponse(
         page(
@@ -133,10 +155,12 @@ def create_app(wiring: Wiring | None = None, sessions: Sessions | None = None) -
     version = settings.running_version(__version__)
     credentials = AdminCredentials(settings.state_dir)
 
+    state = StateStore(settings.state_dir)
+
     # Mirrors ControlState.settings in the store service, which Admin's image
     # does not carry: it installs the shared package and its own service only.
     def product_settings() -> ProductSettings:
-        body = dict(StateStore(settings.state_dir).read("settings").body)
+        body = dict(state.read("settings").body)
         body.pop("revision", None)
         return ProductSettings.model_validate(body)
 
@@ -248,7 +272,10 @@ required></label><button>Log in</button></form>""",
         password = (await submitted(request)).get("password", "")
         if not password or not await credentials.verify_password(password):
             return error_response("login", "unauthorized")
-        product = product_settings()
+        try:
+            product = product_settings()
+        except (OSError, ValueError) as exc:
+            return settings_unreadable(state.path_for("settings"), rejected_keys(exc))
         lifetime = timedelta(hours=product.admin.session_hours)
         try:
             token = await request.app.state.sessions.create(lifetime)
