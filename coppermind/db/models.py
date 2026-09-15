@@ -26,18 +26,6 @@ class Base(DeclarativeBase):
     pass
 
 
-class AdminSession(Base):
-    """An expiring browser session. The recoverable token is cookie-only."""
-
-    __tablename__ = "admin_sessions"
-
-    token_hash: Mapped[str] = mapped_column(Text, primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, index=True
-    )
-
-
 class Note(Base):
     """One note file, mirrored from the notes filesystem.
 

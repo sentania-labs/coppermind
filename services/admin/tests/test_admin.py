@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from coppermind_admin.auth import SessionsUnavailable, token_hash
+from coppermind_admin.auth import AdminCredentials, SignedSessions
 from coppermind_admin.main import COOKIE, create_app
 from fastapi.testclient import TestClient
 
@@ -16,45 +16,13 @@ PASSWORD = "correct horse battery staple"
 CLAIM_CODE = "test-claim-code"
 
 
-class MemorySessions:
-    def __init__(self) -> None:
-        self.tokens: set[str] = set()
-        self.available = True
-
-    def _check(self) -> None:
-        if not self.available:
-            raise SessionsUnavailable
-
-    async def create(self, lifetime: timedelta) -> str:
-        self._check()
-        assert lifetime == timedelta(hours=12)
-        token = "test-session-token"
-        self.tokens.add(token_hash(token))
-        return token
-
-    async def valid(self, token: str) -> bool:
-        self._check()
-        return token_hash(token) in self.tokens
-
-    async def delete(self, token: str) -> None:
-        self._check()
-        self.tokens.discard(token_hash(token))
-
-    async def revoke_all(self) -> None:
-        self._check()
-        self.tokens.clear()
-
-    async def ready(self) -> bool:
-        return self.available
-
-
 def _client(tmp_path: Path, base_url: str = "https://testserver"):
     wiring = Wiring(data_dir=tmp_path / "data")
     StateStore(wiring.state_dir).ensure("settings", default_settings().model_dump(mode="json"))
     claim_code = wiring.state_dir / "internal" / "claim-code"
     claim_code.parent.mkdir(parents=True)
     claim_code.write_text(CLAIM_CODE + "\n", encoding="utf-8")
-    sessions = MemorySessions()
+    sessions = SignedSessions(AdminCredentials(wiring.state_dir))
     return TestClient(create_app(wiring, sessions), base_url=base_url), wiring, sessions
 
 
@@ -85,7 +53,7 @@ def test_fresh_admin_is_unclaimed_and_only_exposes_the_claim_and_login_pages(fre
     assert logged_out.headers["location"] == "/admin/claim"
 
 
-def test_claim_needs_the_bootstrap_code_and_stores_only_an_argon2_hash(fresh):
+def test_claim_needs_the_bootstrap_code_and_stores_the_session_secret_beside_the_hash(fresh):
     client, wiring, _ = fresh
     refused = claim(client, code="wrong")
     assert refused.headers["location"] == "/admin/claim?error=invalid_claim_code"
@@ -93,11 +61,14 @@ def test_claim_needs_the_bootstrap_code_and_stores_only_an_argon2_hash(fresh):
     assert "That claim code was not accepted." in client.get(refused.headers["location"]).text
 
     assert claim(client).headers["location"] == "/admin/login"
-    contents = (wiring.state_dir / "admin.json").read_text(encoding="utf-8")
+    record = wiring.state_dir / "admin.json"
+    contents = record.read_text(encoding="utf-8")
+    stored = json.loads(contents)
     assert PASSWORD not in contents
-    assert '"password_hash": "$argon2' in contents
+    assert stored["password_hash"].startswith("$argon2")
+    assert len(bytes.fromhex(stored["session_secret"])) == 32
     assert not (wiring.state_dir / "internal" / "claim-code").exists()
-    assert (wiring.state_dir / "admin.json").stat().st_mode & 0o077 == 0
+    assert record.stat().st_mode & 0o077 == 0
 
 
 def test_a_pasted_claim_code_is_accepted_around_its_whitespace(fresh):
@@ -140,25 +111,27 @@ def test_rendered_forms_drive_claim_login_and_logout(fresh):
     logged_in = login(client)
     assert logged_in.status_code == 303
     assert logged_in.headers["location"] == "/admin"
-    assert client.cookies.get(COOKIE) == "test-session-token"
+    token = client.cookies.get(COOKIE)
+    assert token is not None
+    assert sessions.valid(token)
     assert "HttpOnly" in logged_in.headers["set-cookie"]
     assert "You are signed in" in client.get("/admin").text
 
     logged_out = client.post("/v1/admin/logout", data={}, follow_redirects=False)
     assert logged_out.status_code == 303
     assert logged_out.headers["location"] == "/admin/login"
-    assert not sessions.tokens
+    assert COOKIE not in client.cookies
     assert client.get("/admin").history[0].headers["location"] == "/admin/login"
 
 
 def test_an_ended_session_says_so_on_the_login_page(fresh):
-    """The cookie outlives the row, so an ordinary expiry is reported as one."""
+    """The cookie can outlive its signed expiry, which is reported as an ended session."""
     client, _, sessions = fresh
     claim(client)
     login(client)
     assert "You are signed in" in client.get("/admin").text
 
-    sessions.tokens.clear()
+    sessions.now = lambda: datetime.now(tz=UTC) + timedelta(hours=13)
     ended = client.get("/admin", follow_redirects=False)
     assert ended.headers["location"] == "/admin/login?error=session_expired"
     assert "That session has ended." in client.get(ended.headers["location"]).text
@@ -169,7 +142,7 @@ def test_a_logout_without_a_live_session_returns_to_the_login_page(fresh):
     client, _, sessions = fresh
     claim(client)
     login(client)
-    sessions.tokens.clear()
+    sessions.now = lambda: datetime.now(tz=UTC) + timedelta(hours=13)
 
     stale = client.post("/v1/admin/logout", data={}, follow_redirects=False)
     assert stale.status_code == 303
@@ -194,7 +167,7 @@ def test_the_session_cookie_is_always_secure(tmp_path: Path):
         assert "You are signed in" in client.get("/admin").text
 
 
-def test_the_session_cookie_lasts_the_browser_session_not_the_row(fresh):
+def test_the_session_cookie_lasts_the_browser_session_not_its_signed_validity(fresh):
     """Set-Cookie is the contract: no Max-Age or Expires means until close."""
     client, _, _ = fresh
     claim(client)
@@ -205,7 +178,7 @@ def test_the_session_cookie_lasts_the_browser_session_not_the_row(fresh):
 
 def test_a_settings_file_admin_cannot_read_names_the_file_and_the_key(fresh):
     """The docs send the operator to hand-edit settings.yaml, so it can be wrong."""
-    client, wiring, sessions = fresh
+    client, wiring, _ = fresh
     claim(client)
     settings_file = wiring.state_dir / "settings.yaml"
 
@@ -218,7 +191,20 @@ def test_a_settings_file_admin_cannot_read_names_the_file_and_the_key(fresh):
     assert str(settings_file) in refused.text
     assert "admin.session_hours" in refused.text
     assert "greater than or equal to 1" in refused.text
-    assert not sessions.tokens
+    assert COOKIE not in client.cookies
+
+    settings_file.write_text(
+        settings_file.read_text(encoding="utf-8").replace(
+            "session_hours: 0", "session_hours: 8761"
+        ),
+        encoding="utf-8",
+    )
+    oversized = login(client)
+    assert oversized.status_code == 500
+    assert str(settings_file) in oversized.text
+    assert "admin.session_hours" in oversized.text
+    assert "less than or equal to 8760" in oversized.text
+    assert COOKIE not in client.cookies
 
     settings_file.write_text("schema_version: 1\nrevision: 1\nadmin:\n  bogus: 1\n", "utf-8")
     mistyped = login(client)
@@ -239,7 +225,7 @@ def test_a_settings_file_admin_cannot_read_names_the_file_and_the_key(fresh):
 
 
 def test_re_claiming_after_recovery_ends_every_session_the_old_password_opened(fresh):
-    """The README recovery replaces the credential, so it must end its sessions."""
+    """Recovery rotates the signing secret, so old cookies stop authenticating."""
     client, wiring, sessions = fresh
     claim(client)
     login(client)
@@ -250,7 +236,9 @@ def test_re_claiming_after_recovery_ends_every_session_the_old_password_opened(f
     reclaimed = claim(client, password="a different admin password")
     assert reclaimed.headers["location"] == "/admin/login"
 
-    assert not sessions.tokens
+    old_cookie = client.cookies.get(COOKIE)
+    assert old_cookie is not None
+    assert not sessions.valid(old_cookie)
     refused = client.get("/admin", follow_redirects=False)
     assert refused.headers["location"] == "/admin/login?error=session_expired"
 
@@ -268,7 +256,7 @@ def test_a_stale_login_on_an_unclaimed_admin_goes_to_the_claim_page(fresh):
 
 def test_an_admin_record_admin_cannot_read_is_not_blamed_on_the_password(fresh):
     """A truncated or restored-in-part admin.json is not a wrong password."""
-    client, wiring, sessions = fresh
+    client, wiring, _ = fresh
     claim(client)
     record = wiring.state_dir / "admin.json"
 
@@ -278,7 +266,7 @@ def test_an_admin_record_admin_cannot_read_is_not_blamed_on_the_password(fresh):
     assert str(record) in refused.text
     assert "That password was not accepted." not in refused.text
     assert "claim Admin" in refused.text
-    assert not sessions.tokens
+    assert COOKIE not in client.cookies
 
     record.write_text('{"schema_version": 1, "password_hash": "not-a-hash"}', encoding="utf-8")
     unusable = login(client)
@@ -294,6 +282,25 @@ def test_an_admin_record_admin_cannot_read_is_not_blamed_on_the_password(fresh):
         answered = login(client)
         assert answered.status_code == 500
         assert str(record) in answered.text
+
+
+def test_a_missing_or_damaged_session_secret_names_the_admin_record(fresh):
+    client, wiring, _ = fresh
+    claim(client)
+    record = wiring.state_dir / "admin.json"
+    intact = json.loads(record.read_text(encoding="utf-8"))
+
+    for secret in (None, "not-hex", " " * 64):
+        damaged = dict(intact)
+        if secret is None:
+            damaged.pop("session_secret")
+        else:
+            damaged["session_secret"] = secret
+        record.write_text(json.dumps(damaged), encoding="utf-8")
+        answered = login(client)
+        assert answered.status_code == 500
+        assert str(record) in answered.text
+        assert "session_secret" in answered.text
 
 
 def test_a_damaged_argon2_hash_is_not_reported_as_a_wrong_password(fresh):
@@ -335,61 +342,30 @@ def test_a_state_file_whose_revision_was_emptied_names_the_file(fresh):
     assert str(record) in named.text
 
 
-def test_a_recovery_claim_during_a_session_outage_stays_unclaimed_and_retryable(fresh):
-    """Fail closed: no new credential while the old sessions cannot be ended."""
-    client, wiring, sessions = fresh
+def test_a_refused_claim_code_never_ends_a_live_session(fresh):
+    """A rejected recovery does not rotate the secret backing the open cookie."""
+    client, wiring, _ = fresh
     claim(client)
     login(client)
     record = wiring.state_dir / "admin.json"
-    claim_code = wiring.state_dir / "internal" / "claim-code"
-
+    previous = record.read_bytes()
     record.unlink()
-    claim_code.write_text(CLAIM_CODE + "\n", encoding="utf-8")
-    sessions.available = False
-
-    refused = claim(client, password="a different admin password")
-    assert refused.status_code == 503
-    assert not record.exists()
-    assert claim_code.is_file()
-
-    sessions.available = True
-    assert claim(client, password="a different admin password").headers["location"] == (
-        "/admin/login"
-    )
-    assert record.is_file()
-    assert not sessions.tokens
-    assert client.get("/admin", follow_redirects=False).headers["location"] == (
-        "/admin/login?error=session_expired"
-    )
-
-
-def test_a_refused_claim_code_never_ends_a_live_session(fresh):
-    """Sessions are only revoked once the code is accepted."""
-    client, wiring, sessions = fresh
-    claim(client)
-    login(client)
-    (wiring.state_dir / "admin.json").unlink()
     (wiring.state_dir / "internal" / "claim-code").write_text(CLAIM_CODE, encoding="utf-8")
 
     refused = claim(client, code="not the code")
     assert refused.headers["location"] == "/admin/claim?error=invalid_claim_code"
-    assert sessions.tokens
+    record.write_bytes(previous)
+    assert "You are signed in" in client.get("/admin").text
 
 
-def test_a_session_database_outage_answers_503_rather_than_failing(fresh):
-    client, _, sessions = fresh
+def test_a_tampered_session_cookie_is_refused(fresh):
+    client, _, _ = fresh
     claim(client)
     login(client)
+    token = client.cookies.get(COOKIE)
+    assert token is not None
+    replacement = "A" if token[-1] != "A" else "B"
+    client.cookies.set(COOKIE, token[:-1] + replacement)
 
-    sessions.available = False
-    refused_login = login(client)
-    assert refused_login.status_code == 503
-    assert "session database could not be reached" in refused_login.text
-
-    protected = client.get("/admin", follow_redirects=False)
-    assert protected.status_code == 503
-    assert "session database could not be reached" in protected.text
-    assert protected.headers["content-type"].startswith("text/html")
-
-    assert client.get("/readyz").status_code == 503
-    assert client.get("/healthz").status_code == 200
+    refused = client.get("/admin", follow_redirects=False)
+    assert refused.headers["location"] == "/admin/login?error=session_expired"

@@ -48,13 +48,12 @@ docker compose up -d
 ```
 
 Then read the new code the same way as above and claim Admin a second time.
-Claiming signs every open Admin session out, so no browser keeps access under
-the password you just replaced, and it needs PostgreSQL reachable to do that:
-with the database down the claim is refused, the code stays usable and you
-retry once the stack is healthy. Nothing else is touched: the notes
-filesystem, its database records, the API keys and the internal credentials
-all stay as they are. Do not rebuild the `data` volume for this. That destroys
-the notes filesystem to reset one password.
+Claiming writes a new session signing secret beside the new password hash, so
+every cookie issued under the old password is refused immediately. PostgreSQL
+is not involved. Nothing else is touched: the notes filesystem, its database
+records, the API keys and the internal credentials all stay as they are. Do
+not rebuild the `data` volume for this. That destroys the notes filesystem to
+reset one password.
 
 The session cookie is always Secure, which browsers send over HTTPS and on the
 loopback address above. Republishing Admin on another address with
@@ -239,7 +238,7 @@ docker compose exec obsidian-sync node /app/control.mjs resume
 | Service | Does | State |
 |---|---|---|
 | `api` | the public contract on `:8080` | five-minute key cache; no durable state |
-| `admin` | server-rendered operator interface on `:8082` | claim and password in `/data/state/admin.json`; sessions in PostgreSQL |
+| `admin` | server-rendered operator interface on `:8082` | password hash and session signing secret in `/data/state/admin.json`; session state in its signed cookie |
 | `store` | the only process that writes the notes filesystem | `/data`, one replica always |
 | `git` | records the history of the notes filesystem; no network, no credential | `/data/notes/.git`, one replica always |
 | `obsidian-sync` | supervises the sync client and exposes internal lifecycle control; real sync refused for now | `/data/state/sync`, one replica always |

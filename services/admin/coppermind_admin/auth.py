@@ -1,21 +1,19 @@
-"""Filesystem credentials and PostgreSQL-backed browser sessions."""
+"""Filesystem credentials and stateless signed browser sessions."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import hmac
 import json
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
 
-import sqlalchemy as sa
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coppermind.atomicio import create_exclusive_bytes
 from coppermind.statefiles import StateStore
@@ -29,10 +27,6 @@ class AlreadyClaimed(Exception):
 
 class InvalidClaimCode(Exception):
     pass
-
-
-class SessionsUnavailable(Exception):
-    """The session database could not be reached."""
 
 
 class AdminRecordUnreadable(Exception):
@@ -56,15 +50,8 @@ class AdminCredentials:
     def is_claimed(self) -> bool:
         return self.path.is_file()
 
-    async def claim(
-        self, code: str, password: str, before_write: Callable[[], Awaitable[None]]
-    ) -> None:
-        """Take the admin record for the holder of the claim code.
-
-        `before_write` runs once the code is accepted and before anything is
-        written, so whatever it guarantees (today, that no session outlives the
-        credential being replaced) either holds or the claim does not happen.
-        """
+    async def claim(self, code: str, password: str) -> None:
+        """Take the admin record for the holder of the claim code."""
         async with self._claim_lock:
             if self.is_claimed():
                 raise AlreadyClaimed
@@ -76,12 +63,12 @@ class AdminCredentials:
             # non-ASCII character, which compare_digest refuses on str.
             if not expected or not secrets.compare_digest(code.strip().encode(), expected.encode()):
                 raise InvalidClaimCode
-            await before_write()
             password_hash = await asyncio.to_thread(_HASHER.hash, password)
             body = {
                 "schema_version": 1,
                 "revision": 1,
                 "password_hash": password_hash,
+                "session_secret": secrets.token_hex(32),
                 "claimed_at": datetime.now(tz=UTC).isoformat(),
             }
             try:
@@ -94,11 +81,14 @@ class AdminCredentials:
                 raise AlreadyClaimed from exc
             self.claim_code_path.unlink(missing_ok=True)
 
-    async def verify_password(self, password: str) -> bool:
+    def _record(self) -> dict[str, object]:
         try:
-            record = self.state.read("admin").body
+            return self.state.read("admin").body
         except (OSError, ValueError) as exc:
             raise AdminRecordUnreadable(str(exc)) from exc
+
+    async def verify_password(self, password: str) -> bool:
+        record = self._record()
         encoded = record.get("password_hash")
         if not isinstance(encoded, str) or not encoded.isascii():
             raise AdminRecordUnreadable("password_hash is not an ASCII Argon2 hash string")
@@ -111,86 +101,57 @@ class AdminCredentials:
                 f"password_hash is not a usable Argon2 hash: {exc}"
             ) from exc
 
-
-class Sessions(Protocol):
-    async def create(self, lifetime: timedelta) -> str: ...
-
-    async def valid(self, token: str) -> bool: ...
-
-    async def delete(self, token: str) -> None: ...
-
-    async def revoke_all(self) -> None: ...
-
-    async def ready(self) -> bool: ...
-
-
-def token_hash(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
-
-
-class PostgresSessions:
-    def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
-        self.factory = factory
-
-    async def create(self, lifetime: timedelta) -> str:
-        token = secrets.token_urlsafe(32)
-        now = datetime.now(tz=UTC)
+    def session_secret(self) -> bytes:
+        encoded = self._record().get("session_secret")
+        if not isinstance(encoded, str) or len(encoded) != 64:
+            raise AdminRecordUnreadable("session_secret is not a 32-byte hexadecimal value")
         try:
-            async with self.factory() as session, session.begin():
-                await session.execute(
-                    sa.text("DELETE FROM admin_sessions WHERE expires_at <= :now"), {"now": now}
-                )
-                await session.execute(
-                    sa.text(
-                        "INSERT INTO admin_sessions (token_hash, created_at, expires_at) "
-                        "VALUES (:token_hash, :created_at, :expires_at)"
-                    ),
-                    {
-                        "token_hash": token_hash(token),
-                        "created_at": now,
-                        "expires_at": now + lifetime,
-                    },
-                )
-        except (SQLAlchemyError, OSError) as exc:
-            raise SessionsUnavailable from exc
-        return token
+            secret = bytes.fromhex(encoded)
+        except ValueError as exc:
+            raise AdminRecordUnreadable(
+                "session_secret is not a 32-byte hexadecimal value"
+            ) from exc
+        if len(secret) != 32:
+            raise AdminRecordUnreadable("session_secret is not a 32-byte hexadecimal value")
+        return secret
 
-    async def valid(self, token: str) -> bool:
-        now = datetime.now(tz=UTC)
-        try:
-            async with self.factory() as session:
-                result = await session.execute(
-                    sa.text(
-                        "SELECT 1 FROM admin_sessions "
-                        "WHERE token_hash = :token_hash AND expires_at > :now"
-                    ),
-                    {"token_hash": token_hash(token), "now": now},
-                )
-                return result.scalar_one_or_none() is not None
-        except (SQLAlchemyError, OSError) as exc:
-            raise SessionsUnavailable from exc
 
-    async def delete(self, token: str) -> None:
-        try:
-            async with self.factory() as session, session.begin():
-                await session.execute(
-                    sa.text("DELETE FROM admin_sessions WHERE token_hash = :token_hash"),
-                    {"token_hash": token_hash(token)},
-                )
-        except (SQLAlchemyError, OSError) as exc:
-            raise SessionsUnavailable from exc
+def _utcnow() -> datetime:
+    return datetime.now(tz=UTC)
 
-    async def revoke_all(self) -> None:
-        try:
-            async with self.factory() as session, session.begin():
-                await session.execute(sa.text("DELETE FROM admin_sessions"))
-        except (SQLAlchemyError, OSError) as exc:
-            raise SessionsUnavailable from exc
 
-    async def ready(self) -> bool:
-        try:
-            async with self.factory() as session:
-                await session.execute(sa.text("SELECT 1"))
-            return True
-        except Exception:
+class SignedSessions:
+    """Session state carried by an authenticated cookie, not a database row."""
+
+    def __init__(
+        self,
+        credentials: AdminCredentials,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self.credentials = credentials
+        self.now = now or _utcnow
+
+    def create(self, lifetime: timedelta) -> str:
+        expires_at = int((self.now() + lifetime).timestamp())
+        payload = f"v1.{expires_at}.{secrets.token_urlsafe(18)}"
+        signature = self._signature(payload)
+        return f"{payload}.{signature}"
+
+    def valid(self, token: str) -> bool:
+        if len(token) > 512:
             return False
+        try:
+            version, expires_at, nonce, signature = token.split(".")
+            expiry = int(expires_at)
+        except (TypeError, ValueError):
+            return False
+        if version != "v1" or not nonce or expiry <= int(self.now().timestamp()):
+            return False
+        payload = f"{version}.{expires_at}.{nonce}"
+        return hmac.compare_digest(signature, self._signature(payload))
+
+    def _signature(self, payload: str) -> str:
+        digest = hmac.new(
+            self.credentials.session_secret(), payload.encode(), hashlib.sha256
+        ).digest()
+        return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()

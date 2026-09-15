@@ -21,8 +21,8 @@ from coppermind.atomicio import atomic_write_text
 
 StateName = Literal["settings", "schema", "rules", "keys", "admin"]
 
-# Extension per state file. JSON is used where the file holds hashes rather
-# than operator prose, so nothing invites hand editing.
+# Extension per state file. JSON is used where the file holds credentials or
+# hashes rather than operator prose, so nothing invites hand editing.
 STATE_FILES: dict[str, str] = {
     "settings": "yaml",
     "schema": "yaml",

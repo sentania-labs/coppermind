@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import html
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -14,7 +12,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 
-from coppermind.db.session import make_engine, make_session_factory
 from coppermind.health import Check, Health, Readiness
 from coppermind.logging import configure_logging, get_logger
 from coppermind.settings import ProductSettings, Wiring
@@ -25,9 +22,7 @@ from coppermind_admin.auth import (
     AdminRecordUnreadable,
     AlreadyClaimed,
     InvalidClaimCode,
-    PostgresSessions,
-    Sessions,
-    SessionsUnavailable,
+    SignedSessions,
 )
 
 SERVICE = "coppermind-admin"
@@ -135,20 +130,7 @@ def unreadable_state_file(path: Path, problem: str, remedy: str) -> HTMLResponse
     )
 
 
-def unavailable() -> HTMLResponse:
-    return HTMLResponse(
-        page(
-            "Unavailable",
-            """<h1>Admin is unavailable</h1>
-<p class="error">The session database could not be reached, so Admin cannot check or create a
-sign-in right now.</p>
-<p class="muted">Nothing was lost. Admin works again as soon as PostgreSQL returns.</p>""",
-        ),
-        status_code=503,
-    )
-
-
-def create_app(wiring: Wiring | None = None, sessions: Sessions | None = None) -> FastAPI:
+def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = None) -> FastAPI:
     settings = wiring or Wiring()
     configure_logging(SERVICE, settings.log_level)
     version = settings.running_version(__version__)
@@ -163,41 +145,25 @@ def create_app(wiring: Wiring | None = None, sessions: Sessions | None = None) -
         body.pop("revision", None)
         return ProductSettings.model_validate(body)
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        engine = None
-        if sessions is None:
-            engine = make_engine(settings.database_url_for("asyncpg"))
-            app.state.sessions = PostgresSessions(make_session_factory(engine))
-        else:
-            app.state.sessions = sessions
-        app.state.credentials = credentials
-        app.state.settings = settings
-        log.info("admin started")
-        try:
-            yield
-        finally:
-            if engine is not None:
-                await engine.dispose()
-
-    app = FastAPI(title="Coppermind Admin", version=version, lifespan=lifespan)
+    app = FastAPI(title="Coppermind Admin", version=version)
+    app.state.sessions = sessions or SignedSessions(credentials)
+    log.info("admin started")
 
     @app.middleware("http")
     async def require_session(request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path.rstrip("/") or "/"
         if path in PUBLIC or path == "/":
             return await call_next(request)
+        if not credentials.is_claimed():
+            return RedirectResponse("/admin/claim", status_code=303)
         token = request.cookies.get(COOKIE, "")
         if token:
             try:
-                signed_in = await request.app.state.sessions.valid(token)
-            except SessionsUnavailable:
-                return unavailable()
+                signed_in = request.app.state.sessions.valid(token)
+            except AdminRecordUnreadable as exc:
+                return unreadable_state_file(credentials.path, str(exc), ADMIN_RECORD_REMEDY)
             if signed_in:
-                request.state.admin_session = token
                 return await call_next(request)
-        if not credentials.is_claimed():
-            return RedirectResponse("/admin/claim", status_code=303)
         if token:
             return error_response("login", "session_expired")
         return RedirectResponse("/admin/login", status_code=303)
@@ -255,13 +221,11 @@ required></label><button>Log in</button></form>""",
         if not code or len(password) < 12:
             return error_response("claim", "validation_error")
         try:
-            await credentials.claim(code, password, request.app.state.sessions.revoke_all)
+            await credentials.claim(code, password)
         except AlreadyClaimed:
             return error_response("login", "already_claimed")
         except InvalidClaimCode:
             return error_response("claim", "invalid_claim_code")
-        except SessionsUnavailable:
-            return unavailable()
         return RedirectResponse("/admin/login", status_code=303)
 
     @app.post("/v1/admin/login", include_in_schema=False)
@@ -285,9 +249,9 @@ required></label><button>Log in</button></form>""",
             )
         lifetime = timedelta(hours=product.admin.session_hours)
         try:
-            token = await request.app.state.sessions.create(lifetime)
-        except SessionsUnavailable:
-            return unavailable()
+            token = request.app.state.sessions.create(lifetime)
+        except AdminRecordUnreadable as exc:
+            return unreadable_state_file(credentials.path, str(exc), ADMIN_RECORD_REMEDY)
         response: Response = RedirectResponse("/admin", status_code=303)
         response.set_cookie(
             COOKIE,
@@ -300,11 +264,7 @@ required></label><button>Log in</button></form>""",
         return response
 
     @app.post("/v1/admin/logout", include_in_schema=False)
-    async def logout(request: Request) -> Response:
-        try:
-            await request.app.state.sessions.delete(request.state.admin_session)
-        except SessionsUnavailable:
-            return unavailable()
+    async def logout() -> Response:
         response = RedirectResponse("/admin/login", status_code=303)
         response.delete_cookie(COOKIE, path="/")
         return response
@@ -314,9 +274,9 @@ required></label><button>Log in</button></form>""",
         return Health(service=SERVICE, version=version)
 
     @app.get("/readyz", tags=["operations"])
-    async def readyz(request: Request) -> JSONResponse:
-        database_ready = await request.app.state.sessions.ready()
-        readiness = Readiness.of([Check(name="postgres", ok=database_ready)])
+    async def readyz() -> JSONResponse:
+        state_ready = settings.state_dir.is_dir()
+        readiness = Readiness.of([Check(name="state", ok=state_ready)])
         return JSONResponse(
             status_code=200 if readiness.ready else 503,
             content=readiness.model_dump(mode="json"),

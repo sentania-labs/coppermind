@@ -39,8 +39,8 @@ RUN uv sync --frozen --no-dev --package coppermind-admin \
 ENV COPPERMIND_BUILD_VERSION="${BUILD_VERSION}"
 
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin coppermind \
-    && mkdir -p /data /run/coppermind/postgres \
-    && chown -R coppermind:coppermind /data /run/coppermind
+    && mkdir -p /data \
+    && chown -R coppermind:coppermind /data
 USER 1000
 EXPOSE 8082
 

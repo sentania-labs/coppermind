@@ -12,13 +12,11 @@ vertical path proved end to end, then widened.
   opens on a server-rendered Claim page. Bootstrap creates the one-time code at
   `/data/state/internal/claim-code`, records that location in its log, and
   keeps the same code across restarts. A successful claim accepts the code,
-  ends every existing admin session, then writes only the Argon2 password hash
-  and claim time to mode 0600 `admin.json` and removes the code; in that order,
-  so a claim that cannot reach the session database leaves the system unclaimed
-  with its code still usable. Later claim attempts are refused, and a login
+  writes the Argon2 password hash, claim time and a random session signing
+  secret to mode 0600 `admin.json`, then removes the code. Later claim attempts are refused, and a login
   submitted on a system that is not claimed returns to the Claim page rather
-  than reporting a bad password. Password login creates an expiring, hashed
-  PostgreSQL session with the shipped 12-hour default. The
+  than reporting a bad password. Password login creates an expiring HMAC-signed
+  cookie with the shipped 12-hour default and no database session state. The
   protected overview says only that the operator is signed in, because its
   counters and controls belong to later increments. Logout removes the
   session and the protected page redirects to Login again. Claim, login and
@@ -27,9 +25,10 @@ vertical path proved end to end, then widened.
   which is named on screen along with what was rejected. The session cookie is
   always Secure, which browsers honour on the loopback address this ships with
   and which makes TLS a requirement for any other address. Admin mounts only
-  `/data/state`, so the notes filesystem is not reachable from it at all. A session database outage
-  renders an operator-facing page under an honest 503 rather than failing. This path was driven through its
-  rendered pages in Chrome against a fresh compose stack.
+  `/data/state`, so the notes filesystem is not reachable from it at all.
+  Re-claiming after password recovery replaces the signing secret, which
+  immediately refuses every cookie issued under the old password. This path
+  was driven through its rendered pages in Chrome against a fresh compose stack.
 - `docker compose up -d` on a clean checkout reaches a healthy stack with no
   manual setup and no hand populated setting. The one-shot `bootstrap`
   container creates `/data`, generates the internal bearer token and the

@@ -127,7 +127,7 @@ class LimitSettings(BaseModel):
 class AdminSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    session_hours: int = Field(default=12, ge=1)
+    session_hours: int = Field(default=12, ge=1, le=24 * 365)
 
 
 class ProductSettings(BaseModel):
