@@ -26,6 +26,7 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     NoteUnparseable,
     NotFound,
+    PatchFrontmatter,
     PathCollision,
     PayloadTooLarge,
     PreconditionRequired,
@@ -86,6 +87,17 @@ class HttpStoreClient:
         response = await self._send(
             "PUT",
             f"{INTERNAL_PREFIX}/notes/{_segment(note_id)}",
+            json=request.model_dump(),
+            headers={"If-Match": f'"{if_match}"'},
+        )
+        return NoteDocument.model_validate(response.json())
+
+    async def patch_frontmatter(
+        self, note_id: NoteId, request: PatchFrontmatter, if_match: ETag
+    ) -> NoteDocument:
+        response = await self._send(
+            "PATCH",
+            f"{INTERNAL_PREFIX}/notes/{_segment(note_id)}/frontmatter",
             json=request.model_dump(),
             headers={"If-Match": f'"{if_match}"'},
         )

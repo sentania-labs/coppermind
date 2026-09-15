@@ -26,11 +26,12 @@ vertical path proved end to end, then widened.
   full-scope key while the first stays usable.
 - Every `/v1` route requires `Bearer cm_<key_id>_<secret>`. A missing or bad
   key answers 401 and a key without the route's scope answers 403. Note reads
-  need `notes:read`; creates and replacements need `notes:write`; ingest needs
-  both `sources:write` and `notes:write`, so a key holding one of the two
-  answers 403. Successful verification and key hashes are cached for five
-  minutes, so a key created after a load is picked up at the next cache expiry
-  rather than at once.
+  need `notes:read`; creates and replacements need `notes:write`; frontmatter
+  patches need both `notes:read` and `notes:write`; ingest needs both
+  `sources:write` and `notes:write`, so a key
+  holding one of the two answers 403. Successful verification and key hashes
+  are cached for five minutes, so a key created after a load is picked up at
+  the next cache expiry rather than at once.
   Health, readiness and OpenAPI remain open, and Compose remains bound to
   loopback by default.
   The content-typed journal scopes, `journal:read` and `journal:write`, are
@@ -80,7 +81,8 @@ vertical path proved end to end, then widened.
   and frontmatter alike, because the note belongs to the captain once it
   exists. A caller resending a changed note body with an existing external id
   gets 200, `note.created: false` and an empty `unstored_fields`, and its note
-  payload was not used: the way to edit a note is `PUT /v1/notes/{id}`.
+  payload was not used: the way to edit a note is `PUT /v1/notes/{id}`, or
+  `PATCH /v1/notes/{id}/frontmatter` for named fields.
   An interrupted revision write can leave a numbered revision directory that
   `manifest.json` does not record. The next ingest of changed artifacts for
   that source answers 409 `incomplete_revision` naming the directory, rather
@@ -129,6 +131,34 @@ vertical path proved end to end, then widened.
   carrying `current_version`, and the file is untouched. The compare and the
   write happen under a per-note lock in the store, so two writers holding
   the same ETag cannot both win.
+- `PATCH /v1/notes/{id}/frontmatter` changes named frontmatter fields without
+  replacing the note. The body is `set` (keys to write values for) and `unset`
+  (keys to remove); a null value in `set` is refused, naming the field and
+  directing the caller to `unset`, so there is one way to remove a key rather
+  than two. The note's own body is read from the file and is never accepted
+  from the caller, so an edit made in Obsidian while a phone marks the note
+  reviewed survives. Untouched keys keep their position, their comments and
+  their YAML types, and a date lands as a date the same way a create and a
+  replace write one. The block is written back in the note's own list style,
+  so a list a person wrote flush with its key stays flush and a block with no
+  list keeps its mapping nesting. A targeted change preserves the note's
+  content and its ordinary formatting, while some unusual formatting is
+  normalised and syncs with it; what survives and what does not is recorded
+  shape by shape in
+  `coppermind/tests/test_frontmatter.py::test_a_patch_preserves_the_note_and_its_ordinary_formatting`.
+  A patch whose result is byte identical to the file writes nothing and moves
+  no mtime, so marking an already reviewed note reviewed is free. The
+  identifier cannot be set or removed, a key the schema requires cannot be
+  removed, the source-association field is owned by ingest and cannot be
+  patched, and a key named in both `set` and `unset` is refused: each answers
+  422 `validation_error` and leaves the file alone, as does frontmatter the
+  schema rejects. A targeted change is validated against the whole resulting
+  properties block, not only the keys it names, so a note an unrelated edit on
+  a device made invalid cannot be marked reviewed until that edit is
+  corrected. Without `If-Match` the answer is 428
+  `precondition_required`; with an ETag the file no longer hashes to, 409
+  `version_conflict` carrying `current_version`. The compare and the write
+  happen under the same per-note lock a replace uses.
 - The store is the only writer of the notes filesystem, reachable only over
   the internal contract on `:8081` with a bearer token. The API holds no
   state and calls it.
@@ -206,13 +236,19 @@ in the tree, so do not read the absence as a decision to leave it out.
   serving another note's content. A replace of such a note answers the same
   404, whatever ETag it carries. Until the reconciler lands, treat the API as
   the way to create notes.
-- **Frontmatter patching.** `PUT` takes the JSON document shape only; the
-  `text/markdown` whole-file body and `PATCH /v1/notes/{id}/frontmatter` do
-  not exist yet. A replace rewrites the frontmatter block from what was sent,
-  so the keys land in the schema's order with any key the schema does not
-  know after them, and neither a hand order nor a comment a person left
-  between the keys survives it; the patch is the minimal-diff path for a
+- **A whole-file note body.** `PUT` takes the JSON document shape only; the
+  `text/markdown` whole-file body does not exist yet. A replace also rewrites
+  the frontmatter block from what was sent, so the keys land in the schema's
+  order with any key the schema does not know after them, and neither a hand
+  order, a comment a person left between the keys nor the block's own
+  indentation survives it.
+  `PATCH /v1/notes/{id}/frontmatter` is the minimal-difference path for a
   one-key change such as marking a note reviewed.
+- **Line endings in the frontmatter block.** Both write paths reassemble the
+  block from the YAML dump, which emits line feeds, so a block written with
+  carriage returns is rewritten whole and Obsidian Sync pushes every line of
+  it. The body keeps its own line endings. The repair belongs in the shared
+  compose, which is why it is deferred rather than done inside the patch.
 - **Obsidian Sync, the curator and the indexer.** No sync, no filing by
   rules, no search.
 - **History through the API.** Nothing reads Git history or restores a note
