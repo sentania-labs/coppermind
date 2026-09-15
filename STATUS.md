@@ -294,8 +294,8 @@ vertical path proved end to end, then widened.
   Git helper, which carries none of the shared package, excludes the configured
   name as given, so settings validation refuses any `notes.sources_folder` the
   Store would rewrite (a leading dot, a trailing space, a character it strips)
-  and refuses an empty one, which would scatter projections through the vault
-  root, rather than let the projections enter Git history. That agreement
+  and refuses an empty one, which would scatter projections through the notes
+  filesystem root, rather than let the projections enter Git history. That agreement
   covers the folder in force, not a folder that used to be in force, so do not
   rename `notes.sources_folder` once sources have been ingested: nothing moves
   the pages already generated, they stay under the old name, the Git helper

@@ -53,7 +53,7 @@ def test_a_sources_folder_the_store_would_rewrite_is_refused(configured: str, wr
 
 
 def test_an_empty_sources_folder_is_refused():
-    """An empty name would scatter projections through the vault root.
+    """An empty name would scatter projections through the notes filesystem root.
 
     The Git helper refuses the same value and keeps the folder it last accepted,
     so nothing would exclude the projections it then stopped matching.

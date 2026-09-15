@@ -143,7 +143,8 @@ def test_a_directory_at_the_chosen_name_is_refused_rather_than_called_an_outage(
     """Something that is not a readable file is an occupied name, not a bad mount.
 
     Answering that the volume is unwell sends the operator to a healthy mount
-    and repeats forever, because nothing about the next attempt differs.
+    to look for a fault that is not there. The name is taken, which is what
+    the refusal has to say, and a page chosen afresh goes to a free one.
     """
     relative = place(tmp_path)
     standing = tmp_path / relative
@@ -175,3 +176,21 @@ def test_a_notes_root_reached_through_a_link_still_names_a_page_under_it(tmp_pat
     assert relative == "_Sources/Plaud/2026-09-08 Ameren Architecture Sync.md"
     assert write(linked, relative) is True
     assert (real / relative).is_file()
+
+
+def test_a_directory_standing_at_the_preferred_name_is_a_taken_name(tmp_path: Path):
+    """Choosing a name has to see every entry, not only the regular files.
+
+    A directory at the name a page would take is as much in the way as a file
+    at it. Counting only files hands back the occupied name every time, so no
+    retry ever places the page.
+    """
+    occupied = tmp_path / "_Sources" / "Plaud" / "2026-09-08 Ameren Architecture Sync.md"
+    occupied.mkdir(parents=True)
+
+    relative = place(tmp_path)
+
+    assert relative == "_Sources/Plaud/2026-09-08 Ameren Architecture Sync (2).md"
+    assert write(tmp_path, relative) is True
+    assert (tmp_path / relative).is_file()
+    assert occupied.is_dir() and not list(occupied.iterdir())

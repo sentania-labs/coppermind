@@ -16,7 +16,7 @@ from coppermind.store_protocol import (
     ProjectionNotPlaced,
     artifact_text,
 )
-from coppermind_store.fs import NOTE_SUFFIX, existing_stems, resolve
+from coppermind_store.fs import NOTE_SUFFIX, resolve
 
 
 def write_projection(
@@ -155,8 +155,24 @@ def _new_path(
     provider_folder = sanitize_stem(provider.title())
     parent_relative = f"{folder}/{provider_folder}"
     parent = resolve(notes_root, parent_relative)
-    stem = unique_stem(note_stem(title, note_date=note_date, dated=True), existing_stems(parent))
+    stem = unique_stem(note_stem(title, note_date=note_date, dated=True), _taken_stems(parent))
     return f"{parent_relative}/{stem}{NOTE_SUFFIX}"
+
+
+def _taken_stems(folder: Path) -> list[str]:
+    """Every page name already in use, whatever kind of entry stands at it.
+
+    A page is only ever written where nothing else is, so a directory or a
+    link at a candidate name is as taken as a file. Counting only regular
+    files would hand the occupied name back on every attempt, and the page
+    would never be placed.
+    """
+    try:
+        return [entry.stem for entry in folder.iterdir() if entry.suffix == NOTE_SUFFIX]
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    except OSError as exc:
+        raise NotesFilesystemUnavailable(str(exc)) from exc
 
 
 def _document(

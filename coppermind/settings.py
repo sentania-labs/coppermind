@@ -71,9 +71,9 @@ class NotesSettings(BaseModel):
         portable = sanitize_folder(value)
         if not portable:
             raise ValueError(
-                f"{value!r} names no folder, so the Store would write projections into the vault "
-                "root while the Git helper kept excluding the folder it last accepted; give a "
-                "folder name the two can both hold"
+                f"{value!r} names no folder, so the Store would write projections into the notes "
+                "filesystem root while the Git helper kept excluding the folder it last "
+                "accepted; give a folder name the two can both hold"
             )
         if portable != value:
             raise ValueError(

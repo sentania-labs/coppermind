@@ -36,7 +36,7 @@ from coppermind.store_protocol import (
 
 
 def projection_text(store: LocalStore, relative: str) -> str:
-    """The generated projection as the captain's vault holds it.
+    """The generated projection as the captain's notes filesystem holds it.
 
     The file is this increment's public output: it is what he opens on his
     phone with the service down, so it is read here from the notes filesystem
@@ -392,12 +392,35 @@ async def test_a_text_typed_artifact_that_is_not_utf8_is_described_not_refused(
     )
 
 
+async def test_a_directory_at_the_preferred_page_name_is_ingested_at_the_next_free_name(
+    store: LocalStore,
+):
+    """A name something else already stands at is chosen around, not refused.
+
+    A directory delivered or made at the name a page would take blocks that
+    name for good: nothing about a later attempt would differ, so the source
+    would stay unreadable until an operator removed it by hand.
+    """
+    first = await store.ingest(sample())
+    blocked = store.notes_root / first.projection_path
+    blocked.unlink()
+    blocked.mkdir()
+
+    second = await store.ingest(sample("rec_second"))
+
+    assert second.projection_path != first.projection_path
+    assert (store.notes_root / second.projection_path).is_file()
+    assert f"source_id: {second.source.id}" in projection_text(store, second.projection_path)
+    assert blocked.is_dir() and not list(blocked.iterdir())
+
+
 async def test_a_new_revision_never_writes_over_another_source_projection(store: LocalStore):
     """A recorded path is only reused while it still holds this source's output.
 
-    Projections live in the captain's vault, so a path can be freed and taken
-    by another source. Replacing whatever sits there would delete a file the
-    manifest of a different source still points at, with nothing reporting it.
+    Projections live in the captain's notes filesystem, so a path can be freed
+    and taken by another source. Replacing whatever sits there would delete a
+    file the manifest of a different source still points at, with nothing
+    reporting it.
     """
     first = await store.ingest(sample("rec_first"))
     (store.notes_root / first.projection_path).unlink()
@@ -706,7 +729,8 @@ async def test_a_notes_fault_removing_a_repaired_projection_reports_the_notes_vo
     The sources write fails, and removing the page it would have recorded fails
     for the very same reason. The operator has to be sent to the volume that is
     actually unwell: answering that the metadata store is unavailable points at
-    a healthy PostgreSQL while the page nothing references stays in the vault.
+    a healthy PostgreSQL while the page nothing references stays in the notes
+    filesystem.
     """
     ingested = await store.ingest(sample())
     kept = store.notes_root / ingested.projection_path
