@@ -55,8 +55,9 @@ vertical path proved end to end, then widened.
   artifacts land under `/data/sources/<source_id>/r0001/`, then
   `manifest.json` last, so a bundle without a manifest is an unfinished one;
   the Review note is written in the same database transaction with the source
-  identifier in its `sources` frontmatter key. A revision is identified by its
-  artifact bytes alone, so resending an identical payload answers 200 with
+  identifier in its `sources` frontmatter key. Creating the pair answers 201;
+  every answer that creates no note answers 200. A revision is identified by
+  its artifact bytes alone, so resending an identical payload answers 200 with
   `created: false`, the existing source and note identifiers, and the current
   revision. Changed artifact content appends an immutable numbered revision
   and answers 200 without rewriting the Review note or changing its reviewed
@@ -92,17 +93,16 @@ vertical path proved end to end, then widened.
   then retry. Nothing heals it automatically, because the filesystem is the
   truth and it no longer claims the identifier. A failure before the note is
   complete removes the bundle and then the claim, so a later legitimate retry
-  can proceed. PostgreSQL failing at commit after
-  the filesystem writes answers 503 `metadata_unavailable` and rolls the rows
-  back, but retains the complete bundle, Review note and external-id claim.
+  can proceed. PostgreSQL failing at commit after the filesystem writes
+  answers 503 `metadata_unavailable` and rolls the rows back, but retains the
+  complete bundle, Review note and external-id claim.
   A retry resolves from the claim and completed files, repairs a missing
   mirror when needed, and cannot create a duplicate. That repair runs on the
   replay path, so a retry carrying a corrected capture time still rebuilds the
   rows and then reports the correction as unstored. Rebuilding the note link
   means reading every note, so it runs in a worker thread: a retry recovering
   from an outage does not stop the store answering readiness and other
-  requests while it walks. A submitted body over
-  `limits.ingest_max_bytes`
+  requests while it walks. A submitted body over `limits.ingest_max_bytes`
   (25 MiB by default, settable like every other setting) answers 413
   `payload_too_large` before filesystem or database writes. The API preserves
   the public body length across the Store contract, but checks it only after
@@ -177,13 +177,15 @@ in the tree, so do not read the absence as a decision to leave it out.
 
 - **Remaining source capabilities.** Storing a correction to a field that
   describes a source (`captured_at`, `metadata`, `source_type`, `origin` or an
-  artifact `mime_type`) is not built; today those are reported back as
-  unstored. Keeping them means recording them per revision, which costs keys
-  in `manifest.json`, a manifest `schema_version` bump and columns on
-  `source_revisions`. Generated source projections into the
-  notes filesystem and tombstoning a source are not built. Tombstones in particular have no
-  columns in the mirror and no keys in `manifest.json`, so adding them costs
-  a migration of its own and a manifest `schema_version` bump.
+  artifact `mime_type`) when the artifacts are unchanged is not built; today
+  those are reported back as unstored. A correction carried in alongside
+  changed artifacts does land, because it rides the new revision. Keeping the
+  rest means recording them per revision, which costs keys in `manifest.json`,
+  a manifest `schema_version` bump and columns on `source_revisions`.
+  Generated source projections into the notes filesystem and tombstoning a
+  source are not built. Tombstones in particular have no columns in the mirror
+  and no keys in `manifest.json`, so adding them costs a migration of its own
+  and a manifest `schema_version` bump.
 - **Reconciliation.** Nothing yet notices a file created, moved or deleted on
   a device. An edit in place is the exception and does read back: a note read
   by its identifier is parsed from the file every time, so a body or
