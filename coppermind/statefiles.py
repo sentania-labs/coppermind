@@ -113,8 +113,9 @@ class StateStore:
 
 
 def _mode_for(name: str) -> int:
-    # keys.json and admin.json hold argon2 hashes. They are not usable as
-    # credentials, but there is no reason for them to be world readable.
+    # keys.json holds Argon2 hashes, and admin.json holds the session signing
+    # secret beside its hash. That secret mints admin sessions on its own, so
+    # neither file is world readable.
     return 0o600 if name in {"keys", "admin"} else 0o644
 
 

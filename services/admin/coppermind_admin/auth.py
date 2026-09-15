@@ -138,7 +138,7 @@ class SignedSessions:
         return f"{payload}.{signature}"
 
     def valid(self, token: str) -> bool:
-        if len(token) > 512:
+        if len(token) > 512 or not token.isascii():
             return False
         try:
             version, expires_at, nonce, signature = token.split(".")

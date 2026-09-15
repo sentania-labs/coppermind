@@ -35,12 +35,19 @@ docker compose run --rm --no-deps --entrypoint cat bootstrap \
 ```
 
 Claiming deletes that code. Admin then requires a password-backed browser
-session until you log out or the configured 12-hour default expires. Its
-overview intentionally reports only that you are signed in; settings, API
-keys, status, and Obsidian Sync connection arrive as separate increments.
+session, which lasts the configured 12-hour default. The session lives in the
+signed cookie itself, not in a database row: Log out clears it from that
+browser, and the same session cannot be cut off anywhere else, so a token
+already copied out stays good until its 12 hours are up. Re-claiming with a
+new password is what ends every session at once, and the recovery steps below
+are how you do it. Admin's overview intentionally reports only that you are
+signed in; settings, API keys, status, and Obsidian Sync connection arrive as
+separate increments.
 
-Forgot the admin password? Remove the admin record and claim again. The
-bootstrap container issues a fresh claim code whenever that record is absent:
+Forgot the admin password, or need to cut off a session cookie that got away
+from you? Both have the same answer: remove the admin record and claim again.
+The bootstrap container issues a fresh claim code whenever that record is
+absent:
 
 ```bash
 docker compose run --rm --no-deps --entrypoint rm bootstrap /data/state/admin.json
@@ -60,7 +67,10 @@ loopback address above. Republishing Admin on another address with
 `COPPERMIND_ADMIN_BIND` therefore requires TLS in front of it: over plain HTTP
 the browser will not send the cookie back and login cannot complete. There is
 no plaintext option. Republishing Admin also puts its login in reach of anyone
-who can reach that port, and login has no attempt limiting yet.
+who can reach that port, and login has no attempt limiting yet. A proxy in
+front of Admin sees the session cookie, so treat anything that logs or buffers
+request headers as holding a live credential: if one gets out, re-claim with a
+new password as described above. Clicking Log out will not reach it.
 
 Read the default API key from its
 restricted bootstrap volume into the current shell:

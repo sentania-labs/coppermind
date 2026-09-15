@@ -18,8 +18,11 @@ vertical path proved end to end, then widened.
   than reporting a bad password. Password login creates an expiring HMAC-signed
   cookie with the shipped 12-hour default and no database session state. The
   protected overview says only that the operator is signed in, because its
-  counters and controls belong to later increments. Logout removes the
-  session and the protected page redirects to Login again. Claim, login and
+  counters and controls belong to later increments. Logout clears the cookie
+  from that browser and the protected page redirects to Login again; because
+  the session is the signed cookie and not a row, an issued token stays valid
+  until its expiry no matter where Log out is clicked, and re-claiming is the
+  only thing that ends every session at once. Claim, login and
   logout accept the rendered forms only, and every refusal returns to the page
   that names its own cause, including a control state file Admin cannot read,
   which is named on screen along with what was rejected. The session cookie is

@@ -369,3 +369,44 @@ def test_a_tampered_session_cookie_is_refused(fresh):
 
     refused = client.get("/admin", follow_redirects=False)
     assert refused.headers["location"] == "/admin/login?error=session_expired"
+
+
+def test_a_session_cookie_carrying_a_non_ascii_byte_returns_to_login(fresh):
+    """Cookie headers are decoded as latin-1, so any high byte arrives as a character."""
+    client, _, _ = fresh
+    claim(client)
+    login(client)
+
+    refused = client.get(
+        "/admin",
+        headers={"cookie": f"{COOKIE}=v1.99999999999.abc.ézz".encode("latin-1")},
+        follow_redirects=False,
+    )
+    assert refused.status_code == 303
+    assert refused.headers["location"] == "/admin/login?error=session_expired"
+
+
+def test_logout_clears_this_browser_but_not_a_token_taken_elsewhere(fresh):
+    """The documented lifecycle: only re-claiming ends a session someone else holds."""
+    client, wiring, sessions = fresh
+    claim(client)
+    login(client)
+    captured = client.cookies.get(COOKIE)
+    assert captured is not None
+
+    client.post("/v1/admin/logout", data={}, follow_redirects=False)
+    assert COOKIE not in client.cookies
+    assert sessions.valid(captured)
+    client.cookies.set(COOKIE, captured)
+    assert "You are signed in" in client.get("/admin").text
+
+    client.cookies.delete(COOKIE)
+    (wiring.state_dir / "admin.json").unlink()
+    (wiring.state_dir / "internal" / "claim-code").write_text(CLAIM_CODE, encoding="utf-8")
+    reclaimed = claim(client, password="a different admin password")
+    assert reclaimed.headers["location"] == "/admin/login"
+
+    assert not sessions.valid(captured)
+    client.cookies.set(COOKIE, captured)
+    stale = client.get("/admin", follow_redirects=False)
+    assert stale.headers["location"] == "/admin/login?error=session_expired"
