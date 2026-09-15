@@ -607,16 +607,22 @@ def _ordered(values: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any
 def _patch_problems(request: PatchFrontmatter, schema: FrontmatterSchema) -> list[str]:
     """Problems with the patch request itself, found before any file is read.
 
-    A key named in both halves has no single meaning, and neither the
-    identifier a note is found by nor a key the schema requires is a patch's
-    to remove. Refusing here means the file is never opened, let alone
-    written.
+    A key named in both halves has no single meaning, neither the identifier a
+    note is found by nor a key the schema requires is a patch's to remove, and
+    a null is not a value to write: removing a key is what `unset` is for, so
+    `set` has one meaning rather than two. Refusing here means the file is
+    never opened, let alone written.
     """
     id_key = schema.role("id_key")
     sources_key = schema.role("sources_key")
     required = {definition.name for definition in schema.keys if definition.required}
     unset = set(request.unset)
     problems = [f"{key}: named in both set and unset" for key in request.set if key in unset]
+    problems += [
+        f"{key}: null is not a value to write; name the key in unset to remove it"
+        for key, value in request.set.items()
+        if value is None
+    ]
     if sources_key in request.set or sources_key in unset:
         problems.append(
             f"{sources_key}: source associations are managed by ingest and cannot be patched"

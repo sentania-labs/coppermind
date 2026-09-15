@@ -870,3 +870,22 @@ async def test_a_key_named_in_both_set_and_unset_is_refused_and_changes_nothing(
 
     assert raised.value.errors == ["account: named in both set and unset"]
     assert path.read_bytes() == before
+
+
+async def test_a_null_value_in_set_is_refused_and_changes_nothing(store: LocalStore):
+    """Removing a key has one name: a null in set would leave an empty property behind."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationFailed) as raised:
+        await store.patch_frontmatter(
+            created.id,
+            PatchFrontmatter(set={"account": None}),
+            created.content_hash,
+        )
+
+    assert raised.value.errors == [
+        "account: null is not a value to write; name the key in unset to remove it"
+    ]
+    assert path.read_bytes() == before

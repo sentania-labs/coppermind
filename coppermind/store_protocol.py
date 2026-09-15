@@ -322,7 +322,11 @@ class ReplaceNote(BaseModel):
 
 
 class PatchFrontmatter(BaseModel):
-    """Set and unset only named fields in a note's frontmatter."""
+    """Set and unset only named fields in a note's frontmatter.
+
+    `set` writes values and `unset` removes keys. A null in `set` is refused,
+    so there is one way to remove a key rather than two.
+    """
 
     model_config = ConfigDict(extra="forbid")
 

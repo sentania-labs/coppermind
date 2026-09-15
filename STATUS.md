@@ -132,8 +132,10 @@ vertical path proved end to end, then widened.
   write happen under a per-note lock in the store, so two writers holding
   the same ETag cannot both win.
 - `PATCH /v1/notes/{id}/frontmatter` changes named frontmatter fields without
-  replacing the note. The body is `set` (keys to write) and `unset` (keys to
-  remove); the note's own body is read from the file and is never accepted
+  replacing the note. The body is `set` (keys to write values for) and `unset`
+  (keys to remove); a null value in `set` is refused, naming the field and
+  directing the caller to `unset`, so there is one way to remove a key rather
+  than two. The note's own body is read from the file and is never accepted
   from the caller, so an edit made in Obsidian while a phone marks the note
   reviewed survives. Untouched keys keep their position, their comments and
   their YAML types, and a date lands as a date the same way a create and a
@@ -146,7 +148,10 @@ vertical path proved end to end, then widened.
   removed, the source-association field is owned by ingest and cannot be
   patched, and a key named in both `set` and `unset` is refused: each answers
   422 `validation_error` and leaves the file alone, as does frontmatter the
-  schema rejects. Without `If-Match` the answer is 428
+  schema rejects. A targeted change is validated against the whole resulting
+  properties block, not only the keys it names, so a note an unrelated edit on
+  a device made invalid cannot be marked reviewed until that edit is
+  corrected. Without `If-Match` the answer is 428
   `precondition_required`; with an ETag the file no longer hashes to, 409
   `version_conflict` carrying `current_version`. The compare and the write
   happen under the same per-note lock a replace uses.
