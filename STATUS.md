@@ -53,16 +53,21 @@ vertical path proved end to end, then widened.
 - `GET /v1/notes` requires `notes:read` and lists summaries for notes whose
   identifiers and paths are known to the metadata mirror. Filters cover folder,
   reviewed state, type, context, account, inclusive date bounds, tag and file
-  state. The opaque cursor pages in mirrored path order, with a default limit
-  of 50 and an allowed range of 1 through 200. Path-keyed paging has to be
-  revisited when note move and rename land, because those change the key a
-  cursor resumes from. For a known path,
+  state. `folder` is the exact path prefix, so `folder=Review` selects
+  `Review/...` and a leading or trailing slash is not normalised away. A text
+  filter (`folder`, `type`, `context`, `account` or `tag`) sent empty answers
+  422 `validation_error`, because an unset form field arriving as `folder=`
+  must not come back as an ordinary empty page. The opaque cursor pages in
+  mirrored path order, with a default limit of 50 and an allowed range of 1
+  through 200. Path-keyed paging has to be revisited when note move and rename
+  land, because those change the key a cursor resumes from. For a known path,
   the store reads the current file before filtering and returning its summary,
   so an in-place edit delivered by Obsidian Sync is visible without waiting for
   reconciliation. Every summary carries the `state` the store observed, `ok`,
   `unparsed` or `missing`, so a summary rebuilt from the mirror because the
-  file could not be read is never mistaken for one read from disk. With PostgreSQL unavailable, listing answers 503
-  `metadata_unavailable`, never an empty page.
+  file could not be read is never mistaken for one read from disk. With
+  PostgreSQL unavailable, listing answers 503 `metadata_unavailable`, never an
+  empty page.
 - `POST /v1/ingest` takes a source and the note to open for it, and creates
   both or neither. A deterministic `.external-id-<sha256>.json` file claims
   each `provider` plus `external_source_id` before the bundle is written. The
