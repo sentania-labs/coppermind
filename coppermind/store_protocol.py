@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from datetime import date as date_type
 from datetime import datetime
 from pathlib import PurePath
 from typing import Any, Literal, Protocol
@@ -348,12 +349,53 @@ class NoteDocument(BaseModel):
     sources: list[str] = Field(default_factory=list)
 
 
+class NoteQuery(BaseModel):
+    """Filters and keyset cursor for listing notes known to the store."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    cursor: str | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+    folder: str | None = None
+    reviewed: bool | None = None
+    type: str | None = None
+    context: str | None = None
+    account: str | None = None
+    from_date: date_type | None = Field(default=None, alias="from")
+    to_date: date_type | None = Field(default=None, alias="to")
+    tag: str | None = None
+    state: Literal["ok", "unparsed", "missing"] | None = None
+
+
+class NoteSummary(BaseModel):
+    """The current filesystem metadata for one note the store knows about."""
+
+    id: NoteId
+    path: str
+    title: str
+    date: date_type | None = None
+    type: str | None = None
+    context: str | None = None
+    account: str | None = None
+    reviewed: bool
+    tags: list[str] = Field(default_factory=list)
+    content_hash: ETag
+    updated_at: datetime
+
+
+class Page[T](BaseModel):
+    items: list[T]
+    next_cursor: str | None = None
+
+
 class Store(Protocol):
     """What the API, the curator and the indexer are allowed to ask for."""
 
     async def create_note(self, request: CreateNote) -> NoteDocument: ...
 
     async def get_note(self, note_id: NoteId) -> NoteDocument: ...
+
+    async def list_notes(self, query: NoteQuery) -> Page[NoteSummary]: ...
 
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag

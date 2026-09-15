@@ -50,6 +50,15 @@ vertical path proved end to end, then widened.
   note.
 - `GET /v1/notes/{id}` returns the note as a document, carrying
   `ETag: "sha256:<hash of the file bytes>"`.
+- `GET /v1/notes` requires `notes:read` and lists summaries for notes whose
+  identifiers and paths are known to the metadata mirror. Filters cover folder,
+  reviewed state, type, context, account, inclusive date bounds, tag and file
+  state. The opaque cursor pages in mirrored path and identifier order, with a
+  default limit of 50 and an allowed range of 1 through 200. For a known path,
+  the store reads the current file before filtering and returning its summary,
+  so an in-place edit delivered by Obsidian Sync is visible without waiting for
+  reconciliation. With PostgreSQL unavailable, listing answers 503
+  `metadata_unavailable`, never an empty page.
 - `POST /v1/ingest` takes a source and the note to open for it, and creates
   both or neither. A deterministic `.external-id-<sha256>.json` file claims
   each `provider` plus `external_source_id` before the bundle is written. The
@@ -227,7 +236,9 @@ in the tree, so do not read the absence as a decision to leave it out.
 - **Reconciliation.** Nothing yet notices a file created, moved or deleted on
   a device. An edit in place is the exception and does read back: a note read
   by its identifier is parsed from the file every time, so a body or
-  frontmatter change made in Obsidian is reflected on the next read. What
+  frontmatter change made in Obsidian is reflected on the next read and list.
+  Listing can only inspect paths already present in the mirror, so it is not a
+  complete inventory of device-created, moved or renamed files yet. What
   needs the reconciler is anything that invalidates or lacks the mirrored
   path. A note created on a device has no row and cannot be read by
   identifier at all; a note moved, renamed or deleted there leaves a row

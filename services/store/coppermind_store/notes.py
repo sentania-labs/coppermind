@@ -28,6 +28,8 @@ by Obsidian Sync, is refused rather than overwriting the newer bytes.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -60,9 +62,12 @@ from coppermind.store_protocol import (
     MetadataUnavailable,
     NoteDocument,
     NoteId,
+    NoteQuery,
     NotesFilesystemUnavailable,
+    NoteSummary,
     NoteUnparseable,
     NotFound,
+    Page,
     PatchFrontmatter,
     PathCollision,
     ReplaceNote,
@@ -206,6 +211,42 @@ class LocalStore:
             updated_at=datetime.fromtimestamp(mtime, tz=UTC),
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
+
+    async def list_notes(self, query: NoteQuery) -> Page[NoteSummary]:
+        """List current files for note paths present in the metadata mirror.
+
+        PostgreSQL supplies the known identifiers and paths, and therefore is
+        required. Each matching summary is then read from the notes filesystem
+        so an in-place device edit is visible before reconciliation exists.
+        Files and paths PostgreSQL does not know about remain reconciliation's
+        responsibility.
+        """
+        after = _decode_note_cursor(query.cursor) if query.cursor else None
+        statement = sa.select(Note).order_by(Note.path, Note.id)
+        if after is not None:
+            path, note_id = after
+            statement = statement.where(
+                sa.or_(Note.path > path, sa.and_(Note.path == path, Note.id > note_id))
+            )
+        try:
+            async with self.session_factory() as session:
+                rows = list((await session.scalars(statement)).all())
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
+
+        schema = self.control.schema()
+        matched: list[tuple[NoteSummary, tuple[str, str]]] = []
+        for row in rows:
+            summary, state = _current_summary(self.notes_root, row, schema)
+            if not _matches_query(summary, state, query):
+                continue
+            matched.append((summary, (row.path, row.id)))
+            if len(matched) > query.limit:
+                break
+
+        page = matched[: query.limit]
+        next_cursor = _encode_note_cursor(page[-1][1]) if len(matched) > query.limit else None
+        return Page[NoteSummary](items=[summary for summary, _ in page], next_cursor=next_cursor)
 
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag
@@ -435,6 +476,103 @@ def _parse(
         # the honest answer is a miss until reconciliation clears the row.
         raise NotFound(note_id)
     return frontmatter, body
+
+
+def _current_summary(
+    notes_root: Path, row: Note, schema: FrontmatterSchema
+) -> tuple[NoteSummary, str]:
+    """Read a known path and return its current summary and observed state."""
+    try:
+        path = resolve(notes_root, row.path)
+    except ValueError:
+        return _mirrored_summary(row), "missing"
+    if not is_note_file(path):
+        return _mirrored_summary(row), "missing"
+    try:
+        data, mtime = _read(row.id, path)
+        frontmatter, body = _parse(row.id, row.path, data, schema)
+    except NotFound:
+        return _mirrored_summary(row), "missing"
+    except NoteUnparseable:
+        return _mirrored_summary(row), "unparsed"
+
+    tags = frontmatter.get(schema.role("tags_key"), [])
+    return (
+        NoteSummary(
+            id=row.id,
+            path=row.path,
+            title=_title_of(body, path),
+            date=_as_date(frontmatter.get(schema.role("date_key"))),
+            type=_text(frontmatter.get(schema.role("type_key"))),
+            context=_text(frontmatter.get(schema.role("context_key"))),
+            account=_text(frontmatter.get(schema.role("account_key"))),
+            reviewed=bool(frontmatter.get(schema.role("reviewed_key"), False)),
+            tags=[str(tag) for tag in tags] if isinstance(tags, list) else [],
+            content_hash=content_hash(data),
+            updated_at=datetime.fromtimestamp(mtime, tz=UTC),
+        ),
+        "ok",
+    )
+
+
+def _mirrored_summary(row: Note) -> NoteSummary:
+    """The last known metadata for a known path that cannot be parsed now."""
+    return NoteSummary(
+        id=row.id,
+        path=row.path,
+        title=row.title or Path(row.path).stem,
+        date=row.date,
+        type=row.type,
+        context=row.context,
+        account=row.account,
+        reviewed=row.reviewed,
+        tags=list(row.tags),
+        content_hash=row.content_hash,
+        updated_at=row.mtime or row.updated_at,
+    )
+
+
+def _matches_query(summary: NoteSummary, state: str, query: NoteQuery) -> bool:
+    if query.folder is not None:
+        folder = query.folder.strip("/")
+        if folder:
+            if not summary.path.startswith(f"{folder}/"):
+                return False
+        elif "/" in summary.path:
+            return False
+    return all(
+        (
+            query.reviewed is None or summary.reviewed is query.reviewed,
+            query.type is None or summary.type == query.type,
+            query.context is None or summary.context == query.context,
+            query.account is None or summary.account == query.account,
+            query.from_date is None or summary.date is not None and summary.date >= query.from_date,
+            query.to_date is None or summary.date is not None and summary.date <= query.to_date,
+            query.tag is None or query.tag in summary.tags,
+            query.state is None or state == query.state,
+        )
+    )
+
+
+def _encode_note_cursor(key: tuple[str, str]) -> str:
+    payload = json.dumps({"v": 1, "path": key[0], "id": key[1]}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+
+def _decode_note_cursor(cursor: str) -> tuple[str, str]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
+        if (
+            not isinstance(payload, dict)
+            or payload.get("v") != 1
+            or not isinstance(payload.get("path"), str)
+            or not isinstance(payload.get("id"), str)
+        ):
+            raise ValueError
+        return payload["path"], payload["id"]
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        raise ValidationFailed(["cursor: invalid or expired"]) from exc
 
 
 def _replace_if_unchanged(

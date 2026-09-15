@@ -9,7 +9,7 @@ production.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import httpx
 import pytest
@@ -26,10 +26,14 @@ from coppermind.settings import Wiring
 from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import (
     CreateNote,
+    MetadataUnavailable,
     NoteDocument,
+    NoteQuery,
     NotesFilesystemUnavailable,
+    NoteSummary,
     NoteUnparseable,
     NotFound,
+    Page,
     PatchFrontmatter,
     PreconditionRequired,
     ReplaceNote,
@@ -50,6 +54,16 @@ NOTE = NoteDocument(
     size_bytes=11,
     updated_at=datetime(2026, 9, 8, tzinfo=UTC),
 )
+SUMMARY = NoteSummary(
+    id=NOTE_ID,
+    path=NOTE.path,
+    title=NOTE.title,
+    date=date(2026, 9, 8),
+    type="note",
+    reviewed=False,
+    content_hash=NOTE.content_hash,
+    updated_at=NOTE.updated_at,
+)
 
 
 class RaisingStore:
@@ -59,6 +73,9 @@ class RaisingStore:
         self.error = error
 
     async def get_note(self, note_id: str) -> None:
+        raise self.error
+
+    async def list_notes(self, query: NoteQuery) -> None:
         raise self.error
 
     async def replace_note(self, note_id: str, request: ReplaceNote, if_match: str) -> None:
@@ -76,12 +93,17 @@ class OneNoteStore:
     def __init__(self, note: NoteDocument) -> None:
         self.note = note
         self.asked_for: list[str] = []
+        self.list_query: NoteQuery | None = None
 
     async def get_note(self, note_id: str) -> NoteDocument:
         self.asked_for.append(note_id)
         if note_id != self.note.id:
             raise NotFound(note_id)
         return self.note
+
+    async def list_notes(self, query: NoteQuery) -> Page[NoteSummary]:
+        self.list_query = query
+        return Page[NoteSummary](items=[SUMMARY], next_cursor="next-page")
 
     async def replace_note(self, note_id: str, request: ReplaceNote, if_match: str) -> NoteDocument:
         self.asked_for.append(note_id)
@@ -135,6 +157,41 @@ async def test_an_identifier_is_never_reparsed_as_part_of_the_url(suffix: str):
     finally:
         await client.aclose()
     assert store.asked_for == [NOTE_ID + suffix]
+
+
+async def test_a_note_page_and_every_filter_cross_the_internal_contract():
+    store = OneNoteStore(NOTE)
+    client = connected(store)
+    query = NoteQuery.model_validate(
+        {
+            "cursor": "prior-page",
+            "limit": 2,
+            "folder": "Review",
+            "reviewed": False,
+            "type": "note",
+            "context": "internal",
+            "account": "Operations",
+            "from": date(2026, 9, 1),
+            "to": date(2026, 9, 30),
+            "tag": "runbook",
+            "state": "ok",
+        }
+    )
+    try:
+        page = await client.list_notes(query)
+    finally:
+        await client.aclose()
+    assert page == Page[NoteSummary](items=[SUMMARY], next_cursor="next-page")
+    assert store.list_query == query
+
+
+async def test_metadata_unavailable_crosses_the_listing_contract():
+    client = connected(RaisingStore(MetadataUnavailable("connection refused")))
+    try:
+        with pytest.raises(MetadataUnavailable):
+            await client.list_notes(NoteQuery())
+    finally:
+        await client.aclose()
 
 
 async def test_an_identifier_that_is_only_punctuation_is_a_miss_not_an_outage():
