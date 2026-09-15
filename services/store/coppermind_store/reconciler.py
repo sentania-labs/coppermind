@@ -44,7 +44,6 @@ from coppermind import frontmatter as fm
 from coppermind.db.models import Note
 from coppermind.db.session import transaction
 from coppermind.logging import get_logger
-from coppermind.naming import sanitize_folder
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import MetadataUnavailable, NotesFilesystemUnavailable
 from coppermind_store.fs import content_hash, resolve
@@ -700,9 +699,7 @@ def _unadoptable_folders(settings: ProductSettings) -> frozenset[tuple[str, ...]
     are the operator's, read from the same settings the rest of the system lays
     the notes filesystem out by, and each is split into its segments because a
     name may nest: `Archive/Trash` has to exclude what is under it, not every
-    path that merely starts with `Archive`. Each is sanitised the way the store
-    sanitises it when writing, so the exclusion names the folder the files are
-    actually under rather than the raw setting.
+    path that merely starts with `Archive`.
     """
     named = (
         settings.notes.trash_folder,
@@ -711,9 +708,7 @@ def _unadoptable_folders(settings: ProductSettings) -> frozenset[tuple[str, ...]
     )
     return frozenset(
         parts
-        for parts in (
-            tuple(part for part in sanitize_folder(name).split("/") if part) for name in named
-        )
+        for parts in (tuple(part for part in name.split("/") if part) for name in named)
         if parts
     )
 
