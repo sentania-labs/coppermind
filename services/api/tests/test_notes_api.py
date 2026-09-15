@@ -59,6 +59,7 @@ REPLACED = NOTE.model_copy(
 NOTE_SUMMARY = NoteSummary(
     id=NOTE.id,
     path=NOTE.path,
+    state="ok",
     title=NOTE.title,
     date=date(2026, 9, 8),
     type="meeting",

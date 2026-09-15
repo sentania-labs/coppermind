@@ -349,6 +349,10 @@ class NoteDocument(BaseModel):
     sources: list[str] = Field(default_factory=list)
 
 
+NoteState = Literal["ok", "unparsed", "missing"]
+"""What the store saw at a known path: its current file, or that it could not read it."""
+
+
 class NoteQuery(BaseModel):
     """Filters and keyset cursor for listing notes known to the store."""
 
@@ -364,14 +368,22 @@ class NoteQuery(BaseModel):
     from_date: date_type | None = Field(default=None, alias="from")
     to_date: date_type | None = Field(default=None, alias="to")
     tag: str | None = None
-    state: Literal["ok", "unparsed", "missing"] | None = None
+    state: NoteState | None = None
 
 
 class NoteSummary(BaseModel):
-    """The current filesystem metadata for one note the store knows about."""
+    """What the store can see right now for one note it knows about.
+
+    `state` says where the rest of the fields came from. `ok` means they were
+    read from the file at `path` just now. `unparsed` and `missing` mean the
+    file could not be read, so the fields are the mirror's last known values,
+    which are stale by definition and whose `content_hash` no longer names
+    bytes anyone can replace.
+    """
 
     id: NoteId
     path: str
+    state: NoteState
     title: str
     date: date_type | None = None
     type: str | None = None

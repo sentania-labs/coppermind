@@ -115,6 +115,56 @@ async def test_state_filters_observe_missing_and_unparseable_known_paths(store: 
     broken_page = await store.list_notes(NoteQuery(state="unparsed"))
     assert [item.id for item in missing_page.items] == [missing.id]
     assert [item.id for item in broken_page.items] == [broken.id]
+    assert [item.state for item in missing_page.items] == ["missing"]
+    assert [item.state for item in broken_page.items] == ["unparsed"]
+
+
+async def test_a_note_removed_on_a_device_lists_as_missing_beside_a_present_one(
+    store: LocalStore,
+):
+    """An unfiltered listing says which summaries came from a file and which did not."""
+    removed = await _create(
+        store,
+        "Removed Note",
+        note_date="2026-09-01",
+        note_type="note",
+        context="internal",
+    )
+    present = await _create(
+        store,
+        "Surviving Note",
+        note_date="2026-09-02",
+        note_type="note",
+        context="internal",
+    )
+    (store.notes_root / removed.path).unlink()
+
+    page = await store.list_notes(NoteQuery())
+
+    assert {item.id: item.state for item in page.items} == {
+        removed.id: "missing",
+        present.id: "ok",
+    }
+
+
+async def test_the_folder_filter_takes_the_folder_exactly_as_written(store: LocalStore):
+    note = await _create(
+        store,
+        "Filed Note",
+        note_date="2026-09-01",
+        note_type="note",
+        context="internal",
+    )
+    assert note.path.startswith("Review/")
+
+    async def ids(folder: str) -> set[str]:
+        page = await store.list_notes(NoteQuery(folder=folder))
+        return {item.id for item in page.items}
+
+    assert await ids("Review") == {note.id}
+    assert await ids("/Review") == set()
+    assert await ids("Review/") == set()
+    assert await ids("") == set()
 
 
 async def test_cursor_pages_four_notes_two_at_a_time_without_gaps(store: LocalStore):

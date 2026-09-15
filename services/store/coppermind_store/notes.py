@@ -64,6 +64,7 @@ from coppermind.store_protocol import (
     NoteId,
     NoteQuery,
     NotesFilesystemUnavailable,
+    NoteState,
     NoteSummary,
     NoteUnparseable,
     NotFound,
@@ -235,7 +236,7 @@ class LocalStore:
         schema = self.control.schema()
         wanted = query.limit + 1
         batch_size = max(wanted, _SCAN_BATCH)
-        matched: list[tuple[NoteSummary, str]] = []
+        matched: list[NoteSummary] = []
         while len(matched) < wanted:
             statement = sa.select(Note).order_by(Note.path).limit(batch_size)
             if after is not None:
@@ -257,8 +258,8 @@ class LocalStore:
                 break
 
         page = matched[: query.limit]
-        next_cursor = _encode_note_cursor(page[-1][1]) if len(matched) > query.limit else None
-        return Page[NoteSummary](items=[summary for summary, _ in page], next_cursor=next_cursor)
+        next_cursor = _encode_note_cursor(page[-1].path) if len(matched) > query.limit else None
+        return Page[NoteSummary](items=page, next_cursor=next_cursor)
 
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag
@@ -499,40 +500,36 @@ def _parse(
     return frontmatter, body
 
 
-def _current_summary(
-    notes_root: Path, row: Note, schema: FrontmatterSchema
-) -> tuple[NoteSummary, str]:
-    """Read a known path and return its current summary and observed state."""
+def _current_summary(notes_root: Path, row: Note, schema: FrontmatterSchema) -> NoteSummary:
+    """Read a known path and say what was there: its current file, or nothing readable."""
     try:
         path = resolve(notes_root, row.path)
     except ValueError:
-        return _mirrored_summary(row), "missing"
+        return _mirrored_summary(row, "missing")
     if not is_note_file(path):
-        return _mirrored_summary(row), "missing"
+        return _mirrored_summary(row, "missing")
     try:
         data, mtime = _read(row.id, path)
         frontmatter, body = _parse(row.id, row.path, data, schema, log_failure=False)
     except NotFound:
-        return _mirrored_summary(row), "missing"
+        return _mirrored_summary(row, "missing")
     except NoteUnparseable:
-        return _mirrored_summary(row), "unparsed"
+        return _mirrored_summary(row, "unparsed")
 
     tags = frontmatter.get(schema.role("tags_key"), [])
-    return (
-        NoteSummary(
-            id=row.id,
-            path=row.path,
-            title=_title_of(body, path),
-            date=_as_date(frontmatter.get(schema.role("date_key"))),
-            type=_text(frontmatter.get(schema.role("type_key"))),
-            context=_text(frontmatter.get(schema.role("context_key"))),
-            account=_text(frontmatter.get(schema.role("account_key"))),
-            reviewed=bool(frontmatter.get(schema.role("reviewed_key"), False)),
-            tags=[str(tag) for tag in tags] if isinstance(tags, list) else [],
-            content_hash=content_hash(data),
-            updated_at=datetime.fromtimestamp(mtime, tz=UTC),
-        ),
-        "ok",
+    return NoteSummary(
+        id=row.id,
+        path=row.path,
+        state="ok",
+        title=_title_of(body, path),
+        date=_as_date(frontmatter.get(schema.role("date_key"))),
+        type=_text(frontmatter.get(schema.role("type_key"))),
+        context=_text(frontmatter.get(schema.role("context_key"))),
+        account=_text(frontmatter.get(schema.role("account_key"))),
+        reviewed=bool(frontmatter.get(schema.role("reviewed_key"), False)),
+        tags=[str(tag) for tag in tags] if isinstance(tags, list) else [],
+        content_hash=content_hash(data),
+        updated_at=datetime.fromtimestamp(mtime, tz=UTC),
     )
 
 
@@ -542,24 +539,25 @@ def _scan_rows(
     schema: FrontmatterSchema,
     query: NoteQuery,
     needed: int,
-) -> list[tuple[NoteSummary, str]]:
+) -> list[NoteSummary]:
     """Read and filter one batch of known paths, stopping once `needed` match."""
-    found: list[tuple[NoteSummary, str]] = []
+    found: list[NoteSummary] = []
     for row in rows:
-        summary, state = _current_summary(notes_root, row, schema)
-        if not _matches_query(summary, state, query):
+        summary = _current_summary(notes_root, row, schema)
+        if not _matches_query(summary, query):
             continue
-        found.append((summary, row.path))
+        found.append(summary)
         if len(found) == needed:
             break
     return found
 
 
-def _mirrored_summary(row: Note) -> NoteSummary:
-    """The last known metadata for a known path that cannot be parsed now."""
+def _mirrored_summary(row: Note, state: NoteState) -> NoteSummary:
+    """The last known metadata for a known path whose file cannot be read now."""
     return NoteSummary(
         id=row.id,
         path=row.path,
+        state=state,
         title=row.title or Path(row.path).stem,
         date=row.date,
         type=row.type,
@@ -572,16 +570,10 @@ def _mirrored_summary(row: Note) -> NoteSummary:
     )
 
 
-def _matches_query(summary: NoteSummary, state: str, query: NoteQuery) -> bool:
-    if query.folder is not None:
-        folder = query.folder.strip("/")
-        if folder:
-            if not summary.path.startswith(f"{folder}/"):
-                return False
-        elif "/" in summary.path:
-            return False
+def _matches_query(summary: NoteSummary, query: NoteQuery) -> bool:
     return all(
         (
+            query.folder is None or summary.path.startswith(f"{query.folder}/"),
             query.reviewed is None or summary.reviewed is query.reviewed,
             query.type is None or summary.type == query.type,
             query.context is None or summary.context == query.context,
@@ -589,7 +581,7 @@ def _matches_query(summary: NoteSummary, state: str, query: NoteQuery) -> bool:
             query.from_date is None or summary.date is not None and summary.date >= query.from_date,
             query.to_date is None or summary.date is not None and summary.date <= query.to_date,
             query.tag is None or query.tag in summary.tags,
-            query.state is None or state == query.state,
+            query.state is None or summary.state == query.state,
         )
     )
 

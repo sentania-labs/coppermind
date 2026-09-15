@@ -57,6 +57,7 @@ NOTE = NoteDocument(
 SUMMARY = NoteSummary(
     id=NOTE_ID,
     path=NOTE.path,
+    state="ok",
     title=NOTE.title,
     date=date(2026, 9, 8),
     type="note",

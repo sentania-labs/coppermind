@@ -59,7 +59,9 @@ vertical path proved end to end, then widened.
   cursor resumes from. For a known path,
   the store reads the current file before filtering and returning its summary,
   so an in-place edit delivered by Obsidian Sync is visible without waiting for
-  reconciliation. With PostgreSQL unavailable, listing answers 503
+  reconciliation. Every summary carries the `state` the store observed, `ok`,
+  `unparsed` or `missing`, so a summary rebuilt from the mirror because the
+  file could not be read is never mistaken for one read from disk. With PostgreSQL unavailable, listing answers 503
   `metadata_unavailable`, never an empty page.
 - `POST /v1/ingest` takes a source and the note to open for it, and creates
   both or neither. A deterministic `.external-id-<sha256>.json` file claims
