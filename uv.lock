@@ -10,6 +10,7 @@ resolution-markers = [
 [manifest]
 members = [
     "coppermind",
+    "coppermind-admin",
     "coppermind-api",
     "coppermind-git",
     "coppermind-store",
@@ -538,6 +539,23 @@ dev = [
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "ruff", specifier = ">=0.5" },
+]
+
+[[package]]
+name = "coppermind-admin"
+version = "0.1.0.dev0"
+source = { editable = "services/admin" }
+dependencies = [
+    { name = "coppermind" },
+    { name = "fastapi" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "coppermind", editable = "." },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 
 [[package]]

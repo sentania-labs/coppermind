@@ -22,6 +22,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
+from coppermind.statefiles import StateStore
+
 MIB = 1024 * 1024
 
 SyncPlan = Literal["standard", "plus"]
@@ -127,7 +129,7 @@ class LimitSettings(BaseModel):
 class AdminSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    session_hours: int = 12
+    session_hours: int = Field(default=12, ge=1, le=24 * 365)
 
 
 class ProductSettings(BaseModel):
@@ -146,6 +148,13 @@ class ProductSettings(BaseModel):
     events: EventSettings = Field(default_factory=EventSettings)
     limits: LimitSettings = Field(default_factory=LimitSettings)
     admin: AdminSettings = Field(default_factory=AdminSettings)
+
+
+def read_settings(store: StateStore) -> ProductSettings:
+    """The one way `settings.yaml` becomes ProductSettings, for every reader."""
+    body = dict(store.read("settings").body)
+    body.pop("revision", None)
+    return ProductSettings.model_validate(body)
 
 
 def default_settings() -> ProductSettings:

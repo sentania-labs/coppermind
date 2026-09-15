@@ -74,12 +74,20 @@ def run(wiring: Wiring | None = None) -> int:
     _ensure_dir(settings.notes_dir, uid, gid, 0o755)
     _ensure_dir(settings.sources_dir, uid, gid, 0o755)
     _ensure_dir(settings.state_dir, uid, gid, 0o755)
+    _ensure_dir(settings.state_dir / "internal", uid, gid, 0o700)
     _ensure_dir(settings.internal_token_file.parent, uid, gid, 0o755)
     _ensure_dir(settings.db_password_file.parent, uid, gid, 0o755)
     _ensure_dir(settings.default_api_key_file.parent, uid, gid, 0o755)
 
     created_token = _ensure_secret(settings.internal_token_file, uid, gid, 0o600)
     created_password = _ensure_secret(settings.db_password_file, uid, gid, 0o644)
+
+    claim_code_path = settings.state_dir / "internal" / "claim-code"
+    if (settings.state_dir / "admin.json").exists():
+        claim_code_path.unlink(missing_ok=True)
+        claim_code = "claimed"
+    else:
+        claim_code = "generated" if _ensure_secret(claim_code_path, uid, gid, 0o600) else "kept"
 
     control = ControlState(settings.state_dir)
     control.ensure_defaults()
@@ -94,6 +102,7 @@ def run(wiring: Wiring | None = None) -> int:
         f"data={settings.data_dir} "
         f"internal_token={'generated' if created_token else 'kept'} "
         f"postgres_password={'generated' if created_password else 'kept'} "
+        f"claim_code={claim_code} claim_code_file={claim_code_path} "
         f"default_api_key={default_api_key} "
         f"default_api_key_file={settings.default_api_key_file}",
         flush=True,
