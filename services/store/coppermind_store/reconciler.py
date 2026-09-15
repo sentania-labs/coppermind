@@ -44,6 +44,7 @@ from coppermind import frontmatter as fm
 from coppermind.db.models import Note
 from coppermind.db.session import transaction
 from coppermind.logging import get_logger
+from coppermind.settings import ProductSettings
 from coppermind.store_protocol import MetadataUnavailable, NotesFilesystemUnavailable
 from coppermind_store.fs import content_hash, resolve
 from coppermind_store.notes import _jsonable, _mirror_columns, _title_of
@@ -364,6 +365,7 @@ async def reconcile_once(
         full=full,
         quiet=quiet,
         unidentified=dict(remembered),
+        unadoptable=_unadoptable_folders(store.control.settings()),
     )
     remembered.clear()
     remembered.update(scan.unidentified)
@@ -376,16 +378,24 @@ async def reconcile_once(
     for candidate in untried:
         try:
             outcome, cause = await store.adopt_note(candidate.path, candidate.content_hash)
-        except NotesFilesystemUnavailable as exc:
+        except MetadataUnavailable:
+            # The mirror is gone, which is every note's problem, not this
+            # file's. It fails the pass the same way a missing mount does.
+            raise
+        except Exception as exc:  # noqa: BLE001 - one file must not wedge the pass
             # One durable per-file fault must not stop every other note
-            # converging, exactly as it does not inside the scan itself. A
-            # mount that is wholly gone still fails the pass from `_scan`.
-            # The stat is kept so an unwritable subtree is not swept on every
-            # cheap pass; the daily thorough scan reads it again regardless and
-            # is what retries it.
+            # converging, exactly as it does not inside the scan itself. The
+            # stat is kept so an unwritable subtree is not swept on every cheap
+            # pass; the daily thorough scan reads it again regardless and is
+            # what retries it. The type is the whole reason: an exception
+            # message can quote the file, and logs are collected and shipped.
             unwritable += 1
             _remember(remembered, candidate.path, candidate.stat_seen)
-            log.warning("device-created note not adopted", path=candidate.path, reason=str(exc))
+            log.warning(
+                "device-created note not adopted",
+                path=candidate.path,
+                reason=type(exc).__name__,
+            )
             continue
         if outcome == "adopted":
             adopted += 1
@@ -523,6 +533,7 @@ def _scan(
     full: bool,
     quiet: QuietWindow | None,
     unidentified: UnidentifiedStats,
+    unadoptable: frozenset[str],
 ) -> ScanResult:
     """Walk the notes filesystem and report what it found."""
     try:
@@ -633,6 +644,12 @@ def _scan(
             if isinstance(result, AdoptionCandidate):
                 if settling:
                     deferred += 1
+                elif relative_path.parts[0] in unadoptable:
+                    # A folder the store owns is not a place a person writes a
+                    # note, so nothing below one is given an identity. The file
+                    # is still read, because a known note moved into one must
+                    # be followed there rather than reported gone.
+                    _remember(still_unidentified, relative, stat_seen)
                 else:
                     adoption_candidates.append(result)
             elif result is None:
@@ -658,6 +675,24 @@ def _scan(
         unidentified=still_unidentified,
         adoption_candidates=adoption_candidates,
         unidentified_unparsed=unidentified_unparsed,
+    )
+
+
+def _unadoptable_folders(settings: ProductSettings) -> frozenset[str]:
+    """The top-level folders the store writes, so adoption never writes there.
+
+    Deleted notes, generated source projections and attachments. Their names
+    are the operator's, read from the same settings the rest of the system
+    lays the notes filesystem out by.
+    """
+    return frozenset(
+        name.strip("/")
+        for name in (
+            settings.notes.trash_folder,
+            settings.notes.sources_folder,
+            settings.notes.attachments_folder,
+        )
+        if name.strip("/")
     )
 
 

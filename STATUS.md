@@ -128,6 +128,19 @@ vertical path proved end to end, then widened.
   runtime yet to judge it by. The interval, the quiet period and the rehash
   time are product settings with working defaults; their graphical controls
   arrive with the separate Admin service.
+- **What adoption will and will not write into.** Adoption skips `.git`,
+  `.obsidian` and `.trash`, everything below the configured trash, sources and
+  attachments folders (`_Trash`, `_Sources` and `_Attachments` by default), and
+  any file whose frontmatter already carries source associations, because
+  ingest wrote that and generated output is not a note a person made. Those
+  files are still read, so a known note moved into one of those folders is
+  followed there rather than reported gone; they are only never given an
+  identity. Everything else under the notes root that parses is adopted, and
+  that is wider than it sounds: a template, an Excalidraw drawing, a Kanban
+  board and anything else a plugin keeps as an ordinary Markdown file are all
+  rewritten and mirrored as notes. Narrowing that, with a control for it, is
+  follow-up work and is not built. Until it is, do not run a migration against
+  the captain's real notes filesystem.
 - `POST /v1/ingest` takes a source and the note to open for it, and creates
   both or neither. A deterministic `.external-id-<sha256>.json` file claims
   each `provider` plus `external_source_id` before the bundle is written. The

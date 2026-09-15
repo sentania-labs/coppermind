@@ -200,6 +200,97 @@ async def test_a_settling_path_does_not_consume_the_rejected_file_memory(
     assert list(remembered) == ["Review/Bad id.md"]
 
 
+async def test_a_folder_the_store_owns_is_never_adopted_into(store: LocalStore):
+    """Trash, sources and attachments are the store's own, not places to adopt."""
+    settings = store.control.settings().notes
+    owned = {
+        settings.trash_folder: b"# Thrown away\n",
+        settings.sources_folder: b"# Generated\n",
+        settings.attachments_folder: b"# Attached\n",
+    }
+    for folder, data in owned.items():
+        (store.notes_root / folder).mkdir(parents=True, exist_ok=True)
+        (store.notes_root / folder / "Left alone.md").write_bytes(data)
+    ordinary = store.notes_root / "Review" / "Made on phone.md"
+    ordinary.parent.mkdir(parents=True, exist_ok=True)
+    ordinary.write_bytes(b"# Made on phone\n")
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 1
+    assert counts["rejected"] == 0
+    assert counts["unwritable"] == 0
+    for folder, data in owned.items():
+        assert (store.notes_root / folder / "Left alone.md").read_bytes() == data
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 1
+
+
+async def test_a_note_moved_into_the_trash_folder_is_followed_not_reported_gone(
+    store: LocalStore,
+):
+    """Skipping adoption there must not skip the file, or the note looks deleted."""
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    trash = store.notes_root / store.control.settings().notes.trash_folder
+    trash.mkdir(parents=True, exist_ok=True)
+    moved = trash / "Runbook.md"
+    (store.notes_root / note.path).rename(moved)
+
+    counts = await reconcile_once(store)
+    row = await _row(store, note.id)
+
+    assert counts["missing"] == 0
+    assert counts["moved"] == 1
+    assert row.state == "ok"
+    assert row.path == f"{store.control.settings().notes.trash_folder}/Runbook.md"
+
+
+async def test_a_file_ingest_generated_is_refused_rather_than_re_adopted(store: LocalStore):
+    """Source associations mark output the store wrote, not a note a person made."""
+    generated = store.notes_root / "Review" / "Opened for a source.md"
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    original = (
+        b"---\nschema_version: 1\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\ndate: 2026-09-15\n"
+        b"type: note\ncontext: internal\nreviewed: false\nsources: [01K4Q8Z3N7V2X9M1B5C6D8E0G7]\n"
+        b"---\n# Opened for a source\n"
+    )
+    generated.write_bytes(original)
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 0
+    assert counts["rejected"] == 1
+    assert generated.read_bytes() == original
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 0
+
+
+async def test_one_unmirrorable_file_does_not_wedge_every_later_pass(store: LocalStore):
+    """A YAML value the mirror column cannot hold must cost one file, not the pass."""
+    gone = await store.create_note(CreateNote(title="Meeting", frontmatter={"type": "reference"}))
+    (store.notes_root / gone.path).unlink()
+    tagged = store.notes_root / "Review" / "Tagged scalar.md"
+    tagged.parent.mkdir(parents=True, exist_ok=True)
+    tagged.write_bytes(b"---\nblob: !!binary |\n  aGVsbG8=\nthing: !custom hello\n---\n# Odd\n")
+    nul = store.notes_root / "Review" / "Nul byte.md"
+    nul.write_bytes(b'---\nk: "a\\u0000b"\n---\n# Nul\n')
+    healthy = store.notes_root / "Review" / "Healthy.md"
+    healthy.write_bytes(b"# Healthy\n")
+
+    counts = await reconcile_once(store)
+    id_key = store.control.schema().role("id_key")
+    fetched = await store.get_note(fm.parse(healthy.read_text(encoding="utf-8"))[0][id_key])
+
+    assert counts["missing"] == 1
+    assert (await _row(store, gone.id)).state == "missing"
+    assert fetched.title == "Healthy"
+
+    second = await reconcile_once(store, full=True)
+
+    assert second["adopted"] == 0
+    assert second["unwritable"] == counts["unwritable"]
+
+
 async def test_adoption_retains_nothing_per_path_it_was_offered(store: LocalStore):
     """Every path ever offered would otherwise keep a lock for the process's life."""
     root = store.notes_root / "Review"

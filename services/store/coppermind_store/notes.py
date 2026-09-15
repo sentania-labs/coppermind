@@ -32,6 +32,7 @@ import base64
 import binascii
 import json
 from datetime import UTC, date, datetime
+from math import isfinite
 from pathlib import Path
 from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
@@ -429,7 +430,9 @@ class LocalStore:
 
         A file already carrying an identity this store knows is not adopted:
         the reconciler never proposes one, because nothing observable tells a
-        copy apart from a move whose delete has not arrived yet.
+        copy apart from a move whose delete has not arrived yet. Neither is a
+        file already carrying source associations, because ingest wrote that
+        and generated output is not a note a person made.
         """
         try:
             path = resolve(self.notes_root, relative)
@@ -450,6 +453,10 @@ class LocalStore:
             return "invalid", "the file is not valid UTF-8"
         except fm.FrontmatterError as exc:
             return "invalid", exc.category
+
+        sources = frontmatter.get(schema.role("sources_key"))
+        if isinstance(sources, list) and sources:
+            return "invalid", "the store generated this file, so it is not a note to adopt"
 
         carried_id = frontmatter.get(schema.role("id_key"))
         if carried_id is None:
@@ -993,13 +1000,22 @@ def _as_int(value: Any) -> int:
 
 
 def _jsonable(value: Any) -> Any:
-    """Convert a round tripped YAML mapping into plain JSON friendly types."""
+    """Convert a round tripped YAML mapping into plain JSON friendly types.
+
+    Total on purpose. A person's frontmatter may hold a tagged scalar, binary
+    or a set, and a float may be a NaN or an infinity; none of those can be
+    stored in the mirror's JSONB column, and an escaping one would fail the
+    insert of a whole reconciliation pass rather than one note. The file stays
+    the truth, so anything that is not a JSON value is mirrored as its text.
+    """
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_jsonable(v) for v in value]
-    if isinstance(value, datetime):
+    if isinstance(value, list | tuple | set | frozenset):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, datetime | date):
         return value.isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    return value
+    if isinstance(value, bool) or value is None or isinstance(value, str | int):
+        return value
+    if isinstance(value, float):
+        return value if isfinite(value) else str(value)
+    return str(value)
