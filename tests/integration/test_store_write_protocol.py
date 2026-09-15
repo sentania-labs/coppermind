@@ -27,6 +27,7 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     NoteUnparseable,
     NotFound,
+    PatchFrontmatter,
     PathCollision,
     ReplaceNote,
     ValidationFailed,
@@ -605,3 +606,105 @@ async def test_an_edit_that_lands_while_the_new_bytes_are_staged_is_not_overwrit
     assert raised.value.current_etag == content_hash(on_device)
     assert path.read_bytes() == on_device
     assert sorted(entry.name for entry in path.parent.iterdir()) == [path.name]
+
+
+async def test_a_frontmatter_patch_changes_one_line_and_keeps_the_body_bytes(
+    store: LocalStore, session_factory
+):
+    """The targeted review action preserves hand ordering, comments and the body."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    body = b"# Runbook\r\n\r\nOperator wording and  trailing spaces  \r\n"
+    before = (
+        b"---\n"
+        b"tags: [architecture]\n"
+        b"# keep this explanation beside the permanent identifier\n"
+        + f"id: {created.id}\n".encode()
+        + b"reviewed: false\n"
+        b"context: customer\n"
+        b"account: Ameren\n"
+        b"date: 2026-09-08\n"
+        b"schema_version: 1\n"
+        b"sources: []\n"
+        b"type: meeting\n"
+        b"---\n" + body
+    )
+    path.write_bytes(before)
+
+    patched = await store.patch_frontmatter(
+        created.id,
+        PatchFrontmatter(set={"reviewed": True}),
+        content_hash(before),
+    )
+
+    after = path.read_bytes()
+    assert after == before.replace(b"reviewed: false\n", b"reviewed: true\n", 1)
+    assert fm.split(after.decode("utf-8"))[1].encode() == body
+    assert patched.frontmatter["reviewed"] is True
+    async with session_factory() as session:
+        row = (await session.execute(sa.select(Note).where(Note.id == created.id))).scalar_one()
+    assert row.reviewed is True
+    assert row.content_hash == content_hash(after)
+
+
+async def test_a_stale_frontmatter_patch_changes_nothing(store: LocalStore):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    on_device = path.read_bytes().replace(b"reviewed: false", b"reviewed: true")
+    path.write_bytes(on_device)
+
+    with pytest.raises(VersionConflict) as raised:
+        await store.patch_frontmatter(
+            created.id,
+            PatchFrontmatter(set={"reviewed": True}),
+            created.content_hash,
+        )
+
+    assert raised.value.current_etag == content_hash(on_device)
+    assert path.read_bytes() == on_device
+
+
+async def test_an_invalid_frontmatter_patch_names_the_field_and_changes_nothing(
+    store: LocalStore,
+):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationFailed) as raised:
+        await store.patch_frontmatter(
+            created.id,
+            PatchFrontmatter(set={"type": "incident"}),
+            created.content_hash,
+        )
+
+    assert raised.value.errors == [
+        "type: 'incident' is not one of meeting, journal, reference, note"
+    ]
+    assert path.read_bytes() == before
+
+    with pytest.raises(ValidationFailed) as changed_id:
+        await store.patch_frontmatter(
+            created.id,
+            PatchFrontmatter(set={"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"}),
+            created.content_hash,
+        )
+    assert changed_id.value.errors == ["id: the identifier of a note cannot be changed"]
+    assert path.read_bytes() == before
+
+
+async def test_a_frontmatter_patch_can_unset_an_optional_field(store: LocalStore):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before_body = fm.split(path.read_text(encoding="utf-8"))[1]
+
+    patched = await store.patch_frontmatter(
+        created.id,
+        PatchFrontmatter(set={"context": "internal"}, unset=["account"]),
+        created.content_hash,
+    )
+
+    after = path.read_text(encoding="utf-8")
+    assert "account:" not in fm.split(after)[0]
+    assert fm.split(after)[1] == before_body
+    assert "account" not in patched.frontmatter

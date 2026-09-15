@@ -30,6 +30,7 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     NoteUnparseable,
     NotFound,
+    PatchFrontmatter,
     PreconditionRequired,
     ReplaceNote,
     StoreError,
@@ -63,6 +64,11 @@ class RaisingStore:
     async def replace_note(self, note_id: str, request: ReplaceNote, if_match: str) -> None:
         raise self.error
 
+    async def patch_frontmatter(
+        self, note_id: str, request: PatchFrontmatter, if_match: str
+    ) -> None:
+        raise self.error
+
 
 class OneNoteStore:
     """A store holding exactly one note, so a lookup by any other id misses."""
@@ -84,6 +90,21 @@ class OneNoteStore:
         if if_match != self.note.content_hash:
             raise VersionConflict(self.note.content_hash)
         self.note = self.note.model_copy(update={"body": request.body})
+        return self.note
+
+    async def patch_frontmatter(
+        self, note_id: str, request: PatchFrontmatter, if_match: str
+    ) -> NoteDocument:
+        self.asked_for.append(note_id)
+        if note_id != self.note.id:
+            raise NotFound(note_id)
+        if if_match != self.note.content_hash:
+            raise VersionConflict(self.note.content_hash)
+        frontmatter = dict(self.note.frontmatter)
+        for key in request.unset:
+            frontmatter.pop(key, None)
+        frontmatter.update(request.set)
+        self.note = self.note.model_copy(update={"frontmatter": frontmatter})
         return self.note
 
 
@@ -205,6 +226,21 @@ async def test_an_empty_etag_is_refused_as_a_missing_precondition():
         await client.aclose()
 
 
+async def test_a_frontmatter_patch_crosses_the_internal_contract():
+    client = connected(OneNoteStore(NOTE))
+    try:
+        patched = await client.patch_frontmatter(
+            NOTE_ID, PatchFrontmatter(set={"reviewed": True}), "sha256:abc"
+        )
+        assert patched.frontmatter["reviewed"] is True
+        with pytest.raises(VersionConflict):
+            await client.patch_frontmatter(
+                NOTE_ID, PatchFrontmatter(set={"reviewed": True}), "sha256:stale"
+            )
+    finally:
+        await client.aclose()
+
+
 def store_wiring(tmp_path, build_version: str | None = None):
     token = tmp_path / "internal-token"
     token.write_text(f"{TOKEN}\n", encoding="utf-8")
@@ -258,6 +294,17 @@ def test_an_internal_replace_without_if_match_answers_428(tmp_path):
             f"/internal/v1/notes/{NOTE_ID}",
             headers={"Authorization": f"Bearer {TOKEN}"},
             json={"frontmatter": {}, "body": ""},
+        )
+    assert response.status_code == 428
+    assert response.json()["error"] == "precondition_required"
+
+
+def test_an_internal_frontmatter_patch_without_if_match_answers_428(tmp_path):
+    with TestClient(store_app(tmp_path)) as client:
+        response = client.patch(
+            f"/internal/v1/notes/{NOTE_ID}/frontmatter",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={"set": {"reviewed": True}},
         )
     assert response.status_code == 428
     assert response.json()["error"] == "precondition_required"

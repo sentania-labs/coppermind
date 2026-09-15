@@ -21,6 +21,7 @@ from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import (
     CreateNote,
     NoteDocument,
+    PatchFrontmatter,
     ReplaceNote,
     StoreError,
     etag_from_if_match,
@@ -82,6 +83,24 @@ async def replace_note(
     """
     try:
         note = await client.replace_note(note_id, payload, etag_from_if_match(if_match))
+    except StoreError as error:
+        return failure(error)
+    return JSONResponse(
+        content=note.model_dump(mode="json"), headers={"ETag": f'"{note.content_hash}"'}
+    )
+
+
+@router.patch("/{note_id}/frontmatter", response_model=NoteDocument)
+async def patch_frontmatter(
+    note_id: str,
+    payload: PatchFrontmatter,
+    if_match: Annotated[str | None, Header()] = None,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:write")),
+) -> Response:
+    """Change named frontmatter fields without replacing the note."""
+    try:
+        note = await client.patch_frontmatter(note_id, payload, etag_from_if_match(if_match))
     except StoreError as error:
         return failure(error)
     return JSONResponse(

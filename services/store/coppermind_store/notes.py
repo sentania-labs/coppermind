@@ -1,4 +1,4 @@
-"""Creating, reading and replacing notes: the local implementation of the store contract.
+"""Creating, reading and changing notes: the local implementation of the store contract.
 
 Write protocol, in this order, for every mutation:
 
@@ -63,6 +63,7 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     NoteUnparseable,
     NotFound,
+    PatchFrontmatter,
     PathCollision,
     ReplaceNote,
     StoreError,
@@ -276,6 +277,70 @@ class LocalStore:
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
 
+    async def patch_frontmatter(
+        self, note_id: NoteId, request: PatchFrontmatter, if_match: ETag
+    ) -> NoteDocument:
+        """Change only the named frontmatter fields at the caller's version.
+
+        The round-trip YAML mapping retains every untouched line, including a
+        person's ordering and comments. The body comes from the same current
+        file and is never accepted from the caller.
+        """
+        schema = self.control.schema()
+        relative, path = await self._locate(note_id)
+        async with self._lock_for(note_id):
+            current_data = _bytes_at(note_id, relative, path, schema, if_match)
+            current_text = current_data.decode("utf-8")
+            data = fm.patch(current_text, request.set, unset=request.unset).encode("utf-8")
+            current_frontmatter, _ = fm.parse(current_text)
+            frontmatter, body = fm.parse(data.decode("utf-8"))
+
+            id_key = schema.role("id_key")
+            if frontmatter.get(id_key) != current_frontmatter.get(id_key):
+                raise ValidationFailed([f"{id_key}: the identifier of a note cannot be changed"])
+            problems = schema.validate_frontmatter(frontmatter)
+            if problems:
+                raise ValidationFailed(problems)
+
+            sources = frontmatter.get(schema.role("sources_key"), [])
+            now = datetime.now(tz=UTC)
+            digest = content_hash(data)
+            try:
+                async with transaction(self.session_factory) as session:
+                    await session.execute(
+                        sa.update(Note)
+                        .where(Note.id == note_id)
+                        .values(
+                            title=_title_of(body, path),
+                            content_hash=digest,
+                            size_bytes=len(data),
+                            mtime=now,
+                            frontmatter=_jsonable(frontmatter),
+                            **_mirror_columns(frontmatter, schema),
+                            state="ok",
+                            state_reason=None,
+                            updated_at=now,
+                        )
+                    )
+                    _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
+            except BaseException as exc:
+                typed = _metadata_failure(exc)
+                if typed is None:
+                    raise
+                raise typed from exc
+
+        return NoteDocument(
+            id=note_id,
+            path=relative,
+            title=_title_of(body, path),
+            frontmatter=_jsonable(frontmatter),
+            body=body,
+            content_hash=digest,
+            size_bytes=len(data),
+            updated_at=now,
+            sources=[str(source) for source in sources] if isinstance(sources, list) else [],
+        )
+
     def _lock_for(self, note_id: NoteId) -> asyncio.Lock:
         """The lock serialising writes to one note. Only asked for a located note."""
         lock = self._locks.get(note_id)
@@ -393,12 +458,21 @@ def _frontmatter_at(
     another note is a miss whatever ETag was sent, not a conflict naming the
     other note's hash.
     """
-    current, _ = _read(note_id, path)
+    current = _bytes_at(note_id, relative, path, schema, if_match)
     frontmatter, _ = _parse(note_id, relative, current, schema)
+    return frontmatter
+
+
+def _bytes_at(
+    note_id: NoteId, relative: str, path: Path, schema: FrontmatterSchema, if_match: ETag
+) -> bytes:
+    """The current bytes after identity and version checks."""
+    current, _ = _read(note_id, path)
+    _parse(note_id, relative, current, schema)
     current_hash = content_hash(current)
     if current_hash != if_match:
         raise VersionConflict(current_hash)
-    return frontmatter
+    return current
 
 
 def _read(note_id: NoteId, path: Path) -> tuple[bytes, float]:

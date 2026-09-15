@@ -19,6 +19,7 @@ from coppermind.store_protocol import (
     IngestRequest,
     IngestResult,
     NoteDocument,
+    PatchFrontmatter,
     ReplaceNote,
     StoreError,
     etag_from_if_match,
@@ -99,6 +100,24 @@ async def replace_note(
 ) -> Response:
     try:
         note = await _store(request).replace_note(note_id, payload, etag_from_if_match(if_match))
+    except StoreError as error:
+        return _failure(error)
+    return JSONResponse(
+        content=note.model_dump(mode="json"), headers={"ETag": f'"{note.content_hash}"'}
+    )
+
+
+@router.patch("/notes/{note_id}/frontmatter", response_model=NoteDocument)
+async def patch_frontmatter(
+    note_id: str,
+    payload: PatchFrontmatter,
+    request: Request,
+    if_match: Annotated[str | None, Header()] = None,
+) -> Response:
+    try:
+        note = await _store(request).patch_frontmatter(
+            note_id, payload, etag_from_if_match(if_match)
+        )
     except StoreError as error:
         return _failure(error)
     return JSONResponse(
