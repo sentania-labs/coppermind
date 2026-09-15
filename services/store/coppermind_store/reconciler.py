@@ -84,17 +84,10 @@ _CLOCK_SKEW_TOLERANCE = timedelta(seconds=60)
 
 # The stat of a file a scan read and found no known identity in, keyed by its
 # path. One process remembers this many; any beyond the bound are read every
-# pass, which is correct, just not cheap.
-
-
-@dataclass(frozen=True)
-class UnidentifiedStat:
-    size_bytes: int
-    mtime: datetime
-    settling: bool
-
-
-UnidentifiedStats = dict[str, UnidentifiedStat]
+# pass, which is correct, just not cheap. Only a durable rejection is kept: a
+# file still inside the quiet period is simply read again next pass, so an
+# arriving vault cannot fill the bound with paths that are about to settle.
+UnidentifiedStats = dict[str, tuple[int, datetime]]
 _UNIDENTIFIED_LIMIT = 10_000
 
 # How many device-created files one pass gives an identity to. Pointing the
@@ -193,7 +186,7 @@ class AdoptionCandidate:
 
     path: str
     content_hash: str
-    stat_seen: UnidentifiedStat
+    stat_seen: tuple[int, datetime]
 
 
 class ReconcilerStatus:
@@ -577,25 +570,16 @@ def _scan(
                 continue
             mtime = datetime.fromtimestamp(stat_result.st_mtime, tz=UTC)
             settling = quiet is not None and quiet.holds(mtime)
-            stat_seen = UnidentifiedStat(stat_result.st_size, mtime, settling)
+            stat_seen = (stat_result.st_size, mtime)
             if not full and entry is not None and _unchanged(entry, stat_result.st_size, mtime):
                 seen.add(entry.note_id)
                 held.add(entry.note_id)
                 continue
-            remembered = unidentified.get(relative)
-            if (
-                not full
-                and entry is None
-                and remembered is not None
-                and remembered.size_bytes == stat_seen.size_bytes
-                and remembered.mtime == stat_seen.mtime
-                and (not remembered.settling or settling)
-            ):
-                # A rejected file stays stat-trusted. A settling one is
-                # opened again as soon as its mtime leaves the quiet window,
-                # which is when adoption becomes safe. The stat is taken
-                # before the file type is judged, so a directory or a fifo
-                # named like a note is rejected once rather than every pass.
+            if not full and entry is None and unidentified.get(relative) == stat_seen:
+                # Read once already, and it named no note this store knows.
+                # Nothing but a change to the file itself can make it one. The
+                # stat is taken before the file type is judged, so a directory
+                # or a fifo named like a note is rejected once, not every pass.
                 _remember(still_unidentified, relative, stat_seen)
                 if settling:
                     deferred += 1
@@ -605,13 +589,7 @@ def _scan(
                 _record(observed, seen, observation)
                 if observation is None:
                     unidentified_unparsed += 1
-                    # Waiting cannot turn a directory or a fifo into a note, so
-                    # this rejection is durable however fresh the stat is.
-                    _remember(
-                        still_unidentified,
-                        relative,
-                        UnidentifiedStat(stat_result.st_size, mtime, settling=False),
-                    )
+                    _remember(still_unidentified, relative, stat_seen)
                     log.warning(
                         "device-created note left unchanged",
                         path=relative,
@@ -641,7 +619,6 @@ def _scan(
                 _record(observed, seen, observation)
                 if observation is None:
                     if settling:
-                        _remember(still_unidentified, relative, stat_seen)
                         deferred += 1
                     else:
                         unidentified_unparsed += 1
@@ -655,13 +632,11 @@ def _scan(
             result = _observe(safe_path, relative, data, mtime, schema, by_id, entry)
             if isinstance(result, AdoptionCandidate):
                 if settling:
-                    _remember(still_unidentified, relative, stat_seen)
                     deferred += 1
                 else:
                     adoption_candidates.append(result)
             elif result is None:
                 if settling:
-                    _remember(still_unidentified, relative, stat_seen)
                     deferred += 1
                 else:
                     unidentified_unparsed += 1
@@ -686,7 +661,7 @@ def _scan(
     )
 
 
-def _remember(stats: UnidentifiedStats, relative: str, stat_seen: UnidentifiedStat) -> None:
+def _remember(stats: UnidentifiedStats, relative: str, stat_seen: tuple[int, datetime]) -> None:
     """Keep this path's stat, up to the bound one process holds."""
     if len(stats) < _UNIDENTIFIED_LIMIT:
         stats[relative] = stat_seen
@@ -752,12 +727,10 @@ def _observe(
     note_id = str(frontmatter.get(schema.role("id_key"), ""))
     if note_id not in by_id:
         if entry is None:
-            # The scan only proposes a file whose mtime has already left the
-            # quiet window, so the candidate it carries is never settling.
             return AdoptionCandidate(
                 path=relative,
                 content_hash=content_hash(data),
-                stat_seen=UnidentifiedStat(len(data), mtime, False),
+                stat_seen=(len(data), mtime),
             )
         # The file is still at a known path, and its parsed content does not
         # explicitly name another known note. Keep that row present until a

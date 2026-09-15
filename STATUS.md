@@ -109,9 +109,12 @@ vertical path proved end to end, then widened.
   file holds the same identity: nothing observable tells a copy apart from a
   move whose delete has not arrived yet, and the service will not guess. The
   process remembers up
-  to 10,000 settling or rejected paths by stat, so an unchanged rejected tree
-  costs one stat per file per pass rather than repeated reads and parses. A
-  file changed inside the quiet period waits for the next pass. Trusting a stat
+  to 10,000 rejected paths by stat, so an unchanged rejected tree costs one
+  stat per file per pass rather than repeated reads and parses. Only a durable
+  rejection is remembered; a file still inside the quiet period is read again
+  on the next pass instead, so a whole vault arriving at once cannot fill that
+  memory with paths that are about to settle. A file changed inside the quiet
+  period waits for the next pass. Trusting a stat
   is safe because it is not the only
   pass: once a day, at the configured local time, the store rereads and
   rehashes every note file, which is what catches an edit that left the file's

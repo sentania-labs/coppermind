@@ -417,12 +417,15 @@ class LocalStore:
         """Give a settled device-created file an identity and mirror it.
 
         The scan supplies the hash it observed after the quiet period. The
-        file is read again under the store's lock and checked once more
-        immediately before an atomic replacement, so a device write wins the
-        race without losing bytes. Only keys the schema requires of this note
-        and that it does not already carry a value for receive defaults; an
-        optional key a person did not write stays unwritten, and existing
-        values and body content are never replaced.
+        file is read again here and checked once more immediately before an
+        atomic replacement, so a device write wins the race without losing
+        bytes. Nothing serialises against this: the reconciler is the only
+        caller and it adopts one file at a time.
+
+        Only keys the schema requires of this note and that it does not already
+        carry a value for receive defaults; an optional key a person did not
+        write stays unwritten, and existing values and body content are never
+        replaced.
 
         A file already carrying an identity this store knows is not adopted:
         the reconciler never proposes one, because nothing observable tells a
@@ -434,109 +437,108 @@ class LocalStore:
             return "invalid", "path is not inside the notes filesystem"
         schema = self.control.schema()
         settings = self.control.settings()
-        async with self._lock_for(f"adopt:{relative}"):
-            try:
-                current, _ = _read(relative, path)
-            except NotFound:
-                return "changed", "the file is no longer there"
-            if content_hash(current) != expected_hash:
-                return "changed", "the file changed after it was read"
-            try:
-                text = current.decode("utf-8")
-                frontmatter, body = fm.parse(text)
-            except UnicodeDecodeError:
-                return "invalid", "the file is not valid UTF-8"
-            except fm.FrontmatterError as exc:
-                return "invalid", exc.category
+        try:
+            current, _ = _read(relative, path)
+        except NotFound:
+            return "changed", "the file is no longer there"
+        if content_hash(current) != expected_hash:
+            return "changed", "the file changed after it was read"
+        try:
+            text = current.decode("utf-8")
+            frontmatter, body = fm.parse(text)
+        except UnicodeDecodeError:
+            return "invalid", "the file is not valid UTF-8"
+        except fm.FrontmatterError as exc:
+            return "invalid", exc.category
 
-            carried_id = frontmatter.get(schema.role("id_key"))
-            if carried_id is None:
-                note_id = new_id()
-            elif is_valid_id(carried_id):
-                note_id = carried_id
-            else:
-                return "invalid", "the id it carries is not a valid identifier"
+        carried_id = frontmatter.get(schema.role("id_key"))
+        if carried_id is None:
+            note_id = new_id()
+        elif is_valid_id(carried_id):
+            note_id = carried_id
+        else:
+            return "invalid", "the id it carries is not a valid identifier"
 
-            changes = _adoption_changes(frontmatter, schema, settings, note_id)
-            try:
-                adopted_text = fm.fill_missing(text, changes)
-                adopted_frontmatter, adopted_body = fm.parse(adopted_text)
-            except fm.FrontmatterError as exc:
-                return "invalid", exc.category
-            # Everything this file is judged on is decided here, before a
-            # connection is asked for, so a note the schema refuses costs a read
-            # and a parse however many times the scan rediscovers it.
-            invalid = schema.invalid_keys(adopted_frontmatter)
-            if invalid:
-                return "invalid", f"keys the schema refused: {', '.join(invalid)}"
-            data = adopted_text.encode("utf-8")
-            now = datetime.now(tz=UTC)
+        changes = _adoption_changes(frontmatter, schema, settings, note_id)
+        try:
+            adopted_text = fm.fill_missing(text, changes)
+            adopted_frontmatter, adopted_body = fm.parse(adopted_text)
+        except fm.FrontmatterError as exc:
+            return "invalid", exc.category
+        # Everything this file is judged on is decided here, before a
+        # connection is asked for, so a note the schema refuses costs a read
+        # and a parse however many times the scan rediscovers it.
+        invalid = schema.invalid_keys(adopted_frontmatter)
+        if invalid:
+            return "invalid", f"keys the schema refused: {', '.join(invalid)}"
+        data = adopted_text.encode("utf-8")
+        now = datetime.now(tz=UTC)
 
-            try:
-                async with transaction(self.session_factory) as session:
-                    await session.execute(sa.text("SELECT 1"))
-                    if await session.scalar(sa.select(Note.id).where(Note.id == note_id)):
-                        return "collision", "the id it carries is already a note"
-                    occupied = await session.scalar(
-                        sa.select(Note.id)
-                        .where(Note.path == relative, Note.state != "missing")
-                        .limit(1)
-                    )
-                    if occupied is not None:
-                        return "collision", "another note already claims this path"
+        try:
+            async with transaction(self.session_factory) as session:
+                await session.execute(sa.text("SELECT 1"))
+                if await session.scalar(sa.select(Note.id).where(Note.id == note_id)):
+                    return "collision", "the id it carries is already a note"
+                occupied = await session.scalar(
+                    sa.select(Note.id)
+                    .where(Note.path == relative, Note.state != "missing")
+                    .limit(1)
+                )
+                if occupied is not None:
+                    return "collision", "another note already claims this path"
 
-                    if data != current:
-                        try:
-                            staged = stage_bytes(path, data)
-                        except OSError as exc:
-                            raise NotesFilesystemUnavailable(str(exc)) from exc
-                        try:
-                            latest, _ = _read(relative, path)
-                            if content_hash(latest) != expected_hash:
-                                staged.unlink(missing_ok=True)
-                                return "changed", "a device wrote to the file first"
-                            commit_staged(staged, path)
-                        except NotFound:
-                            staged.unlink(missing_ok=True)
-                            return "changed", "the file is no longer there"
-                        except OSError as exc:
-                            staged.unlink(missing_ok=True)
-                            raise NotesFilesystemUnavailable(str(exc)) from exc
-                        except BaseException:
-                            staged.unlink(missing_ok=True)
-                            raise
-                    else:
-                        try:
-                            latest, _ = _read(relative, path)
-                        except NotFound:
-                            return "changed", "the file is no longer there"
-                        if content_hash(latest) != expected_hash:
-                            return "changed", "a device wrote to the file first"
-
+                if data != current:
                     try:
-                        file_stat = path.stat()
+                        staged = stage_bytes(path, data)
                     except OSError as exc:
                         raise NotesFilesystemUnavailable(str(exc)) from exc
-                    session.add(
-                        Note(
-                            id=note_id,
-                            path=relative,
-                            title=_title_of(adopted_body, path),
-                            content_hash=content_hash(data),
-                            size_bytes=len(data),
-                            mtime=datetime.fromtimestamp(file_stat.st_mtime, tz=UTC),
-                            frontmatter=_jsonable(adopted_frontmatter),
-                            **_mirror_columns(adopted_frontmatter, schema),
-                            state="ok",
-                            first_seen_at=now,
-                            updated_at=now,
-                        )
+                    try:
+                        latest, _ = _read(relative, path)
+                        if content_hash(latest) != expected_hash:
+                            staged.unlink(missing_ok=True)
+                            return "changed", "a device wrote to the file first"
+                        commit_staged(staged, path)
+                    except NotFound:
+                        staged.unlink(missing_ok=True)
+                        return "changed", "the file is no longer there"
+                    except OSError as exc:
+                        staged.unlink(missing_ok=True)
+                        raise NotesFilesystemUnavailable(str(exc)) from exc
+                    except BaseException:
+                        staged.unlink(missing_ok=True)
+                        raise
+                else:
+                    try:
+                        latest, _ = _read(relative, path)
+                    except NotFound:
+                        return "changed", "the file is no longer there"
+                    if content_hash(latest) != expected_hash:
+                        return "changed", "a device wrote to the file first"
+
+                try:
+                    file_stat = path.stat()
+                except OSError as exc:
+                    raise NotesFilesystemUnavailable(str(exc)) from exc
+                session.add(
+                    Note(
+                        id=note_id,
+                        path=relative,
+                        title=_title_of(adopted_body, path),
+                        content_hash=content_hash(data),
+                        size_bytes=len(data),
+                        mtime=datetime.fromtimestamp(file_stat.st_mtime, tz=UTC),
+                        frontmatter=_jsonable(adopted_frontmatter),
+                        **_mirror_columns(adopted_frontmatter, schema),
+                        state="ok",
+                        first_seen_at=now,
+                        updated_at=now,
                     )
-            except BaseException as exc:
-                typed = _metadata_failure(exc)
-                if typed is None:
-                    raise
-                raise typed from exc
+                )
+        except BaseException as exc:
+            typed = _metadata_failure(exc)
+            if typed is None:
+                raise
+            raise typed from exc
         return "adopted", "identity written into the file"
 
     def _lock_for(self, note_id: NoteId) -> asyncio.Lock:

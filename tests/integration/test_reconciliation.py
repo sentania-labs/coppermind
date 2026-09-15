@@ -172,6 +172,49 @@ async def test_a_device_created_file_waits_for_quiet_before_adoption(store: Loca
     assert body == original.decode()
 
 
+async def test_a_settling_path_does_not_consume_the_rejected_file_memory(
+    store: LocalStore,
+):
+    """A whole vault arrives settling at once, so those paths must not be kept.
+
+    The memory exists for durable rejections. A file still inside the quiet
+    period is about to be read again anyway, so keeping it only crowds out the
+    rejections the bound is there to hold.
+    """
+    unknown = store.notes_root / "Review" / "Still syncing.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    unknown.write_bytes(b"# Still syncing\n\nFirst piece.\n")
+    rejected = store.notes_root / "Review" / "Bad id.md"
+    rejected.write_bytes(b"---\nid: not-a-ulid\n---\n# Hand edited\n")
+    remembered: reconciler.UnidentifiedStats = {}
+
+    waiting = await reconcile_once(store, quiet_period_s=3600, unidentified=remembered)
+
+    assert waiting["deferred"] == 2
+    assert remembered == {}
+
+    settled = await reconcile_once(store, unidentified=remembered)
+
+    assert settled["adopted"] == 1
+    assert settled["rejected"] == 1
+    assert list(remembered) == ["Review/Bad id.md"]
+
+
+async def test_adoption_retains_nothing_per_path_it_was_offered(store: LocalStore):
+    """Every path ever offered would otherwise keep a lock for the process's life."""
+    root = store.notes_root / "Review"
+    root.mkdir(parents=True, exist_ok=True)
+    for index in range(3):
+        (root / f"Refused {index}.md").write_bytes(b"---\ntype: therapy-session\n---\n")
+    (root / "Healthy.md").write_bytes(b"# Healthy\n")
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 1
+    assert counts["rejected"] == 3
+    assert store._locks == {}
+
+
 async def test_adoption_never_overwrites_a_device_write(
     store: LocalStore, monkeypatch: pytest.MonkeyPatch
 ):
