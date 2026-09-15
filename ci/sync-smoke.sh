@@ -69,7 +69,6 @@ trap restore_refusing_helper EXIT
 initial="$(control status)"
 [ "$(printf '%s' "$initial" | field simulated)" = "True" ] \
     || fail "helper is not running the simulated client"
-[ "$(printf '%s' "$initial" | field connected)" = "False" ] || fail "fresh helper claims connected"
 [ "$(printf '%s' "$initial" | field syncing)" = "False" ] || fail "fresh helper claims syncing"
 
 connected="$(control connect "Simulated remote vault")"
@@ -79,7 +78,6 @@ connected="$(control connect "Simulated remote vault")"
 
 paused="$(control pause)"
 [ "$(printf '%s' "$paused" | field state)" = "paused" ] || fail "pause did not stop sync"
-[ "$(printf '%s' "$paused" | field connected)" = "False" ] || fail "paused helper claims connected"
 
 resumed="$(control resume)"
 [ "$(printf '%s' "$resumed" | field state)" = "syncing" ] || fail "resume did not start sync"

@@ -60,7 +60,6 @@ test("fake mode proves the authenticated lifecycle and child restart", async (co
   assert.equal((await request("/status", "GET", false))[0], 401);
   let [code, state] = await request("/status");
   assert.equal(code, 200);
-  assert.equal(state.connected, false);
   assert.equal(state.syncing, false);
   assert.equal(state.state, "not_connected");
 
@@ -76,7 +75,6 @@ test("fake mode proves the authenticated lifecycle and child restart", async (co
   [code, state] = await request("/connect", "POST", true, { vault_name: "Simulated remote vault" });
   assert.equal(code, 200);
   assert.equal(state.vault_name, "Simulated remote vault");
-  assert.equal(state.connected, true);
   assert.equal(state.syncing, true);
   assert.equal(state.simulated, true);
   assert.equal(state.real_sync_supported, false);
@@ -86,12 +84,10 @@ test("fake mode proves the authenticated lifecycle and child restart", async (co
   [code, state] = await request("/pause", "POST");
   assert.equal(code, 200);
   assert.equal(state.state, "paused");
-  assert.equal(state.connected, false);
   assert.equal(state.syncing, false);
 
   [code, state] = await request("/resume", "POST");
   assert.equal(code, 200);
-  assert.equal(state.connected, true);
   assert.equal(state.syncing, true);
   assert.notEqual(state.sync_pid, firstPid);
   const resumedPid = state.sync_pid;
@@ -101,7 +97,6 @@ test("fake mode proves the authenticated lifecycle and child restart", async (co
     const [, value] = await request("/status");
     return value.syncing && value.sync_pid !== resumedPid ? value : null;
   }, "supervisor did not restart the killed sync process");
-  assert.equal(state.connected, true);
   assert.equal(state.last_error, null);
 
   const persisted = JSON.parse(await readFile(statusFile, "utf8"));
@@ -168,7 +163,6 @@ test("real mode refuses every path that would reach the account or the remote va
     const [, value] = await request("/status");
     return value.state === "refused" ? value : null;
   }, "supervisor did not refuse the persisted connection on boot");
-  assert.equal(boot.connected, false);
   assert.equal(boot.syncing, false);
   assert.equal(boot.sync_pid, null);
   assert.equal(boot.simulated, false);
@@ -187,7 +181,6 @@ test("real mode refuses every path that would reach the account or the remote va
   }
 
   const [, after] = await request("/status");
-  assert.equal(after.connected, false);
   assert.equal(after.syncing, false);
   assert.equal(after.state, "refused");
   assert.match(after.last_error, /pending captain decisions/);
@@ -285,7 +278,6 @@ test("a stopped supervisor leaves the stop in the status file", async (context) 
   const persisted = JSON.parse(await readFile(statusFile, "utf8"));
   assert.equal(persisted.state, "stopped");
   assert.equal(persisted.syncing, false);
-  assert.equal(persisted.connected, false);
   assert.equal(persisted.sync_pid, null);
   assert.equal(persisted.control_port, null);
   assert.deepEqual(
@@ -349,7 +341,6 @@ test("shutdown persists stopped from every state without a child", async (contex
 
       const persisted = JSON.parse(await readFile(statusFile, "utf8"));
       assert.equal(persisted.state, "stopped");
-      assert.equal(persisted.connected, false);
       assert.equal(persisted.syncing, false);
       assert.equal(persisted.sync_pid, null);
       assert.equal(persisted.control_port, null);

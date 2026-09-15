@@ -41,7 +41,6 @@ let writeQueue = Promise.resolve();
 const status = {
   schema_version: 1,
   state: "not_connected",
-  connected: false,
   configured: false,
   syncing: false,
   paused: false,
@@ -151,7 +150,6 @@ async function startSync() {
   if (!FAKE) {
     await publishStatus({
       state: "refused",
-      connected: false,
       syncing: false,
       sync_pid: null,
       last_error: REAL_SYNC_REFUSED,
@@ -159,7 +157,7 @@ async function startSync() {
     log("WARNING", "real sync refused", { vault_name: status.vault_name });
     return;
   }
-  await publishStatus({ state: "starting", connected: false, syncing: false, sync_pid: null });
+  await publishStatus({ state: "starting", syncing: false, sync_pid: null });
   const proc = spawn(process.execPath, [path.join(import.meta.dirname, "fake", "sync.mjs")], {
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -178,7 +176,6 @@ async function startSync() {
   proc.once("exit", (code, signal) => handleChildExit(proc, code, signal));
   await publishStatus({
     state: "syncing",
-    connected: true,
     syncing: true,
     sync_pid: proc.pid,
     last_error: null,
@@ -205,7 +202,6 @@ async function handleChildExit(proc, code, signal, error = null) {
     : `sync process exited (${code ?? signal ?? "unknown"})`;
   await publishStatus({
     state: expected ? (status.paused ? "paused" : "stopping") : "restarting",
-    connected: false,
     syncing: false,
     sync_pid: null,
     last_error: expected ? null : message,
@@ -239,7 +235,7 @@ async function pause() {
   clearTimeout(restartTimer);
   await saveConnection();
   await stopChild();
-  await publishStatus({ state: "paused", connected: false, syncing: false, sync_pid: null });
+  await publishStatus({ state: "paused", syncing: false, sync_pid: null });
   return [200, publicStatus()];
 }
 
@@ -318,7 +314,6 @@ async function shutdown(signal) {
   await stopChild();
   await publishStatus({
     state: "stopped",
-    connected: false,
     syncing: false,
     sync_pid: null,
     control_port: null,
