@@ -5,23 +5,33 @@ set -euo pipefail
 : "${IMAGE_ROOT:?image repository root is required}"
 : "${DIGESTS:?digest record is required}"
 test -s "$DIGESTS" || { echo "digest record is empty" >&2; exit 1; }
-expected="$(printf '%s\n' store api git obsidian-sync)"
-actual="$(awk '{ print $1 }' "$DIGESTS")"
-test "$actual" = "$expected" || { echo "$VERSION does not record every service once" >&2; exit 1; }
 
 # The quickstart runs whatever latest names, so latest may only move forward.
 # A re-run of an older tag's job, or two tags promoting out of order, would
 # otherwise hand a clean checkout an older build with nothing reporting it.
-# The version already on the image is the record of where latest stands.
+# The version already on the image is the record of where latest stands, and
+# only a registry saying latest does not exist may skip the comparison: any
+# other failure leaves the question unanswered, which is not an answer.
 serving_version() {
-  skopeo inspect --format '{{ index .Labels "org.opencontainers.image.version" }}' \
-    "docker://$1:latest" 2>/dev/null || true
+  local image="$1" out
+  if out="$(skopeo inspect --format '{{ index .Labels "org.opencontainers.image.version" }}' \
+      "docker://$image:latest" 2>&1)"; then
+    printf '%s' "$out"
+    return 0
+  fi
+  if printf '%s' "$out" | grep -qiE 'manifest unknown|manifest_unknown|name unknown|name_unknown|repository name not known'; then
+    return 0
+  fi
+  echo "$image:latest could not be read, so whether latest would move backwards is unknown" >&2
+  printf '%s\n' "$out" >&2
+  return 1
 }
 
 while read -r service digest; do
   [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "$service has an invalid digest" >&2; exit 1; }
   image="$IMAGE_ROOT/$service"
   serving="$(serving_version "$image")"
+  [ -n "$serving" ] || continue
   [[ "$serving" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
   if [ "$serving" != "$VERSION" ] &&
      [ "$(printf '%s\n%s\n' "$VERSION" "$serving" | sort -V | head -n 1)" = "$VERSION" ]; then

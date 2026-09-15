@@ -50,9 +50,9 @@ check: lint typecheck test compose-check prose-check
 # broken quickstart before anyone tries to run it.
 compose-check:
 	$(COMPOSE) config >/dev/null
-	$(COMPOSE_CI) config >/dev/null
 	$(COMPOSE) -f docker-compose.yml -f docker-compose.sync-smoke.yml config >/dev/null
-	bash ci/check-published-overlay.sh
+	bash ci/check-overlay-images.sh docker-compose.ci.yml coppermind ci
+	bash ci/check-overlay-images.sh ci/docker-compose.published.yml ghcr.io/sentania-labs/coppermind v0.0.0
 
 # House rule, enforced rather than remembered: no em-dashes anywhere in the
 # tree. The lock file and this rule's own definition are excluded.
