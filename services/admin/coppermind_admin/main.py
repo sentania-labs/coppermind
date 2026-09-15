@@ -6,7 +6,6 @@ import html
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from ipaddress import ip_address
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
@@ -14,7 +13,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from starlette.middleware.base import RequestResponseEndpoint
 
 from coppermind.db.session import make_engine, make_session_factory
-from coppermind.errors import envelope
 from coppermind.health import Check, Health, Readiness
 from coppermind.logging import configure_logging, get_logger
 from coppermind.settings import ProductSettings, Wiring
@@ -31,6 +29,9 @@ from coppermind_admin.auth import (
 
 SERVICE = "coppermind-admin"
 COOKIE = "coppermind_admin_session"
+# Carried by the redirect a successful login sends the browser to. Arriving
+# back here without the session cookie is the browser having dropped it.
+SIGNED_IN = "signed_in"
 PUBLIC = {
     "/admin/claim",
     "/admin/login",
@@ -52,10 +53,11 @@ LOGIN_NOTICES = {
     "unauthorized": "That password was not accepted.",
     "already_claimed": "Admin has already been claimed. Log in with the admin password.",
     "session_expired": "That session has ended. Log in again.",
-    "insecure_transport": (
-        "This address is plain HTTP, so your browser discards the Secure session cookie and "
-        "login can never complete. Reach Admin over HTTPS, or set admin.cookie_secure to false "
-        "in /data/state/settings.yaml to run it deliberately in the clear."
+    "cookie_not_kept": (
+        "That password was accepted, but your browser did not keep the session cookie, so "
+        "Admin could not sign you in. A browser drops it when Admin is reached over plain "
+        "HTTP while secure cookies are on: reach Admin over HTTPS, or set admin.cookie_secure "
+        "to false in /data/state/settings.yaml to run it deliberately in the clear."
     ),
 }
 
@@ -105,30 +107,16 @@ def error_response(destination: str, code: str) -> RedirectResponse:
     return RedirectResponse(f"/admin/{destination}?error={code}", status_code=303)
 
 
-def keeps_a_secure_cookie(request: Request) -> bool:
-    """Whether a browser at this address would keep a Secure cookie.
-
-    HTTPS always does, and so does loopback, which is what the quickstart
-    binds to. Any other plaintext address silently discards it.
-    """
-    if request.url.scheme == "https":
-        return True
-    host = request.url.hostname or ""
-    if host == "localhost" or host.endswith(".localhost"):
-        return True
-    try:
-        return ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
-def unavailable() -> JSONResponse:
-    return JSONResponse(
-        status_code=503,
-        content=envelope(
-            "sessions_unavailable",
-            "the session database is unavailable; Admin is usable again once it returns",
+def unavailable() -> HTMLResponse:
+    return HTMLResponse(
+        page(
+            "Unavailable",
+            """<h1>Admin is unavailable</h1>
+<p class="error">The session database could not be reached, so Admin cannot check or create a
+sign-in right now.</p>
+<p class="muted">Nothing was lost. Admin works again as soon as PostgreSQL returns.</p>""",
         ),
+        status_code=503,
     )
 
 
@@ -138,6 +126,8 @@ def create_app(wiring: Wiring | None = None, sessions: Sessions | None = None) -
     version = settings.running_version(__version__)
     credentials = AdminCredentials(settings.state_dir)
 
+    # Mirrors ControlState.settings in the store service, which Admin's image
+    # does not carry: it installs the shared package and its own service only.
     def product_settings() -> ProductSettings:
         body = dict(StateStore(settings.state_dir).read("settings").body)
         body.pop("revision", None)
@@ -180,6 +170,8 @@ def create_app(wiring: Wiring | None = None, sessions: Sessions | None = None) -
             return RedirectResponse("/admin/claim", status_code=303)
         if token:
             return error_response("login", "session_expired")
+        if SIGNED_IN in request.query_params:
+            return error_response("login", "cookie_not_kept")
         return RedirectResponse("/admin/login", status_code=303)
 
     @app.get("/", include_in_schema=False)
@@ -248,14 +240,12 @@ required></label><button>Log in</button></form>""",
         if not password or not await credentials.verify_password(password):
             return error_response("login", "unauthorized")
         product = product_settings()
-        if product.admin.cookie_secure and not keeps_a_secure_cookie(request):
-            return error_response("login", "insecure_transport")
         lifetime = timedelta(hours=product.admin.session_hours)
         try:
             token = await request.app.state.sessions.create(lifetime)
         except SessionsUnavailable:
             return unavailable()
-        response: Response = RedirectResponse("/admin", status_code=303)
+        response: Response = RedirectResponse(f"/admin?{SIGNED_IN}=1", status_code=303)
         response.set_cookie(
             COOKIE,
             token,

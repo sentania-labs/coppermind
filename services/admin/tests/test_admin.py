@@ -136,7 +136,7 @@ def test_rendered_forms_drive_claim_login_and_logout(fresh):
 
     logged_in = login(client)
     assert logged_in.status_code == 303
-    assert logged_in.headers["location"] == "/admin"
+    assert logged_in.headers["location"] == "/admin?signed_in=1"
     assert client.cookies.get(COOKIE) == "test-session-token"
     assert "HttpOnly" in logged_in.headers["set-cookie"]
     assert "You are signed in" in client.get("/admin").text
@@ -191,23 +191,30 @@ def test_the_documented_loopback_address_keeps_the_secure_cookie(tmp_path: Path)
     with client:
         claim(client)
         logged_in = login(client)
-        assert logged_in.headers["location"] == "/admin"
+        assert logged_in.headers["location"] == "/admin?signed_in=1"
         assert "Secure" in logged_in.headers["set-cookie"]
 
 
-def test_a_plaintext_address_refuses_login_instead_of_looping(tmp_path: Path):
-    """Published off loopback over http, a Secure cookie would be discarded."""
+def test_an_address_admin_cannot_judge_still_gets_its_session(tmp_path: Path):
+    """What a TLS-terminating proxy looks like from here: a plain http hop."""
     client, _, sessions = _client(tmp_path, base_url="http://coppermind.example:8082")
     with client:
         claim(client)
-        refused = login(client)
-        assert refused.headers["location"] == "/admin/login?error=insecure_transport"
-        assert not sessions.tokens
-        assert COOKIE not in client.cookies
+        logged_in = login(client)
+        assert logged_in.headers["location"] == "/admin?signed_in=1"
+        assert sessions.tokens
 
-        said = client.get(refused.headers["location"]).text
-        assert "browser discards the Secure session cookie" in said
-        assert "admin.cookie_secure" in said
+
+def test_a_browser_that_drops_the_session_cookie_is_told_why(tmp_path: Path):
+    """A real browser on plain http discards the Secure cookie it was sent."""
+    client, _, _ = _client(tmp_path, base_url="http://coppermind.example:8082")
+    with client:
+        claim(client)
+        landed = client.post("/v1/admin/login", data={"password": PASSWORD})
+        assert landed.status_code == 200
+        assert str(landed.url).endswith("/admin/login?error=cookie_not_kept")
+        assert "did not keep the session cookie" in landed.text
+        assert "admin.cookie_secure" in landed.text
 
 
 def test_a_session_database_outage_answers_503_rather_than_failing(fresh):
@@ -218,11 +225,12 @@ def test_a_session_database_outage_answers_503_rather_than_failing(fresh):
     sessions.available = False
     refused_login = login(client)
     assert refused_login.status_code == 503
-    assert refused_login.json()["error"] == "sessions_unavailable"
+    assert "session database could not be reached" in refused_login.text
 
     protected = client.get("/admin", follow_redirects=False)
     assert protected.status_code == 503
-    assert protected.json()["error"] == "sessions_unavailable"
+    assert "session database could not be reached" in protected.text
+    assert protected.headers["content-type"].startswith("text/html")
 
     assert client.get("/readyz").status_code == 503
     assert client.get("/healthz").status_code == 200
