@@ -118,7 +118,7 @@ BROKEN_NOTES = {
 async def test_a_broken_note_never_puts_its_own_text_in_the_log(
     case: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Logs are collected and shipped, and an unauthenticated read triggers this.
+    """Logs are collected and shipped, so note content cannot enter them.
 
     The parser's reason quotes the lines it choked on, so it is the person's
     own note content. A duplicate key is the case that catches a plausible but

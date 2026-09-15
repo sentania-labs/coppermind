@@ -1,6 +1,6 @@
 # STATUS
 
-What works against `main` today. Updated 2026-09-11. Every claim here was
+What works against `main` today. Updated 2026-09-14. Every claim here was
 checked against a running compose stack on that date, not against CI alone.
 
 This is the first slice of the build. The shape is deliberately narrow: one
@@ -11,9 +11,30 @@ vertical path proved end to end, then widened.
 - `docker compose up -d` on a clean checkout reaches a healthy stack with no
   manual setup and no hand populated setting. The one-shot `bootstrap`
   container creates `/data`, generates the internal bearer token and the
-  PostgreSQL password as files on a volume (never environment values), and
-  writes `settings.yaml` and `schema.yaml` at revision 1 with shipped
-  defaults. Running it again keeps every existing secret and setting.
+  PostgreSQL password as files on volumes (never environment values), creates
+  a working full-scope default API key in a separate restricted volume, and
+  writes `settings.yaml`, `schema.yaml` and the key's Argon2 hash at revision
+  1. Running it again keeps every existing secret, key and setting. Revoke
+  that default and it stays revoked. The revocation takes effect for
+  authentication as soon as the API's cache next loads; the reveal file is
+  replaced by a sentence saying so at the next `docker compose up`, so until
+  that restart it still holds the dead credential. Bootstrap mints the default
+  once, on the install with no record of one, and decides that from the
+  record's own mark in `keys.json` rather than its name. Lose the credential
+  volume while the default is live and the next start reports it
+  unrecoverable and leaves the record alone, rather than minting a second
+  full-scope key while the first stays usable.
+- Every `/v1` route requires `Bearer cm_<key_id>_<secret>`. A missing or bad
+  key answers 401 and a key without the route's scope answers 403. Note reads
+  need `notes:read`; creates and replacements need `notes:write`. Successful
+  verification and key hashes are cached for five minutes, so a key created
+  after a load is picked up at the next cache expiry rather than at once.
+  Health, readiness and OpenAPI remain open, and Compose remains bound to
+  loopback by default.
+  The content-typed journal scopes, `journal:read` and `journal:write`, are
+  defined in the scope vocabulary but nothing enforces them in this
+  increment: only route-level scopes are enforced, so a `notes:write` key can
+  write a note whose type is `journal`.
 - `POST /v1/notes` creates a note. It lands as a Markdown file in the notes
   filesystem, under the review folder, named by the portable naming rules
   (date prefix for dated types, Windows-reserved characters and device names
@@ -48,12 +69,14 @@ vertical path proved end to end, then widened.
   existing one, and the notes filesystem is untouched and still fully
   editable. Starting PostgreSQL brings API operations back with no
   intervention; what changed in the notes filesystem during the outage waits
-  for the reconciler under "Not built yet".
+  for the reconciler under "Not built yet". Control state is checked the same
+  way: a settings, schema or key file the models reject answers 503 and names
+  the file, while key state that loads and happens to hold no usable key is an
+  operator's choice and stays ready.
 - Control state files are revisioned. A write states the revision it replaces
-  and is refused if the file moved on. Readiness loads both of them, so a
-  hand edit the models reject takes the store out of rotation with the file
-  and the failing field named, rather than reporting ready while every note
-  operation fails.
+  and is refused if the file moved on. The readiness check above is what
+  catches a hand edit the models reject, naming the file and the failing
+  field rather than reporting ready while every note operation fails.
 - A note whose frontmatter was broken while editing on a device reads back as
   409 `note_unparseable`, naming the note and saying Coppermind did not modify
   the file.
@@ -88,10 +111,6 @@ vertical path proved end to end, then widened.
 Everything below is planned and has a place in the design. None of it exists
 in the tree, so do not read the absence as a decision to leave it out.
 
-- **API authentication.** There are no API keys yet, so `/v1` is
-  unauthenticated. Compose binds the API to `127.0.0.1` for that reason. Do
-  not put this on a network interface until keys land in the next pull
-  request.
 - **Ingest.** `POST /v1/ingest`, source bundles, revisions, idempotency and
   the generated source projections.
 - **Reconciliation.** Nothing yet notices a file created, moved or deleted on
@@ -121,7 +140,9 @@ in the tree, so do not read the absence as a decision to leave it out.
   the API. Nothing exists yet, so settings are edited as files under
   `/data/state` for now, which is exactly the state the design says is not
   shippable. It is shippable in the sense that the defaults work; it is not
-  yet the finished product.
+  yet the finished product. Its graphical API keys page also arrives later;
+  until then `python3 -m coppermind_store.keys` is the interim path for adding
+  and rotating keys.
 - **Publication and release.** CI deliberately holds no token that could push
   an image anywhere. Publishing, signing and the Helm chart come later.
 

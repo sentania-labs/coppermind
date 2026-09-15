@@ -3,9 +3,9 @@
 #   docker compose up -d
 #
 # That is the whole setup. The bootstrap one-shot creates the volumes,
-# generates the internal token and the PostgreSQL password, and writes the
-# control state files with their shipped defaults, so nothing has to be hand
-# populated before the stack runs.
+# generates the internal token, PostgreSQL password and default API key, and
+# writes the control state files with their shipped defaults, so nothing has
+# to be hand populated before the stack runs.
 #
 # Image tags here track `latest` on purpose: this file is the quickstart.
 # Anything that deploys Coppermind for real pins a version or a digest in its
@@ -50,6 +50,7 @@ services:
       - data:/data
       - internal-token:/run/coppermind/internal
       - postgres-password:/run/coppermind/postgres
+      - default-api-key:/run/coppermind/api
     restart: "no"
 
   # Bundled PostgreSQL. It holds mirrored and derived state only: every row
@@ -110,8 +111,8 @@ services:
 
   # The public contract. Stateless, mounts only its internal credential, and
   # calls the store.
-  # Bound to loopback: this slice has no API authentication yet, so the
-  # quickstart does not put it on a network interface.
+  # Bound to loopback by default even though every public route now requires
+  # a scoped API key. Exposure remains an explicit deployer choice.
   api:
     <<: *api-image
     restart: unless-stopped
@@ -142,8 +143,11 @@ services:
 
 volumes:
   # Everything a backup needs: the notes filesystem, source bundles and the
-  # control state files.
+  # control state files. Back up `default-api-key` with it to keep the default
+  # credential readable; without it a live default becomes unrecoverable and is
+  # never re-minted, and a revoked one stays revoked either way.
   data:
   pgdata:
   internal-token:
   postgres-password:
+  default-api-key:

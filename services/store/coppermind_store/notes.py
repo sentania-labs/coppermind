@@ -43,6 +43,7 @@ from sqlalchemy.exc import (
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coppermind import frontmatter as fm
+from coppermind.api_keys import ApiKeySet
 from coppermind.atomicio import commit_staged, create_exclusive_bytes, stage_bytes
 from coppermind.db.models import Note
 from coppermind.db.session import transaction
@@ -88,6 +89,10 @@ class LocalStore:
         # store is exactly one process, which is what makes an in-process lock
         # a sufficient guard for the compare-and-swap.
         self._locks: dict[str, asyncio.Lock] = {}
+
+    async def get_api_keys(self) -> ApiKeySet:
+        """Read API key hashes from filesystem-first control state."""
+        return self.control.api_keys()
 
     async def create_note(self, request: CreateNote) -> NoteDocument:
         settings = self.control.settings()
@@ -309,9 +314,8 @@ def _parse(
         # The parser's reason quotes the offending lines, so it is the
         # person's own note content: it reaches the internal surface, which
         # the store alone answers, and never the log or the public
-        # envelope. Logs are collected and shipped, and an unauthenticated
-        # read can trigger this, so the log gets only what the type of the
-        # failure and its position say.
+        # envelope. Logs are collected and shipped, so the log gets only what
+        # the type of the failure and its position say.
         log.warning(
             "note frontmatter could not be parsed",
             note_id=note_id,

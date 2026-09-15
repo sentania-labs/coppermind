@@ -9,6 +9,7 @@ import coppermind_store.notes as notes_module
 import httpx
 import pytest
 import sqlalchemy as sa
+from coppermind_api.auth import ApiKeyAuthenticator
 from coppermind_api.main import create_app as create_api_app
 from coppermind_store.control import ControlState
 from coppermind_store.fs import content_hash
@@ -16,6 +17,7 @@ from coppermind_store.notes import LocalStore
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coppermind import frontmatter as fm
+from coppermind.api_keys import API_SCOPES, ApiKeySet, create_key
 from coppermind.db.models import Note
 from coppermind.ids import is_valid_id
 from coppermind.schema import default_schema
@@ -38,6 +40,22 @@ MEETING = {
     "account": "Ameren",
     "tags": ["architecture"],
 }
+
+
+def authorized_api(store: LocalStore):
+    record, credential = create_key(
+        "integration test",
+        list(API_SCOPES),
+        key_id="d1e2f3a4b5c6d7e8",
+        secret="integration-test-secret",
+    )
+    store.control.store.write(
+        "keys", ApiKeySet(keys=[record]).model_dump(mode="json"), if_revision=None
+    )
+    app = create_api_app()
+    app.state.store = store
+    app.state.api_key_auth = ApiKeyAuthenticator(store)
+    return app, {"Authorization": f"Bearer {credential}"}
 
 
 async def test_a_created_note_is_a_file_first_and_a_row_second(store: LocalStore, session_factory):
@@ -228,8 +246,7 @@ async def test_schema_version_projection_defaults_when_role_is_not_an_integer(
 async def test_public_create_rejects_unstorable_metadata_without_leaving_a_file(
     store: LocalStore,
 ):
-    app = create_api_app()
-    app.state.store = store
+    app, authorization = authorized_api(store)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://api"
@@ -237,7 +254,7 @@ async def test_public_create_rejects_unstorable_metadata_without_leaving_a_file(
         response = await client.post(
             "/v1/notes",
             content='{"title":"Weekly","frontmatter":{"weight":1e999}}',
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **authorization},
         )
 
     assert response.status_code == 422
@@ -528,8 +545,7 @@ async def test_a_replace_of_a_row_whose_file_is_now_another_note_is_a_miss(
 
 async def test_public_replace_carries_the_etag_in_both_directions(store: LocalStore):
     """The public route against the real store: 428, then 409, then 200."""
-    app = create_api_app()
-    app.state.store = store
+    app, authorization = authorized_api(store)
     created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
     path = store.notes_root / created.path
     path.write_bytes(path.read_bytes().replace(b"reviewed: false", b"reviewed: true"))
@@ -537,6 +553,7 @@ async def test_public_replace_carries_the_etag_in_both_directions(store: LocalSt
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://api"
     ) as client:
+        client.headers.update(authorization)
         read = await client.get(f"/v1/notes/{created.id}")
         document = read.json()
         document["body"] += "\n- Corrected on review\n"
