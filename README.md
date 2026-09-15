@@ -39,6 +39,19 @@ session until you log out or the configured 12-hour default expires. Its
 overview intentionally reports only that you are signed in; settings, API
 keys, status, and Obsidian Sync connection arrive as separate increments.
 
+Forgot the admin password? Remove the admin record and claim again. The
+bootstrap container issues a fresh claim code whenever that record is absent:
+
+```bash
+docker compose run --rm --no-deps --entrypoint rm bootstrap /data/state/admin.json
+docker compose up -d
+```
+
+Then read the new code the same way as above and claim Admin a second time.
+Nothing else is touched: the notes filesystem, the database, the API keys and
+the internal credentials all stay as they are. Do not rebuild the `data`
+volume for this. That destroys the notes filesystem to reset one password.
+
 The session cookie is issued Secure, which browsers keep over HTTPS and on the
 loopback address above. If you republish Admin on another address with
 `COPPERMIND_ADMIN_BIND` and reach it over plain HTTP, the browser throws that

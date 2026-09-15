@@ -259,12 +259,14 @@ def test_a_settings_file_admin_cannot_read_names_the_file_and_the_key(fresh):
     assert refused.status_code == 500
     assert str(settings_file) in refused.text
     assert "admin.session_hours" in refused.text
+    assert "greater than or equal to 1" in refused.text
     assert not sessions.tokens
 
     settings_file.write_text("schema_version: 1\nrevision: 1\nadmin:\n  bogus: 1\n", "utf-8")
     mistyped = login(client)
     assert mistyped.status_code == 500
     assert "admin.bogus" in mistyped.text
+    assert "Extra inputs are not permitted" in mistyped.text
 
     settings_file.write_text("admin:\n  session_hours: 12\n   cookie_secure: false\n", "utf-8")
     mangled = login(client)

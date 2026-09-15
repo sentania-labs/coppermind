@@ -117,9 +117,12 @@ def without_marker(url: URL) -> str:
     return f"{cleaned.path}?{cleaned.query}" if cleaned.query else cleaned.path
 
 
-def rejected_keys(error: Exception) -> str:
+def rejection_detail(error: Exception) -> str:
     if isinstance(error, ValidationError):
-        return ", ".join(".".join(str(part) for part in item["loc"]) for item in error.errors())
+        return "\n".join(
+            f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}"
+            for item in error.errors()
+        )
     return str(error)
 
 
@@ -130,8 +133,9 @@ def settings_unreadable(path: Path, problem: str) -> HTMLResponse:
             f"""<h1>Admin cannot read its settings</h1>
 <p class="error">{html.escape(str(path))} could not be read, so Admin cannot start a session.</p>
 <p>What it rejected:</p><pre>{html.escape(problem)}</pre>
-<p class="muted">Correct that file and log in again. Nothing else was changed, and the rest of
-Coppermind keeps running on the settings it already loaded.</p>""",
+<p class="muted">Correct that file and log in again. Nothing was changed by this attempt. The
+rest of Coppermind reads the same file fresh, so a bad value stops note creation and
+reconciliation too, and correcting it restores all of them together.</p>""",
         ),
         status_code=500,
     )
@@ -276,7 +280,7 @@ required></label><button>Log in</button></form>""",
         try:
             product = product_settings()
         except (OSError, ValueError) as exc:
-            return settings_unreadable(state.path_for("settings"), rejected_keys(exc))
+            return settings_unreadable(state.path_for("settings"), rejection_detail(exc))
         lifetime = timedelta(hours=product.admin.session_hours)
         try:
             token = await request.app.state.sessions.create(lifetime)
