@@ -136,7 +136,7 @@ docker compose exec git git -C /data/notes log --stat
 | `api` | the public contract on `:8080` | five-minute key cache; no durable state |
 | `store` | the only process that writes the notes filesystem | `/data`, one replica always |
 | `git` | records the history of the notes filesystem; no network, no credential | `/data/notes/.git`, one replica always |
-| `postgres` | mirrored and derived state, rebuildable from `/data` | `pgdata` volume |
+| `postgres` | mirrored and derived state, rebuildable from `/data` apart from a source's external-id claim | `pgdata` volume |
 | `bootstrap`, `migrate` | one-shot, run on every `up` and exit | none |
 
 Health is honest. `/healthz` says the process is up; `/readyz` says the
