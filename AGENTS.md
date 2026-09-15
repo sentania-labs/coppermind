@@ -97,11 +97,15 @@ helper honours it.
   not a database row alone. A write-phase failure removes incomplete files; a
   database commit failure retains a completed bundle, Review note and claim,
   so a retry returns the existing result and repairs the mirror from disk.
-- **An atomic replace can succeed before its directory sync fails.** Once a
-  source manifest replacement begins, cleanup must retain the new revision
-  because the live manifest may already point to it. Replay verifies the
-  current artifact files and their recorded digests before confirming that
-  nothing changed or rebuilding PostgreSQL from the manifest.
+- **An atomic replace can succeed before its directory sync fails.** The
+  boundary is the completed `os.replace`, not the staging in front of it:
+  `atomicio.replace_staged` renames without syncing the directory so ingest
+  can set its "the manifest may already name this" flag between the two
+  halves. A failure before the rename removes what no manifest names; once the
+  rename lands, cleanup must retain the new revision and the projection page
+  beside it, because the live manifest may already point to them. Replay
+  verifies the current artifact files and their recorded digests before
+  confirming that nothing changed or rebuilding PostgreSQL from the manifest.
 
 ## Maintaining this file
 

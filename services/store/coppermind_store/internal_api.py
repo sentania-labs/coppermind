@@ -24,6 +24,8 @@ from coppermind.store_protocol import (
     Page,
     PatchFrontmatter,
     ReplaceNote,
+    SourceArtifactDocument,
+    SourceManifest,
     StoreError,
     etag_from_if_match,
 )
@@ -91,6 +93,27 @@ async def ingest(
         return _failure(error)
     status_code = 201 if result.note.created else 200
     return JSONResponse(status_code=status_code, content=result.model_dump(mode="json"))
+
+
+@router.get("/sources/{source_id}", response_model=SourceManifest)
+async def get_source(source_id: str, request: Request) -> SourceManifest | JSONResponse:
+    try:
+        return await _store(request).get_source(source_id)
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.get(
+    "/sources/{source_id}/revisions/{revision}/artifacts/{name}",
+    response_model=SourceArtifactDocument,
+)
+async def get_source_artifact(
+    source_id: str, revision: int, name: str, request: Request
+) -> SourceArtifactDocument | JSONResponse:
+    try:
+        return await _store(request).get_source_artifact(source_id, revision, name)
+    except StoreError as error:
+        return _failure(error)
 
 
 @router.get("/notes/{note_id}", response_model=NoteDocument)

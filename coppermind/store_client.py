@@ -15,6 +15,7 @@ import httpx
 
 from coppermind.api_keys import ApiKeySet
 from coppermind.store_protocol import (
+    ArtifactNotFound,
     CreateNote,
     ETag,
     IncompleteRevision,
@@ -33,8 +34,13 @@ from coppermind.store_protocol import (
     PathCollision,
     PayloadTooLarge,
     PreconditionRequired,
+    ProjectionNotPlaced,
     ReplaceNote,
+    SourceArtifactDocument,
     SourceClaimMissing,
+    SourceId,
+    SourceManifest,
+    SourceNotFound,
     SourcesFilesystemUnavailable,
     StoreError,
     StoreUnavailable,
@@ -130,6 +136,20 @@ class HttpStoreClient:
         )
         return IngestResult.model_validate(response.json())
 
+    async def get_source(self, source_id: SourceId) -> SourceManifest:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/sources/{_segment(source_id)}")
+        return SourceManifest.model_validate(response.json())
+
+    async def get_source_artifact(
+        self, source_id: SourceId, revision: int, name: str
+    ) -> SourceArtifactDocument:
+        response = await self._send(
+            "GET",
+            f"{INTERNAL_PREFIX}/sources/{_segment(source_id)}/revisions/{revision}/artifacts/"
+            f"{_segment(name)}",
+        )
+        return SourceArtifactDocument.model_validate(response.json())
+
     async def get_api_keys(self) -> ApiKeySet:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/api-keys")
         return ApiKeySet.model_validate(response.json())
@@ -159,6 +179,12 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         payload = {}
     code = payload.get("error", "")
     message = payload.get("message", response.text)
+    if response.status_code == 404 and "source_id" in payload and "name" in payload:
+        return ArtifactNotFound(
+            payload.get("source_id", ""), payload.get("revision", 0), payload.get("name", "")
+        )
+    if response.status_code == 404 and "source_id" in payload:
+        return SourceNotFound(payload.get("source_id", ""))
     if response.status_code == 404:
         return NotFound(payload.get("note_id", message))
     if code == "path_collision":
@@ -166,6 +192,10 @@ def _as_typed_error(response: httpx.Response) -> Exception:
     if code == "source_claim_missing":
         return SourceClaimMissing(
             payload.get("provider", ""), payload.get("external_source_id", "")
+        )
+    if code == "projection_not_placed":
+        return ProjectionNotPlaced(
+            payload.get("source_id", ""), payload.get("revision", 0), payload.get("path", message)
         )
     if code == "incomplete_revision":
         return IncompleteRevision(payload.get("path", message))

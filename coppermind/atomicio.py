@@ -45,12 +45,31 @@ def stage_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> Path:
 
 def commit_staged(temp: Path, path: Path) -> None:
     """Rename a staged file over `path`, then make the rename durable."""
+    replace_staged(temp, path)
+    sync_directory(path.parent)
+
+
+def replace_staged(temp: Path, path: Path) -> None:
+    """Rename a staged file over `path` without making the rename durable.
+
+    A caller that has to tell a replacement that never happened from one a
+    reader may already see does the two halves itself: this returns only once
+    the rename has completed, and `sync_directory` finishes the write.
+    """
     try:
         os.replace(temp, path)
     except BaseException:
         temp.unlink(missing_ok=True)
         raise
-    _fsync_dir(path.parent)
+
+
+def sync_directory(directory: Path) -> None:
+    """Make the renames and creations in `directory` durable."""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def atomic_write_text(path: Path, text: str, *, mode: int = 0o644) -> None:
@@ -71,15 +90,7 @@ def create_exclusive_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> Non
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        _fsync_dir(path.parent)
+        sync_directory(path.parent)
     except BaseException:
         path.unlink(missing_ok=True)
         raise
-
-
-def _fsync_dir(directory: Path) -> None:
-    fd = os.open(directory, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)

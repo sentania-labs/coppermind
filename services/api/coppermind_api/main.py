@@ -28,6 +28,7 @@ from coppermind_api import __version__
 from coppermind_api.auth import ApiKeyAuthenticator, AuthenticationUnavailable
 from coppermind_api.v1.ingest import router as ingest_router
 from coppermind_api.v1.notes import router as notes_router
+from coppermind_api.v1.sources import router as sources_router
 
 SERVICE = "coppermind-api"
 
@@ -142,6 +143,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         )
 
     app.include_router(ingest_router)
+    app.include_router(sources_router)
     app.include_router(notes_router)
     return app
 
