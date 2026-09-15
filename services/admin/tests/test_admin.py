@@ -266,6 +266,12 @@ def test_a_settings_file_admin_cannot_read_names_the_file_and_the_key(fresh):
     assert mistyped.status_code == 500
     assert "admin.bogus" in mistyped.text
 
+    settings_file.write_text("admin:\n  session_hours: 12\n   cookie_secure: false\n", "utf-8")
+    mangled = login(client)
+    assert mangled.status_code == 500
+    assert str(settings_file) in mangled.text
+    assert "line 3" in mangled.text
+
     settings_file.unlink()
     missing = login(client)
     assert missing.status_code == 500

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 from coppermind.atomicio import atomic_write_text
 
@@ -120,7 +121,10 @@ def _load(path: Path, text: str) -> dict[str, Any]:
 
         loaded = json.loads(text)
     else:
-        loaded = _yaml().load(text)
+        try:
+            loaded = _yaml().load(text)
+        except YAMLError as exc:
+            raise ValueError(f"{path.name} is not valid YAML: {exc}") from exc
     if not isinstance(loaded, dict):
         raise ValueError(f"{path.name} is not a mapping")
     return loaded

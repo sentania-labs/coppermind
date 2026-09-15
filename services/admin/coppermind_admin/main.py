@@ -90,6 +90,7 @@ button {{
   background:#245c3b; color:#fff; font:inherit; font-weight:700; cursor:pointer
 }}
 .error {{ padding:.75rem; background:#fde8e4; border-left:.25rem solid #a93624 }}
+pre {{ white-space:pre-wrap; overflow-wrap:anywhere; font-size:.85rem }}
 .muted {{ color:#59655d }}
 </style></head><body><main>{body}</main></body></html>"""
 
@@ -128,7 +129,7 @@ def settings_unreadable(path: Path, problem: str) -> HTMLResponse:
             "Settings unreadable",
             f"""<h1>Admin cannot read its settings</h1>
 <p class="error">{html.escape(str(path))} could not be read, so Admin cannot start a session.</p>
-<p>What it rejected: {html.escape(problem)}</p>
+<p>What it rejected:</p><pre>{html.escape(problem)}</pre>
 <p class="muted">Correct that file and log in again. Nothing else was changed, and the rest of
 Coppermind keeps running on the settings it already loaded.</p>""",
         ),
