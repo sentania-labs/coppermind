@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from coppermind_store import notes as notes_module
 from coppermind_store import reconciler
 from coppermind_store.fs import content_hash
 from coppermind_store.notes import LocalStore
@@ -238,15 +239,110 @@ async def test_a_refusal_names_what_actually_happened(store: LocalStore):
         assert outcome == "invalid"
         return cause
 
-    bad_schema = await refusal("Bad schema.md", b"---\ntype: nonsense\n---\n")
+    bad_schema = await refusal("Bad schema.md", b"---\ntype: therapy-session\n---\n")
     bad_id = await refusal("Bad id.md", b"---\nid: not-a-ulid\n---\n# Hand edited\n")
     bad_endings = await refusal("Bad endings.md", b"---\rtags: [a]\r---\r# Phone\r")
     bad_block = await refusal("Bad block.md", b"---\nid: [\n---\n# Broken\n")
 
-    assert "type" in bad_schema
+    assert bad_schema == "keys the schema refused: type"
     assert bad_id == "the id it carries is not a valid identifier"
     assert bad_endings == "unsupported_line_endings"
     assert len({bad_schema, bad_id, bad_endings, bad_block}) == 4
+
+
+async def test_a_refusal_never_carries_the_person_s_own_value(store: LocalStore):
+    """Logs are collected and shipped, so a cause names keys, never content."""
+    private = store.notes_root / "Personal" / "Journal.md"
+    private.parent.mkdir(parents=True, exist_ok=True)
+    data = b"---\ntype: therapy-session\naccount: Ameren\n---\n# Thursday\n"
+    private.write_bytes(data)
+
+    outcome, cause = await store.adopt_note("Personal/Journal.md", content_hash(data))
+
+    assert outcome == "invalid"
+    assert "therapy-session" not in cause
+    assert "Ameren" not in cause
+    assert "type" in cause
+
+
+async def test_the_schema_refuses_a_candidate_without_asking_for_a_connection(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """An over-limit tree is rediscovered every pass, so a refusal stays cheap."""
+    refused = store.notes_root / "Review" / "Out of vocabulary.md"
+    refused.parent.mkdir(parents=True, exist_ok=True)
+    data = b"---\ntype: therapy-session\n---\n# Out of vocabulary\n"
+    refused.write_bytes(data)
+
+    def no_database(*args, **kwargs):
+        raise AssertionError("adoption asked for a connection before judging the file")
+
+    monkeypatch.setattr(store, "session_factory", no_database)
+    outcome, cause = await store.adopt_note("Review/Out of vocabulary.md", content_hash(data))
+
+    assert outcome == "invalid"
+    assert cause == "keys the schema refused: type"
+
+
+async def test_a_property_left_blank_on_a_phone_is_filled_rather_than_refused(
+    store: LocalStore,
+):
+    """Obsidian writes this shape for a property added and left empty."""
+    unknown = store.notes_root / "Review" / "Grocery list.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    unknown.write_bytes(b"---\ndate:\ntags: [errands]\n---\n# Grocery list\n")
+
+    counts = await reconcile_once(store)
+    frontmatter, body = fm.parse(unknown.read_text(encoding="utf-8"))
+    fetched = await store.get_note(frontmatter[store.control.schema().role("id_key")])
+
+    assert counts["adopted"] == 1
+    assert counts["rejected"] == 0
+    assert store.control.schema().validate_frontmatter(frontmatter) == []
+    assert frontmatter["date"] is not None
+    assert list(frontmatter["tags"]) == ["errands"]
+    assert body == "# Grocery list\n"
+    assert fetched.body == "# Grocery list\n"
+
+
+async def test_a_file_that_disappears_from_the_unchanged_branch_is_only_changed(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """A candidate that needs no new bytes must not cost the whole pass.
+
+    A file already carrying every required key is written nothing, so adoption
+    takes the branch that only re-reads it. A device deleting it in that window
+    is an ordinary race, not a reason to lose every other note's update.
+    """
+    gone = await store.create_note(CreateNote(title="Meeting", frontmatter={"type": "reference"}))
+    (store.notes_root / gone.path).unlink()
+    complete = store.notes_root / "Review" / "Restored.md"
+    complete.parent.mkdir(parents=True, exist_ok=True)
+    complete.write_bytes(
+        b"---\nschema_version: 1\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\ndate: 2026-09-15\n"
+        b"type: note\ncontext: internal\nreviewed: false\nsources: []\n---\n# Restored\n"
+    )
+    real_read = notes_module._read
+    reads: list[str] = []
+
+    def a_device_deletes_it_after_the_first_read(relative, path):
+        result = real_read(relative, path)
+        if relative == "Review/Restored.md":
+            reads.append(relative)
+            if len(reads) == 1:
+                path.unlink()
+        return result
+
+    monkeypatch.setattr(notes_module, "_read", a_device_deletes_it_after_the_first_read)
+    counts = await reconcile_once(store)
+
+    assert len(reads) == 1
+    assert counts["adopted"] == 0
+    assert counts["backlog"] == 1
+    assert counts["missing"] == 1
+    assert (await _row(store, gone.id)).state == "missing"
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 1
 
 
 async def test_one_failed_adoption_does_not_stop_the_others_converging(

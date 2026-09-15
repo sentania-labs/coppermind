@@ -419,9 +419,10 @@ class LocalStore:
         The scan supplies the hash it observed after the quiet period. The
         file is read again under the store's lock and checked once more
         immediately before an atomic replacement, so a device write wins the
-        race without losing bytes. Only absent keys the schema requires of this
-        note receive defaults; an optional key a person did not write stays
-        unwritten, and existing keys and body content are never replaced.
+        race without losing bytes. Only keys the schema requires of this note
+        and that it does not already carry a value for receive defaults; an
+        optional key a person did not write stays unwritten, and existing
+        values and body content are never replaced.
 
         A file already carrying an identity this store knows is not adopted:
         the reconciler never proposes one, because nothing observable tells a
@@ -458,13 +459,16 @@ class LocalStore:
 
             changes = _adoption_changes(frontmatter, schema, settings, note_id)
             try:
-                adopted_text = fm.append_missing(text, changes)
+                adopted_text = fm.fill_missing(text, changes)
                 adopted_frontmatter, adopted_body = fm.parse(adopted_text)
             except fm.FrontmatterError as exc:
                 return "invalid", exc.category
-            problems = schema.validate_frontmatter(adopted_frontmatter)
-            if problems:
-                return "invalid", "; ".join(problems)
+            # Everything this file is judged on is decided here, before a
+            # connection is asked for, so a note the schema refuses costs a read
+            # and a parse however many times the scan rediscovers it.
+            invalid = schema.invalid_keys(adopted_frontmatter)
+            if invalid:
+                return "invalid", f"keys the schema refused: {', '.join(invalid)}"
             data = adopted_text.encode("utf-8")
             now = datetime.now(tz=UTC)
 
@@ -502,7 +506,10 @@ class LocalStore:
                             staged.unlink(missing_ok=True)
                             raise
                     else:
-                        latest, _ = _read(relative, path)
+                        try:
+                            latest, _ = _read(relative, path)
+                        except NotFound:
+                            return "changed", "the file is no longer there"
                         if content_hash(latest) != expected_hash:
                             return "changed", "a device wrote to the file first"
 
@@ -798,11 +805,14 @@ def _adoption_changes(
     settings: ProductSettings,
     note_id: str,
 ) -> dict[str, Any]:
-    """Only the absent keys needed to make a device-created note valid.
+    """Only the keys needed to make a device-created note valid.
 
     A key the schema does not require of this note is left out even when it
     ships a default, because adoption writes into a file a person owns and
-    every key it adds syncs back to their devices.
+    every key it adds syncs back to their devices. A required key the file
+    carries with no value counts as one to fill: the schema reads it as absent,
+    so leaving it would refuse the note for a property a person added and left
+    empty.
     """
     available = schema.defaults()
     available[schema.role("id_key")] = note_id
@@ -813,7 +823,7 @@ def _adoption_changes(
         definition.name: available[definition.name]
         for definition in schema.keys
         if definition.name in required
-        and definition.name not in frontmatter
+        and frontmatter.get(definition.name) is None
         and definition.name in available
     }
 

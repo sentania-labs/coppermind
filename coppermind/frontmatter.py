@@ -258,13 +258,10 @@ def append_missing(text: str, changes: dict[str, Any]) -> str:
     delimiter using the block's line endings, so comments, quoting,
     indentation, ordering and the body remain byte exact.
 
-    A block whose own delimiter lines end in a bare carriage return is refused
-    rather than written. `split` ends the block on a line feed, so for those it
-    reports no body at all, and adopting one would mirror and serve it empty.
-    Only the two delimiter lines are read this way: a carriage return anywhere
-    in the body is the person's own byte and never blocks a write. Reading the
-    endings themselves is a correction to the shared parser, not to adoption.
+    A block whose own delimiter lines `split` cannot read is refused rather than
+    written, because the splice would use their endings.
     """
+    require_readable_delimiters(text)
     block, body, opening_length = _split(text)
     if opening_length < 0:
         return compose(changes, body)
@@ -273,14 +270,6 @@ def append_missing(text: str, changes: dict[str, Any]) -> str:
     if closing_offset is None:  # split already checked this; keeps the invariant local
         raise FrontmatterError("frontmatter block is never closed", category="unterminated_block")
     insertion = opening_length + closing_offset
-    after_closing = text[insertion + len(DELIMITER) :]
-    if newline not in _DELIMITER_ENDINGS or (
-        after_closing and not after_closing.startswith(_DELIMITER_ENDINGS)
-    ):
-        raise FrontmatterError(
-            "frontmatter delimiter ends in a bare carriage return",
-            category="unsupported_line_endings",
-        )
     yaml = _yaml()
     if block.strip():
         loaded, indent, sequence_offset = _load_guessing_indent(block, yaml)
@@ -293,3 +282,48 @@ def append_missing(text: str, changes: dict[str, Any]) -> str:
         return text
     fragment = _dump(additions, yaml).replace("\n", newline)
     return f"{text[:insertion]}{fragment}{text[insertion:]}"
+
+
+def require_readable_delimiters(text: str) -> None:
+    """Refuse a block whose own delimiter lines `split` cannot read.
+
+    `split` ends the block on a line feed, so for a delimiter line closed by a
+    bare carriage return it reports no body at all, and a note written from one
+    would be mirrored and served empty. Only the two delimiter lines are read
+    this way: a carriage return anywhere in the body is the person's own byte
+    and never blocks a write. Reading those endings is a correction to the
+    shared parser rather than to the writers that lean on it.
+    """
+    _, _, opening_length = _split(text)
+    if opening_length < 0:
+        return
+    closing_offset = _find_closing_delimiter(text[opening_length:])
+    if closing_offset is None:  # split already checked this; keeps the invariant local
+        raise FrontmatterError("frontmatter block is never closed", category="unterminated_block")
+    after_closing = text[opening_length + closing_offset + len(DELIMITER) :]
+    if text[len(DELIMITER) : opening_length] not in _DELIMITER_ENDINGS or (
+        after_closing and not after_closing.startswith(_DELIMITER_ENDINGS)
+    ):
+        raise FrontmatterError(
+            "frontmatter delimiter ends in a bare carriage return",
+            category="unsupported_line_endings",
+        )
+
+
+def fill_missing(text: str, changes: dict[str, Any]) -> str:
+    """Write the keys a device-created note lacks, whether absent or left blank.
+
+    A key the file does not carry at all is spliced in before the closing
+    delimiter, so every existing byte survives. A key the file carries with no
+    value cannot be spliced without writing it twice, so a file holding one of
+    those takes the ordinary targeted patch instead and has its block
+    reassembled: key order, comments and quoting survive that, the block's own
+    line endings do not. Blank properties are what Obsidian writes when someone
+    adds one and leaves it empty, so refusing them would leave an ordinary
+    device-created note unadoptable.
+    """
+    frontmatter, _ = parse(text)
+    if any(key in frontmatter for key in changes):
+        require_readable_delimiters(text)
+        return patch(text, changes)
+    return append_missing(text, changes)

@@ -85,13 +85,23 @@ vertical path proved end to end, then widened.
   remainder is simply picked up next pass. Adoption checks the observed hash
   again immediately before the atomic replacement, so another device write wins
   without losing bytes. The tested line endings, inline comments, key order,
-  list style and body stay in place. A file the store refuses, because its
-  frontmatter does not validate, because it carries a malformed identifier, or
-  because its frontmatter delimiter lines end in a bare carriage return that
-  the shared parser reads as having no body, is left byte exact and counted
-  rejected with the reason it was refused. A carriage return in the body is the
-  person's own byte and never blocks adoption. A file the store cannot write is
-  counted unwritable with the same detail. Both keep their stat like any other
+  list style and body stay in place. One shape is the exception: a required
+  property a person added and left blank, which is what Obsidian writes for an
+  empty property, cannot be appended without writing the key twice, so those
+  files take the ordinary targeted property change and have their properties
+  block reassembled. Key order, comments and quoting survive that; the block's
+  own line endings do not. Every other adoption only appends. A file the store
+  refuses, because its frontmatter does not validate, because it carries a
+  malformed identifier, or because its frontmatter delimiter lines end in a
+  bare carriage return that the shared parser reads as having no body, is left
+  byte exact and counted rejected. The reason names the parser category or the
+  schema keys at fault and never the person's own values, because logs are
+  collected and shipped. A carriage return in the body is the person's own byte
+  and never blocks adoption. Everything a file is judged on is decided before a
+  database connection is asked for, so a note the schema refuses costs a read
+  and a parse however often the scan rediscovers it. A file the store cannot
+  write is counted unwritable with the same detail. Both keep their stat like
+  any other
   rejected file, so cheap passes stop sweeping them and the daily thorough
   rehash is what tries them again; because neither names an identity the mirror
   knows, neither holds back a deletion report or the rehash itself. A file that

@@ -277,3 +277,36 @@ def test_append_missing_composes_a_block_for_a_file_with_no_frontmatter():
     updated = fm.append_missing(note, {"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"})
 
     assert fm.parse(updated)[1] == note
+
+
+def test_fill_missing_appends_when_no_key_is_already_written():
+    note = "---\ntags: [mine] # keep this\n---\n# Written on a phone\n"
+
+    updated = fm.fill_missing(note, {"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"})
+
+    assert updated == (
+        "---\ntags: [mine] # keep this\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# Written on a phone\n"
+    )
+
+
+def test_fill_missing_fills_a_property_left_blank_instead_of_writing_it_twice():
+    """Obsidian writes this shape for a property someone added and left empty."""
+    note = "---\ndate:\ntags: [mine]\n---\n# Grocery list\n"
+
+    updated = fm.fill_missing(note, {"date": "2026-09-15"})
+    frontmatter, body = fm.parse(updated)
+
+    assert updated.count("date:") == 1
+    assert frontmatter["date"] == "2026-09-15"
+    assert list(frontmatter["tags"]) == ["mine"]
+    assert body == "# Grocery list\n"
+
+
+def test_fill_missing_refuses_a_blank_property_behind_unreadable_delimiters():
+    """`patch` would drop the body of these, so the file must be left alone."""
+    note = "---\rdate:\r---\r# Grocery list\r"
+
+    with pytest.raises(fm.FrontmatterError) as raised:
+        fm.fill_missing(note, {"date": "2026-09-15"})
+
+    assert raised.value.category == "unsupported_line_endings"
