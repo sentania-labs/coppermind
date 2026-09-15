@@ -20,14 +20,14 @@ That is the whole setup, on Docker Engine 26.0 or newer with Compose v2.26 or
 newer. Admin is mounted with a volume subpath so it cannot reach the notes
 filesystem, and older Compose rejects that key instead of starting the stack.
 
-A one-shot bootstrap container creates the volumes,
-generates the internal credentials and a default API key, and writes the
-settings, frontmatter schema and API key hash with working defaults. Nothing
-has to be hand populated before the stack runs.
+A one-shot bootstrap container creates the volumes, generates the internal
+credentials and a default API key, and writes the settings, frontmatter
+schema and API key hash with working defaults. Nothing has to be hand
+populated before the stack runs.
 
 Open Admin at `http://127.0.0.1:8082/admin`. On the first visit it asks for the
-one-time claim code and the admin password you want to use. Read the code from
-the restricted bootstrap file:
+one-time claim code and the admin password you want to use, which has to be at
+least 12 characters. Read the code from the restricted bootstrap file:
 
 ```bash
 docker compose run --rm --no-deps --entrypoint cat bootstrap \
@@ -70,8 +70,8 @@ not a value to change here. That cookie is a live credential for its 12 hours:
 if one gets out of the browser holding it, re-claim with a new password as
 described above, because clicking Log out will not reach it.
 
-Read the default API key from its
-restricted bootstrap volume into the current shell:
+Read the default API key from its restricted bootstrap volume into the
+current shell:
 
 ```bash
 COPPERMIND_KEY="$(docker compose run --rm --no-deps --entrypoint cat bootstrap \
@@ -187,10 +187,10 @@ does not reduce memory use. The key needs both `sources:write` and
 
 The generated OpenAPI document is at `http://127.0.0.1:8080/openapi.json`.
 
-Until Admin adds its graphical keys page, additional
-keys and rotations use the Store command. It prints a new credential once and
-keeps only its hash. Grant one or more of the scopes shown by `--help`, move
-callers to it, then revoke the old key by its id:
+Until Admin adds its graphical keys page, additional keys and rotations use
+the Store command. It prints a new credential once and keeps only its hash.
+Grant one or more of the scopes shown by `--help`, move callers to it, then
+revoke the old key by its id:
 
 ```bash
 docker compose exec store python3 -m coppermind_store.keys create \
