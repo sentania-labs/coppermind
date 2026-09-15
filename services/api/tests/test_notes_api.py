@@ -27,6 +27,7 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     NoteUnparseable,
     NotFound,
+    PatchFrontmatter,
     ReplaceNote,
     StoreUnavailable,
     ValidationFailed,
@@ -68,6 +69,13 @@ READ_KEY_RECORD, READ_KEY = create_key(
     secret="unit-test-read-only-secret",
     created_at=datetime(2026, 9, 8, tzinfo=UTC),
 )
+WRITE_KEY_RECORD, WRITE_KEY = create_key(
+    "write only",
+    ["notes:write"],
+    key_id="c1d2e3f4a5b6c7d8",
+    secret="unit-test-write-only-secret",
+    created_at=datetime(2026, 9, 8, tzinfo=UTC),
+)
 
 
 class FakeStore:
@@ -77,8 +85,9 @@ class FakeStore:
         self.error = error
         self.created: CreateNote | None = None
         self.replaced: tuple[str, ReplaceNote, str] | None = None
+        self.patched: tuple[str, PatchFrontmatter, str] | None = None
         self.key_reads = 0
-        self.key_records = [KEY_RECORD, READ_KEY_RECORD]
+        self.key_records = [KEY_RECORD, READ_KEY_RECORD, WRITE_KEY_RECORD]
 
     async def create_note(self, request: CreateNote) -> NoteDocument:
         if self.error:
@@ -96,6 +105,14 @@ class FakeStore:
             raise self.error
         self.replaced = (note_id, request, if_match)
         return REPLACED
+
+    async def patch_frontmatter(
+        self, note_id: str, request: PatchFrontmatter, if_match: str
+    ) -> NoteDocument:
+        if self.error:
+            raise self.error
+        self.patched = (note_id, request, if_match)
+        return REPLACED.model_copy(update={"frontmatter": {**REPLACED.frontmatter, **request.set}})
 
     async def is_ready(self) -> bool:
         return self.error is None
@@ -612,3 +629,75 @@ def test_a_replace_missing_half_of_the_document_is_refused(client, missing):
     assert body["error"] == "validation_error"
     assert body["errors"] == [f"{missing}: Field required"]
     assert fake.replaced is None
+
+
+def test_marking_a_note_reviewed_uses_a_targeted_frontmatter_patch(client):
+    test_client, fake = client
+    response = test_client.patch(
+        f"/v1/notes/{NOTE.id}/frontmatter",
+        json={"set": {"reviewed": True}, "unset": []},
+        headers={"If-Match": '"sha256:abc"'},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["etag"] == '"sha256:def"'
+    assert response.json()["frontmatter"]["reviewed"] is True
+    assert fake.patched == (
+        NOTE.id,
+        PatchFrontmatter(set={"reviewed": True}),
+        "sha256:abc",
+    )
+
+
+def test_a_frontmatter_patch_needs_an_if_match_header(client):
+    test_client, fake = client
+    response = test_client.patch(
+        f"/v1/notes/{NOTE.id}/frontmatter", json={"set": {"reviewed": True}}
+    )
+    assert response.status_code == 428
+    assert response.json()["error"] == "precondition_required"
+    assert fake.patched is None
+
+
+@pytest.mark.parametrize("if_match", ['"sha256:wrong"', '"sha256:abc"'])
+def test_a_write_only_key_cannot_read_through_a_frontmatter_patch(client, if_match):
+    test_client, fake = client
+    response = test_client.patch(
+        f"/v1/notes/{NOTE.id}/frontmatter",
+        json={},
+        headers={"Authorization": f"Bearer {WRITE_KEY}", "If-Match": if_match},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "forbidden"
+    assert NOTE.body not in response.text
+    assert "current_version" not in response.json()
+    assert fake.patched is None
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "code"),
+    [
+        (VersionConflict("sha256:newer"), 409, "version_conflict"),
+        (
+            ValidationFailed(["type: 'incident' is not one of meeting, journal, reference, note"]),
+            422,
+            "validation_error",
+        ),
+        (MetadataUnavailable("connection refused"), 503, "metadata_unavailable"),
+    ],
+)
+def test_a_frontmatter_patch_preserves_typed_store_failures(client, error, status, code):
+    test_client, fake = client
+    fake.error = error
+
+    response = test_client.patch(
+        f"/v1/notes/{NOTE.id}/frontmatter",
+        json={"set": {"type": "incident"}},
+        headers={"If-Match": '"sha256:abc"'},
+    )
+
+    assert response.status_code == status
+    assert response.json()["error"] == code
+    if code == "validation_error":
+        assert response.json()["errors"][0].startswith("type:")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import date
 
 import coppermind_store.notes as notes_module
 import httpx
@@ -27,6 +28,7 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     NoteUnparseable,
     NotFound,
+    PatchFrontmatter,
     PathCollision,
     ReplaceNote,
     ValidationFailed,
@@ -605,3 +607,308 @@ async def test_an_edit_that_lands_while_the_new_bytes_are_staged_is_not_overwrit
     assert raised.value.current_etag == content_hash(on_device)
     assert path.read_bytes() == on_device
     assert sorted(entry.name for entry in path.parent.iterdir()) == [path.name]
+
+
+async def test_a_frontmatter_patch_changes_one_line_and_keeps_the_body_bytes(
+    store: LocalStore, session_factory
+):
+    """The targeted review action preserves hand ordering, comments and the body."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    body = b"# Runbook\r\n\r\nOperator wording and  trailing spaces  \r\n"
+    before = (
+        b"---\n"
+        b"tags: [architecture]\n"
+        b"# keep this explanation beside the permanent identifier\n"
+        + f"id: {created.id}\n".encode()
+        + b"reviewed: false\n"
+        b"context: customer\n"
+        b"account: Ameren\n"
+        b"date: 2026-09-08\n"
+        b"schema_version: 1\n"
+        b"sources: []\n"
+        b"type: meeting\n"
+        b"---\n" + body
+    )
+    path.write_bytes(before)
+
+    patched = await store.patch_frontmatter(
+        created.id,
+        PatchFrontmatter(set={"reviewed": True}),
+        content_hash(before),
+    )
+
+    after = path.read_bytes()
+    assert after == before.replace(b"reviewed: false\n", b"reviewed: true\n", 1)
+    assert fm.split(after.decode("utf-8"))[1].encode() == body
+    assert patched.frontmatter["reviewed"] is True
+    async with session_factory() as session:
+        row = (await session.execute(sa.select(Note).where(Note.id == created.id))).scalar_one()
+    assert row.reviewed is True
+    assert row.content_hash == content_hash(after)
+
+
+async def test_a_stale_frontmatter_patch_changes_nothing(store: LocalStore):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    on_device = path.read_bytes().replace(b"reviewed: false", b"reviewed: true")
+    path.write_bytes(on_device)
+
+    with pytest.raises(VersionConflict) as raised:
+        await store.patch_frontmatter(
+            created.id,
+            PatchFrontmatter(set={"reviewed": True}),
+            created.content_hash,
+        )
+
+    assert raised.value.current_etag == content_hash(on_device)
+    assert path.read_bytes() == on_device
+
+
+async def test_an_invalid_frontmatter_patch_names_the_field_and_changes_nothing(
+    store: LocalStore,
+):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationFailed) as raised:
+        await store.patch_frontmatter(
+            created.id,
+            PatchFrontmatter(set={"type": "incident"}),
+            created.content_hash,
+        )
+
+    assert raised.value.errors == [
+        "type: 'incident' is not one of meeting, journal, reference, note"
+    ]
+    assert path.read_bytes() == before
+
+    with pytest.raises(ValidationFailed) as changed_id:
+        await store.patch_frontmatter(
+            created.id,
+            PatchFrontmatter(set={"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"}),
+            created.content_hash,
+        )
+    assert changed_id.value.errors == ["id: the identifier of a note cannot be changed"]
+    assert path.read_bytes() == before
+
+
+async def test_a_frontmatter_patch_can_unset_an_optional_field(store: LocalStore):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before_body = fm.split(path.read_text(encoding="utf-8"))[1]
+
+    patched = await store.patch_frontmatter(
+        created.id,
+        PatchFrontmatter(set={"context": "internal"}, unset=["account"]),
+        created.content_hash,
+    )
+
+    after = path.read_text(encoding="utf-8")
+    assert "account:" not in fm.split(after)[0]
+    assert fm.split(after)[1] == before_body
+    assert "account" not in patched.frontmatter
+
+
+async def test_a_patched_date_lands_as_a_date_not_quoted_text(store: LocalStore, session_factory):
+    """A date key set through the patch reads as a date, the way every write path writes one."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+
+    patched = await store.patch_frontmatter(
+        created.id,
+        PatchFrontmatter(set={"date": "2026-09-10"}),
+        created.content_hash,
+    )
+
+    assert "date: 2026-09-10\n" in fm.split(path.read_text(encoding="utf-8"))[0]
+    assert patched.frontmatter["date"] == "2026-09-10"
+    async with session_factory() as session:
+        row = (await session.execute(sa.select(Note).where(Note.id == created.id))).scalar_one()
+    assert row.date == date(2026, 9, 10)
+
+
+async def test_a_patch_that_changes_nothing_leaves_the_file_alone(store: LocalStore):
+    """An idempotent client re-marking a reviewed note must not make Obsidian Sync push it."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+    stat_before = path.stat()
+
+    patched = await store.patch_frontmatter(
+        created.id,
+        PatchFrontmatter(set={"reviewed": False}),
+        created.content_hash,
+    )
+
+    stat_after = path.stat()
+    assert path.read_bytes() == before
+    assert stat_after.st_ino == stat_before.st_ino
+    assert stat_after.st_mtime_ns == stat_before.st_mtime_ns
+    assert patched.content_hash == created.content_hash
+
+
+async def test_a_no_op_patch_repairs_a_stale_mirror(store: LocalStore, session_factory):
+    """A retry repairs a row left behind when the earlier file write committed first."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    current_data = path.read_bytes().replace(b"reviewed: false", b"reviewed: true")
+    path.write_bytes(current_data)
+    stat_before = path.stat()
+
+    patched = await store.patch_frontmatter(
+        created.id,
+        PatchFrontmatter(set={"reviewed": True}),
+        content_hash(current_data),
+    )
+
+    assert path.read_bytes() == current_data
+    assert path.stat().st_mtime_ns == stat_before.st_mtime_ns
+    assert patched.content_hash == content_hash(current_data)
+    async with session_factory() as session:
+        row = (await session.execute(sa.select(Note).where(Note.id == created.id))).scalar_one()
+    assert row.reviewed is True
+    assert row.frontmatter["reviewed"] is True
+    assert row.content_hash == content_hash(current_data)
+
+
+async def test_a_no_op_patch_answers_from_the_verified_snapshot(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """A device write after verification cannot replace the response with newer contents."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+    on_device = before.replace(b"# Runbook", b"# Device edit")
+    execute = AsyncSession.execute
+
+    async def device_write_during_mirror_update(self, statement, *args, **kwargs):
+        result = await execute(self, statement, *args, **kwargs)
+        if isinstance(statement, sa.Update):
+            path.write_bytes(on_device)
+        return result
+
+    monkeypatch.setattr(AsyncSession, "execute", device_write_during_mirror_update)
+    patched = await store.patch_frontmatter(
+        created.id,
+        PatchFrontmatter(set={"reviewed": False}),
+        created.content_hash,
+    )
+
+    assert patched.body == created.body
+    assert patched.title == created.title
+    assert patched.content_hash == created.content_hash
+    assert path.read_bytes() == on_device
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [PatchFrontmatter(set={"sources": []}), PatchFrontmatter(unset=["sources"])],
+)
+async def test_patching_source_associations_is_refused_and_changes_nothing(
+    store: LocalStore, patch: PatchFrontmatter
+):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationFailed) as raised:
+        await store.patch_frontmatter(created.id, patch, created.content_hash)
+
+    assert raised.value.errors[0] == (
+        "sources: source associations are managed by ingest and cannot be patched"
+    )
+    assert path.read_bytes() == before
+
+
+async def test_unsetting_a_required_field_is_refused_and_changes_nothing(store: LocalStore):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationFailed) as raised:
+        await store.patch_frontmatter(
+            created.id,
+            PatchFrontmatter(unset=["type"]),
+            created.content_hash,
+        )
+
+    assert raised.value.errors == ["type: required, so it cannot be removed"]
+    assert path.read_bytes() == before
+
+
+async def test_unsetting_the_identifier_is_refused_and_changes_nothing(store: LocalStore):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationFailed) as raised:
+        await store.patch_frontmatter(
+            created.id,
+            PatchFrontmatter(unset=["id"]),
+            created.content_hash,
+        )
+
+    assert raised.value.errors == ["id: the identifier of a note cannot be removed"]
+    assert path.read_bytes() == before
+
+
+async def test_a_key_named_in_both_set_and_unset_is_refused_and_changes_nothing(
+    store: LocalStore,
+):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationFailed) as raised:
+        await store.patch_frontmatter(
+            created.id,
+            PatchFrontmatter(set={"account": "Ameren"}, unset=["account"]),
+            created.content_hash,
+        )
+
+    assert raised.value.errors == ["account: named in both set and unset"]
+    assert path.read_bytes() == before
+
+
+async def test_a_null_value_in_set_is_refused_and_changes_nothing(store: LocalStore):
+    """Removing a key has one name: a null in set would leave an empty property behind."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationFailed) as raised:
+        await store.patch_frontmatter(
+            created.id,
+            PatchFrontmatter(set={"account": None}),
+            created.content_hash,
+        )
+
+    assert raised.value.errors == [
+        "account: null is not a value to write; name the key in unset to remove it"
+    ]
+    assert path.read_bytes() == before
+
+
+async def test_a_patch_keeps_a_list_a_person_wrote_flush_with_its_key(store: LocalStore):
+    """A hand written note must differ in the patched key alone, not in its list style."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    hand_written = path.read_text(encoding="utf-8").replace("  - architecture", "- architecture")
+    path.write_text(hand_written, encoding="utf-8")
+
+    patched = await store.patch_frontmatter(
+        created.id,
+        PatchFrontmatter(set={"reviewed": True}),
+        content_hash(hand_written.encode("utf-8")),
+    )
+
+    after = path.read_text(encoding="utf-8")
+    assert "\n- architecture\n" in after
+    before_lines = hand_written.splitlines()
+    after_lines = after.splitlines()
+    assert [line for line in after_lines if line not in before_lines] == ["reviewed: true"]
+    assert [line for line in before_lines if line not in after_lines] == ["reviewed: false"]
+    assert [line for line in after_lines if line != line.rstrip()] == []
+    assert patched.frontmatter["reviewed"] is True

@@ -1,4 +1,4 @@
-"""Creating, reading and replacing notes: the local implementation of the store contract.
+"""Creating, reading and changing notes: the local implementation of the store contract.
 
 Write protocol, in this order, for every mutation:
 
@@ -63,6 +63,7 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     NoteUnparseable,
     NotFound,
+    PatchFrontmatter,
     PathCollision,
     ReplaceNote,
     StoreError,
@@ -234,7 +235,7 @@ class LocalStore:
 
         relative, path = await self._locate(note_id)
         async with self._lock_for(note_id):
-            current = _frontmatter_at(note_id, relative, path, schema, if_match)
+            _, current, _ = _bytes_at(note_id, relative, path, schema, if_match)
             frontmatter = _keeping_types(sent, current)
             data = fm.compose(frontmatter, body).encode("utf-8")
             sources = frontmatter.get(schema.role("sources_key"), [])
@@ -273,6 +274,90 @@ class LocalStore:
             content_hash=digest,
             size_bytes=len(data),
             updated_at=now,
+            sources=[str(source) for source in sources] if isinstance(sources, list) else [],
+        )
+
+    async def patch_frontmatter(
+        self, note_id: NoteId, request: PatchFrontmatter, if_match: ETag
+    ) -> NoteDocument:
+        """Change only the named frontmatter fields at the caller's version.
+
+        The round-trip YAML mapping retains every untouched line, including a
+        person's ordering, comments and the note's list style, so the file
+        differs in the one key the caller named whether the note was written
+        by Coppermind, by Obsidian or by hand. A targeted change preserves the
+        note's content and its ordinary formatting, while some unusual
+        formatting is normalised and syncs with it; what survives and what
+        does not is recorded shape by shape in
+        `coppermind/tests/test_frontmatter.py::test_a_patch_preserves_the_note_and_its_ordinary_formatting`.
+
+        The body comes from the same current file and is never accepted from
+        the caller. A patch whose result is byte identical to the file writes
+        nothing, so marking an already reviewed note reviewed does not move the
+        mtime that Obsidian Sync watches.
+        """
+        schema = self.control.schema()
+        problems = _patch_problems(request, schema)
+        if problems:
+            raise ValidationFailed(problems)
+        changes = _with_kinds(request.set, schema)
+
+        relative, path = await self._locate(note_id)
+        async with self._lock_for(note_id):
+            current_data, current_frontmatter, current_mtime = _bytes_at(
+                note_id, relative, path, schema, if_match
+            )
+            data = fm.patch(current_data.decode("utf-8"), changes, unset=request.unset).encode(
+                "utf-8"
+            )
+            frontmatter, body = fm.parse(data.decode("utf-8"))
+
+            id_key = schema.role("id_key")
+            if frontmatter.get(id_key) != current_frontmatter.get(id_key):
+                raise ValidationFailed([f"{id_key}: the identifier of a note cannot be changed"])
+            problems = schema.validate_frontmatter(frontmatter)
+            if problems:
+                raise ValidationFailed(problems)
+
+            sources = frontmatter.get(schema.role("sources_key"), [])
+            now = datetime.now(tz=UTC)
+            digest = content_hash(data)
+            writes_file = data != current_data
+            file_mtime = now if writes_file else datetime.fromtimestamp(current_mtime, tz=UTC)
+            try:
+                async with transaction(self.session_factory) as session:
+                    await session.execute(
+                        sa.update(Note)
+                        .where(Note.id == note_id)
+                        .values(
+                            title=_title_of(body, path),
+                            content_hash=digest,
+                            size_bytes=len(data),
+                            mtime=file_mtime,
+                            frontmatter=_jsonable(frontmatter),
+                            **_mirror_columns(frontmatter, schema),
+                            state="ok",
+                            state_reason=None,
+                            updated_at=now,
+                        )
+                    )
+                    if writes_file:
+                        _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
+            except BaseException as exc:
+                typed = _metadata_failure(exc)
+                if typed is None:
+                    raise
+                raise typed from exc
+
+        return NoteDocument(
+            id=note_id,
+            path=relative,
+            title=_title_of(body, path),
+            frontmatter=_jsonable(frontmatter),
+            body=body,
+            content_hash=digest,
+            size_bytes=len(data),
+            updated_at=file_mtime,
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
 
@@ -374,7 +459,7 @@ def _replace_if_unchanged(
     except OSError as exc:
         raise NotesFilesystemUnavailable(str(exc)) from exc
     try:
-        _frontmatter_at(note_id, relative, path, schema, if_match)
+        _bytes_at(note_id, relative, path, schema, if_match)
         commit_staged(staged, path)
     except OSError as exc:
         staged.unlink(missing_ok=True)
@@ -384,21 +469,23 @@ def _replace_if_unchanged(
         raise
 
 
-def _frontmatter_at(
+def _bytes_at(
     note_id: NoteId, relative: str, path: Path, schema: FrontmatterSchema, if_match: ETag
-) -> dict[str, Any]:
-    """The frontmatter of a located note whose file still hashes to `if_match`.
+) -> tuple[bytes, dict[str, Any], float]:
+    """The bytes, frontmatter and mtime of a note at `if_match`.
 
     The identity check comes before the compare, so a row whose file is now
     another note is a miss whatever ETag was sent, not a conflict naming the
-    other note's hash.
+    other note's hash. One parse serves both the identity check and the
+    caller, so nothing but that check and the compare sits inside the window
+    `_replace_if_unchanged` holds open before the rename.
     """
-    current, _ = _read(note_id, path)
+    current, mtime = _read(note_id, path)
     frontmatter, _ = _parse(note_id, relative, current, schema)
     current_hash = content_hash(current)
     if current_hash != if_match:
         raise VersionConflict(current_hash)
-    return frontmatter
+    return current, frontmatter, mtime
 
 
 def _read(note_id: NoteId, path: Path) -> tuple[bytes, float]:
@@ -491,24 +578,64 @@ def _keeping_types(frontmatter: dict[str, Any], current: dict[str, Any]) -> dict
     }
 
 
+def _with_kinds(values: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any]:
+    """The caller's values with each known key written in the kind the schema gives it.
+
+    A date key is written as a YAML date, not a quoted string, so the file
+    reads the way a person would write it in Obsidian and no write path,
+    whole document or single key, adds quotes to it.
+    """
+    kinds = {definition.name: definition.kind for definition in schema.keys}
+    return {
+        key: (_as_date(value) or value) if kinds.get(key) == "date" else value
+        for key, value in values.items()
+    }
+
+
 def _ordered(values: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any]:
     """Known keys in schema order with their kinds applied, then the rest as given."""
+    values = _with_kinds(values, schema)
     ordered: dict[str, Any] = {}
     known_keys = {definition.name for definition in schema.keys}
     for definition in schema.keys:
         if definition.name in values and values[definition.name] is not None:
-            value = values[definition.name]
-            # A date key is written as a YAML date, not a quoted string, so the
-            # file reads the way a person would write it in Obsidian and a
-            # round trip through the store does not add quotes to it.
-            if definition.kind == "date":
-                value = _as_date(value) or value
-            ordered[definition.name] = value
+            ordered[definition.name] = values[definition.name]
     # Keys the schema does not know about are kept, after the known ones.
     for key, value in values.items():
         if key not in known_keys:
             ordered[key] = value
     return ordered
+
+
+def _patch_problems(request: PatchFrontmatter, schema: FrontmatterSchema) -> list[str]:
+    """Problems with the patch request itself, found before any file is read.
+
+    A key named in both halves has no single meaning, neither the identifier a
+    note is found by nor a key the schema requires is a patch's to remove, and
+    a null is not a value to write: removing a key is what `unset` is for, so
+    `set` has one meaning rather than two. Refusing here means the file is
+    never opened, let alone written.
+    """
+    id_key = schema.role("id_key")
+    sources_key = schema.role("sources_key")
+    required = {definition.name for definition in schema.keys if definition.required}
+    unset = set(request.unset)
+    problems = [f"{key}: named in both set and unset" for key in request.set if key in unset]
+    problems += [
+        f"{key}: null is not a value to write; name the key in unset to remove it"
+        for key, value in request.set.items()
+        if value is None
+    ]
+    if sources_key in request.set or sources_key in unset:
+        problems.append(
+            f"{sources_key}: source associations are managed by ingest and cannot be patched"
+        )
+    for key in request.unset:
+        if key == id_key:
+            problems.append(f"{key}: the identifier of a note cannot be removed")
+        elif key in required:
+            problems.append(f"{key}: required, so it cannot be removed")
+    return problems
 
 
 def _mirror_columns(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any]:

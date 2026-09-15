@@ -321,6 +321,19 @@ class ReplaceNote(BaseModel):
     body: str
 
 
+class PatchFrontmatter(BaseModel):
+    """Set and unset only named fields in a note's frontmatter.
+
+    `set` writes values and `unset` removes keys. A null in `set` is refused,
+    so there is one way to remove a key rather than two.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    set: dict[str, Any] = Field(default_factory=dict)
+    unset: list[str] = Field(default_factory=list)
+
+
 class NoteDocument(BaseModel):
     """A note as the rest of the system sees it."""
 
@@ -344,6 +357,10 @@ class Store(Protocol):
 
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag
+    ) -> NoteDocument: ...
+
+    async def patch_frontmatter(
+        self, note_id: NoteId, request: PatchFrontmatter, if_match: ETag
     ) -> NoteDocument: ...
 
     async def ingest(
