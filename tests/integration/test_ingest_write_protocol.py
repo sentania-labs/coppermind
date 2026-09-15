@@ -822,13 +822,11 @@ async def test_manifest_sync_failure_retains_a_possibly_committed_revision(
     first = await store.ingest(sample())
     changed = sample()
     changed.source.artifacts[0].content = "Scott: corrected source content"
-    real_atomic_write = sources_module.atomic_write_bytes
 
-    def replace_then_fail(path, data, **kwargs):
-        real_atomic_write(path, data, **kwargs)
+    def sync_fails(_directory):
         raise OSError("directory sync acknowledgement lost")
 
-    monkeypatch.setattr(sources_module, "atomic_write_bytes", replace_then_fail)
+    monkeypatch.setattr(sources_module, "sync_directory", sync_fails)
     with pytest.raises(SourcesFilesystemUnavailable):
         await store.ingest(changed)
 
@@ -839,13 +837,48 @@ async def test_manifest_sync_failure_retains_a_possibly_committed_revision(
         "Scott: corrected source content"
     )
 
-    monkeypatch.setattr(sources_module, "atomic_write_bytes", real_atomic_write)
+    monkeypatch.undo()
     replay = await store.ingest(changed)
     assert replay.source.revision == 2
     assert replay.source.created is False
     projection = projection_text(store, replay.projection_path)
     assert "source_revision: 2" in projection
     assert "Scott: corrected source content" in projection
+
+
+async def test_a_manifest_replacement_that_never_began_leaves_no_stranded_revision(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """A manifest that was never replaced names no new revision, so its files go.
+
+    Staging the manifest only writes a temporary file beside it; the recorded
+    revision changes at the rename. A fault before that rename leaves the
+    manifest naming the previous revision, so the artifacts already written
+    under `r0002` are referenced by nothing, and keeping them would answer every
+    later ingest of this source with an incomplete revision until an operator
+    deleted the directory by hand.
+    """
+    first = await store.ingest(sample())
+    changed = sample()
+    changed.source.artifacts[0].content = "Scott: corrected source content"
+
+    def read_only_volume(*_args, **_kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(sources_module, "stage_bytes", read_only_volume)
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.ingest(changed)
+
+    source_root = store.sources_root / first.source.id
+    manifest = json.loads((source_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["current_revision"] == 1
+    assert not (source_root / "r0002").exists()
+
+    monkeypatch.undo()
+    retried = await store.ingest(changed)
+
+    assert retried.source.revision == 2
+    assert "Scott: corrected source content" in projection_text(store, retried.projection_path)
 
 
 @pytest.mark.parametrize("damage", ["missing", "altered"])

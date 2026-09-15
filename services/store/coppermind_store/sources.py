@@ -28,7 +28,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from coppermind import frontmatter as fm
 from coppermind.atomicio import (
-    atomic_write_bytes,
     create_exclusive_bytes,
     replace_staged,
     stage_bytes,
@@ -524,8 +523,10 @@ async def _ingest_existing(
                 "projection_path": projection_path,
             }
         )
+        staged_manifest = stage_bytes(manifest_path, _json_bytes(manifest))
+        replace_staged(staged_manifest, manifest_path)
         manifest_replacement_started = True
-        atomic_write_bytes(manifest_path, _json_bytes(manifest))
+        sync_directory(manifest_path.parent)
         await asyncio.to_thread(
             write_projection,
             store.notes_root,
