@@ -14,9 +14,14 @@ from coppermind.api_keys import ApiKeyRecord, split_credential, verify_secret
 from coppermind.store_protocol import Store
 
 CACHE_TTL_SECONDS = 300.0
-# A key minted since the last load must work now, not in five minutes. This
-# floor is what keeps a flood of unknown key ids from becoming store traffic.
+# A key minted since the last load must work now, not in five minutes. An
+# unknown key id may therefore cost a load, and this floor is how often: one
+# load per window however many requests arrive, because every load is taken
+# under the lock and waiters re-check the window rather than loading again.
 UNKNOWN_KEY_RELOAD_FLOOR_SECONDS = 1.0
+# Argon2 at the shipped cost holds 64 MiB per verification, so the number that
+# can run at once is capped rather than left to the default thread limiter.
+VERIFY_CONCURRENCY = 4
 
 
 class AuthenticationUnavailable(Exception):
@@ -56,30 +61,37 @@ class ApiKeyAuthenticator:
         self._reload_allowed_at = 0.0
         self._verified: dict[bytes, _Verified] = {}
         self._lock = asyncio.Lock()
+        self._verify_limiter = anyio.CapacityLimiter(VERIFY_CONCURRENCY)
 
     async def records(self) -> dict[str, ApiKeyRecord]:
-        """Return the key records, reloading them at most once per cache life."""
+        """Return the key records, loading them at most once per cache life."""
         if self._records_expire_at > self._clock():
             return self._records
-        return await self._reload()
+        async with self._lock:
+            if self._records_expire_at > self._clock():
+                return self._records
+            return await self._load()
 
-    async def _reload(self) -> dict[str, ApiKeyRecord]:
+    async def _reload_for_unknown_key(self) -> dict[str, ApiKeyRecord]:
+        async with self._lock:
+            if self._reload_allowed_at > self._clock():
+                return self._records
+            return await self._load()
+
+    async def _load(self) -> dict[str, ApiKeyRecord]:
+        """Read the key set. The caller holds the lock, so one read runs at a time."""
         try:
             key_set = await self._store.get_api_keys()
         except Exception as exc:  # store errors become one public 503
             raise AuthenticationUnavailable from exc
-        records = {record.key_id: record for record in key_set.keys}
         now = self._clock()
-        async with self._lock:
-            self._records = records
-            self._records_expire_at = now + self._ttl
-            self._reload_allowed_at = now + UNKNOWN_KEY_RELOAD_FLOOR_SECONDS
-            self._verified = {
-                digest: result
-                for digest, result in self._verified.items()
-                if result.expires_at > now
-            }
-        return records
+        self._records = {record.key_id: record for record in key_set.keys}
+        self._records_expire_at = now + self._ttl
+        self._reload_allowed_at = now + UNKNOWN_KEY_RELOAD_FLOOR_SECONDS
+        self._verified = {
+            digest: result for digest, result in self._verified.items() if result.expires_at > now
+        }
+        return self._records
 
     async def has_active_key(self) -> bool:
         """Answer readiness from the same cache the request path reads."""
@@ -101,12 +113,14 @@ class ApiKeyAuthenticator:
 
         key_id, secret = parsed
         record = (await self.records()).get(key_id)
-        if record is None and self._reload_allowed_at <= self._clock():
-            record = (await self._reload()).get(key_id)
+        if record is None:
+            record = (await self._reload_for_unknown_key()).get(key_id)
         if record is None or record.revoked_at is not None:
             return None
         # Argon2 is deliberately expensive, so it never runs on the event loop.
-        if not await anyio.to_thread.run_sync(verify_secret, record.hash, secret):
+        if not await anyio.to_thread.run_sync(
+            verify_secret, record.hash, secret, limiter=self._verify_limiter
+        ):
             return None
 
         principal = Principal(record.key_id, frozenset(record.scopes))

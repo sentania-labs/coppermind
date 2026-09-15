@@ -6,6 +6,7 @@ is under test is the mapping: status codes, the ETag, the error envelope, and
 the fact that nothing here touches a file.
 """
 
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -195,6 +196,56 @@ async def test_a_key_minted_after_the_cache_was_warmed_still_works():
     principal = await authenticator.authenticate(f"Bearer {late_key}")
     assert principal is not None
     assert principal.scopes == frozenset({"notes:read"})
+    assert fake.key_reads == 2
+
+
+class SlowKeyStore(FakeStore):
+    """A store whose key read answers several event loop turns later."""
+
+    def __init__(self, turns: int = 3) -> None:
+        super().__init__()
+        self.turns = turns
+
+    async def get_api_keys(self) -> ApiKeySet:
+        self.key_reads += 1
+        answer = ApiKeySet(keys=list(self.key_records))
+        for _ in range(self.turns):
+            await asyncio.sleep(0)
+        return answer
+
+
+async def test_concurrent_unknown_keys_cost_one_store_read_per_floor_window():
+    """An unauthenticated flood must not become one store read per request."""
+    fake = SlowKeyStore()
+    seconds = 0.0
+    authenticator = auth_module.ApiKeyAuthenticator(fake, clock=lambda: seconds)
+    unknown = "Bearer cm_00000000000000ff_never-minted"
+
+    answers = await asyncio.gather(*(authenticator.authenticate(unknown) for _ in range(25)))
+
+    assert all(answer is None for answer in answers)
+    assert fake.key_reads == 1
+
+
+async def test_an_overlapping_load_cannot_restore_a_revoked_key():
+    """One load is in flight at a time, so no late answer can overwrite a newer one."""
+    fake = SlowKeyStore()
+    seconds = 0.0
+    authenticator = auth_module.ApiKeyAuthenticator(fake, clock=lambda: seconds)
+
+    first = asyncio.create_task(authenticator.records())
+    await asyncio.sleep(0)
+    fake.key_records = [
+        KEY_RECORD.model_copy(update={"revoked_at": datetime(2026, 9, 9, tzinfo=UTC)}),
+        READ_KEY_RECORD,
+    ]
+    second = asyncio.create_task(authenticator.records())
+    await asyncio.gather(first, second)
+
+    assert fake.key_reads == 1
+
+    seconds = auth_module.CACHE_TTL_SECONDS + 1
+    assert await authenticator.authenticate(f"Bearer {KEY}") is None
     assert fake.key_reads == 2
 
 
