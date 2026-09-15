@@ -248,9 +248,12 @@ def test_append_missing_preserves_an_empty_frontmatter_block_and_its_line_ending
     assert updated == ("---\r\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\r\n---\r\n# Written on a phone\r\n")
 
 
-def test_replace_scalar_changes_only_its_value():
-    note = "---\r\nid: 'old' # system identity\r\ntags: [mine]\r\n---\r\n# Copy\r\n"
+def test_append_missing_keeps_a_carriage_return_only_block_and_its_body():
+    """`split` accepts a lone carriage return, so appending must not truncate."""
+    note = "---\rtags: [mine]\r---\r# Written on a phone\r"
 
-    updated = fm.replace_scalar(note, "id", "old", "new")
+    updated = fm.append_missing(note, {"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"})
 
-    assert updated == ("---\r\nid: 'new' # system identity\r\ntags: [mine]\r\n---\r\n# Copy\r\n")
+    assert updated == (
+        "---\rtags: [mine]\rid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\r---\r# Written on a phone\r"
+    )

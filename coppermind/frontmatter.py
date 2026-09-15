@@ -83,19 +83,31 @@ def split(text: str) -> tuple[str, str]:
     Returns ("", text) when the file has no frontmatter, which is the normal
     state of a note a person just created in Obsidian.
     """
+    block, body, _ = _split(text)
+    return block, body
+
+
+def _split(text: str) -> tuple[str, str, int]:
+    """Split note text and report the length of its opening delimiter line.
+
+    The length is negative when the file carries no frontmatter at all. It is
+    the one answer about the opening line, so nothing downstream has to decide
+    a second time which line endings a block opened with and disagree.
+    """
     if not text.startswith(DELIMITER):
-        return "", text
+        return "", text, -1
     rest = text[len(DELIMITER) :]
     if rest[:1] not in {"\n", "\r"}:
-        return "", text
+        return "", text, -1
     rest = rest.lstrip("\r").removeprefix("\n")
+    opening_length = len(text) - len(rest)
     end = _find_closing_delimiter(rest)
     if end is None:
         raise FrontmatterError("frontmatter block is never closed", category="unterminated_block")
     block = rest[:end]
     after = rest[end:]
     after = after.split("\n", 1)[1] if "\n" in after else ""
-    return block, after
+    return block, after, opening_length
 
 
 def _find_closing_delimiter(text: str) -> int | None:
@@ -242,9 +254,8 @@ def append_missing(text: str, changes: dict[str, Any]) -> str:
     delimiter using the block's line endings, so comments, quoting,
     indentation, ordering and the body remain byte exact.
     """
-    block, body = split(text)
-    has_block = text.startswith(f"{DELIMITER}\n") or text.startswith(f"{DELIMITER}\r\n")
-    if not has_block:
+    block, body, opening_length = _split(text)
+    if opening_length < 0:
         return compose(changes, body)
     yaml = _yaml()
     if block.strip():
@@ -257,26 +268,10 @@ def append_missing(text: str, changes: dict[str, Any]) -> str:
     if not additions:
         return text
     fragment = _dump(additions, yaml)
-    newline = "\r\n" if text.startswith(f"{DELIMITER}\r\n") else "\n"
+    newline = text[len(DELIMITER) : opening_length]
     fragment = fragment.replace("\n", newline)
-    opening_length = len(DELIMITER) + len(newline)
     closing_offset = _find_closing_delimiter(text[opening_length:])
     if closing_offset is None:  # split already checked this; keeps the invariant local
         raise FrontmatterError("frontmatter block is never closed", category="unterminated_block")
     insertion = opening_length + closing_offset
     return f"{text[:insertion]}{fragment}{text[insertion:]}"
-
-
-def replace_scalar(text: str, key: str, expected: str, replacement: str) -> str:
-    """Replace one plain top-level scalar while preserving the rest exactly."""
-    frontmatter, _ = parse(text)
-    if frontmatter.get(key) != expected:
-        raise FrontmatterError("frontmatter scalar changed", category="scalar_changed")
-    pattern = re.compile(
-        rf"(?m)^({re.escape(key)}:[ \t]*)(?P<quote>['\"]?)"
-        rf"{re.escape(expected)}(?P=quote)(?P<tail>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
-    )
-    replaced, count = pattern.subn(rf"\g<1>\g<quote>{replacement}\g<quote>\g<tail>", text)
-    if count != 1:
-        raise FrontmatterError("frontmatter scalar is not plain", category="scalar_not_plain")
-    return replaced

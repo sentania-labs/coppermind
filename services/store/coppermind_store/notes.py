@@ -408,9 +408,7 @@ class LocalStore:
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
 
-    async def adopt_note(
-        self, relative: str, expected_hash: str, *, replace_id: str | None = None
-    ) -> AdoptionOutcome:
+    async def adopt_note(self, relative: str, expected_hash: str) -> AdoptionOutcome:
         """Give a settled device-created file an identity and mirror it.
 
         The scan supplies the hash it observed after the quiet period. The
@@ -419,8 +417,9 @@ class LocalStore:
         race without losing bytes. Missing required keys receive schema
         defaults. Existing keys and body content are never replaced.
 
-        `replace_id` is the identity copied into a second live file. The row's
-        recorded path keeps that identity and this file receives a new one.
+        A file already carrying an identity this store knows is not adopted:
+        the reconciler never proposes one, because nothing observable tells a
+        copy apart from a move whose delete has not arrived yet.
         """
         try:
             path = resolve(self.notes_root, relative)
@@ -441,13 +440,8 @@ class LocalStore:
             except (UnicodeDecodeError, fm.FrontmatterError):
                 return "invalid"
 
-            id_key = schema.role("id_key")
-            carried_id = frontmatter.get(id_key)
-            if replace_id is not None:
-                if carried_id != replace_id:
-                    return "changed"
-                note_id = new_id()
-            elif carried_id is None:
+            carried_id = frontmatter.get(schema.role("id_key"))
+            if carried_id is None:
                 note_id = new_id()
             elif is_valid_id(carried_id):
                 note_id = carried_id
@@ -457,8 +451,6 @@ class LocalStore:
             changes = _adoption_changes(frontmatter, schema, settings, note_id)
             try:
                 adopted_text = fm.append_missing(text, changes)
-                if replace_id is not None:
-                    adopted_text = fm.replace_scalar(adopted_text, id_key, replace_id, note_id)
                 adopted_frontmatter, adopted_body = fm.parse(adopted_text)
             except fm.FrontmatterError:
                 return "invalid"

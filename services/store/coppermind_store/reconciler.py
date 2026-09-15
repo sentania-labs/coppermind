@@ -170,7 +170,6 @@ class Observation:
     title: str | None = None
     frontmatter: dict[str, Any] | None = None
     path_derived: bool = False
-    settled: bool = True
 
 
 @dataclass(frozen=True)
@@ -180,7 +179,6 @@ class AdoptionCandidate:
     path: str
     content_hash: str
     stat_seen: UnidentifiedStat
-    replace_id: str | None = None
 
 
 class ReconcilerStatus:
@@ -362,17 +360,24 @@ async def reconcile_once(
     remembered.clear()
     remembered.update(scan.unidentified)
     observations = _choose_observations(scan, by_id)
-    duplicate_candidates, duplicate_deferred = _duplicate_adoptions(scan, by_id)
-    candidates = [*scan.adoption_candidates, *duplicate_candidates]
     adopted = 0
     unparsed = scan.unidentified_unparsed
-    adoption_deferred = duplicate_deferred
-    for candidate in candidates:
-        outcome = await store.adopt_note(
-            candidate.path,
-            candidate.content_hash,
-            replace_id=candidate.replace_id,
-        )
+    adoption_deferred = 0
+    for candidate in scan.adoption_candidates:
+        try:
+            outcome = await store.adopt_note(candidate.path, candidate.content_hash)
+        except NotesFilesystemUnavailable as exc:
+            # One durable per-file fault must not stop every other note
+            # converging, exactly as it does not inside the scan itself. A
+            # mount that is wholly gone still fails the pass from `_scan`.
+            adoption_deferred += 1
+            remembered.pop(candidate.path, None)
+            log.warning(
+                "device-created note left unchanged",
+                path=candidate.path,
+                reason=str(exc),
+            )
+            continue
         if outcome == "adopted":
             adopted += 1
             remembered.pop(candidate.path, None)
@@ -548,17 +553,6 @@ def _scan(
                 # than as the ELOOP it wraps.
                 _record(observed, seen, _unreadable(entry, relative))
                 continue
-            if not stat_module.S_ISREG(stat_result.st_mode):
-                observation = _unreadable(entry, relative)
-                _record(observed, seen, observation)
-                if observation is None:
-                    unidentified_unparsed += 1
-                    log.warning(
-                        "device-created note left unchanged",
-                        path=relative,
-                        reason="not a regular file",
-                    )
-                continue
             mtime = datetime.fromtimestamp(stat_result.st_mtime, tz=UTC)
             settling = quiet is not None and quiet.holds(mtime)
             stat_seen = UnidentifiedStat(stat_result.st_size, mtime, settling)
@@ -577,10 +571,24 @@ def _scan(
             ):
                 # A rejected file stays stat-trusted. A settling one is
                 # opened again as soon as its mtime leaves the quiet window,
-                # which is when adoption becomes safe.
+                # which is when adoption becomes safe. The stat is taken
+                # before the file type is judged, so a directory or a fifo
+                # named like a note is rejected once rather than every pass.
                 _remember(still_unidentified, relative, stat_seen, settling=settling)
                 if settling:
                     deferred += 1
+                continue
+            if not stat_module.S_ISREG(stat_result.st_mode):
+                observation = _unreadable(entry, relative)
+                _record(observed, seen, observation)
+                if observation is None:
+                    unidentified_unparsed += 1
+                    _remember(still_unidentified, relative, stat_seen, settling=False)
+                    log.warning(
+                        "device-created note left unchanged",
+                        path=relative,
+                        reason="not a regular file",
+                    )
                 continue
             if entry is not None and quiet is not None and quiet.holds(mtime):
                 # A file the mirror already claims is left to settle rather than
@@ -616,9 +624,7 @@ def _scan(
                             reason=UNREADABLE_REASON,
                         )
                 continue
-            result = _observe(
-                safe_path, relative, data, mtime, schema, by_id, entry, settled=not settling
-            )
+            result = _observe(safe_path, relative, data, mtime, schema, by_id, entry)
             if isinstance(result, AdoptionCandidate):
                 if settling:
                     _remember(still_unidentified, relative, stat_seen, settling=True)
@@ -697,8 +703,6 @@ def _observe(
     schema: FrontmatterSchema,
     by_id: dict[str, MirrorEntry],
     entry: MirrorEntry | None,
-    *,
-    settled: bool,
 ) -> Observation | AdoptionCandidate | None:
     """Turn one file's bytes into what it says about a known identity."""
     text: str | None = None
@@ -726,10 +730,12 @@ def _observe(
     note_id = str(frontmatter.get(schema.role("id_key"), ""))
     if note_id not in by_id:
         if entry is None:
+            # The scan only proposes a file whose mtime has already left the
+            # quiet window, so the candidate it carries is never settling.
             return AdoptionCandidate(
                 path=relative,
                 content_hash=content_hash(data),
-                stat_seen=UnidentifiedStat(len(data), mtime, not settled),
+                stat_seen=UnidentifiedStat(len(data), mtime, False),
             )
         # The file is still at a known path, and its parsed content does not
         # explicitly name another known note. Keep that row present until a
@@ -752,7 +758,6 @@ def _observe(
         mtime=mtime,
         title=_title_of(body, safe_path),
         frontmatter=_jsonable(frontmatter),
-        settled=settled,
     )
 
 
@@ -800,39 +805,6 @@ def _choose_observations(scan: ScanResult, by_id: dict[str, MirrorEntry]) -> dic
         else:
             log.warning("duplicate note identity left unresolved", note_id=note_id)
     return chosen
-
-
-def _duplicate_adoptions(
-    scan: ScanResult, by_id: dict[str, MirrorEntry]
-) -> tuple[list[AdoptionCandidate], int]:
-    """Freshen copied identities only when their existing owner is certain."""
-    candidates: list[AdoptionCandidate] = []
-    deferred = 0
-    for note_id, observations in scan.observed.items():
-        entry = by_id[note_id]
-        owner_present = note_id in scan.held or any(
-            item.path == entry.path and not item.path_derived for item in observations
-        )
-        if not owner_present:
-            continue
-        for item in observations:
-            if item.path == entry.path or item.path_derived:
-                continue
-            if not item.settled:
-                deferred += 1
-                continue
-            assert item.content_hash is not None
-            assert item.size_bytes is not None
-            assert item.mtime is not None
-            candidates.append(
-                AdoptionCandidate(
-                    path=item.path,
-                    content_hash=item.content_hash,
-                    stat_seen=UnidentifiedStat(item.size_bytes, item.mtime, False),
-                    replace_id=note_id,
-                )
-            )
-    return candidates, deferred
 
 
 def _values_for(

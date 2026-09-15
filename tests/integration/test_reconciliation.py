@@ -17,7 +17,13 @@ from coppermind_store.reconciler import UNPARSED_REASON, UNREADABLE_REASON, reco
 from coppermind import frontmatter as fm
 from coppermind.db.models import Note
 from coppermind.ids import is_valid_id
-from coppermind.store_protocol import CreateNote, NoteQuery, NoteUnparseable, NotFound
+from coppermind.store_protocol import (
+    CreateNote,
+    NoteQuery,
+    NotesFilesystemUnavailable,
+    NoteUnparseable,
+    NotFound,
+)
 
 
 async def _row(store: LocalStore, note_id: str) -> Note:
@@ -173,9 +179,9 @@ async def test_adoption_never_overwrites_a_device_write(
     unknown.write_text("# Racing sync\n\nFirst piece.\n", encoding="utf-8")
     real_adopt = store.adopt_note
 
-    async def device_writes_first(relative, expected_hash, *, replace_id=None):
+    async def device_writes_first(relative, expected_hash):
         unknown.write_text("# Racing sync\n\nFirst piece.\nSecond piece.\n", encoding="utf-8")
-        return await real_adopt(relative, expected_hash, replace_id=replace_id)
+        return await real_adopt(relative, expected_hash)
 
     monkeypatch.setattr(store, "adopt_note", device_writes_first)
     counts = await reconcile_once(store)
@@ -202,9 +208,35 @@ async def test_an_invalid_device_created_file_is_reported_and_left_byte_exact(
         assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 0
 
 
-async def test_a_copied_identity_gets_a_fresh_id_without_changing_the_owner(
+async def test_one_failed_adoption_does_not_stop_the_others_converging(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """A per-file write fault is its own state, not a dead pass for every note."""
+    root = store.notes_root / "Review"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "Read only.md").write_bytes(b"# Read only\n")
+    (root / "Healthy.md").write_bytes(b"# Healthy\n")
+    real_adopt = store.adopt_note
+
+    async def one_path_is_unwritable(relative, expected_hash):
+        if relative == "Review/Read only.md":
+            raise NotesFilesystemUnavailable("read-only file system")
+        return await real_adopt(relative, expected_hash)
+
+    monkeypatch.setattr(store, "adopt_note", one_path_is_unwritable)
+    counts = await reconcile_once(store)
+    healthy, _ = fm.parse((root / "Healthy.md").read_text(encoding="utf-8"))
+
+    assert counts["adopted"] == 1
+    assert counts["deferred"] == 1
+    assert is_valid_id(healthy[store.control.schema().role("id_key")])
+    assert (root / "Read only.md").read_bytes() == b"# Read only\n"
+
+
+async def test_a_copy_of_a_known_identity_is_left_alone_rather_than_re_identified(
     store: LocalStore,
 ):
+    """Nothing observable tells a copy from a move whose delete has not landed."""
     original = await store.create_note(
         CreateNote(title="Runbook", frontmatter={"type": "reference"})
     )
@@ -213,13 +245,12 @@ async def test_a_copied_identity_gets_a_fresh_id_without_changing_the_owner(
     copied_path.write_bytes(original_path.read_bytes())
 
     counts = await reconcile_once(store)
-    copied_frontmatter, _ = fm.parse(copied_path.read_text(encoding="utf-8"))
-    copied_id = copied_frontmatter[store.control.schema().role("id_key")]
 
-    assert counts["adopted"] == 1
-    assert copied_id != original.id
+    assert counts["adopted"] == 0
+    assert copied_path.read_bytes() == original_path.read_bytes()
     assert (await store.get_note(original.id)).path == original.path
-    assert (await store.get_note(copied_id)).path == "Review/Runbook copy.md"
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 1
 
 
 async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: LocalStore):
@@ -622,7 +653,7 @@ async def test_a_conflict_copy_cannot_capture_a_row_whose_file_is_settling(store
         counts = await reconcile_once(store, quiet_period_s=3600)
         row = await _row(store, note.id)
         assert counts["moved"] == 0
-        assert counts["deferred"] == 2
+        assert counts["deferred"] == 1
         assert row.path == note.path
         assert (await store.get_note(note.id)).path == note.path
 
@@ -659,9 +690,9 @@ async def test_a_rejected_identity_is_read_once_then_stat_trusted(store: LocalSt
     read: list[str] = []
     real_observe = reconciler._observe
 
-    def counted(safe_path, relative, data, mtime, schema, by_id, entry, *, settled):
+    def counted(safe_path, relative, data, mtime, schema, by_id, entry):
         read.append(relative)
-        return real_observe(safe_path, relative, data, mtime, schema, by_id, entry, settled=settled)
+        return real_observe(safe_path, relative, data, mtime, schema, by_id, entry)
 
     monkeypatch.setattr(reconciler, "_observe", counted)
 

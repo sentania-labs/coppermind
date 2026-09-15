@@ -70,17 +70,20 @@ vertical path proved end to end, then widened.
   on a device is mirrored by the identity in its frontmatter. Only a file the
   scan did not find becomes `missing`: one it can see at a known note's path
   but cannot parse, open or identify is `unparsed` there, and two live copies
-  without a certain owner leave the row as it was rather than guessing. An interval
+  of one identity leave the row as it was rather than guessing. An interval
   scan stats every note file and reads only the ones a stat says may have
-  changed. A device-created file waits until its mtime has been quiet for the
-  configured period, then the store assigns an identity and fills only absent
-  required frontmatter from the shipped defaults. It checks the observed hash
-  again immediately before the atomic replacement, so another device write
-  wins without losing bytes. The tested line endings, inline comments, key
-  order, list style and body stay in place. A copied known identity gets a
-  fresh one only when the original at the recorded path is certain; an invalid
+  changed. A device-created file carrying no identity waits until its mtime
+  has been quiet for the configured period, then the store assigns an identity
+  and fills only absent required frontmatter from the shipped defaults. It
+  checks the observed hash again immediately before the atomic replacement, so
+  another device write wins without losing bytes. The tested line endings,
+  inline comments, key order, list style and body stay in place. An invalid
   file is left byte exact, counted as unparsed and logged rather than mirrored
-  as a broken note. The process remembers up
+  as a broken note, and one file the store cannot write is deferred on its own
+  rather than stopping the pass. A file that already carries an identity this
+  store knows is left alone, even when another file holds the same identity:
+  nothing observable tells a copy apart from a move whose delete has not
+  arrived yet, and the service will not guess. The process remembers up
   to 10,000 settling or rejected paths by stat, so an unchanged rejected tree
   costs one stat per file per pass rather than repeated reads and parses. A
   file changed inside the quiet period waits for the next pass. Trusting a stat
