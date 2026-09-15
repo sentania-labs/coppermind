@@ -61,8 +61,13 @@ vertical path proved end to end, then widened.
   `created: false`, the existing source and note identifiers, and the current
   revision. Changed artifact content appends an immutable numbered revision
   and answers 200 without rewriting the Review note or changing its reviewed
-  state. The response carries real `created` values for both records and the
-  source revision. A payload whose artifacts are unchanged while a field
+  state. Before confirming a replay, the store reads every artifact in the
+  current revision and verifies its recorded SHA-256 digest. A missing or
+  damaged artifact answers 503 `sources_filesystem_unavailable` rather than
+  reporting that the source is intact, and the database mirror is not rebuilt
+  from the unverified manifest. The response carries real `created` values for
+  both records and the source revision. A payload whose artifacts are
+  unchanged while a field
   describing them differs (`captured_at`, `metadata`, `source_type`, `origin`
   or an artifact's `mime_type`) is still a replay: 200, `created: false`, the
   same source and note identifiers, one note. Storing a correction to those
@@ -82,6 +87,10 @@ vertical path proved end to end, then widened.
   that source answers 409 `incomplete_revision` naming the directory, rather
   than a 503 blaming a healthy volume. It removes nothing: the operator
   inspects `/data/sources/<source_id>/<rNNNN>/`, removes it, then retries.
+  If replacing `manifest.json` begins but its durability acknowledgement
+  fails, the revision directory is retained because the replacement may
+  already be live. A retry verifies the revision's artifacts before it can
+  report a replay.
   `uq_sources_provider_external_id` remains the database mirror's second
   guard, and it now answers in its own voice: an ingest that finds no claim
   file while the mirror still holds that `provider` plus `external_source_id`

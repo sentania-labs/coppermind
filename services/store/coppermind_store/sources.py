@@ -279,12 +279,22 @@ async def _ingest_existing(
     ):
         raise StoreError("the external-id claim and source manifest disagree")
 
+    current_revision = _positive_int(manifest.get("current_revision"), "current_revision")
+    current = _manifest_revision(manifest, current_revision)
+    current_artifacts = _manifest_artifacts(current)
+    replaying = _content_identity(current_artifacts) == identity
+    if replaying:
+        await asyncio.to_thread(
+            _verify_revision_artifacts,
+            source_path,
+            current_revision,
+            current_artifacts,
+        )
+
     note_id, note_path, note_snapshot = await _linked_note(store, session, source_id, schema)
     await _ensure_mirror(session, manifest, note_id, note_path, note_snapshot, schema)
 
-    current_revision = _positive_int(manifest.get("current_revision"), "current_revision")
-    current = _manifest_revision(manifest, current_revision)
-    if current.get("content_identity") == identity:
+    if replaying:
         return IngestResult(
             source=CreatedSource(
                 id=source_id,
@@ -307,7 +317,7 @@ async def _ingest_existing(
     except OSError as exc:
         raise SourcesFilesystemUnavailable(str(exc)) from exc
 
-    manifest_written = False
+    manifest_replacement_started = False
     try:
         for artifact, data in artifacts:
             create_exclusive_bytes(revision_path / artifact.name, data)
@@ -321,10 +331,10 @@ async def _ingest_existing(
                 "revisions": revisions,
             }
         )
+        manifest_replacement_started = True
         atomic_write_bytes(manifest_path, _json_bytes(manifest))
-        manifest_written = True
     except OSError as exc:
-        if not manifest_written:
+        if not manifest_replacement_started:
             shutil.rmtree(revision_path, ignore_errors=True)
         raise SourcesFilesystemUnavailable(str(exc)) from exc
 
@@ -603,6 +613,43 @@ def _manifest_revision(manifest: dict[str, Any], revision: int) -> dict[str, Any
     return matches[0]
 
 
+def _manifest_artifacts(revision: dict[str, Any]) -> list[dict[str, Any]]:
+    artifacts = revision.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise SourcesFilesystemUnavailable("the source manifest has invalid artifacts")
+    for artifact in artifacts:
+        if (
+            not isinstance(artifact, dict)
+            or not isinstance(artifact.get("name"), str)
+            or not isinstance(artifact.get("sha256"), str)
+        ):
+            raise SourcesFilesystemUnavailable("the source manifest has invalid artifacts")
+    return artifacts
+
+
+def _verify_revision_artifacts(
+    source_path: Path,
+    revision: int,
+    artifacts: list[dict[str, Any]],
+) -> None:
+    """Verify the authoritative files before confirming a replay."""
+    revision_path = source_path / f"r{revision:04d}"
+    for artifact in artifacts:
+        name = str(artifact["name"])
+        try:
+            path = resolve(revision_path, name)
+            with path.open("rb") as handle:
+                actual = hashlib.file_digest(handle, "sha256").hexdigest()
+        except (OSError, ValueError) as exc:
+            raise SourcesFilesystemUnavailable(
+                f"the current source revision artifact is unreadable: {name}"
+            ) from exc
+        if actual != artifact["sha256"]:
+            raise SourcesFilesystemUnavailable(
+                f"the current source revision artifact failed verification: {name}"
+            )
+
+
 def _manifest_time(value: Any, field: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value)
@@ -648,8 +695,12 @@ def _external_id_claim(request: IngestRequest, source_id: str) -> bytes:
 
 
 def _content_identity(artifacts: list[dict[str, Any]]) -> str:
-    names_and_hashes = sorted(f"{item['name']}:{item['sha256']}" for item in artifacts)
-    return hashlib.sha256("\n".join(names_and_hashes).encode("utf-8")).hexdigest()
+    names_and_hashes = sorted(
+        [[str(item["name"]), str(item["sha256"])] for item in artifacts],
+        key=lambda item: (item[0], item[1]),
+    )
+    framed = json.dumps(names_and_hashes, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(framed.encode("utf-8")).hexdigest()
 
 
 def _manifest(

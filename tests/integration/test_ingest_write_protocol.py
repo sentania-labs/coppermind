@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from contextlib import asynccontextmanager
@@ -22,6 +23,7 @@ from coppermind.store_protocol import (
     PathCollision,
     PayloadTooLarge,
     SourceClaimMissing,
+    SourcesFilesystemUnavailable,
 )
 
 
@@ -139,6 +141,26 @@ async def test_t_ing_1_identical_replay_returns_the_original_without_duplicating
     async with session_factory() as session:
         assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 1
         assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 1
+
+
+async def test_identical_replay_recognizes_the_previous_identity_framing(store: LocalStore):
+    """Bundles written by the merged ingest slice must not gain a false revision."""
+    first = await store.ingest(sample())
+    manifest_path = store.sources_root / first.source.id / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    artifacts = manifest["revisions"][0]["artifacts"]
+    legacy_preimage = "\n".join(sorted(f"{item['name']}:{item['sha256']}" for item in artifacts))
+    manifest["revisions"][0]["content_identity"] = hashlib.sha256(
+        legacy_preimage.encode("utf-8")
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    replay = await store.ingest(sample())
+
+    assert replay.source.id == first.source.id
+    assert replay.source.revision == 1
+    assert replay.source.created is False
+    assert not (store.sources_root / first.source.id / "r0002").exists()
 
 
 async def test_oversize_ingest_is_refused_before_files_or_rows_are_written(
@@ -316,6 +338,75 @@ async def test_retry_after_a_revision_commit_failure_returns_the_completed_revis
     assert replay.note.created is False
     async with session_factory() as session:
         assert await session.scalar(sa.select(sa.func.count()).select_from(SourceRevision)) == 2
+
+
+async def test_manifest_sync_failure_retains_a_possibly_committed_revision(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """A failed durability acknowledgement cannot undo a manifest replacement."""
+    first = await store.ingest(sample())
+    changed = sample()
+    changed.source.artifacts[0].content = "Scott: corrected source content"
+    real_atomic_write = sources_module.atomic_write_bytes
+
+    def replace_then_fail(path, data, **kwargs):
+        real_atomic_write(path, data, **kwargs)
+        raise OSError("directory sync acknowledgement lost")
+
+    monkeypatch.setattr(sources_module, "atomic_write_bytes", replace_then_fail)
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.ingest(changed)
+
+    source_root = store.sources_root / first.source.id
+    manifest = json.loads((source_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["current_revision"] == 2
+    assert (source_root / "r0002" / "transcript.txt").read_text(encoding="utf-8") == (
+        "Scott: corrected source content"
+    )
+
+    monkeypatch.setattr(sources_module, "atomic_write_bytes", real_atomic_write)
+    replay = await store.ingest(changed)
+    assert replay.source.revision == 2
+    assert replay.source.created is False
+
+
+@pytest.mark.parametrize("damage", ["missing", "altered"])
+async def test_replay_refuses_a_missing_or_altered_current_artifact(store: LocalStore, damage: str):
+    first = await store.ingest(sample())
+    artifact = store.sources_root / first.source.id / "r0001" / "transcript.txt"
+    if damage == "missing":
+        artifact.unlink()
+    else:
+        artifact.write_text("damaged after ingest", encoding="utf-8")
+
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.ingest(sample())
+
+
+async def test_unverified_artifacts_cannot_rebuild_a_missing_mirror(
+    store: LocalStore, session_factory, monkeypatch: pytest.MonkeyPatch
+):
+    real_transaction = sources_module.transaction
+
+    @asynccontextmanager
+    async def fail_at_commit(factory):
+        async with real_transaction(factory) as session:
+            yield session
+            raise sa.exc.OperationalError("COMMIT", {}, OSError("connection lost"))
+
+    monkeypatch.setattr(sources_module, "transaction", fail_at_commit)
+    with pytest.raises(MetadataUnavailable):
+        await store.ingest(sample())
+
+    artifact = next(store.sources_root.glob("*/r0001/transcript.txt"))
+    artifact.unlink()
+    monkeypatch.setattr(sources_module, "transaction", real_transaction)
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.ingest(sample())
+
+    async with session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 0
+        assert await session.scalar(sa.select(sa.func.count()).select_from(SourceArtifact)) == 0
 
 
 async def test_replay_cannot_overwrite_a_concurrent_note_edit(
