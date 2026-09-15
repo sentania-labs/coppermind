@@ -40,6 +40,27 @@ class PathCollision(StoreError):
         self.existing_path = existing_path
 
 
+class VersionConflict(StoreError):
+    """The note's bytes are not the ones the caller's ETag names.
+
+    Somebody wrote the file after the caller read it: another API client, or
+    a person editing on a device with the change delivered by Obsidian Sync.
+    The write was refused and the file is untouched. `current_etag` is what
+    the file hashes to now, so the caller can read it, merge, and retry.
+    """
+
+    def __init__(self, current_etag: ETag) -> None:
+        super().__init__("the note has changed since it was read; read it again and retry")
+        self.current_etag = current_etag
+
+
+class PreconditionRequired(StoreError):
+    """A conditional write arrived without the ETag it must be conditional on."""
+
+    def __init__(self) -> None:
+        super().__init__("an If-Match header carrying the note's current ETag is required")
+
+
 class ValidationFailed(StoreError):
     def __init__(self, errors: list[str]) -> None:
         super().__init__("; ".join(errors))
@@ -103,6 +124,24 @@ class CreateNote(BaseModel):
         return " ".join(value.split()) if isinstance(value, str) else value
 
 
+class ReplaceNote(BaseModel):
+    """Replace a note's frontmatter and body, keeping its identifier and path.
+
+    This is the document shape `get_note` returns, so a caller can read a
+    note, edit it and send it back whole; the fields that describe the file
+    rather than its content (`id`, `path`, `title`, `content_hash` and so on)
+    are ignored on the way in. The frontmatter is written exactly as sent,
+    validated against the schema, with the identifier the store keeps. Both
+    fields are required: a partial document is refused, never read as an
+    empty body or an empty frontmatter block.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    frontmatter: dict[str, Any]
+    body: str
+
+
 class NoteDocument(BaseModel):
     """A note as the rest of the system sees it."""
 
@@ -123,3 +162,25 @@ class Store(Protocol):
     async def create_note(self, request: CreateNote) -> NoteDocument: ...
 
     async def get_note(self, note_id: NoteId) -> NoteDocument: ...
+
+    async def replace_note(
+        self, note_id: NoteId, request: ReplaceNote, if_match: ETag
+    ) -> NoteDocument: ...
+
+
+def etag_from_if_match(header: str | None) -> ETag:
+    """The ETag an `If-Match` header names, or `PreconditionRequired` if none.
+
+    The value is compared byte for byte against the note's current hash, so a
+    weak validator, a list of several ETags or the `*` wildcard does not match
+    anything and answers as a conflict with the current ETag. A write that is
+    conditional on nothing is what this surface exists to refuse.
+    """
+    if header is None or not header.strip():
+        raise PreconditionRequired()
+    value = header.strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        value = value[1:-1]
+    if not value:
+        raise PreconditionRequired()
+    return value

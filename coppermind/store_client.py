@@ -15,6 +15,7 @@ import httpx
 
 from coppermind.store_protocol import (
     CreateNote,
+    ETag,
     MetadataUnavailable,
     NoteDocument,
     NoteId,
@@ -22,9 +23,12 @@ from coppermind.store_protocol import (
     NoteUnparseable,
     NotFound,
     PathCollision,
+    PreconditionRequired,
+    ReplaceNote,
     StoreError,
     StoreUnavailable,
     ValidationFailed,
+    VersionConflict,
 )
 
 INTERNAL_PREFIX = "/internal/v1"
@@ -69,6 +73,17 @@ class HttpStoreClient:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/notes/{_segment(note_id)}")
         return NoteDocument.model_validate(response.json())
 
+    async def replace_note(
+        self, note_id: NoteId, request: ReplaceNote, if_match: ETag
+    ) -> NoteDocument:
+        response = await self._send(
+            "PUT",
+            f"{INTERNAL_PREFIX}/notes/{_segment(note_id)}",
+            json=request.model_dump(),
+            headers={"If-Match": f'"{if_match}"'},
+        )
+        return NoteDocument.model_validate(response.json())
+
     async def is_ready(self) -> bool:
         """True when the store reports itself ready. Never raises."""
         try:
@@ -98,6 +113,10 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         return NotFound(payload.get("note_id", message))
     if code == "path_collision":
         return PathCollision(payload.get("existing_path", message))
+    if code == "version_conflict":
+        return VersionConflict(payload.get("current_version", ""))
+    if code == "precondition_required":
+        return PreconditionRequired()
     if code == "note_unparseable":
         return NoteUnparseable(payload.get("note_id", ""), payload.get("reason", message))
     if code == "validation_error":
