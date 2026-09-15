@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -523,3 +524,49 @@ async def test_a_note_delivered_before_the_write_survives_the_refused_ingest(
     async with session_factory() as session:
         assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 0
         assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 0
+
+
+async def test_the_recovery_scan_does_not_block_the_request_loop(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """Rebuilding a lost note link reads every note, so it must not stall the store."""
+    real_transaction = sources_module.transaction
+
+    @asynccontextmanager
+    async def fail_at_commit(factory):
+        async with real_transaction(factory) as session:
+            yield session
+            raise sa.exc.OperationalError("COMMIT", {}, OSError("connection lost"))
+
+    monkeypatch.setattr(sources_module, "transaction", fail_at_commit)
+    with pytest.raises(MetadataUnavailable):
+        await store.ingest(sample())
+    monkeypatch.setattr(sources_module, "transaction", real_transaction)
+
+    real_scan = sources_module._scan_for_linked_note
+
+    def slow_scan(*args, **kwargs):
+        time.sleep(0.6)
+        return real_scan(*args, **kwargs)
+
+    monkeypatch.setattr(sources_module, "_scan_for_linked_note", slow_scan)
+    gaps: list[float] = []
+
+    async def heartbeat():
+        previous = time.monotonic()
+        while True:
+            await asyncio.sleep(0.01)
+            now = time.monotonic()
+            gaps.append(now - previous)
+            previous = now
+
+    beating = asyncio.create_task(heartbeat())
+    try:
+        replay = await store.ingest(sample())
+    finally:
+        beating.cancel()
+
+    assert replay.source.created is False
+    assert replay.note.created is False
+    assert len(gaps) > 20, "the event loop did not keep running during the scan"
+    assert max(gaps) < 0.3

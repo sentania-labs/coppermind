@@ -70,6 +70,12 @@ vertical path proved end to end, then widened.
   that reads an empty `unstored_fields` knows the stored source matches what
   it sent. Keeping those corrections arrives with the remaining source
   capabilities under "Not built yet".
+  `unstored_fields` describes the source and nothing else. An ingest that does
+  not create the note ignores the request's whole `note` object, title, body
+  and frontmatter alike, because the note belongs to the captain once it
+  exists. A caller resending a changed note body with an existing external id
+  gets 200, `note.created: false` and an empty `unstored_fields`, and its note
+  payload was not used: the way to edit a note is `PUT /v1/notes/{id}`.
   An interrupted revision write can leave a numbered revision directory that
   `manifest.json` does not record. The next ingest of changed artifacts for
   that source answers 409 `incomplete_revision` naming the directory, rather
@@ -92,7 +98,10 @@ vertical path proved end to end, then widened.
   A retry resolves from the claim and completed files, repairs a missing
   mirror when needed, and cannot create a duplicate. That repair runs on the
   replay path, so a retry carrying a corrected capture time still rebuilds the
-  rows and then reports the correction as unstored. A submitted body over
+  rows and then reports the correction as unstored. Rebuilding the note link
+  means reading every note, so it runs in a worker thread: a retry recovering
+  from an outage does not stop the store answering readiness and other
+  requests while it walks. A submitted body over
   `limits.ingest_max_bytes`
   (25 MiB by default, settable like every other setting) answers 413
   `payload_too_large` before filesystem or database writes. The API preserves

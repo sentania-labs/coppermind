@@ -12,6 +12,7 @@ record, which the next ingest names and leaves alone rather than deleting.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import shutil
@@ -430,10 +431,23 @@ async def _linked_note(
     ).one_or_none()
     if row is not None:
         return row.id, row.path, None
+    return await asyncio.to_thread(_scan_for_linked_note, store.notes_root, source_id, schema)
 
+
+def _scan_for_linked_note(
+    notes_root: Path, source_id: str, schema: FrontmatterSchema
+) -> tuple[str, str, tuple[bytes, dict[str, Any], str, datetime]]:
+    """Find the note citing a source by reading the notes filesystem.
+
+    Reached only when the mirror lost the link, so the files are the one place
+    it survives. Every note is read and parsed, which is why the caller runs
+    this in a worker thread: the store is one process with one worker, and a
+    walk of a real notes filesystem on its event loop would stop readiness and
+    every other request while one degraded retry recovers.
+    """
     matches: list[tuple[str, str, tuple[bytes, dict[str, Any], str, datetime]]] = []
     try:
-        paths = list(store.notes_root.rglob(f"*{NOTE_SUFFIX}"))
+        paths = list(notes_root.rglob(f"*{NOTE_SUFFIX}"))
     except OSError as exc:
         raise NotesFilesystemUnavailable(str(exc)) from exc
     for path in paths:
@@ -447,7 +461,7 @@ async def _linked_note(
         note_id = parsed.get(schema.role("id_key"))
         if source_id in sources and is_valid_id(note_id):
             note_id = str(note_id)
-            relative = path.relative_to(store.notes_root).as_posix()
+            relative = path.relative_to(notes_root).as_posix()
             matches.append(
                 (
                     note_id,

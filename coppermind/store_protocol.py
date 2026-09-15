@@ -276,6 +276,14 @@ class CreatedSource(BaseModel):
     unchanged has nowhere to land yet. Naming it is what keeps the answer
     honest instead of discarding the correction in silence. It is empty on
     every other answer.
+
+    It covers the fields describing the source and nothing else. An ingest
+    that does not create the note ignores the whole `note` object of the
+    request, title, body and frontmatter alike, because the note is the
+    captain's once it exists and Coppermind does not write over his edits.
+    So `unstored_fields: []` beside `note.created: false` means the stored
+    source matches what was sent; it says nothing about the note payload,
+    which was not used at all.
     """
 
     id: SourceId
