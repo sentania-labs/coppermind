@@ -17,14 +17,21 @@ docker compose up -d
 ```
 
 That is the whole setup. A one-shot bootstrap container creates the volumes,
-generates the credentials the services use between themselves, and writes the
-settings and frontmatter schema with working defaults, so nothing has to be
-hand populated before the stack runs.
+generates the internal credentials and a default API key, and writes the
+settings, frontmatter schema and API key hash with working defaults. Nothing
+has to be hand populated before the stack runs. Read the default key from its
+restricted bootstrap volume into the current shell:
+
+```bash
+COPPERMIND_KEY="$(docker compose run --rm --no-deps --entrypoint cat bootstrap \
+  /run/coppermind/api/default-api-key)"
+```
 
 Create a note:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/v1/notes \
+  -H "Authorization: Bearer $COPPERMIND_KEY" \
   -H 'Content-Type: application/json' \
   -d '{
         "title": "Ameren Architecture Sync",
@@ -44,7 +51,8 @@ docker compose exec store cat "/data/notes/Review/2026-09-08 Ameren Architecture
 Read it back as a document:
 
 ```bash
-curl -sS http://127.0.0.1:8080/v1/notes/<id>
+curl -sS -H "Authorization: Bearer $COPPERMIND_KEY" \
+  http://127.0.0.1:8080/v1/notes/<id>
 ```
 
 Edit it: send the document back with `If-Match` carrying the `ETag` the read
@@ -55,6 +63,7 @@ out answers 422 `validation_error` and the note is unchanged.
 
 ```bash
 curl -sS -X PUT http://127.0.0.1:8080/v1/notes/<id> \
+  -H "Authorization: Bearer $COPPERMIND_KEY" \
   -H 'Content-Type: application/json' \
   -H 'If-Match: "sha256:<the ETag the read returned>"' \
   -d '{
@@ -67,6 +76,17 @@ curl -sS -X PUT http://127.0.0.1:8080/v1/notes/<id> \
 
 The generated OpenAPI document is at `http://127.0.0.1:8080/openapi.json`.
 
+Until the separate Admin service adds its graphical keys page, additional
+keys and rotations use the Store command. It prints a new credential once and
+keeps only its hash. Grant one or more of the scopes shown by `--help`, move
+callers to it, then revoke the old key by its id:
+
+```bash
+docker compose exec store python3 -m coppermind_store.keys create \
+  --name automation --scope notes:read --scope notes:write
+docker compose exec store python3 -m coppermind_store.keys revoke <key_id>
+```
+
 Nobody has to touch Git for the notes filesystem to have a history. A few
 minutes after a change settles, it is a commit:
 
@@ -78,7 +98,7 @@ docker compose exec git git -C /data/notes log --stat
 
 | Service | Does | State |
 |---|---|---|
-| `api` | the public contract on `:8080` | none; it calls the store |
+| `api` | the public contract on `:8080` | five-minute key cache; no durable state |
 | `store` | the only process that writes the notes filesystem | `/data`, one replica always |
 | `git` | records the history of the notes filesystem; no network, no credential | `/data/notes/.git`, one replica always |
 | `postgres` | mirrored and derived state, rebuildable from `/data` | `pgdata` volume |

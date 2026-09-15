@@ -43,9 +43,8 @@ STORE_UNAVAILABLE_MESSAGE = (
 )
 
 # Which contract an envelope is being built for. The public surface carries no
-# cause text, because it is unauthenticated in this slice, a raw operating
-# system error names container paths, and a parser error quotes the note's own
-# frontmatter. The internal surface keeps the cause,
+# cause text, because a raw operating system error names container paths and a
+# parser error quotes the note's own frontmatter. The internal surface keeps the cause,
 # because `HttpStoreClient` reads it back to rebuild the typed error. Public is
 # the default so a new caller cannot leak by forgetting to say.
 Surface = Literal["public", "internal"]

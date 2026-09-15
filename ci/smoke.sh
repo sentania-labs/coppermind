@@ -61,7 +61,25 @@ step "the API is up and ready"
 wait_for_status 200 "$API/healthz"
 wait_for_status 200 "$API/readyz"
 curl -sS "$API/readyz"; echo
-ok "/healthz and /readyz answer 200"
+wait_for_status 200 "$API/openapi.json"
+ok "/healthz, /readyz and OpenAPI answer 200 without a key"
+
+step "the bootstrapped default key is usable without a setup step"
+default_key="$(compose run --rm --no-deps --entrypoint cat bootstrap \
+    /run/coppermind/api/default-api-key | tr -d '[:space:]')"
+[ -n "$default_key" ] || fail "bootstrap did not surface a default API key"
+wrong_scope_key="$(compose exec -T store python3 -m coppermind_store.keys create \
+    --name smoke-read-only --scope notes:read | tr -d '[:space:]')"
+[ -n "$wrong_scope_key" ] || fail "the key command did not return a key"
+AUTH=(-H "Authorization: Bearer $default_key")
+
+code="$(status_of -X POST "$API/v1/notes" -H 'Content-Type: application/json' \
+    -d '{"title":"No credential"}')"
+[ "$code" = "401" ] || fail "a create with no key returned $code, expected 401"
+code="$(status_of -X POST "$API/v1/notes" -H "Authorization: Bearer $wrong_scope_key" \
+    -H 'Content-Type: application/json' -d '{"title":"Wrong scope"}')"
+[ "$code" = "403" ] || fail "a create with a read-only key returned $code, expected 403"
+ok "no key is refused with 401 and a read-only key is refused with 403"
 
 step "credentials are limited to the services that need them"
 compose exec -T api test ! -r /run/coppermind/postgres/postgres-password \
@@ -73,6 +91,7 @@ ok "the API cannot read the database password and the store can"
 step "create a note through the API"
 created="$(mktemp)"
 code="$(curl -sS -o "$created" -w '%{http_code}' -X POST "$API/v1/notes" \
+    "${AUTH[@]}" \
     -H 'Content-Type: application/json' \
     -d '{"title":"Ameren Architecture Sync","body":"## Key points\n- Target architecture agreed\n","frontmatter":{"date":"2026-09-08","type":"meeting","context":"customer","account":"Ameren","tags":["architecture","vcf"]}}')"
 [ "$code" = "201" ] || { cat "$created"; fail "create returned $code, expected 201"; }
@@ -94,7 +113,7 @@ ok "the file carries its identifier and the shipped frontmatter keys"
 
 step "read the note back through the API"
 fetched="$(mktemp)"
-code="$(curl -sS -o "$fetched" -w '%{http_code}' "$API/v1/notes/$note_id")"
+code="$(curl -sS -o "$fetched" -w '%{http_code}' "${AUTH[@]}" "$API/v1/notes/$note_id")"
 [ "$code" = "200" ] || { cat "$fetched"; fail "get returned $code, expected 200"; }
 fetched_hash="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["content_hash"])' "$fetched")"
 [ "$fetched_hash" = "$etag" ] || fail "content hash changed between create and read"
@@ -116,7 +135,8 @@ ok "the file now carries reviewed: true and hashes to $device_hash"
 step "a write with no If-Match is refused with 428"
 document="$(mktemp)"
 edited_document "$fetched" "$document"
-code="$(status_of -X PUT "$API/v1/notes/$note_id" -H 'Content-Type: application/json' \
+code="$(status_of -X PUT "$API/v1/notes/$note_id" "${AUTH[@]}" \
+    -H 'Content-Type: application/json' \
     --data-binary @"$document")"
 [ "$code" = "428" ] || fail "an unconditional write returned $code, expected 428"
 ok "an unconditional write is refused"
@@ -124,7 +144,8 @@ ok "an unconditional write is refused"
 step "a write with the ETag from before the edit is refused with 409 and the current ETag"
 conflict="$(mktemp)"
 code="$(curl -sS -o "$conflict" -w '%{http_code}' -X PUT "$API/v1/notes/$note_id" \
-    -H 'Content-Type: application/json' -H "If-Match: \"$etag\"" --data-binary @"$document")"
+    "${AUTH[@]}" -H 'Content-Type: application/json' -H "If-Match: \"$etag\"" \
+    --data-binary @"$document")"
 [ "$code" = "409" ] || { cat "$conflict"; fail "a stale write returned $code, expected 409"; }
 cat "$conflict"; echo
 [ "$(field "$conflict" error)" = "version_conflict" ] || fail "the stale write was not a version_conflict"
@@ -135,14 +156,15 @@ cat "$conflict"; echo
 ok "the stale write was refused and the edit made on the volume survived"
 
 step "read again and write with the current ETag"
-code="$(curl -sS -o "$fetched" -w '%{http_code}' "$API/v1/notes/$note_id")"
+code="$(curl -sS -o "$fetched" -w '%{http_code}' "${AUTH[@]}" "$API/v1/notes/$note_id")"
 [ "$code" = "200" ] || { cat "$fetched"; fail "get returned $code, expected 200"; }
 current_etag="$(field "$fetched" content_hash)"
 [ "$current_etag" = "$device_hash" ] || fail "the API does not see the edit made on the volume"
 edited_document "$fetched" "$document"
 replaced="$(mktemp)"
 code="$(curl -sS -o "$replaced" -w '%{http_code}' -X PUT "$API/v1/notes/$note_id" \
-    -H 'Content-Type: application/json' -H "If-Match: \"$current_etag\"" --data-binary @"$document")"
+    "${AUTH[@]}" -H 'Content-Type: application/json' -H "If-Match: \"$current_etag\"" \
+    --data-binary @"$document")"
 [ "$code" = "200" ] || { cat "$replaced"; fail "a current write returned $code, expected 200"; }
 cat "$replaced"; echo
 etag="$(field "$replaced" content_hash)"
@@ -164,17 +186,19 @@ step "stop PostgreSQL and check readiness tells the truth"
 compose stop postgres
 wait_for_status 503 "$API/readyz" 30
 curl -sS "$API/readyz"; echo
-down_write="$(curl -sS -X POST "$API/v1/notes" -H 'Content-Type: application/json' \
+down_write="$(curl -sS -X POST "$API/v1/notes" "${AUTH[@]}" \
+    -H 'Content-Type: application/json' \
     -d '{"title":"Written while the database is down"}')"
 printf '%s\n' "$down_write"
 printf '%s\n' "$down_write" | grep -q 'metadata_unavailable' \
     || fail "a write during the outage did not report metadata_unavailable"
-down_replace="$(curl -sS -X PUT "$API/v1/notes/$note_id" -H 'Content-Type: application/json' \
-    -H "If-Match: \"$etag\"" --data-binary @"$document")"
+down_replace="$(curl -sS -X PUT "$API/v1/notes/$note_id" "${AUTH[@]}" \
+    -H 'Content-Type: application/json' -H "If-Match: \"$etag\"" \
+    --data-binary @"$document")"
 printf '%s\n' "$down_replace"
 printf '%s\n' "$down_replace" | grep -q 'metadata_unavailable' \
     || fail "a replace during the outage did not report metadata_unavailable"
-[ "$(status_of "$API/v1/notes/$note_id")" = "503" ] \
+[ "$(status_of "${AUTH[@]}" "$API/v1/notes/$note_id")" = "503" ] \
     || fail "a read during the outage did not return 503"
 ok "readiness is 503 and both mutations return a clean metadata_unavailable"
 
@@ -190,7 +214,8 @@ compose start postgres
 wait_for_status 200 "$API/readyz" 60
 curl -sS "$API/readyz"; echo
 recovered="$(mktemp)"
-code="$(curl -sS -o "$recovered" -w '%{http_code}' "$API/v1/notes/$note_id")"
+code="$(curl -sS -o "$recovered" -w '%{http_code}' "${AUTH[@]}" \
+    "$API/v1/notes/$note_id")"
 [ "$code" = "200" ] || { cat "$recovered"; fail "the note did not come back after recovery"; }
 recovered_hash="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["content_hash"])' "$recovered")"
 [ "$recovered_hash" = "$etag" ] || fail "the note changed across the outage"

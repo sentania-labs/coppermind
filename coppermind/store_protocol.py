@@ -18,6 +18,8 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from coppermind.api_keys import ApiKeySet
+
 # `"sha256:<hex of the file bytes>"`. A move does not change it; a change to
 # the bytes, including a frontmatter write back, does.
 ETag = str
@@ -166,6 +168,8 @@ class Store(Protocol):
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag
     ) -> NoteDocument: ...
+
+    async def get_api_keys(self) -> ApiKeySet: ...
 
 
 def etag_from_if_match(header: str | None) -> ETag:

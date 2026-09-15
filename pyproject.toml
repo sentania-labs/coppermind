@@ -25,6 +25,7 @@ dependencies = [
     "alembic>=1.13",
     "structlog>=24.2",
     "httpx>=0.27",
+    "argon2-cffi>=25.1.0",
 ]
 
 [dependency-groups]

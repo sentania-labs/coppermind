@@ -11,10 +11,12 @@ from pathlib import Path
 
 import pytest
 from coppermind_api import __version__
+from coppermind_api import auth as auth_module
 from coppermind_api.deps import store
 from coppermind_api.main import create_app
 from fastapi.testclient import TestClient
 
+from coppermind.api_keys import API_SCOPES, ApiKeySet, create_key
 from coppermind.settings import Wiring
 from coppermind.store_protocol import (
     CreateNote,
@@ -48,6 +50,30 @@ REPLACED = NOTE.model_copy(
     }
 )
 
+KEY_ID = "a1b2c3d4e5f6a7b8"
+KEY_SECRET = "unit-test-full-scope-secret"
+KEY_RECORD, KEY = create_key(
+    "unit test",
+    list(API_SCOPES),
+    key_id=KEY_ID,
+    secret=KEY_SECRET,
+    created_at=datetime(2026, 9, 8, tzinfo=UTC),
+)
+READ_KEY_RECORD, READ_KEY = create_key(
+    "read only",
+    ["notes:read"],
+    key_id="b1c2d3e4f5a6b7c8",
+    secret="unit-test-read-only-secret",
+    created_at=datetime(2026, 9, 8, tzinfo=UTC),
+)
+NOTE_WRITE_RECORD, NOTE_WRITE_KEY = create_key(
+    "note writer",
+    ["notes:write"],
+    key_id="c1d2e3f4a5b6c7d8",
+    secret="unit-test-note-writer-secret",
+    created_at=datetime(2026, 9, 8, tzinfo=UTC),
+)
+
 
 class FakeStore:
     """Satisfies the part of the store contract this slice uses."""
@@ -56,6 +82,7 @@ class FakeStore:
         self.error = error
         self.created: CreateNote | None = None
         self.replaced: tuple[str, ReplaceNote, str] | None = None
+        self.key_reads = 0
 
     async def create_note(self, request: CreateNote) -> NoteDocument:
         if self.error:
@@ -77,6 +104,10 @@ class FakeStore:
     async def is_ready(self) -> bool:
         return self.error is None
 
+    async def get_api_keys(self) -> ApiKeySet:
+        self.key_reads += 1
+        return ApiKeySet(keys=[KEY_RECORD, READ_KEY_RECORD, NOTE_WRITE_RECORD])
+
 
 @pytest.fixture
 def client(tmp_path: Path):
@@ -90,6 +121,8 @@ def client(tmp_path: Path):
         # Readiness reads the client off application state rather than through
         # the dependency, so it is replaced there too.
         app.state.store = fake
+        app.state.api_key_auth._store = fake
+        test_client.headers.update({"Authorization": f"Bearer {KEY}"})
         yield test_client, fake
 
 
@@ -98,6 +131,64 @@ def test_health_says_the_process_is_up(client):
     response = test_client.get("/healthz")
     assert response.status_code == 200
     assert response.json()["service"] == "coppermind-api"
+
+
+def test_v1_refuses_a_missing_or_malformed_key(client):
+    test_client, _ = client
+    wrong_secret = f"Bearer cm_{KEY_ID}_wrong-secret"
+    for authorization in ("", "Bearer wrong", "Basic credentials", wrong_secret):
+        response = test_client.get(f"/v1/notes/{NOTE.id}", headers={"Authorization": authorization})
+        assert response.status_code == 401
+        assert response.json()["error"] == "unauthorized"
+        assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_a_key_without_the_needed_scope_is_forbidden(client):
+    test_client, fake = client
+    response = test_client.post(
+        "/v1/notes",
+        json={"title": "Not allowed"},
+        headers={"Authorization": f"Bearer {READ_KEY}"},
+    )
+    assert response.status_code == 403
+    assert response.json()["error"] == "forbidden"
+    assert fake.created is None
+
+
+def test_journal_create_needs_both_note_and_journal_write_scopes(client):
+    test_client, fake = client
+    response = test_client.post(
+        "/v1/notes",
+        json={"title": "Today", "frontmatter": {"type": "journal"}},
+        headers={"Authorization": f"Bearer {NOTE_WRITE_KEY}"},
+    )
+    assert response.status_code == 403
+    assert fake.created is None
+
+
+def test_successful_authentication_is_cached_without_rehashing(client, monkeypatch):
+    test_client, fake = client
+    real_verify = auth_module.verify_secret
+    calls = 0
+
+    def counted_verify(encoded_hash: str, secret: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return real_verify(encoded_hash, secret)
+
+    monkeypatch.setattr(auth_module, "verify_secret", counted_verify)
+    assert test_client.get(f"/v1/notes/{NOTE.id}").status_code == 200
+    assert test_client.get(f"/v1/notes/{NOTE.id}").status_code == 200
+    assert calls == 1
+    assert fake.key_reads == 1
+
+
+def test_health_readiness_and_openapi_need_no_key(client):
+    test_client, _ = client
+    for path in ("/healthz", "/readyz", "/openapi.json"):
+        assert test_client.get(path, headers={"Authorization": ""}).status_code == 200
+    document = test_client.get("/openapi.json", headers={"Authorization": ""}).json()
+    assert "HTTPBearer" in document["components"]["securitySchemes"]
 
 
 def api_app(tmp_path: Path, build_version: str | None = None):
@@ -215,8 +306,8 @@ def test_a_filesystem_failure_does_not_blame_the_database(client):
     assert body["error"] == "notes_filesystem_unavailable"
     assert "notes filesystem could not be read or written" in body["message"]
     assert "notes filesystem is unaffected" not in body["message"]
-    # The public surface has no authentication in this slice, so it must not
-    # repeat the operating system's reason, which names container paths.
+    # The public surface must not repeat an operating system reason that names
+    # container paths.
     assert "detail" not in body
     assert "Read-only file system" not in response.text
 

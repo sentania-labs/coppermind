@@ -12,6 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import JSONResponse
 
+from coppermind.api_keys import ApiKeySet
 from coppermind.errors import to_http
 from coppermind.store_protocol import (
     CreateNote,
@@ -33,6 +34,11 @@ def _store(request: Request) -> LocalStore:
 def _failure(error: StoreError) -> JSONResponse:
     status_code, body = to_http(error, surface="internal")
     return JSONResponse(status_code=status_code, content=body)
+
+
+@router.get("/api-keys", response_model=ApiKeySet)
+async def get_api_keys(request: Request) -> ApiKeySet:
+    return await _store(request).get_api_keys()
 
 
 @router.post("/notes", status_code=201, response_model=NoteDocument)

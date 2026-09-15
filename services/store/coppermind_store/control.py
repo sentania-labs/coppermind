@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from coppermind.api_keys import ApiKeySet
 from coppermind.schema import FrontmatterSchema, default_schema
 from coppermind.settings import ProductSettings, default_settings
 from coppermind.statefiles import StateStore
@@ -35,3 +36,6 @@ class ControlState:
         body = dict(self.store.read("schema").body)
         body.pop("revision", None)
         return FrontmatterSchema.model_validate(body)
+
+    def api_keys(self) -> ApiKeySet:
+        return ApiKeySet.model_validate(self.store.read("keys").body)

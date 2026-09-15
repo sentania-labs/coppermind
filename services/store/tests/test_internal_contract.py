@@ -157,8 +157,8 @@ async def test_an_unparseable_note_round_trips_without_nesting_its_message():
 async def test_the_internal_surface_keeps_the_cause_the_public_one_hides():
     """The client rebuilds the typed error with the operating system's reason.
 
-    The same error answers the public API with a fixed message, because that
-    surface is unauthenticated and the reason names container paths.
+    The same error answers the public API with a fixed message because the
+    reason names container paths.
     """
     cause = "[Errno 30] Read-only file system: '/data/notes/Review'"
     client = connected(RaisingStore(NotesFilesystemUnavailable(cause)))

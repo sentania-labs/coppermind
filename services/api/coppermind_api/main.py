@@ -16,6 +16,8 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
 
 from coppermind.errors import code_for_status, envelope
 from coppermind.health import Check, Health, Readiness
@@ -23,6 +25,7 @@ from coppermind.logging import configure_logging, get_logger
 from coppermind.settings import Wiring
 from coppermind.store_client import HttpStoreClient
 from coppermind_api import __version__
+from coppermind_api.auth import ApiKeyAuthenticator, AuthenticationUnavailable
 from coppermind_api.v1.notes import router as notes_router
 
 SERVICE = "coppermind-api"
@@ -32,9 +35,9 @@ log = get_logger(SERVICE)
 DESCRIPTION = """
 The Coppermind public contract.
 
-Notes live as Markdown files in the notes filesystem. This service holds no
-state of its own: every note operation is a call to the store, which is the
-only process that writes those files.
+Notes live as Markdown files in the notes filesystem. This service has only a
+five-minute authentication cache: every note operation is a call to the
+store, which is the only process that writes those files.
 """.strip()
 
 
@@ -52,6 +55,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         )
         app.state.wiring = settings
         app.state.store = client
+        app.state.api_key_auth = ApiKeyAuthenticator(client)
         log.info("api started", store=settings.store_url)
         try:
             yield
@@ -90,6 +94,31 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             content=envelope("validation_error", "; ".join(problems), errors=problems),
         )
 
+    @app.middleware("http")
+    async def _authenticate_v1(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        """Make authentication the default for the complete public API prefix."""
+        path = request.url.path
+        if path == "/v1" or path.startswith("/v1/"):
+            try:
+                principal = await request.app.state.api_key_auth.authenticate(
+                    request.headers.get("Authorization")
+                )
+            except AuthenticationUnavailable:
+                return JSONResponse(
+                    status_code=503,
+                    content=envelope(
+                        "store_unavailable", "API key control state could not be loaded"
+                    ),
+                )
+            if principal is None:
+                return JSONResponse(
+                    status_code=401,
+                    content=envelope("unauthorized", "a valid API bearer key is required"),
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            request.state.api_key = principal
+        return await call_next(request)
+
     @app.get("/healthz", response_model=Health, tags=["operations"])
     async def healthz() -> Health:
         return Health(service=SERVICE, version=version)
@@ -105,6 +134,20 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
                 detail="" if store_ready else "the store is not ready; note operations will 503",
             )
         ]
+        try:
+            key_set = await client.get_api_keys()
+            active_keys = [record for record in key_set.keys if record.revoked_at is None]
+            checks.append(
+                Check(
+                    name="api_keys",
+                    ok=bool(active_keys),
+                    detail="" if active_keys else "no active API key is available",
+                )
+            )
+        except Exception:  # the public readiness body never carries a control-file cause
+            checks.append(
+                Check(name="api_keys", ok=False, detail="API key control state is unavailable")
+            )
         readiness = Readiness.of(checks)
         return JSONResponse(
             status_code=200 if readiness.ready else 503,

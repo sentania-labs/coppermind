@@ -1,6 +1,6 @@
 # STATUS
 
-What works against `main` today. Updated 2026-09-11. Every claim here was
+What works against `main` today. Updated 2026-09-14. Every claim here was
 checked against a running compose stack on that date, not against CI alone.
 
 This is the first slice of the build. The shape is deliberately narrow: one
@@ -11,9 +11,16 @@ vertical path proved end to end, then widened.
 - `docker compose up -d` on a clean checkout reaches a healthy stack with no
   manual setup and no hand populated setting. The one-shot `bootstrap`
   container creates `/data`, generates the internal bearer token and the
-  PostgreSQL password as files on a volume (never environment values), and
-  writes `settings.yaml` and `schema.yaml` at revision 1 with shipped
-  defaults. Running it again keeps every existing secret and setting.
+  PostgreSQL password as files on volumes (never environment values), creates
+  a working full-scope default API key in a separate restricted volume, and
+  writes `settings.yaml`, `schema.yaml` and the key's Argon2 hash at revision
+  1. Running it again keeps every existing secret, key and setting.
+- Every `/v1` route requires `Bearer cm_<key_id>_<secret>`. A missing or bad
+  key answers 401 and a key without the route's scope answers 403. Note reads
+  need `notes:read`; creates and replacements need `notes:write`; a journal
+  create also needs `journal:write`. Successful verification and key hashes
+  are cached for five minutes. Health, readiness and OpenAPI remain open, and
+  Compose remains bound to loopback by default.
 - `POST /v1/notes` creates a note. It lands as a Markdown file in the notes
   filesystem, under the review folder, named by the portable naming rules
   (date prefix for dated types, Windows-reserved characters and device names
@@ -88,10 +95,6 @@ vertical path proved end to end, then widened.
 Everything below is planned and has a place in the design. None of it exists
 in the tree, so do not read the absence as a decision to leave it out.
 
-- **API authentication.** There are no API keys yet, so `/v1` is
-  unauthenticated. Compose binds the API to `127.0.0.1` for that reason. Do
-  not put this on a network interface until keys land in the next pull
-  request.
 - **Ingest.** `POST /v1/ingest`, source bundles, revisions, idempotency and
   the generated source projections.
 - **Reconciliation.** Nothing yet notices a file created, moved or deleted on
@@ -121,7 +124,9 @@ in the tree, so do not read the absence as a decision to leave it out.
   the API. Nothing exists yet, so settings are edited as files under
   `/data/state` for now, which is exactly the state the design says is not
   shippable. It is shippable in the sense that the defaults work; it is not
-  yet the finished product.
+  yet the finished product. Its graphical API keys page also arrives later;
+  until then `python3 -m coppermind_store.keys` is the interim path for adding
+  and rotating keys.
 - **Publication and release.** CI deliberately holds no token that could push
   an image anywhere. Publishing, signing and the Helm chart come later.
 

@@ -25,14 +25,21 @@ from coppermind.store_protocol import (
     StoreError,
     etag_from_if_match,
 )
-from coppermind_api.deps import store
+from coppermind_api.auth import Principal
+from coppermind_api.deps import forbid_missing_scope, require_scopes, store
 from coppermind_api.errors import failure
 
 router = APIRouter(prefix="/v1/notes", tags=["notes"])
 
 
 @router.post("", status_code=201, response_model=NoteDocument)
-async def create_note(payload: CreateNote, client: HttpStoreClient = Depends(store)) -> Response:
+async def create_note(
+    payload: CreateNote,
+    client: HttpStoreClient = Depends(store),
+    principal: Principal = Depends(require_scopes("notes:write")),
+) -> Response:
+    if payload.frontmatter.get("type") == "journal":
+        forbid_missing_scope(principal, "journal:write")
     try:
         note = await client.create_note(payload)
     except StoreError as error:
@@ -45,7 +52,11 @@ async def create_note(payload: CreateNote, client: HttpStoreClient = Depends(sto
 
 
 @router.get("/{note_id}", response_model=NoteDocument)
-async def get_note(note_id: str, client: HttpStoreClient = Depends(store)) -> Response:
+async def get_note(
+    note_id: str,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:read")),
+) -> Response:
     """Return a note as a document, with the ETag of the file's bytes."""
     try:
         note = await client.get_note(note_id)
@@ -62,6 +73,7 @@ async def replace_note(
     payload: ReplaceNote,
     if_match: Annotated[str | None, Header()] = None,
     client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:write")),
 ) -> Response:
     """Replace a note's frontmatter and body, keeping its identifier and path.
 

@@ -172,6 +172,7 @@ class Wiring(BaseSettings):
     db_password_file: Path = Path("/run/coppermind/postgres/postgres-password")
 
     internal_token_file: Path = Path("/run/coppermind/internal/internal-token")
+    default_api_key_file: Path = Path("/run/coppermind/api/default-api-key")
 
     log_level: str = "INFO"
 
