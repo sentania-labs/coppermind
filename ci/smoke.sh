@@ -98,6 +98,49 @@ compose exec -T store test -r /run/coppermind/postgres/postgres-password \
     || fail "the store cannot read the PostgreSQL password"
 ok "the API cannot read the database password and the store can"
 
+step "ingest the sample source and its linked Review note"
+ingested="$(mktemp)"
+code="$(curl -sS -o "$ingested" -w '%{http_code}' -X POST "$API/v1/ingest" \
+    "${AUTH[@]}" -H 'Content-Type: application/json' \
+    --data-binary @examples/ingest/plaud-sample.json)"
+[ "$code" = "201" ] || { cat "$ingested"; fail "ingest returned $code, expected 201"; }
+cat "$ingested"; echo
+source_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"]["id"])' "$ingested")"
+ingest_note_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["note"]["id"])' "$ingested")"
+ingest_note_path="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["note"]["path"])' "$ingested")"
+compose exec -T store test -f "/data/sources/$source_id/manifest.json" \
+    || fail "the source manifest is missing"
+compose exec -T store test -f "/data/sources/$source_id/r0001/transcript.txt" \
+    || fail "the transcript artifact is missing"
+ingest_note="$(compose exec -T store cat "/data/notes/$ingest_note_path")"
+printf '%s\n' "$ingest_note" | grep -Fqx -- "  - $source_id" \
+    || fail "the Review note does not link the source id"
+[ "$(compose exec -T store sh -c 'find /data/sources -mindepth 1 -maxdepth 1 -type d | wc -l' | tr -d '[:space:]')" = "1" ] \
+    || fail "the ingest created more than one source bundle"
+[ "$(compose exec -T store sh -c 'find /data/notes/Review -maxdepth 1 -type f -name "*.md" | wc -l' | tr -d '[:space:]')" = "1" ] \
+    || fail "the ingest created more than one Review note"
+ok "source $source_id and note $ingest_note_id exist and are linked"
+
+step "repeat the external id and prove the original stays unchanged"
+source_before="$(compose exec -T store sh -c "find '/data/sources/$source_id' -type f -exec sha256sum {} \\; | sort")"
+note_before="$(hash_on_volume "$ingest_note_path")"
+duplicate="$(mktemp)"
+code="$(curl -sS -o "$duplicate" -w '%{http_code}' -X POST "$API/v1/ingest" \
+    "${AUTH[@]}" -H 'Content-Type: application/json' \
+    --data-binary @examples/ingest/plaud-sample.json)"
+[ "$code" = "409" ] || { cat "$duplicate"; fail "repeat ingest returned $code, expected 409"; }
+[ "$(field "$duplicate" error)" = "source_exists" ] \
+    || fail "the repeated external id was not reported as source_exists"
+[ "$(compose exec -T store sh -c 'find /data/sources -mindepth 1 -maxdepth 1 -type d | wc -l' | tr -d '[:space:]')" = "1" ] \
+    || fail "the repeated external id created another source bundle"
+[ "$(compose exec -T store sh -c 'find /data/notes/Review -maxdepth 1 -type f -name "*.md" | wc -l' | tr -d '[:space:]')" = "1" ] \
+    || fail "the repeated external id created another Review note"
+[ "$(compose exec -T store sh -c "find '/data/sources/$source_id' -type f -exec sha256sum {} \\; | sort")" = "$source_before" ] \
+    || fail "the repeated external id changed the source bundle"
+[ "$(hash_on_volume "$ingest_note_path")" = "$note_before" ] \
+    || fail "the repeated external id changed the Review note"
+ok "the repeated external id returned 409, with one unchanged source and note"
+
 step "create a note through the API"
 created="$(mktemp)"
 code="$(curl -sS -o "$created" -w '%{http_code}' -X POST "$API/v1/notes" \

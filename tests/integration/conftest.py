@@ -67,7 +67,7 @@ async def session_factory(wiring: Wiring) -> AsyncIterator[async_sessionmaker[As
     # Each test starts from an empty mirror; the notes filesystem is a fresh
     # temporary directory, so leftover rows would point at files that are gone.
     async with engine.begin() as connection:
-        await connection.execute(sa.text("TRUNCATE TABLE notes"))
+        await connection.execute(sa.text("TRUNCATE TABLE notes, sources CASCADE"))
     try:
         yield factory
     finally:
