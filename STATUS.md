@@ -19,9 +19,9 @@ vertical path proved end to end, then widened.
   key answers 401 and a key without the route's scope answers 403. Note reads
   need `notes:read`; creates and replacements need `notes:write`. Successful
   verification and key hashes are cached for five minutes, and a key created
-  since the last load is picked up on its first use rather than waiting the
-  cache out. Health, readiness and OpenAPI remain open, and Compose remains
-  bound to loopback by default.
+  since the last load is picked up within about a second of its first use
+  rather than waiting the cache out. Health, readiness and OpenAPI remain
+  open, and Compose remains bound to loopback by default.
   The content-typed journal scopes, `journal:read` and `journal:write`, are
   defined in the scope vocabulary but nothing enforces them in this
   increment: only route-level scopes are enforced, so a `notes:write` key can
