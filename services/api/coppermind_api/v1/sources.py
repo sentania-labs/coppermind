@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, Response
 
 from coppermind.store_client import HttpStoreClient
-from coppermind.store_protocol import SourceManifest, StoreError
+from coppermind.store_protocol import SourceImmutable, SourceManifest, StoreError
 from coppermind_api.auth import Principal
 from coppermind_api.deps import authenticated_key, require_scopes, store
 from coppermind_api.errors import failure
@@ -38,12 +38,19 @@ async def get_source_artifact(
         artifact = await client.get_source_artifact(source_id, revision, name)
     except StoreError as error:
         return failure(error)
+    declared = artifact.mime_type.encode("ascii", "replace").decode("ascii")
     headers = {
         "X-Coppermind-SHA256": artifact.sha256,
         "X-Coppermind-Size-Bytes": str(artifact.size_bytes),
+        "X-Coppermind-Declared-Type": declared,
+        "X-Content-Type-Options": "nosniff",
     }
     if artifact.content is not None:
-        return Response(content=artifact.content, media_type=artifact.mime_type, headers=headers)
+        # The stored type is what an ingesting client claimed, so it names the
+        # artifact in a header rather than deciding how this origin serves it.
+        return Response(
+            content=artifact.content, media_type="text/plain; charset=utf-8", headers=headers
+        )
     return JSONResponse(content=artifact.model_dump(mode="json"), headers=headers)
 
 
@@ -69,12 +76,8 @@ async def get_source_projection(
 )
 async def refuse_source_mutation(
     source_path: str,
-    client: HttpStoreClient = Depends(store),
     _: Principal = Depends(authenticated_key),
 ) -> JSONResponse:
-    source_id = source_path.split("/", 1)[0]
-    try:
-        await client.refuse_source_mutation(source_id)
-    except StoreError as error:
-        return failure(error)
-    raise AssertionError("the immutable source guard returned")
+    # A source is immutable, so there is nothing to ask the Store about. The
+    # refusal is the answer whether or not the Store is reachable.
+    return failure(SourceImmutable(source_path.split("/", 1)[0]))

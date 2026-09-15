@@ -19,7 +19,6 @@ from coppermind.store_protocol import (
     SourceArtifact,
     SourceArtifactDocument,
     SourceClaimMissing,
-    SourceImmutable,
     SourceManifest,
     SourceProjection,
     SourceRevision,
@@ -107,9 +106,6 @@ class FakeStore:
             source_id=source_id, path="_Sources/Plaud/Recording.md", content="#"
         )
 
-    async def refuse_source_mutation(self, source_id: str) -> None:
-        raise SourceImmutable(source_id)
-
 
 def app_for(store: FakeStore) -> FastAPI:
     app = FastAPI()
@@ -154,7 +150,7 @@ async def test_replay_answers_200_over_the_internal_contract():
     assert response.json()["source"]["created"] is False
 
 
-async def test_source_reads_and_immutable_refusal_round_trip_through_the_contract():
+async def test_source_reads_round_trip_through_the_contract():
     store = FakeStore()
     client = connected(store)
     try:
@@ -162,8 +158,6 @@ async def test_source_reads_and_immutable_refusal_round_trip_through_the_contrac
         artifact = await client.get_source_artifact(RESULT.source.id, 1, "transcript.txt")
         assert artifact.content == "hello"
         assert (await client.get_source_projection(RESULT.source.id)).content == "#"
-        with pytest.raises(SourceImmutable):
-            await client.refuse_source_mutation(RESULT.source.id)
     finally:
         await client.aclose()
 

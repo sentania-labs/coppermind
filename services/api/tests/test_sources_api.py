@@ -1,5 +1,6 @@
 """Read-only source API behavior, including T-SRC-1."""
 
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,10 +14,10 @@ from coppermind.settings import Wiring
 from coppermind.store_protocol import (
     SourceArtifact,
     SourceArtifactDocument,
-    SourceImmutable,
     SourceManifest,
     SourceProjection,
     SourceRevision,
+    StoreUnavailable,
 )
 
 SOURCE_ID = "01K4Q8Z2A0P1Q2R3S4T5U6V7W8"
@@ -41,7 +42,8 @@ MANIFEST = SourceManifest(
 
 
 class FakeStore:
-    def __init__(self) -> None:
+    def __init__(self, *, reachable: bool = True) -> None:
+        self.reachable = reachable
         created = datetime(2026, 9, 8, tzinfo=UTC)
         self.read_record, self.read_key = create_key(
             "source reader", ["sources:read"], created_at=created
@@ -54,6 +56,8 @@ class FakeStore:
         return ApiKeySet(keys=[self.read_record, self.other_record])
 
     async def get_source(self, source_id: str) -> SourceManifest:
+        if not self.reachable:
+            raise StoreUnavailable("the store is down")
         assert source_id == SOURCE_ID
         return MANIFEST
 
@@ -78,24 +82,27 @@ class FakeStore:
             content="# Recording (source)\n",
         )
 
-    async def refuse_source_mutation(self, source_id: str) -> None:
-        raise SourceImmutable(source_id)
-
     async def is_ready(self) -> bool:
         return True
 
 
-@pytest.fixture
-def source_client(tmp_path: Path):
+@contextmanager
+def _client(tmp_path: Path, *, reachable: bool = True):
     token = tmp_path / "internal-token"
     token.write_text("test-token\n", encoding="utf-8")
     app = create_app(Wiring(internal_token_file=token, store_url="http://store.invalid"))
-    fake = FakeStore()
+    fake = FakeStore(reachable=reachable)
     app.dependency_overrides[store] = lambda: fake
     with TestClient(app) as client:
         app.state.store = fake
         app.state.api_key_auth._store = fake
         yield client, fake
+
+
+@pytest.fixture
+def source_client(tmp_path: Path):
+    with _client(tmp_path) as pair:
+        yield pair
 
 
 def test_source_manifest_text_binary_and_projection_are_readable(source_client):
@@ -110,6 +117,9 @@ def test_source_manifest_text_binary_and_projection_are_readable(source_client):
     )
     assert text.text == "hello"
     assert text.headers["x-coppermind-size-bytes"] == "5"
+    assert text.headers["content-type"] == "text/plain; charset=utf-8"
+    assert text.headers["x-coppermind-declared-type"] == "text/plain"
+    assert text.headers["x-content-type-options"] == "nosniff"
     binary = client.get(
         f"/v1/sources/{SOURCE_ID}/revisions/1/artifacts/recording.bin", headers=headers
     )
@@ -141,3 +151,12 @@ def test_t_src_1_every_source_mutation_is_refused(source_client, method: str, pa
     response = getattr(client, method)(path, headers={"Authorization": f"Bearer {fake.read_key}"})
     assert response.status_code == 405
     assert response.json()["error"] == "method_not_allowed"
+
+
+def test_t_src_1_mutation_is_refused_while_the_store_is_unreachable(tmp_path: Path):
+    with _client(tmp_path, reachable=False) as (client, fake):
+        headers = {"Authorization": f"Bearer {fake.read_key}"}
+        assert client.get(f"/v1/sources/{SOURCE_ID}", headers=headers).status_code == 503
+        refused = client.put(f"/v1/sources/{SOURCE_ID}", headers=headers)
+    assert refused.status_code == 405
+    assert refused.json()["error"] == "method_not_allowed"

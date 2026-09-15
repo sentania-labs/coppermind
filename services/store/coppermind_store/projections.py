@@ -30,23 +30,17 @@ def write_projection(
 ) -> tuple[str, bool]:
     """Create or replace the one projection for a source.
 
-    Existing generated output is replaced in place. A missing projection is
-    assigned a collision-safe name in the configured sources folder.
+    `relative_path` names generated output to replace in place. Without one the
+    projection is new and is assigned a collision-safe name in the configured
+    sources folder; the caller decides which of the two it is, so no search of
+    the sources folder happens here.
     """
     try:
-        matches = _find(notes_root, settings, source_id) if relative_path is None else []
-        if len(matches) > 1:
-            raise NotesFilesystemUnavailable(
-                f"more than one generated projection names source {source_id}"
-            )
-        if relative_path is not None:
-            target = resolve(notes_root, relative_path)
-        else:
-            target = (
-                matches[0]
-                if matches
-                else _new_path(notes_root, settings, provider, title, note_date)
-            )
+        target = (
+            resolve(notes_root, relative_path)
+            if relative_path is not None
+            else _new_path(notes_root, settings, provider, title, note_date)
+        )
         data = _document(
             source_id,
             revision,
@@ -115,14 +109,8 @@ def _document(
     generated_at: datetime,
     artifacts: list[tuple[dict[str, Any], bytes]],
 ) -> bytes:
-    summaries = [item for item in artifacts if "summary" in str(item[0]["name"]).casefold()]
-    remainder = [item for item in artifacts if item not in summaries]
-    lines = [f"# {title} (source)", ""]
-    if summaries:
-        lines.extend(["## Summary", ""])
-        _append_artifacts(lines, summaries)
-    lines.extend(["## Transcript", ""])
-    _append_artifacts(lines, remainder)
+    lines = [f"# {title} (source)", "", "## Artifacts", ""]
+    _append_artifacts(lines, artifacts)
     frontmatter = {
         "schema_version": 1,
         "managed": True,

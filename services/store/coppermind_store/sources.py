@@ -48,7 +48,6 @@ from coppermind.store_protocol import (
     PayloadTooLarge,
     SourceArtifactDocument,
     SourceClaimMissing,
-    SourceImmutable,
     SourceManifest,
     SourceNotFound,
     SourceProjection,
@@ -137,10 +136,6 @@ async def get_source_projection(store: LocalStore, source_id: str) -> SourceProj
         path=path.relative_to(store.notes_root).as_posix(),
         content=content,
     )
-
-
-async def refuse_source_mutation(source_id: str) -> None:
-    raise SourceImmutable(source_id)
 
 
 async def ingest(
@@ -361,15 +356,20 @@ async def _ingest_new(
     finally:
         if claim_created and not filesystem_complete:
             shutil.rmtree(source_path, ignore_errors=True)
-            if projection_created and projection_path:
-                try:
-                    resolve(store.notes_root, projection_path).unlink(missing_ok=True)
-                except OSError as exc:
-                    raise NotesFilesystemUnavailable(str(exc)) from exc
+            # The claim goes first. It is the durable record that decides every
+            # later ingest of this external id, so a notes filesystem fault
+            # while removing the projection must not strand it behind a source
+            # directory that is already gone.
             try:
                 claim_path.unlink(missing_ok=True)
             except OSError as exc:
                 raise SourcesFilesystemUnavailable(str(exc)) from exc
+            finally:
+                if projection_created and projection_path:
+                    try:
+                        resolve(store.notes_root, projection_path).unlink(missing_ok=True)
+                    except OSError as exc:
+                        raise NotesFilesystemUnavailable(str(exc)) from exc
     return IngestResult(
         source=CreatedSource(id=source_id, revision=1, created=True),
         note=CreatedNote(id=note_id, path=relative, created=True),

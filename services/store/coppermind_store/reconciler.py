@@ -788,6 +788,8 @@ def _observe(
         )
     note_id = str(frontmatter.get(schema.role("id_key"), ""))
     if frontmatter.get("managed") is True:
+        # A generated source projection is the store's own file. It may carry a
+        # note's bytes, so nothing it says about an identity may be believed.
         return None
     if note_id not in by_id:
         if entry is None:

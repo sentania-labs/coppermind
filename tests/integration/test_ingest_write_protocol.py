@@ -25,7 +25,6 @@ from coppermind.store_protocol import (
     PathCollision,
     PayloadTooLarge,
     SourceClaimMissing,
-    SourceImmutable,
     SourcesFilesystemUnavailable,
 )
 
@@ -328,7 +327,7 @@ async def test_t_ing_2_changed_content_appends_a_revision_and_keeps_the_review_n
         assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 1
 
 
-async def test_t_src_1_sources_are_readable_and_immutable(store: LocalStore):
+async def test_t_src_1_every_stored_source_revision_is_readable(store: LocalStore):
     request = sample()
     request.source.artifacts.append(
         IngestArtifact(
@@ -351,8 +350,6 @@ async def test_t_src_1_sources_are_readable_and_immutable(store: LocalStore):
     projection = await store.get_source_projection(ingested.source.id)
     assert projection.path == ingested.projection_path
     assert "Binary artifact: application/octet-stream, 3 bytes" in projection.content
-    with pytest.raises(SourceImmutable):
-        await store.refuse_source_mutation(ingested.source.id)
 
 
 async def test_retry_after_a_revision_commit_failure_returns_the_completed_revision(

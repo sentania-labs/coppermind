@@ -142,11 +142,6 @@ class LocalStore:
 
         return await get_source_projection(self, source_id)
 
-    async def refuse_source_mutation(self, source_id: SourceId) -> None:
-        from coppermind_store.sources import refuse_source_mutation
-
-        await refuse_source_mutation(source_id)
-
     async def create_note(self, request: CreateNote) -> NoteDocument:
         settings = self.control.settings()
         schema = self.control.schema()

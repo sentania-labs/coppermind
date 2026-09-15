@@ -246,25 +246,30 @@ vertical path proved end to end, then widened.
   the public body length across the Store contract, but checks it only after
   the whole body has been read and parsed: it refuses the request, it does not
   spare process memory.
-- Every ingested source has one generated Markdown projection under the
+- Ingesting a source writes one generated Markdown projection under the
   configured sources folder, by default
   `_Sources/<Provider>/<YYYY-MM-DD Title>.md`. Its frontmatter marks it
   managed and records the source identity, revision and generation time. Text
   artifacts are readable in the document; non-text artifacts are listed with
-  their MIME type, size and SHA-256. A changed source revision regenerates the
-  same projection path from the immutable bundle, so a person's edit to a
-  projection is not merged or preserved. Projections are generated output:
-  the current read-side reconciler excludes them as known notes, Git excludes
-  the sources folder, and Obsidian Sync does not exclude it. Write-side
+  their MIME type, size and SHA-256, in the order the manifest records them. A
+  changed source revision regenerates the same projection path from the
+  immutable bundle, so a person's edit to a projection is not merged or
+  preserved. Generation happens on ingest or on a new revision only: nothing
+  backfills, so a source ingested before this landed has no projection and its
+  projection route answers 404 until it is ingested again. Projections are
+  generated output: the current read-side reconciler excludes the sources
+  folder, Git excludes it, and Obsidian Sync does not. Write-side
   reconciliation is not built on this branch, so its separate rule for never
   adopting managed projections must be settled when that work lands.
 - `GET /v1/sources/{id}` reads the filesystem manifest. Its artifact route
-  returns UTF-8 text types as the response body and describes non-text
+  returns UTF-8 text types as the response body, as `text/plain` with the
+  ingested type in `X-Coppermind-Declared-Type`, and describes non-text
   artifacts as JSON with their size and SHA-256, after verifying the stored
   bytes. `GET /v1/sources/{id}/projection` returns the generated Markdown.
   All need `sources:read`. `PUT`, `PATCH` and `DELETE` anywhere under a source
-  return 405 `method_not_allowed`; neither the public nor internal surface
-  offers a way to change source data.
+  return 405 `method_not_allowed` from the API itself, whether or not the
+  Store is reachable; neither the public nor internal surface offers a way to
+  change source data.
 - `PUT /v1/notes/{id}` replaces a note's frontmatter and body on the condition
   that `If-Match` names the ETag the file has now. The body is the document
   shape a read returns, so a client reads, edits and sends it back; the

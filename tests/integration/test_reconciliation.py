@@ -903,7 +903,11 @@ async def test_a_real_source_projection_is_never_adopted_as_a_note(store: LocalS
 async def test_read_side_does_not_treat_a_managed_projection_as_a_known_note(
     store: LocalStore,
 ):
-    """This proves read-side exclusion, not adoption that is not built yet."""
+    """The sources folder is skipped, so nothing in it speaks for a note.
+
+    This proves the folder skip alone. Nothing outside that folder is excluded
+    for being marked managed, and write-side adoption is not built yet.
+    """
     note = await store.create_note(CreateNote(title="Generated", frontmatter={"type": "reference"}))
     original = store.notes_root / note.path
     projection = store.notes_root / "_Sources" / "Plaud" / "Generated.md"
@@ -919,6 +923,29 @@ async def test_read_side_does_not_treat_a_managed_projection_as_a_known_note(
     assert counts["moved"] == 0
     assert counts["missing"] == 1
     assert (await _row(store, note.id)).state == "missing"
+
+
+async def test_a_note_in_a_newly_configured_sources_folder_is_not_reported_deleted(
+    store: LocalStore,
+):
+    """Excluding a folder hides generated output; it does not delete notes.
+
+    An operator can point `notes.sources_folder` at a folder that already holds
+    notes. Their files are still on disk, so a skip that recorded nothing would
+    report every one of them deleted on the next pass.
+    """
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    settings = store.control.store.read("settings")
+    body = dict(settings.body)
+    body["notes"] = {**body["notes"], "sources_folder": Path(note.path).parent.as_posix()}
+    store.control.store.write("settings", body, if_revision=settings.revision)
+
+    counts = await reconcile_once(store)
+
+    assert counts["missing"] == 0
+    row = await _row(store, note.id)
+    assert row.state == "ok"
+    assert row.path == note.path
 
 
 async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: LocalStore):

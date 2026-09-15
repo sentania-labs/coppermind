@@ -127,20 +127,6 @@ async def get_source_projection(
         return _failure(error)
 
 
-@router.api_route(
-    "/sources/{source_path:path}",
-    methods=["PUT", "PATCH", "DELETE"],
-    include_in_schema=False,
-)
-async def refuse_source_mutation(source_path: str, request: Request) -> JSONResponse:
-    source_id = source_path.split("/", 1)[0]
-    try:
-        await _store(request).refuse_source_mutation(source_id)
-    except StoreError as error:
-        return _failure(error)
-    raise AssertionError("the immutable source guard returned")
-
-
 @router.get("/notes/{note_id}", response_model=NoteDocument)
 async def get_note(note_id: str, request: Request) -> Response:
     try:
