@@ -432,10 +432,11 @@ class LocalStore:
         refusal returns before the first await, so re-reading two state files
         per candidate would hold the event loop for a whole sweep.
 
-        Only keys the schema requires of this note and that it does not already
-        carry a value for receive defaults; an optional key a person did not
-        write stays unwritten, and existing values and body content are never
-        replaced.
+        The identity is always written because the notes filesystem is its
+        durable home. Other keys receive defaults only when the schema requires
+        them of this note and it does not already carry a value; an optional
+        key a person did not write stays unwritten, and existing values and
+        body content are never replaced.
 
         A file already carrying an identity this store knows is not adopted:
         the reconciler never proposes one, because nothing observable tells a
@@ -821,27 +822,37 @@ def _adoption_changes(
     settings: ProductSettings,
     note_id: str,
 ) -> dict[str, Any]:
-    """Only the keys needed to make a device-created note valid.
+    """The identity and defaults needed to make a device-created note valid.
 
-    A key the schema does not require of this note is left out even when it
-    ships a default, because adoption writes into a file a person owns and
-    every key it adds syncs back to their devices. A required key the file
-    carries with no value counts as one to fill: the schema reads it as absent,
-    so leaving it would refuse the note for a property a person added and left
-    empty.
+    Identity is durable only when it is in the file, regardless of whether an
+    edited schema calls that key optional. Every other key the schema does not
+    require is left out even when it ships a default, because adoption writes
+    into a file a person owns and every key it adds syncs back to their devices.
+    A required key the file carries with no value counts as one to fill: the
+    schema reads it as absent, so leaving it would refuse the note for a
+    property a person added and left empty. Requirements are recalculated after
+    each applicable default because one default can activate another key's
+    conditional requirement.
     """
     available = schema.defaults()
-    available[schema.role("id_key")] = note_id
+    id_key = schema.role("id_key")
+    available[id_key] = note_id
     available.setdefault(schema.role("schema_version_key"), 1)
     available.setdefault(schema.role("date_key"), _today(settings))
-    required = schema.required_keys(frontmatter)
-    return {
-        definition.name: available[definition.name]
-        for definition in schema.keys
-        if definition.name in required
-        and frontmatter.get(definition.name) is None
-        and definition.name in available
-    }
+    changes = {id_key: note_id} if frontmatter.get(id_key) is None else {}
+    effective = {**frontmatter, **changes}
+    while True:
+        added = False
+        required = schema.required_keys(effective)
+        for definition in schema.keys:
+            name = definition.name
+            if name not in required or effective.get(name) is not None or name not in available:
+                continue
+            changes[name] = available[name]
+            effective[name] = available[name]
+            added = True
+        if not added:
+            return changes
 
 
 def _replacement_frontmatter(

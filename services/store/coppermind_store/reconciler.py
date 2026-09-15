@@ -86,8 +86,9 @@ _CLOCK_SKEW_TOLERANCE = timedelta(seconds=60)
 # The stat of a file a scan read and found no known identity in, keyed by its
 # path. One process remembers this many; any beyond the bound are read every
 # pass, which is correct, just not cheap. Only a durable rejection is kept: a
-# file still inside the quiet period is simply read again next pass, so an
-# arriving vault cannot fill the bound with paths that are about to settle.
+# file still inside the quiet period is simply read again next pass, so a notes
+# filesystem arriving all at once cannot fill the bound with paths that are
+# about to settle.
 UnidentifiedStats = dict[str, tuple[int, datetime]]
 _UNIDENTIFIED_LIMIT = 10_000
 
@@ -380,7 +381,8 @@ async def reconcile_once(
         # Every refusal inside `adopt_note` returns before its first await, so
         # a tree the schema mostly refuses would sweep end to end without the
         # event loop ever getting a turn. One yield per candidate keeps reads
-        # and readiness served while a first adoption works through a vault.
+        # and readiness served while a first adoption works through a notes
+        # filesystem.
         await asyncio.sleep(0)
         try:
             outcome, cause = await store.adopt_note(

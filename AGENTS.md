@@ -47,7 +47,10 @@ until the helper honours it.
   tests hold the line. Ordinary adoption is append only: it parses the existing
   block in round trip mode but dumps only the generated missing keys and
   splices them in before the closing delimiter, so every existing byte and line
-  ending survives. Two deliberate, accepted exceptions reassemble the block
+  ending survives. It always adds the schema's identity role even if an edited
+  schema marks that key optional, because the file must remain the durable copy
+  of the identity; `test_adoption_always_writes_identity_when_schema_marks_it_optional`
+  pins that rule. Two deliberate, accepted exceptions reassemble the block
   instead. The full-document replace (`PUT /v1/notes/{id}`, `replace_note`)
   composes it from what was sent, so a comment between the keys and a
   hand-arranged key order do not survive it. And a required key a person left

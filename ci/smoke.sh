@@ -153,10 +153,19 @@ ok "the API cannot read the database password and the store can"
 
 step "write a new note from the editor container and keep it in flight across a scan"
 phone_path="Device/Made on phone.md"
-scans_before="$(compose logs store 2>&1 | grep -c 'reconciliation completed' || true)"
 compose exec -T editor sh -c \
     'mkdir -p /data/notes/Device; printf "%s\n" "# Made on phone" "" "First piece." > "$1"; touch /tmp/coppermind-writing; while test -e /tmp/coppermind-writing; do printf "%s\n" "Next piece." >> "$1"; sleep 10; done' \
     sh "/data/notes/$phone_path" >/dev/null 2>&1 &
+writer_started=false
+for _ in $(seq 1 30); do
+    if compose exec -T editor test -e /tmp/coppermind-writing; then
+        writer_started=true
+        break
+    fi
+    sleep 1
+done
+[ "$writer_started" = true ] || fail "the device writer did not start"
+scans_before="$(compose logs store 2>&1 | grep -c 'reconciliation completed' || true)"
 for _ in $(seq 1 90); do
     scans_now="$(compose logs store 2>&1 | grep -c 'reconciliation completed' || true)"
     [ "$scans_now" -gt "$scans_before" ] && break

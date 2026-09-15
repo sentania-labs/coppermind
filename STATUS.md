@@ -74,10 +74,12 @@ vertical path proved end to end, then widened.
   scan stats every note file and reads only the ones a stat says may have
   changed. A device-created file carrying no identity waits until its mtime
   has been quiet for the configured period, then the store assigns an identity
-  and fills the absent frontmatter that schema requires of that note from the
-  shipped defaults. A key the schema marks optional is left out even when it
-  ships a default, because the minimum necessary bytes go into a file a person
-  owns. Adoption writes that identity into their own file, so pointing the
+  and writes that identity into the file even if an edited schema marks its key
+  optional, because the filesystem must remain the durable copy. It fills other
+  absent frontmatter the schema requires of that note from the shipped defaults.
+  Any other key the schema marks optional is left out even when it ships a
+  default, because the minimum necessary bytes go into a file a person owns.
+  Pointing the
   store at a notes filesystem that already holds notes rewrites every one of
   them once. That happens gradually: a fixed 50 adoptions per pass, counted in
   files actually taken on rather than files tried, so an existing tree arrives
@@ -114,9 +116,9 @@ vertical path proved end to end, then widened.
   to 10,000 rejected paths by stat, so an unchanged rejected tree costs one
   stat per file per pass rather than repeated reads and parses. Only a durable
   rejection is remembered; a file still inside the quiet period is read again
-  on the next pass instead, so a whole vault arriving at once cannot fill that
-  memory with paths that are about to settle. A file changed inside the quiet
-  period waits for the next pass. Trusting a stat
+  on the next pass instead, so a whole notes filesystem arriving at once
+  cannot fill that memory with paths that are about to settle. A file changed
+  inside the quiet period waits for the next pass. Trusting a stat
   is safe because it is not the only
   pass: once a day, at the configured local time, the store rereads and
   rehashes every note file, which is what catches an edit that left the file's

@@ -156,6 +156,57 @@ async def test_a_settled_device_created_file_is_adopted_and_retrievable(store: L
     assert counts["adopted"] == 1
 
 
+async def test_adoption_always_writes_identity_when_schema_marks_it_optional(
+    store: LocalStore,
+):
+    schema_record = store.control.store.read("schema")
+    schema_body = dict(schema_record.body)
+    id_key = schema_body["roles"]["id_key"]
+    for definition in schema_body["keys"]:
+        if definition["name"] == id_key:
+            definition["required"] = False
+    store.control.store.write("schema", schema_body, if_revision=schema_record.revision)
+    unknown = store.notes_root / "Review" / "Optional identity.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    unknown.write_bytes(b"# Optional identity\n")
+
+    first = await reconcile_once(store)
+    frontmatter, _ = fm.parse(unknown.read_text(encoding="utf-8"))
+    note_id = frontmatter[id_key]
+    second = await reconcile_once(store)
+
+    assert first["adopted"] == 1
+    assert is_valid_id(note_id)
+    assert (await store.get_note(note_id)).path == "Review/Optional identity.md"
+    assert second["adopted"] == 0
+    assert second["unparsed"] == 0
+
+
+async def test_adoption_rechecks_requirements_activated_by_applied_defaults(
+    store: LocalStore,
+):
+    schema_record = store.control.store.read("schema")
+    schema_body = dict(schema_record.body)
+    roles = schema_body["roles"]
+    for definition in schema_body["keys"]:
+        if definition["name"] == roles["context_key"]:
+            definition["default"] = "customer"
+        if definition["name"] == roles["account_key"]:
+            definition["default"] = "Default account"
+    store.control.store.write("schema", schema_body, if_revision=schema_record.revision)
+    unknown = store.notes_root / "Review" / "Default customer.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    unknown.write_bytes(b"# Default customer\n")
+
+    counts = await reconcile_once(store)
+    frontmatter, _ = fm.parse(unknown.read_text(encoding="utf-8"))
+
+    assert counts["adopted"] == 1
+    assert frontmatter[roles["context_key"]] == "customer"
+    assert frontmatter[roles["account_key"]] == "Default account"
+    assert store.control.schema().validate_frontmatter(frontmatter) == []
+
+
 async def test_a_device_created_file_waits_for_quiet_before_adoption(store: LocalStore):
     unknown = store.notes_root / "Review" / "Still syncing.md"
     unknown.parent.mkdir(parents=True, exist_ok=True)
@@ -181,7 +232,7 @@ async def test_a_device_created_file_waits_for_quiet_before_adoption(store: Loca
 async def test_a_settling_path_does_not_consume_the_rejected_file_memory(
     store: LocalStore,
 ):
-    """A whole vault arrives settling at once, so those paths must not be kept.
+    """A whole notes filesystem settles at once, so those paths must not be kept.
 
     The memory exists for durable rejections. A file still inside the quiet
     period is about to be read again anyway, so keeping it only crowds out the
