@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from coppermind_store import notes as notes_module
 from coppermind_store.notes import LocalStore
 
 from coppermind.store_protocol import (
@@ -83,7 +84,7 @@ async def test_filters_use_the_current_files_for_every_known_note(store: LocalSt
     assert await ids(type="meeting") == {ameren.id}
     assert await ids(context="external") == {reference.id}
     assert await ids(account="Ameren") == {ameren.id}
-    assert await ids(from_date=date(2026, 9, 5), to_date=date(2026, 9, 15)) == {runbook.id}
+    assert await ids(**{"from": date(2026, 9, 5), "to": date(2026, 9, 15)}) == {runbook.id}
     assert await ids(tag="architecture") == {ameren.id, reference.id}
     assert await ids(state="ok") == {ameren.id, runbook.id, reference.id}
 
@@ -136,9 +137,35 @@ async def test_cursor_pages_four_notes_two_at_a_time_without_gaps(store: LocalSt
     assert second.next_cursor is None
 
     returned = [item.id for item in [*first.items, *second.items]]
-    expected = [note.id for note in sorted(created, key=lambda note: (note.path, note.id))]
+    expected = [note.id for note in sorted(created, key=lambda note: note.path)]
     assert returned == expected
     assert len(returned) == len(set(returned))
+
+
+async def test_a_page_reads_only_the_files_it_needs(store: LocalStore, monkeypatch):
+    """A page costs what it returns, not what the mirror holds."""
+    for number, title in enumerate(("Alpha", "Bravo", "Charlie", "Delta", "Echo"), start=1):
+        await _create(
+            store,
+            title,
+            note_date=f"2026-09-0{number}",
+            note_type="note",
+            context="internal",
+        )
+
+    read: list[str] = []
+    current_summary = notes_module._current_summary
+
+    def counted(notes_root, row, schema):
+        read.append(row.path)
+        return current_summary(notes_root, row, schema)
+
+    monkeypatch.setattr(notes_module, "_current_summary", counted)
+    page = await store.list_notes(NoteQuery(limit=2))
+
+    assert len(page.items) == 2
+    assert page.next_cursor is not None
+    assert len(read) == 3
 
 
 async def test_invalid_cursor_is_a_validation_failure(store: LocalStore):

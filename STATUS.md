@@ -53,8 +53,10 @@ vertical path proved end to end, then widened.
 - `GET /v1/notes` requires `notes:read` and lists summaries for notes whose
   identifiers and paths are known to the metadata mirror. Filters cover folder,
   reviewed state, type, context, account, inclusive date bounds, tag and file
-  state. The opaque cursor pages in mirrored path and identifier order, with a
-  default limit of 50 and an allowed range of 1 through 200. For a known path,
+  state. The opaque cursor pages in mirrored path order, with a default limit
+  of 50 and an allowed range of 1 through 200. Path-keyed paging has to be
+  revisited when note move and rename land, because those change the key a
+  cursor resumes from. For a known path,
   the store reads the current file before filtering and returning its summary,
   so an in-place edit delivered by Obsidian Sync is visible without waiting for
   reconciliation. With PostgreSQL unavailable, listing answers 503

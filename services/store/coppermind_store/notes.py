@@ -80,6 +80,11 @@ from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, is_no
 
 log = get_logger("coppermind-store")
 
+# How many mirror rows a listing reads from PostgreSQL at a time. A page is
+# filled from as few batches as the filters allow, so the work a request
+# does is bounded by what it returns rather than by the size of the mirror.
+_SCAN_BATCH = 200
+
 
 class LocalStore:
     """The store contract, implemented against a real notes filesystem."""
@@ -220,28 +225,35 @@ class LocalStore:
         so an in-place device edit is visible before reconciliation exists.
         Files and paths PostgreSQL does not know about remain reconciliation's
         responsibility.
+
+        Rows arrive in keyset-resumed batches rather than as the whole mirror,
+        and each batch is read and parsed off the event loop, so a selective
+        filter over a large notes filesystem cannot stall the single-worker
+        store while it scans.
         """
         after = _decode_note_cursor(query.cursor) if query.cursor else None
-        statement = sa.select(Note).order_by(Note.path, Note.id)
-        if after is not None:
-            path, note_id = after
-            statement = statement.where(
-                sa.or_(Note.path > path, sa.and_(Note.path == path, Note.id > note_id))
-            )
-        try:
-            async with self.session_factory() as session:
-                rows = list((await session.scalars(statement)).all())
-        except (SQLAlchemyError, OSError) as exc:
-            raise MetadataUnavailable(str(exc)) from exc
-
         schema = self.control.schema()
-        matched: list[tuple[NoteSummary, tuple[str, str]]] = []
-        for row in rows:
-            summary, state = _current_summary(self.notes_root, row, schema)
-            if not _matches_query(summary, state, query):
-                continue
-            matched.append((summary, (row.path, row.id)))
-            if len(matched) > query.limit:
+        wanted = query.limit + 1
+        batch_size = max(wanted, _SCAN_BATCH)
+        matched: list[tuple[NoteSummary, str]] = []
+        while len(matched) < wanted:
+            statement = sa.select(Note).order_by(Note.path).limit(batch_size)
+            if after is not None:
+                statement = statement.where(Note.path > after)
+            try:
+                async with self.session_factory() as session:
+                    rows = list((await session.scalars(statement)).all())
+            except (SQLAlchemyError, OSError) as exc:
+                raise MetadataUnavailable(str(exc)) from exc
+            if not rows:
+                break
+            after = rows[-1].path
+            matched.extend(
+                await asyncio.to_thread(
+                    _scan_rows, self.notes_root, rows, schema, query, wanted - len(matched)
+                )
+            )
+            if len(rows) < batch_size:
                 break
 
         page = matched[: query.limit]
@@ -448,7 +460,12 @@ class LocalStore:
 
 
 def _parse(
-    note_id: NoteId, relative: str, data: bytes, schema: FrontmatterSchema
+    note_id: NoteId,
+    relative: str,
+    data: bytes,
+    schema: FrontmatterSchema,
+    *,
+    log_failure: bool = True,
 ) -> tuple[dict[str, Any], str]:
     """Parse a located note's bytes and check they are that note's."""
     try:
@@ -461,12 +478,16 @@ def _parse(
         # the store alone answers, and never the log or the public
         # envelope. Logs are collected and shipped, so the log gets only what
         # the type of the failure and its position say.
-        log.warning(
-            "note frontmatter could not be parsed",
-            note_id=note_id,
-            path=relative,
-            **_parse_failure_fields(exc),
-        )
+        # A listing scan passes over the same broken file on every page, so
+        # it reports the state in the summary and leaves the warning to the
+        # read that asked for this note by name.
+        if log_failure:
+            log.warning(
+                "note frontmatter could not be parsed",
+                note_id=note_id,
+                path=relative,
+                **_parse_failure_fields(exc),
+            )
         raise NoteUnparseable(note_id, str(exc)) from exc
     carried_id = frontmatter.get(schema.role("id_key"))
     if carried_id is not None and str(carried_id) != note_id:
@@ -490,7 +511,7 @@ def _current_summary(
         return _mirrored_summary(row), "missing"
     try:
         data, mtime = _read(row.id, path)
-        frontmatter, body = _parse(row.id, row.path, data, schema)
+        frontmatter, body = _parse(row.id, row.path, data, schema, log_failure=False)
     except NotFound:
         return _mirrored_summary(row), "missing"
     except NoteUnparseable:
@@ -513,6 +534,25 @@ def _current_summary(
         ),
         "ok",
     )
+
+
+def _scan_rows(
+    notes_root: Path,
+    rows: list[Note],
+    schema: FrontmatterSchema,
+    query: NoteQuery,
+    needed: int,
+) -> list[tuple[NoteSummary, str]]:
+    """Read and filter one batch of known paths, stopping once `needed` match."""
+    found: list[tuple[NoteSummary, str]] = []
+    for row in rows:
+        summary, state = _current_summary(notes_root, row, schema)
+        if not _matches_query(summary, state, query):
+            continue
+        found.append((summary, row.path))
+        if len(found) == needed:
+            break
+    return found
 
 
 def _mirrored_summary(row: Note) -> NoteSummary:
@@ -554,12 +594,12 @@ def _matches_query(summary: NoteSummary, state: str, query: NoteQuery) -> bool:
     )
 
 
-def _encode_note_cursor(key: tuple[str, str]) -> str:
-    payload = json.dumps({"v": 1, "path": key[0], "id": key[1]}, separators=(",", ":"))
+def _encode_note_cursor(path: str) -> str:
+    payload = json.dumps({"v": 1, "path": path}, separators=(",", ":"))
     return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
 
 
-def _decode_note_cursor(cursor: str) -> tuple[str, str]:
+def _decode_note_cursor(cursor: str) -> str:
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         payload = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
@@ -567,10 +607,9 @@ def _decode_note_cursor(cursor: str) -> tuple[str, str]:
             not isinstance(payload, dict)
             or payload.get("v") != 1
             or not isinstance(payload.get("path"), str)
-            or not isinstance(payload.get("id"), str)
         ):
             raise ValueError
-        return payload["path"], payload["id"]
+        return payload["path"]
     except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
         raise ValidationFailed(["cursor: invalid or expired"]) from exc
 

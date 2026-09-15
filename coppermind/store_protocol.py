@@ -352,7 +352,7 @@ class NoteDocument(BaseModel):
 class NoteQuery(BaseModel):
     """Filters and keyset cursor for listing notes known to the store."""
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="forbid")
 
     cursor: str | None = None
     limit: int = Field(default=50, ge=1, le=200)
