@@ -6,6 +6,7 @@ import html
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from ipaddress import ip_address
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
@@ -40,14 +41,23 @@ PUBLIC = {
 }
 log = get_logger(SERVICE)
 
-# What each rejection tells the operator. The page names the cause it was
-# redirected with, so a refused password is never reported as a bad code.
+# What each rejection tells the operator. The page named in the redirect is
+# the one that reads the notice, so a refused password is never reported as a
+# bad code.
 CLAIM_NOTICES = {
     "invalid_claim_code": "That claim code was not accepted.",
     "validation_error": "Enter the claim code and a password of at least 12 characters.",
-    "already_claimed": "Admin has already been claimed.",
 }
-LOGIN_NOTICES = {"unauthorized": "That password was not accepted."}
+LOGIN_NOTICES = {
+    "unauthorized": "That password was not accepted.",
+    "already_claimed": "Admin has already been claimed. Log in with the admin password.",
+    "session_expired": "That session has ended. Log in again.",
+    "insecure_transport": (
+        "This address is plain HTTP, so your browser discards the Secure session cookie and "
+        "login can never complete. Reach Admin over HTTPS, or set admin.cookie_secure to false "
+        "in /data/state/settings.yaml to run it deliberately in the clear."
+    ),
+}
 
 
 def page(title: str, body: str) -> str:
@@ -91,9 +101,25 @@ async def submitted(request: Request) -> dict[str, str]:
     return {key: values[-1] for key, values in parsed.items()}
 
 
-def error_response(request: Request, code: str) -> RedirectResponse:
-    destination = "claim" if request.url.path.endswith("claim") else "login"
+def error_response(destination: str, code: str) -> RedirectResponse:
     return RedirectResponse(f"/admin/{destination}?error={code}", status_code=303)
+
+
+def keeps_a_secure_cookie(request: Request) -> bool:
+    """Whether a browser at this address would keep a Secure cookie.
+
+    HTTPS always does, and so does loopback, which is what the quickstart
+    binds to. Any other plaintext address silently discards it.
+    """
+    if request.url.scheme == "https":
+        return True
+    host = request.url.hostname or ""
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def unavailable() -> JSONResponse:
@@ -150,13 +176,11 @@ def create_app(wiring: Wiring | None = None, sessions: Sessions | None = None) -
             if signed_in:
                 request.state.admin_session = token
                 return await call_next(request)
-        if path.startswith("/admin"):
-            target = "/admin/login" if credentials.is_claimed() else "/admin/claim"
-            return RedirectResponse(target, status_code=303)
-        return JSONResponse(
-            status_code=401,
-            content=envelope("unauthorized", "an admin session is required"),
-        )
+        if not credentials.is_claimed():
+            return RedirectResponse("/admin/claim", status_code=303)
+        if token:
+            return error_response("login", "session_expired")
+        return RedirectResponse("/admin/login", status_code=303)
 
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:
@@ -209,21 +233,23 @@ required></label><button>Log in</button></form>""",
         body = await submitted(request)
         code, password = body.get("code", ""), body.get("password", "")
         if not code or len(password) < 12:
-            return error_response(request, "validation_error")
+            return error_response("claim", "validation_error")
         try:
             await credentials.claim(code, password)
         except AlreadyClaimed:
-            return error_response(request, "already_claimed")
+            return error_response("login", "already_claimed")
         except InvalidClaimCode:
-            return error_response(request, "invalid_claim_code")
+            return error_response("claim", "invalid_claim_code")
         return RedirectResponse("/admin/login", status_code=303)
 
     @app.post("/v1/admin/login", include_in_schema=False)
     async def login(request: Request) -> Response:
         password = (await submitted(request)).get("password", "")
         if not password or not await credentials.verify_password(password):
-            return error_response(request, "unauthorized")
+            return error_response("login", "unauthorized")
         product = product_settings()
+        if product.admin.cookie_secure and not keeps_a_secure_cookie(request):
+            return error_response("login", "insecure_transport")
         lifetime = timedelta(hours=product.admin.session_hours)
         try:
             token = await request.app.state.sessions.create(lifetime)

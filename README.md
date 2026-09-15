@@ -16,7 +16,11 @@ The design contract is the decision records in
 docker compose up -d
 ```
 
-That is the whole setup. A one-shot bootstrap container creates the volumes,
+That is the whole setup, on Docker Engine 26.0 or newer with Compose v2.26 or
+newer. Admin is mounted with a volume subpath so it cannot reach the notes
+filesystem, and older Compose rejects that key instead of starting the stack.
+
+A one-shot bootstrap container creates the volumes,
 generates the internal credentials and a default API key, and writes the
 settings, frontmatter schema and API key hash with working defaults. Nothing
 has to be hand populated before the stack runs.
@@ -34,6 +38,14 @@ Claiming deletes that code. Admin then requires a password-backed browser
 session until you log out or the configured 12-hour default expires. Its
 overview intentionally reports only that you are signed in; settings, API
 keys, status, and Obsidian Sync connection arrive as separate increments.
+
+The session cookie is issued Secure, which browsers keep over HTTPS and on the
+loopback address above. If you republish Admin on another address with
+`COPPERMIND_ADMIN_BIND` and reach it over plain HTTP, the browser would throw
+that cookie away, so Admin refuses the login and says so on the page instead of
+looping. Put TLS in front of it, or set `admin.cookie_secure` to false in
+`/data/state/settings.yaml` to run it deliberately in the clear until the
+settings page carries that control.
 
 Read the default API key from its
 restricted bootstrap volume into the current shell:

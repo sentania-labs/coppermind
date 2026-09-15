@@ -19,10 +19,11 @@ vertical path proved end to end, then widened.
   counters and controls belong to later increments. Logout removes the
   session and the protected page redirects to Login again. Claim, login and
   logout accept the rendered forms only, and every refusal returns to the page
-  that names its own cause. The session cookie is issued Secure by default,
-  which browsers honour on the loopback address this ships with;
-  `admin.cookie_secure` in `settings.yaml` turns it off for a deliberately
-  plaintext deployment. Admin mounts only `/data/state`, so the notes
+  that names its own cause, including a login refused because the address is
+  plaintext and the Secure cookie could not survive it. The session cookie is
+  issued Secure by default, which browsers honour on the loopback address this
+  ships with; `admin.cookie_secure` in `settings.yaml` turns it off for a
+  deliberately plaintext deployment. Admin mounts only `/data/state`, so the notes
   filesystem is not reachable from it at all. A session database outage
   answers the typed 503 rather than failing. This path was driven through its
   rendered pages in Chrome against a fresh compose stack.

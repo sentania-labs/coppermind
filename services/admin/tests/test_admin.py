@@ -77,9 +77,9 @@ def test_fresh_admin_is_unclaimed_and_only_exposes_the_claim_and_login_pages(fre
     assert client.get("/admin/claim").status_code == 200
     assert client.get("/admin/login").history[0].headers["location"] == "/admin/claim"
     assert client.get("/admin").history[0].headers["location"] == "/admin/claim"
-    response = client.post("/v1/admin/logout")
-    assert response.status_code == 401
-    assert response.json()["error"] == "unauthorized"
+    logged_out = client.post("/v1/admin/logout", follow_redirects=False)
+    assert logged_out.status_code == 303
+    assert logged_out.headers["location"] == "/admin/claim"
 
 
 def test_claim_needs_the_bootstrap_code_and_stores_only_an_argon2_hash(fresh):
@@ -122,10 +122,12 @@ def test_a_short_password_is_reported_as_a_password_problem(fresh):
     assert "That claim code was not accepted." not in page
 
 
-def test_a_second_claim_is_refused(fresh):
+def test_a_second_claim_is_refused_on_the_login_page_that_says_why(fresh):
     client, _, _ = fresh
     claim(client)
-    assert claim(client).headers["location"] == "/admin/claim?error=already_claimed"
+    refused = claim(client)
+    assert refused.headers["location"] == "/admin/login?error=already_claimed"
+    assert "Admin has already been claimed." in client.get(refused.headers["location"]).text
 
 
 def test_rendered_forms_drive_claim_login_and_logout(fresh):
@@ -144,6 +146,19 @@ def test_rendered_forms_drive_claim_login_and_logout(fresh):
     assert logged_out.headers["location"] == "/admin/login"
     assert not sessions.tokens
     assert client.get("/admin").history[0].headers["location"] == "/admin/login"
+
+
+def test_a_logout_without_a_live_session_returns_to_the_login_page(fresh):
+    """The session lapses in an open tab, and Log out is the next thing clicked."""
+    client, _, sessions = fresh
+    claim(client)
+    login(client)
+    sessions.tokens.clear()
+
+    stale = client.post("/v1/admin/logout", data={}, follow_redirects=False)
+    assert stale.status_code == 303
+    assert stale.headers["location"] == "/admin/login?error=session_expired"
+    assert "That session has ended." in client.get(stale.headers["location"]).text
 
 
 def test_a_refused_password_returns_to_login_saying_so(fresh):
@@ -169,6 +184,30 @@ def test_the_session_cookie_is_secure_by_default_and_optional(tmp_path: Path):
         claim(plaintext)
         assert "Secure" not in login(plaintext).headers["set-cookie"]
         assert "You are signed in" in plaintext.get("/admin").text
+
+
+def test_the_documented_loopback_address_keeps_the_secure_cookie(tmp_path: Path):
+    client, _, _ = _client(tmp_path, base_url="http://127.0.0.1:8082")
+    with client:
+        claim(client)
+        logged_in = login(client)
+        assert logged_in.headers["location"] == "/admin"
+        assert "Secure" in logged_in.headers["set-cookie"]
+
+
+def test_a_plaintext_address_refuses_login_instead_of_looping(tmp_path: Path):
+    """Published off loopback over http, a Secure cookie would be discarded."""
+    client, _, sessions = _client(tmp_path, base_url="http://coppermind.example:8082")
+    with client:
+        claim(client)
+        refused = login(client)
+        assert refused.headers["location"] == "/admin/login?error=insecure_transport"
+        assert not sessions.tokens
+        assert COOKIE not in client.cookies
+
+        said = client.get(refused.headers["location"]).text
+        assert "browser discards the Secure session cookie" in said
+        assert "admin.cookie_secure" in said
 
 
 def test_a_session_database_outage_answers_503_rather_than_failing(fresh):
