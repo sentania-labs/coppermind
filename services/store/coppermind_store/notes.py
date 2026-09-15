@@ -32,6 +32,7 @@ import base64
 import binascii
 import json
 from datetime import UTC, date, datetime
+from math import isfinite
 from pathlib import Path
 from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
@@ -486,6 +487,9 @@ class LocalStore:
         invalid = schema.invalid_keys(adopted_frontmatter)
         if invalid:
             return "invalid", f"keys the schema refused: {', '.join(invalid)}"
+        mirrored = _jsonable(adopted_frontmatter)
+        if _unstorable(mirrored):
+            return "invalid", "a value it carries is one the mirror cannot store"
         data = adopted_text.encode("utf-8")
         now = datetime.now(tz=UTC)
 
@@ -542,7 +546,7 @@ class LocalStore:
                         content_hash=content_hash(data),
                         size_bytes=len(data),
                         mtime=datetime.fromtimestamp(file_stat.st_mtime, tz=UTC),
-                        frontmatter=_jsonable(adopted_frontmatter),
+                        frontmatter=mirrored,
                         **_mirror_columns(adopted_frontmatter, schema),
                         state="ok",
                         first_seen_at=now,
@@ -1028,6 +1032,30 @@ def _storable(text: str) -> str:
     return text.replace("\x00", "") if "\x00" in text else text
 
 
+def _unstorable(value: Any) -> bool:
+    """Whether a mirrored value is one PostgreSQL will refuse outright.
+
+    A non-finite float is not JSON and a lone surrogate is not encodable, and
+    either reaches the insert, which for adoption happens after a person's file
+    has already been rewritten. Adoption asks this before it writes so such a
+    file is refused like any other and keeps every byte. The public create path
+    deliberately does not ask: a caller who sent the value is owed a validation
+    error from the insert, with no file left behind.
+    """
+    if isinstance(value, dict):
+        return any(_unstorable(key) or _unstorable(item) for key, item in value.items())
+    if isinstance(value, list):
+        return any(_unstorable(item) for item in value)
+    if isinstance(value, float):
+        return not isfinite(value)
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            return True
+    return False
+
+
 def _jsonable(value: Any) -> Any:
     """Convert a round tripped YAML mapping into plain JSON friendly types.
 
@@ -1045,7 +1073,7 @@ def _jsonable(value: Any) -> Any:
     """
     if isinstance(value, dict):
         return {_storable(str(k)): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, list | tuple | set | frozenset):
+    if isinstance(value, list):
         return [_jsonable(item) for item in value]
     if isinstance(value, datetime | date):
         return value.isoformat()

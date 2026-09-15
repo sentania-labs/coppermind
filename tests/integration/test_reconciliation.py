@@ -480,6 +480,37 @@ async def test_an_invalid_device_created_file_is_reported_and_left_byte_exact(
         assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 0
 
 
+async def test_a_value_the_mirror_cannot_store_leaves_the_file_byte_exact(
+    store: LocalStore,
+):
+    """A refusal before the write, because a failed insert cannot give the bytes back."""
+    root = store.notes_root / "Review"
+    root.mkdir(parents=True, exist_ok=True)
+    infinite = root / "Readings.md"
+    infinite_bytes = b"---\nvalue: 1e400\n---\n# Readings\n"
+    infinite.write_bytes(infinite_bytes)
+    surrogate = root / "Escaped.md"
+    surrogate_bytes = b'---\nk: "a\\uD800b"\n---\n# Escaped\n'
+    surrogate.write_bytes(surrogate_bytes)
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 0
+    assert counts["unwritable"] == 0
+    assert counts["rejected"] == 2
+    assert infinite.read_bytes() == infinite_bytes
+    assert surrogate.read_bytes() == surrogate_bytes
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 0
+
+    outcome, cause = await store.adopt_note(
+        "Review/Readings.md", content_hash(infinite_bytes), **_control(store)
+    )
+
+    assert outcome == "invalid"
+    assert "1e400" not in cause
+
+
 async def test_a_broken_known_note_is_counted_apart_from_a_rejected_stranger(
     store: LocalStore,
 ):
