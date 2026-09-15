@@ -21,6 +21,8 @@ from coppermind_admin.auth import (
     AdminCredentials,
     AdminRecordUnreadable,
     AlreadyClaimed,
+    ClaimCodeUnreadable,
+    ClaimStateProblem,
     ClaimStateUnwritable,
     InvalidClaimCode,
     SignedSessions,
@@ -117,9 +119,14 @@ again with the code bootstrap issues. The notes filesystem and its database reco
 untouched, though claiming again signs every open Admin session out, and rebuilding the data
 volume is neither needed nor appropriate."""
 
-CLAIM_STATE_REMEDY = """Nothing was claimed and your claim code is still good. Admin needs the state
-directory on the data volume to be writable by the user it runs as, so check that the volume has
-free space and that its ownership and permissions are intact, then submit this form again."""
+CLAIM_RECORD_REMEDY = """Nothing was claimed and your claim code is still good. Admin needs
+the state directory on the data volume to be writable by the user it runs as, so check that the
+volume has free space and that its ownership and permissions are intact, then submit this form
+again."""
+
+CLAIM_CODE_REMEDY = """Nothing was claimed and your claim code is still good. Bootstrap writes that
+file and Admin only ever reads it, so it must be readable by the user Admin runs as. Check its
+ownership and permissions, then submit this form again."""
 
 
 def claim_form(refusal: str) -> str:
@@ -134,11 +141,21 @@ minlength="12" required></label><button>Claim Admin</button></form>""",
     )
 
 
-def unwritable_state_refusal(error: ClaimStateUnwritable) -> str:
-    return f"""<p class="error">Admin could not write {html.escape(str(error.path))}, so the claim
-did not happen.</p>
+def claim_state_refusal(error: ClaimStateProblem) -> HTMLResponse:
+    if isinstance(error, ClaimCodeUnreadable):
+        headline = f"Admin could not read the claim code at {html.escape(str(error.path))}"
+        remedy = CLAIM_CODE_REMEDY
+    else:
+        headline = f"Admin could not write {html.escape(str(error.path))}"
+        remedy = CLAIM_RECORD_REMEDY
+    return HTMLResponse(
+        claim_form(
+            f"""<p class="error">{headline}, so the claim did not happen.</p>
 <p>What the filesystem reported:</p><pre>{html.escape(error.problem)}</pre>
-<p class="muted">{CLAIM_STATE_REMEDY}</p>"""
+<p class="muted">{remedy}</p>"""
+        ),
+        status_code=500,
+    )
 
 
 def unreadable_state_file(path: Path, problem: str, remedy: str) -> HTMLResponse:
@@ -240,8 +257,8 @@ required></label><button>Log in</button></form>""",
             return error_response("login", "already_claimed")
         except InvalidClaimCode:
             return error_response("claim", "invalid_claim_code")
-        except ClaimStateUnwritable as exc:
-            return HTMLResponse(claim_form(unwritable_state_refusal(exc)), status_code=500)
+        except (ClaimCodeUnreadable, ClaimStateUnwritable) as exc:
+            return claim_state_refusal(exc)
         return RedirectResponse("/admin/login", status_code=303)
 
     @app.post("/v1/admin/login", include_in_schema=False)

@@ -96,6 +96,25 @@ def test_running_twice_never_rotates_a_secret_or_resets_a_setting(tmp_path: Path
     assert "Inbox" in settings_file.read_text(encoding="utf-8")
 
 
+def test_the_claim_code_is_consumed_once_claimed_and_reissued_after_recovery(tmp_path: Path):
+    """The README promises a fresh code whenever the admin record is absent."""
+    wiring = wiring_for(tmp_path)
+    run(wiring)
+    claim_code = wiring.state_dir / "internal" / "claim-code"
+    first = claim_code.read_text(encoding="utf-8").strip()
+    admin_record = wiring.state_dir / "admin.json"
+
+    admin_record.write_text("{}\n", encoding="utf-8")
+    assert run(wiring) == 0
+    assert not claim_code.exists()
+
+    admin_record.unlink()
+    assert run(wiring) == 0
+    reissued = claim_code.read_text(encoding="utf-8").strip()
+    assert reissued and reissued != first
+    assert S_IMODE(claim_code.stat().st_mode) == 0o600
+
+
 def test_an_unusable_reveal_file_mints_a_working_key_instead_of_failing(tmp_path: Path):
     """A damaged reveal file no service reads must not stop the stack starting."""
     wiring = wiring_for(tmp_path)

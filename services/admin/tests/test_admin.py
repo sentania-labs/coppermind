@@ -421,14 +421,19 @@ def _assert_claim_state_refusal(response, path: Path) -> None:
     assert "Restore that file from a backup" not in response.text
 
 
-def test_a_claim_code_admin_cannot_read_names_it_on_the_claim_page(fresh):
-    """Bootstrap owns that file, so a badly restored volume can make it unreadable."""
+def test_a_claim_code_admin_cannot_read_is_not_reported_as_a_write(fresh):
+    """Bootstrap writes that file and Admin only reads it, so the verb matters."""
     client, wiring, _ = fresh
     claim_code = wiring.state_dir / "internal" / "claim-code"
     claim_code.unlink()
     claim_code.mkdir()
 
-    _assert_claim_state_refusal(claim(client), claim_code)
+    refused = claim(client)
+    _assert_claim_state_refusal(refused, claim_code)
+    assert f"could not read the claim code at {claim_code}" in refused.text
+    assert "could not write" not in refused.text
+    assert "free space" not in refused.text
+    assert "readable by the user Admin runs as" in refused.text
     assert not (wiring.state_dir / "admin.json").exists()
 
 
@@ -436,13 +441,18 @@ def test_a_claim_code_admin_cannot_read_names_it_on_the_claim_page(fresh):
 def test_a_state_directory_that_will_not_take_the_record_says_so_on_the_claim_page(fresh):
     """A full or read-only data volume is the first thing a fresh install can hit."""
     client, wiring, _ = fresh
+    record = wiring.state_dir / "admin.json"
     wiring.state_dir.chmod(0o500)
     try:
         refused = claim(client)
     finally:
         wiring.state_dir.chmod(0o755)
 
-    _assert_claim_state_refusal(refused, wiring.state_dir / "admin.json")
-    assert not (wiring.state_dir / "admin.json").exists()
+    _assert_claim_state_refusal(refused, record)
+    assert f"could not write {record}" in refused.text
+    assert "writable by the user it runs as" in refused.text
+    assert "free space" in refused.text
+    assert "could not read the claim code" not in refused.text
+    assert not record.exists()
     assert (wiring.state_dir / "internal" / "claim-code").is_file()
     assert claim(client).headers["location"] == "/admin/login"
