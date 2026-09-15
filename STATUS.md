@@ -74,10 +74,9 @@ vertical path proved end to end, then widened.
   the file, while key state that loads and happens to hold no usable key is an
   operator's choice and stays ready.
 - Control state files are revisioned. A write states the revision it replaces
-  and is refused if the file moved on. Readiness loads both of them, so a
-  hand edit the models reject takes the store out of rotation with the file
-  and the failing field named, rather than reporting ready while every note
-  operation fails.
+  and is refused if the file moved on. The readiness check above is what
+  catches a hand edit the models reject, naming the file and the failing
+  field rather than reporting ready while every note operation fails.
 - A note whose frontmatter was broken while editing on a device reads back as
   409 `note_unparseable`, naming the note and saying Coppermind did not modify
   the file.
