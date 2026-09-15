@@ -70,8 +70,12 @@ vertical path proved end to end, then widened.
   scan did not find becomes `missing`: one it can see but cannot parse or open
   is `unparsed` at its own path, and two live copies of one identity leave the
   row as it was rather than guessing. An interval scan stats every note file
-  and reads only the ones a stat says may have changed, and a file changed
-  inside the quiet period waits for the next pass. Trusting a stat is safe
+  and reads only the ones a stat says may have changed. A file carrying no
+  identity this store knows, which is every file in a vault Coppermind was
+  pointed at, is read once and then stat-trusted the same way, so an unknown
+  vault costs one stat per file per pass rather than a read and a parse. A
+  file changed inside the quiet period waits for the next pass. Trusting a
+  stat is safe
   because it is not the only pass: once a day, at the configured local time,
   the store rereads and rehashes every note file, which is what catches an
   edit that left the file's size and timestamp where they were. That pass is

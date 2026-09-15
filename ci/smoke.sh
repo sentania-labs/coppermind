@@ -15,6 +15,9 @@
 set -euo pipefail
 
 COMPOSE_FILES="${COMPOSE_FILES:--f docker-compose.yml}"
+# The editor container sits behind this profile so the quickstart does not
+# start it. Every compose call here needs it, including `exec`.
+export COMPOSE_PROFILES="${COMPOSE_PROFILES:-smoke}"
 API="${API:-http://127.0.0.1:8080}"
 # The API's bounded key cache life, as README.md and STATUS.md document it.
 KEY_CACHE_SECONDS=300

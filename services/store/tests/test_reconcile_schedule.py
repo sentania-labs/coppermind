@@ -91,7 +91,7 @@ async def _drive(monkeypatch, scan, calls, rehash_at="00:00"):
 
     monkeypatch.setattr(reconciler, "_cadence", lambda _store: (0, 0, rehash_at, ZoneInfo("UTC")))
 
-    async def counted(_store, *, full, quiet_period_s):
+    async def counted(_store, *, full, quiet_period_s, unidentified=None):
         calls.append(full)
         if len(calls) >= 3:
             finished.set()
@@ -191,7 +191,7 @@ async def test_the_loop_marks_a_scan_in_flight_before_running_it(monkeypatch):
 
     monkeypatch.setattr(reconciler, "_cadence", lambda _store: (0, 0, "03:30", ZoneInfo("UTC")))
 
-    async def scan(_store, *, full, quiet_period_s):
+    async def scan(_store, *, full, quiet_period_s, unidentified=None):
         in_flight.append(status.scan_started_at)
         finished.set()
         return {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 0}

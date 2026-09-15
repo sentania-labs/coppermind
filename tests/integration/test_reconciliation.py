@@ -457,3 +457,70 @@ async def test_a_file_written_during_a_slow_pass_is_still_deferred(store: LocalS
     assert counts["deferred"] == 1
     assert counts["changed"] == 0
     assert (await _row(store, note.id)).title == "Runbook"
+
+
+async def test_a_file_with_no_known_identity_is_read_once_then_stat_trusted(
+    store: LocalStore, monkeypatch
+):
+    """Pointing Coppermind at an existing vault must not cost a parse per pass."""
+    unknown = store.notes_root / "Review" / "Made on phone.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    unknown.write_bytes(b"# Made on phone\n\nNo identity yet.\n")
+    remembered: dict[str, tuple[int, datetime]] = {}
+    read: list[str] = []
+    real_observe = reconciler._observe
+
+    def counted(safe_path, relative, data, mtime, schema, by_id, entry):
+        read.append(relative)
+        return real_observe(safe_path, relative, data, mtime, schema, by_id, entry)
+
+    monkeypatch.setattr(reconciler, "_observe", counted)
+
+    await reconcile_once(store, unidentified=remembered)
+    assert read == ["Review/Made on phone.md"]
+
+    await reconcile_once(store, unidentified=remembered)
+    assert read == ["Review/Made on phone.md"]
+
+    await reconcile_once(store, unidentified=remembered, full=True)
+    assert len(read) == 2
+
+    unknown.write_bytes(b"# Made on phone\n\nEdited on the device.\n")
+    await reconcile_once(store, unidentified=remembered)
+    assert len(read) == 3
+    assert unknown.read_bytes().endswith(b"Edited on the device.\n")
+
+
+async def test_a_forgotten_path_stops_being_remembered_once_its_file_is_gone(
+    store: LocalStore,
+):
+    unknown = store.notes_root / "Review" / "Made on phone.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    unknown.write_bytes(b"# Made on phone\n\nNo identity yet.\n")
+    remembered: dict[str, tuple[int, datetime]] = {}
+
+    await reconcile_once(store, unidentified=remembered)
+    assert "Review/Made on phone.md" in remembered
+
+    unknown.unlink()
+    await reconcile_once(store, unidentified=remembered)
+
+    assert remembered == {}
+
+
+async def test_a_known_note_moved_to_an_unremembered_path_is_still_identified(
+    store: LocalStore,
+):
+    """The stat shortcut must never hide a note that arrived somewhere new."""
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    remembered: dict[str, tuple[int, datetime]] = {}
+    await reconcile_once(store, unidentified=remembered)
+    moved = store.notes_root / "Work" / "Operations Runbook.md"
+    moved.parent.mkdir()
+    (store.notes_root / note.path).rename(moved)
+
+    counts = await reconcile_once(store, unidentified=remembered)
+
+    assert counts["moved"] == 1
+    assert (await _row(store, note.id)).path == "Work/Operations Runbook.md"
+    assert (await store.get_note(note.id)).path == "Work/Operations Runbook.md"

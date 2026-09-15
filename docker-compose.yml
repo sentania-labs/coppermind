@@ -146,8 +146,13 @@ services:
   # through the store would prove only that the store can change its own
   # volume. It runs nothing until a test execs into it, holds no credential
   # and has no network at all.
+  #
+  # Behind a profile so the quickstart above starts the real services only.
+  # `ci/smoke.sh` names the profile itself, so both `make smoke` and running
+  # the script directly bring it up.
   editor:
     <<: *store-image
+    profiles: ["smoke"]
     entrypoint: ["sleep", "infinity"]
     user: "1000:1000"
     network_mode: none

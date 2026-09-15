@@ -5,9 +5,11 @@ ignored until the write-side reconciliation increment.
 
 An interval scan stats every note file and reads only the ones a stat says may
 have changed, so the steady-state cost is one stat per file rather than a read
-and a sha256 of the whole notes filesystem every minute. The scheduled daily
-rehash is the pass that reads everything, which is what catches a change a
-device made without moving the file's mtime or size.
+and a sha256 of the whole notes filesystem every minute. A file carrying no
+identity this store knows, which is every file in a vault Coppermind was
+pointed at, is read once and then stat-trusted the same way. The scheduled
+daily rehash is the pass that reads everything, which is what catches a change
+a device made without moving the file's mtime or size.
 
 Only observed absence makes a note missing. A file the scan can see but cannot
 identify, parse or open is recorded as present and unparsed, because reporting
@@ -67,6 +69,12 @@ _STALE_INTERVALS = 3
 # reported.
 _CLOCK_SKEW_TOLERANCE = timedelta(seconds=60)
 
+# The stat of a file a scan read and found no known identity in, keyed by its
+# path. One process remembers this many; any beyond the bound are read every
+# pass, which is correct, just not cheap.
+UnidentifiedStats = dict[str, tuple[int, datetime]]
+_UNIDENTIFIED_LIMIT = 10_000
+
 MISSING_REASON = "not observed during reconciliation"
 UNPARSED_REASON = "frontmatter could not be parsed"
 UNREADABLE_REASON = "file could not be read"
@@ -99,12 +107,17 @@ class ScanResult:
     but produced no observation of, because it trusted the stat or left the
     file to settle. Their note is still where the mirror says it is, so a copy
     carrying the same identity elsewhere is a second live copy, never a move.
+
+    `unidentified` is what the walk still knows about the paths that carried no
+    identity this store recognises. It replaces the memory the pass was given,
+    so a path that has gone is forgotten without a sweep of its own.
     """
 
     observed: dict[str, list[Observation]]
     seen: set[str]
     held: set[str]
     deferred: int
+    unidentified: UnidentifiedStats
 
 
 @dataclass(frozen=True)
@@ -208,6 +221,7 @@ async def run_reconciler(store: LocalStore, status: ReconcilerStatus | None = No
     """Run scans on the configured interval without joining a request path."""
     status = status or ReconcilerStatus()
     rehashed_on: date | None = None
+    unidentified: UnidentifiedStats = {}
     while True:
         interval, quiet_period_s, rehash_at, zone = _cadence(store)
         status.scan_interval_s = interval
@@ -217,7 +231,9 @@ async def run_reconciler(store: LocalStore, status: ReconcilerStatus | None = No
         started = monotonic()
         status.scanning()
         try:
-            counts = await reconcile_once(store, full=full, quiet_period_s=quiet_period_s)
+            counts = await reconcile_once(
+                store, full=full, quiet_period_s=quiet_period_s, unidentified=unidentified
+            )
         except (MetadataUnavailable, NotesFilesystemUnavailable, OSError) as exc:
             status.deferred(type(exc).__name__)
             log.warning(
@@ -269,7 +285,11 @@ def _cadence(store: LocalStore) -> tuple[int, int, str, ZoneInfo]:
 
 
 async def reconcile_once(
-    store: LocalStore, *, full: bool = False, quiet_period_s: int = 0
+    store: LocalStore,
+    *,
+    full: bool = False,
+    quiet_period_s: int = 0,
+    unidentified: UnidentifiedStats | None = None,
 ) -> dict[str, int]:
     """Make known mirror rows describe files carrying the same identity.
 
@@ -277,7 +297,10 @@ async def reconcile_once(
     mtime still match the mirror is taken at its stat. `quiet_period_s` leaves
     a file that changed within that many seconds for the next pass, so a note
     a device is still delivering is not hashed halfway through its write.
+    `unidentified` carries what earlier passes learned about files holding no
+    identity this store knows, and is replaced with what this pass learned.
     """
+    remembered = {} if unidentified is None else unidentified
     scan_started = datetime.now(tz=UTC)
     by_id = await _mirror_index(store)
     by_path = _by_path(by_id)
@@ -291,8 +314,17 @@ async def reconcile_once(
         else None
     )
     scan = await asyncio.to_thread(
-        _scan, store.notes_root, schema, by_id, by_path, full=full, quiet=quiet
+        _scan,
+        store.notes_root,
+        schema,
+        by_id,
+        by_path,
+        full=full,
+        quiet=quiet,
+        unidentified=dict(remembered),
     )
+    remembered.clear()
+    remembered.update(scan.unidentified)
     observations = _choose_observations(scan, by_id)
     # An identity seen on disk but not chosen, two live copies or an unchanged
     # stat, keeps whatever the mirror already says. Only an identity nothing on
@@ -401,6 +433,7 @@ def _scan(
     *,
     full: bool,
     quiet: QuietWindow | None,
+    unidentified: UnidentifiedStats,
 ) -> ScanResult:
     """Walk the notes filesystem and report what it found."""
     try:
@@ -414,6 +447,7 @@ def _scan(
     observed: dict[str, list[Observation]] = {}
     seen: set[str] = set()
     held: set[str] = set()
+    still_unidentified: UnidentifiedStats = {}
     deferred = 0
     try:
         for path in root.rglob("*.md"):
@@ -441,9 +475,15 @@ def _scan(
                 _record(observed, seen, _unreadable(entry, relative))
                 continue
             mtime = datetime.fromtimestamp(stat_result.st_mtime, tz=UTC)
+            stat_seen = (stat_result.st_size, mtime)
             if not full and entry is not None and _unchanged(entry, stat_result.st_size, mtime):
                 seen.add(entry.note_id)
                 held.add(entry.note_id)
+                continue
+            if not full and entry is None and unidentified.get(relative) == stat_seen:
+                # Read once already, and it named no note this store knows.
+                # Nothing but a change to the file itself can make it one.
+                _remember(still_unidentified, relative, stat_seen)
                 continue
             if entry is not None and quiet is not None and quiet.holds(mtime):
                 # A file the mirror already claims is left to settle rather than
@@ -461,14 +501,25 @@ def _scan(
             except OSError:
                 _record(observed, seen, _unreadable(entry, relative))
                 continue
-            _record(
-                observed,
-                seen,
-                _observe(safe_path, relative, data, mtime, schema, by_id, entry),
-            )
+            observation = _observe(safe_path, relative, data, mtime, schema, by_id, entry)
+            if observation is None:
+                _remember(still_unidentified, relative, stat_seen)
+            _record(observed, seen, observation)
     except OSError as exc:
         raise NotesFilesystemUnavailable(str(exc)) from exc
-    return ScanResult(observed=observed, seen=seen, held=held, deferred=deferred)
+    return ScanResult(
+        observed=observed,
+        seen=seen,
+        held=held,
+        deferred=deferred,
+        unidentified=still_unidentified,
+    )
+
+
+def _remember(stats: UnidentifiedStats, relative: str, stat_seen: tuple[int, datetime]) -> None:
+    """Keep this path's stat, up to the bound one process holds."""
+    if len(stats) < _UNIDENTIFIED_LIMIT:
+        stats[relative] = stat_seen
 
 
 def _unchanged(entry: MirrorEntry, size_bytes: int, mtime: datetime) -> bool:
