@@ -1,4 +1,4 @@
-"""Create-only source ingest at `/v1/ingest`."""
+"""Idempotent source ingest at `/v1/ingest`."""
 
 from __future__ import annotations
 
@@ -14,7 +14,12 @@ from coppermind_api.errors import failure
 router = APIRouter(prefix="/v1", tags=["sources"])
 
 
-@router.post("/ingest", status_code=201, response_model=IngestResult)
+@router.post(
+    "/ingest",
+    status_code=201,
+    response_model=IngestResult,
+    responses={200: {"model": IngestResult, "description": "Source replayed or revised"}},
+)
 async def ingest(
     payload: IngestRequest,
     request: Request,
@@ -25,4 +30,5 @@ async def ingest(
         result = await client.ingest(payload, payload_size_bytes=len(await request.body()))
     except StoreError as error:
         return failure(error)
-    return JSONResponse(status_code=201, content=result.model_dump(mode="json"))
+    status_code = 201 if result.note.created else 200
+    return JSONResponse(status_code=status_code, content=result.model_dump(mode="json"))

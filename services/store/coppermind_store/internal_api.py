@@ -56,7 +56,12 @@ async def create_note(payload: CreateNote, request: Request) -> Response:
     )
 
 
-@router.post("/ingest", status_code=201, response_model=IngestResult)
+@router.post(
+    "/ingest",
+    status_code=201,
+    response_model=IngestResult,
+    responses={200: {"model": IngestResult, "description": "Source replayed or revised"}},
+)
 async def ingest(
     payload: IngestRequest,
     request: Request,
@@ -70,7 +75,8 @@ async def ingest(
         )
     except StoreError as error:
         return _failure(error)
-    return JSONResponse(status_code=201, content=result.model_dump(mode="json"))
+    status_code = 201 if result.note.created else 200
+    return JSONResponse(status_code=status_code, content=result.model_dump(mode="json"))
 
 
 @router.get("/notes/{note_id}", response_model=NoteDocument)

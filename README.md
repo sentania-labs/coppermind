@@ -104,12 +104,18 @@ it. The artifacts are files beside the manifest:
 docker compose exec store ls -R "/data/sources/<source_id>"
 ```
 
-Sending it a second time answers 409 `source_exists` and writes nothing: a
-source is created once, keyed by its `provider` and `external_source_id`. A
-body over `limits.ingest_max_bytes` answers 413 `payload_too_large`. The API
-measures the submitted body before forwarding its parsed request, but only
-after FastAPI has buffered it, so the refusal does not reduce memory use. The
-key needs both `sources:write` and `notes:write`.
+Sending the same payload a second time answers 200 with `created: false` and
+the original identifiers. Changing an artifact appends a numbered source
+revision without rewriting the Review note. Changing only a field that
+describes the source, such as `captured_at` or an artifact's `mime_type`,
+while the artifacts stay the same is still a replay: keeping that correction
+is not built yet, so the answer names the fields in `source.unstored_fields`
+instead of discarding them quietly. A source remains keyed by its `provider`
+and `external_source_id`. A body over `limits.ingest_max_bytes` answers 413
+`payload_too_large`. The API measures the submitted body before forwarding
+its parsed request, but only after FastAPI has buffered it, so the refusal
+does not reduce memory use. The key needs both `sources:write` and
+`notes:write`.
 
 The generated OpenAPI document is at `http://127.0.0.1:8080/openapi.json`.
 
