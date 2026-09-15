@@ -27,17 +27,16 @@ vertical path proved end to end, then widened.
   refusal returns to the page that names its own cause, including a control
   state file Admin cannot read, a claim code on the volume it cannot read, and
   a state directory that will not take the record, each named on screen along
-  with what was rejected. The session
-  cookie is always Secure, which browsers honour on the loopback address Admin
-  is fixed to; there is no setting that publishes it anywhere else. Admin
-  mounts only `/data/state`, so the notes filesystem is not reachable from it
-  at all. Re-claiming after password recovery replaces the signing secret,
-  which immediately refuses every cookie issued under the old password. This
-  path was driven through its rendered pages in Chrome against a fresh compose
-  stack, and `ci/smoke.sh` now drives it unattended across the bootstrap and
-  Admin containers: it reads the claim code the documented way, claims,
-  refuses a second claim, signs in, renders the overview, signs out and loses
-  it again.
+  with what was rejected. The session cookie is always Secure, which browsers
+  honour on the loopback address Admin is fixed to; there is no setting that
+  publishes it anywhere else. Admin mounts only `/data/state`, so the notes
+  filesystem is not reachable from it at all. Re-claiming after password
+  recovery replaces the signing secret, which immediately refuses every cookie
+  issued under the old password. This path was driven through its rendered
+  pages in Chrome against a fresh compose stack, and `ci/smoke.sh` now drives
+  it unattended across the bootstrap and Admin containers: it reads the claim
+  code the documented way, claims, refuses a second claim, signs in, renders
+  the overview, signs out and loses it again.
 - `docker compose up -d` on a clean checkout reaches a healthy stack with no
   manual setup and no hand populated setting. The one-shot `bootstrap`
   container creates `/data`, generates the internal bearer token and the
@@ -431,9 +430,9 @@ in the tree, so do not read the absence as a decision to leave it out.
   `python3 -m coppermind_store.keys` remains the interim path for adding and
   rotating keys.
 - **Helm packaging and lab deployment.** The Helm chart and the lab handoff
-  are not built. Publishing the existing service images and a release
-  from a version tag is in place and is under Working above; no automation
-  pushes a tag or changes GHCR package visibility.
+  are not built. Publishing the existing service images and a release from a
+  version tag is in place and is under Working above; no automation pushes a
+  tag or changes GHCR package visibility.
 
 ## Known gaps in what is here
 
