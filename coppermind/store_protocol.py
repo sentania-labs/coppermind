@@ -30,6 +30,20 @@ ETag = str
 NoteId = str
 SourceId = str
 
+_TEXT_APPLICATION_TYPES = {
+    "application/json",
+    "application/ld+json",
+    "application/xml",
+    "application/yaml",
+    "application/x-yaml",
+}
+
+
+def is_text_mime(mime_type: str) -> bool:
+    """Whether an artifact MIME type has a readable UTF-8 representation."""
+    base = mime_type.partition(";")[0].strip().casefold()
+    return base.startswith("text/") or base in _TEXT_APPLICATION_TYPES or base.endswith("+json")
+
 
 class StoreError(Exception):
     """Base class for the typed errors the contract defines."""
@@ -65,6 +79,26 @@ class SourceClaimMissing(StoreError):
         )
         self.provider = provider
         self.external_source_id = external_source_id
+
+
+class SourceNotFound(StoreError):
+    def __init__(self, source_id: str) -> None:
+        super().__init__(f"no source with id {source_id}")
+        self.source_id = source_id
+
+
+class ArtifactNotFound(StoreError):
+    def __init__(self, source_id: str, revision: int, name: str) -> None:
+        super().__init__(f"source {source_id} revision {revision} has no artifact {name}")
+        self.source_id = source_id
+        self.revision = revision
+        self.name = name
+
+
+class SourceImmutable(StoreError):
+    def __init__(self, source_id: str) -> None:
+        super().__init__(f"source {source_id} and its artifacts are immutable")
+        self.source_id = source_id
 
 
 class IncompleteRevision(StoreError):
@@ -157,7 +191,7 @@ class NotesFilesystemUnavailable(StoreError):
 
 
 class SourcesFilesystemUnavailable(StoreError):
-    """The source bundle filesystem could not be written."""
+    """The source bundle filesystem could not be read or written."""
 
 
 class StoreUnavailable(StoreError):
@@ -302,6 +336,47 @@ class CreatedNote(BaseModel):
 class IngestResult(BaseModel):
     source: CreatedSource
     note: CreatedNote
+    projection_path: str
+
+
+class SourceArtifact(BaseModel):
+    name: str
+    mime_type: str
+    sha256: str
+    size_bytes: int = Field(ge=0)
+
+
+class SourceRevision(BaseModel):
+    revision: int = Field(ge=1)
+    ingested_at: datetime
+    captured_at: datetime | None = None
+    content_identity: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[SourceArtifact]
+
+
+class SourceManifest(BaseModel):
+    schema_version: Literal[1]
+    source_id: SourceId
+    provider: str
+    external_source_id: str
+    source_type: str
+    origin: str
+    current_revision: int = Field(ge=1)
+    revisions: list[SourceRevision]
+    projection_path: str | None = None
+
+
+class SourceArtifactDocument(SourceArtifact):
+    source_id: SourceId
+    revision: int = Field(ge=1)
+    content: str | None = None
+
+
+class SourceProjection(BaseModel):
+    source_id: SourceId
+    path: str
+    content: str
 
 
 class ReplaceNote(BaseModel):
@@ -431,6 +506,16 @@ class Store(Protocol):
     async def ingest(
         self, request: IngestRequest, *, payload_size_bytes: int | None = None
     ) -> IngestResult: ...
+
+    async def get_source(self, source_id: SourceId) -> SourceManifest: ...
+
+    async def get_source_artifact(
+        self, source_id: SourceId, revision: int, name: str
+    ) -> SourceArtifactDocument: ...
+
+    async def get_source_projection(self, source_id: SourceId) -> SourceProjection: ...
+
+    async def refuse_source_mutation(self, source_id: SourceId) -> None: ...
 
     async def get_api_keys(self) -> ApiKeySet: ...
 

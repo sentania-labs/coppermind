@@ -19,11 +19,13 @@ from coppermind.db.models import Note, NoteSource, Source, SourceArtifact, Sourc
 from coppermind.store_protocol import (
     CreateNote,
     IncompleteRevision,
+    IngestArtifact,
     IngestRequest,
     MetadataUnavailable,
     PathCollision,
     PayloadTooLarge,
     SourceClaimMissing,
+    SourceImmutable,
     SourcesFilesystemUnavailable,
 )
 
@@ -73,6 +75,7 @@ async def test_ingest_writes_an_immutable_bundle_linked_to_one_review_note(
     assert result.source.revision == 1
     assert result.source.created is True
     assert result.note.created is True
+    assert result.projection_path == ("_Sources/Plaud/2026-09-08 Ameren Architecture Sync.md")
 
     source_root = store.sources_root / result.source.id
     manifest = json.loads((source_root / "manifest.json").read_text(encoding="utf-8"))
@@ -101,6 +104,13 @@ async def test_ingest_writes_an_immutable_bundle_linked_to_one_review_note(
     assert result.note.path == "Review/2026-09-08 Ameren Architecture Sync.md"
     assert frontmatter["sources"] == [result.source.id]
     assert body.startswith("# Ameren Architecture Sync")
+    projection = store.notes_root / result.projection_path
+    projection_frontmatter, projection_body = fm.parse(projection.read_text(encoding="utf-8"))
+    assert projection_frontmatter["managed"] is True
+    assert projection_frontmatter["source_id"] == result.source.id
+    assert projection_frontmatter["source_revision"] == 1
+    assert "Scott: Let's start with the architecture review..." in projection_body
+    assert "Reviewed the target architecture" in projection_body
 
     async with session_factory() as session:
         assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 1
@@ -195,7 +205,7 @@ async def test_concurrent_duplicate_is_serialised_by_the_filesystem_claim(
     assert [path.name for path in store.sources_root.iterdir() if path.is_dir()] == [
         winner.source.id
     ]
-    assert len(list(store.notes_root.rglob("*.md"))) == 1
+    assert len(list((store.notes_root / "Review").glob("*.md"))) == 1
     async with session_factory() as session:
         assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 1
         assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 1
@@ -250,7 +260,7 @@ async def test_commit_failure_retry_resolves_the_durable_claim_and_repairs_the_m
 
     assert len(list(store.sources_root.glob(".external-id-*.json"))) == 1
     assert len([path for path in store.sources_root.iterdir() if path.is_dir()]) == 1
-    assert len(list(store.notes_root.rglob("*.md"))) == 1
+    assert len(list((store.notes_root / "Review").glob("*.md"))) == 1
     async with session_factory() as session:
         assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 0
         assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 0
@@ -262,7 +272,7 @@ async def test_commit_failure_retry_resolves_the_durable_claim_and_repairs_the_m
     assert replay.source.revision == 1
     assert replay.note.created is False
     assert len([path for path in store.sources_root.iterdir() if path.is_dir()]) == 1
-    assert len(list(store.notes_root.rglob("*.md"))) == 1
+    assert len(list((store.notes_root / "Review").glob("*.md"))) == 1
     async with session_factory() as session:
         assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 1
         assert await session.scalar(sa.select(sa.func.count()).select_from(SourceRevision)) == 1
@@ -279,6 +289,11 @@ async def test_t_ing_2_changed_content_appends_a_revision_and_keeps_the_review_n
     edited = edited.replace("Target architecture agreed", "Captain's correction")
     note_path.write_text(edited, encoding="utf-8")
     note_bytes = note_path.read_bytes()
+    projection_path = store.notes_root / first.projection_path
+    projection_path.write_text(
+        projection_path.read_text(encoding="utf-8") + "Person's projection edit\n",
+        encoding="utf-8",
+    )
 
     changed = sample()
     changed.source.artifacts[0].content = "Scott: corrected source content"
@@ -291,6 +306,12 @@ async def test_t_ing_2_changed_content_appends_a_revision_and_keeps_the_review_n
     assert second.note.path == first.note.path
     assert second.note.created is False
     assert note_path.read_bytes() == note_bytes
+    assert second.projection_path == first.projection_path
+    projection_frontmatter, projection_body = fm.parse(projection_path.read_text(encoding="utf-8"))
+    assert projection_frontmatter["source_revision"] == 2
+    assert "Scott: corrected source content" in projection_body
+    assert "Let's start with the architecture review" not in projection_body
+    assert "Person's projection edit" not in projection_body
     source_root = store.sources_root / first.source.id
     assert (source_root / "r0001" / "transcript.txt").read_text() == (
         "Scott: Let's start with the architecture review..."
@@ -305,6 +326,33 @@ async def test_t_ing_2_changed_content_appends_a_revision_and_keeps_the_review_n
         assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 1
         assert await session.scalar(sa.select(sa.func.count()).select_from(SourceRevision)) == 2
         assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 1
+
+
+async def test_t_src_1_sources_are_readable_and_immutable(store: LocalStore):
+    request = sample()
+    request.source.artifacts.append(
+        IngestArtifact(
+            name="recording.bin",
+            mime_type="application/octet-stream",
+            content_base64="AAEC",
+        )
+    )
+    ingested = await store.ingest(request)
+
+    source = await store.get_source(ingested.source.id)
+    assert source.current_revision == 1
+    assert source.revisions[0].artifacts[-1].size_bytes == 3
+    text = await store.get_source_artifact(ingested.source.id, 1, "transcript.txt")
+    assert text.content == "Scott: Let's start with the architecture review..."
+    binary = await store.get_source_artifact(ingested.source.id, 1, "recording.bin")
+    assert binary.content is None
+    assert binary.size_bytes == 3
+    assert binary.sha256 == hashlib.sha256(b"\x00\x01\x02").hexdigest()
+    projection = await store.get_source_projection(ingested.source.id)
+    assert projection.path == ingested.projection_path
+    assert "Binary artifact: application/octet-stream, 3 bytes" in projection.content
+    with pytest.raises(SourceImmutable):
+        await store.refuse_source_mutation(ingested.source.id)
 
 
 async def test_retry_after_a_revision_commit_failure_returns_the_completed_revision(
@@ -369,6 +417,9 @@ async def test_manifest_sync_failure_retains_a_possibly_committed_revision(
     replay = await store.ingest(changed)
     assert replay.source.revision == 2
     assert replay.source.created is False
+    projection = await store.get_source_projection(first.source.id)
+    assert "source_revision: 2" in projection.content
+    assert "Scott: corrected source content" in projection.content
 
 
 @pytest.mark.parametrize("damage", ["missing", "altered"])
@@ -475,7 +526,7 @@ async def test_a_descriptive_correction_alone_replays_and_reports_what_was_not_s
         if path.is_file()
     }
     assert after == before
-    assert len(list(store.notes_root.rglob("*.md"))) == 1
+    assert len(list((store.notes_root / "Review").glob("*.md"))) == 1
     async with session_factory() as session:
         source = await session.get(Source, first.source.id)
         assert source.current_revision == 1
@@ -588,7 +639,7 @@ async def test_a_missing_claim_over_a_surviving_row_is_refused_not_an_outage(
     assert [path.name for path in store.sources_root.iterdir() if path.is_dir()] == [
         first.source.id
     ]
-    assert len(list(store.notes_root.rglob("*.md"))) == 1
+    assert len(list((store.notes_root / "Review").glob("*.md"))) == 1
     async with session_factory() as session:
         assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 1
         assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 1

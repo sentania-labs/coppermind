@@ -44,6 +44,7 @@ from coppermind import frontmatter as fm
 from coppermind.db.models import Note
 from coppermind.db.session import transaction
 from coppermind.logging import get_logger
+from coppermind.naming import sanitize_folder
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import MetadataUnavailable, NotesFilesystemUnavailable
 from coppermind_store.fs import content_hash, resolve
@@ -567,6 +568,9 @@ def _scan(
             relative_path = path.relative_to(root)
             if any(part in _IGNORED_DIRECTORIES for part in relative_path.parts):
                 continue
+            store_owned = any(
+                relative_path.parts[: len(folder)] == folder for folder in unadoptable
+            )
             relative = relative_path.as_posix()
             entry = by_path.get(relative)
             try:
@@ -655,7 +659,7 @@ def _scan(
             if isinstance(result, AdoptionCandidate):
                 if settling:
                     deferred += 1
-                elif any(relative_path.parts[: len(folder)] == folder for folder in unadoptable):
+                elif store_owned:
                     # A folder the store owns is not a place a person writes a
                     # note, so nothing below one is given an identity. The file
                     # is still read, because a known note moved into one must
@@ -666,6 +670,11 @@ def _scan(
             elif result is None:
                 if settling:
                     deferred += 1
+                elif store_owned:
+                    # A generated projection carrying `managed: true` names no
+                    # identity on purpose. It is the store's own file, not a
+                    # device-created note that failed to parse.
+                    _remember(still_unidentified, relative, stat_seen)
                 else:
                     unidentified_unparsed += 1
                     _remember(still_unidentified, relative, stat_seen)
@@ -696,7 +705,9 @@ def _unadoptable_folders(settings: ProductSettings) -> frozenset[tuple[str, ...]
     are the operator's, read from the same settings the rest of the system lays
     the notes filesystem out by, and each is split into its segments because a
     name may nest: `Archive/Trash` has to exclude what is under it, not every
-    path that merely starts with `Archive`.
+    path that merely starts with `Archive`. Each is sanitised the way the store
+    sanitises it when writing, so the exclusion names the folder the files are
+    actually under rather than the raw setting.
     """
     named = (
         settings.notes.trash_folder,
@@ -705,7 +716,9 @@ def _unadoptable_folders(settings: ProductSettings) -> frozenset[tuple[str, ...]
     )
     return frozenset(
         parts
-        for parts in (tuple(part for part in name.split("/") if part) for name in named)
+        for parts in (
+            tuple(part for part in sanitize_folder(name).split("/") if part) for name in named
+        )
         if parts
     )
 
@@ -774,6 +787,8 @@ def _observe(
             path_derived=path_derived,
         )
     note_id = str(frontmatter.get(schema.role("id_key"), ""))
+    if frontmatter.get("managed") is True:
+        return None
     if note_id not in by_id:
         if entry is None:
             return AdoptionCandidate(

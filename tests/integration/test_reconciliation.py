@@ -21,6 +21,7 @@ from coppermind.db.models import Note
 from coppermind.ids import is_valid_id
 from coppermind.store_protocol import (
     CreateNote,
+    IngestRequest,
     NoteQuery,
     NotesFilesystemUnavailable,
     NoteUnparseable,
@@ -860,6 +861,61 @@ async def test_a_copy_of_a_known_identity_is_left_alone_rather_than_re_identifie
     assert (await store.get_note(original.id)).path == original.path
     async with store.session_factory() as session:
         assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 1
+
+
+async def test_a_real_source_projection_is_never_adopted_as_a_note(store: LocalStore):
+    """The projection ingest writes is the store's own file, not a note to adopt."""
+    result = await store.ingest(
+        IngestRequest.model_validate(
+            {
+                "source": {
+                    "provider": "plaud",
+                    "external_source_id": "rec_adopt_guard",
+                    "source_type": "transcript",
+                    "artifacts": [
+                        {
+                            "name": "transcript.txt",
+                            "mime_type": "text/plain",
+                            "content": "Scott: the projection must stay the store's own file.\n",
+                        }
+                    ],
+                },
+                "note": {"title": "Adoption guard", "frontmatter": {"type": "meeting"}},
+            }
+        )
+    )
+    projection = store.notes_root / result.projection_path
+    original = projection.read_bytes()
+
+    with capture_logs() as logs:
+        counts = await reconcile_once(store, full=True)
+
+    assert counts["adopted"] == 0
+    assert counts["rejected"] == 0
+    assert counts["missing"] == 0
+    assert projection.read_bytes() == original
+    assert [entry["event"] for entry in logs if entry.get("path") == result.projection_path] == []
+    async with store.session_factory() as session:
+        ids = (await session.scalars(sa.select(Note.id))).all()
+    assert list(ids) == [result.note.id]
+
+
+async def test_managed_source_projection_is_never_reconciled_as_a_note(store: LocalStore):
+    note = await store.create_note(CreateNote(title="Generated", frontmatter={"type": "reference"}))
+    original = store.notes_root / note.path
+    projection = store.notes_root / "_Sources" / "Plaud" / "Generated.md"
+    projection.parent.mkdir(parents=True)
+    projection.write_text(
+        fm.patch(original.read_text(encoding="utf-8"), {"managed": True}),
+        encoding="utf-8",
+    )
+    original.unlink()
+
+    counts = await reconcile_once(store)
+
+    assert counts["moved"] == 0
+    assert counts["missing"] == 1
+    assert (await _row(store, note.id)).state == "missing"
 
 
 async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: LocalStore):

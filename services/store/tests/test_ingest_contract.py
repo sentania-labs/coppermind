@@ -1,5 +1,7 @@
 """Ingest across the authenticated internal HTTP contract."""
 
+from datetime import UTC, datetime
+
 import httpx
 import pytest
 from coppermind_store.auth import InternalAuth
@@ -14,7 +16,13 @@ from coppermind.store_protocol import (
     IngestRequest,
     IngestResult,
     PayloadTooLarge,
+    SourceArtifact,
+    SourceArtifactDocument,
     SourceClaimMissing,
+    SourceImmutable,
+    SourceManifest,
+    SourceProjection,
+    SourceRevision,
     SourcesFilesystemUnavailable,
 )
 
@@ -35,6 +43,7 @@ REQUEST = IngestRequest.model_validate(
 RESULT = IngestResult(
     source=CreatedSource(id="01K4Q8Z2A0P1Q2R3S4T5U6V7W8", revision=1, created=True),
     note=CreatedNote(id="01K4Q8Z3N7V2X9M1B5C6D8E0F2", path="Review/Recording.md", created=True),
+    projection_path="_Sources/Plaud/Recording.md",
 )
 
 
@@ -53,6 +62,53 @@ class FakeStore:
         self.request = request
         self.payload_size_bytes = payload_size_bytes
         return self.result
+
+    async def get_source(self, source_id: str) -> SourceManifest:
+        return SourceManifest(
+            schema_version=1,
+            source_id=source_id,
+            provider="plaud",
+            external_source_id="recording-1",
+            source_type="transcript",
+            origin="",
+            current_revision=1,
+            revisions=[
+                SourceRevision(
+                    revision=1,
+                    ingested_at=datetime(2026, 9, 8, 19, 2, 11, tzinfo=UTC),
+                    content_identity="identity",
+                    artifacts=[
+                        SourceArtifact(
+                            name="transcript.txt",
+                            mime_type="text/plain",
+                            sha256="abc",
+                            size_bytes=5,
+                        )
+                    ],
+                )
+            ],
+        )
+
+    async def get_source_artifact(
+        self, source_id: str, revision: int, name: str
+    ) -> SourceArtifactDocument:
+        return SourceArtifactDocument(
+            source_id=source_id,
+            revision=revision,
+            name=name,
+            mime_type="text/plain",
+            sha256="abc",
+            size_bytes=5,
+            content="hello",
+        )
+
+    async def get_source_projection(self, source_id: str) -> SourceProjection:
+        return SourceProjection(
+            source_id=source_id, path="_Sources/Plaud/Recording.md", content="#"
+        )
+
+    async def refuse_source_mutation(self, source_id: str) -> None:
+        raise SourceImmutable(source_id)
 
 
 def app_for(store: FakeStore) -> FastAPI:
@@ -96,6 +152,20 @@ async def test_replay_answers_200_over_the_internal_contract():
         )
     assert response.status_code == 200
     assert response.json()["source"]["created"] is False
+
+
+async def test_source_reads_and_immutable_refusal_round_trip_through_the_contract():
+    store = FakeStore()
+    client = connected(store)
+    try:
+        assert (await client.get_source(RESULT.source.id)).current_revision == 1
+        artifact = await client.get_source_artifact(RESULT.source.id, 1, "transcript.txt")
+        assert artifact.content == "hello"
+        assert (await client.get_source_projection(RESULT.source.id)).content == "#"
+        with pytest.raises(SourceImmutable):
+            await client.refuse_source_mutation(RESULT.source.id)
+    finally:
+        await client.aclose()
 
 
 @pytest.mark.parametrize(

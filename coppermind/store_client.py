@@ -15,6 +15,7 @@ import httpx
 
 from coppermind.api_keys import ApiKeySet
 from coppermind.store_protocol import (
+    ArtifactNotFound,
     CreateNote,
     ETag,
     IncompleteRevision,
@@ -34,7 +35,13 @@ from coppermind.store_protocol import (
     PayloadTooLarge,
     PreconditionRequired,
     ReplaceNote,
+    SourceArtifactDocument,
     SourceClaimMissing,
+    SourceId,
+    SourceImmutable,
+    SourceManifest,
+    SourceNotFound,
+    SourceProjection,
     SourcesFilesystemUnavailable,
     StoreError,
     StoreUnavailable,
@@ -130,6 +137,29 @@ class HttpStoreClient:
         )
         return IngestResult.model_validate(response.json())
 
+    async def get_source(self, source_id: SourceId) -> SourceManifest:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/sources/{_segment(source_id)}")
+        return SourceManifest.model_validate(response.json())
+
+    async def get_source_artifact(
+        self, source_id: SourceId, revision: int, name: str
+    ) -> SourceArtifactDocument:
+        response = await self._send(
+            "GET",
+            f"{INTERNAL_PREFIX}/sources/{_segment(source_id)}/revisions/{revision}/artifacts/"
+            f"{_segment(name)}",
+        )
+        return SourceArtifactDocument.model_validate(response.json())
+
+    async def get_source_projection(self, source_id: SourceId) -> SourceProjection:
+        response = await self._send(
+            "GET", f"{INTERNAL_PREFIX}/sources/{_segment(source_id)}/projection"
+        )
+        return SourceProjection.model_validate(response.json())
+
+    async def refuse_source_mutation(self, source_id: SourceId) -> None:
+        await self._send("DELETE", f"{INTERNAL_PREFIX}/sources/{_segment(source_id)}")
+
     async def get_api_keys(self) -> ApiKeySet:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/api-keys")
         return ApiKeySet.model_validate(response.json())
@@ -159,8 +189,16 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         payload = {}
     code = payload.get("error", "")
     message = payload.get("message", response.text)
+    if response.status_code == 404 and "source_id" in payload and "name" in payload:
+        return ArtifactNotFound(
+            payload.get("source_id", ""), payload.get("revision", 0), payload.get("name", "")
+        )
+    if response.status_code == 404 and "source_id" in payload:
+        return SourceNotFound(payload.get("source_id", ""))
     if response.status_code == 404:
         return NotFound(payload.get("note_id", message))
+    if code == "method_not_allowed" and "source_id" in payload:
+        return SourceImmutable(payload.get("source_id", ""))
     if code == "path_collision":
         return PathCollision(payload.get("existing_path", message))
     if code == "source_claim_missing":

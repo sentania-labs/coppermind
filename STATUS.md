@@ -246,6 +246,23 @@ vertical path proved end to end, then widened.
   the public body length across the Store contract, but checks it only after
   the whole body has been read and parsed: it refuses the request, it does not
   spare process memory.
+- Every ingested source has one generated Markdown projection under the
+  configured sources folder, by default
+  `_Sources/<Provider>/<YYYY-MM-DD Title>.md`. Its frontmatter marks it
+  managed and records the source identity, revision and generation time. Text
+  artifacts are readable in the document; non-text artifacts are listed with
+  their MIME type, size and SHA-256. A changed source revision regenerates the
+  same projection path from the immutable bundle, so a person's edit to a
+  projection is not merged or preserved. Projections are generated output:
+  reconciliation excludes them as notes, Git excludes the sources folder,
+  and Obsidian Sync does not exclude it.
+- `GET /v1/sources/{id}` reads the filesystem manifest. Its artifact route
+  returns UTF-8 text types as the response body and describes non-text
+  artifacts as JSON with their size and SHA-256, after verifying the stored
+  bytes. `GET /v1/sources/{id}/projection` returns the generated Markdown.
+  All need `sources:read`. `PUT`, `PATCH` and `DELETE` anywhere under a source
+  return 405 `method_not_allowed`; neither the public nor internal surface
+  offers a way to change source data.
 - `PUT /v1/notes/{id}` replaces a note's frontmatter and body on the condition
   that `If-Match` names the ETag the file has now. The body is the document
   shape a read returns, so a client reads, edits and sends it back; the
@@ -394,8 +411,7 @@ in the tree, so do not read the absence as a decision to leave it out.
   changed artifacts does land, because it rides the new revision. Keeping the
   rest means recording them per revision, which costs keys in `manifest.json`,
   a manifest `schema_version` bump and columns on `source_revisions`.
-  Generated source projections into the notes filesystem and tombstoning a
-  source are not built. Tombstones in particular have no columns in the mirror
+  Tombstoning a source is not built. It has no columns in the mirror
   and no keys in `manifest.json`, so adding them costs a migration of its own
   and a manifest `schema_version` bump.
 - **A whole-file note body.** `PUT` takes the JSON document shape only; the
