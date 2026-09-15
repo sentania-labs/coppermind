@@ -20,7 +20,10 @@ make down                              # stop; `make clean` also drops volumes
 ```
 
 `make check` and `make scan` predict CI exactly, because CI calls the same
-targets. There is no command in the workflow that you cannot run here.
+targets. There is no command in a pull request's workflow that you cannot run
+here. Publication from a version tag is the exception: pushing, signing and
+promoting images needs registry credentials CI holds and you do not, and it
+only ever runs on a tag.
 
 ## The bar for a pull request
 
@@ -41,7 +44,23 @@ targets. There is no command in the workflow that you cannot run here.
 5. **Tags release.** From a merged `main` commit, `git tag -a vX.Y.Z -m vX.Y.Z`
    and push the tag. No version-bump pull request. The quickstart tracks
    `latest`; anything deploying Coppermind for real pins a version or a digest
-   in its own repository.
+   in its own repository. Promotion of `latest` runs one job at a time across
+   every tag, so when two tags land close together GitHub can drop the one
+   still waiting its turn. That leaves `latest` where it was rather than
+   pointing at the wrong build: re-run the promotion job on the newest tag's
+   run and it moves forward.
+6. **The first tag needs one manual step, once.** GHCR creates a package
+   private on its first publish and does not inherit the repository's
+   visibility, so the first `vX.Y.Z` pushes and signs the four images and then
+   fails its anonymous-pull check with a manifest-unknown error. The captain
+   sets the `store`, `api`, `git` and `obsidian-sync` packages to public in the
+   repository's package settings, once, and re-runs the job. Nothing in CI
+   changes package visibility. Until a real tag has gone through this, the
+   anonymous-pull proof is untested; the first real tag is what completes it.
+   Re-running publication works for 30 days, which is how long a tag build
+   keeps the image archives it publishes from. After that window the archives
+   are gone and the only way forward is pushing the tag again for a fresh
+   build.
 
 Write the body in operational terms: what changes for someone running it,
 what the blast radius is, how to recover if it is wrong. Name which regime the
