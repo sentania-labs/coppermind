@@ -277,10 +277,12 @@ vertical path proved end to end, then widened.
   again. An ingest answers with the path its projection occupies, and that is
   how a client learns where the file landed; nothing serves the projection back
   over the API, because being readable without the service is its whole point.
-  A projection carries the source identity and no note id, so the read-side
-  reconciler declines it the way it declines any file naming no note it knows;
-  the sources folder itself is not special to that pass, and a note the captain
-  files into it himself is followed there like a note in any other folder.
+  A projection is never adopted as a note because it sits under the store-owned
+  sources folder, and that folder is the whole mechanism: nothing about the
+  file itself declines it, so a generated page anywhere else is an ordinary
+  Markdown file to the reconciler and is adopted like one. The folder is still
+  read, so a note the captain files into it himself is followed there like a
+  note in any other folder.
   Obsidian Sync does not exclude the folder. Git excludes it, and the two agree
   on its name by construction: the Store writes to the sanitised name while the
   Git helper, which carries none of the shared package, excludes the configured
@@ -293,8 +295,10 @@ vertical path proved end to end, then widened.
   the pages already generated, they stay under the old name, the Git helper
   stops excluding that name, and the next snapshot commits them. Deleting them
   afterwards takes them out of the working tree but not out of Git history.
-  Write-side reconciliation is not built on this branch, so its separate rule
-  for never adopting managed projections must be settled when that work lands.
+  Adoption stops excluding the old name at the same moment, so the next
+  reconciliation pass writes an id into every stranded page and mirrors it as a
+  note that then appears in listing and search, while a later revision of that
+  source still replaces the file where it stands.
 - `GET /v1/sources/{id}` reads the filesystem manifest. Its artifact route
   returns an artifact that decodes as UTF-8 text as the response body, always
   as `text/plain` and never as the ingested type, and describes every other

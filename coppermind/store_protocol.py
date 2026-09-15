@@ -100,18 +100,19 @@ class ArtifactNotFound(StoreError):
 class ProjectionNotPlaced(StoreError):
     """The revision is stored; the page a person reads it by is not.
 
-    The path the manifest records for this source now holds a file this store
-    did not generate, and generated output never writes over one. Ingesting the
-    same source again places the page at a free name, records it in the
-    manifest and rebuilds any mirror rows the refused attempt rolled back.
+    The name chosen for the page is occupied by a file this store did not
+    generate, and generated output never writes over one. Ingesting the same
+    source again places the page at a free name and rebuilds any mirror rows
+    the refused attempt rolled back. The path the manifest records may not name
+    this page until then.
     """
 
     def __init__(self, source_id: str, revision: int, path: str) -> None:
         super().__init__(
             f"source {source_id} revision {revision} is stored, but its readable page could not "
-            f"be placed: {path} holds a file this store did not generate, and the manifest goes "
-            "on naming it until then. Ingest the source again to place the page at a free name "
-            "and repair the mirror."
+            f"be placed: {path} is occupied by a file this store did not generate, and the "
+            "recorded path may not name this page until then. Ingest the source again to place "
+            "the page at a free name and repair the mirror."
         )
         self.source_id = source_id
         self.revision = revision
