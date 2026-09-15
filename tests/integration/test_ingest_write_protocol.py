@@ -705,13 +705,11 @@ async def test_an_ambiguous_manifest_commit_keeps_the_newly_referenced_projectio
     ingested = await store.ingest(sample())
     kept = store.notes_root / ingested.projection_path
     kept.write_text("---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# Mine now\n", encoding="utf-8")
-    real_commit = sources_module.commit_staged
 
-    def replace_then_fail(staged, path):
-        real_commit(staged, path)
+    def sync_fails(_directory):
         raise OSError("directory sync acknowledgement lost")
 
-    monkeypatch.setattr(sources_module, "commit_staged", replace_then_fail)
+    monkeypatch.setattr(sources_module, "sync_directory", sync_fails)
 
     with pytest.raises(SourcesFilesystemUnavailable):
         await store.ingest(sample())
@@ -721,6 +719,39 @@ async def test_an_ambiguous_manifest_commit_keeps_the_newly_referenced_projectio
     assert projection_path != ingested.projection_path
     assert "source_revision: 1" in projection_text(store, projection_path)
     assert kept.read_text(encoding="utf-8").endswith("# Mine now\n")
+
+
+async def test_a_manifest_rename_that_failed_leaves_no_extra_projection_copy(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """A replacement that never happened names no page, so the page goes with it.
+
+    Staging the manifest only writes a temporary file beside it; the recorded
+    path changes at the rename. A rename that failed leaves the manifest naming
+    the old path, so the page the replay just rebuilt is referenced by nothing,
+    and a retrying client would otherwise leave the captain one more copy of the
+    whole transcript per attempt.
+    """
+    ingested = await store.ingest(sample())
+    kept = store.notes_root / ingested.projection_path
+    kept.write_text("---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# Mine now\n", encoding="utf-8")
+    folder = kept.parent
+
+    def rename_fails(staged, _path):
+        staged.unlink(missing_ok=True)
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(sources_module, "replace_staged", rename_fails)
+
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.ingest(sample())
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.ingest(sample())
+
+    assert [path.name for path in folder.iterdir()] == [kept.name]
+    manifest_path = store.sources_root / ingested.source.id / "manifest.json"
+    recorded = json.loads(manifest_path.read_text(encoding="utf-8"))["projection_path"]
+    assert recorded == ingested.projection_path
 
 
 async def test_an_unrecorded_projection_path_is_rebuilt_rather_than_searched_for(

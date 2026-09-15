@@ -29,9 +29,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from coppermind import frontmatter as fm
 from coppermind.atomicio import (
     atomic_write_bytes,
-    commit_staged,
     create_exclusive_bytes,
+    replace_staged,
     stage_bytes,
+    sync_directory,
 )
 from coppermind.db.models import Note, NoteSource, Source, SourceArtifact, SourceRevision
 from coppermind.db.session import transaction
@@ -307,7 +308,8 @@ async def _ingest_new(
         revision_path.mkdir(parents=True, exist_ok=False)
         for artifact, data in artifacts:
             create_exclusive_bytes(revision_path / artifact.name, data)
-        projection_path = new_projection_path(
+        projection_path = await asyncio.to_thread(
+            new_projection_path,
             store.notes_root,
             settings,
             provider=request.source.provider,
@@ -430,7 +432,8 @@ async def _ingest_existing(
             note = await session.get(Note, note_id)
             if note is None:
                 raise StoreError("the linked note mirror is incomplete") from None
-            projection_path = projection_path or new_projection_path(
+            projection_path = projection_path or await asyncio.to_thread(
+                new_projection_path,
                 store.notes_root,
                 settings,
                 provider=str(manifest["provider"]),
@@ -455,8 +458,9 @@ async def _ingest_existing(
             manifest_replacement_started = False
             try:
                 staged_manifest = stage_bytes(manifest_path, _json_bytes(manifest))
+                replace_staged(staged_manifest, manifest_path)
                 manifest_replacement_started = True
-                commit_staged(staged_manifest, manifest_path)
+                sync_directory(manifest_path.parent)
             except OSError as exc:
                 if projection_created and not manifest_replacement_started:
                     resolve(store.notes_root, projection_path).unlink(missing_ok=True)
@@ -500,7 +504,8 @@ async def _ingest_existing(
         projection_path = (
             str(recorded_path)
             if held_revision is not None
-            else new_projection_path(
+            else await asyncio.to_thread(
+                new_projection_path,
                 store.notes_root,
                 settings,
                 provider=str(manifest["provider"]),

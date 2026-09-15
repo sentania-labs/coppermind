@@ -260,18 +260,23 @@ vertical path proved end to end, then widened.
   preserved. The manifest's `projection_path` is the only record of where a
   projection lives: it is written in the same manifest write that lands the
   revision, and a source whose manifest does not name one has no projection.
-  Generated output never writes over a file this store did not generate, so if
-  a device delivers one of the captain's own notes onto the recorded path while
-  a revision is landing, the ingest answers 409 `projection_not_placed`: the
-  revision is stored, its readable page is not, and ingesting the same source
-  again places the page at a free name and rebuilds the mirror rows the refused
-  attempt rolled back. Until that happens the manifest goes on naming the path
-  it chose, so `projection_path` can point at a file the store did not
-  generate; every reader of it checks the file before trusting it, and a
-  re-ingest is what corrects the record. On a source's first ingest there is no
-  revision yet, so a taken projection path answers 409 `path_collision` and
-  nothing is written: the claim, the bundle and the Review note are all removed
-  and the ingest can simply be retried.
+  The generated page is written only after checking that the path holds this
+  source's own page or nothing, and that check is the last thing before the
+  write: the new bytes are staged and made durable first, so nothing slower
+  than the check itself stands in front of it. So if a device delivers one of
+  the captain's own notes onto the recorded path while a revision is landing,
+  the ingest answers 409 `projection_not_placed`: the revision is stored, its
+  readable page is not, and ingesting the same source again places the page at
+  a free name and rebuilds the mirror rows the refused attempt rolled back.
+  Until that happens the manifest goes on naming the path it chose, so
+  `projection_path` can point at a file the store did not generate; every
+  reader of it checks the file before trusting it, and a re-ingest is what
+  corrects the record. A note delivered in the instant between that check and
+  the write can still be overwritten. That window is accepted for now: closing
+  it needs a filesystem primitive the platform does not currently provide. On a
+  source's first ingest there is no revision yet, so a taken projection path
+  answers 409 `path_collision` and nothing is written: the claim, the bundle and
+  the Review note are all removed and the ingest can simply be retried.
   Generation happens on ingest or on a new revision only: nothing backfills, so
   a source ingested before this landed has no projection until it is ingested
   again. An ingest answers with the path its projection occupies, and that is

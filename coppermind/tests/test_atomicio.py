@@ -16,7 +16,6 @@ from coppermind import atomicio
 from coppermind.atomicio import (
     atomic_write_bytes,
     commit_staged,
-    commit_staged_exclusive,
     create_exclusive_bytes,
     stage_bytes,
 )
@@ -60,7 +59,7 @@ def test_a_failed_directory_fsync_leaves_nothing_behind(
     def boom(_: Path) -> None:
         raise OSError(5, "Input/output error")
 
-    monkeypatch.setattr(atomicio, "_fsync_dir", boom)
+    monkeypatch.setattr(atomicio, "sync_directory", boom)
     target = tmp_path / "Review" / "Runbook.md"
     with pytest.raises(OSError):
         create_exclusive_bytes(target, b"# Runbook\n")
@@ -93,18 +92,6 @@ def test_staged_bytes_are_durable_before_the_rename_and_gone_after_it(tmp_path: 
     commit_staged(staged, target)
     assert target.read_bytes() == b"# New\n"
     assert list(target.parent.iterdir()) == [target]
-
-
-def test_an_exclusive_staged_commit_refuses_a_file_that_appeared(tmp_path: Path):
-    target = tmp_path / "Review" / "Runbook.md"
-    staged = stage_bytes(target, b"# Generated\n")
-    target.write_bytes(b"# Delivered by Sync\n")
-
-    with pytest.raises(FileExistsError):
-        commit_staged_exclusive(staged, target)
-
-    assert target.read_bytes() == b"# Delivered by Sync\n"
-    assert not staged.exists()
 
 
 def test_a_failed_stage_leaves_no_temporary(tmp_path: Path, failing_fsync):
