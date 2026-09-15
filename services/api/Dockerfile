@@ -38,6 +38,7 @@ COPY coppermind ./coppermind
 # workspace against the committed lock; their source is not copied, so this
 # image carries only its own service.
 COPY services/store/pyproject.toml ./services/store/pyproject.toml
+COPY services/admin/pyproject.toml ./services/admin/pyproject.toml
 COPY services/api ./services/api
 # uv and pip are build tools. Both are removed from the runtime image:
 # nothing in the running container installs anything, and their own bundled

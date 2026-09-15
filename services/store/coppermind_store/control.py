@@ -13,7 +13,7 @@ from pathlib import Path
 
 from coppermind.api_keys import ApiKeySet
 from coppermind.schema import FrontmatterSchema, default_schema
-from coppermind.settings import ProductSettings, default_settings
+from coppermind.settings import ProductSettings, default_settings, read_settings
 from coppermind.statefiles import StateStore
 
 
@@ -28,9 +28,7 @@ class ControlState:
         self.store.ensure("schema", default_schema().model_dump(mode="json"))
 
     def settings(self) -> ProductSettings:
-        body = dict(self.store.read("settings").body)
-        body.pop("revision", None)
-        return ProductSettings.model_validate(body)
+        return read_settings(self.store)
 
     def schema(self) -> FrontmatterSchema:
         body = dict(self.store.read("schema").body)

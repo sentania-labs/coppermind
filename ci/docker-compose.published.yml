@@ -20,6 +20,10 @@ services:
     image: ${IMAGE_ROOT}/api:${VERSION}
     build: !reset null
 
+  admin:
+    image: ${IMAGE_ROOT}/admin:${VERSION}
+    build: !reset null
+
   git:
     image: ${IMAGE_ROOT}/git:${VERSION}
     build: !reset null

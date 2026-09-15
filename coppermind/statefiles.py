@@ -15,13 +15,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 from coppermind.atomicio import atomic_write_text
 
 StateName = Literal["settings", "schema", "rules", "keys", "admin"]
 
-# Extension per state file. JSON is used where the file holds hashes rather
-# than operator prose, so nothing invites hand editing.
+# Extension per state file. JSON is used where the file holds credentials or
+# hashes rather than operator prose, so nothing invites hand editing.
 STATE_FILES: dict[str, str] = {
     "settings": "yaml",
     "schema": "yaml",
@@ -77,7 +78,10 @@ class StateStore:
         path = self.path_for(name)
         text = path.read_text(encoding="utf-8")
         loaded = _load(path, text)
-        revision = int(loaded.get("revision", 1))
+        try:
+            revision = int(loaded.get("revision", 1))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{path.name}: revision is not a number") from exc
         return StateFile(name, revision, loaded)
 
     def write(self, name: str, body: dict[str, Any], *, if_revision: int | None) -> StateFile:
@@ -109,8 +113,9 @@ class StateStore:
 
 
 def _mode_for(name: str) -> int:
-    # keys.json and admin.json hold argon2 hashes. They are not usable as
-    # credentials, but there is no reason for them to be world readable.
+    # keys.json holds Argon2 hashes, and admin.json holds the session signing
+    # secret beside its hash. That secret mints admin sessions on its own, so
+    # neither file is world readable.
     return 0o600 if name in {"keys", "admin"} else 0o644
 
 
@@ -120,7 +125,10 @@ def _load(path: Path, text: str) -> dict[str, Any]:
 
         loaded = json.loads(text)
     else:
-        loaded = _yaml().load(text)
+        try:
+            loaded = _yaml().load(text)
+        except YAMLError as exc:
+            raise ValueError(f"{path.name} is not valid YAML: {exc}") from exc
     if not isinstance(loaded, dict):
         raise ValueError(f"{path.name} is not a mapping")
     return loaded

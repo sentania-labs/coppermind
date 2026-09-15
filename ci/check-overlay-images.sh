@@ -20,6 +20,7 @@ expected_images = {
     "store": "store",
     "editor": "store",
     "api": "api",
+    "admin": "admin",
     "git": "git",
     "obsidian-sync": "obsidian-sync",
 }

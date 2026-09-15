@@ -16,11 +16,62 @@ The design contract is the decision records in
 docker compose up -d
 ```
 
-That is the whole setup. A one-shot bootstrap container creates the volumes,
-generates the internal credentials and a default API key, and writes the
-settings, frontmatter schema and API key hash with working defaults. Nothing
-has to be hand populated before the stack runs. Read the default key from its
-restricted bootstrap volume into the current shell:
+That is the whole setup, on Docker Engine 26.0 or newer with Compose v2.26 or
+newer. Admin is mounted with a volume subpath so it cannot reach the notes
+filesystem, and older Compose rejects that key instead of starting the stack.
+
+A one-shot bootstrap container creates the volumes, generates the internal
+credentials and a default API key, and writes the settings, frontmatter
+schema and API key hash with working defaults. Nothing has to be hand
+populated before the stack runs.
+
+Open Admin at `http://127.0.0.1:8082/admin`. On the first visit it asks for the
+one-time claim code and the admin password you want to use, which has to be at
+least 12 characters. Read the code from the restricted bootstrap file:
+
+```bash
+docker compose run --rm --no-deps --entrypoint cat bootstrap \
+  /data/state/internal/claim-code
+```
+
+Claiming deletes that code. Admin then requires a password-backed browser
+session, which lasts the configured 12-hour default. The session lives in the
+signed cookie itself, not in a database row: Log out clears it from that
+browser, and the same session cannot be cut off anywhere else, so a token
+already copied out stays good until its 12 hours are up. Re-claiming with a
+new password is what ends every session at once, and the recovery steps below
+are how you do it. Admin's overview intentionally reports only that you are
+signed in; settings, API keys, status, and Obsidian Sync connection arrive as
+separate increments.
+
+Forgot the admin password, or need to cut off a session cookie that got away
+from you? Both have the same answer: remove the admin record and claim again.
+The bootstrap container issues a fresh claim code whenever that record is
+absent:
+
+```bash
+docker compose run --rm --no-deps --entrypoint rm bootstrap /data/state/admin.json
+docker compose up -d
+```
+
+Then read the new code the same way as above and claim Admin a second time.
+Claiming writes a new session signing secret beside the new password hash, so
+every cookie issued under the old password is refused immediately. PostgreSQL
+is not involved. Nothing else is touched: the notes filesystem, its database
+records, the API keys and the internal credentials all stay as they are. Do
+not rebuild the `data` volume for this. That destroys the notes filesystem to
+reset one password.
+
+Admin is published on `127.0.0.1:8082` and nowhere else, with no setting to
+move it. Its session cookie is always Secure, which a browser honours on that
+loopback address and not on a plain HTTP one, and its login has no attempt
+limiting yet, so reaching Admin from another machine is a later increment and
+not a value to change here. That cookie is a live credential for its 12 hours:
+if one gets out of the browser holding it, re-claim with a new password as
+described above, because clicking Log out will not reach it.
+
+Read the default API key from its restricted bootstrap volume into the
+current shell:
 
 ```bash
 COPPERMIND_KEY="$(docker compose run --rm --no-deps --entrypoint cat bootstrap \
@@ -136,10 +187,10 @@ does not reduce memory use. The key needs both `sources:write` and
 
 The generated OpenAPI document is at `http://127.0.0.1:8080/openapi.json`.
 
-Until the separate Admin service adds its graphical keys page, additional
-keys and rotations use the Store command. It prints a new credential once and
-keeps only its hash. Grant one or more of the scopes shown by `--help`, move
-callers to it, then revoke the old key by its id:
+Until Admin adds its graphical keys page, additional keys and rotations use
+the Store command. It prints a new credential once and keeps only its hash.
+Grant one or more of the scopes shown by `--help`, move callers to it, then
+revoke the old key by its id:
 
 ```bash
 docker compose exec store python3 -m coppermind_store.keys create \
@@ -156,7 +207,7 @@ docker compose exec git git -C /data/notes log --stat
 
 The Obsidian Sync helper is supervised and answers its control endpoint, but
 it does not sync to a device yet. Connecting a real account is refused on
-purpose until the Admin service provides the captain's requested guided setup.
+purpose until Admin's later Connect page provides the requested guided setup.
 That flow will create Coppermind's own new encrypted remote vault, collect its
 encryption password, and restart the helper on save. The captain's existing
 Obsidian vault remains a data source whose content arrives through the ingest
@@ -195,6 +246,7 @@ docker compose exec obsidian-sync node /app/control.mjs resume
 | Service | Does | State |
 |---|---|---|
 | `api` | the public contract on `:8080` | five-minute key cache; no durable state |
+| `admin` | server-rendered operator interface on `:8082` | password hash and session signing secret in `/data/state/admin.json`; session state in its signed cookie |
 | `store` | the only process that writes the notes filesystem | `/data`, one replica always |
 | `git` | records the history of the notes filesystem; no network, no credential | `/data/notes/.git`, one replica always |
 | `obsidian-sync` | supervises the sync client and exposes internal lifecycle control; real sync refused for now | `/data/state/sync`, one replica always |

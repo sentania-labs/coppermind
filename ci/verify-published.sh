@@ -6,7 +6,7 @@ set -euo pipefail
 : "${GITHUB_REPOSITORY:?GitHub repository is required}"
 : "${DIGESTS:?digest record is required}"
 test -s "$DIGESTS" || { echo "digest record is empty" >&2; exit 1; }
-expected="$(printf '%s\n' store api git obsidian-sync)"
+expected="$(printf '%s\n' store api admin git obsidian-sync)"
 actual="$(awk '{ print $1 }' "$DIGESTS")"
 test "$actual" = "$expected" || { echo "digest record does not name every service once" >&2; exit 1; }
 
@@ -25,8 +25,8 @@ while read -r service digest; do
       echo "$image:$VERSION was pushed but cannot be read anonymously." >&2
       echo "The likely cause is GHCR package visibility: a package is private" >&2
       echo "when it is first published and does not inherit the repository's" >&2
-      echo "visibility. The remedy is to set the store, api, git and" >&2
-      echo "obsidian-sync packages to public once, then re-run this job." >&2
+      echo "visibility. The remedy is to set the store, api, admin, git" >&2
+      echo "and obsidian-sync packages to public once, then re-run this job." >&2
     fi
     exit 1
   fi

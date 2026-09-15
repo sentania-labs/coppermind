@@ -42,6 +42,7 @@ COPY pyproject.toml uv.lock README.md ./
 # workspace against the committed lock; their source is not copied.
 COPY services/api/pyproject.toml ./services/api/pyproject.toml
 COPY services/store/pyproject.toml ./services/store/pyproject.toml
+COPY services/admin/pyproject.toml ./services/admin/pyproject.toml
 COPY services/git ./services/git
 RUN uv sync --frozen --no-dev --package coppermind-git \
     && rm -f /usr/local/bin/uv \

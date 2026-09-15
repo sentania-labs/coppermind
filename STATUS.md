@@ -8,6 +8,35 @@ vertical path proved end to end, then widened.
 
 ## Working
 
+- Admin is a separate service and image on loopback port 8082. A fresh install
+  opens on a server-rendered Claim page. Bootstrap creates the one-time code
+  at `/data/state/internal/claim-code`, records that location in its log, and
+  keeps the same code across restarts. A successful claim accepts the code,
+  writes the Argon2 password hash, claim time and a random session signing
+  secret to mode 0600 `admin.json`, then removes the code. Later claim
+  attempts are refused, and a login submitted on a system that is not claimed
+  returns to the Claim page rather than reporting a bad password. Password
+  login creates an expiring HMAC-signed cookie with the shipped 12-hour
+  default and no database session state. The protected overview says only that
+  the operator is signed in, because its counters and controls belong to later
+  increments. Logout clears the cookie from that browser and the protected
+  page redirects to Login again; because the session is the signed cookie and
+  not a row, an issued token stays valid until its expiry no matter where Log
+  out is clicked, and re-claiming is the only thing that ends every session at
+  once. Claim, login and logout accept the rendered forms only, and every
+  refusal returns to the page that names its own cause, including a control
+  state file Admin cannot read, a claim code on the volume it cannot read, and
+  a state directory that will not take the record, each named on screen along
+  with what was rejected. The session cookie is always Secure, which browsers
+  honour on the loopback address Admin is fixed to; there is no setting that
+  publishes it anywhere else. Admin mounts only `/data/state`, so the notes
+  filesystem is not reachable from it at all. Re-claiming after password
+  recovery replaces the signing secret, which immediately refuses every cookie
+  issued under the old password. This path was driven through its rendered
+  pages in Chrome against a fresh compose stack, and `ci/smoke.sh` now drives
+  it unattended across the bootstrap and Admin containers: it reads the claim
+  code the documented way, claims, refuses a second claim, signs in, renders
+  the overview, signs out and loses it again.
 - `docker compose up -d` on a clean checkout reaches a healthy stack with no
   manual setup and no hand populated setting. The one-shot `bootstrap`
   container creates `/data`, generates the internal bearer token and the
@@ -135,7 +164,7 @@ vertical path proved end to end, then widened.
   of its own first, because it reads everything and there is no measured
   runtime yet to judge it by. The interval, the quiet period and the rehash
   time are product settings with working defaults; their graphical controls
-  arrive with the separate Admin service.
+  arrive with Admin's later settings page.
 - **What adoption will and will not write into.** Adoption skips `.git`,
   `.obsidian` and `.trash`, everything below the configured trash, sources and
   attachments folders (`_Trash`, `_Sources` and `_Attachments` by default), and
@@ -394,17 +423,16 @@ in the tree, so do not read the absence as a decision to leave it out.
   connection is still not built.
 - **History through the API.** Nothing reads Git history or restores a note
   from it yet; `docker compose exec git git -C /data/notes log` is the way in.
-- **Admin.** A separate service and image in the design, not a route group in
-  the API. Nothing exists yet, so settings are edited as files under
-  `/data/state` for now, which is exactly the state the design says is not
-  shippable. It is shippable in the sense that the defaults work; it is not
-  yet the finished product. Its graphical API keys page also arrives later;
-  until then `python3 -m coppermind_store.keys` is the interim path for adding
-  and rotating keys.
+- **Remaining Admin pages.** API keys, Obsidian Sync connection, settings,
+  schema, filing rules, jobs, source problems, and real overview counters are
+  not built, so `admin.session_hours` is edited as a file setting until the
+  settings page carries its control. Until the graphical API keys page arrives,
+  `python3 -m coppermind_store.keys` remains the interim path for adding and
+  rotating keys.
 - **Helm packaging and lab deployment.** The Helm chart and the lab handoff
-  are not built. Publishing the four existing service images and a release
-  from a version tag is in place and is under Working above; no automation
-  pushes a tag or changes GHCR package visibility.
+  are not built. Publishing the existing service images and a release from a
+  version tag is in place and is under Working above; no automation pushes a
+  tag or changes GHCR package visibility.
 
 ## Known gaps in what is here
 
@@ -425,9 +453,9 @@ in the tree, so do not read the absence as a decision to leave it out.
   `unstored_fields: ["captured_at"]` on every retry and nothing else changes.
 - Nothing repairs a note whose frontmatter a person broke. Reads of it answer
   409 `note_unparseable` and the file is left exactly as it is; putting it
-  right means editing it on a device, because Admin is not here yet. When the
-  broken file still carries one known identity, reconciliation associates the
-  failure with that identity rather than with a stale path.
+  right means editing it on a device, because Admin has no page for it yet.
+  When the broken file still carries one known identity, reconciliation
+  associates the failure with that identity rather than with a stale path.
 - The Git helper polls; there is no filesystem event watcher. With the
   shipped settings a change is recorded within about six minutes, and a note
   edited for a long stretch without a 60 second pause lands as one snapshot

@@ -2,11 +2,11 @@
 # CI never hand-copies a command; if a gate changes, it changes here.
 SHELL := /bin/bash
 .PHONY: setup lint typecheck test test-integration check \
-        image image-store image-api image-git image-obsidian-sync up down logs smoke failure sync-smoke \
+        image image-store image-api image-admin image-git image-obsidian-sync up down logs smoke failure sync-smoke \
         scan scan-deps scan-secrets scan-fs scan-image \
         compose-check prose-check db-up db-down clean
 
-SERVICES ?= store api git obsidian-sync
+SERVICES ?= store api admin git obsidian-sync
 COMPOSE := docker compose
 
 setup:
@@ -76,6 +76,13 @@ image-api:
 		--build-arg BUILD_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) \
 		--build-arg BUILD_DATE=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
 		-t coppermind/api:local .
+
+image-admin:
+	docker build -f services/admin/Dockerfile \
+		--build-arg BUILD_VERSION=$${BUILD_VERSION:-dev} \
+		--build-arg BUILD_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) \
+		--build-arg BUILD_DATE=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+		-t coppermind/admin:local .
 
 image-git:
 	docker build -f services/git/Dockerfile \

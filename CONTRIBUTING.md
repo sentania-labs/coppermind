@@ -4,16 +4,17 @@ Thanks for helping. This page is the whole process; there is no separate wiki.
 
 ## Run it locally
 
-Prerequisites: [uv](https://docs.astral.sh/uv/), Docker with Compose,
-Python 3.12 (uv will fetch it if you do not have it), and Node 22 with npm,
-which `make check` needs for the Obsidian Sync helper's tests.
+Prerequisites: [uv](https://docs.astral.sh/uv/), Docker with Compose at the
+version the [quickstart](README.md#quickstart) names, Python 3.12 (uv will
+fetch it if you do not have it), and Node 22 with npm, which `make check`
+needs for the Obsidian Sync helper's tests.
 
 ```bash
 make setup                             # sync the uv workspace
 make check                             # what CI's `checks` job runs
 make db-up test-integration db-down    # the PostgreSQL backed tests
 make scan                              # dependency, secret and repository scans
-make up                                # the stack, on 127.0.0.1:8080
+make up                                # the stack, on 127.0.0.1 ports 8080 and 8082
 make smoke                             # the compose storyline end to end
 make failure                           # helpers stopped and started with edits between
 make down                              # stop; `make clean` also drops volumes
@@ -51,16 +52,16 @@ only ever runs on a tag.
    run and it moves forward.
 6. **The first tag needs one manual step, once.** GHCR creates a package
    private on its first publish and does not inherit the repository's
-   visibility, so the first `vX.Y.Z` pushes and signs the four images and then
+   visibility, so the first `vX.Y.Z` pushes and signs the five images and then
    fails its anonymous-pull check with a manifest-unknown error. The captain
-   sets the `store`, `api`, `git` and `obsidian-sync` packages to public in the
-   repository's package settings, once, and re-runs the job. Nothing in CI
-   changes package visibility. Until a real tag has gone through this, the
-   anonymous-pull proof is untested; the first real tag is what completes it.
-   Re-running publication works for 30 days, which is how long a tag build
-   keeps the image archives it publishes from. After that window the archives
-   are gone and the only way forward is pushing the tag again for a fresh
-   build.
+   sets the `store`, `api`, `admin`, `git` and `obsidian-sync` packages to
+   public in the repository's package settings, once, and re-runs the job.
+   Nothing in CI changes package visibility. Until a real tag has gone through
+   this, the anonymous-pull proof is untested; the first real tag is what
+   completes it. Re-running publication works for 30 days, which is how long
+   a tag build keeps the image archives it publishes from. After that window
+   the archives are gone and the only way forward is pushing the tag again for
+   a fresh build.
 
 Write the body in operational terms: what changes for someone running it,
 what the blast radius is, how to recover if it is wrong. Name which regime the
