@@ -94,13 +94,17 @@ vertical path proved end to end, then widened.
   block reassembled. Key order, comments and quoting survive that; the block's
   own line endings do not. Every other adoption only appends. A file the store
   refuses, because its frontmatter does not validate, because it carries a
-  malformed identifier, or because its frontmatter delimiter lines end in a
-  bare carriage return that the shared parser reads as having no body, is left
-  byte exact and counted rejected. The reason names the parser category or the
-  schema keys at fault and never the person's own values, because logs are
-  collected and shipped. A carriage return in the body is the person's own byte
-  and never blocks adoption. Everything a file is judged on is decided before a
-  database connection is asked for, so a note the schema refuses costs a read
+  malformed identifier, because a value it carries is one the mirror cannot
+  store at all, or because its frontmatter delimiter lines end in a bare
+  carriage return that the shared parser reads as having no body, is left byte
+  exact and counted rejected. The reason names the parser category, the schema
+  keys at fault or the kind of fault, and never the person's own values,
+  because logs are collected and shipped. A carriage return in the body is the
+  person's own byte and never blocks adoption, and neither does a NUL inside a
+  value: the file keeps that byte and the mirror, which is the rebuildable
+  copy, drops it.
+  Everything a file is judged on is decided before a database connection is
+  asked for, so a note the schema refuses costs a read
   and a parse however often the scan rediscovers it. A file the store cannot
   write is counted unwritable with the same detail. Both keep their stat like
   any other
