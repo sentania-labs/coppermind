@@ -5,7 +5,7 @@ from stat import S_IMODE
 
 from coppermind_store.bootstrap import run
 from coppermind_store.control import ControlState
-from coppermind_store.keys import REVOKED_NOTICE, revoke_key
+from coppermind_store.keys import DEFAULT_KEY_NAME, REVOKED_NOTICE, revoke_key
 
 from coppermind.api_keys import split_credential, verify_secret
 from coppermind.settings import Wiring
@@ -136,3 +136,45 @@ def test_a_revoked_default_key_stays_revoked_and_says_so(tmp_path: Path):
     assert run(wiring) == 0
     assert wiring.default_api_key_file.read_text(encoding="utf-8").strip() == REVOKED_NOTICE
     assert len(ControlState(wiring.state_dir).api_keys().keys) == 1
+
+
+def test_a_restored_backup_never_resurrects_a_revoked_default(tmp_path: Path, capsys):
+    """The `data` volume carries the revocation; losing the credential volume must not undo it."""
+    wiring = wiring_for(tmp_path)
+    run(wiring)
+    control = ControlState(wiring.state_dir)
+    revoked_id = control.api_keys().keys[0].key_id
+    revoke_key(control, revoked_id)
+    wiring.default_api_key_file.unlink()
+    capsys.readouterr()
+
+    assert run(wiring) == 0
+    assert "default_api_key=revoked" in capsys.readouterr().out
+
+    records = ControlState(wiring.state_dir).api_keys().keys
+    assert [record.key_id for record in records] == [revoked_id]
+    assert records[0].revoked_at is not None
+    assert wiring.default_api_key_file.read_text(encoding="utf-8").strip() == REVOKED_NOTICE
+
+
+def test_a_live_default_whose_credential_is_gone_is_re_issued(tmp_path: Path, capsys):
+    """A restore that keeps a live default must come up with a usable credential."""
+    wiring = wiring_for(tmp_path)
+    run(wiring)
+    first_id = ControlState(wiring.state_dir).api_keys().keys[0].key_id
+    wiring.default_api_key_file.unlink()
+    capsys.readouterr()
+
+    assert run(wiring) == 0
+    assert "default_api_key=re-issued" in capsys.readouterr().out
+
+    credential = wiring.default_api_key_file.read_text(encoding="utf-8").strip()
+    parsed = split_credential(credential)
+    assert parsed is not None
+    key_id, secret = parsed
+    assert key_id != first_id
+    records = ControlState(wiring.state_dir).api_keys().keys
+    current = next(record for record in records if record.key_id == key_id)
+    assert current.name == DEFAULT_KEY_NAME
+    assert current.revoked_at is None
+    assert verify_secret(current.hash, secret)

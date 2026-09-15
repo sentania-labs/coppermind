@@ -14,6 +14,7 @@ from pathlib import Path
 
 from coppermind.api_keys import (
     API_SCOPES,
+    ApiKeyRecord,
     ApiKeySet,
     create_key,
     split_credential,
@@ -24,6 +25,7 @@ from coppermind.settings import Wiring
 from coppermind.statefiles import RevisionConflict
 from coppermind_store.control import ControlState
 
+DEFAULT_KEY_NAME = "bootstrap default"
 REVOKED_NOTICE = (
     "the default API key was revoked; create a new key with: "
     "python3 -m coppermind_store.keys create"
@@ -65,33 +67,41 @@ def revoke_key(control: ControlState, key_id: str) -> None:
         )
 
 
+def _reveals(secret_file: Path, record: ApiKeyRecord) -> bool:
+    """Say whether the reveal file still holds the credential for `record`."""
+    if not secret_file.exists() or secret_file.stat().st_size == 0:
+        return False
+    parsed = split_credential(secret_file.read_text(encoding="utf-8").strip())
+    if parsed is None:
+        return False
+    key_id, secret = parsed
+    return key_id == record.key_id and verify_secret(record.hash, secret)
+
+
 def ensure_default_key(control: ControlState, secret_file: Path) -> str:
     """Ensure bootstrap's full-scope default key, saying what became of it.
 
-    The reveal file is kept whenever it names a live key record it verifies
-    against, so a restart never rotates a credential in use. A revoked record
-    stays revoked: the file is replaced by a sentence saying so, because an
-    operator who reads it should be told rather than handed a credential that
-    answers 401. Anything else, including a first start and a run interrupted
-    between the reveal write and the record write, mints a fresh key and
-    overwrites the file, which rotates only a credential nobody could use.
+    `keys.json` decides, not the reveal file, because the control state is what
+    a backup carries and what revocation is recorded in. A revoked default
+    stays revoked however the credential volume was lost: the reveal file is
+    replaced by a sentence saying so, and no replacement is minted. A live
+    default whose credential is still readable is kept untouched. A live
+    default whose credential is gone is re-issued, which rotates only a
+    credential nobody could use, and a default that was never recorded is
+    generated.
     """
     key_set, exists = _load_keys(control)
-    if secret_file.exists() and secret_file.stat().st_size > 0:
-        revealed = secret_file.read_text(encoding="utf-8").strip()
-        if revealed == REVOKED_NOTICE:
+    current = next(
+        (record for record in reversed(key_set.keys) if record.name == DEFAULT_KEY_NAME), None
+    )
+    if current is not None:
+        if current.revoked_at is not None:
+            atomic_write_text(secret_file, REVOKED_NOTICE + "\n", mode=0o600)
             return "revoked"
-        parsed = split_credential(revealed)
-        if parsed is not None:
-            key_id, secret = parsed
-            current = next((record for record in key_set.keys if record.key_id == key_id), None)
-            if current is not None and verify_secret(current.hash, secret):
-                if current.revoked_at is None:
-                    return "kept"
-                atomic_write_text(secret_file, REVOKED_NOTICE + "\n", mode=0o600)
-                return "revoked"
+        if _reveals(secret_file, current):
+            return "kept"
 
-    record, credential = create_key("bootstrap default", list(API_SCOPES))
+    record, credential = create_key(DEFAULT_KEY_NAME, list(API_SCOPES))
     atomic_write_text(secret_file, credential + "\n", mode=0o600)
     key_set.keys.append(record)
     control.store.write(
@@ -99,7 +109,7 @@ def ensure_default_key(control: ControlState, secret_file: Path) -> str:
         key_set.model_dump(mode="json"),
         if_revision=key_set.revision if exists else None,
     )
-    return "generated"
+    return "re-issued" if current is not None else "generated"
 
 
 def parser() -> argparse.ArgumentParser:
