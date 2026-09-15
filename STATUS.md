@@ -26,11 +26,11 @@ vertical path proved end to end, then widened.
   full-scope key while the first stays usable.
 - Every `/v1` route requires `Bearer cm_<key_id>_<secret>`. A missing or bad
   key answers 401 and a key without the route's scope answers 403. Note reads
-  need `notes:read`; creates and replacements need `notes:write`; ingest needs
-  both `sources:write` and `notes:write`, so a key holding one of the two
-  answers 403. Successful verification and key hashes are cached for five
-  minutes, so a key created after a load is picked up at the next cache expiry
-  rather than at once.
+  need `notes:read`; creates, replacements and frontmatter patches need
+  `notes:write`; ingest needs both `sources:write` and `notes:write`, so a key
+  holding one of the two answers 403. Successful verification and key hashes
+  are cached for five minutes, so a key created after a load is picked up at
+  the next cache expiry rather than at once.
   Health, readiness and OpenAPI remain open, and Compose remains bound to
   loopback by default.
   The content-typed journal scopes, `journal:read` and `journal:write`, are
@@ -80,7 +80,8 @@ vertical path proved end to end, then widened.
   and frontmatter alike, because the note belongs to the captain once it
   exists. A caller resending a changed note body with an existing external id
   gets 200, `note.created: false` and an empty `unstored_fields`, and its note
-  payload was not used: the way to edit a note is `PUT /v1/notes/{id}`.
+  payload was not used: the way to edit a note is `PUT /v1/notes/{id}`, or
+  `PATCH /v1/notes/{id}/frontmatter` for named fields.
   An interrupted revision write can leave a numbered revision directory that
   `manifest.json` does not record. The next ingest of changed artifacts for
   that source answers 409 `incomplete_revision` naming the directory, rather
