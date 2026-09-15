@@ -174,10 +174,10 @@ services:
       retries: 3
 
   # Supervises the Obsidian client and owns only its own state under
-  # /data/state/sync. Real sync is refused for now, pending captain decisions
-  # on first-connect behaviour and on where the account credential lives, so
-  # this service reaches no account and writes no note today. Its control
-  # endpoint answers meanwhile, and the later Admin service supplies its GUI.
+  # /data/state/sync. Its account token and vault encryption key belong on the
+  # separate credential volume, outside the data backup. Real sync is refused
+  # until the later Admin service can guide creation of Coppermind's own
+  # encrypted remote vault and collect its credentials.
   # The simulated client used to prove the lifecycle lives in
   # docker-compose.sync-smoke.yml and is deliberately not settable here.
   obsidian-sync:
@@ -187,6 +187,7 @@ services:
     volumes:
       - data:/data
       - internal-token:/run/coppermind/internal:ro
+      - obsidian-sync-credentials:/var/lib/obsidian-sync
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -201,3 +202,6 @@ volumes:
   internal-token:
   postgres-password:
   default-api-key:
+  # Deliberately outside the data backup. Restoring data without this volume
+  # requires a fresh Obsidian login through the future guided Admin setup.
+  obsidian-sync-credentials:

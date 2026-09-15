@@ -24,15 +24,17 @@ WORKDIR /app
 COPY services/obsidian-sync/supervisor.mjs services/obsidian-sync/health.mjs services/obsidian-sync/control.mjs ./
 COPY services/obsidian-sync/fake ./fake
 
-# No HOME on the data volume: where the Obsidian account credential lives is
-# an open captain decision, and the data volume is what a backup carries.
-ENV COPPERMIND_BUILD_VERSION="${BUILD_VERSION}"
+# The account token and vault encryption key live in this dedicated home,
+# mounted from their own credential volume rather than the data backup.
+ENV HOME="/var/lib/obsidian-sync" \
+    COPPERMIND_BUILD_VERSION="${BUILD_VERSION}"
 
-RUN mkdir -p /data /run/coppermind/internal \
-    && chown -R 1000:1000 /data /app /run/coppermind
+RUN mkdir -p /data /run/coppermind/internal /var/lib/obsidian-sync \
+    && chown -R 1000:1000 /data /app /run/coppermind /var/lib/obsidian-sync \
+    && chmod 0700 /var/lib/obsidian-sync
 USER 1000
 EXPOSE 8092
-VOLUME ["/data"]
+VOLUME ["/data", "/var/lib/obsidian-sync"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD ["node", "/app/health.mjs"]

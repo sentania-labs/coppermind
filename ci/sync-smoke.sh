@@ -65,6 +65,8 @@ restore_refusing_helper() {
 step "bring the stack up with the simulated client"
 compose up -d --wait --remove-orphans
 trap restore_refusing_helper EXIT
+compose exec -T obsidian-sync sh -c \
+    'test "$HOME" = /var/lib/obsidian-sync && test -w "$HOME" && test "${HOME#/data/}" = "$HOME"'
 
 initial="$(control status)"
 [ "$(printf '%s' "$initial" | field simulated)" = "True" ] \

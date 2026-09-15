@@ -156,9 +156,16 @@ docker compose exec git git -C /data/notes log --stat
 
 The Obsidian Sync helper is supervised and answers its control endpoint, but
 it does not sync to a device yet. Connecting a real account is refused on
-purpose: how the first connection should behave, and where the account
-credential should live, are both open decisions, so nothing here touches an
-Obsidian account or a remote vault object. The refusal is what you get back.
+purpose until the Admin service provides the captain's requested guided setup.
+That flow will create Coppermind's own new encrypted remote vault, collect its
+encryption password, and restart the helper on save. The captain's existing
+Obsidian vault remains a data source whose content arrives through the ingest
+API. Nothing here touches an Obsidian account or remote vault object today.
+
+The future account token and vault encryption key have their own
+`obsidian-sync-credentials` volume, outside the `data` backup. Restoring the
+notes filesystem without that credential volume requires a fresh Obsidian
+login through the guided Admin setup.
 
 ```bash
 docker compose exec obsidian-sync node /app/control.mjs status

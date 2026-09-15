@@ -256,11 +256,18 @@ vertical path proved end to end, then widened.
   disconnected, with that state in `/data/state/sync/status.json`.
   **Real sync is refused on purpose.** Connect, pause, resume and boot from a
   persisted connection all return the same refusal and never invoke the
-  client, because two decisions are open: what a first connection should do
-  to a vault that already has notes on both sides, and where the account
-  credential should live given that the `data` volume is what a backup
-  carries. No note has been delivered to a device from here, and no account
-  has been used; the phone half of the core path is not proved yet.
+  client. The captain chose a new encrypted remote vault for Coppermind,
+  separate from his existing vault. His existing vault remains a data source
+  whose content arrives through the ingest API, so the two vaults never merge.
+  Real connect stays refused until Admin provides the guided setup he asked
+  for: create the remote vault when needed, collect its encryption password,
+  save, and restart the helper. No note has been delivered to a device from
+  here, and no account has been used; the phone half of the core path is not
+  proved yet.
+  The future account token and vault encryption key have their own
+  `obsidian-sync-credentials` volume mounted at `/var/lib/obsidian-sync`, not
+  the shared `data` backup volume. Restoring the notes filesystem without that
+  credential volume requires a fresh login through the guided Admin setup.
   A bundled stand-in client, switched on only by `make sync-smoke` through
   `docker-compose.sync-smoke.yml`, proves connect, pause, resume and recovery
   after the supervised child is killed, then puts the helper back in its
@@ -275,9 +282,9 @@ vertical path proved end to end, then widened.
   `coppermind.settings`, the way `services/git/tests/test_settings.py` already
   does for the Git helper. The Obsidian client is not installed in the image
   either; it returns with the call site that uses it.
-  Graphical control stays deferred to the Admin service, so the helper's
-  settings are reachable only from the packaged control command today; that is
-  a named exception to the every-setting-has-a-GUI bar, not an oversight.
+  Graphical control stays deferred to the guided Admin setup. The packaged
+  control command exposes the refused lifecycle today, but typed first connect
+  is not accepted as an exception to the every-setting-has-a-GUI bar.
 
 ## Not built yet
 
