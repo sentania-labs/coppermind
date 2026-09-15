@@ -6,7 +6,6 @@ import path from "node:path";
 import process from "node:process";
 
 const DATA_DIR = process.env.COPPERMIND_DATA_DIR || "/data";
-const NOTES_DIR = path.join(DATA_DIR, "notes");
 const STATE_DIR = path.join(DATA_DIR, "state", "sync");
 const STATUS_FILE = path.join(STATE_DIR, "status.json");
 const CONNECTION_FILE = path.join(STATE_DIR, "connection.json");
@@ -15,13 +14,21 @@ const TOKEN_FILE =
 const FAKE = process.env.COPPERMIND_SYNC_FAKE === "1";
 const PORT = Number.parseInt(process.env.COPPERMIND_SYNC_PORT || "8092", 10);
 const DEVICE_NAME = "Coppermind";
-const PROBE_INTERVAL_MS = 30_000;
-const RESTART_DELAY_MS = FAKE ? 250 : 2_000;
-const COMMAND_TIMEOUT_MS = 10_000;
+const RESTART_BASE_MS = FAKE ? 250 : 2_000;
+const RESTART_CEILING_MS = FAKE ? 2_000 : 300_000;
+const RESTART_STABLE_MS = FAKE ? 2_000 : 60_000;
+
+// Nothing here may reach the operator's Obsidian account or their remote vault
+// object. First-connect behaviour and where the account credential lives are
+// both open captain decisions, so every path that would run the real client
+// refuses instead and says why.
+const REAL_SYNC_REFUSED =
+  "real Obsidian sync is refused pending captain decisions on first-connect behaviour and credential placement";
 
 let child = null;
+let childStartedAt = 0;
 let restartTimer = null;
-let heartbeatTimer = null;
+let restartAttempts = 0;
 let stopping = false;
 let connection = null;
 let writeSequence = 0;
@@ -34,15 +41,19 @@ const status = {
   configured: false,
   syncing: false,
   paused: false,
+  // True whenever the supervised child is the bundled simulator rather than
+  // the Obsidian client. Nothing in a simulated run reaches a remote vault.
+  simulated: FAKE,
+  real_sync_supported: false,
   vault_name: null,
   device_name: DEVICE_NAME,
-  mode: FAKE ? "fake" : "real",
-  sync_mode: "bidirectional",
-  conflict_strategy: "merge",
-  cli_version: "0.0.14",
-  last_sync_at: null,
+  // Only ever set from what the running client reports about itself.
+  sync_mode: null,
+  conflict_strategy: null,
+  // The supervisor watches the child process and nothing else: a client that
+  // is running but has stopped delivering files still reports syncing.
+  liveness: "child_process_only",
   last_error: null,
-  plan_limits_applied: false,
   sync_pid: null,
   control_port: null,
 };
@@ -81,11 +92,13 @@ async function loadConnection() {
       throw new Error("connection file has no remote vault name");
     }
     connection = value;
+    const paused = value.paused === true;
     Object.assign(status, {
       configured: true,
-      paused: value.paused === true,
+      paused,
       vault_name: value.vault_name,
-      state: value.paused === true ? "paused" : "starting",
+      state: paused ? "paused" : FAKE ? "starting" : "refused",
+      last_error: paused || FAKE ? null : REAL_SYNC_REFUSED,
     });
   } catch (error) {
     if (error.code !== "ENOENT") {
@@ -98,55 +111,19 @@ async function saveConnection() {
   await writeJsonAtomically(CONNECTION_FILE, connection);
 }
 
-function run(command, args, timeoutMs = COMMAND_TIMEOUT_MS) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(command, args, { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      proc.kill("SIGKILL");
-      reject(new Error(`${command} timed out`));
-    }, timeoutMs);
-    proc.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    proc.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    proc.once("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    proc.once("exit", (code, signal) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        resolve(stdout.trim());
-      } else {
-        reject(new Error(stderr.trim() || `${command} exited ${code ?? signal}`));
-      }
-    });
-  });
-}
-
-function parseLastSync(raw) {
-  if (!raw) return null;
+function observeClientReport(line) {
+  let parsed;
   try {
-    const parsed = JSON.parse(raw);
-    return parsed.last_sync_at || parsed.lastSyncAt || parsed.lastSync || null;
+    parsed = JSON.parse(line);
   } catch {
-    return null;
+    return;
   }
-}
-
-async function probe() {
-  if (FAKE) return new Date().toISOString();
-  const raw = await run("ob", ["sync-status", "--path", NOTES_DIR, "--json"]);
-  return parseLastSync(raw);
-}
-
-function syncCommand() {
-  if (FAKE) return [process.execPath, [path.join(import.meta.dirname, "fake", "sync.mjs")]];
-  return ["ob", ["sync", "--path", NOTES_DIR, "--continuous"]];
+  const patch = {};
+  if (typeof parsed.sync_mode === "string") patch.sync_mode = parsed.sync_mode;
+  if (typeof parsed.conflict_strategy === "string") {
+    patch.conflict_strategy = parsed.conflict_strategy;
+  }
+  if (Object.keys(patch).length > 0) publishStatus(patch).catch(() => {});
 }
 
 async function stopChild() {
@@ -167,47 +144,55 @@ async function stopChild() {
 
 async function startSync() {
   if (!connection || status.paused || stopping || child) return;
-  await publishStatus({ state: "starting", connected: false, syncing: false, sync_pid: null });
-  try {
-    const lastSync = await probe();
-    const [command, args] = syncCommand();
-    const proc = spawn(command, args, { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
-    child = proc;
-    proc.stdout.on("data", (chunk) => log("sync output", { output: chunk.toString().trim() }));
-    proc.stderr.on("data", (chunk) => log("sync error output", { output: chunk.toString().trim() }));
-    proc.once("error", (error) => handleChildExit(proc, null, null, error));
-    proc.once("exit", (code, signal) => handleChildExit(proc, code, signal));
+  if (!FAKE) {
     await publishStatus({
-      state: "syncing",
-      connected: true,
-      syncing: true,
-      sync_pid: proc.pid,
-      last_sync_at: lastSync || status.last_sync_at,
-      last_error: null,
-    });
-    log("sync process started", { pid: proc.pid, mode: status.mode });
-  } catch (error) {
-    await publishStatus({
-      state: "error",
+      state: "refused",
       connected: false,
       syncing: false,
       sync_pid: null,
-      last_error: String(error.message || error),
+      last_error: REAL_SYNC_REFUSED,
     });
-    scheduleRestart();
-    throw error;
+    log("real sync refused", { vault_name: status.vault_name });
+    return;
   }
+  await publishStatus({ state: "starting", connected: false, syncing: false, sync_pid: null });
+  const proc = spawn(process.execPath, [path.join(import.meta.dirname, "fake", "sync.mjs")], {
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child = proc;
+  childStartedAt = Date.now();
+  proc.stdout.on("data", (chunk) => {
+    const output = chunk.toString().trim();
+    log("sync output", { output });
+    for (const line of output.split("\n")) observeClientReport(line);
+  });
+  proc.stderr.on("data", (chunk) => log("sync error output", { output: chunk.toString().trim() }));
+  proc.once("error", (error) => handleChildExit(proc, null, null, error));
+  proc.once("exit", (code, signal) => handleChildExit(proc, code, signal));
+  await publishStatus({
+    state: "syncing",
+    connected: true,
+    syncing: true,
+    sync_pid: proc.pid,
+    last_error: null,
+  });
+  log("sync process started", { pid: proc.pid, simulated: status.simulated });
 }
 
 function scheduleRestart() {
-  if (!connection || status.paused || stopping) return;
+  if (!connection || status.paused || stopping || !FAKE) return;
   clearTimeout(restartTimer);
-  restartTimer = setTimeout(() => startSync().catch(() => {}), RESTART_DELAY_MS);
+  const delay = Math.min(RESTART_BASE_MS * 2 ** restartAttempts, RESTART_CEILING_MS);
+  restartAttempts += 1;
+  log("sync restart scheduled", { attempt: restartAttempts, delay_ms: delay });
+  restartTimer = setTimeout(() => startSync().catch(() => {}), delay);
 }
 
 async function handleChildExit(proc, code, signal, error = null) {
   if (child !== proc) return;
   child = null;
+  if (Date.now() - childStartedAt >= RESTART_STABLE_MS) restartAttempts = 0;
   const expected = stopping || status.paused;
   const message = error
     ? String(error.message || error)
@@ -225,86 +210,18 @@ async function handleChildExit(proc, code, signal, error = null) {
   }
 }
 
-async function checkLiveness() {
-  if (!child || status.paused) return;
-  try {
-    const lastSync = await probe();
-    await publishStatus({
-      state: "syncing",
-      connected: true,
-      syncing: true,
-      last_sync_at: lastSync || status.last_sync_at,
-      last_error: null,
-    });
-  } catch (error) {
-    await publishStatus({
-      state: "stalled",
-      connected: false,
-      syncing: false,
-      last_error: `sync status probe failed: ${String(error.message || error)}`,
-    });
-    await stopChild();
-  }
-}
-
 async function connect(body) {
+  if (!FAKE) return [501, { error: "real_sync_refused", detail: REAL_SYNC_REFUSED }];
   if (child && status.syncing) return [409, { error: "already_connected" }];
-  let vaultName = body.vault_name;
-  if (FAKE) {
-    vaultName = vaultName || "Fake remote vault";
-  } else {
-    if (body.email || body.password || body.mfa) {
-      return [
-        422,
-        { error: "credentials_not_accepted", detail: "run ob login interactively first" },
-      ];
-    }
-    if (typeof vaultName !== "string" || vaultName.length === 0) {
-      return [422, { error: "vault_name_required" }];
-    }
-    try {
-      await run("ob", ["sync-list-remote", "--json"]);
-      await run("ob", [
-        "sync-setup",
-        "--vault",
-        vaultName,
-        "--path",
-        NOTES_DIR,
-        "--device-name",
-        DEVICE_NAME,
-        "--json",
-      ]);
-      await run("ob", [
-        "sync-config",
-        "--path",
-        NOTES_DIR,
-        "--mode",
-        "bidirectional",
-        "--conflict-strategy",
-        "merge",
-        "--configs",
-        "",
-        "--json",
-      ]);
-    } catch (error) {
-      await publishStatus({
-        state: "not_connected",
-        connected: false,
-        configured: false,
-        syncing: false,
-        last_error: String(error.message || error),
-      });
-      return [400, { error: "connect_failed", detail: status.last_error }];
-    }
-  }
+  const vaultName =
+    typeof body.vault_name === "string" && body.vault_name.length > 0
+      ? body.vault_name
+      : "Simulated remote vault";
   connection = { vault_name: vaultName, paused: false };
+  restartAttempts = 0;
   await saveConnection();
   await publishStatus({ configured: true, paused: false, vault_name: vaultName });
-  try {
-    await startSync();
-  } catch {
-    return [502, { error: "sync_start_failed", detail: status.last_error }];
-  }
+  await startSync();
   return [200, publicStatus()];
 }
 
@@ -320,15 +237,13 @@ async function pause() {
 }
 
 async function resume() {
+  if (!FAKE) return [501, { error: "real_sync_refused", detail: REAL_SYNC_REFUSED }];
   if (!connection) return [409, { error: "not_configured" }];
   connection.paused = false;
   status.paused = false;
+  restartAttempts = 0;
   await saveConnection();
-  try {
-    await startSync();
-  } catch {
-    return [502, { error: "sync_start_failed", detail: status.last_error }];
-  }
+  await startSync();
   return [200, publicStatus()];
 }
 
@@ -368,13 +283,6 @@ const server = http.createServer(async (request, response) => {
       send(response, 200, { supervisor: "running" });
       return;
     }
-    if (request.method === "GET" && request.url === "/healthz") {
-      send(response, status.syncing ? 200 : 503, {
-        healthy: status.syncing,
-        state: status.state,
-      });
-      return;
-    }
     if (!(await authorized(request))) {
       send(response, 401, { error: "unauthorized" });
       return;
@@ -399,24 +307,18 @@ async function shutdown(signal) {
   if (stopping) return;
   stopping = true;
   clearTimeout(restartTimer);
-  clearInterval(heartbeatTimer);
   log("stopping", { signal });
   await stopChild();
   server.close(() => process.exit(0));
 }
 
-await mkdir(NOTES_DIR, { recursive: true });
 await mkdir(STATE_DIR, { recursive: true });
 await loadConnection();
 server.listen(PORT, "0.0.0.0", async () => {
   const address = server.address();
   await publishStatus({ control_port: address.port });
-  log("control endpoint started", { port: address.port, mode: status.mode });
+  log("control endpoint started", { port: address.port, simulated: status.simulated });
   if (connection && !status.paused) await startSync().catch(() => {});
 });
-heartbeatTimer = setInterval(async () => {
-  await checkLiveness();
-  await publishStatus();
-}, PROBE_INTERVAL_MS);
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));

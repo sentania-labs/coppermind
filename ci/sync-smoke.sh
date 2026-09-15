@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Fake mode proves the Obsidian Sync helper lifecycle without an account.
+# The simulated client proves the Obsidian Sync helper lifecycle without an
+# account. It is turned on by docker-compose.ci.yml only, so this needs both
+# compose files; the first check below fails loudly if the overlay is missing.
 set -euo pipefail
 
-COMPOSE_FILES="${COMPOSE_FILES:--f docker-compose.yml}"
+COMPOSE_FILES="${COMPOSE_FILES:--f docker-compose.yml -f docker-compose.ci.yml}"
 # shellcheck disable=SC2086
 compose() { docker compose $COMPOSE_FILES "$@"; }
 
@@ -45,6 +47,8 @@ wait_for() {
 }
 
 initial="$(control GET /status)"
+[ "$(printf '%s' "$initial" | field simulated)" = "True" ] \
+    || fail "helper is not running the simulated client; use -f docker-compose.ci.yml"
 [ "$(printf '%s' "$initial" | field connected)" = "False" ] || fail "fresh helper claims connected"
 [ "$(printf '%s' "$initial" | field syncing)" = "False" ] || fail "fresh helper claims syncing"
 
@@ -71,6 +75,8 @@ persisted="$(compose exec -T obsidian-sync cat /data/state/sync/status.json)"
 [ "$(printf '%s' "$persisted" | field sync_pid)" = "$new_pid" ] \
     || fail "status file does not report the restarted process"
 [ "$(printf '%s' "$persisted" | field syncing)" = "True" ] \
-    || fail "status file does not report active fake sync"
+    || fail "status file does not report the active simulated client"
+[ "$(printf '%s' "$persisted" | field sync_mode)" = "simulated" ] \
+    || fail "status file does not report the client as simulated"
 
-printf 'sync lifecycle passed: connect, pause, resume, killed process restarted\n'
+printf 'simulated sync lifecycle passed: connect, pause, resume, killed process restarted\n'

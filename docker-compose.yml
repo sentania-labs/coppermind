@@ -173,16 +173,17 @@ services:
       timeout: 5s
       retries: 3
 
-  # Runs the Obsidian client under supervision and owns only its sync state
-  # plus changes the remote service delivers into the notes filesystem. With
-  # no account credential it stays honestly disconnected while its control
-  # endpoint remains available. The later Admin service supplies its GUI.
+  # Supervises the Obsidian client and owns only its own state under
+  # /data/state/sync. Real sync is refused for now, pending captain decisions
+  # on first-connect behaviour and on where the account credential lives, so
+  # this service reaches no account and writes no note today. Its control
+  # endpoint answers meanwhile, and the later Admin service supplies its GUI.
+  # The simulated client used to prove the lifecycle is a CI-only override in
+  # docker-compose.ci.yml and is deliberately not settable here.
   obsidian-sync:
     <<: *obsidian-sync-image
     restart: unless-stopped
-    environment:
-      <<: *wiring
-      COPPERMIND_SYNC_FAKE: ${COPPERMIND_SYNC_FAKE:-0}
+    environment: *wiring
     volumes:
       - data:/data
       - internal-token:/run/coppermind/internal:ro

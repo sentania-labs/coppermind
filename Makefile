@@ -104,8 +104,10 @@ smoke:
 failure:
 	COMPOSE_FILES="$${COMPOSE_FILES:--f docker-compose.yml}" bash ci/failure.sh
 
+# Needs the CI overlay: only it turns on the simulated client this proves.
 sync-smoke:
-	COMPOSE_FILES="$${COMPOSE_FILES:--f docker-compose.yml}" bash ci/sync-smoke.sh
+	COMPOSE_FILES="$${COMPOSE_FILES:--f docker-compose.yml -f docker-compose.ci.yml}" \
+		bash ci/sync-smoke.sh
 
 clean: down db-down
 	-$(COMPOSE) down -v

@@ -57,10 +57,6 @@ test("fake mode proves the authenticated lifecycle and child restart", async (co
   };
 
   assert.deepEqual(await request("/livez", "GET", false), [200, { supervisor: "running" }]);
-  assert.deepEqual(await request("/healthz", "GET", false), [
-    503,
-    { healthy: false, state: "not_connected" },
-  ]);
   assert.equal((await request("/status", "GET", false))[0], 401);
   let [code, state] = await request("/status");
   assert.equal(code, 200);
@@ -72,7 +68,8 @@ test("fake mode proves the authenticated lifecycle and child restart", async (co
   assert.equal(code, 200);
   assert.equal(state.connected, true);
   assert.equal(state.syncing, true);
-  assert.equal((await request("/healthz", "GET", false))[0], 200);
+  assert.equal(state.simulated, true);
+  assert.equal(state.real_sync_supported, false);
   const firstPid = state.sync_pid;
 
   [code, state] = await request("/pause", "POST");
@@ -80,13 +77,11 @@ test("fake mode proves the authenticated lifecycle and child restart", async (co
   assert.equal(state.state, "paused");
   assert.equal(state.connected, false);
   assert.equal(state.syncing, false);
-  assert.equal((await request("/healthz", "GET", false))[0], 503);
 
   [code, state] = await request("/resume", "POST");
   assert.equal(code, 200);
   assert.equal(state.connected, true);
   assert.equal(state.syncing, true);
-  assert.equal((await request("/healthz", "GET", false))[0], 200);
   assert.notEqual(state.sync_pid, firstPid);
   const resumedPid = state.sync_pid;
 
@@ -101,4 +96,85 @@ test("fake mode proves the authenticated lifecycle and child restart", async (co
   const persisted = JSON.parse(await readFile(statusFile, "utf8"));
   assert.equal(persisted.sync_pid, state.sync_pid);
   assert.equal(persisted.state, "syncing");
+
+  const reported = await waitFor(async () => {
+    const [, value] = await request("/status");
+    return value.sync_mode ? value : null;
+  }, "supervisor never published what the client reported about itself");
+  assert.equal(reported.sync_mode, "simulated");
+  assert.equal(reported.conflict_strategy, "simulated");
+  assert.equal(reported.liveness, "child_process_only");
+});
+
+test("real mode refuses every path that would reach the account or the remote vault", async (context) => {
+  const data = await mkdtemp(path.join(os.tmpdir(), "coppermind-sync-real-"));
+  const tokenFile = path.join(data, "internal-token");
+  await writeFile(tokenFile, "test-control-token\n", { mode: 0o600 });
+  // A persisted connection from any earlier release must not restart real sync
+  // on boot either.
+  await mkdir(path.join(data, "state", "sync"), { recursive: true });
+  await writeFile(
+    path.join(data, "state", "sync", "connection.json"),
+    `${JSON.stringify({ vault_name: "Captain vault", paused: false })}\n`,
+  );
+  // Any call to the Obsidian client lands here instead of the real binary.
+  const bin = path.join(data, "bin");
+  const invoked = path.join(data, "ob-was-invoked");
+  await mkdir(bin, { recursive: true });
+  await writeFile(path.join(bin, "ob"), `#!/bin/sh\necho "$@" >> ${invoked}\n`, { mode: 0o755 });
+
+  const supervisor = spawn(process.execPath, [path.join(ROOT, "supervisor.mjs")], {
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      COPPERMIND_DATA_DIR: data,
+      COPPERMIND_INTERNAL_TOKEN_FILE: tokenFile,
+      COPPERMIND_SYNC_PORT: "0",
+    },
+    stdio: "ignore",
+  });
+  context.after(() => supervisor.kill("SIGTERM"));
+
+  const statusFile = path.join(data, "state", "sync", "status.json");
+  const booted = await waitFor(async () => {
+    const value = JSON.parse(await readFile(statusFile, "utf8"));
+    return value.control_port ? value : null;
+  }, "supervisor did not publish its port");
+  const base = `http://127.0.0.1:${booted.control_port}`;
+  const request = async (route, method = "GET", body = undefined) => {
+    const response = await fetch(`${base}${route}`, {
+      method,
+      headers: {
+        authorization: "Bearer test-control-token",
+        ...(body ? { "content-type": "application/json" } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return [response.status, await response.json()];
+  };
+
+  const boot = await waitFor(async () => {
+    const [, value] = await request("/status");
+    return value.state === "refused" ? value : null;
+  }, "supervisor did not refuse the persisted connection on boot");
+  assert.equal(boot.connected, false);
+  assert.equal(boot.syncing, false);
+  assert.equal(boot.sync_pid, null);
+  assert.equal(boot.simulated, false);
+  assert.equal(boot.real_sync_supported, false);
+  assert.equal(boot.sync_mode, null);
+  assert.equal(boot.conflict_strategy, null);
+  assert.match(boot.last_error, /pending captain decisions/);
+
+  for (const route of ["/connect", "/resume"]) {
+    const [code, body] = await request(route, "POST", { vault_name: "Captain vault" });
+    assert.equal(code, 501, `${route} did not refuse`);
+    assert.equal(body.error, "real_sync_refused");
+    assert.match(body.detail, /pending captain decisions/);
+  }
+
+  const [, after] = await request("/status");
+  assert.equal(after.connected, false);
+  assert.equal(after.syncing, false);
+  await assert.rejects(readFile(invoked), { code: "ENOENT" }, "the Obsidian client was invoked");
 });

@@ -250,18 +250,27 @@ vertical path proved end to end, then widened.
   SBOM, scanned; and a compose smoke run of the whole storyline above, plus
   the Git helper's failure storyline, against those exact images. Every action
   is pinned to a commit SHA, and a test enforces that.
-- The independently built `obsidian-sync` image supervises the pinned
+- The independently built `obsidian-sync` image carries the pinned
   `obsidian-headless` client and exposes authenticated connect, pause, resume
   and status controls on the compose network. A fresh install has the
-  supervisor available but reports sync health as disconnected, with that
-  state in `/data/state/sync/status.json`.
-  Fake mode proves connect, pause, resume and recovery after the child process
-  is killed without using a third-party account. Real device sync needs the
-  operator's own account credential once. Until the separate Admin service
-  adds its graphical Connect page, supply that credential interactively with
-  `docker compose exec -it obsidian-sync ob login`, then select the remote
-  vault object through the packaged control command. Real-device receipt has
-  not been claimed or tested here.
+  supervisor available and honestly disconnected, with that state in
+  `/data/state/sync/status.json`.
+  **Real sync is refused on purpose.** Connect, resume and boot from a
+  persisted connection all return the same refusal and never invoke the
+  client, because two decisions are open: what a first connection should do
+  to a vault that already has notes on both sides, and where the account
+  credential should live given that the `data` volume is what a backup
+  carries. No note has been delivered to a device from here, and no account
+  has been used; the phone half of the core path is not proved yet.
+  A bundled stand-in client, switched on only by the CI overlay, proves
+  connect, pause, resume and recovery after the supervised child is killed.
+  The status file says what it knows and no more: `simulated` and
+  `real_sync_supported` flags, `sync_mode` and `conflict_strategy` left null
+  until a client reports them, and `liveness: child_process_only` because the
+  supervisor watches a process, not delivery.
+  Graphical control stays deferred to the Admin service, so the helper's
+  settings are reachable only from the packaged control command today; that is
+  a named exception to the every-setting-has-a-GUI bar, not an oversight.
 
 ## Not built yet
 
@@ -297,9 +306,9 @@ in the tree, so do not read the absence as a decision to leave it out.
   it. The body keeps its own line endings. The repair belongs in the shared
   compose, which is why it is deferred rather than done inside the patch.
 - **Obsidian Sync, the curator and the indexer.** No sync, no filing by
-  rules, no search.
-  The Obsidian Sync helper portion of this earlier combined item is superseded
-  by the B2 entry under Working. Its graphical Admin connection remains not built.
+  rules, no search. The helper that will supervise the sync client is under
+  Working, but real sync is still refused there, and its graphical Admin
+  connection is still not built.
 - **History through the API.** Nothing reads Git history or restores a note
   from it yet; `docker compose exec git git -C /data/notes log` is the way in.
 - **Admin.** A separate service and image in the design, not a route group in

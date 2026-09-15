@@ -25,8 +25,9 @@ RUN npm ci --omit=dev \
 COPY services/obsidian-sync/supervisor.mjs services/obsidian-sync/health.mjs services/obsidian-sync/control.mjs ./
 COPY services/obsidian-sync/fake ./fake
 
+# No HOME on the data volume: where the Obsidian account credential lives is
+# an open captain decision, and the data volume is what a backup carries.
 ENV PATH="/app/node_modules/.bin:$PATH" \
-    HOME="/data/state/sync/home" \
     COPPERMIND_BUILD_VERSION="${BUILD_VERSION}"
 
 RUN mkdir -p /data /run/coppermind/internal \
