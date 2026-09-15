@@ -156,3 +156,22 @@ def test_a_directory_at_the_chosen_name_is_refused_rather_than_called_an_outage(
     assert not list(standing.iterdir())
     assert not list(standing.parent.glob(".*.tmp"))
     assert refused.value.path == relative
+
+
+def test_a_notes_root_reached_through_a_link_still_names_a_page_under_it(tmp_path: Path):
+    """The chosen name is composed from the settings, not read back off the disk.
+
+    An operator may mount or link `/data/notes` through a symlinked parent.
+    Deriving the name from the resolved path would answer that the volume is
+    unwell on every ingest, while the volume is healthy.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    linked = tmp_path / "notes"
+    linked.symlink_to(real)
+
+    relative = place(linked)
+
+    assert relative == "_Sources/Plaud/2026-09-08 Ameren Architecture Sync.md"
+    assert write(linked, relative) is True
+    assert (real / relative).is_file()

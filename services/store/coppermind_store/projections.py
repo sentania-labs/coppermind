@@ -139,8 +139,7 @@ def new_projection_path(
     manifest write that lands the revision.
     """
     try:
-        target = _new_path(notes_root, settings, provider, title, note_date)
-        return target.relative_to(notes_root).as_posix()
+        return _new_path(notes_root, settings, provider, title, note_date)
     except (OSError, ValueError) as exc:
         raise NotesFilesystemUnavailable(str(exc)) from exc
 
@@ -151,12 +150,13 @@ def _new_path(
     provider: str,
     title: str,
     note_date: date,
-) -> Path:
+) -> str:
     folder = sanitize_folder(settings.notes.sources_folder)
     provider_folder = sanitize_stem(provider.title())
-    parent = resolve(notes_root, f"{folder}/{provider_folder}" if folder else provider_folder)
+    parent_relative = f"{folder}/{provider_folder}"
+    parent = resolve(notes_root, parent_relative)
     stem = unique_stem(note_stem(title, note_date=note_date, dated=True), existing_stems(parent))
-    return parent / f"{stem}{NOTE_SUFFIX}"
+    return f"{parent_relative}/{stem}{NOTE_SUFFIX}"
 
 
 def _document(

@@ -38,15 +38,19 @@ async def get_source_artifact(
         artifact = await client.get_source_artifact(source_id, revision, name)
     except StoreError as error:
         return failure(error)
-    headers = {
-        "X-Coppermind-SHA256": artifact.sha256,
-        "X-Coppermind-Size-Bytes": str(artifact.size_bytes),
-        "X-Content-Type-Options": "nosniff",
-    }
     if artifact.content is not None:
         # The ingested type is free client text. The manifest records it; this
         # origin decides for itself how the bytes it serves are interpreted.
         return Response(
-            content=artifact.content, media_type="text/plain; charset=utf-8", headers=headers
+            content=artifact.content,
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "X-Coppermind-SHA256": artifact.sha256,
+                "X-Coppermind-Size-Bytes": str(artifact.size_bytes),
+                "X-Content-Type-Options": "nosniff",
+            },
         )
-    return JSONResponse(content=artifact.model_dump(mode="json"), headers=headers)
+    return JSONResponse(
+        content=artifact.model_dump(mode="json"),
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
