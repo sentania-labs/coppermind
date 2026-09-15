@@ -202,6 +202,21 @@ note_path="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pa
 etag="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["content_hash"])' "$created")"
 ok "created $note_id at $note_path"
 
+step "create two more notes for listing and paging"
+runbook_created="$(mktemp)"
+code="$(curl -sS -o "$runbook_created" -w '%{http_code}' -X POST "$API/v1/notes" \
+    "${AUTH[@]}" -H 'Content-Type: application/json' \
+    -d '{"title":"Database Runbook","frontmatter":{"date":"2026-09-10","type":"note","context":"internal","tags":["runbook"]}}')"
+[ "$code" = "201" ] || { cat "$runbook_created"; fail "runbook create returned $code, expected 201"; }
+runbook_note_id="$(field "$runbook_created" id)"
+reference_created="$(mktemp)"
+code="$(curl -sS -o "$reference_created" -w '%{http_code}' -X POST "$API/v1/notes" \
+    "${AUTH[@]}" -H 'Content-Type: application/json' \
+    -d '{"title":"Vendor Reference","frontmatter":{"date":"2026-09-20","type":"reference","context":"external","tags":["vendor"]}}')"
+[ "$code" = "201" ] || { cat "$reference_created"; fail "reference create returned $code, expected 201"; }
+reference_note_id="$(field "$reference_created" id)"
+ok "four notes now exercise listing, filters and two-item pages"
+
 step "read the file on the volume, not through the API"
 on_disk="$(compose exec -T store cat "/data/notes/$note_path")"
 printf '%s\n' "$on_disk"
@@ -280,6 +295,45 @@ done
 [ "$(hash_on_volume "$note_path")" = "$etag" ] || fail "the new ETag is not the hash of the file on the volume"
 ok "the current write landed under the same identifier and path, with a fresh ETag"
 
+step "list and filter notes from their current files"
+reviewed="$(mktemp)"
+code="$(curl -sS -o "$reviewed" -w '%{http_code}' "${AUTH[@]}" \
+    "$API/v1/notes?reviewed=true")"
+[ "$code" = "200" ] || { cat "$reviewed"; fail "reviewed listing returned $code, expected 200"; }
+python3 -c 'import json,sys
+actual = {item["id"] for item in json.load(open(sys.argv[1]))["items"]}
+expected = set(sys.argv[2:])
+raise SystemExit(0 if actual == expected else f"reviewed listing returned {actual}, expected {expected}")' \
+    "$reviewed" "$ingest_note_id" "$note_id"
+filtered="$(mktemp)"
+code="$(curl -sS -o "$filtered" -w '%{http_code}' "${AUTH[@]}" \
+    "$API/v1/notes?type=reference&context=external&tag=vendor")"
+[ "$code" = "200" ] || { cat "$filtered"; fail "filtered listing returned $code, expected 200"; }
+python3 -c 'import json,sys
+items = json.load(open(sys.argv[1]))["items"]
+assert len(items) == 1 and items[0]["id"] == sys.argv[2]' "$filtered" "$reference_note_id" \
+    || fail "the filtered listing did not return only the vendor reference"
+ok "filters see the reviewed device edit and select the expected subset"
+
+step "page through four notes two at a time"
+first_page="$(mktemp)"
+code="$(curl -sS -o "$first_page" -w '%{http_code}' "${AUTH[@]}" "$API/v1/notes?limit=2")"
+[ "$code" = "200" ] || { cat "$first_page"; fail "first page returned $code, expected 200"; }
+cursor="$(field "$first_page" next_cursor)"
+[ -n "$cursor" ] && [ "$cursor" != "None" ] || fail "the first page did not carry a cursor"
+second_page="$(mktemp)"
+code="$(curl -sS -G -o "$second_page" -w '%{http_code}' "${AUTH[@]}" \
+    --data-urlencode 'limit=2' --data-urlencode "cursor=$cursor" "$API/v1/notes")"
+[ "$code" = "200" ] || { cat "$second_page"; fail "second page returned $code, expected 200"; }
+python3 -c 'import json,sys
+items = json.load(open(sys.argv[1]))["items"] + json.load(open(sys.argv[2]))["items"]
+actual = [item["id"] for item in items]
+expected = set(sys.argv[3:])
+assert len(actual) == 4 and len(actual) == len(set(actual)) and set(actual) == expected
+assert json.load(open(sys.argv[2]))["next_cursor"] is None' \
+    "$first_page" "$second_page" "$ingest_note_id" "$note_id" "$runbook_note_id" "$reference_note_id"
+ok "two pages returned all four notes exactly once"
+
 review_count() { compose exec -T store sh -c 'ls -1 /data/notes/Review | wc -l' | tr -d "[:space:]"; }
 before_outage="$(review_count)"
 
@@ -301,14 +355,19 @@ printf '%s\n' "$down_replace" | grep -q 'metadata_unavailable' \
     || fail "a replace during the outage did not report metadata_unavailable"
 [ "$(status_of "${AUTH[@]}" "$API/v1/notes/$note_id")" = "503" ] \
     || fail "a read during the outage did not return 503"
-ok "readiness is 503 and both mutations return a clean metadata_unavailable"
+down_list="$(mktemp)"
+code="$(curl -sS -o "$down_list" -w '%{http_code}' "${AUTH[@]}" "$API/v1/notes")"
+[ "$code" = "503" ] || { cat "$down_list"; fail "a listing during the outage returned $code"; }
+[ "$(field "$down_list" error)" = "metadata_unavailable" ] \
+    || fail "a listing during the outage did not report metadata_unavailable"
+ok "readiness and listing are 503, and mutations return a clean metadata_unavailable"
 
 step "the notes filesystem is untouched by the outage"
 still_there="$(compose exec -T store cat "/data/notes/$note_path")"
 [ "$still_there" = "$on_disk" ] || fail "the note file changed during the outage"
 [ "$(review_count)" = "$before_outage" ] \
     || fail "the refused write left a file behind in the review folder"
-ok "the note is unchanged and the refused write left no orphan file"
+ok "the note remains readable on the filesystem and the refused write left no orphan file"
 
 step "start PostgreSQL and check everything recovers"
 compose start postgres

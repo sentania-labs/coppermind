@@ -1,9 +1,9 @@
 """`/v1/notes`.
 
-Create a note, read one back by its identifier, replace one on the condition
-that it has not changed since it was read, and change named frontmatter fields
-without replacing it. All four are thin: validation, the call to the store,
-and the ETag. Nothing here touches a file.
+Create a note, list notes, read one back by its identifier, replace one on the
+condition that it has not changed since it was read, and change named
+frontmatter fields without replacing it. Every route is thin: validation, the
+call to the store, and the ETag where one applies. Nothing here touches a file.
 
 A new note lands in the review folder, which is where anything that has not
 been read yet belongs. The identifier in the response is the one written into
@@ -15,13 +15,16 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Response
+from fastapi import APIRouter, Depends, Header, Query, Response
 from fastapi.responses import JSONResponse
 
 from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import (
     CreateNote,
     NoteDocument,
+    NoteQuery,
+    NoteSummary,
+    Page,
     PatchFrontmatter,
     ReplaceNote,
     StoreError,
@@ -49,6 +52,19 @@ async def create_note(
         content=note.model_dump(mode="json"),
         headers={"ETag": f'"{note.content_hash}"', "Location": f"/v1/notes/{note.id}"},
     )
+
+
+@router.get("", response_model=Page[NoteSummary])
+async def list_notes(
+    query: Annotated[NoteQuery, Query()],
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:read")),
+) -> Page[NoteSummary] | JSONResponse:
+    """List current summaries for notes known to the metadata mirror."""
+    try:
+        return await client.list_notes(query)
+    except StoreError as error:
+        return failure(error)
 
 
 @router.get("/{note_id}", response_model=NoteDocument)

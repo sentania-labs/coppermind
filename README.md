@@ -67,11 +67,27 @@ curl -sS -H "Authorization: Bearer $COPPERMIND_KEY" \
   http://127.0.0.1:8080/v1/notes/<id>
 ```
 
-Edit it: send the document back with `If-Match` carrying the `ETag` the read
-returned. Without the header the answer is 428. If the file changed since the
-read, on any device, the answer is 409 `version_conflict` naming the current
-ETag and nothing is written. Send both `frontmatter` and `body`: leaving either
-out answers 422 `validation_error` and the note is unchanged.
+List notes and narrow them by folder, reviewed state, type, context, account,
+date bounds or tag. Each summary is read from the note's current file, and
+carries the `state` that read saw. Pass the answer's `next_cursor` back to get
+the following page:
+
+```bash
+curl -sS -G -H "Authorization: Bearer $COPPERMIND_KEY" \
+  --data-urlencode 'folder=Review' \
+  --data-urlencode 'reviewed=false' \
+  --data-urlencode 'limit=25' \
+  http://127.0.0.1:8080/v1/notes
+```
+
+A filter sent with an empty value answers 422 `validation_error` rather than an
+empty page, so an unset field is never mistaken for a real result.
+
+Edit that note: send the document back with `If-Match` carrying the `ETag` the
+read returned. Without the header the answer is 428. If the file changed since
+the read, on any device, the answer is 409 `version_conflict` naming the
+current ETag and nothing is written. Send both `frontmatter` and `body`:
+leaving either out answers 422 `validation_error` and the note is unchanged.
 
 ```bash
 curl -sS -X PUT http://127.0.0.1:8080/v1/notes/<id> \
@@ -149,14 +165,14 @@ docker compose exec git git -C /data/notes log --stat
 
 Health is honest. `/healthz` says the process is up; `/readyz` says the
 service can do its job. Stop PostgreSQL and `/readyz` answers 503 and says
-why, note writes and reads answer 503 `metadata_unavailable`, and the notes
-filesystem itself carries on unaffected. Start it again and API operations
-recover on their own, with no restart and nothing to clear by hand. A note
-edited in place while PostgreSQL was down reads back as soon as it returns,
-because a note is parsed from its file on every read. A note created, moved or
-deleted on the volume is a separate matter: nothing notices those yet, and
-they wait for the reconciler that a later pull request in this slice
-delivers.
+why, note writes, reads and listings answer 503 `metadata_unavailable`, and
+the notes filesystem itself carries on unaffected. Start it again and API
+operations recover on their own, with no restart and nothing to clear by hand.
+A note edited in place while PostgreSQL was down reads back as soon as it
+returns, because a note is parsed from its file on every read and every
+listing. A note created, moved or deleted on the volume is a separate matter:
+nothing notices those yet, and they wait for the reconciler that a later pull
+request in this slice delivers.
 
 ## Working on it
 

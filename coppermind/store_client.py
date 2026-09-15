@@ -23,9 +23,12 @@ from coppermind.store_protocol import (
     MetadataUnavailable,
     NoteDocument,
     NoteId,
+    NoteQuery,
     NotesFilesystemUnavailable,
+    NoteSummary,
     NoteUnparseable,
     NotFound,
+    Page,
     PatchFrontmatter,
     PathCollision,
     PayloadTooLarge,
@@ -80,6 +83,14 @@ class HttpStoreClient:
     async def get_note(self, note_id: NoteId) -> NoteDocument:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/notes/{_segment(note_id)}")
         return NoteDocument.model_validate(response.json())
+
+    async def list_notes(self, query: NoteQuery) -> Page[NoteSummary]:
+        response = await self._send(
+            "GET",
+            f"{INTERNAL_PREFIX}/notes",
+            params=query.model_dump(mode="json", by_alias=True, exclude_none=True),
+        )
+        return Page[NoteSummary].model_validate(response.json())
 
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag

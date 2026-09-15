@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Request, Response
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from coppermind.api_keys import ApiKeySet
@@ -19,6 +19,9 @@ from coppermind.store_protocol import (
     IngestRequest,
     IngestResult,
     NoteDocument,
+    NoteQuery,
+    NoteSummary,
+    Page,
     PatchFrontmatter,
     ReplaceNote,
     StoreError,
@@ -55,6 +58,16 @@ async def create_note(payload: CreateNote, request: Request) -> Response:
         content=note.model_dump(mode="json"),
         headers={"ETag": f'"{note.content_hash}"'},
     )
+
+
+@router.get("/notes", response_model=Page[NoteSummary])
+async def list_notes(
+    request: Request, query: Annotated[NoteQuery, Query()]
+) -> Page[NoteSummary] | JSONResponse:
+    try:
+        return await _store(request).list_notes(query)
+    except StoreError as error:
+        return _failure(error)
 
 
 @router.post(
