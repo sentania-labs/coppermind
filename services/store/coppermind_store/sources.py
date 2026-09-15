@@ -27,7 +27,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coppermind import frontmatter as fm
-from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes
+from coppermind.atomicio import (
+    atomic_write_bytes,
+    commit_staged,
+    create_exclusive_bytes,
+    stage_bytes,
+)
 from coppermind.db.models import Note, NoteSource, Source, SourceArtifact, SourceRevision
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
@@ -447,10 +452,13 @@ async def _ingest_existing(
             )
         if manifest.get("projection_path") != projection_path:
             manifest["projection_path"] = projection_path
+            manifest_replacement_started = False
             try:
-                atomic_write_bytes(manifest_path, _json_bytes(manifest))
+                staged_manifest = stage_bytes(manifest_path, _json_bytes(manifest))
+                manifest_replacement_started = True
+                commit_staged(staged_manifest, manifest_path)
             except OSError as exc:
-                if projection_created:
+                if projection_created and not manifest_replacement_started:
                     resolve(store.notes_root, projection_path).unlink(missing_ok=True)
                 raise SourcesFilesystemUnavailable(str(exc)) from exc
         return IngestResult(

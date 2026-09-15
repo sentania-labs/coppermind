@@ -53,6 +53,17 @@ def commit_staged(temp: Path, path: Path) -> None:
     _fsync_dir(path.parent)
 
 
+def commit_staged_exclusive(temp: Path, path: Path) -> None:
+    """Install staged bytes only while `path` remains absent."""
+    try:
+        os.link(temp, path)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+    temp.unlink()
+    _fsync_dir(path.parent)
+
+
 def atomic_write_text(path: Path, text: str, *, mode: int = 0o644) -> None:
     atomic_write_bytes(path, text.encode("utf-8"), mode=mode)
 

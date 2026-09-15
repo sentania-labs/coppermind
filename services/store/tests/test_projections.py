@@ -1,8 +1,8 @@
 """What a generated projection is allowed to replace.
 
-Projections live in the captain's vault, where Obsidian Sync writes the same
-folders this store does, so the only file `write_projection` may rename over is
-generated output that still names the source it is regenerating.
+Projections live in the notes filesystem, where Obsidian Sync writes the same
+folders this store does, so generated output must never replace a file Sync
+delivered after the store checked the path.
 """
 
 from datetime import UTC, date, datetime
@@ -116,3 +116,28 @@ def test_a_file_delivered_while_the_bytes_are_staged_is_not_written_over(
 
     assert target.read_text(encoding="utf-8") == MINE
     assert not list(target.parent.glob(".*.tmp"))
+
+
+def test_a_file_delivered_after_validation_is_not_written_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    relative = place(tmp_path)
+    write(tmp_path, relative)
+    target = tmp_path / relative
+    real_commit = projections_module.commit_staged_exclusive
+
+    def sync_delivers_before_exclusive_install(staged: Path, path: Path) -> None:
+        path.write_text(MINE, encoding="utf-8")
+        real_commit(staged, path)
+
+    monkeypatch.setattr(
+        projections_module,
+        "commit_staged_exclusive",
+        sync_delivers_before_exclusive_install,
+    )
+
+    with pytest.raises(ProjectionNotPlaced):
+        write(tmp_path, relative, revision=2, text="second")
+
+    assert target.read_text(encoding="utf-8") == MINE
+    assert not list(target.parent.glob("*.held"))

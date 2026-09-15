@@ -682,7 +682,7 @@ async def test_a_sources_fault_recording_a_repaired_projection_reports_it_and_le
     def read_only_volume(*_args, **_kwargs):
         raise OSError(30, "Read-only file system")
 
-    monkeypatch.setattr(sources_module, "atomic_write_bytes", read_only_volume)
+    monkeypatch.setattr(sources_module, "stage_bytes", read_only_volume)
 
     with pytest.raises(SourcesFilesystemUnavailable):
         await store.ingest(sample())
@@ -696,6 +696,31 @@ async def test_a_sources_fault_recording_a_repaired_projection_reports_it_and_le
     assert sorted(path.name for path in folder.iterdir()) == sorted(
         [kept.name, replay.projection_path.rsplit("/", 1)[-1]]
     )
+
+
+async def test_an_ambiguous_manifest_commit_keeps_the_newly_referenced_projection(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """A directory-sync failure may mean the new manifest is already authoritative."""
+    ingested = await store.ingest(sample())
+    kept = store.notes_root / ingested.projection_path
+    kept.write_text("---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# Mine now\n", encoding="utf-8")
+    real_commit = sources_module.commit_staged
+
+    def replace_then_fail(staged, path):
+        real_commit(staged, path)
+        raise OSError("directory sync acknowledgement lost")
+
+    monkeypatch.setattr(sources_module, "commit_staged", replace_then_fail)
+
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.ingest(sample())
+
+    manifest_path = store.sources_root / ingested.source.id / "manifest.json"
+    projection_path = json.loads(manifest_path.read_text(encoding="utf-8"))["projection_path"]
+    assert projection_path != ingested.projection_path
+    assert "source_revision: 1" in projection_text(store, projection_path)
+    assert kept.read_text(encoding="utf-8").endswith("# Mine now\n")
 
 
 async def test_an_unrecorded_projection_path_is_rebuilt_rather_than_searched_for(

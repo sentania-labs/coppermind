@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from coppermind import frontmatter as fm
-from coppermind.atomicio import commit_staged, create_exclusive_bytes, stage_bytes
+from coppermind.atomicio import commit_staged_exclusive, create_exclusive_bytes, stage_bytes
 from coppermind.naming import note_stem, sanitize_folder, sanitize_stem, unique_stem
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
@@ -63,22 +65,58 @@ def write_projection(
 def _replace_projection(
     notes_root: Path, target: Path, data: bytes, source_id: str, revision: int
 ) -> None:
-    """Rename `data` over generated output only while it is still this source's.
-
-    The new bytes are staged and made durable first, so what stands between the
-    last check and the rename is the check itself. Obsidian Sync can deliver one
-    of the captain's own notes onto this path at any moment, and a file this
-    store did not generate for this source is never written over.
-    """
+    """Replace the exact file validated as this source's generated output."""
     staged = stage_bytes(target, data)
     try:
-        relative = target.relative_to(notes_root).as_posix()
-        if projection_revision(notes_root, relative, source_id) is None:
-            raise ProjectionNotPlaced(source_id, revision, relative)
-        commit_staged(staged, target)
+        held = _hold_current(target)
     except BaseException:
         staged.unlink(missing_ok=True)
         raise
+    held_is_projection = False
+    try:
+        relative = target.relative_to(notes_root).as_posix()
+        held_relative = held.relative_to(notes_root).as_posix()
+        if projection_revision(notes_root, held_relative, source_id) is None:
+            _restore_if_vacant(held, target)
+            raise ProjectionNotPlaced(source_id, revision, relative)
+        held_is_projection = True
+        try:
+            commit_staged_exclusive(staged, target)
+        except FileExistsError as exc:
+            raise ProjectionNotPlaced(source_id, revision, relative) from exc
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
+    finally:
+        if held.exists():
+            if not target.exists() or not held_is_projection:
+                _restore_if_vacant(held, target)
+            elif held_is_projection:
+                held.unlink(missing_ok=True)
+
+
+def _hold_current(target: Path) -> Path:
+    """Move the current occupant aside without replacing any person's file."""
+    descriptor, name = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{target.name}.", suffix=".held"
+    )
+    os.close(descriptor)
+    held = Path(name)
+    try:
+        os.replace(target, held)
+    except BaseException:
+        held.unlink(missing_ok=True)
+        raise
+    return held
+
+
+def _restore_if_vacant(held: Path, target: Path) -> None:
+    """Put a held occupant back only if no newer file now owns its name."""
+    try:
+        os.link(held, target)
+    except FileExistsError:
+        return
+    held.unlink()
 
 
 def projection_revision(notes_root: Path, relative: str, source_id: str) -> int | None:
