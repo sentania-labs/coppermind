@@ -397,9 +397,12 @@ in the tree, so do not read the absence as a decision to leave it out.
   because a new package does not inherit the repository's visibility, so the
   publish job pushes and signs the images and then fails its anonymous-pull
   check until the captain sets the `store`, `api`, `git` and `obsidian-sync`
-  packages to public once. No automation changes that visibility. That first
-  real tag is also the first exercise of the anonymous-pull proof, which has
-  never run against a live registry before it.
+  packages to public once. Publication can then be re-run for 30 days, the
+  retention of the image archives a tag build publishes from; past that window
+  the tag has to be pushed again for a fresh build. No automation changes that
+  visibility or pushes a tag. That first real tag is also the first exercise of
+  the anonymous-pull proof, which has never run against a live registry before
+  it.
 
 ## Known gaps in what is here
 
