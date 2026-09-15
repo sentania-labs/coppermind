@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 import coppermind_store.sources as sources_module
 import pytest
@@ -16,6 +17,7 @@ from coppermind.db.models import Note, NoteSource, Source, SourceArtifact, Sourc
 from coppermind.store_protocol import (
     IngestRequest,
     MetadataUnavailable,
+    PathCollision,
     PayloadTooLarge,
 )
 
@@ -339,3 +341,72 @@ async def test_replay_cannot_overwrite_a_concurrent_note_edit(
     assert replay.source.created is False
     assert replay.note.created is False
     assert note_path.read_text(encoding="utf-8") == edited
+
+
+async def test_t_ing_3_a_descriptive_correction_alone_appends_a_revision(
+    store: LocalStore, session_factory
+):
+    """Correcting only the fields that describe the artifacts is never discarded."""
+    first = await store.ingest(sample())
+    note_path = store.notes_root / first.note.path
+    edited = fm.patch(note_path.read_text(encoding="utf-8"), {"reviewed": True})
+    note_path.write_text(edited, encoding="utf-8")
+    note_bytes = note_path.read_bytes()
+
+    corrected = sample()
+    corrected.source.captured_at = datetime.fromisoformat("2026-09-08T15:47:00-05:00")
+    corrected.source.metadata["language"] = "en-US"
+    corrected.source.origin = "Plaud NotePin (office)"
+    second = await store.ingest(corrected)
+
+    assert second.source.id == first.source.id
+    assert second.source.revision == 2
+    assert second.source.created is True
+    assert second.note.id == first.note.id
+    assert second.note.created is False
+    assert note_path.read_bytes() == note_bytes
+
+    source_root = store.sources_root / first.source.id
+    assert (source_root / "r0001" / "transcript.txt").read_text(encoding="utf-8") == (
+        source_root / "r0002" / "transcript.txt"
+    ).read_text(encoding="utf-8")
+    manifest = json.loads((source_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["current_revision"] == 2
+    assert manifest["origin"] == "Plaud NotePin (office)"
+    assert [item["revision"] for item in manifest["revisions"]] == [1, 2]
+    assert manifest["revisions"][0]["metadata"]["language"] == "en"
+    assert manifest["revisions"][0]["captured_at"] == "2026-09-08T14:02:11-05:00"
+    assert manifest["revisions"][1]["metadata"]["language"] == "en-US"
+    assert manifest["revisions"][1]["captured_at"] == "2026-09-08T15:47:00-05:00"
+
+    async with session_factory() as session:
+        source = await session.get(Source, first.source.id)
+        assert source.current_revision == 2
+        assert source.origin == "Plaud NotePin (office)"
+        assert await session.scalar(sa.select(sa.func.count()).select_from(SourceRevision)) == 2
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 1
+        assert len(list(store.notes_root.rglob("*.md"))) == 1
+
+
+async def test_a_note_delivered_before_the_write_survives_the_refused_ingest(
+    store: LocalStore, session_factory, monkeypatch: pytest.MonkeyPatch
+):
+    """The collision cleanup only removes files this ingest created."""
+    real_create = sources_module.create_exclusive_bytes
+    delivered = b"---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n\n# Delivered by a device\n"
+
+    def deliver_then_create(path, data, **kwargs):
+        if path.is_relative_to(store.notes_root):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(delivered)
+        return real_create(path, data, **kwargs)
+
+    monkeypatch.setattr(sources_module, "create_exclusive_bytes", deliver_then_create)
+    with pytest.raises(PathCollision):
+        await store.ingest(sample())
+
+    assert [path.read_bytes() for path in store.notes_root.rglob("*.md")] == [delivered]
+    assert list(store.sources_root.iterdir()) == []
+    async with session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 0
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 0

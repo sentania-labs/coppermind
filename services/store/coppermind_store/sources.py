@@ -79,7 +79,7 @@ async def ingest(
         }
         for artifact, data in artifacts
     ]
-    identity = _content_identity(artifact_metadata)
+    identity = _content_identity(request, artifact_metadata)
     claim_path = _external_id_claim_path(
         store.sources_root,
         request.source.provider,
@@ -233,6 +233,8 @@ async def _ingest_new(
             create_exclusive_bytes(note_path, note_data)
         except FileExistsError as exc:
             raise PathCollision(relative) from exc
+        except OSError as exc:
+            raise NotesFilesystemUnavailable(str(exc)) from exc
         filesystem_complete = True
     except OSError as exc:
         raise SourcesFilesystemUnavailable(str(exc)) from exc
@@ -240,7 +242,6 @@ async def _ingest_new(
         if claim_created and not filesystem_complete:
             claim_path.unlink(missing_ok=True)
             shutil.rmtree(source_path, ignore_errors=True)
-            note_path.unlink(missing_ok=True)
     return IngestResult(
         source=CreatedSource(id=source_id, revision=1, created=True),
         note=CreatedNote(id=note_id, path=relative, created=True),
@@ -446,6 +447,8 @@ async def _ensure_mirror(
         session.add(source)
         await session.flush()
     else:
+        source.source_type = str(manifest.get("source_type", ""))
+        source.origin = str(manifest.get("origin", ""))
         source.current_revision = current_revision
         source.content_identity = str(current.get("content_identity", ""))
         source.updated_at = updated_at
@@ -570,9 +573,25 @@ def _external_id_claim(request: IngestRequest, source_id: str) -> bytes:
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
-def _content_identity(artifacts: list[dict[str, Any]]) -> str:
-    names_and_hashes = sorted(f"{item['name']}:{item['sha256']}" for item in artifacts)
-    return hashlib.sha256("\n".join(names_and_hashes).encode("utf-8")).hexdigest()
+def _content_identity(request: IngestRequest, artifacts: list[dict[str, Any]]) -> str:
+    """Everything a revision records about the source, as one digest.
+
+    A revision is the artifact bytes together with the fields that describe
+    them, so correcting a capture time, metadata, the source type or the
+    origin is a new revision rather than a replay that discards the
+    correction.
+    """
+    captured = request.source.captured_at
+    document = {
+        "artifacts": sorted(
+            f"{item['name']}:{item['mime_type']}:{item['sha256']}" for item in artifacts
+        ),
+        "captured_at": captured.isoformat() if captured else None,
+        "metadata": _jsonable(request.source.metadata),
+        "origin": request.source.origin,
+        "source_type": request.source.source_type,
+    }
+    return hashlib.sha256(_json_bytes(document)).hexdigest()
 
 
 def _manifest(
