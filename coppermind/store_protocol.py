@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from datetime import date as date_type
 from datetime import datetime
 from pathlib import PurePath
 from typing import Any, Literal, Protocol
@@ -348,12 +349,71 @@ class NoteDocument(BaseModel):
     sources: list[str] = Field(default_factory=list)
 
 
+NoteState = Literal["ok", "unparsed", "missing"]
+"""What the store saw at a known path: its current file, or that it could not read it."""
+
+
+class NoteQuery(BaseModel):
+    """Filters and keyset cursor for listing notes known to the store.
+
+    A text filter sent empty is refused rather than applied. An unset form
+    field that arrives as `folder=` would otherwise match nothing and come
+    back as an ordinary empty page, which is the one answer a listing must
+    not give for a question it could not ask.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cursor: str | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+    folder: str | None = Field(default=None, min_length=1)
+    reviewed: bool | None = None
+    type: str | None = Field(default=None, min_length=1)
+    context: str | None = Field(default=None, min_length=1)
+    account: str | None = Field(default=None, min_length=1)
+    from_date: date_type | None = Field(default=None, alias="from")
+    to_date: date_type | None = Field(default=None, alias="to")
+    tag: str | None = Field(default=None, min_length=1)
+    state: NoteState | None = None
+
+
+class NoteSummary(BaseModel):
+    """What the store can see right now for one note it knows about.
+
+    `state` says where the rest of the fields came from. `ok` means they were
+    read from the file at `path` just now. `unparsed` and `missing` mean the
+    file could not be read, so the fields are the mirror's last known values,
+    which are stale by definition and whose `content_hash` no longer names
+    bytes anyone can replace.
+    """
+
+    id: NoteId
+    path: str
+    state: NoteState
+    title: str
+    date: date_type | None = None
+    type: str | None = None
+    context: str | None = None
+    account: str | None = None
+    reviewed: bool
+    tags: list[str] = Field(default_factory=list)
+    content_hash: ETag
+    updated_at: datetime
+
+
+class Page[T](BaseModel):
+    items: list[T]
+    next_cursor: str | None = None
+
+
 class Store(Protocol):
     """What the API, the curator and the indexer are allowed to ask for."""
 
     async def create_note(self, request: CreateNote) -> NoteDocument: ...
 
     async def get_note(self, note_id: NoteId) -> NoteDocument: ...
+
+    async def list_notes(self, query: NoteQuery) -> Page[NoteSummary]: ...
 
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag

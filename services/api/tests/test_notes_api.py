@@ -8,7 +8,7 @@ the fact that nothing here touches a file.
 
 import asyncio
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -24,9 +24,12 @@ from coppermind.store_protocol import (
     CreateNote,
     MetadataUnavailable,
     NoteDocument,
+    NoteQuery,
     NotesFilesystemUnavailable,
+    NoteSummary,
     NoteUnparseable,
     NotFound,
+    Page,
     PatchFrontmatter,
     ReplaceNote,
     StoreUnavailable,
@@ -51,6 +54,21 @@ REPLACED = NOTE.model_copy(
         "content_hash": "sha256:def",
         "size_bytes": 71,
     }
+)
+
+NOTE_SUMMARY = NoteSummary(
+    id=NOTE.id,
+    path=NOTE.path,
+    state="ok",
+    title=NOTE.title,
+    date=date(2026, 9, 8),
+    type="meeting",
+    context="customer",
+    account="Ameren",
+    reviewed=False,
+    tags=["architecture"],
+    content_hash=NOTE.content_hash,
+    updated_at=NOTE.updated_at,
 )
 
 KEY_ID = "a1b2c3d4e5f6a7b8"
@@ -86,6 +104,7 @@ class FakeStore:
         self.created: CreateNote | None = None
         self.replaced: tuple[str, ReplaceNote, str] | None = None
         self.patched: tuple[str, PatchFrontmatter, str] | None = None
+        self.listed: NoteQuery | None = None
         self.key_reads = 0
         self.key_records = [KEY_RECORD, READ_KEY_RECORD, WRITE_KEY_RECORD]
 
@@ -99,6 +118,12 @@ class FakeStore:
         if self.error:
             raise self.error
         return NOTE
+
+    async def list_notes(self, query: NoteQuery) -> Page[NoteSummary]:
+        if self.error:
+            raise self.error
+        self.listed = query
+        return Page[NoteSummary](items=[NOTE_SUMMARY], next_cursor="next-page")
 
     async def replace_note(self, note_id: str, request: ReplaceNote, if_match: str) -> NoteDocument:
         if self.error:
@@ -166,6 +191,71 @@ def test_a_key_without_the_needed_scope_is_forbidden(client):
     assert response.status_code == 403
     assert response.json()["error"] == "forbidden"
     assert fake.created is None
+
+
+def test_listing_requires_read_scope(client):
+    test_client, fake = client
+    response = test_client.get("/v1/notes", headers={"Authorization": f"Bearer {WRITE_KEY}"})
+    assert response.status_code == 403
+    assert response.json()["error"] == "forbidden"
+    assert fake.listed is None
+
+
+def test_listing_passes_every_filter_and_the_cursor_to_the_store(client):
+    test_client, fake = client
+    response = test_client.get(
+        "/v1/notes",
+        params={
+            "cursor": "prior-page",
+            "limit": 2,
+            "folder": "Review",
+            "reviewed": "false",
+            "type": "meeting",
+            "context": "customer",
+            "account": "Ameren",
+            "from": "2026-09-01",
+            "to": "2026-09-30",
+            "tag": "architecture",
+            "state": "ok",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [NOTE_SUMMARY.model_dump(mode="json")],
+        "next_cursor": "next-page",
+    }
+    assert fake.listed == NoteQuery.model_validate(
+        {
+            "cursor": "prior-page",
+            "limit": 2,
+            "folder": "Review",
+            "reviewed": False,
+            "type": "meeting",
+            "context": "customer",
+            "account": "Ameren",
+            "from": date(2026, 9, 1),
+            "to": date(2026, 9, 30),
+            "tag": "architecture",
+            "state": "ok",
+        }
+    )
+
+
+def test_an_empty_text_filter_is_refused_rather_than_answered_with_an_empty_page(client):
+    test_client, fake = client
+    for filter_name in ("folder", "type", "context", "account", "tag"):
+        response = test_client.get("/v1/notes", params={filter_name: ""})
+        assert response.status_code == 422
+        assert fake.listed is None
+
+
+def test_listing_reports_metadata_unavailable_instead_of_an_empty_page(client):
+    test_client, fake = client
+    fake.error = MetadataUnavailable("connection refused")
+    response = test_client.get("/v1/notes")
+    assert response.status_code == 503
+    assert response.json()["error"] == "metadata_unavailable"
+    assert "items" not in response.json()
 
 
 async def test_the_cache_expires_so_a_revoked_key_stops_working():

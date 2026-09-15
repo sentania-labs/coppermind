@@ -28,6 +28,8 @@ by Obsidian Sync, is refused rather than overwriting the newer bytes.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -60,9 +62,13 @@ from coppermind.store_protocol import (
     MetadataUnavailable,
     NoteDocument,
     NoteId,
+    NoteQuery,
     NotesFilesystemUnavailable,
+    NoteState,
+    NoteSummary,
     NoteUnparseable,
     NotFound,
+    Page,
     PatchFrontmatter,
     PathCollision,
     ReplaceNote,
@@ -74,6 +80,13 @@ from coppermind_store.control import ControlState
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, is_note_file, resolve
 
 log = get_logger("coppermind-store")
+
+# How many mirror rows a listing holds in memory at a time. A filter that
+# matches little still walks the mirror, because matching reads the files
+# themselves and there is no index yet; what the batch bounds is how much of
+# the mirror is materialized at once, and the thread offload keeps that walk
+# off the event loop.
+_SCAN_BATCH = 200
 
 
 class LocalStore:
@@ -206,6 +219,49 @@ class LocalStore:
             updated_at=datetime.fromtimestamp(mtime, tz=UTC),
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
+
+    async def list_notes(self, query: NoteQuery) -> Page[NoteSummary]:
+        """List current files for note paths present in the metadata mirror.
+
+        PostgreSQL supplies the known identifiers and paths, and therefore is
+        required. Each matching summary is then read from the notes filesystem
+        so an in-place device edit is visible before reconciliation exists.
+        Files and paths PostgreSQL does not know about remain reconciliation's
+        responsibility.
+
+        Rows arrive in keyset-resumed batches rather than as the whole mirror,
+        and each batch is read and parsed off the event loop, so a selective
+        filter over a large notes filesystem cannot stall the single-worker
+        store while it scans.
+        """
+        after = _decode_note_cursor(query.cursor) if query.cursor else None
+        schema = self.control.schema()
+        wanted = query.limit + 1
+        batch_size = max(wanted, _SCAN_BATCH)
+        matched: list[NoteSummary] = []
+        while len(matched) < wanted:
+            statement = sa.select(Note).order_by(Note.path).limit(batch_size)
+            if after is not None:
+                statement = statement.where(Note.path > after)
+            try:
+                async with self.session_factory() as session:
+                    rows = list((await session.scalars(statement)).all())
+            except (SQLAlchemyError, OSError) as exc:
+                raise MetadataUnavailable(str(exc)) from exc
+            if not rows:
+                break
+            after = rows[-1].path
+            matched.extend(
+                await asyncio.to_thread(
+                    _scan_rows, self.notes_root, rows, schema, query, wanted - len(matched)
+                )
+            )
+            if len(rows) < batch_size:
+                break
+
+        page = matched[: query.limit]
+        next_cursor = _encode_note_cursor(page[-1].path) if len(matched) > query.limit else None
+        return Page[NoteSummary](items=page, next_cursor=next_cursor)
 
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag
@@ -407,7 +463,12 @@ class LocalStore:
 
 
 def _parse(
-    note_id: NoteId, relative: str, data: bytes, schema: FrontmatterSchema
+    note_id: NoteId,
+    relative: str,
+    data: bytes,
+    schema: FrontmatterSchema,
+    *,
+    log_failure: bool = True,
 ) -> tuple[dict[str, Any], str]:
     """Parse a located note's bytes and check they are that note's."""
     try:
@@ -420,12 +481,16 @@ def _parse(
         # the store alone answers, and never the log or the public
         # envelope. Logs are collected and shipped, so the log gets only what
         # the type of the failure and its position say.
-        log.warning(
-            "note frontmatter could not be parsed",
-            note_id=note_id,
-            path=relative,
-            **_parse_failure_fields(exc),
-        )
+        # A listing scan passes over the same broken file on every page, so
+        # it reports the state in the summary and leaves the warning to the
+        # read that asked for this note by name.
+        if log_failure:
+            log.warning(
+                "note frontmatter could not be parsed",
+                note_id=note_id,
+                path=relative,
+                **_parse_failure_fields(exc),
+            )
         raise NoteUnparseable(note_id, str(exc)) from exc
     carried_id = frontmatter.get(schema.role("id_key"))
     if carried_id is not None and str(carried_id) != note_id:
@@ -435,6 +500,112 @@ def _parse(
         # the honest answer is a miss until reconciliation clears the row.
         raise NotFound(note_id)
     return frontmatter, body
+
+
+def _current_summary(notes_root: Path, row: Note, schema: FrontmatterSchema) -> NoteSummary:
+    """Read a known path and say what was there: its current file, or nothing readable."""
+    try:
+        path = resolve(notes_root, row.path)
+    except ValueError:
+        return _mirrored_summary(row, "missing")
+    if not is_note_file(path):
+        return _mirrored_summary(row, "missing")
+    try:
+        data, mtime = _read(row.id, path)
+        frontmatter, body = _parse(row.id, row.path, data, schema, log_failure=False)
+    except NotFound:
+        return _mirrored_summary(row, "missing")
+    except NoteUnparseable:
+        return _mirrored_summary(row, "unparsed")
+
+    tags = frontmatter.get(schema.role("tags_key"), [])
+    return NoteSummary(
+        id=row.id,
+        path=row.path,
+        state="ok",
+        title=_title_of(body, path),
+        date=_as_date(frontmatter.get(schema.role("date_key"))),
+        type=_text(frontmatter.get(schema.role("type_key"))),
+        context=_text(frontmatter.get(schema.role("context_key"))),
+        account=_text(frontmatter.get(schema.role("account_key"))),
+        reviewed=bool(frontmatter.get(schema.role("reviewed_key"), False)),
+        tags=[str(tag) for tag in tags] if isinstance(tags, list) else [],
+        content_hash=content_hash(data),
+        updated_at=datetime.fromtimestamp(mtime, tz=UTC),
+    )
+
+
+def _scan_rows(
+    notes_root: Path,
+    rows: list[Note],
+    schema: FrontmatterSchema,
+    query: NoteQuery,
+    needed: int,
+) -> list[NoteSummary]:
+    """Read and filter one batch of known paths, stopping once `needed` match."""
+    found: list[NoteSummary] = []
+    for row in rows:
+        summary = _current_summary(notes_root, row, schema)
+        if not _matches_query(summary, query):
+            continue
+        found.append(summary)
+        if len(found) == needed:
+            break
+    return found
+
+
+def _mirrored_summary(row: Note, state: NoteState) -> NoteSummary:
+    """The last known metadata for a known path whose file cannot be read now."""
+    return NoteSummary(
+        id=row.id,
+        path=row.path,
+        state=state,
+        title=row.title or Path(row.path).stem,
+        date=row.date,
+        type=row.type,
+        context=row.context,
+        account=row.account,
+        reviewed=row.reviewed,
+        tags=list(row.tags),
+        content_hash=row.content_hash,
+        updated_at=row.mtime or row.updated_at,
+    )
+
+
+def _matches_query(summary: NoteSummary, query: NoteQuery) -> bool:
+    return all(
+        (
+            query.folder is None or summary.path.startswith(f"{query.folder}/"),
+            query.reviewed is None or summary.reviewed is query.reviewed,
+            query.type is None or summary.type == query.type,
+            query.context is None or summary.context == query.context,
+            query.account is None or summary.account == query.account,
+            query.from_date is None or summary.date is not None and summary.date >= query.from_date,
+            query.to_date is None or summary.date is not None and summary.date <= query.to_date,
+            query.tag is None or query.tag in summary.tags,
+            query.state is None or summary.state == query.state,
+        )
+    )
+
+
+def _encode_note_cursor(path: str) -> str:
+    payload = json.dumps({"v": 1, "path": path}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+
+def _decode_note_cursor(cursor: str) -> str:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
+        if (
+            not isinstance(payload, dict)
+            or payload.get("v") != 1
+            or not isinstance(payload.get("path"), str)
+        ):
+            raise ValueError
+        return payload["path"]
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        raise ValidationFailed(["cursor: invalid or expired"]) from exc
 
 
 def _replace_if_unchanged(
