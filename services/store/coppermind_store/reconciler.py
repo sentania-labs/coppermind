@@ -61,9 +61,11 @@ _WEDGED_AFTER = 3
 _STALE_INTERVALS = 3
 
 # How far past the walk's own clock an mtime may sit and still be read as an
-# in-flight write. Beyond it the stamp is a wrong device clock or a restored
-# archive, and deferring it forever would stop every deletion being reported.
-_FUTURE_MTIME_TOLERANCE = timedelta(seconds=1)
+# in-flight write. Sized for the skew between this container and the clock that
+# stamps a network mount. Beyond it the stamp is a wrong device clock or a
+# restored archive, and deferring it forever would stop every deletion being
+# reported.
+_CLOCK_SKEW_TOLERANCE = timedelta(seconds=60)
 
 MISSING_REASON = "not observed during reconciliation"
 UNPARSED_REASON = "frontmatter could not be parsed"
@@ -74,30 +76,34 @@ UNREADABLE_REASON = "file could not be read"
 class QuietWindow:
     """The mtime range that marks a file as still being delivered.
 
-    Bounded above as well as below. A stamp from the future is a wrong clock or
-    a preserved archive time, not a write in progress, and treating it as one
-    would defer that file on every pass for as long as it sat there.
+    The upper bound is read from the clock as each file is stat'd, not from
+    when the pass began: a walk over a large notes filesystem takes time, and a
+    file a device starts writing during that walk is the very thing the quiet
+    period exists to leave alone. Past the tolerance the stamp is a wrong clock
+    or a preserved archive time, not a write in progress, and treating it as
+    one would hold that file back on every pass for as long as it sat there.
     """
 
     earliest: datetime
-    latest: datetime
+    tolerance: timedelta
 
     def holds(self, mtime: datetime) -> bool:
-        return self.earliest < mtime <= self.latest
+        return self.earliest < mtime <= datetime.now(tz=UTC) + self.tolerance
 
 
 @dataclass(frozen=True)
 class ScanResult:
     """What one walk of the notes filesystem learned.
 
-    `stat_credited` are identities the walk took on their stat alone, without
-    reading the file. They are known present at their recorded path, so a copy
-    of one found elsewhere is a second live copy rather than a move.
+    `held` are identities the walk found a file for at their own recorded path
+    but produced no observation of, because it trusted the stat or left the
+    file to settle. Their note is still where the mirror says it is, so a copy
+    carrying the same identity elsewhere is a second live copy, never a move.
     """
 
     observed: dict[str, list[Observation]]
     seen: set[str]
-    stat_credited: set[str]
+    held: set[str]
     deferred: int
 
 
@@ -286,7 +292,7 @@ async def reconcile_once(
     quiet = (
         QuietWindow(
             earliest=scan_started - timedelta(seconds=quiet_period_s),
-            latest=scan_started + _FUTURE_MTIME_TOLERANCE,
+            tolerance=_CLOCK_SKEW_TOLERANCE,
         )
         if quiet_period_s > 0
         else None
@@ -414,7 +420,7 @@ def _scan(
 
     observed: dict[str, list[Observation]] = {}
     seen: set[str] = set()
-    stat_credited: set[str] = set()
+    held: set[str] = set()
     deferred = 0
     try:
         for path in root.rglob("*.md"):
@@ -444,13 +450,15 @@ def _scan(
             mtime = datetime.fromtimestamp(stat_result.st_mtime, tz=UTC)
             if not full and entry is not None and _unchanged(entry, stat_result.st_size, mtime):
                 seen.add(entry.note_id)
-                stat_credited.add(entry.note_id)
+                held.add(entry.note_id)
                 continue
             if entry is not None and quiet is not None and quiet.holds(mtime):
                 # A file the mirror already claims is left to settle rather than
-                # hashed halfway through a device's write. Whose bytes these now
-                # are is unknown until they are read, so the pass is marked
-                # deferred rather than crediting the row that names the path.
+                # hashed halfway through a device's write. A file is here, so
+                # the note still holds its path, but whose bytes these now are
+                # is unknown until they are read: the pass is marked deferred
+                # rather than vouching for the row that names the path.
+                held.add(entry.note_id)
                 deferred += 1
                 continue
             try:
@@ -467,7 +475,7 @@ def _scan(
             )
     except OSError as exc:
         raise NotesFilesystemUnavailable(str(exc)) from exc
-    return ScanResult(observed=observed, seen=seen, stat_credited=stat_credited, deferred=deferred)
+    return ScanResult(observed=observed, seen=seen, held=held, deferred=deferred)
 
 
 def _unchanged(entry: MirrorEntry, size_bytes: int, mtime: datetime) -> bool:
@@ -567,10 +575,10 @@ def _choose_observations(scan: ScanResult, by_id: dict[str, MirrorEntry]) -> dic
     """Pick the one file that speaks for each identity this scan saw."""
     chosen: dict[str, Observation] = {}
     for note_id, candidates in scan.observed.items():
-        if note_id in scan.stat_credited:
-            # The walk already proved this note's own file still sits at its
-            # recorded path, so whatever else carries the identity is a second
-            # live copy. Neither is chosen over the other.
+        if note_id in scan.held:
+            # The walk found this note's own file still at its recorded path,
+            # so whatever else carries the identity is a second live copy.
+            # Neither is chosen over the other.
             log.warning("duplicate note identity left unresolved", note_id=note_id)
             continue
         # A file that named this identity itself outranks one that only

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
+from coppermind_store import reconciler
 from coppermind_store.fs import content_hash
 from coppermind_store.notes import LocalStore
 from coppermind_store.reconciler import UNPARSED_REASON, UNREADABLE_REASON, reconcile_once
@@ -414,3 +416,44 @@ async def test_a_file_stamped_in_the_future_does_not_stop_deletions_being_report
     assert counts["missing"] == 1
     assert (await _row(store, deleted.id)).state == "missing"
     assert (await _row(store, stamped.id)).state == "ok"
+
+
+async def test_a_conflict_copy_cannot_capture_a_row_whose_file_is_settling(store: LocalStore):
+    """A deferred file is still the note's own file, so a copy is a second copy."""
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    await reconcile_once(store)
+    original = store.notes_root / note.path
+    original.write_bytes(original.read_bytes().replace(b"# Runbook", b"# Runbook being typed"))
+    conflict = original.with_name("Runbook (conflict 2026-09-15).md")
+    conflict.write_bytes(original.read_bytes())
+
+    for _ in range(2):
+        counts = await reconcile_once(store, quiet_period_s=3600)
+        row = await _row(store, note.id)
+        assert counts["moved"] == 0
+        assert counts["deferred"] == 1
+        assert row.path == note.path
+        assert (await store.get_note(note.id)).path == note.path
+
+    assert original.exists()
+
+
+async def test_a_file_written_during_a_slow_pass_is_still_deferred(store: LocalStore, monkeypatch):
+    """The quiet window closes at the clock when a file is stat'd, not at the start."""
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    await reconcile_once(store)
+    path = store.notes_root / note.path
+    real_index = reconciler._mirror_index
+
+    async def index_then_a_device_writes(target):
+        index = await real_index(target)
+        await asyncio.sleep(1.5)
+        path.write_bytes(path.read_bytes().replace(b"# Runbook", b"# Runbook in progress"))
+        return index
+
+    monkeypatch.setattr(reconciler, "_mirror_index", index_then_a_device_writes)
+    counts = await reconcile_once(store, quiet_period_s=3600)
+
+    assert counts["deferred"] == 1
+    assert counts["changed"] == 0
+    assert (await _row(store, note.id)).title == "Runbook"

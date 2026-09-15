@@ -55,14 +55,6 @@ wait_for_status() {
     fail "$url answered $got, expected $want"
 }
 
-external_editor() {
-    if compose config --services | grep -Fqx tools; then
-        compose exec -T tools "$@"
-    else
-        compose exec -T store "$@"
-    fi
-}
-
 wait_for_note_path() {
     local note_id="$1" want="$2" tries="${3:-180}" response got code
     response="$(mktemp)"
@@ -100,6 +92,11 @@ raise SystemExit(0 if any(item["id"] == sys.argv[2] for item in items) else 1)' 
 
 step "bring the stack up"
 compose up -d --wait --remove-orphans
+# Every edit that stands in for a device is made from the tools container, not
+# from the store. The store is the process under test, so an edit made through
+# it would prove only that the store can change its own volume.
+compose config --services | grep -Fqx tools \
+    || fail "external-edit evidence needs the tools container from docker-compose.ci.yml"
 ok "compose reported every service healthy"
 
 step "the API is up and ready"
@@ -262,7 +259,7 @@ reference_note_id="$(field "$reference_created" id)"
 ok "four notes now exercise listing, filters and two-item pages"
 
 step "read the file on the volume, not through the API"
-on_disk="$(external_editor cat "/data/notes/$note_path")"
+on_disk="$(compose exec -T tools cat "/data/notes/$note_path")"
 printf '%s\n' "$on_disk"
 for key in "id: $note_id" "schema_version: 1" "date: 2026-09-08" "type: meeting" \
            "context: customer" "account: Ameren" "reviewed: false" "sources: []"; do
@@ -280,12 +277,10 @@ fetched_hash="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[
 ok "the note reads back with the same ETag"
 
 step "edit the file on the volume behind the store's back, as a device would"
-# The CI tools container stands in for a device. A base-compose smoke uses a
-# test shell in the store image because the quickstart has no test-only service.
-external_editor python3 -c \
+compose exec -T tools python3 -c \
     'import sys; p = sys.argv[1]; t = open(p).read(); open(p, "w").write(t.replace("reviewed: false", "reviewed: true", 1))' \
     "/data/notes/$note_path"
-device_edit="$(external_editor cat "/data/notes/$note_path")"
+device_edit="$(compose exec -T tools cat "/data/notes/$note_path")"
 [ "$device_edit" != "$on_disk" ] || fail "the edit on the volume did not change the file"
 device_hash="$(hash_on_volume "$note_path")"
 [ "$device_hash" != "$etag" ] || fail "the edit on the volume did not change the hash"
@@ -310,7 +305,7 @@ cat "$conflict"; echo
 [ "$(field "$conflict" error)" = "version_conflict" ] || fail "the stale write was not a version_conflict"
 [ "$(field "$conflict" current_version)" = "$device_hash" ] \
     || fail "current_version is not the hash of the file on the volume"
-[ "$(external_editor cat "/data/notes/$note_path")" = "$device_edit" ] \
+[ "$(compose exec -T tools cat "/data/notes/$note_path")" = "$device_edit" ] \
     || fail "the refused write changed the file"
 ok "the stale write was refused and the edit made on the volume survived"
 
@@ -330,7 +325,7 @@ etag="$(field "$replaced" content_hash)"
 [ "$etag" != "$current_etag" ] || fail "the ETag did not change after a successful write"
 [ "$(field "$replaced" id)" = "$note_id" ] || fail "the identifier changed"
 [ "$(field "$replaced" path)" = "$note_path" ] || fail "the path changed"
-on_disk="$(external_editor cat "/data/notes/$note_path")"
+on_disk="$(compose exec -T tools cat "/data/notes/$note_path")"
 printf '%s\n' "$on_disk"
 for line in "id: $note_id" "reviewed: true" "date: 2026-09-08" "- Corrected on review"; do
     printf '%s\n' "$on_disk" | grep -Fqx -- "$line" || fail "the replaced file is missing '$line'"
@@ -380,13 +375,13 @@ ok "two pages returned all four notes exactly once"
 
 step "move and rename a note on the volume, then find it by the same id"
 reconciled_path="Work/Operations Runbook.md"
-external_editor mkdir -p /data/notes/Work
-external_editor mv "/data/notes/$runbook_note_path" "/data/notes/$reconciled_path"
+compose exec -T tools mkdir -p /data/notes/Work
+compose exec -T tools mv "/data/notes/$runbook_note_path" "/data/notes/$reconciled_path"
 wait_for_note_path "$runbook_note_id" "$reconciled_path"
 ok "the scheduled scan followed the identity while the API kept answering"
 
 step "delete that note on the volume and wait for an honest missing listing"
-external_editor rm "/data/notes/$reconciled_path"
+compose exec -T tools rm "/data/notes/$reconciled_path"
 wait_for_note_filter "$runbook_note_id" "state=missing"
 [ "$(status_of "${AUTH[@]}" "$API/v1/notes/$runbook_note_id")" = "404" ] \
     || fail "the deleted note still read as present"
