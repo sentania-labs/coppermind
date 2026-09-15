@@ -316,7 +316,13 @@ async function shutdown(signal) {
   clearTimeout(restartTimer);
   log("INFO", "stopping", { signal });
   await stopChild();
-  await writeQueue.catch(() => {});
+  await publishStatus({
+    state: "stopped",
+    connected: false,
+    syncing: false,
+    sync_pid: null,
+    control_port: null,
+  });
   server.close(() => process.exit(0));
 }
 

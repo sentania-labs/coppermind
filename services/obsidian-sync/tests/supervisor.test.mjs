@@ -283,13 +283,76 @@ test("a stopped supervisor leaves the stop in the status file", async (context) 
   await new Promise((resolve) => supervisor.once("exit", resolve));
 
   const persisted = JSON.parse(await readFile(statusFile, "utf8"));
-  assert.equal(persisted.state, "stopping");
+  assert.equal(persisted.state, "stopped");
   assert.equal(persisted.syncing, false);
   assert.equal(persisted.connected, false);
   assert.equal(persisted.sync_pid, null);
+  assert.equal(persisted.control_port, null);
   assert.deepEqual(
     (await readdir(stateDir)).filter((name) => name.endsWith(".tmp")),
     [],
     "a half-written status file was left on the volume",
   );
+});
+
+test("shutdown persists stopped from every state without a child", async (context) => {
+  const cases = [
+    { name: "disconnected", fake: false, connection: null, expectedState: "not_connected" },
+    {
+      name: "refused",
+      fake: false,
+      connection: { vault_name: "Captain vault", paused: false },
+      expectedState: "refused",
+    },
+    {
+      name: "paused",
+      fake: true,
+      connection: { vault_name: "Simulated remote vault", paused: true },
+      expectedState: "paused",
+    },
+  ];
+
+  for (const scenario of cases) {
+    await context.test(scenario.name, async () => {
+      const data = await mkdtemp(path.join(os.tmpdir(), `coppermind-sync-${scenario.name}-`));
+      const tokenFile = path.join(data, "internal-token");
+      await writeFile(tokenFile, "test-control-token\n", { mode: 0o600 });
+      if (scenario.connection) {
+        const stateDir = path.join(data, "state", "sync");
+        await mkdir(stateDir, { recursive: true });
+        await writeFile(
+          path.join(stateDir, "connection.json"),
+          `${JSON.stringify(scenario.connection)}\n`,
+        );
+      }
+
+      const supervisor = spawn(process.execPath, [path.join(ROOT, "supervisor.mjs")], {
+        env: {
+          ...process.env,
+          COPPERMIND_DATA_DIR: data,
+          COPPERMIND_INTERNAL_TOKEN_FILE: tokenFile,
+          COPPERMIND_SYNC_FAKE: scenario.fake ? "1" : "0",
+          COPPERMIND_SYNC_PORT: "0",
+        },
+        stdio: "ignore",
+      });
+      context.after(() => supervisor.kill("SIGKILL"));
+
+      const statusFile = path.join(data, "state", "sync", "status.json");
+      await waitFor(async () => {
+        const value = JSON.parse(await readFile(statusFile, "utf8"));
+        return value.control_port && value.state === scenario.expectedState ? value : null;
+      }, `supervisor did not reach ${scenario.expectedState}`);
+
+      supervisor.kill("SIGTERM");
+      await new Promise((resolve) => supervisor.once("exit", resolve));
+
+      const persisted = JSON.parse(await readFile(statusFile, "utf8"));
+      assert.equal(persisted.state, "stopped");
+      assert.equal(persisted.connected, false);
+      assert.equal(persisted.syncing, false);
+      assert.equal(persisted.sync_pid, null);
+      assert.equal(persisted.control_port, null);
+    });
+  }
 });
