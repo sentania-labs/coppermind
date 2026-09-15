@@ -68,30 +68,31 @@ vertical path proved end to end, then widened.
   by default. The filesystem walk runs outside the request loop, so requests
   continue while a scan is in progress. A known note edited, moved or renamed
   on a device is mirrored by the identity in its frontmatter. Only a file the
-  scan did not find becomes `missing`: one it can see but cannot parse or open
-  is `unparsed` at its own path, and two live copies of one identity leave the
-  row as it was rather than guessing. An interval scan stats every note file
-  and reads only the ones a stat says may have changed. A file carrying no
-  identity this store knows, which is every file in an existing tree
-  Coppermind was pointed at, is read once and then stat-trusted the same way,
-  so an unfamiliar tree costs one stat per file per pass rather than a read
-  and a parse. That memory holds 10,000 such paths per store process; where
-  more files than that carry no known identity, the ones past the bound are
-  read and parsed every pass until write-side reconciliation gives them
-  identities. A file changed inside the quiet period waits for the next pass.
-  Trusting a stat is safe because it is not the only pass: once a day, at the
-  configured local time, the store rereads and rehashes every note file, which
-  is what catches an edit that left the file's size and timestamp where they
-  were. That pass is due until it completes, so one that could not run is
-  retried on the next interval rather than skipped for the day. Several scans
-  in a row that cannot complete make `/readyz` report not ready rather than
-  serving state nothing is refreshing, as does a long silence with no scan
-  landing; the first scan after a start gets a grace of its own first, because
-  it reads everything and there is no measured runtime yet to judge it by.
-  Files whose identity is not already known are left byte for byte alone. The
-  interval, the quiet period and the rehash time are product settings with
-  working defaults; their graphical controls arrive with the separate Admin
-  service.
+  scan did not find becomes `missing`: one it can see at a known note's path
+  but cannot parse, open or identify is `unparsed` there, and two live copies
+  of one identity leave the row as it was rather than guessing. An interval
+  scan stats every note file and reads only the ones a stat says may have
+  changed. A file carrying no identity this store knows, which is every file
+  in an existing tree Coppermind was pointed at, is read once and then
+  stat-trusted the same way, so an unfamiliar tree costs one stat per file per
+  pass rather than a read and a parse. That memory holds 10,000 such paths per
+  store process; where more files than that carry no known identity, the ones
+  past the bound are read and parsed every pass until write-side
+  reconciliation gives them identities. A file changed inside the quiet period
+  waits for the next pass. Trusting a stat is safe because it is not the only
+  pass: once a day, at the configured local time, the store rereads and
+  rehashes every note file, which is what catches an edit that left the file's
+  size and timestamp where they were. That pass stays due until one completes
+  having deferred nothing, so a rehash that could not run, or that had to
+  leave a file for later, is retried on the next interval rather than skipped
+  for the day. Several scans in a row that cannot complete make `/readyz`
+  report not ready rather than serving state nothing is refreshing, as does a
+  long silence with no scan landing; the first scan after a start gets a grace
+  of its own first, because it reads everything and there is no measured
+  runtime yet to judge it by. Files whose identity is not already known are
+  left byte for byte alone. The interval, the quiet period and the rehash time
+  are product settings with working defaults; their graphical controls arrive
+  with the separate Admin service.
 - `POST /v1/ingest` takes a source and the note to open for it, and creates
   both or neither. A deterministic `.external-id-<sha256>.json` file claims
   each `provider` plus `external_source_id` before the bundle is written. The
