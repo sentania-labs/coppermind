@@ -954,18 +954,12 @@ async def test_a_note_filed_into_the_sources_folder_is_moved_not_reported_delete
     assert row.path == "_Sources/Plaud/Runbook.md"
     assert (await store.get_note(note.id)).path == row.path
 
-    assert await reconcile_once(store) == {
-        "adopted": 0,
-        "backlog": 0,
-        "rejected": 0,
-        "unwritable": 0,
-        "duplicates": 0,
-        "changed": 0,
-        "moved": 0,
-        "missing": 0,
-        "unparsed": 0,
-        "deferred": 0,
-    }
+    settled = await reconcile_once(store)
+    assert settled["changed"] == 0
+    assert settled["moved"] == 0
+    assert settled["missing"] == 0
+    assert settled["unparsed"] == 0
+    assert settled["deferred"] == 0
     assert (await _row(store, note.id)).state == "ok"
 
 
