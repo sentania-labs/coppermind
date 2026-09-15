@@ -50,7 +50,9 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         factory = make_session_factory(engine)
         app.state.wiring = settings
         app.state.auth = InternalAuth.from_wiring(settings)
-        app.state.store = LocalStore(settings.notes_dir, control, factory)
+        app.state.store = LocalStore(
+            settings.notes_dir, control, factory, sources_root=settings.sources_dir
+        )
         app.state.engine = engine
         log.info(
             "store started",
@@ -126,6 +128,8 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         """
         writable, detail = is_writable(request.app.state.wiring.notes_dir)
         checks = [Check(name="notes_filesystem", ok=writable, detail=detail)]
+        sources_writable, sources_detail = is_writable(request.app.state.wiring.sources_dir)
+        checks.append(Check(name="sources_filesystem", ok=sources_writable, detail=sources_detail))
         control_detail = _control_state_problem(request.app.state.store.control)
         checks.append(Check(name="control_state", ok=not control_detail, detail=control_detail))
         try:

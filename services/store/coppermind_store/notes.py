@@ -55,6 +55,8 @@ from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
     CreateNote,
     ETag,
+    IngestRequest,
+    IngestResult,
     MetadataUnavailable,
     NoteDocument,
     NoteId,
@@ -81,8 +83,10 @@ class LocalStore:
         notes_root: Path,
         control: ControlState,
         session_factory: async_sessionmaker[AsyncSession],
+        sources_root: Path,
     ) -> None:
         self.notes_root = notes_root
+        self.sources_root = sources_root
         self.control = control
         self.session_factory = session_factory
         # One lock per note that has been written through this process. The
@@ -93,6 +97,13 @@ class LocalStore:
     async def get_api_keys(self) -> ApiKeySet:
         """Read API key hashes from filesystem-first control state."""
         return self.control.api_keys()
+
+    async def ingest(
+        self, request: IngestRequest, *, payload_size_bytes: int | None = None
+    ) -> IngestResult:
+        from coppermind_store.sources import ingest
+
+        return await ingest(self, request, payload_size_bytes=payload_size_bytes)
 
     async def create_note(self, request: CreateNote) -> NoteDocument:
         settings = self.control.settings()

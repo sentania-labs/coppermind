@@ -39,7 +39,7 @@ async def test_an_ambiguous_commit_failure_keeps_the_authoritative_file(
     control = ControlState(wiring.state_dir)
     control.ensure_defaults()
     wiring.notes_dir.mkdir(parents=True)
-    store = LocalStore(wiring.notes_dir, control, cast(Any, object()))
+    store = LocalStore(wiring.notes_dir, control, cast(Any, object()), wiring.sources_dir)
     monkeypatch.setattr(notes_module, "transaction", transaction_with_lost_commit_result)
 
     with pytest.raises(MetadataUnavailable):
@@ -57,7 +57,7 @@ async def test_a_database_programming_failure_keeps_the_authoritative_file(
     control = ControlState(wiring.state_dir)
     control.ensure_defaults()
     wiring.notes_dir.mkdir(parents=True)
-    store = LocalStore(wiring.notes_dir, control, cast(Any, object()))
+    store = LocalStore(wiring.notes_dir, control, cast(Any, object()), wiring.sources_dir)
     monkeypatch.setattr(notes_module, "transaction", transaction_with_programming_failure)
 
     with pytest.raises(MetadataUnavailable):
