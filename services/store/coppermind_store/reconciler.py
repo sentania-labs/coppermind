@@ -370,7 +370,7 @@ async def reconcile_once(
     )
     remembered.clear()
     remembered.update(scan.unidentified)
-    observations = _choose_observations(scan, by_id)
+    observations, duplicates = _choose_observations(scan, by_id)
     adopted = 0
     rejected = scan.unidentified_unparsed
     unwritable = 0
@@ -436,6 +436,7 @@ async def reconcile_once(
         "backlog": backlog,
         "rejected": rejected,
         "unwritable": unwritable,
+        "duplicates": duplicates,
         "changed": 0,
         "moved": 0,
         "missing": 0,
@@ -823,15 +824,26 @@ def _identity_from_broken(text: str | None, schema: FrontmatterSchema) -> str | 
     return matches[0] if len(matches) == 1 else None
 
 
-def _choose_observations(scan: ScanResult, by_id: dict[str, MirrorEntry]) -> dict[str, Observation]:
-    """Pick the one file that speaks for each identity this scan saw."""
+def _choose_observations(
+    scan: ScanResult, by_id: dict[str, MirrorEntry]
+) -> tuple[dict[str, Observation], int]:
+    """Pick the one file that speaks for each identity this scan saw.
+
+    An identity two live files claim is left alone: neither is chosen, neither
+    is changed, and neither is reported gone. The count comes back with the
+    choices so the pass reports it where an operator already reads what it
+    would not take on, rather than leaving it in a log line nothing counts.
+    """
     chosen: dict[str, Observation] = {}
+    duplicates = 0
     for note_id, candidates in scan.observed.items():
         if note_id in scan.held:
             # The walk found this note's own file still at its recorded path,
-            # so whatever else carries the identity is a second live copy.
-            # Neither is chosen over the other.
-            log.warning("duplicate note identity left unresolved", note_id=note_id)
+            # so whatever else carries the identity is a second live copy. That
+            # file produced no observation of its own, so its recorded path is
+            # named here to report both sides of the collision.
+            duplicates += 1
+            _unresolved(note_id, [by_id[note_id].path, *(item.path for item in candidates)])
             continue
         # A file that named this identity itself outranks one that only
         # inherited it from the row recording its path, so a stranger dropped
@@ -844,8 +856,18 @@ def _choose_observations(scan: ScanResult, by_id: dict[str, MirrorEntry]) -> dic
         elif len(ranked) == 1:
             chosen[note_id] = ranked[0]
         else:
-            log.warning("duplicate note identity left unresolved", note_id=note_id)
-    return chosen
+            duplicates += 1
+            _unresolved(note_id, [item.path for item in ranked])
+    return chosen, duplicates
+
+
+def _unresolved(note_id: str, paths: list[str]) -> None:
+    """Name every file claiming one identity, not the identity alone."""
+    log.warning(
+        "duplicate note identity left unresolved",
+        note_id=note_id,
+        paths=sorted(set(paths)),
+    )
 
 
 def _values_for(

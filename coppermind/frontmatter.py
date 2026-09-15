@@ -288,18 +288,6 @@ def _readable_block(text: str) -> tuple[str, str, int, int]:
     return block, body, opening_length, closing_offset
 
 
-def append_missing(text: str, changes: dict[str, Any]) -> str:
-    """Append absent keys without rewriting any existing frontmatter bytes.
-
-    Adoption adds system-owned defaults to a file a person wrote. The whole
-    existing block is still parsed in round trip mode, but only the generated
-    additions are dumped. They are spliced immediately before the closing
-    delimiter using the block's line endings, so comments, quoting,
-    indentation, ordering and the body remain byte exact.
-    """
-    return _appended(text, changes, *_readable_block(text))
-
-
 def _appended(
     text: str,
     changes: dict[str, Any],
@@ -308,6 +296,14 @@ def _appended(
     opening_length: int,
     closing_offset: int,
 ) -> str:
+    """Append absent keys without rewriting any existing frontmatter bytes.
+
+    Adoption adds system-owned defaults to a file a person wrote. The whole
+    existing block is still parsed in round trip mode, but only the generated
+    additions are dumped. They are spliced immediately before the closing
+    delimiter using the block's line endings, so comments, quoting,
+    indentation, ordering and the body remain byte exact.
+    """
     if opening_length < 0:
         return compose(changes, body)
     yaml = _yaml()

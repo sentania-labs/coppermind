@@ -240,29 +240,29 @@ def test_a_list_item_a_person_left_blank_still_patches():
     assert body.startswith("# Ameren Architecture Sync")
 
 
-def test_append_missing_preserves_an_empty_frontmatter_block_and_its_line_endings():
+def test_fill_missing_preserves_an_empty_frontmatter_block_and_its_line_endings():
     note = "---\r\n---\r\n# Written on a phone\r\n"
 
-    updated = fm.append_missing(note, {"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"})
+    updated = fm.fill_missing(note, {"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"})
 
     assert updated == ("---\r\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\r\n---\r\n# Written on a phone\r\n")
 
 
-def test_append_missing_refuses_delimiters_that_end_in_a_bare_carriage_return():
+def test_fill_missing_refuses_delimiters_that_end_in_a_bare_carriage_return():
     """`split` reports no body for these, so a write would mirror them empty."""
     note = "---\rtags: [mine]\r---\r# Written on a phone\r"
 
     with pytest.raises(fm.FrontmatterError) as raised:
-        fm.append_missing(note, {"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"})
+        fm.fill_missing(note, {"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"})
 
     assert raised.value.category == "unsupported_line_endings"
 
 
-def test_append_missing_keeps_a_carriage_return_the_body_itself_carries():
+def test_fill_missing_keeps_a_carriage_return_the_body_itself_carries():
     """`split` reads this file correctly, so its body must not block a write."""
     note = "---\ntags: [mine]\n---\n# Title\n\nline one\rline two\n"
 
-    updated = fm.append_missing(note, {"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"})
+    updated = fm.fill_missing(note, {"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"})
 
     assert updated == (
         "---\ntags: [mine]\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# Title\n\nline one\rline two\n"
@@ -270,11 +270,11 @@ def test_append_missing_keeps_a_carriage_return_the_body_itself_carries():
     assert fm.parse(updated)[1] == "# Title\n\nline one\rline two\n"
 
 
-def test_append_missing_composes_a_block_for_a_file_with_no_frontmatter():
+def test_fill_missing_composes_a_block_for_a_file_with_no_frontmatter():
     """Compose writes a line-feed closing delimiter, so the body survives."""
     note = "# Written on a phone\r\rStill no line feed anywhere.\r"
 
-    updated = fm.append_missing(note, {"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"})
+    updated = fm.fill_missing(note, {"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"})
 
     assert fm.parse(updated)[1] == note
 

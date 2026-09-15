@@ -14,6 +14,7 @@ from coppermind_store import reconciler
 from coppermind_store.fs import content_hash
 from coppermind_store.notes import LocalStore
 from coppermind_store.reconciler import UNPARSED_REASON, UNREADABLE_REASON, reconcile_once
+from structlog.testing import capture_logs
 
 from coppermind import frontmatter as fm
 from coppermind.db.models import Note
@@ -794,6 +795,7 @@ async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: 
         "backlog": 0,
         "rejected": 0,
         "unwritable": 0,
+        "duplicates": 0,
         "changed": 0,
         "moved": 0,
         "missing": 0,
@@ -912,6 +914,7 @@ async def test_two_live_copies_leave_the_row_alone_instead_of_reporting_it_gone(
         "backlog": 0,
         "rejected": 0,
         "unwritable": 0,
+        "duplicates": 1,
         "changed": 0,
         "moved": 0,
         "missing": 0,
@@ -920,6 +923,43 @@ async def test_two_live_copies_leave_the_row_alone_instead_of_reporting_it_gone(
     }
     assert row.state == "ok"
     assert row.path == note.path
+
+
+async def test_a_copied_identity_is_reported_with_both_paths_and_neither_is_touched(
+    store: LocalStore,
+):
+    """A template a plugin copies leaves two files claiming one identity.
+
+    The store resolves neither, which is the shipped behaviour, but an operator
+    has to be able to see it: the pass counts it and names both files, not the
+    identity alone.
+    """
+    note = await store.create_note(CreateNote(title="Meeting", frontmatter={"type": "reference"}))
+    await reconcile_once(store)
+    template = store.notes_root / note.path
+    original = template.read_bytes()
+    copied = store.notes_root / "Meetings" / "2026-09-20.md"
+    copied.parent.mkdir(parents=True, exist_ok=True)
+    copied.write_bytes(original)
+
+    with capture_logs() as logged:
+        counts = await reconcile_once(store)
+    row = await _row(store, note.id)
+
+    assert counts["duplicates"] == 1
+    assert counts["missing"] == 0
+    assert counts["adopted"] == 0
+    assert template.read_bytes() == original
+    assert copied.read_bytes() == original
+    assert row.state == "ok"
+    assert row.path == note.path
+    reported = [
+        entry for entry in logged if entry["event"] == "duplicate note identity left unresolved"
+    ]
+    assert len(reported) == 1
+    assert reported[0]["log_level"] == "warning"
+    assert reported[0]["note_id"] == note.id
+    assert set(reported[0]["paths"]) == {note.path, "Meetings/2026-09-20.md"}
 
 
 async def test_one_unreadable_file_does_not_stop_the_others_converging(store: LocalStore):
@@ -960,6 +1000,7 @@ async def test_an_interval_scan_trusts_a_stat_and_the_daily_rehash_does_not(stor
         "backlog": 0,
         "rejected": 0,
         "unwritable": 0,
+        "duplicates": 0,
         "changed": 0,
         "moved": 0,
         "missing": 0,
@@ -973,6 +1014,7 @@ async def test_an_interval_scan_trusts_a_stat_and_the_daily_rehash_does_not(stor
         "backlog": 0,
         "rejected": 0,
         "unwritable": 0,
+        "duplicates": 0,
         "changed": 1,
         "moved": 0,
         "missing": 0,
@@ -997,6 +1039,7 @@ async def test_a_file_still_inside_the_quiet_period_waits_rather_than_going_miss
         "backlog": 0,
         "rejected": 0,
         "unwritable": 0,
+        "duplicates": 0,
         "changed": 0,
         "moved": 0,
         "missing": 0,
@@ -1011,6 +1054,7 @@ async def test_a_file_still_inside_the_quiet_period_waits_rather_than_going_miss
         "backlog": 0,
         "rejected": 0,
         "unwritable": 0,
+        "duplicates": 0,
         "changed": 1,
         "moved": 0,
         "missing": 0,
