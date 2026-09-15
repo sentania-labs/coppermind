@@ -265,7 +265,10 @@ vertical path proved end to end, then widened.
   a revision is landing, the ingest answers 409 `projection_not_placed`: the
   revision is stored, its readable page is not, and ingesting the same source
   again places the page at a free name and rebuilds the mirror rows the refused
-  attempt rolled back.
+  attempt rolled back. Until that happens the manifest goes on naming the path
+  it chose, so `projection_path` can point at a file the store did not
+  generate; every reader of it checks the file before trusting it, and a
+  re-ingest is what corrects the record.
   Generation happens on ingest or on a new revision only: nothing backfills, so
   a source ingested before this landed has no projection until it is ingested
   again. An ingest answers with the path its projection occupies, and that is
@@ -291,9 +294,11 @@ vertical path proved end to end, then widened.
   A source or artifact that is not there answers 404; a volume that cannot be
   read answers 503 rather than reporting the bundle gone.
   Both need `sources:read`. `PUT`, `PATCH` and `DELETE` on a source or an
-  artifact return 405 `method_not_allowed`, whether or not the Store is
-  reachable, because only reads are routed: neither the public nor the internal
-  surface offers a way to change source data.
+  artifact return 405 `method_not_allowed`, because only reads are routed:
+  neither the public nor the internal surface offers a way to change source
+  data. With the Store down and the key cache cold the boundary answers 503
+  first, since the keys live in the Store; a mutation reaches nothing that
+  could change source data either way.
 - `PUT /v1/notes/{id}` replaces a note's frontmatter and body on the condition
   that `If-Match` names the ETag the file has now. The body is the document
   shape a read returns, so a client reads, edits and sends it back; the

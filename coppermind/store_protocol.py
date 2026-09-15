@@ -31,12 +31,6 @@ NoteId = str
 SourceId = str
 
 
-def is_text_mime(mime_type: str) -> bool:
-    """Whether an artifact MIME type claims a readable text representation."""
-    base = mime_type.partition(";")[0].strip().casefold()
-    return base.startswith("text/") or base == "application/json"
-
-
 def artifact_text(data: bytes, mime_type: str) -> str | None:
     """The artifact's readable text, or None when it has none.
 
@@ -44,7 +38,8 @@ def artifact_text(data: bytes, mime_type: str) -> str | None:
     constrains, so only a successful decode makes an artifact legible. Anything
     else is described rather than read, here and everywhere.
     """
-    if not is_text_mime(mime_type):
+    base = mime_type.partition(";")[0].strip().casefold()
+    if not (base.startswith("text/") or base == "application/json"):
         return None
     try:
         return data.decode("utf-8")
@@ -114,8 +109,9 @@ class ProjectionNotPlaced(StoreError):
     def __init__(self, source_id: str, revision: int, path: str) -> None:
         super().__init__(
             f"source {source_id} revision {revision} is stored, but its readable page could not "
-            f"be placed: {path} holds a file this store did not generate. Ingest the source "
-            "again to place the page and repair the mirror."
+            f"be placed: {path} holds a file this store did not generate, and the manifest goes "
+            "on naming it until then. Ingest the source again to place the page at a free name "
+            "and repair the mirror."
         )
         self.source_id = source_id
         self.revision = revision

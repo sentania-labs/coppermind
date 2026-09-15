@@ -25,26 +25,20 @@ def write_projection(
     *,
     source_id: str,
     revision: int,
-    provider: str,
     title: str,
-    note_date: date,
     revision_ingested_at: datetime,
     artifacts: list[tuple[dict[str, Any], bytes]],
-    relative_path: str | None = None,
-) -> tuple[str, bool]:
-    """Create or replace the one projection for a source.
+    relative_path: str,
+) -> bool:
+    """Write the one projection for a source at the path its caller chose.
 
-    `relative_path` names generated output to replace in place. Without one the
-    projection is new and is assigned a collision-safe name in the configured
-    sources folder; the caller decides which of the two it is, so no search of
-    the sources folder happens here.
+    The manifest that records `relative_path` is the only place a projection is
+    ever found again, so the caller names it with `new_projection_path` before
+    anything is written and no path is chosen here. True means the file was
+    created, False that generated output was replaced where it stood.
     """
     try:
-        target = (
-            resolve(notes_root, relative_path)
-            if relative_path is not None
-            else _new_path(notes_root, settings, provider, title, note_date)
-        )
+        target = resolve(notes_root, relative_path)
         data = _document(
             source_id,
             revision,
@@ -54,11 +48,9 @@ def write_projection(
         )
         if target.exists():
             _replace_projection(notes_root, target, data, source_id, revision)
-            created = False
-        else:
-            create_exclusive_bytes(target, data)
-            created = True
-        return target.relative_to(notes_root).as_posix(), created
+            return False
+        create_exclusive_bytes(target, data)
+        return True
     except NotesFilesystemUnavailable:
         raise
     except (OSError, ValueError, fm.FrontmatterError) as exc:

@@ -52,6 +52,8 @@ class FakeStore:
         )
 
     async def get_api_keys(self) -> ApiKeySet:
+        if not self.reachable:
+            raise StoreUnavailable("the store is down")
         return ApiKeySet(keys=[self.read_record, self.other_record])
 
     async def get_source(self, source_id: str) -> SourceManifest:
@@ -162,10 +164,19 @@ def test_t_src_1_every_source_mutation_is_refused(source_client, method: str, pa
     assert response.json()["error"] == "method_not_allowed"
 
 
-def test_t_src_1_mutation_is_refused_while_the_store_is_unreachable(tmp_path: Path):
+def test_t_src_1_a_mutation_alters_nothing_while_the_store_is_unreachable(tmp_path: Path):
+    """A source cannot be altered whichever answer the API is able to give.
+
+    The key records live in the Store, so with it down and the cache cold the
+    boundary answers 503 before routing decides the method is not allowed. What
+    a source read and a source mutation have in common is that neither reaches
+    anything that could change source data.
+    """
     with _client(tmp_path, reachable=False) as (client, fake):
         headers = {"Authorization": f"Bearer {fake.read_key}"}
-        assert client.get(f"/v1/sources/{SOURCE_ID}", headers=headers).status_code == 503
+        read = client.get(f"/v1/sources/{SOURCE_ID}", headers=headers)
         refused = client.put(f"/v1/sources/{SOURCE_ID}", headers=headers)
-    assert refused.status_code == 405
-    assert refused.json()["error"] == "method_not_allowed"
+
+    assert read.status_code == 503
+    assert refused.status_code == 503
+    assert refused.json()["error"] == "store_unavailable"

@@ -300,16 +300,23 @@ async def _ingest_new(
         revision_path.mkdir(parents=True, exist_ok=False)
         for artifact, data in artifacts:
             create_exclusive_bytes(revision_path / artifact.name, data)
-        projection_path, projection_created = write_projection(
+        projection_path = new_projection_path(
+            store.notes_root,
+            settings,
+            provider=request.source.provider,
+            title=note_request.title,
+            note_date=_as_date(frontmatter.get(schema.role("date_key"))) or now.date(),
+        )
+        projection_created = await asyncio.to_thread(
+            write_projection,
             store.notes_root,
             settings,
             source_id=source_id,
             revision=1,
-            provider=request.source.provider,
             title=note_request.title,
-            note_date=_as_date(frontmatter.get(schema.role("date_key"))) or now.date(),
             revision_ingested_at=now,
             artifacts=_projection_artifacts(artifacts, artifact_metadata),
+            relative_path=projection_path,
         )
         create_exclusive_bytes(
             source_path / "manifest.json",
@@ -411,19 +418,25 @@ async def _ingest_existing(
             note = await session.get(Note, note_id)
             if note is None:
                 raise StoreError("the linked note mirror is incomplete") from None
-            projection_path, projection_created = write_projection(
+            projection_path = projection_path or new_projection_path(
+                store.notes_root,
+                settings,
+                provider=str(manifest["provider"]),
+                title=note.title,
+                note_date=note.date or datetime.now(tz=UTC).date(),
+            )
+            projection_created = await asyncio.to_thread(
+                write_projection,
                 store.notes_root,
                 settings,
                 source_id=source_id,
                 revision=current_revision,
-                provider=str(manifest["provider"]),
                 title=note.title,
-                note_date=note.date or datetime.now(tz=UTC).date(),
                 revision_ingested_at=_manifest_time(current.get("ingested_at"), "ingested_at"),
                 artifacts=await asyncio.to_thread(
                     _read_revision_artifacts, source_path, current_revision, current_artifacts
                 ),
-                relative_path=projection_path or None,
+                relative_path=projection_path,
             )
         if manifest.get("projection_path") != projection_path:
             manifest["projection_path"] = projection_path
@@ -489,14 +502,13 @@ async def _ingest_existing(
         )
         manifest_replacement_started = True
         atomic_write_bytes(manifest_path, _json_bytes(manifest))
-        write_projection(
+        await asyncio.to_thread(
+            write_projection,
             store.notes_root,
             settings,
             source_id=source_id,
             revision=revision,
-            provider=str(manifest["provider"]),
             title=note.title,
-            note_date=note.date or now.date(),
             revision_ingested_at=now,
             artifacts=_projection_artifacts(artifacts, artifact_metadata),
             relative_path=projection_path,
