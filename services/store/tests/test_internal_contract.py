@@ -400,6 +400,17 @@ def test_a_healthy_store_reports_its_control_files_as_ready(tmp_path):
     assert control["detail"] == ""
 
 
+def test_a_broken_sources_mount_makes_the_store_not_ready(tmp_path):
+    wiring = store_wiring(tmp_path)
+    wiring.sources_dir.parent.mkdir(parents=True)
+    wiring.sources_dir.write_text("not a directory", encoding="utf-8")
+    with TestClient(create_app(wiring)) as client:
+        response = client.get("/readyz")
+    assert response.status_code == 503
+    check = next(item for item in response.json()["checks"] if item["name"] == "sources_filesystem")
+    assert check["ok"] is False
+
+
 def test_key_state_the_models_reject_makes_the_store_report_not_ready(tmp_path):
     """Every public request authenticates against this file, so a green beside it is false."""
     wiring = store_wiring(tmp_path)

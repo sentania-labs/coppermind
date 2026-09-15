@@ -20,7 +20,10 @@ from coppermind.store_protocol import (
     NoteUnparseable,
     NotFound,
     PathCollision,
+    PayloadTooLarge,
     PreconditionRequired,
+    SourceAlreadyExists,
+    SourcesFilesystemUnavailable,
     StoreError,
     StoreUnavailable,
     ValidationFailed,
@@ -34,6 +37,11 @@ METADATA_UNAVAILABLE_MESSAGE = (
 
 NOTES_FILESYSTEM_UNAVAILABLE_MESSAGE = (
     "the notes filesystem could not be read or written; this operation did not succeed and can be "
+    "retried once the volume is healthy"
+)
+
+SOURCES_FILESYSTEM_UNAVAILABLE_MESSAGE = (
+    "the source bundle filesystem could not be written; this ingest did not succeed and can be "
     "retried once the volume is healthy"
 )
 
@@ -73,6 +81,15 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
         return 422, envelope("validation_error", str(error), errors=error.errors)
     if isinstance(error, PathCollision):
         return 409, envelope("path_collision", str(error), existing_path=error.existing_path)
+    if isinstance(error, SourceAlreadyExists):
+        return 409, envelope(
+            "source_exists",
+            str(error),
+            provider=error.provider,
+            external_source_id=error.external_source_id,
+        )
+    if isinstance(error, PayloadTooLarge):
+        return 413, envelope("payload_too_large", str(error), limit_bytes=error.limit_bytes)
     if isinstance(error, VersionConflict):
         return 409, envelope("version_conflict", str(error), current_version=error.current_etag)
     if isinstance(error, PreconditionRequired):
@@ -88,6 +105,10 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
     if isinstance(error, NotesFilesystemUnavailable):
         return 503, envelope(
             "notes_filesystem_unavailable", NOTES_FILESYSTEM_UNAVAILABLE_MESSAGE, **cause
+        )
+    if isinstance(error, SourcesFilesystemUnavailable):
+        return 503, envelope(
+            "sources_filesystem_unavailable", SOURCES_FILESYSTEM_UNAVAILABLE_MESSAGE, **cause
         )
     if isinstance(error, StoreUnavailable):
         return 503, envelope("store_unavailable", STORE_UNAVAILABLE_MESSAGE, **cause)

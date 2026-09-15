@@ -26,6 +26,7 @@ from coppermind.settings import Wiring
 from coppermind.store_client import HttpStoreClient
 from coppermind_api import __version__
 from coppermind_api.auth import ApiKeyAuthenticator, AuthenticationUnavailable
+from coppermind_api.v1.ingest import router as ingest_router
 from coppermind_api.v1.notes import router as notes_router
 
 SERVICE = "coppermind-api"
@@ -140,6 +141,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             content=readiness.model_dump(mode="json"),
         )
 
+    app.include_router(ingest_router)
     app.include_router(notes_router)
     return app
 

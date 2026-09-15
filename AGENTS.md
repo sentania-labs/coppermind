@@ -65,6 +65,11 @@ until the helper honours it.
   is only a guard while the store is one process: one uvicorn worker, one
   replica. Adding `--workers` to the store's Dockerfile or a second replica
   reopens the race the lock closes.
+- **Source external IDs have filesystem claims.** Ingest creates the
+  deterministic `.external-id-<sha256>.json` claim before its source bundle.
+  A write-phase failure removes both; a database commit failure retains the
+  completed bundle, Review note and claim, so a retry returns 409 while the
+  database mirror is unavailable or rebuilt.
 
 ## Maintaining this file
 

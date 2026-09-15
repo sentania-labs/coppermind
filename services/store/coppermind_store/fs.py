@@ -58,7 +58,7 @@ def is_note_file(path: Path) -> bool:
 
 
 def is_writable(root: Path) -> tuple[bool, str]:
-    """Check that the notes filesystem is present and writable.
+    """Check that a store-owned filesystem root is present and writable.
 
     Used by readiness. A volume that mounted read only, or that a fresh
     Longhorn claim left owned by root, is the failure this catches, and it is

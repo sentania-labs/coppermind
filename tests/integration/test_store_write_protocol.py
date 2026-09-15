@@ -192,7 +192,7 @@ async def test_the_mirror_reads_the_schema_version_by_role_not_by_name(
     control.store.write("schema", renamed.model_dump(mode="json"), if_revision=1)
 
     wiring.notes_dir.mkdir(parents=True, exist_ok=True)
-    store = LocalStore(wiring.notes_dir, control, session_factory)
+    store = LocalStore(wiring.notes_dir, control, session_factory, wiring.sources_dir)
     note = await store.create_note(CreateNote(title="Renamed key"))
 
     assert note.frontmatter["format_version"] == 2

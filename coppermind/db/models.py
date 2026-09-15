@@ -6,7 +6,18 @@ from datetime import date as date_type
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, Index, Integer, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -52,3 +63,69 @@ class Note(Base):
         Index("ix_notes_context_account", "context", "account"),
         Index("ix_notes_date", "date"),
     )
+
+
+class Source(Base):
+    """An immutable source identity mirrored from its manifest."""
+
+    __tablename__ = "sources"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    external_source_id: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(Text, nullable=False)
+    origin: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    current_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    content_identity: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("provider", "external_source_id", name="uq_sources_provider_external_id"),
+    )
+
+
+class SourceRevision(Base):
+    __tablename__ = "source_revisions"
+
+    source_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    content_identity: Mapped[str] = mapped_column(Text, nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict
+    )
+
+
+class SourceArtifact(Base):
+    __tablename__ = "source_artifacts"
+
+    source_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    mime_type: Mapped[str] = mapped_column(Text, nullable=False)
+    sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["source_id", "revision"],
+            ["source_revisions.source_id", "source_revisions.revision"],
+            ondelete="CASCADE",
+        ),
+    )
+
+
+class NoteSource(Base):
+    __tablename__ = "note_sources"
+
+    note_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("notes.id", ondelete="CASCADE"), primary_key=True
+    )
+    source_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

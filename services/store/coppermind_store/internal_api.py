@@ -16,6 +16,8 @@ from coppermind.api_keys import ApiKeySet
 from coppermind.errors import to_http
 from coppermind.store_protocol import (
     CreateNote,
+    IngestRequest,
+    IngestResult,
     NoteDocument,
     ReplaceNote,
     StoreError,
@@ -52,6 +54,23 @@ async def create_note(payload: CreateNote, request: Request) -> Response:
         content=note.model_dump(mode="json"),
         headers={"ETag": f'"{note.content_hash}"'},
     )
+
+
+@router.post("/ingest", status_code=201, response_model=IngestResult)
+async def ingest(
+    payload: IngestRequest,
+    request: Request,
+    payload_size_bytes: Annotated[int | None, Header(alias="X-Coppermind-Payload-Bytes")] = None,
+) -> Response:
+    try:
+        internal_size = len(await request.body())
+        result = await _store(request).ingest(
+            payload,
+            payload_size_bytes=max(internal_size, payload_size_bytes or 0),
+        )
+    except StoreError as error:
+        return _failure(error)
+    return JSONResponse(status_code=201, content=result.model_dump(mode="json"))
 
 
 @router.get("/notes/{note_id}", response_model=NoteDocument)

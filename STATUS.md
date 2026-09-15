@@ -1,6 +1,6 @@
 # STATUS
 
-What works against `main` today. Updated 2026-09-14. Every claim here was
+What works against `main` today. Updated 2026-09-15. Every claim here was
 checked against a running compose stack on that date, not against CI alone.
 
 This is the first slice of the build. The shape is deliberately narrow: one
@@ -26,9 +26,11 @@ vertical path proved end to end, then widened.
   full-scope key while the first stays usable.
 - Every `/v1` route requires `Bearer cm_<key_id>_<secret>`. A missing or bad
   key answers 401 and a key without the route's scope answers 403. Note reads
-  need `notes:read`; creates and replacements need `notes:write`. Successful
-  verification and key hashes are cached for five minutes, so a key created
-  after a load is picked up at the next cache expiry rather than at once.
+  need `notes:read`; creates and replacements need `notes:write`; ingest needs
+  both `sources:write` and `notes:write`, so a key holding one of the two
+  answers 403. Successful verification and key hashes are cached for five
+  minutes, so a key created after a load is picked up at the next cache expiry
+  rather than at once.
   Health, readiness and OpenAPI remain open, and Compose remains bound to
   loopback by default.
   The content-typed journal scopes, `journal:read` and `journal:write`, are
@@ -47,6 +49,27 @@ vertical path proved end to end, then widened.
   note.
 - `GET /v1/notes/{id}` returns the note as a document, carrying
   `ETag: "sha256:<hash of the file bytes>"`.
+- `POST /v1/ingest` takes a source and the note to open for it, and creates
+  both or neither. A deterministic `.external-id-<sha256>.json` file claims
+  each `provider` plus `external_source_id` before the bundle is written. The
+  artifacts land under `/data/sources/<source_id>/r0001/`, then
+  `manifest.json` last, so a bundle without a manifest is an unfinished one;
+  the Review note is written in the same database transaction with the source
+  identifier in its `sources` frontmatter key. A second ingest of the same
+  `provider` plus `external_source_id` loses the exclusive claim creation,
+  answers 409 `source_exists` and writes nothing.
+  `uq_sources_provider_external_id` remains the database mirror's second
+  guard. A failure before the note is complete removes the claim and bundle,
+  so a later legitimate retry can proceed. PostgreSQL failing at commit after
+  the filesystem writes answers 503 `metadata_unavailable` and rolls the rows
+  back, but retains the complete bundle, Review note and external-id claim.
+  The caller cannot know the write outcome, but retrying receives 409 and
+  cannot create a duplicate. A submitted body over `limits.ingest_max_bytes`
+  (25 MiB by default, settable like every other setting) answers 413
+  `payload_too_large` before filesystem or database writes. The API preserves
+  the public body length across the Store contract, but checks it only after
+  the whole body has been read and parsed: it refuses the request, it does not
+  spare process memory.
 - `PUT /v1/notes/{id}` replaces a note's frontmatter and body on the condition
   that `If-Match` names the ETag the file has now. The body is the document
   shape a read returns, so a client reads, edits and sends it back; the
@@ -72,7 +95,10 @@ vertical path proved end to end, then widened.
   for the reconciler under "Not built yet". Control state is checked the same
   way: a settings, schema or key file the models reject answers 503 and names
   the file, while key state that loads and happens to hold no usable key is an
-  operator's choice and stays ready.
+  operator's choice and stays ready. Readiness names the source bundle
+  filesystem as its own check beside the notes filesystem, so a `/data/sources`
+  the store cannot create or write in holds it unready rather than failing at
+  the first ingest.
 - Control state files are revisioned. A write states the revision it replaces
   and is refused if the file moved on. The readiness check above is what
   catches a hand edit the models reject, naming the file and the failing
@@ -111,8 +137,12 @@ vertical path proved end to end, then widened.
 Everything below is planned and has a place in the design. None of it exists
 in the tree, so do not read the absence as a decision to leave it out.
 
-- **Ingest.** `POST /v1/ingest`, source bundles, revisions, idempotency and
-  the generated source projections.
+- **Ingest beyond the first revision.** A source is created once and never
+  revised: `r0002` and later, an idempotency key that returns the first
+  answer instead of 409, the generated source projections into the notes
+  filesystem, and tombstoning a source. Tombstones in particular have no
+  columns in the mirror and no keys in `manifest.json`, so adding them costs
+  a migration of its own and a manifest `schema_version` bump.
 - **Reconciliation.** Nothing yet notices a file created, moved or deleted on
   a device. An edit in place is the exception and does read back: a note read
   by its identifier is parsed from the file every time, so a body or

@@ -17,6 +17,8 @@ from coppermind.api_keys import ApiKeySet
 from coppermind.store_protocol import (
     CreateNote,
     ETag,
+    IngestRequest,
+    IngestResult,
     MetadataUnavailable,
     NoteDocument,
     NoteId,
@@ -24,8 +26,11 @@ from coppermind.store_protocol import (
     NoteUnparseable,
     NotFound,
     PathCollision,
+    PayloadTooLarge,
     PreconditionRequired,
     ReplaceNote,
+    SourceAlreadyExists,
+    SourcesFilesystemUnavailable,
     StoreError,
     StoreUnavailable,
     ValidationFailed,
@@ -85,6 +90,22 @@ class HttpStoreClient:
         )
         return NoteDocument.model_validate(response.json())
 
+    async def ingest(
+        self, request: IngestRequest, *, payload_size_bytes: int | None = None
+    ) -> IngestResult:
+        headers = (
+            {"X-Coppermind-Payload-Bytes": str(payload_size_bytes)}
+            if payload_size_bytes is not None
+            else None
+        )
+        response = await self._send(
+            "POST",
+            f"{INTERNAL_PREFIX}/ingest",
+            json=request.model_dump(mode="json", exclude_none=True),
+            headers=headers,
+        )
+        return IngestResult.model_validate(response.json())
+
     async def get_api_keys(self) -> ApiKeySet:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/api-keys")
         return ApiKeySet.model_validate(response.json())
@@ -118,6 +139,14 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         return NotFound(payload.get("note_id", message))
     if code == "path_collision":
         return PathCollision(payload.get("existing_path", message))
+    if code == "source_exists":
+        return SourceAlreadyExists(
+            payload.get("provider", ""), payload.get("external_source_id", "")
+        )
+    if code == "payload_too_large":
+        return PayloadTooLarge(payload.get("limit_bytes", 0))
+    if code == "sources_filesystem_unavailable":
+        return SourcesFilesystemUnavailable(payload.get("detail", message))
     if code == "version_conflict":
         return VersionConflict(payload.get("current_version", ""))
     if code == "precondition_required":

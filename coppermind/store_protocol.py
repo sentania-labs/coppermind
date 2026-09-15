@@ -13,10 +13,13 @@ here that no implementation provides.
 
 from __future__ import annotations
 
+import base64
+import binascii
 from datetime import datetime
-from typing import Any, Protocol
+from pathlib import PurePath
+from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from coppermind.api_keys import ApiKeySet
 
@@ -24,6 +27,7 @@ from coppermind.api_keys import ApiKeySet
 # the bytes, including a frontmatter write back, does.
 ETag = str
 NoteId = str
+SourceId = str
 
 
 class StoreError(Exception):
@@ -40,6 +44,23 @@ class PathCollision(StoreError):
     def __init__(self, existing_path: str) -> None:
         super().__init__(f"path already in use: {existing_path}")
         self.existing_path = existing_path
+
+
+class SourceAlreadyExists(StoreError):
+    """The provider's external identifier has already been ingested."""
+
+    def __init__(self, provider: str, external_source_id: str) -> None:
+        super().__init__(
+            f"source {provider}/{external_source_id} already exists; the original was not changed"
+        )
+        self.provider = provider
+        self.external_source_id = external_source_id
+
+
+class PayloadTooLarge(StoreError):
+    def __init__(self, limit_bytes: int) -> None:
+        super().__init__(f"the ingest payload exceeds the {limit_bytes} byte limit")
+        self.limit_bytes = limit_bytes
 
 
 class VersionConflict(StoreError):
@@ -107,6 +128,10 @@ class NotesFilesystemUnavailable(StoreError):
     """
 
 
+class SourcesFilesystemUnavailable(StoreError):
+    """The source bundle filesystem could not be written."""
+
+
 class StoreUnavailable(StoreError):
     """The store service itself could not be reached."""
 
@@ -124,6 +149,108 @@ class CreateNote(BaseModel):
     @classmethod
     def normalize_title(cls, value: Any) -> Any:
         return " ".join(value.split()) if isinstance(value, str) else value
+
+
+class IngestArtifact(BaseModel):
+    """One immutable file in a source revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    mime_type: str = Field(min_length=1)
+    content: str | None = None
+    content_base64: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def safe_name(cls, value: str) -> str:
+        if value in {".", ".."} or PurePath(value).name != value or "\\" in value or "\0" in value:
+            raise ValueError("must be a filename, not a path")
+        return value
+
+    @model_validator(mode="after")
+    def one_content_form(self) -> IngestArtifact:
+        if (self.content is None) == (self.content_base64 is None):
+            raise ValueError("exactly one of content or content_base64 is required")
+        if self.content_base64 is not None:
+            try:
+                base64.b64decode(self.content_base64, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ValueError("content_base64 is not valid base64") from exc
+        return self
+
+    def bytes(self) -> bytes:
+        if self.content is not None:
+            return self.content.encode("utf-8")
+        return base64.b64decode(self.content_base64 or "", validate=True)
+
+
+class IngestSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(min_length=1)
+    external_source_id: str = Field(min_length=1)
+    source_type: Literal["transcript", "document", "image", "email", "other"]
+    origin: str = ""
+    captured_at: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[IngestArtifact] = Field(min_length=1)
+
+    @field_validator("provider", "external_source_id")
+    @classmethod
+    def trimmed_identity(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("must not be blank")
+        return normalized
+
+    @field_validator("captured_at")
+    @classmethod
+    def captured_at_has_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("must include a timezone")
+        return value
+
+    @model_validator(mode="after")
+    def artifact_names_are_unique(self) -> IngestSource:
+        names = [artifact.name for artifact in self.artifacts]
+        if len(names) != len(set(names)):
+            raise ValueError("artifact names must be unique")
+        return self
+
+
+class IngestNote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1)
+    body: str = ""
+    frontmatter: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def normalize_title(cls, value: Any) -> Any:
+        return " ".join(value.split()) if isinstance(value, str) else value
+
+
+class IngestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: IngestSource
+    note: IngestNote
+
+
+class CreatedSource(BaseModel):
+    id: SourceId
+
+
+class CreatedNote(BaseModel):
+    id: NoteId
+    path: str
+
+
+class IngestResult(BaseModel):
+    source: CreatedSource
+    note: CreatedNote
 
 
 class ReplaceNote(BaseModel):
@@ -168,6 +295,10 @@ class Store(Protocol):
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag
     ) -> NoteDocument: ...
+
+    async def ingest(
+        self, request: IngestRequest, *, payload_size_bytes: int | None = None
+    ) -> IngestResult: ...
 
     async def get_api_keys(self) -> ApiKeySet: ...
 
