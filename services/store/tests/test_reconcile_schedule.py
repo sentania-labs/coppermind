@@ -124,7 +124,7 @@ async def test_a_deferred_daily_rehash_is_retried_rather_than_forfeited(monkeypa
             failures.append("deferred")
             raise MetadataUnavailable("postgres restarting")
         completed.append(full)
-        return {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0}
+        return {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 0}
 
     monkeypatch.setattr(reconciler, "reconcile_once", scan)
     task = asyncio.create_task(reconciler.run_reconciler(object()))
@@ -137,3 +137,58 @@ async def test_a_deferred_daily_rehash_is_retried_rather_than_forfeited(monkeypa
 
     assert calls[:3] == [True, True, False]
     assert True in completed
+
+
+def test_a_scan_in_flight_is_not_counted_as_silence():
+    """The loop sleeps the interval and then scans, so a scan's own runtime is extra."""
+    status = ReconcilerStatus()
+    status.scan_interval_s = 60
+    status.completed()
+    status.last_completed_at = datetime.now(UTC) - timedelta(seconds=600)
+    assert status.problem() != ""
+
+    status.scanning()
+
+    assert status.problem() == ""
+
+
+def test_the_deadline_never_falls_below_a_scans_own_runtime():
+    """A brisk interval is a legitimate setting, not a permanent not-ready."""
+    status = ReconcilerStatus()
+    status.scan_interval_s = 5
+    status.scanning()
+    status.scan_started_at = datetime.now(UTC) - timedelta(seconds=120)
+    status.completed()
+    assert status.longest_scan_s >= 120
+
+    status.last_completed_at = datetime.now(UTC) - timedelta(seconds=200)
+    assert status.problem() == ""
+
+    status.last_completed_at = datetime.now(UTC) - timedelta(seconds=1000)
+    assert status.problem() != ""
+
+
+async def test_the_loop_marks_a_scan_in_flight_before_running_it(monkeypatch):
+    status = ReconcilerStatus()
+    in_flight: list[datetime | None] = []
+    finished = asyncio.Event()
+
+    monkeypatch.setattr(reconciler, "_cadence", lambda _store: (0, 0, "03:30", ZoneInfo("UTC")))
+    monkeypatch.setattr(reconciler, "_next_full_rehash", lambda *_args: None)
+
+    async def scan(_store, *, full, quiet_period_s):
+        in_flight.append(status.scan_started_at)
+        finished.set()
+        return {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 0}
+
+    monkeypatch.setattr(reconciler, "reconcile_once", scan)
+    task = asyncio.create_task(reconciler.run_reconciler(object(), status))
+    try:
+        await asyncio.wait_for(finished.wait(), timeout=5)
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    assert in_flight[0] is not None
+    assert status.scan_started_at is None

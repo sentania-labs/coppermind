@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
@@ -115,7 +116,7 @@ async def test_unknown_device_created_file_is_left_unchanged(store: LocalStore):
     async with store.session_factory() as session:
         assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 0
     assert unknown.read_bytes() == original
-    assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0}
+    assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 0}
 
 
 async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: LocalStore):
@@ -128,7 +129,7 @@ async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: 
     counts = await reconcile_once(store)
     row = await _row(store, note.id)
 
-    assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 1}
+    assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 1, "deferred": 0}
     assert row.state == "unparsed"
     assert row.path == note.path
     assert row.content_hash == content_hash(broken)
@@ -170,7 +171,7 @@ async def test_two_live_copies_leave_the_row_alone_instead_of_reporting_it_gone(
     counts = await reconcile_once(store)
     row = await _row(store, note.id)
 
-    assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0}
+    assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 0}
     assert row.state == "ok"
     assert row.path == note.path
 
@@ -208,7 +209,13 @@ async def test_an_interval_scan_trusts_a_stat_and_the_daily_rehash_does_not(stor
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert path.stat().st_size == before.st_size
 
-    assert await reconcile_once(store) == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0}
+    assert await reconcile_once(store) == {
+        "changed": 0,
+        "moved": 0,
+        "missing": 0,
+        "unparsed": 0,
+        "deferred": 0,
+    }
     assert (await _row(store, note.id)).title == "Runbook"
 
     assert await reconcile_once(store, full=True) == {
@@ -216,6 +223,7 @@ async def test_an_interval_scan_trusts_a_stat_and_the_daily_rehash_does_not(stor
         "moved": 0,
         "missing": 0,
         "unparsed": 0,
+        "deferred": 0,
     }
     assert (await _row(store, note.id)).title == "Runbouk"
 
@@ -230,7 +238,7 @@ async def test_a_file_still_inside_the_quiet_period_waits_rather_than_going_miss
     deferred = await reconcile_once(store, quiet_period_s=3600)
     settling = await _row(store, note.id)
 
-    assert deferred == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0}
+    assert deferred == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 1}
     assert settling.state == "ok"
     assert settling.title == "Runbook"
 
@@ -239,6 +247,7 @@ async def test_a_file_still_inside_the_quiet_period_waits_rather_than_going_miss
         "moved": 0,
         "missing": 0,
         "unparsed": 0,
+        "deferred": 0,
     }
     assert (await _row(store, note.id)).title == "Current Runbook"
 
@@ -361,3 +370,47 @@ async def test_an_unreadable_note_says_why_its_hash_is_not_current(store: LocalS
     assert summaries[unreadable.id].content_hash == last_read_hash
     assert summaries[broken.id].state_reason == UNPARSED_REASON
     assert summaries[broken.id].content_hash == content_hash(broken_path.read_bytes())
+
+
+async def test_a_copy_made_after_a_scan_does_not_steal_the_row(store: LocalStore):
+    """A stat-credited note is still present, so a copy of it is a second copy."""
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    await reconcile_once(store)
+    original = store.notes_root / note.path
+    copy = original.with_name("Runbook 1.md")
+    copy.write_bytes(original.read_bytes())
+
+    counts = await reconcile_once(store)
+    row = await _row(store, note.id)
+
+    assert counts["moved"] == 0
+    assert row.path == note.path
+    assert row.state == "ok"
+    assert (await store.get_note(note.id)).path == note.path
+    assert original.exists()
+
+    await reconcile_once(store, full=True)
+
+    assert (await _row(store, note.id)).path == note.path
+
+
+async def test_a_file_stamped_in_the_future_does_not_stop_deletions_being_reported(
+    store: LocalStore,
+):
+    """A wrong clock is not an in-flight write, so it defers nothing."""
+    stamped = await store.create_note(
+        CreateNote(title="Runbook", frontmatter={"type": "reference"})
+    )
+    deleted = await store.create_note(
+        CreateNote(title="Meeting", frontmatter={"type": "reference"})
+    )
+    ahead = (datetime.now(tz=UTC) + timedelta(days=365)).timestamp()
+    os.utime(store.notes_root / stamped.path, (ahead, ahead))
+    (store.notes_root / deleted.path).unlink()
+
+    counts = await reconcile_once(store, quiet_period_s=3600)
+
+    assert counts["deferred"] == 0
+    assert counts["missing"] == 1
+    assert (await _row(store, deleted.id)).state == "missing"
+    assert (await _row(store, stamped.id)).state == "ok"
