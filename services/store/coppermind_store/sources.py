@@ -4,10 +4,12 @@ A deterministic filesystem claim owns each external identifier. Artifact
 files are exclusive and each revision is recorded in `manifest.json` only
 after its files are durable. The linked Review note is created once and is
 never part of a replay or revision write. A write-phase failure removes what
-that attempt created; a commit failure retains complete files so the next
-retry can resolve through the claim and repair the database mirror. A process
-killed mid-write can still leave a revision directory the manifest does not
-record, which the next ingest names and leaves alone rather than deleting.
+that attempt created, unless replacing `manifest.json` has begun and the new
+revision may already be live; a commit failure retains complete files so the
+next retry can resolve through the claim and repair the database mirror.
+Either of those, or a process killed mid-write, can leave a revision directory
+the manifest does not record, which the next ingest names and leaves alone
+rather than deleting.
 """
 
 from __future__ import annotations

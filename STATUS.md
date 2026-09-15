@@ -67,15 +67,14 @@ vertical path proved end to end, then widened.
   reporting that the source is intact, and the database mirror is not rebuilt
   from the unverified manifest. The response carries real `created` values for
   both records and the source revision. A payload whose artifacts are
-  unchanged while a field
-  describing them differs (`captured_at`, `metadata`, `source_type`, `origin`
-  or an artifact's `mime_type`) is still a replay: 200, `created: false`, the
-  same source and note identifiers, one note. Storing a correction to those
-  fields is not built in this increment, so the answer names every one of them
-  in `source.unstored_fields` rather than discarding it in silence. A caller
-  that reads an empty `unstored_fields` knows the stored source matches what
-  it sent. Keeping those corrections arrives with the remaining source
-  capabilities under "Not built yet".
+  unchanged while a field describing them differs (`captured_at`, `metadata`,
+  `source_type`, `origin` or an artifact's `mime_type`) is still a replay:
+  200, `created: false`, the same source and note identifiers, one note.
+  Storing a correction to those fields is not built in this increment, so the
+  answer names every one of them in `source.unstored_fields` rather than
+  discarding it in silence. A caller that reads an empty `unstored_fields`
+  knows the stored source matches what it sent. Keeping those corrections
+  arrives with the remaining source capabilities under "Not built yet".
   `unstored_fields` describes the source and nothing else. An ingest that does
   not create the note ignores the request's whole `note` object, title, body
   and frontmatter alike, because the note belongs to the captain once it
