@@ -32,8 +32,9 @@ import base64
 import binascii
 import json
 from datetime import UTC, date, datetime
+from math import isfinite
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
@@ -45,7 +46,7 @@ from coppermind.api_keys import ApiKeySet
 from coppermind.atomicio import commit_staged, create_exclusive_bytes, stage_bytes
 from coppermind.db.models import Note
 from coppermind.db.session import transaction
-from coppermind.ids import new_id
+from coppermind.ids import is_valid_id, new_id
 from coppermind.logging import get_logger
 from coppermind.naming import note_stem, sanitize_folder, unique_stem
 from coppermind.schema import FrontmatterSchema
@@ -80,6 +81,13 @@ log = get_logger("coppermind-store")
 # How many mirror rows a listing holds in memory at a time. A selective filter
 # still walks the mirror, and this bounds the materialized batch.
 _SCAN_BATCH = 200
+
+AdoptionOutcome = Literal["adopted", "changed", "invalid", "collision"]
+# The outcome and why it happened. "invalid" alone names five different
+# refusals, and the reconciler's log line is the only thing that surfaces a
+# file the store has decided not to adopt. The cause is content free by
+# construction: a parser category or a schema key name, never note bytes.
+AdoptionResult = tuple[AdoptionOutcome, str]
 
 
 class LocalStore:
@@ -406,6 +414,152 @@ class LocalStore:
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
 
+    async def adopt_note(
+        self,
+        relative: str,
+        expected_hash: str,
+        *,
+        schema: FrontmatterSchema,
+        settings: ProductSettings,
+    ) -> AdoptionResult:
+        """Give a settled device-created file an identity and mirror it.
+
+        The scan supplies the hash it observed after the quiet period. The
+        file is read again here and checked once more immediately before an
+        atomic replacement, so a device write wins the race without losing
+        bytes. Nothing serialises against this: the reconciler is the only
+        caller and it adopts one file at a time, which is also why it reads the
+        schema and the settings once for a whole pass and hands them in: every
+        refusal returns before the first await, so re-reading two state files
+        per candidate would hold the event loop for a whole sweep.
+
+        The identity is always written because the notes filesystem is its
+        durable home. Other keys receive defaults only when the schema requires
+        them of this note and it does not already carry a value; an optional
+        key a person did not write stays unwritten, and existing values and
+        body content are never replaced.
+
+        A file already carrying an identity this store knows is not adopted:
+        the reconciler never proposes one, because nothing observable tells a
+        copy apart from a move whose delete has not arrived yet. Neither is a
+        file already carrying source associations, because ingest wrote that
+        and generated output is not a note a person made.
+        """
+        try:
+            path = resolve(self.notes_root, relative)
+        except ValueError:
+            return "invalid", "path is not inside the notes filesystem"
+        try:
+            current, _ = _read(relative, path)
+        except NotFound:
+            return "changed", "the file is no longer there"
+        if content_hash(current) != expected_hash:
+            return "changed", "the file changed after it was read"
+        try:
+            text = current.decode("utf-8")
+            frontmatter, body = fm.parse(text)
+        except UnicodeDecodeError:
+            return "invalid", "the file is not valid UTF-8"
+        except fm.FrontmatterError as exc:
+            return "invalid", exc.category
+
+        sources = frontmatter.get(schema.role("sources_key"))
+        if isinstance(sources, list) and sources:
+            return "invalid", "the store generated this file, so it is not a note to adopt"
+
+        carried_id = frontmatter.get(schema.role("id_key"))
+        if carried_id is None:
+            note_id = new_id()
+        elif is_valid_id(carried_id):
+            note_id = carried_id
+        else:
+            return "invalid", "the id it carries is not a valid identifier"
+
+        changes = _adoption_changes(frontmatter, schema, settings, note_id)
+        try:
+            adopted_text = fm.fill_missing(text, changes)
+            adopted_frontmatter, adopted_body = fm.parse(adopted_text)
+        except fm.FrontmatterError as exc:
+            return "invalid", exc.category
+        # Everything this file is judged on is decided here, before a
+        # connection is asked for, so a note the schema refuses costs a read
+        # and a parse however many times the scan rediscovers it.
+        invalid = schema.invalid_keys(adopted_frontmatter)
+        if invalid:
+            return "invalid", f"keys the schema refused: {', '.join(invalid)}"
+        mirrored = _jsonable(adopted_frontmatter)
+        if _unstorable(mirrored):
+            return "invalid", "a value it carries is one the mirror cannot store"
+        data = adopted_text.encode("utf-8")
+        now = datetime.now(tz=UTC)
+
+        try:
+            async with transaction(self.session_factory) as session:
+                await session.execute(sa.text("SELECT 1"))
+                if await session.scalar(sa.select(Note.id).where(Note.id == note_id)):
+                    return "collision", "the id it carries is already a note"
+                occupied = await session.scalar(
+                    sa.select(Note.id)
+                    .where(Note.path == relative, Note.state != "missing")
+                    .limit(1)
+                )
+                if occupied is not None:
+                    return "collision", "another note already claims this path"
+
+                if data != current:
+                    try:
+                        staged = stage_bytes(path, data)
+                    except OSError as exc:
+                        raise NotesFilesystemUnavailable(str(exc)) from exc
+                    try:
+                        latest, _ = _read(relative, path)
+                        if content_hash(latest) != expected_hash:
+                            staged.unlink(missing_ok=True)
+                            return "changed", "a device wrote to the file first"
+                        commit_staged(staged, path)
+                    except NotFound:
+                        staged.unlink(missing_ok=True)
+                        return "changed", "the file is no longer there"
+                    except OSError as exc:
+                        staged.unlink(missing_ok=True)
+                        raise NotesFilesystemUnavailable(str(exc)) from exc
+                    except BaseException:
+                        staged.unlink(missing_ok=True)
+                        raise
+                else:
+                    try:
+                        latest, _ = _read(relative, path)
+                    except NotFound:
+                        return "changed", "the file is no longer there"
+                    if content_hash(latest) != expected_hash:
+                        return "changed", "a device wrote to the file first"
+
+                try:
+                    file_stat = path.stat()
+                except OSError as exc:
+                    raise NotesFilesystemUnavailable(str(exc)) from exc
+                session.add(
+                    Note(
+                        id=note_id,
+                        path=relative,
+                        title=_title_of(adopted_body, path),
+                        content_hash=content_hash(data),
+                        size_bytes=len(data),
+                        mtime=datetime.fromtimestamp(file_stat.st_mtime, tz=UTC),
+                        frontmatter=mirrored,
+                        **_mirror_columns(adopted_frontmatter, schema),
+                        state="ok",
+                        first_seen_at=now,
+                        updated_at=now,
+                    )
+                )
+        except BaseException as exc:
+            typed = _metadata_failure(exc)
+            if typed is None:
+                raise
+            raise typed from exc
+        return "adopted", "identity written into the file"
+
     def _lock_for(self, note_id: NoteId) -> asyncio.Lock:
         """The lock serialising writes to one note. Only asked for a located note."""
         lock = self._locks.get(note_id)
@@ -666,6 +820,45 @@ def _build_frontmatter(
     return _ordered(values, schema)
 
 
+def _adoption_changes(
+    frontmatter: dict[str, Any],
+    schema: FrontmatterSchema,
+    settings: ProductSettings,
+    note_id: str,
+) -> dict[str, Any]:
+    """The identity and defaults needed to make a device-created note valid.
+
+    Identity is durable only when it is in the file, regardless of whether an
+    edited schema calls that key optional. Every other key the schema does not
+    require is left out even when it ships a default, because adoption writes
+    into a file a person owns and every key it adds syncs back to their devices.
+    A required key the file carries with no value counts as one to fill: the
+    schema reads it as absent, so leaving it would refuse the note for a
+    property a person added and left empty. Requirements are recalculated after
+    each applicable default because one default can activate another key's
+    conditional requirement.
+    """
+    available = schema.defaults()
+    id_key = schema.role("id_key")
+    available[id_key] = note_id
+    available.setdefault(schema.role("schema_version_key"), 1)
+    available.setdefault(schema.role("date_key"), _today(settings))
+    changes = {id_key: note_id} if frontmatter.get(id_key) is None else {}
+    effective = {**frontmatter, **changes}
+    while True:
+        added = False
+        required = schema.required_keys(effective)
+        for definition in schema.keys:
+            name = definition.name
+            if name not in required or effective.get(name) is not None or name not in available:
+                continue
+            changes[name] = available[name]
+            effective[name] = available[name]
+            added = True
+        if not added:
+            return changes
+
+
 def _replacement_frontmatter(
     request: ReplaceNote, schema: FrontmatterSchema, note_id: str
 ) -> dict[str, Any]:
@@ -769,7 +962,7 @@ def _mirror_columns(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> d
         "account": _text(frontmatter.get(schema.role("account_key"))),
         "date": _as_date(frontmatter.get(schema.role("date_key"))),
         "reviewed": bool(frontmatter.get(schema.role("reviewed_key"), False)),
-        "tags": [str(tag) for tag in tags] if isinstance(tags, list) else [],
+        "tags": [_storable(str(tag)) for tag in tags] if isinstance(tags, list) else [],
     }
 
 
@@ -800,8 +993,8 @@ def _terminated(body: str) -> str:
 def _title_of(body: str, path: Path) -> str:
     for line in body.splitlines():
         if line.startswith("# "):
-            return line[2:].strip()
-    return path.stem
+            return _storable(line[2:].strip())
+    return _storable(path.stem)
 
 
 def _today(settings: ProductSettings) -> date:
@@ -810,7 +1003,7 @@ def _today(settings: ProductSettings) -> date:
 
 
 def _text(value: Any) -> str | None:
-    return value if isinstance(value, str) else None
+    return _storable(value) if isinstance(value, str) else None
 
 
 def _as_date(value: Any) -> date | None:
@@ -828,14 +1021,64 @@ def _as_int(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 1
 
 
-def _jsonable(value: Any) -> Any:
-    """Convert a round tripped YAML mapping into plain JSON friendly types."""
+def _storable(text: str) -> str:
+    """Drop what no PostgreSQL text or JSONB column can hold.
+
+    A NUL is rejected outright, and it would be rejected at the insert, after
+    adoption had already rewritten a file a person owns, leaving a note the
+    store changed and then never delivered. The file keeps every byte; the
+    mirror, which is only ever a mirror, does not.
+    """
+    return text.replace("\x00", "") if "\x00" in text else text
+
+
+def _unstorable(value: Any) -> bool:
+    """Whether a mirrored value is one PostgreSQL will refuse outright.
+
+    A non-finite float is not JSON and a lone surrogate is not encodable, and
+    either reaches the insert, which for adoption happens after a person's file
+    has already been rewritten. Adoption asks this before it writes so such a
+    file is refused like any other and keeps every byte. The public create path
+    deliberately does not ask: a caller who sent the value is owed a validation
+    error from the insert, with no file left behind.
+    """
     if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
+        return any(_unstorable(key) or _unstorable(item) for key, item in value.items())
     if isinstance(value, list):
-        return [_jsonable(v) for v in value]
-    if isinstance(value, datetime):
+        return any(_unstorable(item) for item in value)
+    if isinstance(value, float):
+        return not isfinite(value)
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            return True
+    return False
+
+
+def _jsonable(value: Any) -> Any:
+    """Convert a round tripped YAML mapping into plain JSON friendly types.
+
+    A person's frontmatter may hold a tagged scalar, binary or a set, and a
+    string may carry a NUL; none of those can be stored in the mirror's JSONB
+    column, and one escaping into an insert would fail it after the file had
+    already been written. The file stays the truth, so anything that is not a
+    JSON value is mirrored as its text.
+
+    A number is passed through as it stands, an infinity included. A value a
+    caller sent that PostgreSQL will not take has to reach the insert and be
+    refused there, because the public write contract answers that request with
+    a validation error and no file, rather than storing something else in its
+    place.
+    """
+    if isinstance(value, dict):
+        return {_storable(str(k)): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, datetime | date):
         return value.isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    return value
+    if isinstance(value, str):
+        return _storable(value)
+    if isinstance(value, bool) or value is None or isinstance(value, int | float):
+        return value
+    return _storable(str(value))

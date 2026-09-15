@@ -63,6 +63,10 @@ class FrontmatterError(ValueError):
 _WORD_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
 _ITEM_WITH_NO_VALUE = re.compile(r"^([ \t]*-)[ \t]*$", re.MULTILINE)
 
+# The line endings `split` reads a delimiter line by. It ends the block on a
+# line feed, so a delimiter closed by a bare carriage return costs the body.
+_DELIMITER_ENDINGS = ("\n", "\r\n")
+
 
 def _category(exc: YAMLError) -> str:
     """Name a parse failure from its type alone, so it cannot carry content."""
@@ -83,19 +87,31 @@ def split(text: str) -> tuple[str, str]:
     Returns ("", text) when the file has no frontmatter, which is the normal
     state of a note a person just created in Obsidian.
     """
+    block, body, _ = _split(text)
+    return block, body
+
+
+def _split(text: str) -> tuple[str, str, int]:
+    """Split note text and report the length of its opening delimiter line.
+
+    The length is negative when the file carries no frontmatter at all. It is
+    the one answer about the opening line, so nothing downstream has to decide
+    a second time which line endings a block opened with and disagree.
+    """
     if not text.startswith(DELIMITER):
-        return "", text
+        return "", text, -1
     rest = text[len(DELIMITER) :]
     if rest[:1] not in {"\n", "\r"}:
-        return "", text
+        return "", text, -1
     rest = rest.lstrip("\r").removeprefix("\n")
+    opening_length = len(text) - len(rest)
     end = _find_closing_delimiter(rest)
     if end is None:
         raise FrontmatterError("frontmatter block is never closed", category="unterminated_block")
     block = rest[:end]
     after = rest[end:]
     after = after.split("\n", 1)[1] if "\n" in after else ""
-    return block, after
+    return block, after, opening_length
 
 
 def _find_closing_delimiter(text: str) -> int | None:
@@ -128,13 +144,17 @@ def _mapping(loaded: Any) -> dict[str, Any]:
 def parse(text: str) -> tuple[dict[str, Any], str]:
     """Return the frontmatter mapping and the body of a note file."""
     block, body = split(text)
+    return _parse_block(block), body
+
+
+def _parse_block(block: str) -> dict[str, Any]:
     if not block.strip():
-        return {}, body
+        return {}
     try:
         loaded = _yaml().load(block)
     except YAMLError as exc:
         raise _unparseable(exc) from exc
-    return _mapping(loaded), body
+    return _mapping(loaded)
 
 
 def _indent_of(block: str) -> tuple[int | None, int | None]:
@@ -220,14 +240,101 @@ def patch(text: str, changes: dict[str, Any], *, unset: list[str] | None = None)
     house nesting for those mappings.
     """
     block, body = split(text)
+    return _patched(block, body, changes, unset or [])
+
+
+def _patched(block: str, body: str, changes: dict[str, Any], unset: list[str]) -> str:
     yaml = _yaml()
     frontmatter: dict[str, Any] = {}
     if block.strip():
         loaded, indent, sequence_offset = _load_guessing_indent(block, yaml)
         frontmatter = _mapping(loaded)
         _indent_like(yaml, indent, sequence_offset)
-    for key in unset or []:
+    for key in unset:
         frontmatter.pop(key, None)
     for key, value in changes.items():
         frontmatter[key] = value
     return _compose(frontmatter, body, yaml)
+
+
+def _readable_block(text: str) -> tuple[str, str, int, int]:
+    """Split a block once and locate the closing delimiter the writers splice at.
+
+    The block, the body, where the block starts and where its closing delimiter
+    line starts, or a negative pair when the file carries no frontmatter.
+
+    A block whose own delimiter lines `split` cannot read is refused here rather
+    than written. `split` ends the block on a line feed, so for a delimiter line
+    closed by a bare carriage return it reports no body at all, and a note
+    written from one would be mirrored and served empty. Only the two delimiter
+    lines are read this way: a carriage return anywhere in the body is the
+    person's own byte and never blocks a write. Reading those endings is a
+    correction to the shared parser rather than to the writers that lean on it.
+    """
+    block, body, opening_length = _split(text)
+    if opening_length < 0:
+        return block, body, -1, -1
+    closing_offset = _find_closing_delimiter(text[opening_length:])
+    if closing_offset is None:  # split already checked this; keeps the invariant local
+        raise FrontmatterError("frontmatter block is never closed", category="unterminated_block")
+    after_closing = text[opening_length + closing_offset + len(DELIMITER) :]
+    if text[len(DELIMITER) : opening_length] not in _DELIMITER_ENDINGS or (
+        after_closing and not after_closing.startswith(_DELIMITER_ENDINGS)
+    ):
+        raise FrontmatterError(
+            "frontmatter delimiter ends in a bare carriage return",
+            category="unsupported_line_endings",
+        )
+    return block, body, opening_length, closing_offset
+
+
+def _appended(
+    text: str,
+    changes: dict[str, Any],
+    block: str,
+    body: str,
+    opening_length: int,
+    closing_offset: int,
+) -> str:
+    """Append absent keys without rewriting any existing frontmatter bytes.
+
+    Adoption adds system-owned defaults to a file a person wrote. The whole
+    existing block is still parsed in round trip mode, but only the generated
+    additions are dumped. They are spliced immediately before the closing
+    delimiter using the block's line endings, so comments, quoting,
+    indentation, ordering and the body remain byte exact.
+    """
+    if opening_length < 0:
+        return compose(changes, body)
+    yaml = _yaml()
+    if block.strip():
+        loaded, indent, sequence_offset = _load_guessing_indent(block, yaml)
+        frontmatter = _mapping(loaded)
+        _indent_like(yaml, indent, sequence_offset)
+    else:
+        frontmatter = {}
+    additions = {key: value for key, value in changes.items() if key not in frontmatter}
+    if not additions:
+        return text
+    fragment = _dump(additions, yaml).replace("\n", text[len(DELIMITER) : opening_length])
+    insertion = opening_length + closing_offset
+    return f"{text[:insertion]}{fragment}{text[insertion:]}"
+
+
+def fill_missing(text: str, changes: dict[str, Any]) -> str:
+    """Write the keys a device-created note lacks, whether absent or left blank.
+
+    A key the file does not carry at all is spliced in before the closing
+    delimiter, so every existing byte survives. A key the file carries with no
+    value cannot be spliced without writing it twice, so a file holding one of
+    those takes the ordinary targeted patch instead and has its block
+    reassembled: key order, comments and quoting survive that, the block's own
+    line endings do not. Blank properties are what Obsidian writes when someone
+    adds one and leaves it empty, so refusing them would leave an ordinary
+    device-created note unadoptable.
+    """
+    found = _readable_block(text)
+    block, body, opening_length, _ = found
+    if opening_length >= 0 and any(key in _parse_block(block) for key in changes):
+        return _patched(block, body, changes, [])
+    return _appended(text, changes, *found)

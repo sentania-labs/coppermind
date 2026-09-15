@@ -1,7 +1,12 @@
-"""Read note identities from the filesystem and refresh the metadata mirror.
+"""Adopt note files and refresh the metadata mirror from the filesystem.
 
-The scan never writes a note. Files with no known identity are deliberately
-ignored until the write-side reconciliation increment.
+Files with no known identity receive one through the store after they have
+been quiet. The scan itself only observes bytes and proposes candidates, so
+the store can perform its ordinary database-first, hash-guarded atomic write.
+A pass adopts at most `_ADOPTIONS_PER_PASS` files and leaves the rest for the
+next one. A candidate the store refused, or could not write, keeps its stat
+like any other rejected file, so cheap passes stop sweeping it and the daily
+thorough rehash is what tries it again.
 
 An interval scan stats every note file and reads only the ones a stat says may
 have changed, so the steady-state cost is one stat per file rather than a read
@@ -39,6 +44,7 @@ from coppermind import frontmatter as fm
 from coppermind.db.models import Note
 from coppermind.db.session import transaction
 from coppermind.logging import get_logger
+from coppermind.settings import ProductSettings
 from coppermind.store_protocol import MetadataUnavailable, NotesFilesystemUnavailable
 from coppermind_store.fs import content_hash, resolve
 from coppermind_store.notes import _jsonable, _mirror_columns, _title_of
@@ -79,9 +85,23 @@ _CLOCK_SKEW_TOLERANCE = timedelta(seconds=60)
 
 # The stat of a file a scan read and found no known identity in, keyed by its
 # path. One process remembers this many; any beyond the bound are read every
-# pass, which is correct, just not cheap.
+# pass, which is correct, just not cheap. Only a durable rejection is kept: a
+# file still inside the quiet period is simply read again next pass, so a notes
+# filesystem arriving all at once cannot fill the bound with paths that are
+# about to settle.
 UnidentifiedStats = dict[str, tuple[int, datetime]]
 _UNIDENTIFIED_LIMIT = 10_000
+
+# How many device-created files one pass gives an identity to. Pointing the
+# store at a notes filesystem that already holds a person's notes makes every
+# file in it a candidate at once, and each adoption is its own database
+# transaction and a rewritten file that Obsidian Sync then pushes to every
+# device. The bound spreads that first adoption over successive passes rather
+# than one burst, and costs nothing: a file left over is a candidate again on
+# the next pass. It counts files actually adopted, not files tried, so a
+# subtree that cannot be written never consumes the whole bound and starves
+# the rest of the notes filesystem of its turn.
+_ADOPTIONS_PER_PASS = 50
 
 MISSING_REASON = "not observed during reconciliation"
 UNPARSED_REASON = "frontmatter could not be parsed"
@@ -126,6 +146,8 @@ class ScanResult:
     held: set[str]
     deferred: int
     unidentified: UnidentifiedStats
+    adoption_candidates: list[AdoptionCandidate]
+    unidentified_unparsed: int
 
 
 @dataclass(frozen=True)
@@ -158,6 +180,15 @@ class Observation:
     title: str | None = None
     frontmatter: dict[str, Any] | None = None
     path_derived: bool = False
+
+
+@dataclass(frozen=True)
+class AdoptionCandidate:
+    """A quiet file the store may give an identity without losing bytes."""
+
+    path: str
+    content_hash: str
+    stat_seen: tuple[int, datetime]
 
 
 class ReconcilerStatus:
@@ -318,6 +349,7 @@ async def reconcile_once(
     by_id = await _mirror_index(store)
     by_path = _by_path(by_id)
     schema = store.control.schema()
+    settings = store.control.settings()
     quiet = (
         QuietWindow(
             earliest=scan_started - timedelta(seconds=quiet_period_s),
@@ -335,19 +367,84 @@ async def reconcile_once(
         full=full,
         quiet=quiet,
         unidentified=dict(remembered),
+        unadoptable=_unadoptable_folders(settings),
     )
     remembered.clear()
     remembered.update(scan.unidentified)
-    observations = _choose_observations(scan, by_id)
+    observations, duplicates = _choose_observations(scan, by_id)
+    adopted = 0
+    rejected = scan.unidentified_unparsed
+    unwritable = 0
+    retry = 0
+    untried = iter(scan.adoption_candidates)
+    for candidate in untried:
+        # Every refusal inside `adopt_note` returns before its first await, so
+        # a tree the schema mostly refuses would sweep end to end without the
+        # event loop ever getting a turn. One yield per candidate keeps reads
+        # and readiness served while a first adoption works through a notes
+        # filesystem.
+        await asyncio.sleep(0)
+        try:
+            outcome, cause = await store.adopt_note(
+                candidate.path, candidate.content_hash, schema=schema, settings=settings
+            )
+        except MetadataUnavailable:
+            # The mirror is gone, which is every note's problem, not this
+            # file's. It fails the pass the same way a missing mount does.
+            raise
+        except Exception as exc:  # noqa: BLE001 - one file must not wedge the pass
+            # One durable per-file fault must not stop every other note
+            # converging, exactly as it does not inside the scan itself. The
+            # stat is kept so an unwritable subtree is not swept on every cheap
+            # pass; the daily thorough scan reads it again regardless and is
+            # what retries it. The type is the whole reason: an exception
+            # message can quote the file, and logs are collected and shipped.
+            unwritable += 1
+            _remember(remembered, candidate.path, candidate.stat_seen)
+            log.warning(
+                "device-created note not adopted",
+                path=candidate.path,
+                reason=type(exc).__name__,
+            )
+            continue
+        if outcome == "adopted":
+            adopted += 1
+            if adopted == _ADOPTIONS_PER_PASS:
+                break
+        elif outcome == "changed":
+            # The bytes moved under the read. Nothing is wrong with the file,
+            # so it is read afresh and proposed again on the next pass.
+            retry += 1
+            log.info("device-created note not adopted", path=candidate.path, reason=cause)
+        else:
+            rejected += 1
+            _remember(remembered, candidate.path, candidate.stat_seen)
+            log.warning("device-created note left unchanged", path=candidate.path, reason=cause)
+    backlog = retry + sum(1 for _ in untried)
     # An identity seen on disk but not chosen, two live copies or an unchanged
     # stat, keeps whatever the mirror already says. Only an identity nothing on
     # disk carried is a candidate for missing, and only when this pass read
     # every file that changed: bytes left unread inside the quiet period could
     # belong to any note, so a pass that deferred one cannot call any note gone.
+    # A candidate left unadopted is not such a file: its bytes were read and
+    # name no identity the mirror knows, so holding it over for the next pass
+    # cannot make any known note look absent, and must not stop one being
+    # reported gone or hold the daily rehash due for as long as the fault lasts.
     absent = set() if scan.deferred else {note_id for note_id in by_id if note_id not in scan.seen}
     pending = sorted(set(observations) | absent)
 
-    counts = {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": scan.deferred}
+    counts = {
+        "adopted": adopted,
+        "backlog": backlog,
+        "rejected": rejected,
+        "unwritable": unwritable,
+        "duplicates": duplicates,
+        "changed": 0,
+        "moved": 0,
+        "missing": 0,
+        "unparsed": 0,
+        "deferred": scan.deferred,
+    }
     now = datetime.now(tz=UTC)
     try:
         async with transaction(store.session_factory) as session:
@@ -447,6 +544,7 @@ def _scan(
     full: bool,
     quiet: QuietWindow | None,
     unidentified: UnidentifiedStats,
+    unadoptable: frozenset[tuple[str, ...]],
 ) -> ScanResult:
     """Walk the notes filesystem and report what it found."""
     try:
@@ -461,6 +559,8 @@ def _scan(
     seen: set[str] = set()
     held: set[str] = set()
     still_unidentified: UnidentifiedStats = {}
+    adoption_candidates: list[AdoptionCandidate] = []
+    unidentified_unparsed = 0
     deferred = 0
     try:
         for path in root.rglob("*.md"):
@@ -490,10 +590,8 @@ def _scan(
                 # than as the ELOOP it wraps.
                 _record(observed, seen, _unreadable(entry, relative))
                 continue
-            if not stat_module.S_ISREG(stat_result.st_mode):
-                _record(observed, seen, _unreadable(entry, relative))
-                continue
             mtime = datetime.fromtimestamp(stat_result.st_mtime, tz=UTC)
+            settling = quiet is not None and quiet.holds(mtime)
             stat_seen = (stat_result.st_size, mtime)
             if not full and entry is not None and _unchanged(entry, stat_result.st_size, mtime):
                 seen.add(entry.note_id)
@@ -501,10 +599,26 @@ def _scan(
                 continue
             if not full and entry is None and unidentified.get(relative) == stat_seen:
                 # Read once already, and it named no note this store knows.
-                # Nothing but a change to the file itself can make it one.
+                # Nothing but a change to the file itself can make it one. The
+                # stat is taken before the file type is judged, so a directory
+                # or a fifo named like a note is rejected once, not every pass.
                 _remember(still_unidentified, relative, stat_seen)
+                if settling:
+                    deferred += 1
                 continue
-            if entry is not None and quiet is not None and quiet.holds(mtime):
+            if not stat_module.S_ISREG(stat_result.st_mode):
+                observation = _unreadable(entry, relative)
+                _record(observed, seen, observation)
+                if observation is None:
+                    unidentified_unparsed += 1
+                    _remember(still_unidentified, relative, stat_seen)
+                    log.warning(
+                        "device-created note left unchanged",
+                        path=relative,
+                        reason="not a regular file",
+                    )
+                continue
+            if entry is not None and settling:
                 # A file the mirror already claims is left to settle rather than
                 # hashed halfway through a device's write. A file is here, so
                 # the note still holds its path, but whose bytes these now are
@@ -523,12 +637,45 @@ def _scan(
                     held.add(entry.note_id)
                 continue
             except OSError:
-                _record(observed, seen, _unreadable(entry, relative))
+                observation = _unreadable(entry, relative)
+                _record(observed, seen, observation)
+                if observation is None:
+                    if settling:
+                        deferred += 1
+                    else:
+                        unidentified_unparsed += 1
+                        _remember(still_unidentified, relative, stat_seen)
+                        log.warning(
+                            "device-created note left unchanged",
+                            path=relative,
+                            reason=UNREADABLE_REASON,
+                        )
                 continue
-            observation = _observe(safe_path, relative, data, mtime, schema, by_id, entry)
-            if observation is None:
-                _remember(still_unidentified, relative, stat_seen)
-            _record(observed, seen, observation)
+            result = _observe(safe_path, relative, data, mtime, schema, by_id, entry)
+            if isinstance(result, AdoptionCandidate):
+                if settling:
+                    deferred += 1
+                elif any(relative_path.parts[: len(folder)] == folder for folder in unadoptable):
+                    # A folder the store owns is not a place a person writes a
+                    # note, so nothing below one is given an identity. The file
+                    # is still read, because a known note moved into one must
+                    # be followed there rather than reported gone.
+                    _remember(still_unidentified, relative, stat_seen)
+                else:
+                    adoption_candidates.append(result)
+            elif result is None:
+                if settling:
+                    deferred += 1
+                else:
+                    unidentified_unparsed += 1
+                    _remember(still_unidentified, relative, stat_seen)
+                    log.warning(
+                        "device-created note left unchanged",
+                        path=relative,
+                        reason=UNPARSED_REASON,
+                    )
+            else:
+                _record(observed, seen, result)
     except OSError as exc:
         raise NotesFilesystemUnavailable(str(exc)) from exc
     return ScanResult(
@@ -537,6 +684,29 @@ def _scan(
         held=held,
         deferred=deferred,
         unidentified=still_unidentified,
+        adoption_candidates=adoption_candidates,
+        unidentified_unparsed=unidentified_unparsed,
+    )
+
+
+def _unadoptable_folders(settings: ProductSettings) -> frozenset[tuple[str, ...]]:
+    """The folders the store writes, so adoption never writes there.
+
+    Deleted notes, generated source projections and attachments. Their names
+    are the operator's, read from the same settings the rest of the system lays
+    the notes filesystem out by, and each is split into its segments because a
+    name may nest: `Archive/Trash` has to exclude what is under it, not every
+    path that merely starts with `Archive`.
+    """
+    named = (
+        settings.notes.trash_folder,
+        settings.notes.sources_folder,
+        settings.notes.attachments_folder,
+    )
+    return frozenset(
+        parts
+        for parts in (tuple(part for part in name.split("/") if part) for name in named)
+        if parts
     )
 
 
@@ -579,7 +749,7 @@ def _observe(
     schema: FrontmatterSchema,
     by_id: dict[str, MirrorEntry],
     entry: MirrorEntry | None,
-) -> Observation | None:
+) -> Observation | AdoptionCandidate | None:
     """Turn one file's bytes into what it says about a known identity."""
     text: str | None = None
     try:
@@ -606,7 +776,11 @@ def _observe(
     note_id = str(frontmatter.get(schema.role("id_key"), ""))
     if note_id not in by_id:
         if entry is None:
-            return None
+            return AdoptionCandidate(
+                path=relative,
+                content_hash=content_hash(data),
+                stat_seen=(len(data), mtime),
+            )
         # The file is still at a known path, and its parsed content does not
         # explicitly name another known note. Keep that row present until a
         # later edit restores an identity or the file is observed absent.
@@ -652,15 +826,26 @@ def _identity_from_broken(text: str | None, schema: FrontmatterSchema) -> str | 
     return matches[0] if len(matches) == 1 else None
 
 
-def _choose_observations(scan: ScanResult, by_id: dict[str, MirrorEntry]) -> dict[str, Observation]:
-    """Pick the one file that speaks for each identity this scan saw."""
+def _choose_observations(
+    scan: ScanResult, by_id: dict[str, MirrorEntry]
+) -> tuple[dict[str, Observation], int]:
+    """Pick the one file that speaks for each identity this scan saw.
+
+    An identity two live files claim is left alone: neither is chosen, neither
+    is changed, and neither is reported gone. The count comes back with the
+    choices so the pass reports it where an operator already reads what it
+    would not take on, rather than leaving it in a log line nothing counts.
+    """
     chosen: dict[str, Observation] = {}
+    duplicates = 0
     for note_id, candidates in scan.observed.items():
         if note_id in scan.held:
             # The walk found this note's own file still at its recorded path,
-            # so whatever else carries the identity is a second live copy.
-            # Neither is chosen over the other.
-            log.warning("duplicate note identity left unresolved", note_id=note_id)
+            # so whatever else carries the identity is a second live copy. That
+            # file produced no observation of its own, so its recorded path is
+            # named here to report both sides of the collision.
+            duplicates += 1
+            _unresolved(note_id, [by_id[note_id].path, *(item.path for item in candidates)])
             continue
         # A file that named this identity itself outranks one that only
         # inherited it from the row recording its path, so a stranger dropped
@@ -673,8 +858,18 @@ def _choose_observations(scan: ScanResult, by_id: dict[str, MirrorEntry]) -> dic
         elif len(ranked) == 1:
             chosen[note_id] = ranked[0]
         else:
-            log.warning("duplicate note identity left unresolved", note_id=note_id)
-    return chosen
+            duplicates += 1
+            _unresolved(note_id, [item.path for item in ranked])
+    return chosen, duplicates
+
+
+def _unresolved(note_id: str, paths: list[str]) -> None:
+    """Name every file claiming one identity, not the identity alone."""
+    log.warning(
+        "duplicate note identity left unresolved",
+        note_id=note_id,
+        paths=sorted(set(paths)),
+    )
 
 
 def _values_for(
