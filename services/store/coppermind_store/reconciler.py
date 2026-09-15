@@ -259,7 +259,7 @@ async def run_reconciler(store: LocalStore, status: ReconcilerStatus | None = No
             log.exception("reconciliation failed", error_type=type(exc).__name__)
         else:
             status.completed()
-            if full:
+            if full and counts["deferred"] == 0:
                 # Only a rehash that ran counts for the day. A deferred one
                 # stays due, because the full pass is the only thing that sees
                 # a change that did not move a file's mtime or size.
@@ -473,6 +473,12 @@ def _scan(
                 safe_path = resolve(root, relative)
                 stat_result = safe_path.stat()
             except FileNotFoundError:
+                # A sync client may replace a directory entry between the
+                # walk and stat. Nothing was observed absent for the whole
+                # pass, so leave missing decisions until the next one.
+                deferred += 1
+                if entry is not None:
+                    held.add(entry.note_id)
                 continue
             except ValueError:
                 # A symlink out of the notes filesystem. Something is at the
@@ -510,6 +516,11 @@ def _scan(
             try:
                 data = safe_path.read_bytes()
             except FileNotFoundError:
+                # A replace between stat and read is the same uncertainty as
+                # an in-flight delivery, not evidence that the note is gone.
+                deferred += 1
+                if entry is not None:
+                    held.add(entry.note_id)
                 continue
             except OSError:
                 _record(observed, seen, _unreadable(entry, relative))
@@ -594,7 +605,20 @@ def _observe(
         )
     note_id = str(frontmatter.get(schema.role("id_key"), ""))
     if note_id not in by_id:
-        return None
+        if entry is None:
+            return None
+        # The file is still at a known path, and its parsed content does not
+        # explicitly name another known note. Keep that row present until a
+        # later edit restores an identity or the file is observed absent.
+        return Observation(
+            note_id=entry.note_id,
+            path=relative,
+            state="unparsed",
+            content_hash=content_hash(data),
+            size_bytes=len(data),
+            mtime=mtime,
+            path_derived=True,
+        )
     return Observation(
         note_id=note_id,
         path=relative,

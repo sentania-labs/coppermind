@@ -20,4 +20,28 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # This revision deliberately permits a missing historical row and its live
+    # replacement to share a path. The mirror is rebuildable, so retain the
+    # live row, or the newest row when no live one exists, before restoring the
+    # old uniqueness rule.
+    op.execute(
+        """
+        WITH ranked AS (
+            SELECT
+                id,
+                row_number() OVER (
+                    PARTITION BY path
+                    ORDER BY
+                        CASE WHEN state = 'missing' THEN 1 ELSE 0 END,
+                        updated_at DESC,
+                        id
+                ) AS path_rank
+            FROM notes
+        )
+        DELETE FROM notes
+        USING ranked
+        WHERE notes.id = ranked.id
+          AND ranked.path_rank > 1
+        """
+    )
     op.create_unique_constraint("uq_notes_path", "notes", ["path"])

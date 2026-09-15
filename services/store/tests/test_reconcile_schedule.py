@@ -157,6 +157,27 @@ async def test_a_deferred_daily_rehash_is_retried_rather_than_forfeited(monkeypa
     assert True in completed
 
 
+async def test_a_full_pass_that_skips_a_file_is_retried(monkeypatch):
+    """A successful but incomplete rehash has not paid the day's debt."""
+    calls: list[bool] = []
+    attempts = 0
+
+    async def scan(full):
+        nonlocal attempts
+        attempts += 1
+        return {
+            "changed": 0,
+            "moved": 0,
+            "missing": 0,
+            "unparsed": 0,
+            "deferred": 1 if full and attempts == 1 else 0,
+        }
+
+    await _drive(monkeypatch, scan, calls)
+
+    assert calls[:3] == [True, True, False]
+
+
 async def test_the_rehash_runs_once_a_day_and_not_on_every_pass(monkeypatch):
     calls: list[bool] = []
 

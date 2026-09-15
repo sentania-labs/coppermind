@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -158,6 +159,72 @@ async def test_a_break_that_takes_the_id_line_still_holds_the_known_path(store: 
     assert row.state == "unparsed"
     assert row.path == note.path
     assert row.content_hash == content_hash(path.read_bytes())
+
+
+@pytest.mark.parametrize("case", ["unidentifiable", "quiet-window-move", "stripped-identity"])
+async def test_a_file_present_at_a_known_path_is_never_reported_missing(
+    store: LocalStore, case: str
+):
+    """Missing means the scan observed absence, not uncertainty about a present file."""
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    path = store.notes_root / note.path
+    quiet_period_s = 0
+
+    if case == "unidentifiable":
+        path.write_text("---\nreviewed: [\n---\n\n# Runbook\n", encoding="utf-8")
+    elif case == "quiet-window-move":
+        moved = await store.create_note(
+            CreateNote(title="Meeting", frontmatter={"type": "reference"})
+        )
+        path.unlink()
+        (store.notes_root / moved.path).rename(path)
+        quiet_period_s = 3600
+    else:
+        text = path.read_text(encoding="utf-8").replace(f"id: {note.id}\n", "")
+        path.write_text(text, encoding="utf-8")
+
+    counts = await reconcile_once(store, quiet_period_s=quiet_period_s)
+    row = await _row(store, note.id)
+
+    assert path.exists()
+    assert counts["missing"] == 0
+    assert row.state != "missing"
+    assert row.path == note.path
+    if case != "quiet-window-move":
+        assert row.state == "unparsed"
+
+
+async def test_a_file_replaced_between_stat_and_read_defers_missing(store: LocalStore, monkeypatch):
+    """A vanishing directory entry during a read is uncertainty, not absence."""
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    path = store.notes_root / note.path
+    path.write_bytes(path.read_bytes().replace(b"# Runbook", b"# Current Runbook"))
+    real_read = Path.read_bytes
+    raced = False
+
+    def replace_while_reading(target: Path) -> bytes:
+        nonlocal raced
+        if target == path and not raced:
+            raced = True
+            replacement = real_read(target)
+            target.unlink()
+            target.write_bytes(replacement)
+            raise FileNotFoundError(target)
+        return real_read(target)
+
+    monkeypatch.setattr(Path, "read_bytes", replace_while_reading)
+
+    deferred = await reconcile_once(store)
+    row = await _row(store, note.id)
+
+    assert deferred["deferred"] == 1
+    assert deferred["missing"] == 0
+    assert path.exists()
+    assert row.state != "missing"
+
+    settled = await reconcile_once(store)
+    assert settled["changed"] == 1
+    assert (await _row(store, note.id)).title == "Current Runbook"
 
 
 async def test_two_live_copies_leave_the_row_alone_instead_of_reporting_it_gone(
