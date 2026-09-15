@@ -1,5 +1,5 @@
 # The Obsidian Sync helper is independently built and versioned. It contains
-# only Node, the pinned headless client and its dependency-free supervisor.
+# only Node and its dependency-free supervisor.
 FROM node:22-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
 
 ARG BUILD_VERSION=dev
@@ -18,17 +18,15 @@ RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
+# The Obsidian client itself is not installed: nothing invokes it while real
+# sync is refused, so the slice that calls it brings it back with its call site.
 WORKDIR /app
-COPY services/obsidian-sync/package.json services/obsidian-sync/package-lock.json ./
-RUN npm ci --omit=dev \
-    && npm cache clean --force
 COPY services/obsidian-sync/supervisor.mjs services/obsidian-sync/health.mjs services/obsidian-sync/control.mjs ./
 COPY services/obsidian-sync/fake ./fake
 
 # No HOME on the data volume: where the Obsidian account credential lives is
 # an open captain decision, and the data volume is what a backup carries.
-ENV PATH="/app/node_modules/.bin:$PATH" \
-    COPPERMIND_BUILD_VERSION="${BUILD_VERSION}"
+ENV COPPERMIND_BUILD_VERSION="${BUILD_VERSION}"
 
 RUN mkdir -p /data /run/coppermind/internal \
     && chown -R 1000:1000 /data /app /run/coppermind

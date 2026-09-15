@@ -13,10 +13,11 @@ const TOKEN_FILE =
   process.env.COPPERMIND_INTERNAL_TOKEN_FILE || "/run/coppermind/internal/internal-token";
 const FAKE = process.env.COPPERMIND_SYNC_FAKE === "1";
 const PORT = Number.parseInt(process.env.COPPERMIND_SYNC_PORT || "8092", 10);
-const DEVICE_NAME = "Coppermind";
-const RESTART_BASE_MS = FAKE ? 250 : 2_000;
-const RESTART_CEILING_MS = FAKE ? 2_000 : 300_000;
-const RESTART_STABLE_MS = FAKE ? 2_000 : 60_000;
+// The simulated client is the only supervised child today, so these are its
+// restart bounds and nothing else's.
+const RESTART_BASE_MS = 250;
+const RESTART_CEILING_MS = 2_000;
+const RESTART_STABLE_MS = 2_000;
 
 // Nothing here may reach the operator's Obsidian account or their remote vault
 // object. First-connect behaviour and where the account credential lives are
@@ -46,7 +47,6 @@ const status = {
   simulated: FAKE,
   real_sync_supported: false,
   vault_name: null,
-  device_name: DEVICE_NAME,
   // Only ever set from what the running client reports about itself.
   sync_mode: null,
   conflict_strategy: null,
@@ -92,13 +92,13 @@ async function loadConnection() {
       throw new Error("connection file has no remote vault name");
     }
     connection = value;
-    const paused = value.paused === true;
+    const paused = FAKE && value.paused === true;
     Object.assign(status, {
       configured: true,
       paused,
       vault_name: value.vault_name,
-      state: paused ? "paused" : FAKE ? "starting" : "refused",
-      last_error: paused || FAKE ? null : REAL_SYNC_REFUSED,
+      state: FAKE ? (paused ? "paused" : "starting") : "refused",
+      last_error: FAKE ? null : REAL_SYNC_REFUSED,
     });
   } catch (error) {
     if (error.code !== "ENOENT") {
@@ -226,6 +226,7 @@ async function connect(body) {
 }
 
 async function pause() {
+  if (!FAKE) return [501, { error: "real_sync_refused", detail: REAL_SYNC_REFUSED }];
   if (!connection) return [409, { error: "not_configured" }];
   connection.paused = true;
   status.paused = true;

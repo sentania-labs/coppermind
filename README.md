@@ -175,7 +175,8 @@ What the status does and does not say:
   process, so it cannot tell a running client from a delivering one.
 
 Pause and resume use the same internal control endpoint through the packaged
-command, and resume is refused for the same reason connect is:
+command. Both are refused for the same reason connect is, so nothing can
+persist a paused connection that would read as a working one:
 
 ```bash
 docker compose exec obsidian-sync node /app/control.mjs pause

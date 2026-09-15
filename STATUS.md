@@ -267,7 +267,13 @@ vertical path proved end to end, then widened.
   The status file says what it knows and no more: `simulated` and
   `real_sync_supported` flags, `sync_mode` and `conflict_strategy` left null
   until a client reports them, and `liveness: child_process_only` because the
-  supervisor watches a process, not delivery.
+  supervisor watches a process, not delivery. It publishes no device name,
+  because the one setting that names this device is `sync.device_name` in
+  `/data/state/settings.yaml` and the helper does not read it yet: the slice
+  that connects for real must read that key and pin its default equal to
+  `coppermind.settings`, the way `services/git/tests/test_settings.py` already
+  does for the Git helper. The Obsidian client is not installed in the image
+  either; it returns with the call site that uses it.
   Graphical control stays deferred to the Admin service, so the helper's
   settings are reachable only from the packaged control command today; that is
   a named exception to the every-setting-has-a-GUI bar, not an oversight.
