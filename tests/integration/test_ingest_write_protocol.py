@@ -9,6 +9,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import coppermind_store.sources as sources_module
 import pytest
@@ -483,6 +484,87 @@ async def test_the_note_and_its_projection_take_their_date_from_one_rule(store: 
 
     assert ingested.note.path == "Review/2026-09-08 Ameren Architecture Sync.md"
     assert ingested.projection_path == "_Sources/Plaud/2026-09-08 Ameren Architecture Sync.md"
+
+
+async def test_a_taken_projection_path_on_a_first_ingest_is_answered_as_a_collision(
+    store: LocalStore, session_factory, monkeypatch: pytest.MonkeyPatch
+):
+    """A source that never landed is not reported as a revision that did.
+
+    Two recordings of one title on one day pick the same page name, and a
+    device can deliver a note onto it just as readily. Generated output never
+    writes over a file this store did not generate, and on a first ingest
+    nothing durable survives the refusal, so the answer is the collision every
+    other taken path gets.
+    """
+    mine = "---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# Mine now\n"
+    real_choose = projections_module.new_projection_path
+    chosen: list[str] = []
+
+    def choose_then_the_path_is_taken(notes_root, settings, **kwargs):
+        relative = real_choose(notes_root, settings, **kwargs)
+        target = notes_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(mine, encoding="utf-8")
+        chosen.append(relative)
+        return relative
+
+    monkeypatch.setattr(sources_module, "new_projection_path", choose_then_the_path_is_taken)
+
+    with pytest.raises(PathCollision) as refused:
+        await store.ingest(sample())
+
+    assert refused.value.existing_path == chosen[0]
+    assert (store.notes_root / chosen[0]).read_text(encoding="utf-8") == mine
+    assert list(store.notes_root.glob("Review/*.md")) == []
+    assert list(store.sources_root.iterdir()) == []
+    async with session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 0
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 0
+
+    monkeypatch.undo()
+    retried = await store.ingest(sample())
+
+    assert retried.source.created is True
+    assert retried.projection_path != chosen[0]
+    assert (store.notes_root / chosen[0]).read_text(encoding="utf-8") == mine
+    assert "Scott: Let's start with the architecture review..." in projection_text(
+        store, retried.projection_path
+    )
+
+
+async def test_a_rebuilt_projection_without_a_note_date_is_named_in_the_operators_day(
+    store: LocalStore, session_factory
+):
+    """The fallback day is the operator's, not UTC's.
+
+    Blanking the note's date property on a device leaves the mirror no date to
+    name the page by, and the page still has to land under the day the captain
+    is living in: two operators twenty-six hours apart never name one the same.
+    """
+    ingested = await store.ingest(sample())
+    manifest_path = store.sources_root / ingested.source.id / "manifest.json"
+    async with session_factory() as session:
+        await session.execute(sa.update(Note).values(date=None))
+        await session.commit()
+
+    named: dict[str, str] = {}
+    for zone in ("Pacific/Kiritimati", "Etc/GMT+12"):
+        current = store.control.store.read("settings")
+        body = dict(current.body)
+        body["general"] = {**body.get("general", {}), "timezone": zone}
+        body.pop("revision", None)
+        store.control.store.write("settings", body, if_revision=current.revision)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["projection_path"] = ""
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        replay = await store.ingest(sample())
+
+        named[zone] = replay.projection_path.rsplit("/", 1)[-1][:10]
+        assert named[zone] == datetime.now(tz=ZoneInfo(zone)).date().isoformat()
+
+    assert named["Pacific/Kiritimati"] != named["Etc/GMT+12"]
 
 
 async def test_a_file_delivered_onto_the_recorded_path_refuses_the_page_not_the_revision(

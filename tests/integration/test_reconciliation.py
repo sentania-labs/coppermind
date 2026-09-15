@@ -932,6 +932,30 @@ async def test_read_side_does_not_treat_a_managed_projection_as_a_known_note(
         assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 1
 
 
+async def test_a_note_the_captain_marked_managed_is_still_his_note(store: LocalStore):
+    """A property he typed does not turn his note into the store's own file.
+
+    `managed` is not reserved: unknown keys pass through, and Obsidian writes
+    the key for any checkbox property. The file names an identity the mirror
+    knows and is still at its path, so it goes on answering for that note
+    rather than being reported deleted.
+    """
+    note = await store.create_note(
+        CreateNote(title="Runbook", frontmatter={"type": "reference", "managed": True})
+    )
+    written, _ = fm.parse((store.notes_root / note.path).read_text(encoding="utf-8"))
+    assert written.get("managed") is True
+
+    counts = await reconcile_once(store, full=True)
+
+    assert counts["missing"] == 0
+    assert counts["unparsed"] == 0
+    row = await _row(store, note.id)
+    assert row.state == "ok"
+    assert row.path == note.path
+    assert (await store.get_note(note.id)).path == note.path
+
+
 async def test_a_note_filed_into_the_sources_folder_is_moved_not_reported_deleted(
     store: LocalStore,
 ):

@@ -46,6 +46,7 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     PathCollision,
     PayloadTooLarge,
+    ProjectionNotPlaced,
     SourceArtifactDocument,
     SourceClaimMissing,
     SourceManifest,
@@ -65,6 +66,7 @@ from coppermind_store.notes import (
     _mirror_columns,
     _stem_for,
     _title_of,
+    _today,
 )
 from coppermind_store.projections import (
     new_projection_path,
@@ -305,19 +307,22 @@ async def _ingest_new(
             settings,
             provider=request.source.provider,
             title=note_request.title,
-            note_date=_as_date(frontmatter.get(schema.role("date_key"))) or now.date(),
+            note_date=_as_date(frontmatter.get(schema.role("date_key"))) or _today(settings),
         )
-        projection_created = await asyncio.to_thread(
-            write_projection,
-            store.notes_root,
-            settings,
-            source_id=source_id,
-            revision=1,
-            title=note_request.title,
-            revision_ingested_at=now,
-            artifacts=_projection_artifacts(artifacts, artifact_metadata),
-            relative_path=projection_path,
-        )
+        try:
+            projection_created = await asyncio.to_thread(
+                write_projection,
+                store.notes_root,
+                settings,
+                source_id=source_id,
+                revision=1,
+                title=note_request.title,
+                revision_ingested_at=now,
+                artifacts=_projection_artifacts(artifacts, artifact_metadata),
+                relative_path=projection_path,
+            )
+        except ProjectionNotPlaced as exc:
+            raise PathCollision(projection_path) from exc
         create_exclusive_bytes(
             source_path / "manifest.json",
             _manifest(
@@ -423,7 +428,7 @@ async def _ingest_existing(
                 settings,
                 provider=str(manifest["provider"]),
                 title=note.title,
-                note_date=note.date or datetime.now(tz=UTC).date(),
+                note_date=note.date or _today(settings),
             )
             projection_created = await asyncio.to_thread(
                 write_projection,
@@ -486,7 +491,7 @@ async def _ingest_existing(
                 settings,
                 provider=str(manifest["provider"]),
                 title=note.title,
-                note_date=note.date or now.date(),
+                note_date=note.date or _today(settings),
             )
         )
         revisions = list(manifest.get("revisions", []))

@@ -268,7 +268,10 @@ vertical path proved end to end, then widened.
   attempt rolled back. Until that happens the manifest goes on naming the path
   it chose, so `projection_path` can point at a file the store did not
   generate; every reader of it checks the file before trusting it, and a
-  re-ingest is what corrects the record.
+  re-ingest is what corrects the record. On a source's first ingest there is no
+  revision yet, so a taken projection path answers 409 `path_collision` and
+  nothing is written: the claim, the bundle and the Review note are all removed
+  and the ingest can simply be retried.
   Generation happens on ingest or on a new revision only: nothing backfills, so
   a source ingested before this landed has no projection until it is ingested
   again. An ingest answers with the path its projection occupies, and that is
