@@ -287,7 +287,7 @@ jobs:
           IMAGE_ROOT: ghcr.io/${{ github.repository }}
         run: |
           : > "$RUNNER_TEMP/digests.txt"
-          for service in store api git obsidian-sync; do
+          for service in store api admin git obsidian-sync; do
             archive="$RUNNER_TEMP/images/$service.tar"
             digest="$(tar -xOf "$archive" index.json | jq -r '.manifests[0].digest')"
             case "$digest" in sha256:*) ;; *) echo "$service archive has no digest"; exit 1 ;; esac

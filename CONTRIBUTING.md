@@ -52,10 +52,10 @@ only ever runs on a tag.
    run and it moves forward.
 6. **The first tag needs one manual step, once.** GHCR creates a package
    private on its first publish and does not inherit the repository's
-   visibility, so the first `vX.Y.Z` pushes and signs the four images and then
+   visibility, so the first `vX.Y.Z` pushes and signs the five images and then
    fails its anonymous-pull check with a manifest-unknown error. The captain
-   sets the `store`, `api`, `git` and `obsidian-sync` packages to public in the
-   repository's package settings, once, and re-runs the job. Nothing in CI
+   sets the `store`, `api`, `admin`, `git` and `obsidian-sync` packages to
+   public in the repository's package settings, once, and re-runs the job. Nothing in CI
    changes package visibility. Until a real tag has gone through this, the
    anonymous-pull proof is untested; the first real tag is what completes it.
    Re-running publication works for 30 days, which is how long a tag build
