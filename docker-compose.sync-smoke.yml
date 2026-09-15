@@ -1,0 +1,9 @@
+# The simulated client, which `make sync-smoke` layers on top of whatever
+# compose files it was given. It is the only thing that turns simulation on:
+# the quickstart file cannot set it, and a stack brought up any other way runs
+# the helper in its normal refusing mode.
+services:
+
+  obsidian-sync:
+    environment:
+      COPPERMIND_SYNC_FAKE: "1"

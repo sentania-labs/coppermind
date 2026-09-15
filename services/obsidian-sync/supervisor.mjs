@@ -13,6 +13,9 @@ const TOKEN_FILE =
   process.env.COPPERMIND_INTERNAL_TOKEN_FILE || "/run/coppermind/internal/internal-token";
 const FAKE = process.env.COPPERMIND_SYNC_FAKE === "1";
 const PORT = Number.parseInt(process.env.COPPERMIND_SYNC_PORT || "8092", 10);
+const LOG_LEVELS = { DEBUG: 10, INFO: 20, WARNING: 30, ERROR: 40 };
+const LOG_THRESHOLD =
+  LOG_LEVELS[(process.env.COPPERMIND_LOG_LEVEL || "INFO").trim().toUpperCase()] ?? LOG_LEVELS.INFO;
 // The simulated client is the only supervised child today, so these are its
 // restart bounds and nothing else's.
 const RESTART_BASE_MS = 250;
@@ -58,11 +61,12 @@ const status = {
   control_port: null,
 };
 
-function log(event, fields = {}) {
+function log(level, event, fields = {}) {
+  if (LOG_LEVELS[level] < LOG_THRESHOLD) return;
   process.stdout.write(
     `${JSON.stringify({
       timestamp: new Date().toISOString(),
-      level: "info",
+      level: level.toLowerCase(),
       service: "obsidian-sync",
       event,
       ...fields,
@@ -152,7 +156,7 @@ async function startSync() {
       sync_pid: null,
       last_error: REAL_SYNC_REFUSED,
     });
-    log("real sync refused", { vault_name: status.vault_name });
+    log("WARNING", "real sync refused", { vault_name: status.vault_name });
     return;
   }
   await publishStatus({ state: "starting", connected: false, syncing: false, sync_pid: null });
@@ -164,10 +168,12 @@ async function startSync() {
   childStartedAt = Date.now();
   proc.stdout.on("data", (chunk) => {
     const output = chunk.toString().trim();
-    log("sync output", { output });
+    log("INFO", "sync output", { output });
     for (const line of output.split("\n")) observeClientReport(line);
   });
-  proc.stderr.on("data", (chunk) => log("sync error output", { output: chunk.toString().trim() }));
+  proc.stderr.on("data", (chunk) =>
+    log("WARNING", "sync error output", { output: chunk.toString().trim() }),
+  );
   proc.once("error", (error) => handleChildExit(proc, null, null, error));
   proc.once("exit", (code, signal) => handleChildExit(proc, code, signal));
   await publishStatus({
@@ -177,7 +183,7 @@ async function startSync() {
     sync_pid: proc.pid,
     last_error: null,
   });
-  log("sync process started", { pid: proc.pid, simulated: status.simulated });
+  log("INFO", "sync process started", { pid: proc.pid, simulated: status.simulated });
 }
 
 function scheduleRestart() {
@@ -185,7 +191,7 @@ function scheduleRestart() {
   clearTimeout(restartTimer);
   const delay = Math.min(RESTART_BASE_MS * 2 ** restartAttempts, RESTART_CEILING_MS);
   restartAttempts += 1;
-  log("sync restart scheduled", { attempt: restartAttempts, delay_ms: delay });
+  log("INFO", "sync restart scheduled", { attempt: restartAttempts, delay_ms: delay });
   restartTimer = setTimeout(() => startSync().catch(() => {}), delay);
 }
 
@@ -205,7 +211,7 @@ async function handleChildExit(proc, code, signal, error = null) {
     last_error: expected ? null : message,
   });
   if (!expected) {
-    log("sync process stopped unexpectedly", { code, signal });
+    log("WARNING", "sync process stopped unexpectedly", { code, signal });
     scheduleRestart();
   }
 }
@@ -308,7 +314,7 @@ async function shutdown(signal) {
   if (stopping) return;
   stopping = true;
   clearTimeout(restartTimer);
-  log("stopping", { signal });
+  log("INFO", "stopping", { signal });
   await stopChild();
   server.close(() => process.exit(0));
 }
@@ -318,7 +324,7 @@ await loadConnection();
 server.listen(PORT, "0.0.0.0", async () => {
   const address = server.address();
   await publishStatus({ control_port: address.port });
-  log("control endpoint started", { port: address.port, simulated: status.simulated });
+  log("INFO", "control endpoint started", { port: address.port, simulated: status.simulated });
   if (connection && !status.paused) await startSync().catch(() => {});
 });
 process.on("SIGTERM", () => shutdown("SIGTERM"));

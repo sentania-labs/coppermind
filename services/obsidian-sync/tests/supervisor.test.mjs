@@ -183,3 +183,58 @@ test("real mode refuses every path that would reach the account or the remote va
   assert.match(after.last_error, /pending captain decisions/);
   await assert.rejects(readFile(invoked), { code: "ENOENT" }, "the Obsidian client was invoked");
 });
+
+test("the supervisor honours COPPERMIND_LOG_LEVEL", async (context) => {
+  // Its log lines are the contract here: one JSON object per line on stdout,
+  // the field names every other Coppermind service uses.
+  const linesAt = async (level) => {
+    const data = await mkdtemp(path.join(os.tmpdir(), "coppermind-sync-log-"));
+    const tokenFile = path.join(data, "internal-token");
+    await writeFile(tokenFile, "test-control-token\n", { mode: 0o600 });
+    await mkdir(path.join(data, "state", "sync"), { recursive: true });
+    await writeFile(
+      path.join(data, "state", "sync", "connection.json"),
+      `${JSON.stringify({ vault_name: "Captain vault", paused: false })}\n`,
+    );
+    const env = { ...process.env };
+    delete env.COPPERMIND_LOG_LEVEL;
+    if (level) env.COPPERMIND_LOG_LEVEL = level;
+    const supervisor = spawn(process.execPath, [path.join(ROOT, "supervisor.mjs")], {
+      env: {
+        ...env,
+        COPPERMIND_DATA_DIR: data,
+        COPPERMIND_INTERNAL_TOKEN_FILE: tokenFile,
+        COPPERMIND_SYNC_PORT: "0",
+      },
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    context.after(() => supervisor.kill("SIGTERM"));
+    let out = "";
+    supervisor.stdout.on("data", (chunk) => {
+      out += chunk;
+    });
+    await waitFor(
+      async () => out.includes("real sync refused"),
+      `the supervisor never logged the refusal at ${level ?? "the default level"}`,
+    );
+    return out.trim().split("\n").map(JSON.parse);
+  };
+
+  const quiet = await linesAt("WARNING");
+  assert.deepEqual([...new Set(quiet.map((entry) => entry.level))], ["warning"]);
+  assert.equal(
+    quiet.some((entry) => entry.event === "control endpoint started"),
+    false,
+    "an info line survived COPPERMIND_LOG_LEVEL=WARNING",
+  );
+
+  const chatty = await linesAt(undefined);
+  const startup = chatty.find((entry) => entry.event === "control endpoint started");
+  assert.ok(startup, "the default level dropped the startup line");
+  assert.equal(startup.level, "info");
+  assert.equal(startup.service, "obsidian-sync");
+  assert.ok(
+    chatty.some((entry) => entry.event === "real sync refused" && entry.level === "warning"),
+    "the refusal is not logged as a warning",
+  );
+});

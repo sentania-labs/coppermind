@@ -4,8 +4,9 @@ Thanks for helping. This page is the whole process; there is no separate wiki.
 
 ## Run it locally
 
-Prerequisites: [uv](https://docs.astral.sh/uv/), Docker with Compose, and
-Python 3.12 (uv will fetch it if you do not have it).
+Prerequisites: [uv](https://docs.astral.sh/uv/), Docker with Compose,
+Python 3.12 (uv will fetch it if you do not have it), and Node 22 with npm,
+which `make check` needs for the Obsidian Sync helper's tests.
 
 ```bash
 make setup                             # sync the uv workspace

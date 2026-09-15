@@ -168,8 +168,8 @@ docker compose exec obsidian-sync node /app/control.mjs connect "My Remote Vault
 
 What the status does and does not say:
 
-- `simulated` is true only when the CI overlay is running the bundled stand-in
-  client; `real_sync_supported` is false everywhere today.
+- `simulated` is true only while `make sync-smoke` is running the bundled
+  stand-in client; `real_sync_supported` is false everywhere today.
 - `sync_mode` and `conflict_strategy` stay null until a client reports them.
 - `liveness` is `child_process_only`: the supervisor watches the client
   process, so it cannot tell a running client from a delivering one.
@@ -218,7 +218,7 @@ make scan             # dependency, secret and repository scans, as CI runs them
 make image            # build the images locally
 make smoke            # the compose storyline end to end
 make failure          # helpers stopped and started with edits in between
-make sync-smoke       # simulated sync connect, pause, resume and restart (needs the CI overlay)
+make sync-smoke       # simulated sync connect, pause, resume and restart
 ```
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the bar for a pull request.

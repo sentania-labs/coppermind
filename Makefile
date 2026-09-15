@@ -51,6 +51,7 @@ check: lint typecheck test compose-check prose-check
 compose-check:
 	$(COMPOSE) config >/dev/null
 	$(COMPOSE_CI) config >/dev/null
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.sync-smoke.yml config >/dev/null
 
 # House rule, enforced rather than remembered: no em-dashes anywhere in the
 # tree. The lock file and this rule's own definition are excluded.
@@ -104,10 +105,10 @@ smoke:
 failure:
 	COMPOSE_FILES="$${COMPOSE_FILES:--f docker-compose.yml}" bash ci/failure.sh
 
-# Needs the CI overlay: only it turns on the simulated client this proves.
+# Brings its own stack up, adds the simulated client overlay to whatever
+# compose files it is given, and takes the simulation back down at the end.
 sync-smoke:
-	COMPOSE_FILES="$${COMPOSE_FILES:--f docker-compose.yml -f docker-compose.ci.yml}" \
-		bash ci/sync-smoke.sh
+	COMPOSE_FILES="$${COMPOSE_FILES:--f docker-compose.yml}" bash ci/sync-smoke.sh
 
 clean: down db-down
 	-$(COMPOSE) down -v

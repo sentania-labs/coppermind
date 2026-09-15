@@ -178,8 +178,8 @@ services:
   # on first-connect behaviour and on where the account credential lives, so
   # this service reaches no account and writes no note today. Its control
   # endpoint answers meanwhile, and the later Admin service supplies its GUI.
-  # The simulated client used to prove the lifecycle is a CI-only override in
-  # docker-compose.ci.yml and is deliberately not settable here.
+  # The simulated client used to prove the lifecycle lives in
+  # docker-compose.sync-smoke.yml and is deliberately not settable here.
   obsidian-sync:
     <<: *obsidian-sync-image
     restart: unless-stopped

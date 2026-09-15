@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 # The simulated client proves the Obsidian Sync helper lifecycle without an
-# account. It is turned on by docker-compose.ci.yml only, so this needs both
-# compose files; the first check below fails loudly if the overlay is missing.
+# account. This brings the stack up itself, layers the simulated client on top
+# of whatever compose files it was given, and puts the helper back in its
+# normal refusing mode with no connection left behind.
+#
+# Usage:
+#   bash ci/sync-smoke.sh
+#   COMPOSE_FILES="-f docker-compose.yml -f docker-compose.ci.yml" bash ci/sync-smoke.sh
 set -euo pipefail
 
-COMPOSE_FILES="${COMPOSE_FILES:--f docker-compose.yml -f docker-compose.ci.yml}"
+COMPOSE_FILES="${COMPOSE_FILES:--f docker-compose.yml}"
+SIMULATED_FILES="$COMPOSE_FILES -f docker-compose.sync-smoke.yml"
 # shellcheck disable=SC2086
-compose() { docker compose $COMPOSE_FILES "$@"; }
+compose() { docker compose $SIMULATED_FILES "$@"; }
+# shellcheck disable=SC2086
+plain_compose() { docker compose $COMPOSE_FILES "$@"; }
 
+step() { printf '\n== %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 
 control() {
@@ -46,9 +55,12 @@ wait_for() {
     fail "sync helper never reached $wanted"
 }
 
+step "bring the stack up with the simulated client"
+compose up -d --wait --remove-orphans
+
 initial="$(control GET /status)"
 [ "$(printf '%s' "$initial" | field simulated)" = "True" ] \
-    || fail "helper is not running the simulated client; use -f docker-compose.ci.yml"
+    || fail "helper is not running the simulated client"
 [ "$(printf '%s' "$initial" | field connected)" = "False" ] || fail "fresh helper claims connected"
 [ "$(printf '%s' "$initial" | field syncing)" = "False" ] || fail "fresh helper claims syncing"
 
@@ -79,4 +91,13 @@ persisted="$(compose exec -T obsidian-sync cat /data/state/sync/status.json)"
 [ "$(printf '%s' "$persisted" | field sync_mode)" = "simulated" ] \
     || fail "status file does not report the client as simulated"
 
-printf 'simulated sync lifecycle passed: connect, pause, resume, killed process restarted\n'
+step "leave nothing simulated behind"
+compose exec -T obsidian-sync rm -f /data/state/sync/connection.json
+plain_compose up -d --wait --force-recreate --no-deps obsidian-sync
+restored="$(plain_compose exec -T obsidian-sync cat /data/state/sync/status.json)"
+[ "$(printf '%s' "$restored" | field simulated)" = "False" ] \
+    || fail "the helper is still running the simulated client"
+[ "$(printf '%s' "$restored" | field state)" = "not_connected" ] \
+    || fail "the simulated connection outlived the smoke run"
+
+printf '\nsimulated sync lifecycle passed: connect, pause, resume, killed process restarted\n'

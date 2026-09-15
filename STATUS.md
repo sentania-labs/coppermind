@@ -250,9 +250,9 @@ vertical path proved end to end, then widened.
   SBOM, scanned; and a compose smoke run of the whole storyline above, plus
   the Git helper's failure storyline, against those exact images. Every action
   is pinned to a commit SHA, and a test enforces that.
-- The independently built `obsidian-sync` image carries the pinned
-  `obsidian-headless` client and exposes authenticated connect, pause, resume
-  and status controls on the compose network. A fresh install has the
+- The independently built `obsidian-sync` image supervises a sync client and
+  exposes authenticated connect, pause, resume and status controls on the
+  compose network. A fresh install has the
   supervisor available and honestly disconnected, with that state in
   `/data/state/sync/status.json`.
   **Real sync is refused on purpose.** Connect, resume and boot from a
@@ -262,8 +262,10 @@ vertical path proved end to end, then widened.
   credential should live given that the `data` volume is what a backup
   carries. No note has been delivered to a device from here, and no account
   has been used; the phone half of the core path is not proved yet.
-  A bundled stand-in client, switched on only by the CI overlay, proves
-  connect, pause, resume and recovery after the supervised child is killed.
+  A bundled stand-in client, switched on only by `make sync-smoke` through
+  `docker-compose.sync-smoke.yml`, proves connect, pause, resume and recovery
+  after the supervised child is killed, then puts the helper back in its
+  refusing mode with no connection left behind.
   The status file says what it knows and no more: `simulated` and
   `real_sync_supported` flags, `sync_mode` and `conflict_strategy` left null
   until a client reports them, and `liveness: child_process_only` because the
