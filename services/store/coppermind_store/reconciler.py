@@ -55,6 +55,11 @@ _MIRROR_BATCH = 200
 # listed state current.
 _WEDGED_AFTER = 3
 
+# Scan intervals that may pass with no scan completing at all before readiness
+# says the same. A scan wedged inside the filesystem walk never raises, so the
+# failure counter alone would stay green while nothing converged.
+_STALE_INTERVALS = 3
+
 MISSING_REASON = "not observed during reconciliation"
 UNPARSED_REASON = "frontmatter could not be parsed"
 UNREADABLE_REASON = "file could not be read"
@@ -101,9 +106,11 @@ class ReconcilerStatus:
     """
 
     def __init__(self) -> None:
+        self.started_at = datetime.now(tz=UTC)
         self.last_completed_at: datetime | None = None
         self.consecutive_failures = 0
         self.last_reason = ""
+        self.scan_interval_s = 60
 
     def completed(self) -> None:
         self.last_completed_at = datetime.now(tz=UTC)
@@ -116,11 +123,23 @@ class ReconcilerStatus:
 
     def problem(self) -> str:
         """Describe a reconciler that has stopped converging, or return ''."""
-        if self.consecutive_failures < _WEDGED_AFTER:
+        if self.consecutive_failures >= _WEDGED_AFTER:
+            return (
+                f"{self.consecutive_failures} scans in a row did not complete "
+                f"({self.last_reason}); listed note state is not being refreshed"
+            )
+        quiet_for = datetime.now(tz=UTC) - (self.last_completed_at or self.started_at)
+        if quiet_for <= timedelta(seconds=_STALE_INTERVALS * self.scan_interval_s):
             return ""
+        seconds = round(quiet_for.total_seconds())
+        waited = (
+            f"no scan has completed in {seconds}s"
+            if self.last_completed_at is None
+            else f"the last scan completed {seconds}s ago"
+        )
         return (
-            f"{self.consecutive_failures} scans in a row did not complete "
-            f"({self.last_reason}); listed note state is not being refreshed"
+            f"{waited}, over {_STALE_INTERVALS} scan intervals; "
+            "listed note state is not being refreshed"
         )
 
 
@@ -130,11 +149,12 @@ async def run_reconciler(store: LocalStore, status: ReconcilerStatus | None = No
     due: datetime | None = None
     while True:
         interval, quiet_period_s, rehash_at, zone = _cadence(store)
+        status.scan_interval_s = interval
         await asyncio.sleep(interval)
         now = datetime.now(tz=UTC)
-        full = due is not None and now >= due
-        if due is None or full:
+        if due is None:
             due = _next_full_rehash(now, rehash_at, zone)
+        full = due is not None and now >= due
         started = monotonic()
         try:
             counts = await reconcile_once(store, full=full, quiet_period_s=quiet_period_s)
@@ -150,6 +170,11 @@ async def run_reconciler(store: LocalStore, status: ReconcilerStatus | None = No
             log.exception("reconciliation failed", error_type=type(exc).__name__)
         else:
             status.completed()
+            if full:
+                # Only a rehash that ran clears the night's slot. A deferred one
+                # stays due, because the full pass is the only thing that sees a
+                # change that did not move a file's mtime or size.
+                due = _next_full_rehash(datetime.now(tz=UTC), rehash_at, zone)
             log.info(
                 "reconciliation completed",
                 duration_ms=round((monotonic() - started) * 1000),
@@ -205,7 +230,7 @@ async def reconcile_once(
     settled_before = (
         scan_started - timedelta(seconds=quiet_period_s) if quiet_period_s > 0 else None
     )
-    found, seen = await asyncio.to_thread(
+    found, seen, deferred = await asyncio.to_thread(
         _scan,
         store.notes_root,
         schema,
@@ -215,10 +240,13 @@ async def reconcile_once(
         settled_before=settled_before,
     )
     observations = _choose_observations(found, by_id)
-    # An identity seen on disk but not chosen (two live copies, an unchanged
-    # stat, a file still settling) keeps whatever the mirror already says. Only
-    # an identity nothing on disk carried is a candidate for missing.
-    pending = sorted(set(observations) | {note_id for note_id in by_id if note_id not in seen})
+    # An identity seen on disk but not chosen, two live copies or an unchanged
+    # stat, keeps whatever the mirror already says. Only an identity nothing on
+    # disk carried is a candidate for missing, and only when this pass read
+    # every file that changed: bytes left unread inside the quiet period could
+    # belong to any note, so a pass that deferred one cannot call any note gone.
+    absent = set() if deferred else {note_id for note_id in by_id if note_id not in seen}
+    pending = sorted(set(observations) | absent)
 
     counts = {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0}
     now = datetime.now(tz=UTC)
@@ -319,8 +347,12 @@ def _scan(
     *,
     full: bool,
     settled_before: datetime | None,
-) -> tuple[dict[str, list[Observation]], set[str]]:
-    """Walk the notes filesystem, returning what was read and what was seen."""
+) -> tuple[dict[str, list[Observation]], set[str], bool]:
+    """Walk the notes filesystem.
+
+    Returns what was read, which identities were seen, and whether any file was
+    left unread because it changed inside the quiet period.
+    """
     try:
         if not stat_module.S_ISDIR(root.stat().st_mode):
             raise NotesFilesystemUnavailable(f"notes filesystem is not a directory: {root}")
@@ -331,6 +363,7 @@ def _scan(
 
     observed: dict[str, list[Observation]] = {}
     seen: set[str] = set()
+    deferred = False
     try:
         for path in root.rglob("*.md"):
             relative_path = path.relative_to(root)
@@ -361,10 +394,11 @@ def _scan(
                 seen.add(entry.note_id)
                 continue
             if entry is not None and settled_before is not None and mtime > settled_before:
-                # Deferring is only safe for a file whose identity the mirror
-                # already knows. An unclaimed path has to be read, or the note
-                # that moved there is recorded as deleted while it settles.
-                seen.add(entry.note_id)
+                # A file the mirror already claims is left to settle rather than
+                # hashed halfway through a device's write. Whose bytes these now
+                # are is unknown until they are read, so the pass is marked
+                # deferred rather than crediting the row that names the path.
+                deferred = True
                 continue
             try:
                 data = safe_path.read_bytes()
@@ -380,7 +414,7 @@ def _scan(
             )
     except OSError as exc:
         raise NotesFilesystemUnavailable(str(exc)) from exc
-    return observed, seen
+    return observed, seen, deferred
 
 
 def _unchanged(entry: MirrorEntry, size_bytes: int, mtime: datetime) -> bool:

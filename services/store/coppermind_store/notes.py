@@ -509,6 +509,7 @@ def _mirrored_summary(row: Note, state: NoteState) -> NoteSummary:
         id=row.id,
         path=row.path,
         state=state,
+        state_reason=row.state_reason,
         title=row.title or Path(row.path).stem,
         date=row.date,
         type=row.type,

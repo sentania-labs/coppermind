@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import asyncio
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+from coppermind_store import reconciler
 from coppermind_store.reconciler import ReconcilerStatus, _next_full_rehash
 
 from coppermind.settings import ReconcileSettings
+from coppermind.store_protocol import MetadataUnavailable
 
 CHICAGO = ZoneInfo("America/Chicago")
 
@@ -51,3 +55,85 @@ def test_a_reconciler_is_only_reported_wedged_after_several_failed_scans():
     status.completed()
     assert status.problem() == ""
     assert status.last_completed_at is not None
+
+
+def test_a_scan_that_stalls_without_raising_is_reported_stale():
+    """A wedged walk never raises, so the failure counter alone stays green."""
+    status = ReconcilerStatus()
+    status.scan_interval_s = 60
+    status.completed()
+    assert status.consecutive_failures == 0
+    assert status.problem() == ""
+
+    status.last_completed_at = datetime.now(UTC) - timedelta(seconds=179)
+    assert status.problem() == ""
+
+    status.last_completed_at = datetime.now(UTC) - timedelta(seconds=600)
+    stalled = status.problem()
+    assert "600s ago" in stalled
+    assert status.consecutive_failures == 0
+
+    status.completed()
+    assert status.problem() == ""
+
+
+def test_a_reconciler_that_never_completes_a_first_scan_is_reported_stale():
+    status = ReconcilerStatus()
+    status.scan_interval_s = 60
+    status.started_at = datetime.now(UTC) - timedelta(seconds=600)
+
+    assert status.last_completed_at is None
+    assert "no scan has completed" in status.problem()
+
+
+def test_the_staleness_deadline_follows_the_configured_interval():
+    slow = ReconcilerStatus()
+    slow.scan_interval_s = 600
+    slow.completed()
+    slow.last_completed_at = datetime.now(UTC) - timedelta(seconds=600)
+
+    assert slow.problem() == ""
+
+    brisk = ReconcilerStatus()
+    brisk.scan_interval_s = 5
+    brisk.completed()
+    brisk.last_completed_at = datetime.now(UTC) - timedelta(seconds=600)
+
+    assert brisk.problem() != ""
+
+
+async def test_a_deferred_daily_rehash_is_retried_rather_than_forfeited(monkeypatch):
+    """The full pass is the only one that sees a change that moved no mtime."""
+    calls: list[bool] = []
+    completed: list[bool] = []
+    failures: list[str] = []
+    finished = asyncio.Event()
+    past = datetime(2000, 1, 1, tzinfo=UTC)
+    ahead = datetime(2400, 1, 1, tzinfo=UTC)
+
+    monkeypatch.setattr(reconciler, "_cadence", lambda _store: (0, 0, "03:30", ZoneInfo("UTC")))
+    monkeypatch.setattr(
+        reconciler, "_next_full_rehash", lambda *_args: ahead if completed else past
+    )
+
+    async def scan(_store, *, full, quiet_period_s):
+        calls.append(full)
+        if len(calls) >= 3:
+            finished.set()
+        if full and not failures:
+            failures.append("deferred")
+            raise MetadataUnavailable("postgres restarting")
+        completed.append(full)
+        return {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0}
+
+    monkeypatch.setattr(reconciler, "reconcile_once", scan)
+    task = asyncio.create_task(reconciler.run_reconciler(object()))
+    try:
+        await asyncio.wait_for(finished.wait(), timeout=5)
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    assert calls[:3] == [True, True, False]
+    assert True in completed

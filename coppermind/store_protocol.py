@@ -380,19 +380,21 @@ class NoteQuery(BaseModel):
 class NoteSummary(BaseModel):
     """What the store can see right now for one note it knows about.
 
-    `state` says how current the rest of the fields are. `ok` means the latest
-    reconciliation scan read them all from the file at `path`. `unparsed`
-    means it found a file at `path` it could not use, and how much is current
-    depends on why: bytes it read but could not parse refresh `content_hash`,
-    `size_bytes` and `updated_at`, leaving only the schema fields stale, while
-    a file it could not open at all refreshes `path` alone and leaves
-    `content_hash` naming the last bytes that were read. `missing` means the
-    scan did not find the file, and every field is the last known one.
+    `state` says how current the rest of the fields are and `state_reason`
+    says why, which is what tells a caller how far to trust `content_hash`.
+    `ok` means the latest reconciliation scan read every field from the file at
+    `path`. `unparsed` means it found a file at `path` it could not use: bytes
+    it read but could not parse refresh `content_hash`, `size_bytes` and
+    `updated_at`, leaving only the schema fields stale, while a file it could
+    not open at all refreshes `path` alone and leaves `content_hash` naming the
+    last bytes anyone read. `missing` means the scan did not find the file, and
+    every field is the last known one.
     """
 
     id: NoteId
     path: str
     state: NoteState
+    state_reason: str | None = None
     title: str
     date: date_type | None = None
     type: str | None = None

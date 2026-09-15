@@ -8,7 +8,7 @@ import pytest
 import sqlalchemy as sa
 from coppermind_store.fs import content_hash
 from coppermind_store.notes import LocalStore
-from coppermind_store.reconciler import UNREADABLE_REASON, reconcile_once
+from coppermind_store.reconciler import UNPARSED_REASON, UNREADABLE_REASON, reconcile_once
 
 from coppermind.db.models import Note
 from coppermind.store_protocol import CreateNote, NoteQuery, NoteUnparseable, NotFound
@@ -309,3 +309,55 @@ async def test_a_note_symlinked_out_of_the_notes_filesystem_is_unparsed_not_miss
     assert row.state == "unparsed"
     assert row.state_reason == UNREADABLE_REASON
     assert row.path == note.path
+
+
+async def test_a_swap_inside_the_quiet_period_reports_neither_note_deleted(store: LocalStore):
+    """A pass that left a file unread cannot tell whose bytes are at its path."""
+    deleted = await store.create_note(
+        CreateNote(title="Runbook", frontmatter={"type": "reference"})
+    )
+    moved = await store.create_note(CreateNote(title="Meeting", frontmatter={"type": "reference"}))
+    occupied = store.notes_root / deleted.path
+    occupied.unlink()
+    (store.notes_root / moved.path).rename(occupied)
+
+    for _ in range(3):
+        os.utime(occupied, None)
+        counts = await reconcile_once(store, quiet_period_s=3600)
+        assert counts["missing"] == 0
+        assert (await _row(store, deleted.id)).state != "missing"
+        assert (await _row(store, moved.id)).state != "missing"
+        assert {item.state for item in (await store.list_notes(NoteQuery())).items} == {"ok"}
+
+    settled = await reconcile_once(store)
+
+    assert settled["missing"] == 1
+    assert (await _row(store, deleted.id)).state == "missing"
+    moved_row = await _row(store, moved.id)
+    assert moved_row.state == "ok"
+    assert moved_row.path == deleted.path
+    assert (await store.get_note(moved.id)).id == moved.id
+
+
+async def test_an_unreadable_note_says_why_its_hash_is_not_current(store: LocalStore):
+    """A summary carries the reason, so a stale ETag is distinguishable."""
+    unreadable = await store.create_note(
+        CreateNote(title="Runbook", frontmatter={"type": "reference"})
+    )
+    broken = await store.create_note(CreateNote(title="Meeting", frontmatter={"type": "reference"}))
+    unreadable_path = store.notes_root / unreadable.path
+    last_read_hash = content_hash(unreadable_path.read_bytes())
+    unreadable_path.unlink()
+    unreadable_path.symlink_to(unreadable_path.name)
+    broken_path = store.notes_root / broken.path
+    broken_path.write_bytes(broken_path.read_bytes().replace(b"tags: []", b"tags: ["))
+
+    await reconcile_once(store)
+    summaries = {
+        item.id: item for item in (await store.list_notes(NoteQuery(state="unparsed"))).items
+    }
+
+    assert summaries[unreadable.id].state_reason == UNREADABLE_REASON
+    assert summaries[unreadable.id].content_hash == last_read_hash
+    assert summaries[broken.id].state_reason == UNPARSED_REASON
+    assert summaries[broken.id].content_hash == content_hash(broken_path.read_bytes())
