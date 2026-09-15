@@ -302,6 +302,25 @@ def test_fill_missing_fills_a_property_left_blank_instead_of_writing_it_twice():
     assert body == "# Grocery list\n"
 
 
+def test_fill_missing_reassembles_only_the_block_when_a_property_is_blank():
+    """The one adoption shape that is not append only, per AGENTS.md.
+
+    Filling a key the file already names cannot splice, so the block is rebuilt
+    and its line endings are not preserved. The body's own endings are.
+    """
+    note = "---\r\ndate:\r\ntags: [errands] # keep this\r\n---\r\n# Grocery list\r\n"
+
+    updated = fm.fill_missing(note, {"date": "2026-09-15"})
+    frontmatter, body = fm.parse(updated)
+
+    assert updated.startswith("---\ndate: ")
+    assert "# keep this" in updated
+    assert list(frontmatter) == ["date", "tags"]
+    assert frontmatter["date"] == "2026-09-15"
+    assert list(frontmatter["tags"]) == ["errands"]
+    assert body == "# Grocery list\r\n"
+
+
 def test_fill_missing_refuses_a_blank_property_behind_unreadable_delimiters():
     """`patch` would drop the body of these, so the file must be left alone."""
     note = "---\rdate:\r---\r# Grocery list\r"

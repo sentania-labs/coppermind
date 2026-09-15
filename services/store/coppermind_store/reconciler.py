@@ -596,7 +596,7 @@ def _scan(
                         reason="not a regular file",
                     )
                 continue
-            if entry is not None and quiet is not None and quiet.holds(mtime):
+            if entry is not None and settling:
                 # A file the mirror already claims is left to settle rather than
                 # hashed halfway through a device's write. A file is here, so
                 # the note still holds its path, but whose bytes these now are
