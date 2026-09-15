@@ -348,6 +348,7 @@ async def reconcile_once(
     by_id = await _mirror_index(store)
     by_path = _by_path(by_id)
     schema = store.control.schema()
+    settings = store.control.settings()
     quiet = (
         QuietWindow(
             earliest=scan_started - timedelta(seconds=quiet_period_s),
@@ -365,7 +366,7 @@ async def reconcile_once(
         full=full,
         quiet=quiet,
         unidentified=dict(remembered),
-        unadoptable=_unadoptable_folders(store.control.settings()),
+        unadoptable=_unadoptable_folders(settings),
     )
     remembered.clear()
     remembered.update(scan.unidentified)
@@ -376,8 +377,15 @@ async def reconcile_once(
     retry = 0
     untried = iter(scan.adoption_candidates)
     for candidate in untried:
+        # Every refusal inside `adopt_note` returns before its first await, so
+        # a tree the schema mostly refuses would sweep end to end without the
+        # event loop ever getting a turn. One yield per candidate keeps reads
+        # and readiness served while a first adoption works through a vault.
+        await asyncio.sleep(0)
         try:
-            outcome, cause = await store.adopt_note(candidate.path, candidate.content_hash)
+            outcome, cause = await store.adopt_note(
+                candidate.path, candidate.content_hash, schema=schema, settings=settings
+            )
         except MetadataUnavailable:
             # The mirror is gone, which is every note's problem, not this
             # file's. It fails the pass the same way a missing mount does.
@@ -533,7 +541,7 @@ def _scan(
     full: bool,
     quiet: QuietWindow | None,
     unidentified: UnidentifiedStats,
-    unadoptable: frozenset[str],
+    unadoptable: frozenset[tuple[str, ...]],
 ) -> ScanResult:
     """Walk the notes filesystem and report what it found."""
     try:
@@ -644,7 +652,7 @@ def _scan(
             if isinstance(result, AdoptionCandidate):
                 if settling:
                     deferred += 1
-                elif relative_path.parts[0] in unadoptable:
+                elif any(relative_path.parts[: len(folder)] == folder for folder in unadoptable):
                     # A folder the store owns is not a place a person writes a
                     # note, so nothing below one is given an identity. The file
                     # is still read, because a known note moved into one must
@@ -678,21 +686,24 @@ def _scan(
     )
 
 
-def _unadoptable_folders(settings: ProductSettings) -> frozenset[str]:
-    """The top-level folders the store writes, so adoption never writes there.
+def _unadoptable_folders(settings: ProductSettings) -> frozenset[tuple[str, ...]]:
+    """The folders the store writes, so adoption never writes there.
 
     Deleted notes, generated source projections and attachments. Their names
-    are the operator's, read from the same settings the rest of the system
-    lays the notes filesystem out by.
+    are the operator's, read from the same settings the rest of the system lays
+    the notes filesystem out by, and each is split into its segments because a
+    name may nest: `Archive/Trash` has to exclude what is under it, not every
+    path that merely starts with `Archive`.
     """
+    named = (
+        settings.notes.trash_folder,
+        settings.notes.sources_folder,
+        settings.notes.attachments_folder,
+    )
     return frozenset(
-        name.strip("/")
-        for name in (
-            settings.notes.trash_folder,
-            settings.notes.sources_folder,
-            settings.notes.attachments_folder,
-        )
-        if name.strip("/")
+        parts
+        for parts in (tuple(part for part in name.split("/") if part) for name in named)
+        if parts
     )
 
 

@@ -414,14 +414,24 @@ class LocalStore:
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
 
-    async def adopt_note(self, relative: str, expected_hash: str) -> AdoptionResult:
+    async def adopt_note(
+        self,
+        relative: str,
+        expected_hash: str,
+        *,
+        schema: FrontmatterSchema,
+        settings: ProductSettings,
+    ) -> AdoptionResult:
         """Give a settled device-created file an identity and mirror it.
 
         The scan supplies the hash it observed after the quiet period. The
         file is read again here and checked once more immediately before an
         atomic replacement, so a device write wins the race without losing
         bytes. Nothing serialises against this: the reconciler is the only
-        caller and it adopts one file at a time.
+        caller and it adopts one file at a time, which is also why it reads the
+        schema and the settings once for a whole pass and hands them in: every
+        refusal returns before the first await, so re-reading two state files
+        per candidate would hold the event loop for a whole sweep.
 
         Only keys the schema requires of this note and that it does not already
         carry a value for receive defaults; an optional key a person did not
@@ -438,8 +448,6 @@ class LocalStore:
             path = resolve(self.notes_root, relative)
         except ValueError:
             return "invalid", "path is not inside the notes filesystem"
-        schema = self.control.schema()
-        settings = self.control.settings()
         try:
             current, _ = _read(relative, path)
         except NotFound:
@@ -940,7 +948,7 @@ def _mirror_columns(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> d
         "account": _text(frontmatter.get(schema.role("account_key"))),
         "date": _as_date(frontmatter.get(schema.role("date_key"))),
         "reviewed": bool(frontmatter.get(schema.role("reviewed_key"), False)),
-        "tags": [str(tag) for tag in tags] if isinstance(tags, list) else [],
+        "tags": [_storable(str(tag)) for tag in tags] if isinstance(tags, list) else [],
     }
 
 
@@ -971,8 +979,8 @@ def _terminated(body: str) -> str:
 def _title_of(body: str, path: Path) -> str:
     for line in body.splitlines():
         if line.startswith("# "):
-            return line[2:].strip()
-    return path.stem
+            return _storable(line[2:].strip())
+    return _storable(path.stem)
 
 
 def _today(settings: ProductSettings) -> date:
@@ -981,7 +989,7 @@ def _today(settings: ProductSettings) -> date:
 
 
 def _text(value: Any) -> str | None:
-    return value if isinstance(value, str) else None
+    return _storable(value) if isinstance(value, str) else None
 
 
 def _as_date(value: Any) -> date | None:
@@ -999,23 +1007,37 @@ def _as_int(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 1
 
 
+def _storable(text: str) -> str:
+    """Drop what no PostgreSQL text or JSONB column can hold.
+
+    A NUL is rejected outright, and it would be rejected at the insert, after
+    adoption had already rewritten a file a person owns, leaving a note the
+    store changed and then never delivered. The file keeps every byte; the
+    mirror, which is only ever a mirror, does not.
+    """
+    return text.replace("\x00", "") if "\x00" in text else text
+
+
 def _jsonable(value: Any) -> Any:
     """Convert a round tripped YAML mapping into plain JSON friendly types.
 
     Total on purpose. A person's frontmatter may hold a tagged scalar, binary
-    or a set, and a float may be a NaN or an infinity; none of those can be
-    stored in the mirror's JSONB column, and an escaping one would fail the
-    insert of a whole reconciliation pass rather than one note. The file stays
-    the truth, so anything that is not a JSON value is mirrored as its text.
+    or a set, a float may be a NaN or an infinity, and a string may carry a
+    NUL; none of those can be stored in the mirror's JSONB column, and an
+    escaping one would fail an insert after the file had already been written.
+    The file stays the truth, so anything that is not a JSON value is mirrored
+    as its text.
     """
     if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
+        return {_storable(str(k)): _jsonable(v) for k, v in value.items()}
     if isinstance(value, list | tuple | set | frozenset):
         return [_jsonable(item) for item in value]
     if isinstance(value, datetime | date):
         return value.isoformat()
-    if isinstance(value, bool) or value is None or isinstance(value, str | int):
+    if isinstance(value, str):
+        return _storable(value)
+    if isinstance(value, bool) or value is None or isinstance(value, int):
         return value
     if isinstance(value, float):
         return value if isfinite(value) else str(value)
-    return str(value)
+    return _storable(str(value))

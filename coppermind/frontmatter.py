@@ -240,13 +240,17 @@ def patch(text: str, changes: dict[str, Any], *, unset: list[str] | None = None)
     house nesting for those mappings.
     """
     block, body = split(text)
+    return _patched(block, body, changes, unset or [])
+
+
+def _patched(block: str, body: str, changes: dict[str, Any], unset: list[str]) -> str:
     yaml = _yaml()
     frontmatter: dict[str, Any] = {}
     if block.strip():
         loaded, indent, sequence_offset = _load_guessing_indent(block, yaml)
         frontmatter = _mapping(loaded)
         _indent_like(yaml, indent, sequence_offset)
-    for key in unset or []:
+    for key in unset:
         frontmatter.pop(key, None)
     for key, value in changes.items():
         frontmatter[key] = value
@@ -293,7 +297,17 @@ def append_missing(text: str, changes: dict[str, Any]) -> str:
     delimiter using the block's line endings, so comments, quoting,
     indentation, ordering and the body remain byte exact.
     """
-    block, body, opening_length, closing_offset = _readable_block(text)
+    return _appended(text, changes, *_readable_block(text))
+
+
+def _appended(
+    text: str,
+    changes: dict[str, Any],
+    block: str,
+    body: str,
+    opening_length: int,
+    closing_offset: int,
+) -> str:
     if opening_length < 0:
         return compose(changes, body)
     yaml = _yaml()
@@ -323,7 +337,8 @@ def fill_missing(text: str, changes: dict[str, Any]) -> str:
     adds one and leaves it empty, so refusing them would leave an ordinary
     device-created note unadoptable.
     """
-    block, _, opening_length, _ = _readable_block(text)
+    found = _readable_block(text)
+    block, body, opening_length, _ = found
     if opening_length >= 0 and any(key in _parse_block(block) for key in changes):
-        return patch(text, changes)
-    return append_missing(text, changes)
+        return _patched(block, body, changes, [])
+    return _appended(text, changes, *found)

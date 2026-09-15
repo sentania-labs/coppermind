@@ -27,6 +27,11 @@ from coppermind.store_protocol import (
 )
 
 
+def _control(store: LocalStore) -> dict[str, object]:
+    """What the reconciler reads once a pass and hands to every adoption."""
+    return {"schema": store.control.schema(), "settings": store.control.settings()}
+
+
 async def _row(store: LocalStore, note_id: str) -> Note:
     async with store.session_factory() as session:
         return (await session.scalars(sa.select(Note).where(Note.id == note_id))).one()
@@ -226,6 +231,27 @@ async def test_a_folder_the_store_owns_is_never_adopted_into(store: LocalStore):
         assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 1
 
 
+async def test_a_nested_trash_folder_is_excluded_by_its_whole_path(store: LocalStore):
+    """A configured folder may nest, so the exclusion is a path, not a first segment."""
+    current = store.control.store.read("settings")
+    body = dict(current.body)
+    body["notes"] = {**body.get("notes", {}), "trash_folder": "Archive/Trash"}
+    body.pop("revision", None)
+    store.control.store.write("settings", body, if_revision=current.revision)
+    nested = store.notes_root / "Archive" / "Trash" / "Thrown away.md"
+    nested.parent.mkdir(parents=True, exist_ok=True)
+    original = b"# Thrown away\n"
+    nested.write_bytes(original)
+    sibling = store.notes_root / "Archive" / "Kept.md"
+    sibling.write_bytes(b"# Kept\n")
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 1
+    assert nested.read_bytes() == original
+    assert fm.parse(sibling.read_text(encoding="utf-8"))[0][store.control.schema().role("id_key")]
+
+
 async def test_a_note_moved_into_the_trash_folder_is_followed_not_reported_gone(
     store: LocalStore,
 ):
@@ -279,16 +305,73 @@ async def test_one_unmirrorable_file_does_not_wedge_every_later_pass(store: Loca
 
     counts = await reconcile_once(store)
     id_key = store.control.schema().role("id_key")
-    fetched = await store.get_note(fm.parse(healthy.read_text(encoding="utf-8"))[0][id_key])
+
+    def adopted_id(path: Path) -> str:
+        return str(fm.parse(path.read_text(encoding="utf-8"))[0][id_key])
 
     assert counts["missing"] == 1
+    assert counts["unwritable"] == 0
     assert (await _row(store, gone.id)).state == "missing"
-    assert fetched.title == "Healthy"
+    assert (await store.get_note(adopted_id(healthy))).title == "Healthy"
+    # A value no column can hold is mirrored without it rather than leaving a
+    # file the store rewrote and never delivered.
+    assert (await store.get_note(adopted_id(nul))).frontmatter["k"] == "ab"
+    assert (await store.get_note(adopted_id(tagged))).title == "Odd"
 
     second = await reconcile_once(store, full=True)
 
     assert second["adopted"] == 0
-    assert second["unwritable"] == counts["unwritable"]
+    assert second["unwritable"] == 0
+
+
+async def test_a_refusal_heavy_sweep_keeps_letting_other_work_run(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """Every refusal returns before its first await, so the loop must yield itself.
+
+    A first pass over a tree the schema mostly refuses sweeps it end to end, and
+    without a turn for the event loop nothing else in the store is served for
+    the length of that sweep.
+    """
+    root = store.notes_root / "Review"
+    root.mkdir(parents=True, exist_ok=True)
+    for index in range(5):
+        (root / f"Refused {index}.md").write_bytes(b"---\ntype: therapy-session\n---\n")
+    ticks = 0
+    running = True
+
+    async def other_work() -> None:
+        nonlocal ticks
+        while running:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    read_schema = 0
+    real_schema = store.control.schema
+
+    def counted_schema():
+        nonlocal read_schema
+        read_schema += 1
+        return real_schema()
+
+    seen: list[int] = []
+    real_adopt = store.adopt_note
+
+    async def note_the_tick(relative, expected_hash, **control):
+        seen.append(ticks)
+        return await real_adopt(relative, expected_hash, **control)
+
+    monkeypatch.setattr(store.control, "schema", counted_schema)
+    monkeypatch.setattr(store, "adopt_note", note_the_tick)
+    ticker = asyncio.create_task(other_work())
+    counts = await reconcile_once(store)
+    running = False
+    await ticker
+
+    assert counts["rejected"] == 5
+    assert len(seen) == 5
+    assert seen[-1] > seen[0]
+    assert read_schema == 1
 
 
 async def test_adoption_retains_nothing_per_path_it_was_offered(store: LocalStore):
@@ -314,9 +397,9 @@ async def test_adoption_never_overwrites_a_device_write(
     unknown.write_text("# Racing sync\n\nFirst piece.\n", encoding="utf-8")
     real_adopt = store.adopt_note
 
-    async def device_writes_first(relative, expected_hash):
+    async def device_writes_first(relative, expected_hash, **control):
         unknown.write_text("# Racing sync\n\nFirst piece.\nSecond piece.\n", encoding="utf-8")
-        return await real_adopt(relative, expected_hash)
+        return await real_adopt(relative, expected_hash, **control)
 
     monkeypatch.setattr(store, "adopt_note", device_writes_first)
     counts = await reconcile_once(store)
@@ -369,7 +452,9 @@ async def test_a_refusal_names_what_actually_happened(store: LocalStore):
     async def refusal(name: str, data: bytes) -> str:
         path = root / name
         path.write_bytes(data)
-        outcome, cause = await store.adopt_note(f"Review/{name}", content_hash(data))
+        outcome, cause = await store.adopt_note(
+            f"Review/{name}", content_hash(data), **_control(store)
+        )
         assert outcome == "invalid"
         return cause
 
@@ -391,7 +476,9 @@ async def test_a_refusal_never_carries_the_person_s_own_value(store: LocalStore)
     data = b"---\ntype: therapy-session\naccount: Ameren\n---\n# Thursday\n"
     private.write_bytes(data)
 
-    outcome, cause = await store.adopt_note("Personal/Journal.md", content_hash(data))
+    outcome, cause = await store.adopt_note(
+        "Personal/Journal.md", content_hash(data), **_control(store)
+    )
 
     assert outcome == "invalid"
     assert "therapy-session" not in cause
@@ -412,7 +499,10 @@ async def test_the_schema_refuses_a_candidate_without_asking_for_a_connection(
         raise AssertionError("adoption asked for a connection before judging the file")
 
     monkeypatch.setattr(store, "session_factory", no_database)
-    outcome, cause = await store.adopt_note("Review/Out of vocabulary.md", content_hash(data))
+    control = _control(store)
+    outcome, cause = await store.adopt_note(
+        "Review/Out of vocabulary.md", content_hash(data), **control
+    )
 
     assert outcome == "invalid"
     assert cause == "keys the schema refused: type"
@@ -495,10 +585,10 @@ async def test_one_failed_adoption_does_not_stop_the_others_converging(
     (root / "Healthy.md").write_bytes(b"# Healthy\n")
     real_adopt = store.adopt_note
 
-    async def one_path_is_unwritable(relative, expected_hash):
+    async def one_path_is_unwritable(relative, expected_hash, **control):
         if relative == "Review/Read only.md":
             raise NotesFilesystemUnavailable("read-only file system")
-        return await real_adopt(relative, expected_hash)
+        return await real_adopt(relative, expected_hash, **control)
 
     monkeypatch.setattr(store, "adopt_note", one_path_is_unwritable)
     counts = await reconcile_once(store)
@@ -532,10 +622,10 @@ async def test_an_unwritable_subtree_never_starves_the_rest_of_the_tree(
         (healthy / f"Healthy {index}.md").write_bytes(f"# Healthy {index}\n".encode())
     real_adopt = store.adopt_note
 
-    async def one_subtree_is_unwritable(relative, expected_hash):
+    async def one_subtree_is_unwritable(relative, expected_hash, **control):
         if relative.startswith("Locked/"):
             raise NotesFilesystemUnavailable("read-only file system")
-        return await real_adopt(relative, expected_hash)
+        return await real_adopt(relative, expected_hash, **control)
 
     monkeypatch.setattr(store, "adopt_note", one_subtree_is_unwritable)
     counts = await reconcile_once(store)
@@ -564,7 +654,7 @@ async def test_an_unwritable_file_is_retried_by_the_thorough_scan_not_every_pass
     attempts: list[str] = []
     real_adopt = store.adopt_note
 
-    async def always_unwritable(relative, expected_hash):
+    async def always_unwritable(relative, expected_hash, **control):
         attempts.append(relative)
         raise NotesFilesystemUnavailable("read-only file system")
 
