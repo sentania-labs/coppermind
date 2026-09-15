@@ -14,6 +14,14 @@ For what specifically works today, see [STATUS.md](../STATUS.md). For what is
 merged, next, and deliberately deferred, see [roadmap.md](roadmap.md). This
 file does not repeat either; it is the durable design underneath both.
 
+This is the overview. The detail a person would need to build or operate
+Coppermind without the original plan is split out by subject, the plan's own
+section seams: every route and scope in [api.md](api.md), the frontmatter
+schema and every setting with its default in
+[data-and-settings.md](data-and-settings.md), and the slice-by-slice delivery
+breakdown, the named tests each slice is proven by, and the backup and
+recovery procedure in [delivery-plan.md](delivery-plan.md).
+
 ## What Coppermind is
 
 A filesystem-first personal knowledge system. Notes are plain Markdown files
@@ -194,6 +202,12 @@ unchanged here would misstate what the code actually does.
   not a reversal of the decision to use a new vault, but it means the
   phone half of milestone 1 is not there yet even though the plan's PR
   breakdown expected it in the first slice.
+- **The `journal:read` and `journal:write` scopes exist but do nothing yet.**
+  The plan lists them as real, enforced scopes alongside `notes:read` and
+  `notes:write`. Today they are defined in the scope vocabulary and nothing
+  checks them: a key holding only `notes:write` can write a note of type
+  `journal`. A key holder should not assume the finer-grained journal
+  permission is actually a boundary yet.
 
 Everything else in this document (the component boundaries, the storage
 layout, the contract shapes, the deferred list) still matches what was
