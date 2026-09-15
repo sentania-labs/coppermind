@@ -235,7 +235,7 @@ class LocalStore:
 
         relative, path = await self._locate(note_id)
         async with self._lock_for(note_id):
-            _, current = _bytes_at(note_id, relative, path, schema, if_match)
+            _, current, _ = _bytes_at(note_id, relative, path, schema, if_match)
             frontmatter = _keeping_types(sent, current)
             data = fm.compose(frontmatter, body).encode("utf-8")
             sources = frontmatter.get(schema.role("sources_key"), [])
@@ -301,7 +301,9 @@ class LocalStore:
 
         relative, path = await self._locate(note_id)
         async with self._lock_for(note_id):
-            current_data, current_frontmatter = _bytes_at(note_id, relative, path, schema, if_match)
+            current_data, current_frontmatter, current_mtime = _bytes_at(
+                note_id, relative, path, schema, if_match
+            )
             data = fm.patch(current_data.decode("utf-8"), changes, unset=request.unset).encode(
                 "utf-8"
             )
@@ -314,12 +316,11 @@ class LocalStore:
             if problems:
                 raise ValidationFailed(problems)
 
-            if data == current_data:
-                return await self.get_note(note_id)
-
             sources = frontmatter.get(schema.role("sources_key"), [])
             now = datetime.now(tz=UTC)
             digest = content_hash(data)
+            writes_file = data != current_data
+            file_mtime = now if writes_file else datetime.fromtimestamp(current_mtime, tz=UTC)
             try:
                 async with transaction(self.session_factory) as session:
                     await session.execute(
@@ -329,7 +330,7 @@ class LocalStore:
                             title=_title_of(body, path),
                             content_hash=digest,
                             size_bytes=len(data),
-                            mtime=now,
+                            mtime=file_mtime,
                             frontmatter=_jsonable(frontmatter),
                             **_mirror_columns(frontmatter, schema),
                             state="ok",
@@ -337,7 +338,8 @@ class LocalStore:
                             updated_at=now,
                         )
                     )
-                    _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
+                    if writes_file:
+                        _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
             except BaseException as exc:
                 typed = _metadata_failure(exc)
                 if typed is None:
@@ -352,7 +354,7 @@ class LocalStore:
             body=body,
             content_hash=digest,
             size_bytes=len(data),
-            updated_at=now,
+            updated_at=file_mtime,
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
 
@@ -466,8 +468,8 @@ def _replace_if_unchanged(
 
 def _bytes_at(
     note_id: NoteId, relative: str, path: Path, schema: FrontmatterSchema, if_match: ETag
-) -> tuple[bytes, dict[str, Any]]:
-    """The bytes and frontmatter of a located note whose file still hashes to `if_match`.
+) -> tuple[bytes, dict[str, Any], float]:
+    """The bytes, frontmatter and mtime of a note at `if_match`.
 
     The identity check comes before the compare, so a row whose file is now
     another note is a miss whatever ETag was sent, not a conflict naming the
@@ -475,12 +477,12 @@ def _bytes_at(
     caller, so nothing but that check and the compare sits inside the window
     `_replace_if_unchanged` holds open before the rename.
     """
-    current, _ = _read(note_id, path)
+    current, mtime = _read(note_id, path)
     frontmatter, _ = _parse(note_id, relative, current, schema)
     current_hash = content_hash(current)
     if current_hash != if_match:
         raise VersionConflict(current_hash)
-    return current, frontmatter
+    return current, frontmatter, mtime
 
 
 def _read(note_id: NoteId, path: Path) -> tuple[bytes, float]:
@@ -611,9 +613,14 @@ def _patch_problems(request: PatchFrontmatter, schema: FrontmatterSchema) -> lis
     written.
     """
     id_key = schema.role("id_key")
+    sources_key = schema.role("sources_key")
     required = {definition.name for definition in schema.keys if definition.required}
     unset = set(request.unset)
     problems = [f"{key}: named in both set and unset" for key in request.set if key in unset]
+    if sources_key in request.set or sources_key in unset:
+        problems.append(
+            f"{sources_key}: source associations are managed by ingest and cannot be patched"
+        )
     for key in request.unset:
         if key == id_key:
             problems.append(f"{key}: the identifier of a note cannot be removed")

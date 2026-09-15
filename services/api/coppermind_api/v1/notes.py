@@ -97,7 +97,7 @@ async def patch_frontmatter(
     payload: PatchFrontmatter,
     if_match: Annotated[str | None, Header()] = None,
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("notes:write")),
+    _: Principal = Depends(require_scopes("notes:read", "notes:write")),
 ) -> Response:
     """Change named frontmatter fields without replacing the note.
 

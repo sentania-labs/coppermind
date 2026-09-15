@@ -749,6 +749,79 @@ async def test_a_patch_that_changes_nothing_leaves_the_file_alone(store: LocalSt
     assert patched.content_hash == created.content_hash
 
 
+async def test_a_no_op_patch_repairs_a_stale_mirror(store: LocalStore, session_factory):
+    """A retry repairs a row left behind when the earlier file write committed first."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    current_data = path.read_bytes().replace(b"reviewed: false", b"reviewed: true")
+    path.write_bytes(current_data)
+    stat_before = path.stat()
+
+    patched = await store.patch_frontmatter(
+        created.id,
+        PatchFrontmatter(set={"reviewed": True}),
+        content_hash(current_data),
+    )
+
+    assert path.read_bytes() == current_data
+    assert path.stat().st_mtime_ns == stat_before.st_mtime_ns
+    assert patched.content_hash == content_hash(current_data)
+    async with session_factory() as session:
+        row = (await session.execute(sa.select(Note).where(Note.id == created.id))).scalar_one()
+    assert row.reviewed is True
+    assert row.frontmatter["reviewed"] is True
+    assert row.content_hash == content_hash(current_data)
+
+
+async def test_a_no_op_patch_answers_from_the_verified_snapshot(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """A device write after verification cannot replace the response with newer contents."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+    on_device = before.replace(b"# Runbook", b"# Device edit")
+    execute = AsyncSession.execute
+
+    async def device_write_during_mirror_update(self, statement, *args, **kwargs):
+        result = await execute(self, statement, *args, **kwargs)
+        if isinstance(statement, sa.Update):
+            path.write_bytes(on_device)
+        return result
+
+    monkeypatch.setattr(AsyncSession, "execute", device_write_during_mirror_update)
+    patched = await store.patch_frontmatter(
+        created.id,
+        PatchFrontmatter(set={"reviewed": False}),
+        created.content_hash,
+    )
+
+    assert patched.body == created.body
+    assert patched.title == created.title
+    assert patched.content_hash == created.content_hash
+    assert path.read_bytes() == on_device
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [PatchFrontmatter(set={"sources": []}), PatchFrontmatter(unset=["sources"])],
+)
+async def test_patching_source_associations_is_refused_and_changes_nothing(
+    store: LocalStore, patch: PatchFrontmatter
+):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationFailed) as raised:
+        await store.patch_frontmatter(created.id, patch, created.content_hash)
+
+    assert raised.value.errors[0] == (
+        "sources: source associations are managed by ingest and cannot be patched"
+    )
+    assert path.read_bytes() == before
+
+
 async def test_unsetting_a_required_field_is_refused_and_changes_nothing(store: LocalStore):
     created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
     path = store.notes_root / created.path

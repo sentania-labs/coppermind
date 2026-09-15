@@ -26,8 +26,9 @@ vertical path proved end to end, then widened.
   full-scope key while the first stays usable.
 - Every `/v1` route requires `Bearer cm_<key_id>_<secret>`. A missing or bad
   key answers 401 and a key without the route's scope answers 403. Note reads
-  need `notes:read`; creates, replacements and frontmatter patches need
-  `notes:write`; ingest needs both `sources:write` and `notes:write`, so a key
+  need `notes:read`; creates and replacements need `notes:write`; frontmatter
+  patches need both `notes:read` and `notes:write`; ingest needs both
+  `sources:write` and `notes:write`, so a key
   holding one of the two answers 403. Successful verification and key hashes
   are cached for five minutes, so a key created after a load is picked up at
   the next cache expiry rather than at once.
@@ -142,7 +143,8 @@ vertical path proved end to end, then widened.
   A patch whose result is byte identical to the file writes nothing and moves
   no mtime, so marking an already reviewed note reviewed is free. The
   identifier cannot be set or removed, a key the schema requires cannot be
-  removed, and a key named in both `set` and `unset` is refused: each answers
+  removed, the source-association field is owned by ingest and cannot be
+  patched, and a key named in both `set` and `unset` is refused: each answers
   422 `validation_error` and leaves the file alone, as does frontmatter the
   schema rejects. Without `If-Match` the answer is 428
   `precondition_required`; with an ETag the file no longer hashes to, 409

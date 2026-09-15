@@ -69,6 +69,13 @@ READ_KEY_RECORD, READ_KEY = create_key(
     secret="unit-test-read-only-secret",
     created_at=datetime(2026, 9, 8, tzinfo=UTC),
 )
+WRITE_KEY_RECORD, WRITE_KEY = create_key(
+    "write only",
+    ["notes:write"],
+    key_id="c1d2e3f4a5b6c7d8",
+    secret="unit-test-write-only-secret",
+    created_at=datetime(2026, 9, 8, tzinfo=UTC),
+)
 
 
 class FakeStore:
@@ -80,7 +87,7 @@ class FakeStore:
         self.replaced: tuple[str, ReplaceNote, str] | None = None
         self.patched: tuple[str, PatchFrontmatter, str] | None = None
         self.key_reads = 0
-        self.key_records = [KEY_RECORD, READ_KEY_RECORD]
+        self.key_records = [KEY_RECORD, READ_KEY_RECORD, WRITE_KEY_RECORD]
 
     async def create_note(self, request: CreateNote) -> NoteDocument:
         if self.error:
@@ -649,6 +656,22 @@ def test_a_frontmatter_patch_needs_an_if_match_header(client):
     )
     assert response.status_code == 428
     assert response.json()["error"] == "precondition_required"
+    assert fake.patched is None
+
+
+@pytest.mark.parametrize("if_match", ['"sha256:wrong"', '"sha256:abc"'])
+def test_a_write_only_key_cannot_read_through_a_frontmatter_patch(client, if_match):
+    test_client, fake = client
+    response = test_client.patch(
+        f"/v1/notes/{NOTE.id}/frontmatter",
+        json={},
+        headers={"Authorization": f"Bearer {WRITE_KEY}", "If-Match": if_match},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "forbidden"
+    assert NOTE.body not in response.text
+    assert "current_version" not in response.json()
     assert fake.patched is None
 
 
