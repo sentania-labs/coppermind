@@ -121,7 +121,10 @@ async def get_source_projection(store: LocalStore, source_id: str) -> SourceProj
         if not manifest.projection_path:
             raise FileNotFoundError(source_id)
         path = resolve(store.notes_root, manifest.projection_path)
-        if not _projection_is_current(path, source_id, manifest.current_revision):
+        if (
+            _projection_revision(store.notes_root, manifest.projection_path, source_id)
+            != manifest.current_revision
+        ):
             raise FileNotFoundError(path)
         content = path.read_text(encoding="utf-8")
     except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError) as exc:
@@ -413,13 +416,10 @@ async def _ingest_existing(
     if replaying:
         recorded_path = manifest.get("projection_path")
         projection_path = recorded_path if isinstance(recorded_path, str) and recorded_path else ""
-        try:
-            projection = resolve(store.notes_root, projection_path) if projection_path else None
-        except ValueError:
-            projection, projection_path = None, ""
-        if projection is None or not _projection_is_current(
-            projection, source_id, current_revision
-        ):
+        held_revision = _projection_revision(store.notes_root, projection_path, source_id)
+        if held_revision is None:
+            projection_path = ""
+        if held_revision != current_revision:
             note = await session.get(Note, note_id)
             if note is None:
                 raise StoreError("the linked note mirror is incomplete") from None
@@ -473,7 +473,8 @@ async def _ingest_existing(
         recorded_path = manifest.get("projection_path")
         projection_path = (
             str(recorded_path)
-            if isinstance(recorded_path, str) and recorded_path
+            if isinstance(recorded_path, str)
+            and _projection_revision(store.notes_root, recorded_path, source_id) is not None
             else new_projection_path(
                 store.notes_root,
                 settings,
@@ -845,16 +846,24 @@ def _read_revision_artifacts(
         ) from exc
 
 
-def _projection_is_current(path: Path, source_id: str, revision: int) -> bool:
+def _projection_revision(notes_root: Path, relative: str, source_id: str) -> int | None:
+    """The revision the file at this path projects for this source.
+
+    None means the path holds something else: a projection of another source,
+    one of the captain's own notes that has come to occupy it, or nothing at
+    all. Generated output is only ever replaced where it is found, so a path
+    that does not answer for this source is never written over.
+    """
+    if not relative:
+        return None
     try:
-        frontmatter, _ = fm.parse(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, fm.FrontmatterError):
-        return False
-    return (
-        frontmatter.get("managed") is True
-        and frontmatter.get("source_id") == source_id
-        and frontmatter.get("source_revision") == revision
-    )
+        frontmatter, _ = fm.parse(resolve(notes_root, relative).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, fm.FrontmatterError):
+        return None
+    if frontmatter.get("managed") is not True or frontmatter.get("source_id") != source_id:
+        return None
+    revision = frontmatter.get("source_revision")
+    return revision if isinstance(revision, int) else None
 
 
 def _projection_artifacts(

@@ -378,6 +378,32 @@ async def test_a_text_typed_artifact_that_is_not_utf8_is_described_not_refused(
     assert "Binary artifact: text/plain, 5 bytes" in projection.content
 
 
+async def test_a_new_revision_never_writes_over_another_source_projection(store: LocalStore):
+    """A recorded path is only reused while it still holds this source's output.
+
+    Projections live in the captain's vault, so a path can be freed and taken
+    by another source. Replacing whatever sits there would delete a file the
+    manifest of a different source still points at, with nothing reporting it.
+    """
+    first = await store.ingest(sample("rec_first"))
+    (store.notes_root / first.projection_path).unlink()
+    other = await store.ingest(sample("rec_other"))
+    assert other.projection_path == first.projection_path
+
+    changed = sample("rec_first")
+    changed.source.artifacts[0].content = "Scott: corrected source content"
+    second = await store.ingest(changed)
+
+    assert second.source.revision == 2
+    assert second.projection_path != first.projection_path
+    kept = await store.get_source_projection(other.source.id)
+    assert kept.path == other.projection_path
+    assert "Scott: Let's start with the architecture review..." in kept.content
+    regenerated = await store.get_source_projection(second.source.id)
+    assert regenerated.path == second.projection_path
+    assert "Scott: corrected source content" in regenerated.content
+
+
 async def test_an_unrecorded_projection_path_is_not_found_rather_than_searched_for(
     store: LocalStore,
 ):

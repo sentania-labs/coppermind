@@ -968,6 +968,65 @@ async def test_a_note_filed_into_the_sources_folder_is_moved_not_reported_delete
     assert (await _row(store, note.id)).state == "ok"
 
 
+async def test_a_note_recorded_missing_comes_back_when_it_reappears_beside_a_source(
+    store: LocalStore,
+):
+    """Missing is a report of what was observed, never a verdict a row keeps.
+
+    The sources folder is walked like any other, so a note that reappears there
+    is found on the next ordinary pass rather than waiting for a full rehash.
+    """
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    original = store.notes_root / note.path
+    data = original.read_bytes()
+    original.unlink()
+    assert (await reconcile_once(store))["missing"] == 1
+    assert (await _row(store, note.id)).state == "missing"
+
+    filed = store.notes_root / "_Sources" / "Plaud" / "Runbook.md"
+    filed.parent.mkdir(parents=True)
+    filed.write_bytes(data)
+
+    counts = await reconcile_once(store)
+
+    assert counts["moved"] == 1
+    assert counts["missing"] == 0
+    row = await _row(store, note.id)
+    assert row.state == "ok"
+    assert row.path == "_Sources/Plaud/Runbook.md"
+    assert (await store.get_note(note.id)).path == row.path
+
+
+async def test_a_note_filed_into_the_sources_folder_still_mirrors_its_edits(store: LocalStore):
+    """Skipping generated output must not freeze the notes filed beside it.
+
+    A row that claims a path in the sources folder is one of the captain's own
+    notes, so his next edit on a device has to reach listing and search like
+    any other, not be trusted forever at a stat the pass never took.
+    """
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    filed = store.notes_root / "_Sources" / "Plaud" / "Runbook.md"
+    filed.parent.mkdir(parents=True)
+    (store.notes_root / note.path).rename(filed)
+    await reconcile_once(store)
+    filed.write_bytes(
+        filed.read_bytes()
+        .replace(b"type: reference", b"type: runbook")
+        .replace(b"# Runbook", b"# Current Runbook")
+    )
+
+    counts = await reconcile_once(store)
+
+    assert counts["changed"] == 1
+    assert counts["missing"] == 0
+    fetched = await store.get_note(note.id)
+    assert fetched.title == "Current Runbook"
+    row = await _row(store, note.id)
+    assert row.title == "Current Runbook"
+    assert row.type == "runbook"
+    assert row.content_hash == fetched.content_hash
+
+
 async def test_a_note_in_a_newly_configured_sources_folder_is_not_reported_deleted(
     store: LocalStore,
 ):
