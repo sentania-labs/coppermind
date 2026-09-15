@@ -11,7 +11,11 @@ from coppermind import frontmatter as fm
 from coppermind.atomicio import commit_staged, create_exclusive_bytes, stage_bytes
 from coppermind.naming import note_stem, sanitize_folder, sanitize_stem, unique_stem
 from coppermind.settings import ProductSettings
-from coppermind.store_protocol import NotesFilesystemUnavailable, PathCollision, artifact_text
+from coppermind.store_protocol import (
+    NotesFilesystemUnavailable,
+    ProjectionNotPlaced,
+    artifact_text,
+)
 from coppermind_store.fs import NOTE_SUFFIX, existing_stems, resolve
 
 
@@ -24,7 +28,7 @@ def write_projection(
     provider: str,
     title: str,
     note_date: date,
-    generated_at: datetime,
+    revision_ingested_at: datetime,
     artifacts: list[tuple[dict[str, Any], bytes]],
     relative_path: str | None = None,
 ) -> tuple[str, bool]:
@@ -45,11 +49,11 @@ def write_projection(
             source_id,
             revision,
             title,
-            generated_at.astimezone(ZoneInfo(settings.general.timezone)),
+            revision_ingested_at.astimezone(ZoneInfo(settings.general.timezone)),
             artifacts,
         )
         if target.exists():
-            _replace_projection(notes_root, target, data, source_id)
+            _replace_projection(notes_root, target, data, source_id, revision)
             created = False
         else:
             create_exclusive_bytes(target, data)
@@ -61,7 +65,9 @@ def write_projection(
         raise NotesFilesystemUnavailable(str(exc)) from exc
 
 
-def _replace_projection(notes_root: Path, target: Path, data: bytes, source_id: str) -> None:
+def _replace_projection(
+    notes_root: Path, target: Path, data: bytes, source_id: str, revision: int
+) -> None:
     """Rename `data` over generated output only while it is still this source's.
 
     The new bytes are staged and made durable first, so what stands between the
@@ -73,7 +79,7 @@ def _replace_projection(notes_root: Path, target: Path, data: bytes, source_id: 
     try:
         relative = target.relative_to(notes_root).as_posix()
         if projection_revision(notes_root, relative, source_id) is None:
-            raise PathCollision(relative)
+            raise ProjectionNotPlaced(source_id, revision, relative)
         commit_staged(staged, target)
     except BaseException:
         staged.unlink(missing_ok=True)
@@ -141,7 +147,7 @@ def _document(
     source_id: str,
     revision: int,
     title: str,
-    generated_at: datetime,
+    revision_ingested_at: datetime,
     artifacts: list[tuple[dict[str, Any], bytes]],
 ) -> bytes:
     lines = [f"# {title} (source)", "", "## Artifacts", ""]
@@ -151,7 +157,7 @@ def _document(
         "managed": True,
         "source_id": source_id,
         "source_revision": revision,
-        "generated_at": generated_at.isoformat(),
+        "revision_ingested_at": revision_ingested_at.isoformat(),
     }
     return fm.compose(frontmatter, "\n".join(lines).rstrip() + "\n").encode("utf-8")
 

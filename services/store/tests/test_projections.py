@@ -15,7 +15,7 @@ from coppermind_store.projections import write_projection
 
 from coppermind import frontmatter as fm
 from coppermind.settings import default_settings
-from coppermind.store_protocol import PathCollision
+from coppermind.store_protocol import ProjectionNotPlaced
 
 SOURCE_ID = "01K4Q8Z2A0P1Q2R3S4T5U6V7W8"
 OTHER_SOURCE_ID = "01K4Q8Z2A0P1Q2R3S4T5U6V7W9"
@@ -47,7 +47,7 @@ def write(
         provider="plaud",
         title="Ameren Architecture Sync",
         note_date=date(2026, 9, 8),
-        generated_at=datetime(2026, 9, 8, 19, 2, 11, tzinfo=UTC),
+        revision_ingested_at=datetime(2026, 9, 8, 19, 2, 11, tzinfo=UTC),
         artifacts=[(artifact, text.encode("utf-8"))],
         relative_path=relative_path,
     )
@@ -73,10 +73,13 @@ def test_a_file_this_source_did_not_generate_is_never_written_over(tmp_path: Pat
     target = tmp_path / relative
     target.write_text(occupant, encoding="utf-8")
 
-    with pytest.raises(PathCollision):
+    with pytest.raises(ProjectionNotPlaced) as refused:
         write(tmp_path, revision=2, text="second", relative_path=relative)
 
     assert target.read_text(encoding="utf-8") == occupant
+    assert refused.value.source_id == SOURCE_ID
+    assert refused.value.revision == 2
+    assert refused.value.path == relative
 
 
 def test_a_file_delivered_while_the_bytes_are_staged_is_not_written_over(
@@ -99,7 +102,7 @@ def test_a_file_delivered_while_the_bytes_are_staged_is_not_written_over(
 
     monkeypatch.setattr(projections_module, "stage_bytes", stage_then_sync_delivers)
 
-    with pytest.raises(PathCollision):
+    with pytest.raises(ProjectionNotPlaced):
         write(tmp_path, revision=2, text="second", relative_path=relative)
 
     assert target.read_text(encoding="utf-8") == MINE

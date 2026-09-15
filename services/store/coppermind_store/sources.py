@@ -18,7 +18,7 @@ import asyncio
 import hashlib
 import json
 import shutil
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -57,6 +57,7 @@ from coppermind.store_protocol import (
 )
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
 from coppermind_store.notes import (
+    _as_date,
     _body_with_heading,
     _build_frontmatter,
     _jsonable,
@@ -306,8 +307,8 @@ async def _ingest_new(
             revision=1,
             provider=request.source.provider,
             title=note_request.title,
-            note_date=_note_date(frontmatter, schema, now.date()),
-            generated_at=now,
+            note_date=_as_date(frontmatter.get(schema.role("date_key"))) or now.date(),
+            revision_ingested_at=now,
             artifacts=_projection_artifacts(artifacts, artifact_metadata),
         )
         create_exclusive_bytes(
@@ -418,7 +419,7 @@ async def _ingest_existing(
                 provider=str(manifest["provider"]),
                 title=note.title,
                 note_date=note.date or datetime.now(tz=UTC).date(),
-                generated_at=_manifest_time(current.get("ingested_at"), "ingested_at"),
+                revision_ingested_at=_manifest_time(current.get("ingested_at"), "ingested_at"),
                 artifacts=await asyncio.to_thread(
                     _read_revision_artifacts, source_path, current_revision, current_artifacts
                 ),
@@ -496,7 +497,7 @@ async def _ingest_existing(
             provider=str(manifest["provider"]),
             title=note.title,
             note_date=note.date or now.date(),
-            generated_at=now,
+            revision_ingested_at=now,
             artifacts=_projection_artifacts(artifacts, artifact_metadata),
             relative_path=projection_path,
         )
@@ -857,11 +858,6 @@ def _projection_artifacts(
     artifacts: list[tuple[IngestArtifact, bytes]], metadata: list[dict[str, Any]]
 ) -> list[tuple[dict[str, Any], bytes]]:
     return [(description, data) for (_, data), description in zip(artifacts, metadata, strict=True)]
-
-
-def _note_date(frontmatter: dict[str, Any], schema: FrontmatterSchema, fallback: date) -> date:
-    value = frontmatter.get(schema.role("date_key"))
-    return value if isinstance(value, date) and not isinstance(value, datetime) else fallback
 
 
 def _manifest_time(value: Any, field: str) -> datetime:

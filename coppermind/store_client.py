@@ -34,6 +34,7 @@ from coppermind.store_protocol import (
     PathCollision,
     PayloadTooLarge,
     PreconditionRequired,
+    ProjectionNotPlaced,
     ReplaceNote,
     SourceArtifactDocument,
     SourceClaimMissing,
@@ -191,6 +192,10 @@ def _as_typed_error(response: httpx.Response) -> Exception:
     if code == "source_claim_missing":
         return SourceClaimMissing(
             payload.get("provider", ""), payload.get("external_source_id", "")
+        )
+    if code == "projection_not_placed":
+        return ProjectionNotPlaced(
+            payload.get("source_id", ""), payload.get("revision", 0), payload.get("path", message)
         )
     if code == "incomplete_revision":
         return IncompleteRevision(payload.get("path", message))

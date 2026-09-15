@@ -249,7 +249,9 @@ vertical path proved end to end, then widened.
 - Ingesting a source writes one generated Markdown projection under the
   configured sources folder, by default
   `_Sources/<Provider>/<YYYY-MM-DD Title>.md`. Its frontmatter marks it
-  managed and records the source identity, revision and generation time. Text
+  managed and records the source identity, the revision and that revision's
+  ingest time in `revision_ingested_at`, so rebuilding a projection from the
+  same revision produces the same document rather than a new timestamp. Text
   artifacts are readable in the document; an artifact that is not text, or
   whose bytes do not decode as UTF-8 whatever its declared type, is listed with
   its MIME type, size and SHA-256, in the order the manifest records them. A
@@ -258,6 +260,12 @@ vertical path proved end to end, then widened.
   preserved. The manifest's `projection_path` is the only record of where a
   projection lives: it is written in the same manifest write that lands the
   revision, and a source whose manifest does not name one has no projection.
+  Generated output never writes over a file this store did not generate, so if
+  a device delivers one of the captain's own notes onto the recorded path while
+  a revision is landing, the ingest answers 409 `projection_not_placed`: the
+  revision is stored, its readable page is not, and ingesting the same source
+  again places the page at a free name and rebuilds the mirror rows the refused
+  attempt rolled back.
   Generation happens on ingest or on a new revision only: nothing backfills, so
   a source ingested before this landed has no projection until it is ingested
   again. An ingest answers with the path its projection occupies, and that is

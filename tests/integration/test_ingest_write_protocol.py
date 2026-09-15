@@ -13,6 +13,7 @@ from datetime import datetime
 import coppermind_store.sources as sources_module
 import pytest
 import sqlalchemy as sa
+from coppermind_store import projections as projections_module
 from coppermind_store.notes import LocalStore
 
 from coppermind import frontmatter as fm
@@ -26,6 +27,7 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     PathCollision,
     PayloadTooLarge,
+    ProjectionNotPlaced,
     SourceClaimMissing,
     SourceNotFound,
     SourcesFilesystemUnavailable,
@@ -460,6 +462,73 @@ async def test_a_notes_fault_during_a_new_revision_leaves_nothing_to_clean_up_by
     retried = await store.ingest(changed)
     assert retried.source.revision == 2
     assert retried.source.created is True
+
+
+async def test_the_note_and_its_projection_take_their_date_from_one_rule(store: LocalStore):
+    """The Review note and the projection are one recording under one day.
+
+    The date key's kind is operator-configurable control state, and a schema
+    that does not call it a date leaves the value the text the client sent. A
+    second, narrower reading of that value would file the two files under
+    different days and name the same recording twice.
+    """
+    schema = store.control.store.read("schema")
+    body = dict(schema.body)
+    body["keys"] = [
+        {**key, "kind": "string"} if key["name"] == "date" else key for key in body["keys"]
+    ]
+    store.control.store.write("schema", body, if_revision=schema.revision)
+
+    ingested = await store.ingest(sample())
+
+    assert ingested.note.path == "Review/2026-09-08 Ameren Architecture Sync.md"
+    assert ingested.projection_path == "_Sources/Plaud/2026-09-08 Ameren Architecture Sync.md"
+
+
+async def test_a_file_delivered_onto_the_recorded_path_refuses_the_page_not_the_revision(
+    store: LocalStore, session_factory, monkeypatch: pytest.MonkeyPatch
+):
+    """A revision that landed is not reported as a request that was rejected.
+
+    Generated output never writes over one of the captain's own notes, so a
+    file delivered onto the recorded path while the revision is landing refuses
+    the page rather than the bytes. Ingesting the source again places the page
+    at a free name and rebuilds the mirror rows the refusal rolled back.
+    """
+    first = await store.ingest(sample())
+    target = store.notes_root / first.projection_path
+    mine = "---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# Mine now\n"
+    real_stage = projections_module.stage_bytes
+
+    def stage_then_sync_delivers(path, data, **kwargs):
+        staged = real_stage(path, data, **kwargs)
+        path.write_text(mine, encoding="utf-8")
+        return staged
+
+    monkeypatch.setattr(projections_module, "stage_bytes", stage_then_sync_delivers)
+    changed = sample()
+    changed.source.artifacts[0].content = "Scott: corrected source content"
+
+    with pytest.raises(ProjectionNotPlaced) as refused:
+        await store.ingest(changed)
+
+    assert refused.value.revision == 2
+    assert refused.value.path == first.projection_path
+    assert target.read_text(encoding="utf-8") == mine
+    manifest_path = store.sources_root / first.source.id / "manifest.json"
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["current_revision"] == 2
+    async with session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(SourceRevision)) == 1
+
+    monkeypatch.undo()
+    retried = await store.ingest(changed)
+
+    assert retried.source.revision == 2
+    assert retried.projection_path != first.projection_path
+    assert target.read_text(encoding="utf-8") == mine
+    assert "Scott: corrected source content" in projection_text(store, retried.projection_path)
+    async with session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(SourceRevision)) == 2
 
 
 async def test_a_sources_fault_recording_a_repaired_projection_reports_it_and_leaves_no_copy(

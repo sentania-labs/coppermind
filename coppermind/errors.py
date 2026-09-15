@@ -24,6 +24,7 @@ from coppermind.store_protocol import (
     PathCollision,
     PayloadTooLarge,
     PreconditionRequired,
+    ProjectionNotPlaced,
     SourceClaimMissing,
     SourceNotFound,
     SourcesFilesystemUnavailable,
@@ -100,6 +101,14 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
             str(error),
             provider=error.provider,
             external_source_id=error.external_source_id,
+        )
+    if isinstance(error, ProjectionNotPlaced):
+        return 409, envelope(
+            "projection_not_placed",
+            str(error),
+            source_id=error.source_id,
+            revision=error.revision,
+            path=error.path,
         )
     if isinstance(error, IncompleteRevision):
         return 409, envelope("incomplete_revision", str(error), path=error.path)
