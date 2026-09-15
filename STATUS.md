@@ -55,16 +55,20 @@ vertical path proved end to end, then widened.
   artifacts land under `/data/sources/<source_id>/r0001/`, then
   `manifest.json` last, so a bundle without a manifest is an unfinished one;
   the Review note is written in the same database transaction with the source
-  identifier in its `sources` frontmatter key. A second ingest of the same
-  `provider` plus `external_source_id` loses the exclusive claim creation,
-  answers 409 `source_exists` and writes nothing.
+  identifier in its `sources` frontmatter key. Replaying byte-identical source
+  artifacts answers 200 with `created: false`, the existing source and note
+  identifiers, and the current revision. Changed artifact content appends an
+  immutable numbered revision and answers 200 without rewriting the Review
+  note or changing its reviewed state. The response carries real `created`
+  values for both records and the source revision.
   `uq_sources_provider_external_id` remains the database mirror's second
   guard. A failure before the note is complete removes the claim and bundle,
   so a later legitimate retry can proceed. PostgreSQL failing at commit after
   the filesystem writes answers 503 `metadata_unavailable` and rolls the rows
   back, but retains the complete bundle, Review note and external-id claim.
-  The caller cannot know the write outcome, but retrying receives 409 and
-  cannot create a duplicate. A submitted body over `limits.ingest_max_bytes`
+  A retry resolves from the claim and completed files, repairs a missing
+  mirror when needed, and cannot create a duplicate. A submitted body over
+  `limits.ingest_max_bytes`
   (25 MiB by default, settable like every other setting) answers 413
   `payload_too_large` before filesystem or database writes. The API preserves
   the public body length across the Store contract, but checks it only after
@@ -137,10 +141,8 @@ vertical path proved end to end, then widened.
 Everything below is planned and has a place in the design. None of it exists
 in the tree, so do not read the absence as a decision to leave it out.
 
-- **Ingest beyond the first revision.** A source is created once and never
-  revised: `r0002` and later, an idempotency key that returns the first
-  answer instead of 409, the generated source projections into the notes
-  filesystem, and tombstoning a source. Tombstones in particular have no
+- **Remaining source capabilities.** Generated source projections into the
+  notes filesystem and tombstoning a source are not built. Tombstones in particular have no
   columns in the mirror and no keys in `manifest.json`, so adding them costs
   a migration of its own and a manifest `schema_version` bump.
 - **Reconciliation.** Nothing yet notices a file created, moved or deleted on

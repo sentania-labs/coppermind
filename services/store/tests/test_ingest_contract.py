@@ -13,7 +13,6 @@ from coppermind.store_protocol import (
     IngestRequest,
     IngestResult,
     PayloadTooLarge,
-    SourceAlreadyExists,
     SourcesFilesystemUnavailable,
 )
 
@@ -32,14 +31,15 @@ REQUEST = IngestRequest.model_validate(
     }
 )
 RESULT = IngestResult(
-    source=CreatedSource(id="01K4Q8Z2A0P1Q2R3S4T5U6V7W8"),
-    note=CreatedNote(id="01K4Q8Z3N7V2X9M1B5C6D8E0F2", path="Review/Recording.md"),
+    source=CreatedSource(id="01K4Q8Z2A0P1Q2R3S4T5U6V7W8", revision=1, created=True),
+    note=CreatedNote(id="01K4Q8Z3N7V2X9M1B5C6D8E0F2", path="Review/Recording.md", created=True),
 )
 
 
 class FakeStore:
     def __init__(self) -> None:
         self.error: Exception | None = None
+        self.result = RESULT
         self.request: IngestRequest | None = None
         self.payload_size_bytes: int | None = None
 
@@ -50,15 +50,19 @@ class FakeStore:
             raise self.error
         self.request = request
         self.payload_size_bytes = payload_size_bytes
-        return RESULT
+        return self.result
 
 
-def connected(store: FakeStore) -> HttpStoreClient:
+def app_for(store: FakeStore) -> FastAPI:
     app = FastAPI()
     app.state.auth = InternalAuth(TOKEN)
     app.state.store = store
     app.include_router(router)
-    return HttpStoreClient("http://store", TOKEN, transport=httpx.ASGITransport(app=app))
+    return app
+
+
+def connected(store: FakeStore) -> HttpStoreClient:
+    return HttpStoreClient("http://store", TOKEN, transport=httpx.ASGITransport(app=app_for(store)))
 
 
 async def test_ingest_round_trips_through_the_internal_contract():
@@ -72,10 +76,29 @@ async def test_ingest_round_trips_through_the_internal_contract():
     assert store.payload_size_bytes == 10_000
 
 
+async def test_replay_answers_200_over_the_internal_contract():
+    store = FakeStore()
+    store.result = RESULT.model_copy(
+        update={
+            "source": RESULT.source.model_copy(update={"created": False}),
+            "note": RESULT.note.model_copy(update={"created": False}),
+        }
+    )
+    async with httpx.AsyncClient(
+        base_url="http://store", transport=httpx.ASGITransport(app=app_for(store))
+    ) as client:
+        response = await client.post(
+            "/internal/v1/ingest",
+            json=REQUEST.model_dump(mode="json", exclude_none=True),
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+    assert response.status_code == 200
+    assert response.json()["source"]["created"] is False
+
+
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
-        (SourceAlreadyExists("plaud", "recording-1"), SourceAlreadyExists),
         (PayloadTooLarge(1024), PayloadTooLarge),
         (SourcesFilesystemUnavailable("read only"), SourcesFilesystemUnavailable),
     ],

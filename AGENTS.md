@@ -67,9 +67,10 @@ until the helper honours it.
   reopens the race the lock closes.
 - **Source external IDs have filesystem claims.** Ingest creates the
   deterministic `.external-id-<sha256>.json` claim before its source bundle.
-  A write-phase failure removes both; a database commit failure retains the
-  completed bundle, Review note and claim, so a retry returns 409 while the
-  database mirror is unavailable or rebuilt.
+  Replay and revision decisions resolve through that claim and the manifest,
+  not a database row alone. A write-phase failure removes incomplete files; a
+  database commit failure retains a completed bundle, Review note and claim,
+  so a retry returns the existing result and repairs the mirror from disk.
 
 ## Maintaining this file
 

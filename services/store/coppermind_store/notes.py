@@ -93,6 +93,7 @@ class LocalStore:
         # store is exactly one process, which is what makes an in-process lock
         # a sufficient guard for the compare-and-swap.
         self._locks: dict[str, asyncio.Lock] = {}
+        self._source_locks: dict[str, asyncio.Lock] = {}
 
     async def get_api_keys(self) -> ApiKeySet:
         """Read API key hashes from filesystem-first control state."""
@@ -280,6 +281,13 @@ class LocalStore:
         lock = self._locks.get(note_id)
         if lock is None:
             lock = self._locks[note_id] = asyncio.Lock()
+        return lock
+
+    def _source_lock_for(self, claim_name: str) -> asyncio.Lock:
+        """Serialise replays and revisions for one durable source claim."""
+        lock = self._source_locks.get(claim_name)
+        if lock is None:
+            lock = self._source_locks[claim_name] = asyncio.Lock()
         return lock
 
     async def _locate(self, note_id: NoteId) -> tuple[str, Path]:

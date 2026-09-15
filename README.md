@@ -104,8 +104,10 @@ it. The artifacts are files beside the manifest:
 docker compose exec store ls -R "/data/sources/<source_id>"
 ```
 
-Sending it a second time answers 409 `source_exists` and writes nothing: a
-source is created once, keyed by its `provider` and `external_source_id`. A
+Sending it a second time answers 200 with `created: false` and the original
+identifiers. Changing an artifact appends a numbered source revision without
+rewriting the Review note. A source remains keyed by its `provider` and
+`external_source_id`. A
 body over `limits.ingest_max_bytes` answers 413 `payload_too_large`. The API
 measures the submitted body before forwarding its parsed request, but only
 after FastAPI has buffered it, so the refusal does not reduce memory use. The

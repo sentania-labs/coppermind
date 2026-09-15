@@ -46,17 +46,6 @@ class PathCollision(StoreError):
         self.existing_path = existing_path
 
 
-class SourceAlreadyExists(StoreError):
-    """The provider's external identifier has already been ingested."""
-
-    def __init__(self, provider: str, external_source_id: str) -> None:
-        super().__init__(
-            f"source {provider}/{external_source_id} already exists; the original was not changed"
-        )
-        self.provider = provider
-        self.external_source_id = external_source_id
-
-
 class PayloadTooLarge(StoreError):
     def __init__(self, limit_bytes: int) -> None:
         super().__init__(f"the ingest payload exceeds the {limit_bytes} byte limit")
@@ -241,11 +230,14 @@ class IngestRequest(BaseModel):
 
 class CreatedSource(BaseModel):
     id: SourceId
+    revision: int = Field(ge=1)
+    created: bool
 
 
 class CreatedNote(BaseModel):
     id: NoteId
     path: str
+    created: bool
 
 
 class IngestResult(BaseModel):

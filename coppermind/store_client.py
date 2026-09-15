@@ -29,7 +29,6 @@ from coppermind.store_protocol import (
     PayloadTooLarge,
     PreconditionRequired,
     ReplaceNote,
-    SourceAlreadyExists,
     SourcesFilesystemUnavailable,
     StoreError,
     StoreUnavailable,
@@ -139,10 +138,6 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         return NotFound(payload.get("note_id", message))
     if code == "path_collision":
         return PathCollision(payload.get("existing_path", message))
-    if code == "source_exists":
-        return SourceAlreadyExists(
-            payload.get("provider", ""), payload.get("external_source_id", "")
-        )
     if code == "payload_too_large":
         return PayloadTooLarge(payload.get("limit_bytes", 0))
     if code == "sources_filesystem_unavailable":
