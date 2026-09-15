@@ -102,12 +102,6 @@ class ArtifactNotFound(StoreError):
         self.name = name
 
 
-class SourceImmutable(StoreError):
-    def __init__(self, source_id: str) -> None:
-        super().__init__(f"source {source_id} and its artifacts are immutable")
-        self.source_id = source_id
-
-
 class IncompleteRevision(StoreError):
     """A revision directory is on disk that the manifest does not record.
 

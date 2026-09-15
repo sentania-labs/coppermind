@@ -25,7 +25,6 @@ from coppermind.store_protocol import (
     PayloadTooLarge,
     PreconditionRequired,
     SourceClaimMissing,
-    SourceImmutable,
     SourceNotFound,
     SourcesFilesystemUnavailable,
     StoreError,
@@ -91,8 +90,6 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
             revision=error.revision,
             name=error.name,
         )
-    if isinstance(error, SourceImmutable):
-        return 405, envelope("method_not_allowed", str(error), source_id=error.source_id)
     if isinstance(error, ValidationFailed):
         return 422, envelope("validation_error", str(error), errors=error.errors)
     if isinstance(error, PathCollision):

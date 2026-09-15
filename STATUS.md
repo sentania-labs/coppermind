@@ -263,11 +263,11 @@ vertical path proved end to end, then widened.
   again. An ingest answers with the path its projection occupies, and that is
   how a client learns where the file landed; nothing serves the projection back
   over the API, because being readable without the service is its whole point.
-  Projections are generated output: the read-side
-  reconciler excludes the sources folder and Obsidian Sync does not. A note the
-  captain files into that folder himself is still followed there rather than
-  reported deleted, because a row the pass would otherwise call gone is looked
-  for among the skipped files first. Git excludes the folder, and the two agree
+  A projection carries the source identity and no note id, so the read-side
+  reconciler declines it the way it declines any file naming no note it knows;
+  the sources folder itself is not special to that pass, and a note the captain
+  files into it himself is followed there like a note in any other folder.
+  Obsidian Sync does not exclude the folder. Git excludes it, and the two agree
   on its name by construction: the Store writes to the sanitised name while the
   Git helper, which carries none of the shared package, excludes the configured
   name as given, so settings validation refuses any `notes.sources_folder` the
@@ -282,10 +282,10 @@ vertical path proved end to end, then widened.
   artifact as JSON with its size and SHA-256, after verifying the stored bytes.
   A source or artifact that is not there answers 404; a volume that cannot be
   read answers 503 rather than reporting the bundle gone.
-  Both need `sources:read`. `PUT`, `PATCH` and `DELETE` anywhere under a source
-  return 405 `method_not_allowed` from the API itself, whether or not the
-  Store is reachable; neither the public nor internal surface offers a way to
-  change source data.
+  Both need `sources:read`. `PUT`, `PATCH` and `DELETE` on a source or an
+  artifact return 405 `method_not_allowed`, whether or not the Store is
+  reachable, because only reads are routed: neither the public nor the internal
+  surface offers a way to change source data.
 - `PUT /v1/notes/{id}` replaces a note's frontmatter and body on the condition
   that `If-Match` names the ETag the file has now. The body is the document
   shape a read returns, so a client reads, edits and sends it back; the

@@ -905,8 +905,9 @@ async def test_read_side_does_not_treat_a_managed_projection_as_a_known_note(
 ):
     """Generated output speaks for no note, even when the walk reads it.
 
-    A projection is read like any other file so a note filed beside its source
-    is followed, and `managed: true` is what stops it answering for an identity.
+    Its frontmatter carries the source identity and no note id. The walk reads
+    the folder like any other so a note filed beside its source is followed,
+    and `managed: true` is what stops the projection answering for an identity.
     """
     note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
     projection = store.notes_root / "_Sources" / "Plaud" / "Generated.md"
@@ -998,11 +999,10 @@ async def test_a_note_recorded_missing_comes_back_when_it_reappears_beside_a_sou
 
 
 async def test_a_note_filed_into_the_sources_folder_still_mirrors_its_edits(store: LocalStore):
-    """Skipping generated output must not freeze the notes filed beside it.
+    """A note filed beside its source keeps reaching listing and search.
 
     A row that claims a path in the sources folder is one of the captain's own
-    notes, so his next edit on a device has to reach listing and search like
-    any other, not be trusted forever at a stat the pass never took.
+    notes, so his next edit on a device has to be mirrored like any other.
     """
     note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
     filed = store.notes_root / "_Sources" / "Plaud" / "Runbook.md"
@@ -1025,29 +1025,6 @@ async def test_a_note_filed_into_the_sources_folder_still_mirrors_its_edits(stor
     assert row.title == "Current Runbook"
     assert row.type == "runbook"
     assert row.content_hash == fetched.content_hash
-
-
-async def test_a_note_in_a_newly_configured_sources_folder_is_not_reported_deleted(
-    store: LocalStore,
-):
-    """Excluding a folder hides generated output; it does not delete notes.
-
-    An operator can point `notes.sources_folder` at a folder that already holds
-    notes. Their files are still on disk, so a skip that recorded nothing would
-    report every one of them deleted on the next pass.
-    """
-    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
-    settings = store.control.store.read("settings")
-    body = dict(settings.body)
-    body["notes"] = {**body["notes"], "sources_folder": Path(note.path).parent.as_posix()}
-    store.control.store.write("settings", body, if_revision=settings.revision)
-
-    counts = await reconcile_once(store)
-
-    assert counts["missing"] == 0
-    row = await _row(store, note.id)
-    assert row.state == "ok"
-    assert row.path == note.path
 
 
 async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: LocalStore):
