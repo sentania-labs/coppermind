@@ -83,10 +83,10 @@ change falls under (software, live infrastructure, or knowledge).
 Sync helpers do without it): identifiers, the note file format, portable
 naming, the frontmatter schema, product settings, control state files, API key
 records and their hashing, the store contract and its HTTP client, and the
-database models and migrations. `services/<name>/` is one image each, built with the
-repository root as the build context. `ci/` holds the scripts CI and you both
-run. `tests/` holds what crosses a service boundary; a service's own tests
-live beside it.
+database models and migrations. `services/<name>/` is one image each, built
+with the repository root as the build context. `ci/` holds the scripts CI and
+you both run. `tests/` holds what crosses a service boundary; a service's own
+tests live beside it.
 
 The shared package deliberately carries declarations named by the approved plan ahead of
 their consuming slices; check that plan before raising an unused-declaration finding.

@@ -252,10 +252,9 @@ vertical path proved end to end, then widened.
   is pinned to a commit SHA, and a test enforces that.
 - The independently built `obsidian-sync` image supervises a sync client and
   exposes authenticated connect, pause, resume and status controls on the
-  compose network. A fresh install has the
-  supervisor available and honestly disconnected, with that state in
-  `/data/state/sync/status.json`.
-  **Real sync is refused on purpose.** Connect, resume and boot from a
+  compose network. A fresh install has the supervisor available and honestly
+  disconnected, with that state in `/data/state/sync/status.json`.
+  **Real sync is refused on purpose.** Connect, pause, resume and boot from a
   persisted connection all return the same refusal and never invoke the
   client, because two decisions are open: what a first connection should do
   to a vault that already has notes on both sides, and where the account
