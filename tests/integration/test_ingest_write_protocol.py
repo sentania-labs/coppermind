@@ -613,6 +613,54 @@ async def test_a_file_delivered_onto_the_recorded_path_refuses_the_page_not_the_
         assert await session.scalar(sa.select(sa.func.count()).select_from(SourceRevision)) == 2
 
 
+async def test_a_file_delivered_onto_a_fresh_page_name_refuses_the_page_not_the_volume(
+    store: LocalStore, session_factory, monkeypatch: pytest.MonkeyPatch
+):
+    """A landed revision is not reported as a volume that could not be written.
+
+    The recorded path already holds one of the captain's own notes, so the
+    revision picks a free name, and a device can deliver a file onto that one
+    just as readily. Generated output never writes over it, and the answer says
+    the page was refused rather than sending the operator to check the volume.
+    """
+    first = await store.ingest(sample())
+    mine = "---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# Mine now\n"
+    kept = store.notes_root / first.projection_path
+    kept.write_text(mine, encoding="utf-8")
+    real_create = projections_module.create_exclusive_bytes
+    delivered: list[str] = []
+
+    def create_after_sync_delivers(path, data, **kwargs):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(mine, encoding="utf-8")
+        delivered.append(path.relative_to(store.notes_root).as_posix())
+        return real_create(path, data, **kwargs)
+
+    monkeypatch.setattr(projections_module, "create_exclusive_bytes", create_after_sync_delivers)
+    changed = sample()
+    changed.source.artifacts[0].content = "Scott: corrected source content"
+
+    with pytest.raises(ProjectionNotPlaced) as refused:
+        await store.ingest(changed)
+
+    assert refused.value.revision == 2
+    assert refused.value.path == delivered[0]
+    assert (store.notes_root / delivered[0]).read_text(encoding="utf-8") == mine
+    manifest_path = store.sources_root / first.source.id / "manifest.json"
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["current_revision"] == 2
+    async with session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(SourceRevision)) == 1
+
+    monkeypatch.undo()
+    retried = await store.ingest(changed)
+
+    assert retried.source.revision == 2
+    assert retried.projection_path not in (first.projection_path, delivered[0])
+    assert "Scott: corrected source content" in projection_text(store, retried.projection_path)
+    async with session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(SourceRevision)) == 2
+
+
 async def test_a_sources_fault_recording_a_repaired_projection_reports_it_and_leaves_no_copy(
     store: LocalStore, monkeypatch: pytest.MonkeyPatch
 ):

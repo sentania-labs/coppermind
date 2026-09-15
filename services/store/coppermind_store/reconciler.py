@@ -670,11 +670,6 @@ def _scan(
             elif result is None:
                 if settling:
                     deferred += 1
-                elif store_owned:
-                    # A generated projection carrying `managed: true` names no
-                    # identity on purpose. It is the store's own file, not a
-                    # device-created note that failed to parse.
-                    _remember(still_unidentified, relative, stat_seen)
                 else:
                     unidentified_unparsed += 1
                     _remember(still_unidentified, relative, stat_seen)
@@ -789,11 +784,6 @@ def _observe(
     note_id = str(frontmatter.get(schema.role("id_key"), ""))
     if note_id not in by_id:
         if entry is None:
-            if frontmatter.get("managed") is True:
-                # A generated source projection is the store's own file. It
-                # names no note this store knows and no row claims its path, so
-                # it is never given an identity of its own.
-                return None
             return AdoptionCandidate(
                 path=relative,
                 content_hash=content_hash(data),

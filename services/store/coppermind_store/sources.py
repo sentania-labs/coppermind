@@ -415,7 +415,9 @@ async def _ingest_existing(
     if replaying:
         recorded_path = manifest.get("projection_path")
         projection_path = recorded_path if isinstance(recorded_path, str) and recorded_path else ""
-        held_revision = projection_revision(store.notes_root, projection_path, source_id)
+        held_revision = await asyncio.to_thread(
+            projection_revision, store.notes_root, projection_path, source_id
+        )
         projection_created = False
         if held_revision is None:
             projection_path = ""
@@ -482,10 +484,14 @@ async def _ingest_existing(
         if note is None:
             raise StoreError("the linked note mirror is incomplete")
         recorded_path = manifest.get("projection_path")
+        held_revision = (
+            await asyncio.to_thread(projection_revision, store.notes_root, recorded_path, source_id)
+            if isinstance(recorded_path, str)
+            else None
+        )
         projection_path = (
             str(recorded_path)
-            if isinstance(recorded_path, str)
-            and projection_revision(store.notes_root, recorded_path, source_id) is not None
+            if held_revision is not None
             else new_projection_path(
                 store.notes_root,
                 settings,

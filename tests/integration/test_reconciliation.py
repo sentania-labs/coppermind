@@ -906,8 +906,9 @@ async def test_read_side_does_not_treat_a_managed_projection_as_a_known_note(
     """Generated output speaks for no note, even when the walk reads it.
 
     Its frontmatter carries the source identity and no note id. The walk reads
-    the folder like any other so a note filed beside its source is followed,
-    and `managed: true` is what stops the projection answering for an identity.
+    the sources folder like any other so a note filed beside its source is
+    followed, and the folder being the store's own is what stops the projection
+    taking an identity of its own.
     """
     note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
     projection = store.notes_root / "_Sources" / "Plaud" / "Generated.md"
@@ -932,13 +933,36 @@ async def test_read_side_does_not_treat_a_managed_projection_as_a_known_note(
         assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 1
 
 
-async def test_a_note_the_captain_marked_managed_is_still_his_note(store: LocalStore):
-    """A property he typed does not turn his note into the store's own file.
+async def test_a_note_the_captain_marked_managed_is_adopted_like_any_other(store: LocalStore):
+    """A property he typed is not what makes a file the store's own.
 
     `managed` is not reserved: unknown keys pass through, and Obsidian writes
-    the key for any checkbox property. The file names an identity the mirror
-    knows and is still at its path, so it goes on answering for that note
-    rather than being reported deleted.
+    the key for any checkbox property he ticks. A note he wrote outside the
+    store's own folders is his, whatever properties he gave it, so it is
+    adopted rather than reported as a file that would not parse.
+    """
+    written = store.notes_root / "Reference" / "Checkbox ticked.md"
+    written.parent.mkdir(parents=True, exist_ok=True)
+    written.write_text(
+        fm.compose({"type": "reference", "managed": True}, "# Checkbox ticked\n"),
+        encoding="utf-8",
+    )
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 1
+    assert counts["rejected"] == 0
+    adopted, _ = fm.parse(written.read_text(encoding="utf-8"))
+    assert adopted["managed"] is True
+    assert is_valid_id(str(adopted["id"]))
+    assert (await store.get_note(str(adopted["id"]))).path == "Reference/Checkbox ticked.md"
+
+
+async def test_a_note_the_captain_marked_managed_is_still_his_note(store: LocalStore):
+    """A property he typed does not stop the mirror answering for his note.
+
+    The file names an identity the mirror knows and is still at its path, so it
+    goes on answering for that note rather than being reported deleted.
     """
     note = await store.create_note(
         CreateNote(title="Runbook", frontmatter={"type": "reference", "managed": True})

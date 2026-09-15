@@ -49,7 +49,10 @@ def write_projection(
         if target.exists():
             _replace_projection(notes_root, target, data, source_id, revision)
             return False
-        create_exclusive_bytes(target, data)
+        try:
+            create_exclusive_bytes(target, data)
+        except FileExistsError as exc:
+            raise ProjectionNotPlaced(source_id, revision, relative_path) from exc
         return True
     except NotesFilesystemUnavailable:
         raise
