@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from coppermind.store_protocol import (
+    ArtifactNotFound,
     IncompleteRevision,
     MetadataUnavailable,
     NotesFilesystemUnavailable,
@@ -23,7 +24,9 @@ from coppermind.store_protocol import (
     PathCollision,
     PayloadTooLarge,
     PreconditionRequired,
+    ProjectionNotPlaced,
     SourceClaimMissing,
+    SourceNotFound,
     SourcesFilesystemUnavailable,
     StoreError,
     StoreUnavailable,
@@ -42,7 +45,7 @@ NOTES_FILESYSTEM_UNAVAILABLE_MESSAGE = (
 )
 
 SOURCES_FILESYSTEM_UNAVAILABLE_MESSAGE = (
-    "the source bundle filesystem could not be written; this ingest did not succeed and can be "
+    "the source bundle filesystem could not be read or written; this source operation can be "
     "retried once the volume is healthy"
 )
 
@@ -78,6 +81,16 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
     cause = {"detail": str(error)} if surface == "internal" else {}
     if isinstance(error, NotFound):
         return 404, envelope("not_found", str(error), note_id=error.note_id)
+    if isinstance(error, SourceNotFound):
+        return 404, envelope("not_found", str(error), source_id=error.source_id)
+    if isinstance(error, ArtifactNotFound):
+        return 404, envelope(
+            "not_found",
+            str(error),
+            source_id=error.source_id,
+            revision=error.revision,
+            name=error.name,
+        )
     if isinstance(error, ValidationFailed):
         return 422, envelope("validation_error", str(error), errors=error.errors)
     if isinstance(error, PathCollision):
@@ -88,6 +101,14 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
             str(error),
             provider=error.provider,
             external_source_id=error.external_source_id,
+        )
+    if isinstance(error, ProjectionNotPlaced):
+        return 409, envelope(
+            "projection_not_placed",
+            str(error),
+            source_id=error.source_id,
+            revision=error.revision,
+            path=error.path,
         )
     if isinstance(error, IncompleteRevision):
         return 409, envelope("incomplete_revision", str(error), path=error.path)

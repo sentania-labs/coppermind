@@ -259,6 +259,7 @@ cat "$ingested"; echo
 source_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"]["id"])' "$ingested")"
 ingest_note_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["note"]["id"])' "$ingested")"
 ingest_note_path="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["note"]["path"])' "$ingested")"
+projection_path="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["projection_path"])' "$ingested")"
 [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"]["revision"])' "$ingested")" = "1" ] \
     || fail "the first ingest did not report source revision 1"
 [ "$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["source"]["created"]).lower())' "$ingested")" = "true" ] \
@@ -269,6 +270,18 @@ compose exec -T store test -f "/data/sources/$source_id/manifest.json" \
     || fail "the source manifest is missing"
 compose exec -T store test -f "/data/sources/$source_id/r0001/transcript.txt" \
     || fail "the transcript artifact is missing"
+expected_projection="_Sources/Plaud/2026-09-08 Ameren Architecture Sync.md"
+[ "$projection_path" = "$expected_projection" ] \
+    || fail "the projection landed at $projection_path, expected $expected_projection"
+projection="$(compose exec -T store cat "/data/notes/$projection_path")"
+printf '%s\n' "$projection" | grep -Fqx 'managed: true' \
+    || fail "the projection does not carry its managed marker"
+printf '%s\n' "$projection" | grep -Fqx "source_id: $source_id" \
+    || fail "the projection does not carry its source identity"
+printf '%s\n' "$projection" | grep -Fqx 'source_revision: 1' \
+    || fail "the projection does not name revision 1"
+printf '%s\n' "$projection" | grep -Fq "Let's start with the architecture review" \
+    || fail "the projection does not carry the transcript"
 ingest_note="$(compose exec -T store cat "/data/notes/$ingest_note_path")"
 printf '%s\n' "$ingest_note" | grep -Fqx -- "  - $source_id" \
     || fail "the Review note does not link the source id"
@@ -310,6 +323,7 @@ compose exec -T store python3 -c \
     "/data/notes/$ingest_note_path"
 reviewed_note="$(compose exec -T store cat "/data/notes/$ingest_note_path")"
 reviewed_hash="$(hash_on_volume "$ingest_note_path")"
+compose exec -T store sh -c 'echo "Person edit" >> "$1"' sh "/data/notes/$projection_path"
 revised="$(mktemp)"
 code="$(python3 -c 'import json,sys
 document = json.load(open("examples/ingest/plaud-sample.json"))
@@ -338,7 +352,36 @@ compose exec -T store grep -Fqx "Scott: corrected source content" \
     || fail "the source revision changed the Review note"
 [ "$(compose exec -T store cat "/data/notes/$ingest_note_path")" = "$reviewed_note" ] \
     || fail "the source revision reset the Review note content or state"
-ok "revision 2 preserved revision 1 and the captain's reviewed note exactly"
+projection="$(compose exec -T store cat "/data/notes/$projection_path")"
+printf '%s\n' "$projection" | grep -Fqx 'source_revision: 2' \
+    || fail "the projection does not name revision 2"
+printf '%s\n' "$projection" | grep -Fqx 'Scott: corrected source content' \
+    || fail "the projection does not carry revision 2"
+if printf '%s\n' "$projection" | grep -Fq 'Person edit'; then
+    fail "the projection preserved a person's edit instead of regenerating"
+fi
+ok "revision 2 updated the projection in place and preserved the reviewed note"
+
+step "read the source and artifact, then prove source mutation is refused"
+source_document="$(mktemp)"
+code="$(curl -sS -o "$source_document" -w '%{http_code}' "${AUTH[@]}" \
+    "$API/v1/sources/$source_id")"
+[ "$code" = "200" ] || { cat "$source_document"; fail "source read returned $code"; }
+[ "$(field "$source_document" current_revision)" = "2" ] \
+    || fail "the source read did not return revision 2"
+artifact="$(mktemp)"
+code="$(curl -sS -o "$artifact" -w '%{http_code}' "${AUTH[@]}" \
+    "$API/v1/sources/$source_id/revisions/2/artifacts/transcript.txt")"
+[ "$code" = "200" ] || { cat "$artifact"; fail "artifact read returned $code"; }
+[ "$(cat "$artifact")" = "Scott: corrected source content" ] \
+    || fail "the text artifact was not readable inline"
+refused="$(mktemp)"
+code="$(curl -sS -o "$refused" -w '%{http_code}' -X PUT "${AUTH[@]}" \
+    "$API/v1/sources/$source_id")"
+[ "$code" = "405" ] || { cat "$refused"; fail "source mutation returned $code"; }
+[ "$(field "$refused" error)" = "method_not_allowed" ] \
+    || fail "source mutation did not carry the method_not_allowed refusal"
+ok "the latest source and text artifact are readable, and T-SRC-1 returns 405"
 
 step "create a note through the API"
 created="$(mktemp)"

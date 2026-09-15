@@ -56,11 +56,11 @@ vertical path proved end to end, then widened.
 - Every `/v1` route requires `Bearer cm_<key_id>_<secret>`. A missing or bad
   key answers 401 and a key without the route's scope answers 403. Note reads
   need `notes:read`; creates and replacements need `notes:write`; frontmatter
-  patches need both `notes:read` and `notes:write`; ingest needs both
-  `sources:write` and `notes:write`, so a key
-  holding one of the two answers 403. Successful verification and key hashes
-  are cached for five minutes, so a key created after a load is picked up at
-  the next cache expiry rather than at once.
+  patches need both `notes:read` and `notes:write`; source and artifact reads
+  need `sources:read`; ingest needs both `sources:write` and `notes:write`, so
+  a key holding one of the two answers 403. Successful verification and key
+  hashes are cached for five minutes, so a key created after a load is picked
+  up at the next cache expiry rather than at once.
   Health, readiness and OpenAPI remain open, and Compose remains bound to
   loopback by default.
   The content-typed journal scopes, `journal:read` and `journal:write`, are
@@ -246,6 +246,78 @@ vertical path proved end to end, then widened.
   the public body length across the Store contract, but checks it only after
   the whole body has been read and parsed: it refuses the request, it does not
   spare process memory.
+- Ingesting a source writes one generated Markdown projection under the
+  configured sources folder, by default
+  `_Sources/<Provider>/<YYYY-MM-DD Title>.md`. Its frontmatter marks it
+  managed and records the source identity, the revision and that revision's
+  ingest time in `revision_ingested_at`, so rebuilding a projection from the
+  same revision produces the same document rather than a new timestamp. Text
+  artifacts are readable in the document; an artifact that is not text, or
+  whose bytes do not decode as UTF-8 whatever its declared type, is listed with
+  its MIME type, size and SHA-256, in the order the manifest records them. A
+  changed source revision regenerates the same projection path from the
+  immutable bundle, so a person's edit to a projection is not merged or
+  preserved. The manifest's `projection_path` is the only record of where a
+  projection lives: it is written in the same manifest write that lands the
+  revision, and a source whose manifest does not name one has no projection.
+  The generated page is written only after checking that the path holds this
+  source's own page or nothing, and that check is the last thing before the
+  write: the new bytes are staged and made durable first, so nothing slower
+  than the check itself stands in front of it. So if a device delivers one of
+  the captain's own notes onto the recorded path while a revision is landing,
+  the ingest answers 409 `projection_not_placed`: the revision is stored, its
+  readable page is not, and ingesting the same source again places the page at
+  a free name and rebuilds the mirror rows the refused attempt rolled back.
+  Until that happens the path the manifest records may not name the refused
+  page: `projection_path` can name a file the store did not generate, or a
+  page other than the one the refusal names. Every reader of it checks the
+  file before trusting it, and a re-ingest is what corrects the record. A note
+  delivered in the instant between that check and the write can still be
+  overwritten. That window is accepted for now: closing it needs a filesystem
+  primitive the platform does not currently provide. On a source's first ingest
+  there is no revision yet, so a taken projection path answers 409
+  `path_collision` and nothing is written: the claim, the bundle and the Review
+  note are all removed and the ingest can simply be retried.
+  Generation happens on ingest or on a new revision only: nothing backfills, so
+  a source ingested before this landed has no projection until it is ingested
+  again. An ingest answers with the path its projection occupies, and that is
+  how a client learns where the file landed; nothing serves the projection back
+  over the API, because being readable without the service is its whole point.
+  A projection is never adopted as a note because it sits under the store-owned
+  sources folder, and that folder is the whole mechanism: nothing about the
+  file itself declines it, so a generated page anywhere else is an ordinary
+  Markdown file to the reconciler and is adopted like one. The folder is still
+  read, so a note the captain files into it himself is followed there like a
+  note in any other folder.
+  Obsidian Sync does not exclude the folder. Git excludes it, and the two agree
+  on its name by construction: both the Store and the Git helper, which carries
+  none of the shared package, use the configured name exactly as given, so
+  settings validation refuses any `notes.sources_folder` the Store would have to
+  rewrite (a leading dot, a trailing space, a character it strips) and refuses
+  an empty one, which would scatter projections through the notes filesystem
+  root, rather than let the projections enter Git history. That agreement
+  covers the folder in force, not a folder that used to be in force, so do not
+  rename `notes.sources_folder` once sources have been ingested: nothing moves
+  the pages already generated, they stay under the old name, the Git helper
+  stops excluding that name, and the next snapshot commits them. Deleting them
+  afterwards takes them out of the working tree but not out of Git history.
+  Adoption stops excluding the old name at the same moment, so the next
+  reconciliation pass writes an id into every stranded page and mirrors it as a
+  note that then appears in listing and search, while a later revision of that
+  source still replaces the file where it stands.
+- `GET /v1/sources/{id}` reads the filesystem manifest. Its artifact route
+  returns an artifact that decodes as UTF-8 text as the response body, always
+  as `text/plain` and never as the ingested type, and describes every other
+  artifact as JSON with its size and SHA-256, after verifying the stored bytes.
+  A source with no manifest, and an artifact the manifest does not record,
+  answer 404; bytes the manifest records that the volume cannot deliver, whole
+  and matching their digest, answer 503 rather than reporting the bundle gone.
+  Both need `sources:read`. `PUT`, `PATCH` and `DELETE` on a source or an
+  artifact return 405 `method_not_allowed`, because only reads are routed:
+  neither the public nor the internal surface offers a way to change source
+  data. With the Store down and the key cache cold the boundary answers 503
+  first, since the keys live in the Store; a mutation reaches nothing that
+  could change source data either way.
 - `PUT /v1/notes/{id}` replaces a note's frontmatter and body on the condition
   that `If-Match` names the ETag the file has now. The body is the document
   shape a read returns, so a client reads, edits and sends it back; the
@@ -394,8 +466,7 @@ in the tree, so do not read the absence as a decision to leave it out.
   changed artifacts does land, because it rides the new revision. Keeping the
   rest means recording them per revision, which costs keys in `manifest.json`,
   a manifest `schema_version` bump and columns on `source_revisions`.
-  Generated source projections into the notes filesystem and tombstoning a
-  source are not built. Tombstones in particular have no columns in the mirror
+  Tombstoning a source is not built. It has no columns in the mirror
   and no keys in `manifest.json`, so adding them costs a migration of its own
   and a manifest `schema_version` bump.
 - **A whole-file note body.** `PUT` takes the JSON document shape only; the

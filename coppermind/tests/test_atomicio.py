@@ -59,7 +59,7 @@ def test_a_failed_directory_fsync_leaves_nothing_behind(
     def boom(_: Path) -> None:
         raise OSError(5, "Input/output error")
 
-    monkeypatch.setattr(atomicio, "_fsync_dir", boom)
+    monkeypatch.setattr(atomicio, "sync_directory", boom)
     target = tmp_path / "Review" / "Runbook.md"
     with pytest.raises(OSError):
         create_exclusive_bytes(target, b"# Runbook\n")

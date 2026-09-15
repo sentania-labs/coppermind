@@ -27,7 +27,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coppermind import frontmatter as fm
-from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes
+from coppermind.atomicio import (
+    create_exclusive_bytes,
+    replace_staged,
+    stage_bytes,
+    sync_directory,
+)
 from coppermind.db.models import Note, NoteSource, Source, SourceArtifact, SourceRevision
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
@@ -35,6 +40,7 @@ from coppermind.naming import sanitize_folder, unique_stem
 from coppermind.schema import FrontmatterSchema
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
+    ArtifactNotFound,
     CreatedNote,
     CreatedSource,
     CreateNote,
@@ -45,13 +51,19 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     PathCollision,
     PayloadTooLarge,
+    ProjectionNotPlaced,
+    SourceArtifactDocument,
     SourceClaimMissing,
+    SourceManifest,
+    SourceNotFound,
     SourcesFilesystemUnavailable,
     StoreError,
     ValidationFailed,
+    artifact_text,
 )
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
 from coppermind_store.notes import (
+    _as_date,
     _body_with_heading,
     _build_frontmatter,
     _jsonable,
@@ -59,10 +71,63 @@ from coppermind_store.notes import (
     _mirror_columns,
     _stem_for,
     _title_of,
+    _today,
+)
+from coppermind_store.projections import (
+    new_projection_path,
+    projection_revision,
+    write_projection,
 )
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
+
+
+async def get_source(store: LocalStore, source_id: str) -> SourceManifest:
+    """Read the filesystem manifest by immutable source identity."""
+    if not is_valid_id(source_id):
+        raise SourceNotFound(source_id)
+    path = store.sources_root / source_id / "manifest.json"
+    try:
+        document = await asyncio.to_thread(_manifest_document, path)
+    except FileNotFoundError as exc:
+        raise SourceNotFound(source_id) from exc
+    except OSError as exc:
+        raise SourcesFilesystemUnavailable("the source manifest is unreadable") from exc
+    try:
+        manifest = SourceManifest.model_validate(document)
+    except ValueError as exc:
+        raise SourcesFilesystemUnavailable("the source manifest is invalid") from exc
+    if manifest.source_id != source_id:
+        raise SourcesFilesystemUnavailable("the source manifest names a different source")
+    return manifest
+
+
+async def get_source_artifact(
+    store: LocalStore, source_id: str, revision: int, name: str
+) -> SourceArtifactDocument:
+    manifest = await get_source(store, source_id)
+    found_revision = next((item for item in manifest.revisions if item.revision == revision), None)
+    artifact = (
+        next((item for item in found_revision.artifacts if item.name == name), None)
+        if found_revision is not None
+        else None
+    )
+    if artifact is None:
+        raise ArtifactNotFound(source_id, revision, name)
+    try:
+        path = resolve(store.sources_root / source_id / f"r{revision:04d}", name)
+        data = await asyncio.to_thread(
+            _verified_artifact_bytes, path, artifact.size_bytes, artifact.sha256
+        )
+    except (OSError, ValueError) as exc:
+        raise SourcesFilesystemUnavailable(f"the source artifact is unreadable: {name}") from exc
+    return SourceArtifactDocument(
+        **artifact.model_dump(),
+        source_id=source_id,
+        revision=revision,
+        content=artifact_text(data, artifact.mime_type),
+    )
 
 
 async def ingest(
@@ -124,6 +189,7 @@ async def ingest(
                     identity,
                     claim_data,
                     schema,
+                    settings,
                 )
     except BaseException as exc:
         typed = _metadata_failure(exc)
@@ -188,6 +254,8 @@ async def _ingest_new(
 
     claim_created = False
     filesystem_complete = False
+    projection_path = ""
+    projection_created = False
     try:
         create_exclusive_bytes(claim_path, _external_id_claim(request, source_id))
         claim_created = True
@@ -239,9 +307,38 @@ async def _ingest_new(
         revision_path.mkdir(parents=True, exist_ok=False)
         for artifact, data in artifacts:
             create_exclusive_bytes(revision_path / artifact.name, data)
+        projection_path = await asyncio.to_thread(
+            new_projection_path,
+            store.notes_root,
+            settings,
+            provider=request.source.provider,
+            title=note_request.title,
+            note_date=_as_date(frontmatter.get(schema.role("date_key"))) or _today(settings),
+        )
+        try:
+            projection_created = await asyncio.to_thread(
+                write_projection,
+                store.notes_root,
+                settings,
+                source_id=source_id,
+                revision=1,
+                title=note_request.title,
+                revision_ingested_at=now,
+                artifacts=_projection_artifacts(artifacts, artifact_metadata),
+                relative_path=projection_path,
+            )
+        except ProjectionNotPlaced as exc:
+            raise PathCollision(projection_path) from exc
         create_exclusive_bytes(
             source_path / "manifest.json",
-            _manifest(request, source_id, now, identity, artifact_metadata),
+            _manifest(
+                request,
+                source_id,
+                now,
+                identity,
+                artifact_metadata,
+                projection_path,
+            ),
         )
         try:
             create_exclusive_bytes(note_path, note_data)
@@ -262,13 +359,24 @@ async def _ingest_new(
     finally:
         if claim_created and not filesystem_complete:
             shutil.rmtree(source_path, ignore_errors=True)
+            # The claim goes first. It is the durable record that decides every
+            # later ingest of this external id, so a notes filesystem fault
+            # while removing the projection must not strand it behind a source
+            # directory that is already gone.
             try:
                 claim_path.unlink(missing_ok=True)
             except OSError as exc:
                 raise SourcesFilesystemUnavailable(str(exc)) from exc
+            finally:
+                if projection_created and projection_path:
+                    try:
+                        resolve(store.notes_root, projection_path).unlink(missing_ok=True)
+                    except OSError as exc:
+                        raise NotesFilesystemUnavailable(str(exc)) from exc
     return IngestResult(
         source=CreatedSource(id=source_id, revision=1, created=True),
         note=CreatedNote(id=note_id, path=relative, created=True),
+        projection_path=projection_path,
     )
 
 
@@ -281,6 +389,7 @@ async def _ingest_existing(
     identity: str,
     claim_data: bytes,
     schema: FrontmatterSchema,
+    settings: ProductSettings,
 ) -> IngestResult:
     claim = _claimed_source(claim_data, request)
     source_id = claim["source_id"]
@@ -310,6 +419,54 @@ async def _ingest_existing(
     await _ensure_mirror(session, manifest, note_id, note_path, note_snapshot, schema)
 
     if replaying:
+        recorded_path = manifest.get("projection_path")
+        projection_path = recorded_path if isinstance(recorded_path, str) and recorded_path else ""
+        held_revision = await asyncio.to_thread(
+            projection_revision, store.notes_root, projection_path, source_id
+        )
+        projection_created = False
+        if held_revision is None:
+            projection_path = ""
+        if held_revision != current_revision:
+            note = await session.get(Note, note_id)
+            if note is None:
+                raise StoreError("the linked note mirror is incomplete") from None
+            projection_path = projection_path or await asyncio.to_thread(
+                new_projection_path,
+                store.notes_root,
+                settings,
+                provider=str(manifest["provider"]),
+                title=note.title,
+                note_date=note.date or _today(settings),
+            )
+            projection_created = await asyncio.to_thread(
+                write_projection,
+                store.notes_root,
+                settings,
+                source_id=source_id,
+                revision=current_revision,
+                title=note.title,
+                revision_ingested_at=_manifest_time(current.get("ingested_at"), "ingested_at"),
+                artifacts=await asyncio.to_thread(
+                    _read_revision_artifacts, source_path, current_revision, current_artifacts
+                ),
+                relative_path=projection_path,
+            )
+        if manifest.get("projection_path") != projection_path:
+            manifest["projection_path"] = projection_path
+            manifest_replacement_started = False
+            try:
+                staged_manifest = stage_bytes(manifest_path, _json_bytes(manifest))
+                replace_staged(staged_manifest, manifest_path)
+                manifest_replacement_started = True
+                sync_directory(manifest_path.parent)
+            except OSError as exc:
+                if projection_created and not manifest_replacement_started:
+                    try:
+                        resolve(store.notes_root, projection_path).unlink(missing_ok=True)
+                    except OSError as notes_exc:
+                        raise NotesFilesystemUnavailable(str(notes_exc)) from notes_exc
+                raise SourcesFilesystemUnavailable(str(exc)) from exc
         return IngestResult(
             source=CreatedSource(
                 id=source_id,
@@ -320,6 +477,7 @@ async def _ingest_existing(
                 ),
             ),
             note=CreatedNote(id=note_id, path=note_path, created=False),
+            projection_path=projection_path,
         )
 
     revision = current_revision + 1
@@ -336,6 +494,27 @@ async def _ingest_existing(
     try:
         for artifact, data in artifacts:
             create_exclusive_bytes(revision_path / artifact.name, data)
+        note = await session.get(Note, note_id)
+        if note is None:
+            raise StoreError("the linked note mirror is incomplete")
+        recorded_path = manifest.get("projection_path")
+        held_revision = (
+            await asyncio.to_thread(projection_revision, store.notes_root, recorded_path, source_id)
+            if isinstance(recorded_path, str)
+            else None
+        )
+        projection_path = (
+            str(recorded_path)
+            if held_revision is not None
+            else await asyncio.to_thread(
+                new_projection_path,
+                store.notes_root,
+                settings,
+                provider=str(manifest["provider"]),
+                title=note.title,
+                note_date=note.date or _today(settings),
+            )
+        )
         revisions = list(manifest.get("revisions", []))
         revisions.append(_revision_document(request, revision, now, identity, artifact_metadata))
         manifest.update(
@@ -344,14 +523,32 @@ async def _ingest_existing(
                 "origin": request.source.origin,
                 "current_revision": revision,
                 "revisions": revisions,
+                "projection_path": projection_path,
             }
         )
+        staged_manifest = stage_bytes(manifest_path, _json_bytes(manifest))
+        replace_staged(staged_manifest, manifest_path)
         manifest_replacement_started = True
-        atomic_write_bytes(manifest_path, _json_bytes(manifest))
+        sync_directory(manifest_path.parent)
+        await asyncio.to_thread(
+            write_projection,
+            store.notes_root,
+            settings,
+            source_id=source_id,
+            revision=revision,
+            title=note.title,
+            revision_ingested_at=now,
+            artifacts=_projection_artifacts(artifacts, artifact_metadata),
+            relative_path=projection_path,
+        )
     except OSError as exc:
+        raise SourcesFilesystemUnavailable(str(exc)) from exc
+    finally:
+        # Reached with the replacement started only on the way out with the
+        # revision recorded, so this removes a revision no manifest names,
+        # whatever fault left it behind.
         if not manifest_replacement_started:
             shutil.rmtree(revision_path, ignore_errors=True)
-        raise SourcesFilesystemUnavailable(str(exc)) from exc
 
     source = await session.get(Source, source_id)
     if source is None:
@@ -377,6 +574,7 @@ async def _ingest_existing(
     return IngestResult(
         source=CreatedSource(id=source_id, revision=revision, created=True),
         note=CreatedNote(id=note_id, path=note_path, created=False),
+        projection_path=projection_path,
     )
 
 
@@ -432,6 +630,11 @@ def _claimed_source(claim_data: bytes, request: IngestRequest) -> dict[str, Any]
     ):
         raise SourcesFilesystemUnavailable("the external-id claim is invalid")
     return claim
+
+
+def _manifest_document(path: Path) -> dict[str, Any]:
+    path.stat()
+    return _read_json(path, "source manifest")
 
 
 def _read_json(path: Path, label: str) -> dict[str, Any]:
@@ -665,6 +868,38 @@ def _verify_revision_artifacts(
             )
 
 
+def _verified_artifact_bytes(path: Path, size_bytes: int, sha256: str) -> bytes:
+    data = path.read_bytes()
+    if len(data) != size_bytes or hashlib.sha256(data).hexdigest() != sha256:
+        raise SourcesFilesystemUnavailable(f"the source artifact failed verification: {path.name}")
+    return data
+
+
+def _read_revision_artifacts(
+    source_path: Path,
+    revision: int,
+    artifacts: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], bytes]]:
+    try:
+        return [
+            (
+                artifact,
+                resolve(source_path / f"r{revision:04d}", str(artifact["name"])).read_bytes(),
+            )
+            for artifact in artifacts
+        ]
+    except (OSError, ValueError) as exc:
+        raise SourcesFilesystemUnavailable(
+            "the current source revision changed while it was being read"
+        ) from exc
+
+
+def _projection_artifacts(
+    artifacts: list[tuple[IngestArtifact, bytes]], metadata: list[dict[str, Any]]
+) -> list[tuple[dict[str, Any], bytes]]:
+    return [(description, data) for (_, data), description in zip(artifacts, metadata, strict=True)]
+
+
 def _manifest_time(value: Any, field: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value)
@@ -724,6 +959,7 @@ def _manifest(
     ingested_at: datetime,
     identity: str,
     artifacts: list[dict[str, Any]],
+    projection_path: str,
 ) -> bytes:
     document = {
         "schema_version": 1,
@@ -734,6 +970,7 @@ def _manifest(
         "origin": request.source.origin,
         "current_revision": 1,
         "revisions": [_revision_document(request, 1, ingested_at, identity, artifacts)],
+        "projection_path": projection_path,
     }
     return _json_bytes(document)
 

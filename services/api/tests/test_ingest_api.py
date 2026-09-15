@@ -34,6 +34,7 @@ RESULT = IngestResult(
         path="Review/Architecture sync.md",
         created=True,
     ),
+    projection_path="_Sources/Plaud/Architecture sync.md",
 )
 
 

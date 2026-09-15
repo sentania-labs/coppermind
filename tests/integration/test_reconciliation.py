@@ -21,6 +21,7 @@ from coppermind.db.models import Note
 from coppermind.ids import is_valid_id
 from coppermind.store_protocol import (
     CreateNote,
+    IngestRequest,
     NoteQuery,
     NotesFilesystemUnavailable,
     NoteUnparseable,
@@ -860,6 +861,212 @@ async def test_a_copy_of_a_known_identity_is_left_alone_rather_than_re_identifie
     assert (await store.get_note(original.id)).path == original.path
     async with store.session_factory() as session:
         assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 1
+
+
+async def test_a_real_source_projection_is_never_adopted_as_a_note(store: LocalStore):
+    """The projection ingest writes is the store's own file, not a note to adopt."""
+    result = await store.ingest(
+        IngestRequest.model_validate(
+            {
+                "source": {
+                    "provider": "plaud",
+                    "external_source_id": "rec_adopt_guard",
+                    "source_type": "transcript",
+                    "artifacts": [
+                        {
+                            "name": "transcript.txt",
+                            "mime_type": "text/plain",
+                            "content": "Scott: the projection must stay the store's own file.\n",
+                        }
+                    ],
+                },
+                "note": {"title": "Adoption guard", "frontmatter": {"type": "meeting"}},
+            }
+        )
+    )
+    projection = store.notes_root / result.projection_path
+    original = projection.read_bytes()
+
+    with capture_logs() as logs:
+        counts = await reconcile_once(store, full=True)
+
+    assert counts["adopted"] == 0
+    assert counts["rejected"] == 0
+    assert counts["missing"] == 0
+    assert projection.read_bytes() == original
+    assert [entry["event"] for entry in logs if entry.get("path") == result.projection_path] == []
+    async with store.session_factory() as session:
+        ids = (await session.scalars(sa.select(Note.id))).all()
+    assert list(ids) == [result.note.id]
+
+
+async def test_read_side_does_not_treat_a_managed_projection_as_a_known_note(
+    store: LocalStore,
+):
+    """Generated output speaks for no note, even when the walk reads it.
+
+    Its frontmatter carries the source identity and no note id. The walk reads
+    the sources folder like any other so a note filed beside its source is
+    followed, and the folder being the store's own is what stops the projection
+    taking an identity of its own.
+    """
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    projection = store.notes_root / "_Sources" / "Plaud" / "Generated.md"
+    projection.parent.mkdir(parents=True)
+    projection.write_text(
+        fm.compose(
+            {"schema_version": 1, "managed": True, "source_id": "01K4Q8Z2A0P1Q2R3S4T5U6V7W8"},
+            "# Generated (source)\n",
+        ),
+        encoding="utf-8",
+    )
+
+    counts = await reconcile_once(store)
+
+    assert counts["moved"] == 0
+    assert counts["missing"] == 0
+    assert counts["unparsed"] == 0
+    row = await _row(store, note.id)
+    assert row.state == "ok"
+    assert row.path == note.path
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 1
+
+
+async def test_a_note_the_captain_marked_managed_is_adopted_like_any_other(store: LocalStore):
+    """A property he typed is not what makes a file the store's own.
+
+    `managed` is not reserved: unknown keys pass through, and Obsidian writes
+    the key for any checkbox property he ticks. A note he wrote outside the
+    store's own folders is his, whatever properties he gave it, so it is
+    adopted rather than reported as a file that would not parse.
+    """
+    written = store.notes_root / "Reference" / "Checkbox ticked.md"
+    written.parent.mkdir(parents=True, exist_ok=True)
+    written.write_text(
+        fm.compose({"type": "reference", "managed": True}, "# Checkbox ticked\n"),
+        encoding="utf-8",
+    )
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 1
+    assert counts["rejected"] == 0
+    adopted, _ = fm.parse(written.read_text(encoding="utf-8"))
+    assert adopted["managed"] is True
+    assert is_valid_id(str(adopted["id"]))
+    assert (await store.get_note(str(adopted["id"]))).path == "Reference/Checkbox ticked.md"
+
+
+async def test_a_note_the_captain_marked_managed_is_still_his_note(store: LocalStore):
+    """A property he typed does not stop the mirror answering for his note.
+
+    The file names an identity the mirror knows and is still at its path, so it
+    goes on answering for that note rather than being reported deleted.
+    """
+    note = await store.create_note(
+        CreateNote(title="Runbook", frontmatter={"type": "reference", "managed": True})
+    )
+    written, _ = fm.parse((store.notes_root / note.path).read_text(encoding="utf-8"))
+    assert written.get("managed") is True
+
+    counts = await reconcile_once(store, full=True)
+
+    assert counts["missing"] == 0
+    assert counts["unparsed"] == 0
+    row = await _row(store, note.id)
+    assert row.state == "ok"
+    assert row.path == note.path
+    assert (await store.get_note(note.id)).path == note.path
+
+
+async def test_a_note_filed_into_the_sources_folder_is_moved_not_reported_deleted(
+    store: LocalStore,
+):
+    """The captain filing a note beside its source has not deleted it.
+
+    Adoption never writes into the sources folder, but the walk still reads it,
+    so a note carried in there is followed rather than reported gone.
+    """
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    filed = store.notes_root / "_Sources" / "Plaud" / "Runbook.md"
+    filed.parent.mkdir(parents=True)
+    (store.notes_root / note.path).rename(filed)
+
+    counts = await reconcile_once(store)
+
+    assert counts["missing"] == 0
+    assert counts["moved"] == 1
+    row = await _row(store, note.id)
+    assert row.state == "ok"
+    assert row.path == "_Sources/Plaud/Runbook.md"
+    assert (await store.get_note(note.id)).path == row.path
+
+    settled = await reconcile_once(store)
+    assert settled["changed"] == 0
+    assert settled["moved"] == 0
+    assert settled["missing"] == 0
+    assert settled["unparsed"] == 0
+    assert settled["deferred"] == 0
+    assert (await _row(store, note.id)).state == "ok"
+
+
+async def test_a_note_recorded_missing_comes_back_when_it_reappears_beside_a_source(
+    store: LocalStore,
+):
+    """Missing is a report of what was observed, never a verdict a row keeps.
+
+    The sources folder is walked like any other, so a note that reappears there
+    is found on the next ordinary pass rather than waiting for a full rehash.
+    """
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    original = store.notes_root / note.path
+    data = original.read_bytes()
+    original.unlink()
+    assert (await reconcile_once(store))["missing"] == 1
+    assert (await _row(store, note.id)).state == "missing"
+
+    filed = store.notes_root / "_Sources" / "Plaud" / "Runbook.md"
+    filed.parent.mkdir(parents=True)
+    filed.write_bytes(data)
+
+    counts = await reconcile_once(store)
+
+    assert counts["moved"] == 1
+    assert counts["missing"] == 0
+    row = await _row(store, note.id)
+    assert row.state == "ok"
+    assert row.path == "_Sources/Plaud/Runbook.md"
+    assert (await store.get_note(note.id)).path == row.path
+
+
+async def test_a_note_filed_into_the_sources_folder_still_mirrors_its_edits(store: LocalStore):
+    """A note filed beside its source keeps reaching listing and search.
+
+    A row that claims a path in the sources folder is one of the captain's own
+    notes, so his next edit on a device has to be mirrored like any other.
+    """
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    filed = store.notes_root / "_Sources" / "Plaud" / "Runbook.md"
+    filed.parent.mkdir(parents=True)
+    (store.notes_root / note.path).rename(filed)
+    await reconcile_once(store)
+    filed.write_bytes(
+        filed.read_bytes()
+        .replace(b"type: reference", b"type: runbook")
+        .replace(b"# Runbook", b"# Current Runbook")
+    )
+
+    counts = await reconcile_once(store)
+
+    assert counts["changed"] == 1
+    assert counts["missing"] == 0
+    fetched = await store.get_note(note.id)
+    assert fetched.title == "Current Runbook"
+    row = await _row(store, note.id)
+    assert row.title == "Current Runbook"
+    assert row.type == "runbook"
+    assert row.content_hash == fetched.content_hash
 
 
 async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: LocalStore):

@@ -31,6 +31,22 @@ NoteId = str
 SourceId = str
 
 
+def artifact_text(data: bytes, mime_type: str) -> str | None:
+    """The artifact's readable text, or None when it has none.
+
+    A declared text type is a client's claim about bytes the contract never
+    constrains, so only a successful decode makes an artifact legible. Anything
+    else is described rather than read, here and everywhere.
+    """
+    base = mime_type.partition(";")[0].strip().casefold()
+    if not (base.startswith("text/") or base == "application/json"):
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 class StoreError(Exception):
     """Base class for the typed errors the contract defines."""
 
@@ -65,6 +81,42 @@ class SourceClaimMissing(StoreError):
         )
         self.provider = provider
         self.external_source_id = external_source_id
+
+
+class SourceNotFound(StoreError):
+    def __init__(self, source_id: str) -> None:
+        super().__init__(f"no source with id {source_id}")
+        self.source_id = source_id
+
+
+class ArtifactNotFound(StoreError):
+    def __init__(self, source_id: str, revision: int, name: str) -> None:
+        super().__init__(f"source {source_id} revision {revision} has no artifact {name}")
+        self.source_id = source_id
+        self.revision = revision
+        self.name = name
+
+
+class ProjectionNotPlaced(StoreError):
+    """The revision is stored; the page a person reads it by is not.
+
+    The name chosen for the page is occupied by a file this store did not
+    generate, and generated output never writes over one. Ingesting the same
+    source again places the page at a free name and rebuilds any mirror rows
+    the refused attempt rolled back. The path the manifest records may not name
+    this page until then.
+    """
+
+    def __init__(self, source_id: str, revision: int, path: str) -> None:
+        super().__init__(
+            f"source {source_id} revision {revision} is stored, but its readable page could not "
+            f"be placed: {path} is occupied by a file this store did not generate, and the "
+            "recorded path may not name this page until then. Ingest the source again to place "
+            "the page at a free name and repair the mirror."
+        )
+        self.source_id = source_id
+        self.revision = revision
+        self.path = path
 
 
 class IncompleteRevision(StoreError):
@@ -157,7 +209,7 @@ class NotesFilesystemUnavailable(StoreError):
 
 
 class SourcesFilesystemUnavailable(StoreError):
-    """The source bundle filesystem could not be written."""
+    """The source bundle filesystem could not be read or written."""
 
 
 class StoreUnavailable(StoreError):
@@ -302,6 +354,41 @@ class CreatedNote(BaseModel):
 class IngestResult(BaseModel):
     source: CreatedSource
     note: CreatedNote
+    projection_path: str
+
+
+class SourceArtifact(BaseModel):
+    name: str
+    mime_type: str
+    sha256: str
+    size_bytes: int = Field(ge=0)
+
+
+class SourceRevision(BaseModel):
+    revision: int = Field(ge=1)
+    ingested_at: datetime
+    captured_at: datetime | None = None
+    content_identity: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[SourceArtifact]
+
+
+class SourceManifest(BaseModel):
+    schema_version: Literal[1]
+    source_id: SourceId
+    provider: str
+    external_source_id: str
+    source_type: str
+    origin: str
+    current_revision: int = Field(ge=1)
+    revisions: list[SourceRevision]
+    projection_path: str | None = None
+
+
+class SourceArtifactDocument(SourceArtifact):
+    source_id: SourceId
+    revision: int = Field(ge=1)
+    content: str | None = None
 
 
 class ReplaceNote(BaseModel):
@@ -431,6 +518,12 @@ class Store(Protocol):
     async def ingest(
         self, request: IngestRequest, *, payload_size_bytes: int | None = None
     ) -> IngestResult: ...
+
+    async def get_source(self, source_id: SourceId) -> SourceManifest: ...
+
+    async def get_source_artifact(
+        self, source_id: SourceId, revision: int, name: str
+    ) -> SourceArtifactDocument: ...
 
     async def get_api_keys(self) -> ApiKeySet: ...
 

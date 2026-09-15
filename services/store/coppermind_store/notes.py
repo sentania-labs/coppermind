@@ -69,6 +69,9 @@ from coppermind.store_protocol import (
     PatchFrontmatter,
     PathCollision,
     ReplaceNote,
+    SourceArtifactDocument,
+    SourceId,
+    SourceManifest,
     StoreError,
     ValidationFailed,
     VersionConflict,
@@ -120,6 +123,18 @@ class LocalStore:
         from coppermind_store.sources import ingest
 
         return await ingest(self, request, payload_size_bytes=payload_size_bytes)
+
+    async def get_source(self, source_id: SourceId) -> SourceManifest:
+        from coppermind_store.sources import get_source
+
+        return await get_source(self, source_id)
+
+    async def get_source_artifact(
+        self, source_id: SourceId, revision: int, name: str
+    ) -> SourceArtifactDocument:
+        from coppermind_store.sources import get_source_artifact
+
+        return await get_source_artifact(self, source_id, revision, name)
 
     async def create_note(self, request: CreateNote) -> NoteDocument:
         settings = self.control.settings()
