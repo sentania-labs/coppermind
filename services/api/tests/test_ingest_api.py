@@ -1,5 +1,6 @@
 """The public create-only ingest contract."""
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -40,6 +41,8 @@ class FakeStore:
     def __init__(self) -> None:
         self.error: Exception | None = None
         self.ingested: IngestRequest | None = None
+        self.payload_size_bytes: int | None = None
+        self.ingest_limit_bytes: int | None = None
         created = datetime(2026, 9, 8, tzinfo=UTC)
         self.full_record, self.full_key = create_key(
             "full", ["sources:write", "notes:write"], created_at=created
@@ -51,10 +54,18 @@ class FakeStore:
             "notes only", ["notes:write"], created_at=created
         )
 
-    async def ingest(self, request: IngestRequest) -> IngestResult:
+    async def ingest(
+        self, request: IngestRequest, *, payload_size_bytes: int | None = None
+    ) -> IngestResult:
         if self.error:
             raise self.error
+        if (
+            self.ingest_limit_bytes is not None
+            and (payload_size_bytes or 0) > self.ingest_limit_bytes
+        ):
+            raise PayloadTooLarge(self.ingest_limit_bytes)
         self.ingested = request
+        self.payload_size_bytes = payload_size_bytes
         return RESULT
 
     async def get_api_keys(self) -> ApiKeySet:
@@ -102,6 +113,31 @@ def test_ingest_answers_201_with_the_source_and_linked_note(tmp_path: Path):
     assert response.json() == RESULT.model_dump(mode="json")
     assert fake.ingested is not None
     assert fake.ingested.source.external_source_id == "rec_8f3a2c19"
+    assert fake.payload_size_bytes == len(response.request.content)
+
+
+def test_ingest_limit_uses_the_raw_public_body_size(tmp_path: Path):
+    app, fake = client_for(tmp_path)
+    compact_size = len(json.dumps(INGEST, separators=(",", ":")).encode("utf-8"))
+    raw = json.dumps(INGEST, indent=24).encode("utf-8")
+    assert len(raw) > compact_size
+    fake.ingest_limit_bytes = compact_size
+
+    with TestClient(app) as client:
+        app.state.store = fake
+        app.state.api_key_auth._store = fake
+        response = client.post(
+            "/v1/ingest",
+            content=raw,
+            headers={
+                "Authorization": f"Bearer {fake.full_key}",
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 413
+    assert response.json()["limit_bytes"] == compact_size
+    assert fake.ingested is None
 
 
 def test_duplicate_and_oversize_ingest_keep_the_documented_envelope(tmp_path: Path):

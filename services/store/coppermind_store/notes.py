@@ -98,10 +98,12 @@ class LocalStore:
         """Read API key hashes from filesystem-first control state."""
         return self.control.api_keys()
 
-    async def ingest(self, request: IngestRequest) -> IngestResult:
+    async def ingest(
+        self, request: IngestRequest, *, payload_size_bytes: int | None = None
+    ) -> IngestResult:
         from coppermind_store.sources import ingest
 
-        return await ingest(self, request)
+        return await ingest(self, request, payload_size_bytes=payload_size_bytes)
 
     async def create_note(self, request: CreateNote) -> NoteDocument:
         settings = self.control.settings()

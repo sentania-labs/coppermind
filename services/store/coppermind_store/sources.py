@@ -1,11 +1,11 @@
 """Create-only source ingestion.
 
-The database transaction claims the external identifier before the store
-touches the filesystem. Artifact files are exclusive, then `manifest.json`
-is written last so an interrupted bundle is never mistaken for complete. The
-linked Review note is the final filesystem write in the same transaction, and
-an ingest that does not reach it removes the directory it created, so a
-failure leaves nothing behind rather than an unreferenced bundle.
+A deterministic filesystem claim owns each external identifier. Artifact
+files are exclusive, then `manifest.json` is written last so an interrupted
+bundle is never mistaken for complete. The linked Review note is the final
+filesystem write in the same database transaction. A write-phase failure
+removes the claim and bundle; a commit failure retains the complete files and
+claim so a retry cannot duplicate them.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import hashlib
 import json
 import shutil
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
@@ -52,10 +53,15 @@ if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
 
 
-async def ingest(store: LocalStore, request: IngestRequest) -> IngestResult:
+async def ingest(
+    store: LocalStore,
+    request: IngestRequest,
+    *,
+    payload_size_bytes: int | None = None,
+) -> IngestResult:
     settings = store.control.settings()
     schema = store.control.schema()
-    if _payload_size(request) > settings.limits.ingest_max_bytes:
+    if max(_payload_size(request), payload_size_bytes or 0) > settings.limits.ingest_max_bytes:
         raise PayloadTooLarge(settings.limits.ingest_max_bytes)
 
     source_id = new_id()
@@ -101,21 +107,29 @@ async def ingest(store: LocalStore, request: IngestRequest) -> IngestResult:
     source_path = store.sources_root / source_id
     revision_path = source_path / "r0001"
     manifest_path = source_path / "manifest.json"
+    claim_path = _external_id_claim_path(
+        store.sources_root,
+        request.source.provider,
+        request.source.external_source_id,
+    )
+    claim = _external_id_claim(request, source_id)
     manifest = _manifest(request, source_id, now, identity, artifact_metadata)
+    claim_created = False
+    filesystem_complete = False
 
     try:
         async with transaction(store.session_factory) as session:
             await session.execute(sa.text("SELECT 1"))
-            existing = await session.scalar(
-                sa.select(Source.id).where(
-                    Source.provider == request.source.provider,
-                    Source.external_source_id == request.source.external_source_id,
-                )
-            )
-            if existing is not None:
+
+            try:
+                create_exclusive_bytes(claim_path, claim)
+            except FileExistsError as exc:
                 raise SourceAlreadyExists(
                     request.source.provider, request.source.external_source_id
-                )
+                ) from exc
+            except OSError as exc:
+                raise SourcesFilesystemUnavailable(str(exc)) from exc
+            claim_created = True
 
             session.add(
                 Source(
@@ -130,9 +144,8 @@ async def ingest(store: LocalStore, request: IngestRequest) -> IngestResult:
                     updated_at=now,
                 )
             )
-            # Flush this row alone so the unique key claims the external id
-            # before any filesystem write. A concurrent repeat blocks here,
-            # then receives the same 409 when the first transaction commits.
+            # The filesystem claim is authoritative. This constraint mirrors
+            # it and remains a second guard for stale or imported rows.
             await session.flush()
 
             session.add_all(
@@ -194,6 +207,7 @@ async def ingest(store: LocalStore, request: IngestRequest) -> IngestResult:
                     raise PathCollision(relative) from exc
                 except OSError as exc:
                     raise NotesFilesystemUnavailable(str(exc)) from exc
+                filesystem_complete = True
             except BaseException:
                 shutil.rmtree(source_path, ignore_errors=True)
                 raise
@@ -216,6 +230,12 @@ async def ingest(store: LocalStore, request: IngestRequest) -> IngestResult:
         if typed is not None:
             raise typed from exc
         raise
+    finally:
+        if claim_created and not filesystem_complete:
+            try:
+                claim_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise SourcesFilesystemUnavailable(str(exc)) from exc
 
     return IngestResult(
         source=CreatedSource(id=source_id),
@@ -236,6 +256,25 @@ def _violated_constraint(exc: IntegrityError) -> str:
 def _payload_size(request: IngestRequest) -> int:
     """Bytes in the compact JSON request sent over the store contract."""
     return len(request.model_dump_json(exclude_none=True).encode("utf-8"))
+
+
+def _external_id_claim_path(root: Path, provider: str, external_source_id: str) -> Path:
+    """The stable claim path for a provider and its external identifier."""
+    key = json.dumps(
+        [provider, external_source_id], ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    digest = hashlib.sha256(key).hexdigest()
+    return root / f".external-id-{digest}.json"
+
+
+def _external_id_claim(request: IngestRequest, source_id: str) -> bytes:
+    document = {
+        "schema_version": 1,
+        "provider": request.source.provider,
+        "external_source_id": request.source.external_source_id,
+        "source_id": source_id,
+    }
+    return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
 def _content_identity(artifacts: list[dict[str, Any]]) -> str:

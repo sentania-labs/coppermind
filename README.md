@@ -106,8 +106,10 @@ docker compose exec store ls -R "/data/sources/<source_id>"
 
 Sending it a second time answers 409 `source_exists` and writes nothing: a
 source is created once, keyed by its `provider` and `external_source_id`. A
-body over `limits.ingest_max_bytes` answers 413 `payload_too_large`. The key
-needs both `sources:write` and `notes:write`.
+body over `limits.ingest_max_bytes` answers 413 `payload_too_large`. The API
+measures the submitted body before forwarding its parsed request, but only
+after FastAPI has buffered it, so the refusal does not reduce memory use. The
+key needs both `sources:write` and `notes:write`.
 
 The generated OpenAPI document is at `http://127.0.0.1:8080/openapi.json`.
 
@@ -136,7 +138,7 @@ docker compose exec git git -C /data/notes log --stat
 | `api` | the public contract on `:8080` | five-minute key cache; no durable state |
 | `store` | the only process that writes the notes filesystem | `/data`, one replica always |
 | `git` | records the history of the notes filesystem; no network, no credential | `/data/notes/.git`, one replica always |
-| `postgres` | mirrored and derived state, rebuildable from `/data` apart from a source's external-id claim | `pgdata` volume |
+| `postgres` | mirrored and derived state, rebuildable from `/data` | `pgdata` volume |
 | `bootstrap`, `migrate` | one-shot, run on every `up` and exit | none |
 
 Health is honest. `/healthz` says the process is up; `/readyz` says the

@@ -1,6 +1,6 @@
 # STATUS
 
-What works against `main` today. Updated 2026-09-14. Every claim here was
+What works against `main` today. Updated 2026-09-15. Every claim here was
 checked against a running compose stack on that date, not against CI alone.
 
 This is the first slice of the build. The shape is deliberately narrow: one
@@ -50,25 +50,26 @@ vertical path proved end to end, then widened.
 - `GET /v1/notes/{id}` returns the note as a document, carrying
   `ETag: "sha256:<hash of the file bytes>"`.
 - `POST /v1/ingest` takes a source and the note to open for it, and creates
-  both or neither. The artifacts land under
+  both or neither. A deterministic `.external-id-<sha256>.json` file claims
+  each `provider` plus `external_source_id` before the bundle is written. The
+  artifacts land under
   `/data/sources/<source_id>/r0001/`, then `manifest.json` last, so a bundle
   without a manifest is an unfinished one; the Review note is written in the
   same database transaction with the source identifier in its `sources`
   frontmatter key. A second ingest of the same `provider` plus
-  `external_source_id` answers 409 `source_exists` and writes nothing, and a
-  repeat that races the first past the pre-check is refused by
-  `uq_sources_provider_external_id` with the same 409. An ingest that fails
-  after the bundle directory exists removes it, so a failure leaves no files
-  behind. A request over `limits.ingest_max_bytes` (25 MiB by default,
+  `external_source_id` loses the exclusive claim creation, answers 409
+  `source_exists` and writes nothing. `uq_sources_provider_external_id`
+  remains the database mirror's second guard. A failure before the note is
+  complete removes the claim and bundle, so a later legitimate retry can
+  proceed. PostgreSQL failing at commit after the filesystem writes answers
+  503 `metadata_unavailable` and rolls the rows back, but retains the complete
+  bundle, Review note and external-id claim. The caller cannot know the write
+  outcome, but retrying receives 409 and cannot create a duplicate.
+  A submitted body over `limits.ingest_max_bytes` (25 MiB by default,
   settable like every other setting) answers 413 `payload_too_large` before
-  anything is written, but the check is made after the whole body has been
-  read and parsed: it refuses the request, it does not spare the process the
-  memory.
-  One thing the database alone knows: the external identifier claim lives
-  only in that unique key. PostgreSQL failing after the bundle is on disk but
-  before the commit answers 503 `metadata_unavailable`, rolls the rows back
-  and leaves the bundle removed, but the caller cannot tell whether the write
-  landed, and nothing on the filesystem would stop a later duplicate.
+  filesystem or database writes. The API preserves the public body length
+  across the Store contract, but checks it only after the whole body has been
+  read and parsed: it refuses the request, it does not spare process memory.
 - `PUT /v1/notes/{id}` replaces a note's frontmatter and body on the condition
   that `If-Match` names the ETag the file has now. The body is the document
   shape a read returns, so a client reads, edits and sends it back; the

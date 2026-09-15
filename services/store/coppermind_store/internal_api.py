@@ -57,9 +57,17 @@ async def create_note(payload: CreateNote, request: Request) -> Response:
 
 
 @router.post("/ingest", status_code=201, response_model=IngestResult)
-async def ingest(payload: IngestRequest, request: Request) -> Response:
+async def ingest(
+    payload: IngestRequest,
+    request: Request,
+    payload_size_bytes: Annotated[int | None, Header(alias="X-Coppermind-Payload-Bytes")] = None,
+) -> Response:
     try:
-        result = await _store(request).ingest(payload)
+        internal_size = len(await request.body())
+        result = await _store(request).ingest(
+            payload,
+            payload_size_bytes=max(internal_size, payload_size_bytes or 0),
+        )
     except StoreError as error:
         return _failure(error)
     return JSONResponse(status_code=201, content=result.model_dump(mode="json"))

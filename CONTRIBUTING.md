@@ -61,11 +61,9 @@ change falls under (software, live infrastructure, or knowledge).
 - **One writer.** Exactly one process writes the notes filesystem: the store.
   The API, the curator and the indexer ask it. If you find yourself opening a
   note file for writing anywhere else, the design has drifted.
-- **Filesystem first, database second.** The files are the truth. Nearly every
+- **Filesystem first, database second.** The files are the truth. Every
   PostgreSQL row is a mirror that one job can rebuild from `/data`. A change
-  that lengthens the list of things the database is the only copy of is a
-  change to reject; [AGENTS.md](AGENTS.md) holds that list and the single
-  entry on it today.
+  that makes the database the only copy of something is a change to reject.
 - **Admin is its own service and image.** Different lifecycle, different
   exposure and authentication posture, different responsibility. Nothing may
   assume Admin lives inside the API process.
