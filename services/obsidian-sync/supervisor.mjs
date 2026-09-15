@@ -218,11 +218,11 @@ async function handleChildExit(proc, code, signal, error = null) {
 
 async function connect(body) {
   if (!FAKE) return [501, { error: "real_sync_refused", detail: REAL_SYNC_REFUSED }];
+  const vaultName = body.vault_name;
+  if (typeof vaultName !== "string" || vaultName.length === 0) {
+    return [400, { error: "vault_name_required" }];
+  }
   if (child && status.syncing) return [409, { error: "already_connected" }];
-  const vaultName =
-    typeof body.vault_name === "string" && body.vault_name.length > 0
-      ? body.vault_name
-      : "Simulated remote vault";
   connection = { vault_name: vaultName, paused: false };
   restartAttempts = 0;
   await saveConnection();
@@ -316,6 +316,7 @@ async function shutdown(signal) {
   clearTimeout(restartTimer);
   log("INFO", "stopping", { signal });
   await stopChild();
+  await writeQueue.catch(() => {});
   server.close(() => process.exit(0));
 }
 

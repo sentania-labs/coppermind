@@ -12,7 +12,7 @@ const routes = {
 };
 if (!(command in routes)) {
   process.stderr.write(
-    "usage: node /app/control.mjs status|connect [remote-vault-name]|pause|resume\n",
+    "usage: node /app/control.mjs status|connect <remote-vault-name>|pause|resume\n",
   );
   process.exit(2);
 }

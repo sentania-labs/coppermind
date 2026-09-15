@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -64,8 +64,18 @@ test("fake mode proves the authenticated lifecycle and child restart", async (co
   assert.equal(state.syncing, false);
   assert.equal(state.state, "not_connected");
 
-  [code, state] = await request("/connect", "POST", true, {});
+  for (const body of [{}, { vault_name: "" }, { vault_name: 7 }]) {
+    const [rejected, detail] = await request("/connect", "POST", true, body);
+    assert.equal(rejected, 400, `connect accepted ${JSON.stringify(body)}`);
+    assert.equal(detail.error, "vault_name_required");
+  }
+  [, state] = await request("/status");
+  assert.equal(state.configured, false, "a rejected connect still configured the helper");
+  assert.equal(state.vault_name, null);
+
+  [code, state] = await request("/connect", "POST", true, { vault_name: "Simulated remote vault" });
   assert.equal(code, 200);
+  assert.equal(state.vault_name, "Simulated remote vault");
   assert.equal(state.connected, true);
   assert.equal(state.syncing, true);
   assert.equal(state.simulated, true);
@@ -236,5 +246,50 @@ test("the supervisor honours COPPERMIND_LOG_LEVEL", async (context) => {
   assert.ok(
     chatty.some((entry) => entry.event === "real sync refused" && entry.level === "warning"),
     "the refusal is not logged as a warning",
+  );
+});
+
+test("a stopped supervisor leaves the stop in the status file", async (context) => {
+  const data = await mkdtemp(path.join(os.tmpdir(), "coppermind-sync-stop-"));
+  const tokenFile = path.join(data, "internal-token");
+  await writeFile(tokenFile, "test-control-token\n", { mode: 0o600 });
+  const supervisor = spawn(process.execPath, [path.join(ROOT, "supervisor.mjs")], {
+    env: {
+      ...process.env,
+      COPPERMIND_DATA_DIR: data,
+      COPPERMIND_INTERNAL_TOKEN_FILE: tokenFile,
+      COPPERMIND_SYNC_FAKE: "1",
+      COPPERMIND_SYNC_PORT: "0",
+    },
+    stdio: "ignore",
+  });
+  context.after(() => supervisor.kill("SIGKILL"));
+
+  const stateDir = path.join(data, "state", "sync");
+  const statusFile = path.join(stateDir, "status.json");
+  const started = await waitFor(async () => {
+    const value = JSON.parse(await readFile(statusFile, "utf8"));
+    return value.control_port ? value : null;
+  }, "supervisor did not publish its port");
+  const connected = await fetch(`http://127.0.0.1:${started.control_port}/connect`, {
+    method: "POST",
+    headers: { authorization: "Bearer test-control-token", "content-type": "application/json" },
+    body: JSON.stringify({ vault_name: "Simulated remote vault" }),
+  });
+  assert.equal(connected.status, 200);
+  assert.equal((await connected.json()).syncing, true);
+
+  supervisor.kill("SIGTERM");
+  await new Promise((resolve) => supervisor.once("exit", resolve));
+
+  const persisted = JSON.parse(await readFile(statusFile, "utf8"));
+  assert.equal(persisted.state, "stopping");
+  assert.equal(persisted.syncing, false);
+  assert.equal(persisted.connected, false);
+  assert.equal(persisted.sync_pid, null);
+  assert.deepEqual(
+    (await readdir(stateDir)).filter((name) => name.endsWith(".tmp")),
+    [],
+    "a half-written status file was left on the volume",
   );
 });
