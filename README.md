@@ -154,6 +154,42 @@ minutes after a change settles, it is a commit:
 docker compose exec git git -C /data/notes log --stat
 ```
 
+The Obsidian Sync helper is supervised and answers its control endpoint, but
+it does not sync to a device yet. Connecting a real account is refused on
+purpose until the Admin service provides the captain's requested guided setup.
+That flow will create Coppermind's own new encrypted remote vault, collect its
+encryption password, and restart the helper on save. The captain's existing
+Obsidian vault remains a data source whose content arrives through the ingest
+API. Nothing here touches an Obsidian account or remote vault object today.
+
+The future account token and vault encryption key have their own
+`obsidian-sync-credentials` volume, outside the `data` backup. Restoring the
+notes filesystem without that credential volume requires a fresh Obsidian
+login through the guided Admin setup.
+
+```bash
+docker compose exec obsidian-sync node /app/control.mjs status
+docker compose exec obsidian-sync node /app/control.mjs connect "My Remote Vault"
+# 501 real_sync_refused
+```
+
+What the status does and does not say:
+
+- `simulated` is true only while `make sync-smoke` is running the bundled
+  stand-in client; `real_sync_supported` is false everywhere today.
+- `sync_mode` and `conflict_strategy` stay null until a client reports them.
+- `liveness` is `child_process_only`: the supervisor watches the client
+  process, so it cannot tell a running client from a delivering one.
+
+Pause and resume use the same internal control endpoint through the packaged
+command. Both are refused for the same reason connect is, so nothing can
+persist a paused connection that would read as a working one:
+
+```bash
+docker compose exec obsidian-sync node /app/control.mjs pause
+docker compose exec obsidian-sync node /app/control.mjs resume
+```
+
 ## What is running
 
 | Service | Does | State |
@@ -161,6 +197,7 @@ docker compose exec git git -C /data/notes log --stat
 | `api` | the public contract on `:8080` | five-minute key cache; no durable state |
 | `store` | the only process that writes the notes filesystem | `/data`, one replica always |
 | `git` | records the history of the notes filesystem; no network, no credential | `/data/notes/.git`, one replica always |
+| `obsidian-sync` | supervises the sync client and exposes internal lifecycle control; real sync refused for now | `/data/state/sync`, one replica always |
 | `postgres` | mirrored and derived state, rebuildable from `/data` | `pgdata` volume |
 | `bootstrap`, `migrate` | one-shot, run on every `up` and exit | none |
 
@@ -188,6 +225,7 @@ make scan             # dependency, secret and repository scans, as CI runs them
 make image            # build the images locally
 make smoke            # the compose storyline end to end
 make failure          # helpers stopped and started with edits in between
+make sync-smoke       # simulated sync connect, pause, resume and restart
 ```
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the bar for a pull request.

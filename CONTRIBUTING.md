@@ -4,8 +4,9 @@ Thanks for helping. This page is the whole process; there is no separate wiki.
 
 ## Run it locally
 
-Prerequisites: [uv](https://docs.astral.sh/uv/), Docker with Compose, and
-Python 3.12 (uv will fetch it if you do not have it).
+Prerequisites: [uv](https://docs.astral.sh/uv/), Docker with Compose,
+Python 3.12 (uv will fetch it if you do not have it), and Node 22 with npm,
+which `make check` needs for the Obsidian Sync helper's tests.
 
 ```bash
 make setup                             # sync the uv workspace
@@ -78,14 +79,14 @@ change falls under (software, live infrastructure, or knowledge).
 
 ## Where things live
 
-`coppermind/` is the shared package the images install (the Git helper alone
-does without it): identifiers, the note file format, portable naming, the
-frontmatter schema, product settings, control state files, API key records
-and their hashing, the store contract and its HTTP client, and the database
-models and migrations. `services/<name>/` is one image each, built with the
-repository root as the build context. `ci/` holds the scripts CI and you both
-run. `tests/` holds what crosses a service boundary; a service's own tests
-live beside it.
+`coppermind/` is the shared package the images install (the Git and Obsidian
+Sync helpers do without it): identifiers, the note file format, portable
+naming, the frontmatter schema, product settings, control state files, API key
+records and their hashing, the store contract and its HTTP client, and the
+database models and migrations. `services/<name>/` is one image each, built
+with the repository root as the build context. `ci/` holds the scripts CI and
+you both run. `tests/` holds what crosses a service boundary; a service's own
+tests live beside it.
 
 The shared package deliberately carries declarations named by the approved plan ahead of
 their consuming slices; check that plan before raising an unused-declaration finding.

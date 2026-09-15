@@ -36,6 +36,12 @@ x-git-image: &git-image
     context: .
     dockerfile: services/git/Dockerfile
 
+x-obsidian-sync-image: &obsidian-sync-image
+  image: ghcr.io/sentania-labs/coppermind/obsidian-sync:latest
+  build:
+    context: .
+    dockerfile: services/obsidian-sync/Dockerfile
+
 services:
 
   # Runs once per `up` and exits 0. Root only long enough to hand /data and
@@ -167,6 +173,25 @@ services:
       timeout: 5s
       retries: 3
 
+  # Supervises the Obsidian client and owns only its own state under
+  # /data/state/sync. Its account token and vault encryption key belong on the
+  # separate credential volume, outside the data backup. Real sync is refused
+  # until the later Admin service can guide creation of Coppermind's own
+  # encrypted remote vault and collect its credentials.
+  # The simulated client used to prove the lifecycle lives in
+  # docker-compose.sync-smoke.yml and is deliberately not settable here.
+  obsidian-sync:
+    <<: *obsidian-sync-image
+    restart: unless-stopped
+    environment: *wiring
+    volumes:
+      - data:/data
+      - internal-token:/run/coppermind/internal:ro
+      - obsidian-sync-credentials:/var/lib/obsidian-sync
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
 volumes:
   # Everything a backup needs: the notes filesystem, source bundles and the
   # control state files. Back up `default-api-key` with it to keep the default
@@ -177,3 +202,6 @@ volumes:
   internal-token:
   postgres-password:
   default-api-key:
+  # Deliberately outside the data backup. Restoring data without this volume
+  # requires a fresh Obsidian login through the future guided Admin setup.
+  obsidian-sync-credentials:

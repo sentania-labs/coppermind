@@ -2,11 +2,11 @@
 # CI never hand-copies a command; if a gate changes, it changes here.
 SHELL := /bin/bash
 .PHONY: setup lint typecheck test test-integration check \
-        image image-store image-api image-git up down logs smoke failure \
+        image image-store image-api image-git image-obsidian-sync up down logs smoke failure sync-smoke \
         scan scan-deps scan-secrets scan-fs scan-image \
         compose-check prose-check db-up db-down clean
 
-SERVICES ?= store api git
+SERVICES ?= store api git obsidian-sync
 COMPOSE := docker compose
 COMPOSE_CI := docker compose -f docker-compose.yml -f docker-compose.ci.yml
 
@@ -23,6 +23,7 @@ typecheck:
 # Unit tests. No database, no containers, no network.
 test:
 	uv run pytest -q
+	npm --prefix services/obsidian-sync test
 
 # PostgreSQL backed tests. `make db-up` starts a throwaway server on 5433 so
 # this never touches a running stack's database.
@@ -50,6 +51,7 @@ check: lint typecheck test compose-check prose-check
 compose-check:
 	$(COMPOSE) config >/dev/null
 	$(COMPOSE_CI) config >/dev/null
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.sync-smoke.yml config >/dev/null
 
 # House rule, enforced rather than remembered: no em-dashes anywhere in the
 # tree. The lock file and this rule's own definition are excluded.
@@ -79,6 +81,13 @@ image-git:
 		--build-arg BUILD_DATE=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
 		-t coppermind/git:local .
 
+image-obsidian-sync:
+	docker build -f services/obsidian-sync/Dockerfile \
+		--build-arg BUILD_VERSION=$${BUILD_VERSION:-dev} \
+		--build-arg BUILD_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) \
+		--build-arg BUILD_DATE=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+		-t coppermind/obsidian-sync:local .
+
 up:
 	$(COMPOSE) up -d
 
@@ -95,6 +104,11 @@ smoke:
 # Helpers stopped and started with edits in between; takes a few minutes.
 failure:
 	COMPOSE_FILES="$${COMPOSE_FILES:--f docker-compose.yml}" bash ci/failure.sh
+
+# Brings its own stack up, adds the simulated client overlay to whatever
+# compose files it is given, and takes the simulation back down at the end.
+sync-smoke:
+	COMPOSE_FILES="$${COMPOSE_FILES:--f docker-compose.yml}" bash ci/sync-smoke.sh
 
 clean: down db-down
 	-$(COMPOSE) down -v

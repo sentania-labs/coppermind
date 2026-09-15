@@ -1,8 +1,10 @@
 # Workspace root and the shared package in one file. `coppermind/` is the
-# package the service images install; `services/*` are the workspace members,
-# one image each (the Git helper alone does without the shared package). One
-# toolchain configuration (ruff, mypy, pytest) covers
-# the whole repository so a developer and CI run the same checks.
+# package the service images install; `services/*` is one image each. The Git
+# and Obsidian Sync helpers do without the shared package, and the Obsidian
+# Sync helper is Node rather than Python, so it is not a workspace member and
+# carries its own tests that `make test` runs. One toolchain configuration
+# (ruff, mypy, pytest) covers the Python side so a developer and CI run the
+# same checks.
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
