@@ -6,7 +6,6 @@ import html
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import Any
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
@@ -26,6 +25,7 @@ from coppermind_admin.auth import (
     InvalidClaimCode,
     PostgresSessions,
     Sessions,
+    SessionsUnavailable,
 )
 
 SERVICE = "coppermind-admin"
@@ -39,6 +39,15 @@ PUBLIC = {
     "/readyz",
 }
 log = get_logger(SERVICE)
+
+# What each rejection tells the operator. The page names the cause it was
+# redirected with, so a refused password is never reported as a bad code.
+CLAIM_NOTICES = {
+    "invalid_claim_code": "That claim code was not accepted.",
+    "validation_error": "Enter the claim code and a password of at least 12 characters.",
+    "already_claimed": "Admin has already been claimed.",
+}
+LOGIN_NOTICES = {"unauthorized": "That password was not accepted."}
 
 
 def page(title: str, body: str) -> str:
@@ -69,26 +78,32 @@ button {{
 </style></head><body><main>{body}</main></body></html>"""
 
 
-def wants_form(request: Request) -> bool:
-    return request.headers.get("content-type", "").startswith("application/x-www-form-urlencoded")
+def notice(notices: dict[str, str], error: str | None) -> str:
+    if not error:
+        return ""
+    message = notices.get(error, "That did not work. Try again.")
+    return f'<p class="error">{html.escape(message)}</p>'
 
 
-async def fields(request: Request) -> dict[str, Any]:
-    if wants_form(request):
-        parsed = parse_qs((await request.body()).decode(), keep_blank_values=True)
-        return {key: values[-1] for key, values in parsed.items()}
-    try:
-        loaded = await request.json()
-    except Exception:
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
+async def submitted(request: Request) -> dict[str, str]:
+    """The fields of a submitted form. Admin is driven by its pages only."""
+    parsed = parse_qs((await request.body()).decode(errors="replace"), keep_blank_values=True)
+    return {key: values[-1] for key, values in parsed.items()}
 
 
-def error_response(request: Request, status: int, code: str, message: str) -> Response:
-    if wants_form(request):
-        destination = "claim" if request.url.path.endswith("claim") else "login"
-        return RedirectResponse(f"/admin/{destination}?error={code}", status_code=303)
-    return JSONResponse(status_code=status, content=envelope(code, message))
+def error_response(request: Request, code: str) -> RedirectResponse:
+    destination = "claim" if request.url.path.endswith("claim") else "login"
+    return RedirectResponse(f"/admin/{destination}?error={code}", status_code=303)
+
+
+def unavailable() -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content=envelope(
+            "sessions_unavailable",
+            "the session database is unavailable; Admin is usable again once it returns",
+        ),
+    )
 
 
 def create_app(wiring: Wiring | None = None, sessions: Sessions | None = None) -> FastAPI:
@@ -96,6 +111,11 @@ def create_app(wiring: Wiring | None = None, sessions: Sessions | None = None) -
     configure_logging(SERVICE, settings.log_level)
     version = settings.running_version(__version__)
     credentials = AdminCredentials(settings.state_dir)
+
+    def product_settings() -> ProductSettings:
+        body = dict(StateStore(settings.state_dir).read("settings").body)
+        body.pop("revision", None)
+        return ProductSettings.model_validate(body)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -122,9 +142,14 @@ def create_app(wiring: Wiring | None = None, sessions: Sessions | None = None) -
         if path in PUBLIC or path == "/":
             return await call_next(request)
         token = request.cookies.get(COOKIE, "")
-        if token and await request.app.state.sessions.valid(token):
-            request.state.admin_session = token
-            return await call_next(request)
+        if token:
+            try:
+                signed_in = await request.app.state.sessions.valid(token)
+            except SessionsUnavailable:
+                return unavailable()
+            if signed_in:
+                request.state.admin_session = token
+                return await call_next(request)
         if path.startswith("/admin"):
             target = "/admin/login" if credentials.is_claimed() else "/admin/claim"
             return RedirectResponse(target, status_code=303)
@@ -141,12 +166,11 @@ def create_app(wiring: Wiring | None = None, sessions: Sessions | None = None) -
     async def claim_page(request: Request) -> Response:
         if credentials.is_claimed():
             return RedirectResponse("/admin/login", status_code=303)
-        error = request.query_params.get("error")
-        notice = '<p class="error">That claim code was not accepted.</p>' if error else ""
+        refusal = notice(CLAIM_NOTICES, request.query_params.get("error"))
         return HTMLResponse(
             page(
                 "Claim Admin",
-                f"""<h1>Claim Coppermind</h1>{notice}
+                f"""<h1>Claim Coppermind</h1>{refusal}
 <p>Enter the one-time code from the bootstrap claim-code file, then choose the admin password.</p>
 <form method="post" action="/v1/admin/claim">
 <label>Claim code<input name="code" autocomplete="one-time-code" required></label>
@@ -159,12 +183,11 @@ minlength="12" required></label><button>Claim Admin</button></form>""",
     async def login_page(request: Request) -> Response:
         if not credentials.is_claimed():
             return RedirectResponse("/admin/claim", status_code=303)
-        error = request.query_params.get("error")
-        notice = '<p class="error">That password was not accepted.</p>' if error else ""
+        refusal = notice(LOGIN_NOTICES, request.query_params.get("error"))
         return HTMLResponse(
             page(
                 "Login",
-                f"""<h1>Admin login</h1>{notice}<form method="post" action="/v1/admin/login">
+                f"""<h1>Admin login</h1>{refusal}<form method="post" action="/v1/admin/login">
 <label>Password<input type="password" name="password" autocomplete="current-password"
 required></label><button>Log in</button></form>""",
             )
@@ -181,62 +204,50 @@ required></label><button>Log in</button></form>""",
             )
         )
 
-    @app.post("/v1/admin/claim", status_code=201)
+    @app.post("/v1/admin/claim", include_in_schema=False)
     async def claim(request: Request) -> Response:
-        body = await fields(request)
-        code, password = body.get("code"), body.get("password")
-        if not isinstance(code, str) or not isinstance(password, str) or len(password) < 12:
-            return error_response(
-                request,
-                422,
-                "validation_error",
-                "code and a 12-character password are required",
-            )
+        body = await submitted(request)
+        code, password = body.get("code", ""), body.get("password", "")
+        if not code or len(password) < 12:
+            return error_response(request, "validation_error")
         try:
             await credentials.claim(code, password)
         except AlreadyClaimed:
-            return error_response(request, 409, "already_claimed", "Admin is already claimed")
+            return error_response(request, "already_claimed")
         except InvalidClaimCode:
-            return error_response(request, 403, "invalid_claim_code", "the claim code is not valid")
-        if wants_form(request):
-            return RedirectResponse("/admin/login", status_code=303)
-        return JSONResponse(status_code=201, content={"claimed": True})
+            return error_response(request, "invalid_claim_code")
+        return RedirectResponse("/admin/login", status_code=303)
 
-    @app.post("/v1/admin/login")
+    @app.post("/v1/admin/login", include_in_schema=False)
     async def login(request: Request) -> Response:
-        body = await fields(request)
-        password = body.get("password")
-        if not isinstance(password, str) or not await credentials.verify_password(password):
-            return error_response(request, 401, "unauthorized", "the admin password is not valid")
-        product_body = dict(StateStore(settings.state_dir).read("settings").body)
-        product_body.pop("revision", None)
-        product = ProductSettings.model_validate(product_body)
+        password = (await submitted(request)).get("password", "")
+        if not password or not await credentials.verify_password(password):
+            return error_response(request, "unauthorized")
+        product = product_settings()
         lifetime = timedelta(hours=product.admin.session_hours)
-        token = await request.app.state.sessions.create(lifetime)
-        response: Response
-        if wants_form(request):
-            response = RedirectResponse("/admin", status_code=303)
-        else:
-            response = JSONResponse({"authenticated": True})
+        try:
+            token = await request.app.state.sessions.create(lifetime)
+        except SessionsUnavailable:
+            return unavailable()
+        response: Response = RedirectResponse("/admin", status_code=303)
         response.set_cookie(
             COOKIE,
             token,
             max_age=int(lifetime.total_seconds()),
             httponly=True,
             samesite="strict",
-            secure=request.url.scheme == "https",
+            secure=product.admin.cookie_secure,
             path="/",
         )
         return response
 
-    @app.post("/v1/admin/logout", status_code=204)
+    @app.post("/v1/admin/logout", include_in_schema=False)
     async def logout(request: Request) -> Response:
-        await request.app.state.sessions.delete(request.state.admin_session)
-        response = (
-            RedirectResponse("/admin/login", status_code=303)
-            if wants_form(request)
-            else Response(status_code=204)
-        )
+        try:
+            await request.app.state.sessions.delete(request.state.admin_session)
+        except SessionsUnavailable:
+            return unavailable()
+        response = RedirectResponse("/admin/login", status_code=303)
         response.delete_cookie(COOKIE, path="/")
         return response
 

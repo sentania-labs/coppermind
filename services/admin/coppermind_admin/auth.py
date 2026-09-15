@@ -13,9 +13,11 @@ from typing import Protocol
 import sqlalchemy as sa
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coppermind.atomicio import create_exclusive_bytes
+from coppermind.statefiles import StateStore
 
 _HASHER = PasswordHasher()
 
@@ -28,11 +30,21 @@ class InvalidClaimCode(Exception):
     pass
 
 
+class SessionsUnavailable(Exception):
+    """The session database could not be reached."""
+
+
 class AdminCredentials:
-    """The one durable admin credential record from control state."""
+    """The one durable admin credential record from control state.
+
+    Reads go through the state store that owns `admin.json`, and only the
+    claim writes the file itself, because an exclusive create is what refuses
+    the second claimant when two people open the Claim page at once.
+    """
 
     def __init__(self, state_dir: Path) -> None:
-        self.path = state_dir / "admin.json"
+        self.state = StateStore(state_dir)
+        self.path = self.state.path_for("admin")
         self.claim_code_path = state_dir / "internal" / "claim-code"
         self._claim_lock = asyncio.Lock()
 
@@ -47,7 +59,9 @@ class AdminCredentials:
                 expected = self.claim_code_path.read_text(encoding="utf-8").strip()
             except FileNotFoundError as exc:
                 raise InvalidClaimCode from exc
-            if not expected or not secrets.compare_digest(code, expected):
+            # Compared as bytes: a code pasted out of a terminal can carry a
+            # non-ASCII character, which compare_digest refuses on str.
+            if not expected or not secrets.compare_digest(code.strip().encode(), expected.encode()):
                 raise InvalidClaimCode
             password_hash = await asyncio.to_thread(_HASHER.hash, password)
             body = {
@@ -68,10 +82,9 @@ class AdminCredentials:
 
     async def verify_password(self, password: str) -> bool:
         try:
-            record = json.loads(self.path.read_text(encoding="utf-8"))
-            encoded = record["password_hash"]
+            encoded = self.state.read("admin").body["password_hash"]
             return await asyncio.to_thread(_HASHER.verify, encoded, password)
-        except (FileNotFoundError, KeyError, TypeError, InvalidHashError, VerificationError):
+        except (OSError, ValueError, KeyError, TypeError, InvalidHashError, VerificationError):
             return False
 
 
@@ -96,44 +109,50 @@ class PostgresSessions:
     async def create(self, lifetime: timedelta) -> str:
         token = secrets.token_urlsafe(32)
         now = datetime.now(tz=UTC)
-        async with self.factory() as session, session.begin():
-            await session.execute(
-                sa.text("DELETE FROM admin_sessions WHERE expires_at <= :now"), {"now": now}
-            )
-            await session.execute(
-                sa.text(
-                    "INSERT INTO admin_sessions "
-                    "(token_hash, created_at, expires_at, last_seen_at) "
-                    "VALUES (:token_hash, :created_at, :expires_at, :last_seen_at)"
-                ),
-                {
-                    "token_hash": token_hash(token),
-                    "created_at": now,
-                    "expires_at": now + lifetime,
-                    "last_seen_at": now,
-                },
-            )
+        try:
+            async with self.factory() as session, session.begin():
+                await session.execute(
+                    sa.text("DELETE FROM admin_sessions WHERE expires_at <= :now"), {"now": now}
+                )
+                await session.execute(
+                    sa.text(
+                        "INSERT INTO admin_sessions (token_hash, created_at, expires_at) "
+                        "VALUES (:token_hash, :created_at, :expires_at)"
+                    ),
+                    {
+                        "token_hash": token_hash(token),
+                        "created_at": now,
+                        "expires_at": now + lifetime,
+                    },
+                )
+        except (SQLAlchemyError, OSError) as exc:
+            raise SessionsUnavailable from exc
         return token
 
     async def valid(self, token: str) -> bool:
         now = datetime.now(tz=UTC)
-        async with self.factory() as session, session.begin():
-            result = await session.execute(
-                sa.text(
-                    "UPDATE admin_sessions SET last_seen_at = :now "
-                    "WHERE token_hash = :token_hash AND expires_at > :now "
-                    "RETURNING token_hash"
-                ),
-                {"token_hash": token_hash(token), "now": now},
-            )
-            return result.scalar_one_or_none() is not None
+        try:
+            async with self.factory() as session:
+                result = await session.execute(
+                    sa.text(
+                        "SELECT 1 FROM admin_sessions "
+                        "WHERE token_hash = :token_hash AND expires_at > :now"
+                    ),
+                    {"token_hash": token_hash(token), "now": now},
+                )
+                return result.scalar_one_or_none() is not None
+        except (SQLAlchemyError, OSError) as exc:
+            raise SessionsUnavailable from exc
 
     async def delete(self, token: str) -> None:
-        async with self.factory() as session, session.begin():
-            await session.execute(
-                sa.text("DELETE FROM admin_sessions WHERE token_hash = :token_hash"),
-                {"token_hash": token_hash(token)},
-            )
+        try:
+            async with self.factory() as session, session.begin():
+                await session.execute(
+                    sa.text("DELETE FROM admin_sessions WHERE token_hash = :token_hash"),
+                    {"token_hash": token_hash(token)},
+                )
+        except (SQLAlchemyError, OSError) as exc:
+            raise SessionsUnavailable from exc
 
     async def ready(self) -> bool:
         try:

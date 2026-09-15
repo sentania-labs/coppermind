@@ -128,6 +128,11 @@ class AdminSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     session_hours: int = 12
+    # The session cookie carries Secure by default. Browsers accept it on the
+    # loopback default this ships with, and withhold it from any plaintext hop
+    # once the port is published, so a TLS-terminating proxy needs no change
+    # here. Turning it off is a deliberate choice for a plaintext deployment.
+    cookie_secure: bool = True
 
 
 class ProductSettings(BaseModel):

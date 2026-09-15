@@ -137,14 +137,21 @@ services:
       store:
         condition: service_healthy
 
-  # Operator pages have their own image, port and session boundary. Admin
-  # mounts control state but never the notes filesystem itself.
+  # Operator pages have their own image, port and session boundary. Only the
+  # control state subtree of the data volume is mounted, so the notes
+  # filesystem is not reachable from Admin at all and the store stays its one
+  # writer. The subtree exists by the time this starts: bootstrap creates it
+  # before migrate, which this waits on.
   admin:
     <<: *admin-image
     restart: unless-stopped
     environment: *wiring
     volumes:
-      - data:/data
+      - type: volume
+        source: data
+        target: /data/state
+        volume:
+          subpath: state
       - postgres-password:/run/coppermind/postgres:ro
     ports:
       - "${COPPERMIND_ADMIN_BIND:-127.0.0.1:8082}:8082"
