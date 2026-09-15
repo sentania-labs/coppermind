@@ -58,8 +58,8 @@ class NotesSettings(BaseModel):
 class ReconcileSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    scan_interval_s: int = 60
-    quiet_period_s: int = 30
+    scan_interval_s: int = Field(default=60, ge=1)
+    quiet_period_s: int = Field(default=30, ge=0)
     full_rehash_daily_at: str = "03:30"
 
 

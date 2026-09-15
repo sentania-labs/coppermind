@@ -9,8 +9,9 @@ is not up yet.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import sqlalchemy as sa
 from fastapi import FastAPI, Request
@@ -31,6 +32,7 @@ from coppermind_store.control import ControlState
 from coppermind_store.fs import is_writable
 from coppermind_store.internal_api import router as internal_router
 from coppermind_store.notes import LocalStore
+from coppermind_store.reconciler import run_reconciler
 
 SERVICE = "coppermind-store"
 
@@ -53,6 +55,9 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         app.state.store = LocalStore(
             settings.notes_dir, control, factory, sources_root=settings.sources_dir
         )
+        reconcile_task = asyncio.create_task(
+            run_reconciler(app.state.store), name="coppermind-reconciler"
+        )
         app.state.engine = engine
         log.info(
             "store started",
@@ -62,6 +67,9 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         try:
             yield
         finally:
+            reconcile_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await reconcile_task
             await engine.dispose()
 
     app = FastAPI(

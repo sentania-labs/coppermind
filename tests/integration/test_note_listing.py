@@ -74,6 +74,7 @@ async def test_filters_use_the_current_files_for_every_known_note(store: LocalSt
         .replace("# Ameren Architecture", "# Current Ameren Architecture", 1)
     )
     ameren_path.write_text(edited, encoding="utf-8")
+    await store.reconcile()
 
     async def ids(**filters: object) -> set[str]:
         page = await store.list_notes(NoteQuery.model_validate(filters))
@@ -109,7 +110,12 @@ async def test_state_filters_observe_missing_and_unparseable_known_paths(store: 
         context="internal",
     )
     (store.notes_root / missing.path).unlink()
-    (store.notes_root / broken.path).write_text("---\nreviewed: [\n", encoding="utf-8")
+    broken_path = store.notes_root / broken.path
+    broken_path.write_text(
+        broken_path.read_text(encoding="utf-8").replace("tags: []", "tags: ["),
+        encoding="utf-8",
+    )
+    await store.reconcile()
 
     missing_page = await store.list_notes(NoteQuery(state="missing"))
     broken_page = await store.list_notes(NoteQuery(state="unparsed"))
@@ -138,6 +144,7 @@ async def test_a_note_removed_on_a_device_lists_as_missing_beside_a_present_one(
         context="internal",
     )
     (store.notes_root / removed.path).unlink()
+    await store.reconcile()
 
     page = await store.list_notes(NoteQuery())
 
@@ -186,13 +193,12 @@ async def test_cursor_pages_four_notes_two_at_a_time_without_gaps(store: LocalSt
     assert second.next_cursor is None
 
     returned = [item.id for item in [*first.items, *second.items]]
-    expected = [note.id for note in sorted(created, key=lambda note: note.path)]
+    expected = [note.id for note in sorted(created, key=lambda note: note.id)]
     assert returned == expected
     assert len(returned) == len(set(returned))
 
 
-async def test_a_page_reads_only_the_files_it_needs(store: LocalStore, monkeypatch):
-    """A page costs what it returns, not what the mirror holds."""
+async def test_a_page_reads_the_reconciled_mirror_not_note_files(store: LocalStore, monkeypatch):
     for number, title in enumerate(("Alpha", "Bravo", "Charlie", "Delta", "Echo"), start=1):
         await _create(
             store,
@@ -202,19 +208,44 @@ async def test_a_page_reads_only_the_files_it_needs(store: LocalStore, monkeypat
             context="internal",
         )
 
-    read: list[str] = []
-    current_summary = notes_module._current_summary
+    def refused(*_args, **_kwargs):
+        raise AssertionError("listing opened a note file")
 
-    def counted(notes_root, row, schema):
-        read.append(row.path)
-        return current_summary(notes_root, row, schema)
-
-    monkeypatch.setattr(notes_module, "_current_summary", counted)
+    monkeypatch.setattr(notes_module, "_read", refused)
     page = await store.list_notes(NoteQuery(limit=2))
 
     assert len(page.items) == 2
     assert page.next_cursor is not None
-    assert len(read) == 3
+
+
+async def test_rename_between_pages_does_not_change_where_the_cursor_resumes(
+    store: LocalStore,
+):
+    created = [
+        await _create(
+            store,
+            title,
+            note_date=f"2026-09-0{number}",
+            note_type="note",
+            context="internal",
+        )
+        for number, title in enumerate(("Alpha", "Bravo", "Charlie", "Delta"), start=1)
+    ]
+    first = await store.list_notes(NoteQuery(limit=2))
+    assert first.next_cursor is not None
+
+    first_ids = {item.id for item in first.items}
+    remaining = next(note for note in created if note.id not in first_ids)
+    old_path = store.notes_root / remaining.path
+    moved_path = store.notes_root / "Filed" / "Renamed.md"
+    moved_path.parent.mkdir()
+    old_path.rename(moved_path)
+    await store.reconcile()
+
+    second = await store.list_notes(NoteQuery(limit=2, cursor=first.next_cursor))
+    returned = [item.id for item in [*first.items, *second.items]]
+    assert returned == sorted(note.id for note in created)
+    assert len(returned) == len(set(returned))
 
 
 async def test_invalid_cursor_is_a_validation_failure(store: LocalStore):

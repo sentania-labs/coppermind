@@ -37,7 +37,9 @@ class Note(Base):
     __tablename__ = "notes"
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
-    path: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    # Missing rows retain their last known path. A different note can later
+    # move onto that path, so identity is unique while historical paths are not.
+    path: Mapped[str] = mapped_column(Text, nullable=False)
     title: Mapped[str | None] = mapped_column(Text)
     content_hash: Mapped[str] = mapped_column(Text, nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)

@@ -33,15 +33,11 @@ import binascii
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
-from sqlalchemy.exc import (
-    DBAPIError,
-    IntegrityError,
-    SQLAlchemyError,
-)
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coppermind import frontmatter as fm
@@ -81,11 +77,8 @@ from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, is_no
 
 log = get_logger("coppermind-store")
 
-# How many mirror rows a listing holds in memory at a time. A filter that
-# matches little still walks the mirror, because matching reads the files
-# themselves and there is no index yet; what the batch bounds is how much of
-# the mirror is materialized at once, and the thread offload keeps that walk
-# off the event loop.
+# How many mirror rows a listing holds in memory at a time. A selective filter
+# still walks the mirror, and this bounds the materialized batch.
 _SCAN_BATCH = 200
 
 
@@ -112,6 +105,12 @@ class LocalStore:
     async def get_api_keys(self) -> ApiKeySet:
         """Read API key hashes from filesystem-first control state."""
         return self.control.api_keys()
+
+    async def reconcile(self) -> dict[str, int]:
+        """Refresh known metadata from note identities observed on disk."""
+        from coppermind_store.reconciler import reconcile_once
+
+        return await reconcile_once(self)
 
     async def ingest(
         self, request: IngestRequest, *, payload_size_bytes: int | None = None
@@ -148,6 +147,13 @@ class LocalStore:
                 # connects lazily, so without this a PostgreSQL outage would only
                 # surface at commit, after the file had already been created.
                 await session.execute(sa.text("SELECT 1"))
+                occupied = (
+                    await session.execute(
+                        sa.select(Note.id).where(Note.path == relative, Note.state != "missing")
+                    )
+                ).scalar_one_or_none()
+                if occupied is not None:
+                    raise PathCollision(relative)
                 try:
                     create_exclusive_bytes(target, data)
                 except FileExistsError as exc:
@@ -174,15 +180,6 @@ class LocalStore:
                     )
                 )
         except BaseException as exc:
-            if isinstance(exc, IntegrityError):
-                if created:
-                    target.unlink(missing_ok=True)
-                # The path is unique in the mirror, so this is a row that
-                # outlived its file: the note was deleted on a device and no
-                # reconciler has cleared the row yet. PostgreSQL is healthy,
-                # so saying otherwise would send the operator after the wrong
-                # thing.
-                raise PathCollision(relative) from exc
             typed = _metadata_failure(exc)
             if typed is None:
                 raise
@@ -221,28 +218,22 @@ class LocalStore:
         )
 
     async def list_notes(self, query: NoteQuery) -> Page[NoteSummary]:
-        """List current files for note paths present in the metadata mirror.
+        """List the most recent reconciled state for known note identities.
 
-        PostgreSQL supplies the known identifiers and paths, and therefore is
-        required. Each matching summary is then read from the notes filesystem
-        so an in-place device edit is visible before reconciliation exists.
-        Files and paths PostgreSQL does not know about remain reconciliation's
-        responsibility.
+        PostgreSQL is required because it holds the reconciler's mirror. The
+        immutable identifier is both the sort key and cursor, so a move or
+        rename between pages cannot change where the next page resumes.
 
-        Rows arrive in keyset-resumed batches rather than as the whole mirror,
-        and each batch is read and parsed off the event loop, so a selective
-        filter over a large notes filesystem cannot stall the single-worker
-        store while it scans.
+        Rows arrive in keyset-resumed batches rather than as the whole mirror.
         """
         after = _decode_note_cursor(query.cursor) if query.cursor else None
-        schema = self.control.schema()
         wanted = query.limit + 1
         batch_size = max(wanted, _SCAN_BATCH)
         matched: list[NoteSummary] = []
         while len(matched) < wanted:
-            statement = sa.select(Note).order_by(Note.path).limit(batch_size)
+            statement = sa.select(Note).order_by(Note.id).limit(batch_size)
             if after is not None:
-                statement = statement.where(Note.path > after)
+                statement = statement.where(Note.id > after)
             try:
                 async with self.session_factory() as session:
                     rows = list((await session.scalars(statement)).all())
@@ -250,17 +241,13 @@ class LocalStore:
                 raise MetadataUnavailable(str(exc)) from exc
             if not rows:
                 break
-            after = rows[-1].path
-            matched.extend(
-                await asyncio.to_thread(
-                    _scan_rows, self.notes_root, rows, schema, query, wanted - len(matched)
-                )
-            )
+            after = rows[-1].id
+            matched.extend(_scan_rows(rows, query, wanted - len(matched)))
             if len(rows) < batch_size:
                 break
 
         page = matched[: query.limit]
-        next_cursor = _encode_note_cursor(page[-1].path) if len(matched) > query.limit else None
+        next_cursor = _encode_note_cursor(page[-1].id) if len(matched) > query.limit else None
         return Page[NoteSummary](items=page, next_cursor=next_cursor)
 
     async def replace_note(
@@ -441,13 +428,16 @@ class LocalStore:
         """
         try:
             async with self.session_factory() as session:
-                relative = (
-                    await session.execute(sa.select(Note.path).where(Note.id == note_id))
-                ).scalar_one_or_none()
+                located = (
+                    await session.execute(
+                        sa.select(Note.path, Note.state).where(Note.id == note_id)
+                    )
+                ).one_or_none()
         except (SQLAlchemyError, OSError) as exc:
             raise MetadataUnavailable(str(exc)) from exc
-        if relative is None:
+        if located is None or located.state == "missing":
             raise NotFound(note_id)
+        relative = located.path
         try:
             path = resolve(self.notes_root, relative)
         except ValueError as exc:
@@ -467,8 +457,6 @@ def _parse(
     relative: str,
     data: bytes,
     schema: FrontmatterSchema,
-    *,
-    log_failure: bool = True,
 ) -> tuple[dict[str, Any], str]:
     """Parse a located note's bytes and check they are that note's."""
     try:
@@ -481,16 +469,14 @@ def _parse(
         # the store alone answers, and never the log or the public
         # envelope. Logs are collected and shipped, so the log gets only what
         # the type of the failure and its position say.
-        # A listing scan passes over the same broken file on every page, so
-        # it reports the state in the summary and leaves the warning to the
-        # read that asked for this note by name.
-        if log_failure:
-            log.warning(
-                "note frontmatter could not be parsed",
-                note_id=note_id,
-                path=relative,
-                **_parse_failure_fields(exc),
-            )
+        # Scheduled reconciliation records the state without logging note
+        # content. This warning belongs to the read that asked for the note.
+        log.warning(
+            "note frontmatter could not be parsed",
+            note_id=note_id,
+            path=relative,
+            **_parse_failure_fields(exc),
+        )
         raise NoteUnparseable(note_id, str(exc)) from exc
     carried_id = frontmatter.get(schema.role("id_key"))
     if carried_id is not None and str(carried_id) != note_id:
@@ -502,50 +488,11 @@ def _parse(
     return frontmatter, body
 
 
-def _current_summary(notes_root: Path, row: Note, schema: FrontmatterSchema) -> NoteSummary:
-    """Read a known path and say what was there: its current file, or nothing readable."""
-    try:
-        path = resolve(notes_root, row.path)
-    except ValueError:
-        return _mirrored_summary(row, "missing")
-    if not is_note_file(path):
-        return _mirrored_summary(row, "missing")
-    try:
-        data, mtime = _read(row.id, path)
-        frontmatter, body = _parse(row.id, row.path, data, schema, log_failure=False)
-    except NotFound:
-        return _mirrored_summary(row, "missing")
-    except NoteUnparseable:
-        return _mirrored_summary(row, "unparsed")
-
-    tags = frontmatter.get(schema.role("tags_key"), [])
-    return NoteSummary(
-        id=row.id,
-        path=row.path,
-        state="ok",
-        title=_title_of(body, path),
-        date=_as_date(frontmatter.get(schema.role("date_key"))),
-        type=_text(frontmatter.get(schema.role("type_key"))),
-        context=_text(frontmatter.get(schema.role("context_key"))),
-        account=_text(frontmatter.get(schema.role("account_key"))),
-        reviewed=bool(frontmatter.get(schema.role("reviewed_key"), False)),
-        tags=[str(tag) for tag in tags] if isinstance(tags, list) else [],
-        content_hash=content_hash(data),
-        updated_at=datetime.fromtimestamp(mtime, tz=UTC),
-    )
-
-
-def _scan_rows(
-    notes_root: Path,
-    rows: list[Note],
-    schema: FrontmatterSchema,
-    query: NoteQuery,
-    needed: int,
-) -> list[NoteSummary]:
-    """Read and filter one batch of known paths, stopping once `needed` match."""
+def _scan_rows(rows: list[Note], query: NoteQuery, needed: int) -> list[NoteSummary]:
+    """Filter one mirror batch, stopping once `needed` rows match."""
     found: list[NoteSummary] = []
     for row in rows:
-        summary = _current_summary(notes_root, row, schema)
+        summary = _mirrored_summary(row, cast(NoteState, row.state))
         if not _matches_query(summary, query):
             continue
         found.append(summary)
@@ -555,7 +502,7 @@ def _scan_rows(
 
 
 def _mirrored_summary(row: Note, state: NoteState) -> NoteSummary:
-    """The last known metadata for a known path whose file cannot be read now."""
+    """The latest reconciled metadata and state for a known identity."""
     return NoteSummary(
         id=row.id,
         path=row.path,
@@ -588,8 +535,8 @@ def _matches_query(summary: NoteSummary, query: NoteQuery) -> bool:
     )
 
 
-def _encode_note_cursor(path: str) -> str:
-    payload = json.dumps({"v": 1, "path": path}, separators=(",", ":"))
+def _encode_note_cursor(note_id: str) -> str:
+    payload = json.dumps({"v": 2, "id": note_id}, separators=(",", ":"))
     return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
 
 
@@ -599,11 +546,11 @@ def _decode_note_cursor(cursor: str) -> str:
         payload = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
         if (
             not isinstance(payload, dict)
-            or payload.get("v") != 1
-            or not isinstance(payload.get("path"), str)
+            or payload.get("v") != 2
+            or not isinstance(payload.get("id"), str)
         ):
             raise ValueError
-        return payload["path"]
+        return payload["id"]
     except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
         raise ValidationFailed(["cursor: invalid or expired"]) from exc
 
