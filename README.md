@@ -48,9 +48,13 @@ docker compose up -d
 ```
 
 Then read the new code the same way as above and claim Admin a second time.
-Nothing else is touched: the notes filesystem, the database, the API keys and
-the internal credentials all stay as they are. Do not rebuild the `data`
-volume for this. That destroys the notes filesystem to reset one password.
+Claiming signs every open Admin session out, so no browser keeps access under
+the password you just replaced, and it needs PostgreSQL reachable to do that:
+with the database down the claim is refused, the code stays usable and you
+retry once the stack is healthy. Nothing else is touched: the notes
+filesystem, its database records, the API keys and the internal credentials
+all stay as they are. Do not rebuild the `data` volume for this. That destroys
+the notes filesystem to reset one password.
 
 The session cookie is always Secure, which browsers send over HTTPS and on the
 loopback address above. Republishing Admin on another address with

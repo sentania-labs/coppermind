@@ -58,6 +58,13 @@ its own, and its exposure and authentication are configured independently of
 the public API. The component list is therefore api, admin, store, git,
 obsidian-sync, curator and indexer, plus PostgreSQL.
 
+Superseded 2026-09-15 on Admin holding no state: the operator session boundary
+turned out to live in Admin itself, so it keeps the claim record and password
+hash in `/data/state/admin.json`, its sessions in PostgreSQL, and reads control
+state from a `/data/state` mount instead of through the API. The separate
+service and image, and the independently configured exposure, stand. STATUS.md
+and README.md document what Admin holds today.
+
 > I do want `coppermind-admin` to remain a separate service/image rather than
 > being folded into the API. Admin has a different lifecycle, exposure/auth
 > posture, and UI responsibility, and keeping that boundary now fits the

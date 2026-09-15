@@ -11,10 +11,14 @@ vertical path proved end to end, then widened.
 - Admin is a separate service and image on loopback port 8082. A fresh install
   opens on a server-rendered Claim page. Bootstrap creates the one-time code at
   `/data/state/internal/claim-code`, records that location in its log, and
-  keeps the same code across restarts. A successful claim writes only the
-  Argon2 password hash and claim time to mode 0600 `admin.json`, then removes
-  the code. Later claim attempts are refused. Password login creates an
-  expiring, hashed PostgreSQL session with the shipped 12-hour default. The
+  keeps the same code across restarts. A successful claim accepts the code,
+  ends every existing admin session, then writes only the Argon2 password hash
+  and claim time to mode 0600 `admin.json` and removes the code; in that order,
+  so a claim that cannot reach the session database leaves the system unclaimed
+  with its code still usable. Later claim attempts are refused, and a login
+  submitted on a system that is not claimed returns to the Claim page rather
+  than reporting a bad password. Password login creates an expiring, hashed
+  PostgreSQL session with the shipped 12-hour default. The
   protected overview says only that the operator is signed in, because its
   counters and controls belong to later increments. Logout removes the
   session and the protected page redirects to Login again. Claim, login and
@@ -153,7 +157,7 @@ vertical path proved end to end, then widened.
   of its own first, because it reads everything and there is no measured
   runtime yet to judge it by. The interval, the quiet period and the rehash
   time are product settings with working defaults; their graphical controls
-  arrive with the separate Admin service.
+  arrive with Admin's later settings page.
 - **What adoption will and will not write into.** Adoption skips `.git`,
   `.obsidian` and `.trash`, everything below the configured trash, sources and
   attachments folders (`_Trash`, `_Sources` and `_Attachments` by default), and
@@ -442,9 +446,9 @@ in the tree, so do not read the absence as a decision to leave it out.
   `unstored_fields: ["captured_at"]` on every retry and nothing else changes.
 - Nothing repairs a note whose frontmatter a person broke. Reads of it answer
   409 `note_unparseable` and the file is left exactly as it is; putting it
-  right means editing it on a device, because Admin is not here yet. When the
-  broken file still carries one known identity, reconciliation associates the
-  failure with that identity rather than with a stale path.
+  right means editing it on a device, because Admin has no page for it yet.
+  When the broken file still carries one known identity, reconciliation
+  associates the failure with that identity rather than with a stale path.
 - The Git helper polls; there is no filesystem event watcher. With the
   shipped settings a change is recorded within about six minutes, and a note
   edited for a long stretch without a 60 second pause lands as one snapshot
