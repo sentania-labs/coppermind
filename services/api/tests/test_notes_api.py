@@ -170,35 +170,6 @@ async def test_the_cache_expires_so_a_revoked_key_stops_working():
     assert fake.key_reads == 2
 
 
-async def test_a_key_minted_after_the_cache_was_warmed_still_works():
-    """Traffic warms the cache; a key minted after it must not wait the cache out."""
-    fake = FakeStore()
-    seconds = 0.0
-    authenticator = auth_module.ApiKeyAuthenticator(fake, clock=lambda: seconds)
-
-    assert await authenticator.authenticate(f"Bearer {KEY}") is not None
-    assert fake.key_reads == 1
-
-    late_record, late_key = create_key(
-        "minted after the probe",
-        ["notes:read"],
-        key_id="d1e2f3a4b5c6d7e8",
-        secret="unit-test-late-secret",
-        created_at=datetime(2026, 9, 8, tzinfo=UTC),
-    )
-    fake.key_records = [KEY_RECORD, READ_KEY_RECORD, late_record]
-
-    # Inside the floor an unknown id is refused without touching the store.
-    assert await authenticator.authenticate(f"Bearer {late_key}") is None
-    assert fake.key_reads == 1
-
-    seconds = auth_module.UNKNOWN_KEY_RELOAD_FLOOR_SECONDS
-    principal = await authenticator.authenticate(f"Bearer {late_key}")
-    assert principal is not None
-    assert principal.scopes == frozenset({"notes:read"})
-    assert fake.key_reads == 2
-
-
 class GatedKeyStore(FakeStore):
     """A store whose key read begins, then waits for the test to let it answer."""
 
@@ -238,11 +209,10 @@ async def test_a_hung_store_costs_one_attempt_for_every_waiting_credential():
     assert fake.key_reads == 1
 
 
-async def test_concurrent_unknown_keys_cost_one_store_read_per_floor_window():
+async def test_concurrent_unknown_keys_cost_one_store_read():
     """An unauthenticated flood must not become one store read per request."""
     fake = GatedKeyStore()
-    seconds = 0.0
-    authenticator = auth_module.ApiKeyAuthenticator(fake, clock=lambda: seconds)
+    authenticator = auth_module.ApiKeyAuthenticator(fake)
     unknown = "Bearer cm_00000000000000ff_never-minted"
 
     waiters = [asyncio.create_task(authenticator.authenticate(unknown)) for _ in range(25)]

@@ -15,15 +15,17 @@ vertical path proved end to end, then widened.
   a working full-scope default API key in a separate restricted volume, and
   writes `settings.yaml`, `schema.yaml` and the key's Argon2 hash at revision
   1. Running it again keeps every existing secret, key and setting. Revoke
-  that default and it stays revoked: the reveal file is replaced by a sentence
-  saying so, rather than a credential that answers 401.
+  that default and it stays revoked. The revocation takes effect for
+  authentication as soon as the API's cache next loads; the reveal file is
+  replaced by a sentence saying so at the next `docker compose up`, so until
+  that restart it still holds the dead credential.
 - Every `/v1` route requires `Bearer cm_<key_id>_<secret>`. A missing or bad
   key answers 401 and a key without the route's scope answers 403. Note reads
   need `notes:read`; creates and replacements need `notes:write`. Successful
-  verification and key hashes are cached for five minutes, and a key created
-  since the last load is picked up within about a second of its first use
-  rather than waiting the cache out. Health, readiness and OpenAPI remain
-  open, and Compose remains bound to loopback by default.
+  verification and key hashes are cached for five minutes, so a key created
+  after a load is picked up at the next cache expiry rather than at once.
+  Health, readiness and OpenAPI remain open, and Compose remains bound to
+  loopback by default.
   The content-typed journal scopes, `journal:read` and `journal:write`, are
   defined in the scope vocabulary but nothing enforces them in this
   increment: only route-level scopes are enforced, so a `notes:write` key can

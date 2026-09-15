@@ -27,8 +27,10 @@ COPPERMIND_KEY="$(docker compose run --rm --no-deps --entrypoint cat bootstrap \
   /run/coppermind/api/default-api-key)"
 ```
 
-Revoke that default once you have minted your own key and the file says so in
-place of the credential, because a revoked default is never minted again.
+Revoke that default once you have minted your own key. A revoked default is
+never minted again, and it stops authenticating as soon as the API's cache
+next loads, but the file above still holds the dead credential until the next
+`docker compose up` replaces it with a sentence saying it was revoked.
 
 Create a note:
 

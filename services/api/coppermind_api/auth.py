@@ -14,11 +14,6 @@ from coppermind.api_keys import ApiKeyRecord, split_credential, verify_secret
 from coppermind.store_protocol import Store
 
 CACHE_TTL_SECONDS = 300.0
-# A key minted since the last load must work now, not in five minutes. An
-# unknown key id may therefore cost a load, and this floor is how often: one
-# load per window however many requests arrive, because callers that meet a
-# load already running await that one attempt instead of starting another.
-UNKNOWN_KEY_RELOAD_FLOOR_SECONDS = 1.0
 # Argon2 at the shipped cost holds 64 MiB per verification, so the number that
 # can run at once is capped rather than left to the default thread limiter.
 VERIFY_CONCURRENCY = 4
@@ -58,7 +53,6 @@ class ApiKeyAuthenticator:
         self._clock = clock
         self._records: dict[str, ApiKeyRecord] = {}
         self._records_expire_at = 0.0
-        self._reload_allowed_at = 0.0
         self._verified: dict[bytes, _Verified] = {}
         self._loading: asyncio.Task[dict[str, ApiKeyRecord]] | None = None
         self._lock = asyncio.Lock()
@@ -67,11 +61,6 @@ class ApiKeyAuthenticator:
     async def records(self) -> dict[str, ApiKeyRecord]:
         """Return the key records, loading them at most once per cache life."""
         if self._records_expire_at > self._clock():
-            return self._records
-        return await self._load()
-
-    async def _reload_for_unknown_key(self) -> dict[str, ApiKeyRecord]:
-        if self._reload_allowed_at > self._clock():
             return self._records
         return await self._load()
 
@@ -95,7 +84,6 @@ class ApiKeyAuthenticator:
         now = self._clock()
         self._records = {record.key_id: record for record in key_set.keys}
         self._records_expire_at = now + self._ttl
-        self._reload_allowed_at = now + UNKNOWN_KEY_RELOAD_FLOOR_SECONDS
         self._verified = {
             digest: result for digest, result in self._verified.items() if result.expires_at > now
         }
@@ -116,8 +104,6 @@ class ApiKeyAuthenticator:
 
         key_id, secret = parsed
         record = (await self.records()).get(key_id)
-        if record is None:
-            record = (await self._reload_for_unknown_key()).get(key_id)
         if record is None or record.revoked_at is not None:
             return None
         # Argon2 is deliberately expensive, so it never runs on the event loop.
