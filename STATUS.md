@@ -250,6 +250,18 @@ vertical path proved end to end, then widened.
   SBOM, scanned; and a compose smoke run of the whole storyline above, plus
   the Git helper's failure storyline, against those exact images. Every action
   is pinned to a commit SHA, and a test enforces that.
+- The independently built `obsidian-sync` image supervises the pinned
+  `obsidian-headless` client and exposes authenticated connect, pause, resume
+  and status controls on the compose network. A fresh install has the
+  supervisor available but reports sync health as disconnected, with that
+  state in `/data/state/sync/status.json`.
+  Fake mode proves connect, pause, resume and recovery after the child process
+  is killed without using a third-party account. Real device sync needs the
+  operator's own account credential once. Until the separate Admin service
+  adds its graphical Connect page, supply that credential interactively with
+  `docker compose exec -it obsidian-sync ob login`, then select the remote
+  vault object through the packaged control command. Real-device receipt has
+  not been claimed or tested here.
 
 ## Not built yet
 
@@ -286,6 +298,8 @@ in the tree, so do not read the absence as a decision to leave it out.
   compose, which is why it is deferred rather than done inside the patch.
 - **Obsidian Sync, the curator and the indexer.** No sync, no filing by
   rules, no search.
+  The Obsidian Sync helper portion of this earlier combined item is superseded
+  by the B2 entry under Working. Its graphical Admin connection remains not built.
 - **History through the API.** Nothing reads Git history or restores a note
   from it yet; `docker compose exec git git -C /data/notes log` is the way in.
 - **Admin.** A separate service and image in the design, not a route group in

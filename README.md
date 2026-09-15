@@ -154,6 +154,26 @@ minutes after a change settles, it is a commit:
 docker compose exec git git -C /data/notes log --stat
 ```
 
+The Obsidian Sync helper starts disconnected and says so in its status file.
+Until the separate Admin service supplies the graphical Connect page, give the
+Obsidian client the account credential interactively, then name the remote
+vault object to connect. The account credential is stored only in the helper's
+persistent home under `/data/state/sync`.
+
+```bash
+docker compose exec -it obsidian-sync ob login
+docker compose exec obsidian-sync node /app/control.mjs connect "My Remote Vault"
+docker compose exec obsidian-sync node /app/control.mjs status
+```
+
+Pause and resume use the same internal control endpoint through the packaged
+command:
+
+```bash
+docker compose exec obsidian-sync node /app/control.mjs pause
+docker compose exec obsidian-sync node /app/control.mjs resume
+```
+
 ## What is running
 
 | Service | Does | State |
@@ -161,6 +181,7 @@ docker compose exec git git -C /data/notes log --stat
 | `api` | the public contract on `:8080` | five-minute key cache; no durable state |
 | `store` | the only process that writes the notes filesystem | `/data`, one replica always |
 | `git` | records the history of the notes filesystem; no network, no credential | `/data/notes/.git`, one replica always |
+| `obsidian-sync` | supervises Obsidian Sync and exposes internal lifecycle control | `/data/state/sync`, one replica always |
 | `postgres` | mirrored and derived state, rebuildable from `/data` | `pgdata` volume |
 | `bootstrap`, `migrate` | one-shot, run on every `up` and exit | none |
 
@@ -188,6 +209,7 @@ make scan             # dependency, secret and repository scans, as CI runs them
 make image            # build the images locally
 make smoke            # the compose storyline end to end
 make failure          # helpers stopped and started with edits in between
+make sync-smoke       # fake sync connect, pause, resume and restart
 ```
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the bar for a pull request.

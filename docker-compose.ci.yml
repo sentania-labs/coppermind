@@ -29,3 +29,9 @@ services:
   editor:
     image: coppermind/store:ci
     build: !reset null
+
+  obsidian-sync:
+    image: coppermind/obsidian-sync:ci
+    build: !reset null
+    environment:
+      COPPERMIND_SYNC_FAKE: "1"
