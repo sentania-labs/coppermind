@@ -70,9 +70,14 @@ vertical path proved end to end, then widened.
   scan did not find becomes `missing`: one it can see but cannot parse or open
   is `unparsed` at its own path, and two live copies of one identity leave the
   row as it was rather than guessing. An interval scan stats every note file
-  and reads only the ones a stat says may have changed, a file changed inside
-  the quiet period waits for the next pass, and the daily rehash is the pass
-  that rereads everything. Several scans in a row that cannot complete make
+  and reads only the ones a stat says may have changed, and a file changed
+  inside the quiet period waits for the next pass. Trusting a stat is safe
+  because it is not the only pass: once a day, at the configured local time,
+  the store rereads and rehashes every note file, which is what catches an
+  edit that left the file's size and timestamp where they were. That pass is
+  due until it completes, so one that could not run is retried on the next
+  interval rather than skipped for the day. Several scans in a row that
+  cannot complete make
   `/readyz` report not ready rather than serving state nothing is refreshing.
   Files whose identity is not already known are left byte for byte alone. The
   interval, the quiet period and the rehash time are product settings with

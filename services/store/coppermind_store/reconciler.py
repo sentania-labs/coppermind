@@ -22,7 +22,7 @@ import re
 import stat as stat_module
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any
@@ -207,15 +207,13 @@ class ReconcilerStatus:
 async def run_reconciler(store: LocalStore, status: ReconcilerStatus | None = None) -> None:
     """Run scans on the configured interval without joining a request path."""
     status = status or ReconcilerStatus()
-    due: datetime | None = None
+    rehashed_on: date | None = None
     while True:
         interval, quiet_period_s, rehash_at, zone = _cadence(store)
         status.scan_interval_s = interval
         await asyncio.sleep(interval)
-        now = datetime.now(tz=UTC)
-        if due is None:
-            due = _next_full_rehash(now, rehash_at, zone)
-        full = due is not None and now >= due
+        today = datetime.now(tz=zone)
+        full = _rehash_due(today, rehash_at, rehashed_on)
         started = monotonic()
         status.scanning()
         try:
@@ -233,16 +231,26 @@ async def run_reconciler(store: LocalStore, status: ReconcilerStatus | None = No
         else:
             status.completed()
             if full:
-                # Only a rehash that ran clears the night's slot. A deferred one
-                # stays due, because the full pass is the only thing that sees a
-                # change that did not move a file's mtime or size.
-                due = _next_full_rehash(datetime.now(tz=UTC), rehash_at, zone)
+                # Only a rehash that ran counts for the day. A deferred one
+                # stays due, because the full pass is the only thing that sees
+                # a change that did not move a file's mtime or size.
+                rehashed_on = today.date()
             log.info(
                 "reconciliation completed",
                 duration_ms=round((monotonic() - started) * 1000),
                 full=full,
                 **counts,
             )
+
+
+def _rehash_due(now: datetime, at: str, last: date | None) -> bool:
+    """Whether the daily full rehash still owes a run for `now`'s local date.
+
+    Zero padded `HH:MM` compares as text exactly as it does as a clock, which
+    the setting's own pattern guarantees. A store that starts after the hour
+    rehashes on its first pass rather than waiting a day for the next one.
+    """
+    return last != now.date() and now.strftime("%H:%M") >= at
 
 
 def _cadence(store: LocalStore) -> tuple[int, int, str, ZoneInfo]:
@@ -258,21 +266,6 @@ def _cadence(store: LocalStore) -> tuple[int, int, str, ZoneInfo]:
     except Exception as exc:  # noqa: BLE001 - readiness reports the control-file fault
         log.warning("reconciliation settings unavailable", error_type=type(exc).__name__)
         return 60, 30, "03:30", ZoneInfo("UTC")
-
-
-def _next_full_rehash(after: datetime, at: str, zone: ZoneInfo) -> datetime | None:
-    """The first local `HH:MM` strictly after `after`, or None if unparseable."""
-    try:
-        hour, minute = (int(part) for part in at.split(":", 1))
-        wall_clock = time(hour=hour, minute=minute)
-    except ValueError:
-        log.warning("full rehash time not understood", value=at)
-        return None
-    local = after.astimezone(zone)
-    candidate = datetime.combine(local.date(), wall_clock, tzinfo=zone)
-    if candidate <= local:
-        candidate = datetime.combine(local.date() + timedelta(days=1), wall_clock, tzinfo=zone)
-    return candidate
 
 
 async def reconcile_once(

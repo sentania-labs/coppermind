@@ -1,4 +1,4 @@
-"""When the daily full rehash falls due, in the operator's own timezone."""
+"""When the daily full rehash falls due, and how a stalled reconciler surfaces."""
 
 from __future__ import annotations
 
@@ -9,29 +9,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from coppermind_store import reconciler
-from coppermind_store.reconciler import ReconcilerStatus, _next_full_rehash
+from coppermind_store.reconciler import ReconcilerStatus
 
 from coppermind.settings import ReconcileSettings
 from coppermind.store_protocol import MetadataUnavailable
 
 CHICAGO = ZoneInfo("America/Chicago")
-
-
-def test_the_rehash_is_due_at_the_next_local_wall_clock_time():
-    before = datetime(2026, 9, 15, 6, 0, tzinfo=UTC)
-
-    due = _next_full_rehash(before, "03:30", CHICAGO)
-
-    assert due == datetime(2026, 9, 15, 8, 30, tzinfo=UTC)
-    assert due.astimezone(CHICAGO).hour == 3
-
-
-def test_a_time_already_past_today_rolls_to_tomorrow():
-    after = datetime(2026, 9, 15, 4, 0, tzinfo=CHICAGO)
-
-    due = _next_full_rehash(after, "03:30", CHICAGO)
-
-    assert due == datetime(2026, 9, 16, 3, 30, tzinfo=CHICAGO)
 
 
 def test_settings_refuse_a_rehash_time_that_is_not_a_wall_clock():
@@ -102,31 +85,19 @@ def test_the_staleness_deadline_follows_the_configured_interval():
     assert brisk.problem() != ""
 
 
-async def test_a_deferred_daily_rehash_is_retried_rather_than_forfeited(monkeypatch):
-    """The full pass is the only one that sees a change that moved no mtime."""
-    calls: list[bool] = []
-    completed: list[bool] = []
-    failures: list[str] = []
+async def _drive(monkeypatch, scan, calls, rehash_at="00:00"):
+    """Run the loop with no sleep until `scan` has been called three times."""
     finished = asyncio.Event()
-    past = datetime(2000, 1, 1, tzinfo=UTC)
-    ahead = datetime(2400, 1, 1, tzinfo=UTC)
 
-    monkeypatch.setattr(reconciler, "_cadence", lambda _store: (0, 0, "03:30", ZoneInfo("UTC")))
-    monkeypatch.setattr(
-        reconciler, "_next_full_rehash", lambda *_args: ahead if completed else past
-    )
+    monkeypatch.setattr(reconciler, "_cadence", lambda _store: (0, 0, rehash_at, ZoneInfo("UTC")))
 
-    async def scan(_store, *, full, quiet_period_s):
+    async def counted(_store, *, full, quiet_period_s):
         calls.append(full)
         if len(calls) >= 3:
             finished.set()
-        if full and not failures:
-            failures.append("deferred")
-            raise MetadataUnavailable("postgres restarting")
-        completed.append(full)
-        return {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 0}
+        return await scan(full)
 
-    monkeypatch.setattr(reconciler, "reconcile_once", scan)
+    monkeypatch.setattr(reconciler, "reconcile_once", counted)
     task = asyncio.create_task(reconciler.run_reconciler(object()))
     try:
         await asyncio.wait_for(finished.wait(), timeout=5)
@@ -135,8 +106,53 @@ async def test_a_deferred_daily_rehash_is_retried_rather_than_forfeited(monkeypa
         with suppress(asyncio.CancelledError):
             await task
 
+
+async def test_a_deferred_daily_rehash_is_retried_rather_than_forfeited(monkeypatch):
+    """The full pass is the only one that sees a change that moved no mtime."""
+    calls: list[bool] = []
+    completed: list[bool] = []
+    failures: list[str] = []
+
+    async def scan(full):
+        if full and not failures:
+            failures.append("deferred")
+            raise MetadataUnavailable("postgres restarting")
+        completed.append(full)
+        return {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 0}
+
+    await _drive(monkeypatch, scan, calls)
+
     assert calls[:3] == [True, True, False]
     assert True in completed
+
+
+async def test_the_rehash_runs_once_a_day_and_not_on_every_pass(monkeypatch):
+    calls: list[bool] = []
+
+    async def scan(_full):
+        return {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 0}
+
+    await _drive(monkeypatch, scan, calls)
+
+    assert calls[:3] == [True, False, False]
+
+
+def test_the_rehash_owes_a_run_once_the_local_hour_has_passed():
+    morning = datetime(2026, 9, 15, 3, 29, tzinfo=CHICAGO)
+    on_the_hour = datetime(2026, 9, 15, 3, 30, tzinfo=CHICAGO)
+    evening = datetime(2026, 9, 15, 21, 0, tzinfo=CHICAGO)
+
+    assert reconciler._rehash_due(morning, "03:30", None) is False
+    assert reconciler._rehash_due(on_the_hour, "03:30", None) is True
+    assert reconciler._rehash_due(evening, "03:30", None) is True
+
+
+def test_one_rehash_a_day_and_the_next_day_owes_another():
+    evening = datetime(2026, 9, 15, 21, 0, tzinfo=CHICAGO)
+    tomorrow = datetime(2026, 9, 16, 4, 0, tzinfo=CHICAGO)
+
+    assert reconciler._rehash_due(evening, "03:30", evening.date()) is False
+    assert reconciler._rehash_due(tomorrow, "03:30", evening.date()) is True
 
 
 def test_a_scan_in_flight_is_not_counted_as_silence():
@@ -174,7 +190,6 @@ async def test_the_loop_marks_a_scan_in_flight_before_running_it(monkeypatch):
     finished = asyncio.Event()
 
     monkeypatch.setattr(reconciler, "_cadence", lambda _store: (0, 0, "03:30", ZoneInfo("UTC")))
-    monkeypatch.setattr(reconciler, "_next_full_rehash", lambda *_args: None)
 
     async def scan(_store, *, full, quiet_period_s):
         in_flight.append(status.scan_started_at)

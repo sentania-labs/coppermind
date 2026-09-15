@@ -3,8 +3,7 @@
 #   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
 #
 # Images come from the tarballs the image job built and tested, so the smoke
-# test exercises exactly what would be published, never a fresh build. The
-# tools container stands in for a device editing the shared notes filesystem.
+# test exercises exactly what would be published, never a fresh build.
 services:
 
   bootstrap:
@@ -27,18 +26,6 @@ services:
     image: coppermind/git:ci
     build: !reset null
 
-  tools:
+  editor:
     image: coppermind/store:ci
     build: !reset null
-    entrypoint: ["sleep", "infinity"]
-    user: "1000:1000"
-    volumes:
-      - data:/data
-    depends_on:
-      bootstrap:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "python3", "-c", "pass"]
-      interval: 5s
-      timeout: 5s
-      retries: 3
