@@ -73,9 +73,12 @@ vertical path proved end to end, then widened.
   and reads only the ones a stat says may have changed. A file carrying no
   identity this store knows, which is every file in a vault Coppermind was
   pointed at, is read once and then stat-trusted the same way, so an unknown
-  vault costs one stat per file per pass rather than a read and a parse. A
-  file changed inside the quiet period waits for the next pass. Trusting a
-  stat is safe
+  vault costs one stat per file per pass rather than a read and a parse. That
+  memory holds 10,000 such paths per store process; in a vault with more
+  unidentified files than that, the ones past the bound are read and parsed
+  every pass until write-side reconciliation gives them identities. A file
+  changed inside the quiet period waits for the next pass. Trusting a stat is
+  safe
   because it is not the only pass: once a day, at the configured local time,
   the store rereads and rehashes every note file, which is what catches an
   edit that left the file's size and timestamp where they were. That pass is

@@ -7,9 +7,11 @@ An interval scan stats every note file and reads only the ones a stat says may
 have changed, so the steady-state cost is one stat per file rather than a read
 and a sha256 of the whole notes filesystem every minute. A file carrying no
 identity this store knows, which is every file in a vault Coppermind was
-pointed at, is read once and then stat-trusted the same way. The scheduled
-daily rehash is the pass that reads everything, which is what catches a change
-a device made without moving the file's mtime or size.
+pointed at, is read once and then stat-trusted the same way, for up to
+`_UNIDENTIFIED_LIMIT` such paths; past that bound the remaining unknown files
+are read and parsed on every pass. The scheduled daily rehash is the pass that
+reads everything, which is what catches a change a device made without moving
+the file's mtime or size.
 
 Only observed absence makes a note missing. A file the scan can see but cannot
 identify, parse or open is recorded as present and unparsed, because reporting
@@ -61,6 +63,12 @@ _WEDGED_AFTER = 3
 # says the same. A scan wedged inside the filesystem walk never raises, so the
 # failure counter alone would stay green while nothing converged.
 _STALE_INTERVALS = 3
+
+# How long the first pass of a process has before it counts as silence. Until
+# one scan has finished there is no measured runtime to size the deadline from,
+# and a first pass reads and hashes the whole notes filesystem. Finite on
+# purpose: a first scan that never finishes has to surface.
+_FIRST_SCAN_GRACE = timedelta(minutes=30)
 
 # How far past the walk's own clock an mtime may sit and still be read as an
 # in-flight write. Sized for the skew between this container and the clock that
@@ -158,6 +166,9 @@ class ReconcilerStatus:
     A filesystem or database fault that survives several intervals stops the
     mirror converging for every note at once. Logs alone would leave the
     service answering listings from state nothing is refreshing.
+
+    The first pass of a process is judged on a fixed grace rather than on the
+    deadline, because nothing has measured how long a scan takes here yet.
     """
 
     def __init__(self) -> None:
@@ -200,6 +211,8 @@ class ReconcilerStatus:
         if self.scan_started_at is not None and self.scan_started_at > since:
             since = self.scan_started_at
         quiet_for = datetime.now(tz=UTC) - since
+        if self.last_completed_at is None and quiet_for <= _FIRST_SCAN_GRACE:
+            return ""
         # The deadline never falls below what a scan here actually takes, so a
         # long rehash, or a brisk interval an operator chose, is not a fault.
         deadline = _STALE_INTERVALS * max(self.scan_interval_s, self.longest_scan_s)

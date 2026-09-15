@@ -60,12 +60,43 @@ def test_a_scan_that_stalls_without_raising_is_reported_stale():
     assert status.problem() == ""
 
 
-def test_a_reconciler_that_never_completes_a_first_scan_is_reported_stale():
+def test_a_long_first_scan_stays_ready_while_its_grace_holds():
+    """Nothing has measured a scan here yet, so the deadline cannot judge one."""
     status = ReconcilerStatus()
     status.scan_interval_s = 60
-    status.started_at = datetime.now(UTC) - timedelta(seconds=600)
+    status.started_at = datetime.now(UTC) - timedelta(seconds=660)
+    status.scanning()
+    status.scan_started_at = datetime.now(UTC) - timedelta(seconds=600)
 
     assert status.last_completed_at is None
+    assert status.longest_scan_s == 0.0
+    assert status.problem() == ""
+
+    status.completed()
+    assert status.longest_scan_s >= 600
+    assert status.problem() == ""
+
+
+def test_a_first_scan_that_never_completes_is_reported_once_the_grace_runs_out():
+    status = ReconcilerStatus()
+    status.scan_interval_s = 60
+    grace = reconciler._FIRST_SCAN_GRACE.total_seconds()
+    status.started_at = datetime.now(UTC) - timedelta(seconds=grace + 600)
+    status.scanning()
+    status.scan_started_at = datetime.now(UTC) - timedelta(seconds=grace + 540)
+
+    assert status.last_completed_at is None
+    assert "no scan has completed" in status.problem()
+
+
+def test_a_reconciler_that_never_starts_a_first_scan_is_reported_stale():
+    status = ReconcilerStatus()
+    status.scan_interval_s = 60
+    grace = reconciler._FIRST_SCAN_GRACE.total_seconds()
+    status.started_at = datetime.now(UTC) - timedelta(seconds=grace + 600)
+
+    assert status.last_completed_at is None
+    assert status.scan_started_at is None
     assert "no scan has completed" in status.problem()
 
 
