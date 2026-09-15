@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from coppermind_admin.auth import AdminCredentials, SignedSessions
-from coppermind_admin.main import COOKIE, create_app
+from coppermind_admin.main import COOKIE, MAX_FORM_BYTES, create_app
 from fastapi.testclient import TestClient
 
 from coppermind.settings import Wiring, default_settings
@@ -138,7 +138,7 @@ def test_an_ended_session_says_so_on_the_login_page(fresh):
     assert "That session has ended." in client.get(ended.headers["location"]).text
 
 
-def test_a_logout_without_a_live_session_returns_to_the_login_page(fresh):
+def test_a_logout_without_a_live_session_clears_the_dead_cookie(fresh):
     """The session lapses in an open tab, and Log out is the next thing clicked."""
     client, _, sessions = fresh
     claim(client)
@@ -148,7 +148,9 @@ def test_a_logout_without_a_live_session_returns_to_the_login_page(fresh):
     stale = client.post("/v1/admin/logout", data={}, follow_redirects=False)
     assert stale.status_code == 303
     assert stale.headers["location"] == "/admin/login?error=session_expired"
+    assert COOKIE not in client.cookies
     assert "That session has ended." in client.get(stale.headers["location"]).text
+    assert client.get("/admin", follow_redirects=False).headers["location"] == "/admin/login"
 
 
 def test_a_refused_password_returns_to_login_saying_so(fresh):
@@ -456,3 +458,29 @@ def test_a_state_directory_that_will_not_take_the_record_says_so_on_the_claim_pa
     assert not record.exists()
     assert (wiring.state_dir / "internal" / "claim-code").is_file()
     assert claim(client).headers["location"] == "/admin/login"
+
+
+def test_a_form_body_past_the_ceiling_is_refused_before_any_work(fresh):
+    """Both public POSTs are unauthenticated, so neither buffers a body of any size."""
+    client, wiring, _ = fresh
+    oversized = {"code": CLAIM_CODE, "password": "x" * (MAX_FORM_BYTES + 1)}
+
+    refused = client.post("/v1/admin/claim", data=oversized, follow_redirects=False)
+    assert refused.status_code == 303
+    assert refused.headers["location"] == "/admin/claim?error=too_large"
+    assert "too large" in client.get(refused.headers["location"]).text
+    assert not (wiring.state_dir / "admin.json").exists()
+    assert (wiring.state_dir / "internal" / "claim-code").is_file()
+
+    claim(client)
+    refused = client.post(
+        "/v1/admin/login",
+        data={"password": "x" * (MAX_FORM_BYTES + 1)},
+        follow_redirects=False,
+    )
+    assert refused.status_code == 303
+    assert refused.headers["location"] == "/admin/login?error=too_large"
+    assert "too large" in client.get(refused.headers["location"]).text
+    assert COOKIE not in client.cookies
+
+    assert login(client).headers["location"] == "/admin"

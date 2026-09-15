@@ -62,15 +62,13 @@ records, the API keys and the internal credentials all stay as they are. Do
 not rebuild the `data` volume for this. That destroys the notes filesystem to
 reset one password.
 
-The session cookie is always Secure, which browsers send over HTTPS and on the
-loopback address above. Republishing Admin on another address with
-`COPPERMIND_ADMIN_BIND` therefore requires TLS in front of it: over plain HTTP
-the browser will not send the cookie back and login cannot complete. There is
-no plaintext option. Republishing Admin also puts its login in reach of anyone
-who can reach that port, and login has no attempt limiting yet. A proxy in
-front of Admin sees the session cookie, so treat anything that logs or buffers
-request headers as holding a live credential: if one gets out, re-claim with a
-new password as described above. Clicking Log out will not reach it.
+Admin is published on `127.0.0.1:8082` and nowhere else, with no setting to
+move it. Its session cookie is always Secure, which a browser honours on that
+loopback address and not on a plain HTTP one, and its login has no attempt
+limiting yet, so reaching Admin from another machine is a later increment and
+not a value to change here. That cookie is a live credential for its 12 hours:
+if one gets out of the browser holding it, re-claim with a new password as
+described above, because clicking Log out will not reach it.
 
 Read the default API key from its
 restricted bootstrap volume into the current shell:

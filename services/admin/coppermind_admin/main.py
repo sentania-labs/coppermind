@@ -14,7 +14,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 
 from coppermind.health import Check, Health, Readiness
 from coppermind.logging import configure_logging, get_logger
-from coppermind.settings import ProductSettings, Wiring
+from coppermind.settings import ProductSettings, Wiring, read_settings
 from coppermind.statefiles import StateStore
 from coppermind_admin import __version__
 from coppermind_admin.auth import (
@@ -40,17 +40,23 @@ PUBLIC = {
 }
 log = get_logger(SERVICE)
 
+# A claim code and a password are a few hundred bytes. The ceiling is here so an
+# unauthenticated POST cannot make Admin buffer a body of any size it likes.
+MAX_FORM_BYTES = 4096
+
 # What each rejection tells the operator. The page named in the redirect is
 # the one that reads the notice, so a refused password is never reported as a
 # bad code.
 CLAIM_NOTICES = {
     "invalid_claim_code": "That claim code was not accepted.",
     "validation_error": "Enter the claim code and a password of at least 12 characters.",
+    "too_large": "That submission was too large to read. Try again.",
 }
 LOGIN_NOTICES = {
     "unauthorized": "That password was not accepted.",
     "already_claimed": "Admin has already been claimed. Log in with the admin password.",
     "session_expired": "That session has ended. Log in again.",
+    "too_large": "That submission was too large to read. Try again.",
 }
 
 
@@ -90,9 +96,18 @@ def notice(notices: dict[str, str], error: str | None) -> str:
     return f'<p class="error">{html.escape(message)}</p>'
 
 
+class SubmissionTooLarge(Exception):
+    """The form body passed the ceiling before Admin finished reading it."""
+
+
 async def submitted(request: Request) -> dict[str, str]:
     """The fields of a submitted form. Admin is driven by its pages only."""
-    parsed = parse_qs((await request.body()).decode(errors="replace"), keep_blank_values=True)
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > MAX_FORM_BYTES:
+            raise SubmissionTooLarge
+    parsed = parse_qs(bytes(body).decode(errors="replace"), keep_blank_values=True)
     return {key: values[-1] for key, values in parsed.items()}
 
 
@@ -179,12 +194,8 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
 
     state = StateStore(settings.state_dir)
 
-    # Mirrors ControlState.settings in the store service, which Admin's image
-    # does not carry: it installs the shared package and its own service only.
     def product_settings() -> ProductSettings:
-        body = dict(state.read("settings").body)
-        body.pop("revision", None)
-        return ProductSettings.model_validate(body)
+        return read_settings(state)
 
     app = FastAPI(title="Coppermind Admin", version=version)
     app.state.sessions = sessions or SignedSessions(credentials)
@@ -206,7 +217,9 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
             if signed_in:
                 return await call_next(request)
         if token:
-            return error_response("login", "session_expired")
+            ended = error_response("login", "session_expired")
+            ended.delete_cookie(COOKIE, path="/")
+            return ended
         return RedirectResponse("/admin/login", status_code=303)
 
     @app.get("/", include_in_schema=False)
@@ -247,7 +260,10 @@ required></label><button>Log in</button></form>""",
 
     @app.post("/v1/admin/claim", include_in_schema=False)
     async def claim(request: Request) -> Response:
-        body = await submitted(request)
+        try:
+            body = await submitted(request)
+        except SubmissionTooLarge:
+            return error_response("claim", "too_large")
         code, password = body.get("code", ""), body.get("password", "")
         if not code or len(password) < 12:
             return error_response("claim", "validation_error")
@@ -265,7 +281,10 @@ required></label><button>Log in</button></form>""",
     async def login(request: Request) -> Response:
         if not credentials.is_claimed():
             return RedirectResponse("/admin/claim", status_code=303)
-        password = (await submitted(request)).get("password", "")
+        try:
+            password = (await submitted(request)).get("password", "")
+        except SubmissionTooLarge:
+            return error_response("login", "too_large")
         if not password:
             return error_response("login", "unauthorized")
         try:

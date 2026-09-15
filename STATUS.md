@@ -27,8 +27,8 @@ vertical path proved end to end, then widened.
   that names its own cause, including a control state file Admin cannot read
   and a state directory that will not take the record, each named on screen
   along with what was rejected. The session cookie is
-  always Secure, which browsers honour on the loopback address this ships with
-  and which makes TLS a requirement for any other address. Admin mounts only
+  always Secure, which browsers honour on the loopback address Admin is fixed
+  to; there is no setting that publishes it anywhere else. Admin mounts only
   `/data/state`, so the notes filesystem is not reachable from it at all.
   Re-claiming after password recovery replaces the signing secret, which
   immediately refuses every cookie issued under the old password. This path

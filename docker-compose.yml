@@ -142,6 +142,11 @@ services:
   # filesystem is not reachable from Admin at all and the store stays its one
   # writer. Bootstrap creates the subtree and one-time claim code before this
   # starts. Admin has no PostgreSQL dependency.
+  #
+  # Fixed to loopback with no override. Its session cookie is Secure, which a
+  # browser honours here and not on a plain HTTP address, and login has no
+  # attempt limiting, so publishing Admin elsewhere arrives with the controls
+  # that deployment needs rather than before them.
   admin:
     <<: *admin-image
     restart: unless-stopped
@@ -153,7 +158,7 @@ services:
         volume:
           subpath: state
     ports:
-      - "${COPPERMIND_ADMIN_BIND:-127.0.0.1:8082}:8082"
+      - "127.0.0.1:8082:8082"
     depends_on:
       bootstrap:
         condition: service_completed_successfully
