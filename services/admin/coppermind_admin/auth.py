@@ -86,14 +86,17 @@ class AdminCredentials:
 
     async def verify_password(self, password: str) -> bool:
         try:
-            encoded = self.state.read("admin").body["password_hash"]
-        except (OSError, ValueError, KeyError) as exc:
+            record = self.state.read("admin").body
+        except (OSError, ValueError) as exc:
             raise AdminRecordUnreadable(str(exc)) from exc
+        encoded = record.get("password_hash")
+        if not isinstance(encoded, str) or not encoded.isascii():
+            raise AdminRecordUnreadable("password_hash is not an ASCII Argon2 hash string")
         try:
             return await asyncio.to_thread(_HASHER.verify, encoded, password)
         except VerificationError:
             return False
-        except (TypeError, InvalidHashError) as exc:
+        except InvalidHashError as exc:
             raise AdminRecordUnreadable(
                 f"password_hash is not a usable Argon2 hash: {exc}"
             ) from exc
@@ -105,6 +108,8 @@ class Sessions(Protocol):
     async def valid(self, token: str) -> bool: ...
 
     async def delete(self, token: str) -> None: ...
+
+    async def revoke_all(self) -> None: ...
 
     async def ready(self) -> bool: ...
 
@@ -162,6 +167,13 @@ class PostgresSessions:
                     sa.text("DELETE FROM admin_sessions WHERE token_hash = :token_hash"),
                     {"token_hash": token_hash(token)},
                 )
+        except (SQLAlchemyError, OSError) as exc:
+            raise SessionsUnavailable from exc
+
+    async def revoke_all(self) -> None:
+        try:
+            async with self.factory() as session, session.begin():
+                await session.execute(sa.text("DELETE FROM admin_sessions"))
         except (SQLAlchemyError, OSError) as exc:
             raise SessionsUnavailable from exc
 

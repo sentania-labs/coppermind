@@ -64,6 +64,16 @@ async def test_an_expired_session_is_refused_and_swept(
     assert remaining == [token_hash(live)]
 
 
+async def test_revoke_all_ends_every_session_at_once(sessions: PostgresSessions):
+    first = await sessions.create(timedelta(hours=12))
+    second = await sessions.create(timedelta(hours=12))
+
+    await sessions.revoke_all()
+
+    assert await sessions.valid(first) is False
+    assert await sessions.valid(second) is False
+
+
 async def test_an_outage_raises_the_error_admin_answers_503_for():
     engine = make_engine(
         "postgresql+asyncpg://coppermind:coppermind@127.0.0.1:5999/coppermind_absent"
@@ -77,5 +87,7 @@ async def test_an_outage_raises_the_error_admin_answers_503_for():
             await unreachable.valid("any token")
         with pytest.raises(SessionsUnavailable):
             await unreachable.delete("any token")
+        with pytest.raises(SessionsUnavailable):
+            await unreachable.revoke_all()
     finally:
         await engine.dispose()

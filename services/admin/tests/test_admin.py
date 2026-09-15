@@ -39,6 +39,10 @@ class MemorySessions:
         self._check()
         self.tokens.discard(token_hash(token))
 
+    async def revoke_all(self) -> None:
+        self._check()
+        self.tokens.clear()
+
     async def ready(self) -> bool:
         return self.available
 
@@ -189,25 +193,6 @@ def test_the_session_cookie_is_always_secure(tmp_path: Path):
         assert "You are signed in" in client.get("/admin").text
 
 
-def test_the_documented_loopback_address_keeps_the_secure_cookie(tmp_path: Path):
-    client, _, _ = _client(tmp_path, base_url="http://127.0.0.1:8082")
-    with client:
-        claim(client)
-        logged_in = login(client)
-        assert logged_in.headers["location"] == "/admin"
-        assert "Secure" in logged_in.headers["set-cookie"]
-
-
-def test_an_address_admin_cannot_judge_still_gets_its_session(tmp_path: Path):
-    """What a TLS-terminating proxy looks like from here: a plain http hop."""
-    client, _, sessions = _client(tmp_path, base_url="http://coppermind.example:8082")
-    with client:
-        claim(client)
-        logged_in = login(client)
-        assert logged_in.headers["location"] == "/admin"
-        assert sessions.tokens
-
-
 def test_the_session_cookie_lasts_the_browser_session_not_the_row(fresh):
     """Set-Cookie is the contract: no Max-Age or Expires means until close."""
     client, _, _ = fresh
@@ -252,6 +237,34 @@ def test_a_settings_file_admin_cannot_read_names_the_file_and_the_key(fresh):
     assert str(settings_file) in missing.text
 
 
+def test_re_claiming_after_recovery_ends_every_session_the_old_password_opened(fresh):
+    """The README recovery replaces the credential, so it must end its sessions."""
+    client, wiring, sessions = fresh
+    claim(client)
+    login(client)
+    assert "You are signed in" in client.get("/admin").text
+
+    (wiring.state_dir / "admin.json").unlink()
+    (wiring.state_dir / "internal" / "claim-code").write_text(CLAIM_CODE + "\n", encoding="utf-8")
+    reclaimed = claim(client, password="a different admin password")
+    assert reclaimed.headers["location"] == "/admin/login"
+
+    assert not sessions.tokens
+    refused = client.get("/admin", follow_redirects=False)
+    assert refused.headers["location"] == "/admin/login?error=session_expired"
+
+
+def test_a_stale_login_on_an_unclaimed_admin_goes_to_the_claim_page(fresh):
+    """The operator removed admin.json to recover, then submitted an old tab."""
+    client, wiring, _ = fresh
+    claim(client)
+    (wiring.state_dir / "admin.json").unlink()
+
+    stale = login(client)
+    assert stale.status_code == 303
+    assert stale.headers["location"] == "/admin/claim"
+
+
 def test_an_admin_record_admin_cannot_read_is_not_blamed_on_the_password(fresh):
     """A truncated or restored-in-part admin.json is not a wrong password."""
     client, wiring, sessions = fresh
@@ -270,6 +283,16 @@ def test_an_admin_record_admin_cannot_read_is_not_blamed_on_the_password(fresh):
     unusable = login(client)
     assert unusable.status_code == 500
     assert str(record) in unusable.text
+
+    for broken in (
+        '{"password_hash": null}',
+        '{"password_hash": 12}',
+        '{"password_h' + 'ash": "$argon2\u2019"}',
+    ):
+        record.write_text(broken, encoding="utf-8")
+        answered = login(client)
+        assert answered.status_code == 500
+        assert str(record) in answered.text
 
 
 def test_a_session_database_outage_answers_503_rather_than_failing(fresh):

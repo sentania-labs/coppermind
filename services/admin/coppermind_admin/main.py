@@ -259,10 +259,16 @@ required></label><button>Log in</button></form>""",
             return error_response("login", "already_claimed")
         except InvalidClaimCode:
             return error_response("claim", "invalid_claim_code")
+        try:
+            await request.app.state.sessions.revoke_all()
+        except SessionsUnavailable:
+            return unavailable()
         return RedirectResponse("/admin/login", status_code=303)
 
     @app.post("/v1/admin/login", include_in_schema=False)
     async def login(request: Request) -> Response:
+        if not credentials.is_claimed():
+            return RedirectResponse("/admin/claim", status_code=303)
         password = (await submitted(request)).get("password", "")
         if not password:
             return error_response("login", "unauthorized")
