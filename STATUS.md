@@ -56,11 +56,11 @@ vertical path proved end to end, then widened.
 - Every `/v1` route requires `Bearer cm_<key_id>_<secret>`. A missing or bad
   key answers 401 and a key without the route's scope answers 403. Note reads
   need `notes:read`; creates and replacements need `notes:write`; frontmatter
-  patches need both `notes:read` and `notes:write`; ingest needs both
-  `sources:write` and `notes:write`, so a key
-  holding one of the two answers 403. Successful verification and key hashes
-  are cached for five minutes, so a key created after a load is picked up at
-  the next cache expiry rather than at once.
+  patches need both `notes:read` and `notes:write`; source and artifact reads
+  need `sources:read`; ingest needs both `sources:write` and `notes:write`, so
+  a key holding one of the two answers 403. Successful verification and key
+  hashes are cached for five minutes, so a key created after a load is picked
+  up at the next cache expiry rather than at once.
   Health, readiness and OpenAPI remain open, and Compose remains bound to
   loopback by default.
   The content-typed journal scopes, `journal:read` and `journal:write`, are
