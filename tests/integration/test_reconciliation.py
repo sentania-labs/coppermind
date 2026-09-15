@@ -900,7 +900,10 @@ async def test_a_real_source_projection_is_never_adopted_as_a_note(store: LocalS
     assert list(ids) == [result.note.id]
 
 
-async def test_managed_source_projection_is_never_reconciled_as_a_note(store: LocalStore):
+async def test_read_side_does_not_treat_a_managed_projection_as_a_known_note(
+    store: LocalStore,
+):
+    """This proves read-side exclusion, not adoption that is not built yet."""
     note = await store.create_note(CreateNote(title="Generated", frontmatter={"type": "reference"}))
     original = store.notes_root / note.path
     projection = store.notes_root / "_Sources" / "Plaud" / "Generated.md"

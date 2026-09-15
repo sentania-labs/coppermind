@@ -254,8 +254,10 @@ vertical path proved end to end, then widened.
   their MIME type, size and SHA-256. A changed source revision regenerates the
   same projection path from the immutable bundle, so a person's edit to a
   projection is not merged or preserved. Projections are generated output:
-  reconciliation excludes them as notes, Git excludes the sources folder,
-  and Obsidian Sync does not exclude it.
+  the current read-side reconciler excludes them as known notes, Git excludes
+  the sources folder, and Obsidian Sync does not exclude it. Write-side
+  reconciliation is not built on this branch, so its separate rule for never
+  adopting managed projections must be settled when that work lands.
 - `GET /v1/sources/{id}` reads the filesystem manifest. Its artifact route
   returns UTF-8 text types as the response body and describes non-text
   artifacts as JSON with their size and SHA-256, after verifying the stored
