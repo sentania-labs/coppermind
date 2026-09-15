@@ -248,12 +248,20 @@ def test_append_missing_preserves_an_empty_frontmatter_block_and_its_line_ending
     assert updated == ("---\r\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\r\n---\r\n# Written on a phone\r\n")
 
 
-def test_append_missing_keeps_a_carriage_return_only_block_and_its_body():
-    """`split` accepts a lone carriage return, so appending must not truncate."""
+def test_append_missing_refuses_carriage_return_only_line_endings():
+    """`split` reports no body for these, so a write would mirror them empty."""
     note = "---\rtags: [mine]\r---\r# Written on a phone\r"
 
-    updated = fm.append_missing(note, {"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"})
+    with pytest.raises(fm.FrontmatterError) as raised:
+        fm.append_missing(note, {"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"})
 
-    assert updated == (
-        "---\rtags: [mine]\rid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\r---\r# Written on a phone\r"
-    )
+    assert raised.value.category == "unsupported_line_endings"
+
+
+def test_append_missing_refuses_a_carriage_return_only_file_with_no_block():
+    note = "# Written on a phone\r\rStill no line feed anywhere.\r"
+
+    with pytest.raises(fm.FrontmatterError) as raised:
+        fm.append_missing(note, {"id": "01K4Q8Z3N7V2X9M1B5C6D8E0F2"})
+
+    assert raised.value.category == "unsupported_line_endings"

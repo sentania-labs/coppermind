@@ -187,7 +187,7 @@ async def test_adoption_never_overwrites_a_device_write(
     counts = await reconcile_once(store)
 
     assert counts["adopted"] == 0
-    assert counts["deferred"] == 1
+    assert counts["unadopted"] == 1
     assert unknown.read_text(encoding="utf-8") == "# Racing sync\n\nFirst piece.\nSecond piece.\n"
 
 
@@ -211,7 +211,13 @@ async def test_an_invalid_device_created_file_is_reported_and_left_byte_exact(
 async def test_one_failed_adoption_does_not_stop_the_others_converging(
     store: LocalStore, monkeypatch: pytest.MonkeyPatch
 ):
-    """A per-file write fault is its own state, not a dead pass for every note."""
+    """A per-file write fault is its own state, not a dead pass for every note.
+
+    An unadoptable file carries no identity the mirror knows, so it must not
+    suppress a deletion report or hold the daily rehash due behind it.
+    """
+    gone = await store.create_note(CreateNote(title="Meeting", frontmatter={"type": "reference"}))
+    (store.notes_root / gone.path).unlink()
     root = store.notes_root / "Review"
     root.mkdir(parents=True, exist_ok=True)
     (root / "Read only.md").write_bytes(b"# Read only\n")
@@ -228,9 +234,62 @@ async def test_one_failed_adoption_does_not_stop_the_others_converging(
     healthy, _ = fm.parse((root / "Healthy.md").read_text(encoding="utf-8"))
 
     assert counts["adopted"] == 1
-    assert counts["deferred"] == 1
+    assert counts["unadopted"] == 1
+    assert counts["deferred"] == 0
+    assert counts["missing"] == 1
+    assert (await _row(store, gone.id)).state == "missing"
     assert is_valid_id(healthy[store.control.schema().role("id_key")])
     assert (root / "Read only.md").read_bytes() == b"# Read only\n"
+
+
+async def test_adoption_is_bounded_per_pass_so_an_existing_tree_arrives_gradually(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """A tree already full of notes is adopted over passes, not in one burst."""
+    monkeypatch.setattr(reconciler, "_ADOPTIONS_PER_PASS", 2)
+    root = store.notes_root / "Review"
+    root.mkdir(parents=True, exist_ok=True)
+    for index in range(3):
+        (root / f"Existing {index}.md").write_bytes(f"# Existing {index}\n".encode())
+
+    first = await reconcile_once(store)
+
+    assert first["adopted"] == 2
+    assert first["unadopted"] == 1
+    assert first["deferred"] == 0
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 2
+
+    second = await reconcile_once(store)
+
+    assert second["adopted"] == 1
+    assert second["unadopted"] == 0
+    identities = {
+        fm.parse((root / f"Existing {index}.md").read_text(encoding="utf-8"))[0][
+            store.control.schema().role("id_key")
+        ]
+        for index in range(3)
+    }
+    assert len(identities) == 3
+    assert all(is_valid_id(note_id) for note_id in identities)
+
+
+async def test_a_carriage_return_only_file_is_left_alone_rather_than_served_empty(
+    store: LocalStore,
+):
+    """`split` reports no body for these, so adopting one would mirror it empty."""
+    unknown = store.notes_root / "Review" / "Written on a phone.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    original = b"---\rtags: [phone]\r---\r# Written on a phone\r"
+    unknown.write_bytes(original)
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 0
+    assert counts["unparsed"] == 1
+    assert unknown.read_bytes() == original
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 0
 
 
 async def test_a_copy_of_a_known_identity_is_left_alone_rather_than_re_identified(
@@ -265,6 +324,7 @@ async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: 
 
     assert counts == {
         "adopted": 0,
+        "unadopted": 0,
         "changed": 0,
         "moved": 0,
         "missing": 0,
@@ -380,6 +440,7 @@ async def test_two_live_copies_leave_the_row_alone_instead_of_reporting_it_gone(
 
     assert counts == {
         "adopted": 0,
+        "unadopted": 0,
         "changed": 0,
         "moved": 0,
         "missing": 0,
@@ -425,6 +486,7 @@ async def test_an_interval_scan_trusts_a_stat_and_the_daily_rehash_does_not(stor
 
     assert await reconcile_once(store) == {
         "adopted": 0,
+        "unadopted": 0,
         "changed": 0,
         "moved": 0,
         "missing": 0,
@@ -435,6 +497,7 @@ async def test_an_interval_scan_trusts_a_stat_and_the_daily_rehash_does_not(stor
 
     assert await reconcile_once(store, full=True) == {
         "adopted": 0,
+        "unadopted": 0,
         "changed": 1,
         "moved": 0,
         "missing": 0,
@@ -456,6 +519,7 @@ async def test_a_file_still_inside_the_quiet_period_waits_rather_than_going_miss
 
     assert deferred == {
         "adopted": 0,
+        "unadopted": 0,
         "changed": 0,
         "moved": 0,
         "missing": 0,
@@ -467,6 +531,7 @@ async def test_a_file_still_inside_the_quiet_period_waits_rather_than_going_miss
 
     assert await reconcile_once(store) == {
         "adopted": 0,
+        "unadopted": 0,
         "changed": 1,
         "moved": 0,
         "missing": 0,

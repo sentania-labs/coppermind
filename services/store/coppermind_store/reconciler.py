@@ -93,6 +93,15 @@ class UnidentifiedStat:
 UnidentifiedStats = dict[str, UnidentifiedStat]
 _UNIDENTIFIED_LIMIT = 10_000
 
+# How many device-created files one pass gives an identity to. Pointing the
+# store at a notes filesystem that already holds a person's notes makes every
+# file in it a candidate at once, and each adoption is its own database
+# transaction and a rewritten file that Obsidian Sync then pushes to every
+# device. The bound spreads that first adoption over successive passes rather
+# than one burst, and costs nothing: a file left over is a candidate again on
+# the next pass.
+_ADOPTIONS_PER_PASS = 50
+
 MISSING_REASON = "not observed during reconciliation"
 UNPARSED_REASON = "frontmatter could not be parsed"
 UNREADABLE_REASON = "file could not be read"
@@ -362,52 +371,50 @@ async def reconcile_once(
     observations = _choose_observations(scan, by_id)
     adopted = 0
     unparsed = scan.unidentified_unparsed
-    adoption_deferred = 0
-    for candidate in scan.adoption_candidates:
+    unadopted = max(len(scan.adoption_candidates) - _ADOPTIONS_PER_PASS, 0)
+    for candidate in scan.adoption_candidates[:_ADOPTIONS_PER_PASS]:
         try:
             outcome = await store.adopt_note(candidate.path, candidate.content_hash)
         except NotesFilesystemUnavailable as exc:
             # One durable per-file fault must not stop every other note
             # converging, exactly as it does not inside the scan itself. A
             # mount that is wholly gone still fails the pass from `_scan`.
-            adoption_deferred += 1
-            remembered.pop(candidate.path, None)
-            log.warning(
-                "device-created note left unchanged",
-                path=candidate.path,
-                reason=str(exc),
-            )
+            unadopted += 1
+            log.warning("device-created note not adopted", path=candidate.path, reason=str(exc))
             continue
         if outcome == "adopted":
             adopted += 1
-            remembered.pop(candidate.path, None)
         elif outcome == "invalid":
             unparsed += 1
-            _remember(remembered, candidate.path, candidate.stat_seen, settling=False)
+            _remember(remembered, candidate.path, candidate.stat_seen)
             log.warning(
                 "device-created note left unchanged",
                 path=candidate.path,
                 reason="frontmatter validation failed",
             )
         else:
-            adoption_deferred += 1
-            remembered.pop(candidate.path, None)
+            unadopted += 1
+            log.warning("device-created note not adopted", path=candidate.path, reason=outcome)
     # An identity seen on disk but not chosen, two live copies or an unchanged
     # stat, keeps whatever the mirror already says. Only an identity nothing on
     # disk carried is a candidate for missing, and only when this pass read
     # every file that changed: bytes left unread inside the quiet period could
     # belong to any note, so a pass that deferred one cannot call any note gone.
-    deferred = scan.deferred + adoption_deferred
-    absent = set() if deferred else {note_id for note_id in by_id if note_id not in scan.seen}
+    # A candidate left unadopted is not such a file: its bytes were read and
+    # name no identity the mirror knows, so holding it over for the next pass
+    # cannot make any known note look absent, and must not stop one being
+    # reported gone or hold the daily rehash due for as long as the fault lasts.
+    absent = set() if scan.deferred else {note_id for note_id in by_id if note_id not in scan.seen}
     pending = sorted(set(observations) | absent)
 
     counts = {
         "adopted": adopted,
+        "unadopted": unadopted,
         "changed": 0,
         "moved": 0,
         "missing": 0,
         "unparsed": unparsed,
-        "deferred": deferred,
+        "deferred": scan.deferred,
     }
     now = datetime.now(tz=UTC)
     try:
@@ -574,7 +581,7 @@ def _scan(
                 # which is when adoption becomes safe. The stat is taken
                 # before the file type is judged, so a directory or a fifo
                 # named like a note is rejected once rather than every pass.
-                _remember(still_unidentified, relative, stat_seen, settling=settling)
+                _remember(still_unidentified, relative, stat_seen)
                 if settling:
                     deferred += 1
                 continue
@@ -583,7 +590,13 @@ def _scan(
                 _record(observed, seen, observation)
                 if observation is None:
                     unidentified_unparsed += 1
-                    _remember(still_unidentified, relative, stat_seen, settling=False)
+                    # Waiting cannot turn a directory or a fifo into a note, so
+                    # this rejection is durable however fresh the stat is.
+                    _remember(
+                        still_unidentified,
+                        relative,
+                        UnidentifiedStat(stat_result.st_size, mtime, settling=False),
+                    )
                     log.warning(
                         "device-created note left unchanged",
                         path=relative,
@@ -613,11 +626,11 @@ def _scan(
                 _record(observed, seen, observation)
                 if observation is None:
                     if settling:
-                        _remember(still_unidentified, relative, stat_seen, settling=True)
+                        _remember(still_unidentified, relative, stat_seen)
                         deferred += 1
                     else:
                         unidentified_unparsed += 1
-                        _remember(still_unidentified, relative, stat_seen, settling=False)
+                        _remember(still_unidentified, relative, stat_seen)
                         log.warning(
                             "device-created note left unchanged",
                             path=relative,
@@ -627,17 +640,17 @@ def _scan(
             result = _observe(safe_path, relative, data, mtime, schema, by_id, entry)
             if isinstance(result, AdoptionCandidate):
                 if settling:
-                    _remember(still_unidentified, relative, stat_seen, settling=True)
+                    _remember(still_unidentified, relative, stat_seen)
                     deferred += 1
                 else:
                     adoption_candidates.append(result)
             elif result is None:
                 if settling:
-                    _remember(still_unidentified, relative, stat_seen, settling=True)
+                    _remember(still_unidentified, relative, stat_seen)
                     deferred += 1
                 else:
                     unidentified_unparsed += 1
-                    _remember(still_unidentified, relative, stat_seen, settling=False)
+                    _remember(still_unidentified, relative, stat_seen)
                     log.warning(
                         "device-created note left unchanged",
                         path=relative,
@@ -658,16 +671,10 @@ def _scan(
     )
 
 
-def _remember(
-    stats: UnidentifiedStats,
-    relative: str,
-    stat_seen: UnidentifiedStat,
-    *,
-    settling: bool,
-) -> None:
+def _remember(stats: UnidentifiedStats, relative: str, stat_seen: UnidentifiedStat) -> None:
     """Keep this path's stat, up to the bound one process holds."""
     if len(stats) < _UNIDENTIFIED_LIMIT:
-        stats[relative] = UnidentifiedStat(stat_seen.size_bytes, stat_seen.mtime, settling)
+        stats[relative] = stat_seen
 
 
 def _unchanged(entry: MirrorEntry, size_bytes: int, mtime: datetime) -> bool:

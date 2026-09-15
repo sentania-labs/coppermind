@@ -62,6 +62,7 @@ class FrontmatterError(ValueError):
 
 _WORD_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
 _ITEM_WITH_NO_VALUE = re.compile(r"^([ \t]*-)[ \t]*$", re.MULTILINE)
+_LONE_CARRIAGE_RETURN = re.compile(r"\r(?!\n)")
 
 
 def _category(exc: YAMLError) -> str:
@@ -253,7 +254,17 @@ def append_missing(text: str, changes: dict[str, Any]) -> str:
     additions are dumped. They are spliced immediately before the closing
     delimiter using the block's line endings, so comments, quoting,
     indentation, ordering and the body remain byte exact.
+
+    A file whose lines end in a bare carriage return is refused rather than
+    written. `split` terminates the block on a line feed, so it reports no body
+    for such a file, and adopting one would mirror and serve it empty. Reading
+    those endings is a correction to the shared parser, not to adoption.
     """
+    if _LONE_CARRIAGE_RETURN.search(text):
+        raise FrontmatterError(
+            "note uses carriage return line endings",
+            category="unsupported_line_endings",
+        )
     block, body, opening_length = _split(text)
     if opening_length < 0:
         return compose(changes, body)
