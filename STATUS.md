@@ -139,12 +139,14 @@ vertical path proved end to end, then widened.
   from the caller, so an edit made in Obsidian while a phone marks the note
   reviewed survives. Untouched keys keep their position, their comments and
   their YAML types, and a date lands as a date the same way a create and a
-  replace write one. The block is written back at the indentation the file
-  already uses, so a list a person wrote flush with its key stays flush and a
-  nested mapping keeps its own nesting. That minimal file difference holds for
-  a frontmatter block written with ordinary line endings: a block written with
-  carriage returns is rewritten whole in line feeds and Obsidian Sync pushes
-  all of it.
+  replace write one. The block is written back in the note's own list style,
+  so a list a person wrote flush with its key stays flush and a block with no
+  list keeps its mapping nesting. That minimal file difference holds for
+  ordinary formatting, with two exceptions: a block written with carriage
+  returns is rewritten whole in line feeds, and a block mixing a flush list
+  with mappings nested at another width keeps the list style and normalises
+  those mappings to standard nesting. Obsidian Sync pushes those rewritten
+  lines.
   A patch whose result is byte identical to the file writes nothing and moves
   no mtime, so marking an already reviewed note reviewed is free. The
   identifier cannot be set or removed, a key the schema requires cannot be

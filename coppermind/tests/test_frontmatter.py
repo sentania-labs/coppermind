@@ -106,3 +106,24 @@ def test_a_patch_writes_the_block_back_at_the_indentation_the_file_uses(note: st
     after = updated.splitlines()
     assert [line for line in after if line not in before] == ["reviewed: true"]
     assert kept in after
+
+
+BLANK_ITEM_NOTE = """---
+id: 01K4Q8Z3N7V2X9M1B5C6D8E0F2
+type: meeting
+people:
+  -
+  - scott
+---
+# Ameren Architecture Sync
+"""
+
+
+def test_a_list_item_a_person_left_blank_still_patches():
+    """A blank entry left in a property on a phone must not block a review mark."""
+    updated = fm.patch(BLANK_ITEM_NOTE, {"reviewed": True})
+
+    frontmatter, body = fm.parse(updated)
+    assert frontmatter["reviewed"] is True
+    assert list(frontmatter["people"]) == [None, "scott"]
+    assert body.startswith("# Ameren Architecture Sync")

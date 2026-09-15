@@ -283,12 +283,13 @@ class LocalStore:
         """Change only the named frontmatter fields at the caller's version.
 
         The round-trip YAML mapping retains every untouched line, including a
-        person's ordering, comments and the block's own indentation, so the
-        file differs in the one key the caller named whether the note was
-        written by Coppermind, by Obsidian or by hand. That holds for a
-        frontmatter block written with ordinary line endings; a block written
-        with carriage returns comes back whole in line feeds, and Obsidian Sync
-        pushes all of it.
+        person's ordering, comments and the note's list style, so the file
+        differs in the one key the caller named whether the note was written
+        by Coppermind, by Obsidian or by hand. Two shapes are exceptions: a
+        block written with carriage returns comes back whole in line feeds,
+        and a block mixing a flush list with mappings nested at another width
+        keeps the list style and normalises those mappings to standard
+        nesting. Obsidian Sync pushes those rewritten lines.
 
         The body comes from the same current file and is never accepted from
         the caller. A patch whose result is byte identical to the file writes

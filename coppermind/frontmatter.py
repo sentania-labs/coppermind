@@ -136,12 +136,30 @@ def parse(text: str) -> tuple[dict[str, Any], str]:
     return _mapping(loaded), body
 
 
+def _load_guessing_indent(block: str, yaml: YAML) -> tuple[Any, int | None, int | None]:
+    """Load a block and name its indentation, or load it in the house style.
+
+    The guess walks the raw lines before anything is parsed, and that walk is
+    not total: a list item a person left blank runs it off the end of a line.
+    A guess that cannot be made is no guess, so such a note still patches.
+    """
+    try:
+        try:
+            return load_yaml_guess_indent(block, yaml=yaml)
+        except IndexError:
+            return yaml.load(block), None, None
+    except YAMLError as exc:
+        raise _unparseable(exc) from exc
+
+
 def _indent_like(yaml: YAML, indent: int | None, sequence_offset: int | None) -> None:
     """Write a block back at the indentation the file already uses.
 
     The loader's own guess names the indentation of the block's first list,
-    or, when it has no list, the nesting of its mappings. Anything it cannot
-    name, and anything a dump cannot express, keeps the house style.
+    or, when it has no list, the nesting of its mappings. A block that has
+    both keeps its list style and takes the house nesting for its mappings.
+    Anything the guess cannot name, and anything a dump cannot express, keeps
+    the house style.
     """
     if indent is None or indent < 2:
         return
@@ -185,16 +203,15 @@ def patch(text: str, changes: dict[str, Any], *, unset: list[str] | None = None)
     position; a new key is appended after the existing ones. A file with no
     frontmatter gains a block. The block is written back at its own
     indentation, so a list written flush with its key stays flush rather than
-    syncing to every device as a rewritten list.
+    syncing to every device as a rewritten list. A block that mixes a list
+    with mappings nested at another width keeps the list style and takes the
+    house nesting for those mappings.
     """
     block, body = split(text)
     yaml = _yaml()
     frontmatter: dict[str, Any] = {}
     if block.strip():
-        try:
-            loaded, indent, sequence_offset = load_yaml_guess_indent(block, yaml=yaml)
-        except YAMLError as exc:
-            raise _unparseable(exc) from exc
+        loaded, indent, sequence_offset = _load_guessing_indent(block, yaml)
         frontmatter = _mapping(loaded)
         _indent_like(yaml, indent, sequence_offset)
     for key in unset or []:
