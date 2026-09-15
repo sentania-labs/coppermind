@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -33,6 +34,15 @@ class AdminRecordUnreadable(Exception):
     """The admin record is there but is not a usable credential record."""
 
 
+class ClaimStateUnwritable(Exception):
+    """The state directory refused the read or write a claim needs."""
+
+    def __init__(self, path: Path, problem: str) -> None:
+        super().__init__(f"{path}: {problem}")
+        self.path = path
+        self.problem = problem
+
+
 class AdminCredentials:
     """The one durable admin credential record from control state.
 
@@ -59,6 +69,8 @@ class AdminCredentials:
                 expected = self.claim_code_path.read_text(encoding="utf-8").strip()
             except FileNotFoundError as exc:
                 raise InvalidClaimCode from exc
+            except OSError as exc:
+                raise ClaimStateUnwritable(self.claim_code_path, str(exc)) from exc
             # Compared as bytes: a code pasted out of a terminal can carry a
             # non-ASCII character, which compare_digest refuses on str.
             if not expected or not secrets.compare_digest(code.strip().encode(), expected.encode()):
@@ -79,7 +91,10 @@ class AdminCredentials:
                 )
             except FileExistsError as exc:
                 raise AlreadyClaimed from exc
-            self.claim_code_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise ClaimStateUnwritable(self.path, str(exc)) from exc
+            with contextlib.suppress(OSError):
+                self.claim_code_path.unlink(missing_ok=True)
 
     def _record(self) -> dict[str, object]:
         try:

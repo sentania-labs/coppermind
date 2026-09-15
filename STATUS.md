@@ -24,14 +24,18 @@ vertical path proved end to end, then widened.
   until its expiry no matter where Log out is clicked, and re-claiming is the
   only thing that ends every session at once. Claim, login and
   logout accept the rendered forms only, and every refusal returns to the page
-  that names its own cause, including a control state file Admin cannot read,
-  which is named on screen along with what was rejected. The session cookie is
+  that names its own cause, including a control state file Admin cannot read
+  and a state directory that will not take the record, each named on screen
+  along with what was rejected. The session cookie is
   always Secure, which browsers honour on the loopback address this ships with
   and which makes TLS a requirement for any other address. Admin mounts only
   `/data/state`, so the notes filesystem is not reachable from it at all.
   Re-claiming after password recovery replaces the signing secret, which
   immediately refuses every cookie issued under the old password. This path
-  was driven through its rendered pages in Chrome against a fresh compose stack.
+  was driven through its rendered pages in Chrome against a fresh compose stack,
+  and `ci/smoke.sh` now drives it unattended across the bootstrap and Admin
+  containers: it reads the claim code the documented way, claims, refuses a
+  second claim, signs in, renders the overview, signs out and loses it again.
 - `docker compose up -d` on a clean checkout reaches a healthy stack with no
   manual setup and no hand populated setting. The one-shot `bootstrap`
   container creates `/data`, generates the internal bearer token and the

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -410,3 +411,38 @@ def test_logout_clears_this_browser_but_not_a_token_taken_elsewhere(fresh):
     client.cookies.set(COOKIE, captured)
     stale = client.get("/admin", follow_redirects=False)
     assert stale.headers["location"] == "/admin/login?error=session_expired"
+
+
+def _assert_claim_state_refusal(response, path: Path) -> None:
+    assert response.status_code == 500
+    assert str(path) in response.text
+    assert "Claim code" in response.text
+    assert "your claim code is still good" in response.text
+    assert "Restore that file from a backup" not in response.text
+
+
+def test_a_claim_code_admin_cannot_read_names_it_on_the_claim_page(fresh):
+    """Bootstrap owns that file, so a badly restored volume can make it unreadable."""
+    client, wiring, _ = fresh
+    claim_code = wiring.state_dir / "internal" / "claim-code"
+    claim_code.unlink()
+    claim_code.mkdir()
+
+    _assert_claim_state_refusal(claim(client), claim_code)
+    assert not (wiring.state_dir / "admin.json").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the mode this test relies on")
+def test_a_state_directory_that_will_not_take_the_record_says_so_on_the_claim_page(fresh):
+    """A full or read-only data volume is the first thing a fresh install can hit."""
+    client, wiring, _ = fresh
+    wiring.state_dir.chmod(0o500)
+    try:
+        refused = claim(client)
+    finally:
+        wiring.state_dir.chmod(0o755)
+
+    _assert_claim_state_refusal(refused, wiring.state_dir / "admin.json")
+    assert not (wiring.state_dir / "admin.json").exists()
+    assert (wiring.state_dir / "internal" / "claim-code").is_file()
+    assert claim(client).headers["location"] == "/admin/login"

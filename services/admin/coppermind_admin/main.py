@@ -21,6 +21,7 @@ from coppermind_admin.auth import (
     AdminCredentials,
     AdminRecordUnreadable,
     AlreadyClaimed,
+    ClaimStateUnwritable,
     InvalidClaimCode,
     SignedSessions,
 )
@@ -116,6 +117,29 @@ again with the code bootstrap issues. The notes filesystem and its database reco
 untouched, though claiming again signs every open Admin session out, and rebuilding the data
 volume is neither needed nor appropriate."""
 
+CLAIM_STATE_REMEDY = """Nothing was claimed and your claim code is still good. Admin needs the state
+directory on the data volume to be writable by the user it runs as, so check that the volume has
+free space and that its ownership and permissions are intact, then submit this form again."""
+
+
+def claim_form(refusal: str) -> str:
+    return page(
+        "Claim Admin",
+        f"""<h1>Claim Coppermind</h1>{refusal}
+<p>Enter the one-time code from the bootstrap claim-code file, then choose the admin password.</p>
+<form method="post" action="/v1/admin/claim">
+<label>Claim code<input name="code" autocomplete="one-time-code" required></label>
+<label>Admin password<input type="password" name="password" autocomplete="new-password"
+minlength="12" required></label><button>Claim Admin</button></form>""",
+    )
+
+
+def unwritable_state_refusal(error: ClaimStateUnwritable) -> str:
+    return f"""<p class="error">Admin could not write {html.escape(str(error.path))}, so the claim
+did not happen.</p>
+<p>What the filesystem reported:</p><pre>{html.escape(error.problem)}</pre>
+<p class="muted">{CLAIM_STATE_REMEDY}</p>"""
+
 
 def unreadable_state_file(path: Path, problem: str, remedy: str) -> HTMLResponse:
     return HTMLResponse(
@@ -177,17 +201,7 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
         if credentials.is_claimed():
             return RedirectResponse("/admin/login", status_code=303)
         refusal = notice(CLAIM_NOTICES, request.query_params.get("error"))
-        return HTMLResponse(
-            page(
-                "Claim Admin",
-                f"""<h1>Claim Coppermind</h1>{refusal}
-<p>Enter the one-time code from the bootstrap claim-code file, then choose the admin password.</p>
-<form method="post" action="/v1/admin/claim">
-<label>Claim code<input name="code" autocomplete="one-time-code" required></label>
-<label>Admin password<input type="password" name="password" autocomplete="new-password"
-minlength="12" required></label><button>Claim Admin</button></form>""",
-            )
-        )
+        return HTMLResponse(claim_form(refusal))
 
     @app.get("/admin/login", response_class=HTMLResponse, include_in_schema=False)
     async def login_page(request: Request) -> Response:
@@ -226,6 +240,8 @@ required></label><button>Log in</button></form>""",
             return error_response("login", "already_claimed")
         except InvalidClaimCode:
             return error_response("claim", "invalid_claim_code")
+        except ClaimStateUnwritable as exc:
+            return HTMLResponse(claim_form(unwritable_state_refusal(exc)), status_code=500)
         return RedirectResponse("/admin/login", status_code=303)
 
     @app.post("/v1/admin/login", include_in_schema=False)

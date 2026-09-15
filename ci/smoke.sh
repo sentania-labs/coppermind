@@ -7,6 +7,8 @@
 # conditional on a stale ETag cannot overwrite an edit made on the volume
 # while one carrying the current ETag lands, a note moved, renamed or deleted
 # on the volume converges in the scheduled scan while the API keeps answering,
+# the operator claims Admin with the code bootstrap left on the state volume
+# and signs in and out of the protected page,
 # readiness fails honestly when PostgreSQL is stopped, and everything recovers
 # when it returns. Read from the volume, never through the API, whenever the
 # claim is about a file.
@@ -21,6 +23,7 @@ COMPOSE_FILES="${COMPOSE_FILES:--f docker-compose.yml}"
 # start it. Every compose call here needs it, including `exec`.
 export COMPOSE_PROFILES="${COMPOSE_PROFILES:-smoke}"
 API="${API:-http://127.0.0.1:8080}"
+ADMIN="${ADMIN:-http://127.0.0.1:8082}"
 # The API's bounded key cache life, as README.md and STATUS.md document it.
 KEY_CACHE_SECONDS=300
 # shellcheck disable=SC2086
@@ -118,6 +121,68 @@ wait_for_status 200 "$API/readyz"
 curl -sS "$API/readyz"; echo
 wait_for_status 200 "$API/openapi.json"
 ok "/healthz, /readyz and OpenAPI answer 200 without a key"
+
+# Admin drives its own session cookie, so every call shares one jar. The cookie
+# is Secure only, which curl sends over http to the loopback address the
+# quickstart publishes, exactly as a browser does.
+admin_jar=""
+admin() {
+    curl -sS -b "$admin_jar" -c "$admin_jar" -o /dev/null -w '%{redirect_url}' "$@"
+}
+admin_page() { curl -sS -b "$admin_jar" -c "$admin_jar" "$@"; }
+has_session_cookie() { grep -q coppermind_admin_session "$admin_jar"; }
+
+step "claim Admin with the code bootstrap left on the state volume"
+admin_jar="$(mktemp)"
+wait_for_status 200 "$ADMIN/healthz"
+[ "$(admin "$ADMIN/admin")" = "$ADMIN/admin/claim" ] \
+    || fail "an unclaimed Admin did not send the operator to the Claim page"
+
+# The README's own instruction, run as written: the one-time code crosses from
+# the bootstrap container to the operator through the state volume, and Admin
+# reads the same file back through its own subpath mount.
+claim_code="$(compose run --rm --no-deps --entrypoint cat bootstrap \
+    /data/state/internal/claim-code | tr -d '[:space:]')"
+[ -n "$claim_code" ] || fail "bootstrap left no claim code on the state volume"
+
+admin_password='smoke admin password'
+[ "$(admin -X POST "$ADMIN/v1/admin/claim" \
+    --data-urlencode 'code=not the code' --data-urlencode "password=$admin_password")" \
+    = "$ADMIN/admin/claim?error=invalid_claim_code" ] \
+    || fail "a wrong claim code was not refused on the Claim page"
+[ "$(admin -X POST "$ADMIN/v1/admin/claim" \
+    --data-urlencode "code=$claim_code" --data-urlencode "password=$admin_password")" \
+    = "$ADMIN/admin/login" ] \
+    || fail "the code bootstrap printed was not accepted by Admin"
+compose run --rm --no-deps --entrypoint sh bootstrap \
+    -c 'test ! -e /data/state/internal/claim-code' \
+    || fail "claiming did not consume the code on the shared state volume"
+[ "$(admin -X POST "$ADMIN/v1/admin/claim" \
+    --data-urlencode "code=$claim_code" --data-urlencode "password=$admin_password")" \
+    = "$ADMIN/admin/login?error=already_claimed" ] \
+    || fail "a second claim was not refused"
+ok "the printed code claimed Admin once, was consumed, and a second claim was refused"
+
+step "sign in, reach the protected overview, and sign out"
+[ "$(admin "$ADMIN/admin")" = "$ADMIN/admin/login" ] \
+    || fail "the overview was reachable without signing in"
+[ "$(admin -X POST "$ADMIN/v1/admin/login" --data-urlencode 'password=wrong password')" \
+    = "$ADMIN/admin/login?error=unauthorized" ] \
+    || fail "a wrong password was not refused on the Login page"
+has_session_cookie && fail "a refused password issued a session cookie"
+[ "$(admin -X POST "$ADMIN/v1/admin/login" --data-urlencode "password=$admin_password")" \
+    = "$ADMIN/admin" ] \
+    || fail "the admin password chosen at claim did not sign in"
+has_session_cookie || fail "signing in did not issue a session cookie"
+admin_page "$ADMIN/admin" | grep -Fq 'You are signed in' \
+    || fail "the protected overview did not render for a signed in operator"
+
+[ "$(admin -X POST "$ADMIN/v1/admin/logout")" = "$ADMIN/admin/login" ] \
+    || fail "logout did not return to the Login page"
+has_session_cookie && fail "logout left the session cookie in the browser"
+[ "$(admin "$ADMIN/admin")" = "$ADMIN/admin/login" ] \
+    || fail "the overview was still reachable after logout"
+ok "the operator signed in, saw the overview, signed out and lost the overview again"
 
 step "the bootstrapped default key is usable without a setup step"
 default_key="$(compose run --rm --no-deps --entrypoint cat bootstrap \
