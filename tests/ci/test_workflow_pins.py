@@ -8,8 +8,7 @@ accepts cannot slip past a string match:
    whatever it points at today.
 2. No job queues on the self hosted `lab` pool. That pool exists to reach the
    lab and nothing here needs to.
-3. No job is granted a token that could publish. Publication arrives with the
-   release pull request, not before.
+3. Publication authority belongs only to tag-triggered release jobs.
 
 """
 
@@ -97,13 +96,24 @@ def test_nothing_in_this_repository_queues_on_the_lab_runner_pool():
     assert not problems, "\n".join(problems)
 
 
-def test_no_job_can_publish_an_image_in_this_slice():
-    """Until the release pull request, no run of CI may hold a token that pushes."""
+def test_publish_authority_is_confined_to_tag_only_jobs():
     problems: list[str] = []
     for workflow in WORKFLOWS:
         document = load(workflow)
         for name, job in (document.get("jobs") or {}).items():
             for scope, why in FORBIDDEN_PERMISSIONS.items():
                 if granted(document, job, scope) == "write":
-                    problems.append(f"{workflow.name}:{name} has {scope}: write and so {why}")
+                    condition = str(job.get("if", ""))
+                    if "event_name == 'push'" not in condition or "refs/tags/" not in condition:
+                        problems.append(
+                            f"{workflow.name}:{name} has {scope}: write and so {why} "
+                            "outside a tag push"
+                        )
     assert not problems, "\n".join(problems)
+
+
+def test_release_waits_for_every_image_and_the_running_stack():
+    workflow = load(WORKFLOWS[0])
+    publish = workflow["jobs"]["publish"]
+    assert set(publish["needs"]) == {"image", "smoke", "integration", "release-tag"}
+    assert publish["runs-on"] == "ubuntu-latest"

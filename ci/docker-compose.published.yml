@@ -1,0 +1,17 @@
+# CI proof overlay for anonymously pulled release images.
+services:
+  bootstrap: &store
+    image: ${IMAGE_ROOT}/store:${VERSION}
+    build: !reset null
+  migrate: *store
+  store: *store
+  editor: *store
+  api:
+    image: ${IMAGE_ROOT}/api:${VERSION}
+    build: !reset null
+  git:
+    image: ${IMAGE_ROOT}/git:${VERSION}
+    build: !reset null
+  obsidian-sync:
+    image: ${IMAGE_ROOT}/obsidian-sync:${VERSION}
+    build: !reset null

@@ -391,8 +391,9 @@ in the tree, so do not read the absence as a decision to leave it out.
   yet the finished product. Its graphical API keys page also arrives later;
   until then `python3 -m coppermind_store.keys` is the interim path for adding
   and rotating keys.
-- **Publication and release.** CI deliberately holds no token that could push
-  an image anywhere. Publishing, signing and the Helm chart come later.
+- **Helm packaging and lab deployment.** Version tags now publish the four
+  existing service images and a GitHub release. The Helm chart and lab handoff
+  remain later work.
 
 ## Known gaps in what is here
 
