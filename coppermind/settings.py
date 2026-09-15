@@ -127,7 +127,7 @@ class LimitSettings(BaseModel):
 class AdminSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    session_hours: int = 12
+    session_hours: int = Field(default=12, ge=1)
     # The session cookie carries Secure by default. Browsers accept it on the
     # loopback default this ships with, and withhold it from any plaintext hop
     # once the port is published, so a TLS-terminating proxy needs no change

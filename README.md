@@ -46,6 +46,8 @@ cookie away; Admin notices that the browser came back without it and says so on
 the Login page rather than looping. Put TLS in front of it, or set
 `admin.cookie_secure` to false in `/data/state/settings.yaml` to run it
 deliberately in the clear until the settings page carries that control.
+Republishing Admin also puts its login in reach of anyone who can reach that
+port, and login has no attempt limiting yet.
 
 Read the default API key from its
 restricted bootstrap volume into the current shell:

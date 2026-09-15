@@ -10,6 +10,7 @@ from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.datastructures import URL
 from starlette.middleware.base import RequestResponseEndpoint
 
 from coppermind.db.session import make_engine, make_session_factory
@@ -29,8 +30,9 @@ from coppermind_admin.auth import (
 
 SERVICE = "coppermind-admin"
 COOKIE = "coppermind_admin_session"
-# Carried by the redirect a successful login sends the browser to. Arriving
-# back here without the session cookie is the browser having dropped it.
+# Carried once by the redirect a successful login sends the browser to, and
+# stripped as soon as a session validates. Arriving here with the marker and
+# without the session cookie is the browser having dropped it.
 SIGNED_IN = "signed_in"
 PUBLIC = {
     "/admin/claim",
@@ -107,6 +109,11 @@ def error_response(destination: str, code: str) -> RedirectResponse:
     return RedirectResponse(f"/admin/{destination}?error={code}", status_code=303)
 
 
+def without_marker(url: URL) -> str:
+    cleaned = url.remove_query_params(SIGNED_IN)
+    return f"{cleaned.path}?{cleaned.query}" if cleaned.query else cleaned.path
+
+
 def unavailable() -> HTMLResponse:
     return HTMLResponse(
         page(
@@ -164,6 +171,8 @@ def create_app(wiring: Wiring | None = None, sessions: Sessions | None = None) -
             except SessionsUnavailable:
                 return unavailable()
             if signed_in:
+                if SIGNED_IN in request.query_params:
+                    return RedirectResponse(without_marker(request.url), status_code=303)
                 request.state.admin_session = token
                 return await call_next(request)
         if not credentials.is_claimed():
@@ -249,7 +258,6 @@ required></label><button>Log in</button></form>""",
         response.set_cookie(
             COOKIE,
             token,
-            max_age=int(lifetime.total_seconds()),
             httponly=True,
             samesite="strict",
             secure=product.admin.cookie_secure,

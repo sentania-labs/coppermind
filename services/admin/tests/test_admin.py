@@ -148,6 +148,24 @@ def test_rendered_forms_drive_claim_login_and_logout(fresh):
     assert client.get("/admin").history[0].headers["location"] == "/admin/login"
 
 
+def test_the_signed_in_marker_is_spent_once_and_an_ended_session_says_so(fresh):
+    """The marker must not outlive the redirect that carried it."""
+    client, _, sessions = fresh
+    claim(client)
+    logged_in = login(client)
+
+    landed = client.get(logged_in.headers["location"], follow_redirects=False)
+    assert landed.status_code == 303
+    assert landed.headers["location"] == "/admin"
+    assert "You are signed in" in client.get("/admin").text
+
+    # The cookie outlives the row, so an ordinary expiry is reported as one.
+    sessions.tokens.clear()
+    ended = client.get("/admin", follow_redirects=False)
+    assert ended.headers["location"] == "/admin/login?error=session_expired"
+    assert "That session has ended." in client.get(ended.headers["location"]).text
+
+
 def test_a_logout_without_a_live_session_returns_to_the_login_page(fresh):
     """The session lapses in an open tab, and Log out is the next thing clicked."""
     client, _, sessions = fresh
@@ -215,6 +233,16 @@ def test_a_browser_that_drops_the_session_cookie_is_told_why(tmp_path: Path):
         assert str(landed.url).endswith("/admin/login?error=cookie_not_kept")
         assert "did not keep the session cookie" in landed.text
         assert "admin.cookie_secure" in landed.text
+        assert "That session has ended." not in landed.text
+
+
+def test_the_session_cookie_lasts_the_browser_session_not_the_row(fresh):
+    """Set-Cookie is the contract: no Max-Age or Expires means until close."""
+    client, _, _ = fresh
+    claim(client)
+    issued = login(client).headers["set-cookie"].lower()
+    assert "max-age" not in issued
+    assert "expires" not in issued
 
 
 def test_a_session_database_outage_answers_503_rather_than_failing(fresh):
