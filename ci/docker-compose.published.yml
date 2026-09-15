@@ -1,17 +1,33 @@
-# CI proof overlay for anonymously pulled release images.
+# CI proof overlay for anonymously pulled release images. Every service resets
+# the build section it inherits: a service that kept one would be built from
+# the working tree when the published image is absent, and the release proof
+# would pass against code that was never published.
 services:
-  bootstrap: &store
+
+  bootstrap:
     image: ${IMAGE_ROOT}/store:${VERSION}
     build: !reset null
-  migrate: *store
-  store: *store
-  editor: *store
+
+  migrate:
+    image: ${IMAGE_ROOT}/store:${VERSION}
+    build: !reset null
+
+  store:
+    image: ${IMAGE_ROOT}/store:${VERSION}
+    build: !reset null
+
   api:
     image: ${IMAGE_ROOT}/api:${VERSION}
     build: !reset null
+
   git:
     image: ${IMAGE_ROOT}/git:${VERSION}
     build: !reset null
+
+  editor:
+    image: ${IMAGE_ROOT}/store:${VERSION}
+    build: !reset null
+
   obsidian-sync:
     image: ${IMAGE_ROOT}/obsidian-sync:${VERSION}
     build: !reset null

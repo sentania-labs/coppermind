@@ -52,8 +52,7 @@ compose-check:
 	$(COMPOSE) config >/dev/null
 	$(COMPOSE_CI) config >/dev/null
 	$(COMPOSE) -f docker-compose.yml -f docker-compose.sync-smoke.yml config >/dev/null
-	IMAGE_ROOT=ghcr.io/sentania-labs/coppermind VERSION=v0.0.0 \
-		$(COMPOSE) -f docker-compose.yml -f ci/docker-compose.published.yml config >/dev/null
+	bash ci/check-published-overlay.sh
 
 # House rule, enforced rather than remembered: no em-dashes anywhere in the
 # tree. The lock file and this rule's own definition are excluded.
