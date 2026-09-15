@@ -381,11 +381,13 @@ class NoteSummary(BaseModel):
     """What the store can see right now for one note it knows about.
 
     `state` says how current the rest of the fields are. `ok` means the latest
-    reconciliation scan read them all from the file at `path`. `unparsed` means
-    that scan found the file but could not read its frontmatter, so `path`,
-    `content_hash`, `size_bytes` and `updated_at` describe the bytes on disk
-    while the schema fields are the last values that parsed. `missing` means
-    the scan did not find the file, and every field is the last known one.
+    reconciliation scan read them all from the file at `path`. `unparsed`
+    means it found a file at `path` it could not use, and how much is current
+    depends on why: bytes it read but could not parse refresh `content_hash`,
+    `size_bytes` and `updated_at`, leaving only the schema fields stale, while
+    a file it could not open at all refreshes `path` alone and leaves
+    `content_hash` naming the last bytes that were read. `missing` means the
+    scan did not find the file, and every field is the last known one.
     """
 
     id: NoteId

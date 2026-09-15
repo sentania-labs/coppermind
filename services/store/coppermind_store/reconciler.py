@@ -77,7 +77,8 @@ class Observation:
     """What one scanned file says about one known identity.
 
     `state` is `ok`, `unparsed` for bytes that would not parse, or `unreadable`
-    for a file the scan could see but could not open.
+    for a file the scan could see but could not open. `path_derived` marks an
+    identity the file did not name, inherited from the row recording its path.
     """
 
     note_id: str
@@ -88,6 +89,7 @@ class Observation:
     mtime: datetime | None = None
     title: str | None = None
     frontmatter: dict[str, Any] | None = None
+    path_derived: bool = False
 
 
 class ReconcilerStatus:
@@ -342,6 +344,9 @@ def _scan(
             except FileNotFoundError:
                 continue
             except ValueError:
+                # A symlink out of the notes filesystem. Something is at the
+                # path; the store just refuses to follow it.
+                _record(observed, seen, _unreadable(entry, relative))
                 continue
             except (OSError, RuntimeError):
                 # A symlink loop reaches here as pathlib's RuntimeError rather
@@ -349,14 +354,17 @@ def _scan(
                 _record(observed, seen, _unreadable(entry, relative))
                 continue
             if not stat_module.S_ISREG(stat_result.st_mode):
+                _record(observed, seen, _unreadable(entry, relative))
                 continue
             mtime = datetime.fromtimestamp(stat_result.st_mtime, tz=UTC)
             if not full and entry is not None and _unchanged(entry, stat_result.st_size, mtime):
                 seen.add(entry.note_id)
                 continue
-            if settled_before is not None and mtime > settled_before:
-                if entry is not None:
-                    seen.add(entry.note_id)
+            if entry is not None and settled_before is not None and mtime > settled_before:
+                # Deferring is only safe for a file whose identity the mirror
+                # already knows. An unclaimed path has to be read, or the note
+                # that moved there is recorded as deleted while it settles.
+                seen.add(entry.note_id)
                 continue
             try:
                 data = safe_path.read_bytes()
@@ -397,7 +405,7 @@ def _unreadable(entry: MirrorEntry | None, relative: str) -> Observation | None:
     """
     if entry is None:
         return None
-    return Observation(note_id=entry.note_id, path=relative, state="unreadable")
+    return Observation(note_id=entry.note_id, path=relative, state="unreadable", path_derived=True)
 
 
 def _observe(
@@ -416,7 +424,8 @@ def _observe(
         frontmatter, body = fm.parse(text)
     except (UnicodeDecodeError, fm.FrontmatterError):
         note_id = _identity_from_broken(text, schema)
-        if note_id not in by_id:
+        path_derived = note_id not in by_id
+        if path_derived:
             # Nothing in the broken bytes names a note this store knows, so the
             # only claim left is the row that records this path.
             note_id = entry.note_id if entry is not None else None
@@ -429,6 +438,7 @@ def _observe(
             content_hash=content_hash(data),
             size_bytes=len(data),
             mtime=mtime,
+            path_derived=path_derived,
         )
     note_id = str(frontmatter.get(schema.role("id_key"), ""))
     if note_id not in by_id:
@@ -469,13 +479,19 @@ def _identity_from_broken(text: str | None, schema: FrontmatterSchema) -> str | 
 def _choose_observations(
     found: dict[str, list[Observation]], by_id: dict[str, MirrorEntry]
 ) -> dict[str, Observation]:
+    """Pick the one file that speaks for each identity this scan saw."""
     chosen: dict[str, Observation] = {}
     for note_id, candidates in found.items():
-        at_known_path = [item for item in candidates if item.path == by_id[note_id].path]
+        # A file that named this identity itself outranks one that only
+        # inherited it from the row recording its path, so a stranger dropped
+        # at a note's old path never captures the note that moved away.
+        named = [item for item in candidates if not item.path_derived]
+        ranked = named or candidates
+        at_known_path = [item for item in ranked if item.path == by_id[note_id].path]
         if len(at_known_path) == 1:
             chosen[note_id] = at_known_path[0]
-        elif len(candidates) == 1:
-            chosen[note_id] = candidates[0]
+        elif len(ranked) == 1:
+            chosen[note_id] = ranked[0]
         else:
             log.warning("duplicate note identity left unresolved", note_id=note_id)
     return chosen

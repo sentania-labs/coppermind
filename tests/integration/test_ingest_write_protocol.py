@@ -17,6 +17,7 @@ from coppermind_store.notes import LocalStore
 from coppermind import frontmatter as fm
 from coppermind.db.models import Note, NoteSource, Source, SourceArtifact, SourceRevision
 from coppermind.store_protocol import (
+    CreateNote,
     IncompleteRevision,
     IngestRequest,
     MetadataUnavailable,
@@ -661,3 +662,23 @@ async def test_the_recovery_scan_does_not_block_the_request_loop(
     assert replay.note.created is False
     assert len(gaps) > 20, "the event loop did not keep running during the scan"
     assert max(gaps) < 0.3
+
+
+async def test_ingest_refuses_a_path_a_live_row_still_holds(store: LocalStore, session_factory):
+    """Ingest answers the same 409 as create when a row, not a file, holds the path."""
+    note = await store.create_note(
+        CreateNote(
+            title="Ameren Architecture Sync",
+            frontmatter={"date": "2026-09-08", "type": "meeting", "context": "internal"},
+        )
+    )
+    (store.notes_root / note.path).unlink()
+
+    with pytest.raises(PathCollision) as raised:
+        await store.ingest(sample())
+
+    assert raised.value.existing_path == note.path
+    assert list(store.sources_root.rglob("manifest.json")) == []
+    async with session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 0
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 1

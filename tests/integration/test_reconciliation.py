@@ -241,3 +241,71 @@ async def test_a_file_still_inside_the_quiet_period_waits_rather_than_going_miss
         "unparsed": 0,
     }
     assert (await _row(store, note.id)).title == "Current Runbook"
+
+
+async def test_a_move_still_being_typed_on_is_followed_not_reported_deleted(store: LocalStore):
+    """A file at a path no row claims is read, quiet period or not."""
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    moved = store.notes_root / "Work" / "Runbook.md"
+    moved.parent.mkdir()
+    (store.notes_root / note.path).rename(moved)
+    moved.write_bytes(moved.read_bytes().replace(b"# Runbook", b"# Runbook in progress"))
+
+    counts = await reconcile_once(store, quiet_period_s=3600)
+    row = await _row(store, note.id)
+
+    assert counts["missing"] == 0
+    assert row.state == "ok"
+    assert row.path == "Work/Runbook.md"
+    assert (await store.get_note(note.id)).path == "Work/Runbook.md"
+
+
+async def test_a_stranger_at_the_old_path_does_not_capture_the_note_that_moved(
+    store: LocalStore,
+):
+    """An identity the file named itself outranks one inherited from a path."""
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    old_path = store.notes_root / note.path
+    moved = store.notes_root / "Work" / "Operations Runbook.md"
+    moved.parent.mkdir()
+    old_path.rename(moved)
+    old_path.write_text("---\nreviewed: [\n---\n\n# Typed on a phone\n", encoding="utf-8")
+
+    await reconcile_once(store)
+    row = await _row(store, note.id)
+
+    assert row.state == "ok"
+    assert row.path == "Work/Operations Runbook.md"
+    assert (await store.get_note(note.id)).title == "Runbook"
+
+
+async def test_a_directory_where_the_note_was_is_unparsed_not_missing(store: LocalStore):
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    path = store.notes_root / note.path
+    path.unlink()
+    path.mkdir()
+
+    await reconcile_once(store)
+    row = await _row(store, note.id)
+
+    assert row.state == "unparsed"
+    assert row.state_reason == UNREADABLE_REASON
+    assert row.path == note.path
+
+
+async def test_a_note_symlinked_out_of_the_notes_filesystem_is_unparsed_not_missing(
+    store: LocalStore,
+):
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    outside = store.notes_root.parent / "elsewhere.md"
+    path = store.notes_root / note.path
+    outside.write_bytes(path.read_bytes())
+    path.unlink()
+    path.symlink_to(outside)
+
+    await reconcile_once(store)
+    row = await _row(store, note.id)
+
+    assert row.state == "unparsed"
+    assert row.state_reason == UNREADABLE_REASON
+    assert row.path == note.path
