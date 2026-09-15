@@ -41,15 +41,11 @@ class FakeStore:
     def __init__(self) -> None:
         self.error: Exception | None = None
         self.request: IngestRequest | None = None
-        self.payload_size_bytes: int | None = None
 
-    async def ingest(
-        self, request: IngestRequest, *, payload_size_bytes: int | None = None
-    ) -> IngestResult:
+    async def ingest(self, request: IngestRequest) -> IngestResult:
         if self.error:
             raise self.error
         self.request = request
-        self.payload_size_bytes = payload_size_bytes
         return RESULT
 
 
@@ -69,7 +65,6 @@ async def test_ingest_round_trips_through_the_internal_contract():
     finally:
         await client.aclose()
     assert store.request == REQUEST
-    assert store.payload_size_bytes is not None
 
 
 @pytest.mark.parametrize(

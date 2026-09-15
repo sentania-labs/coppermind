@@ -83,10 +83,10 @@ class LocalStore:
         notes_root: Path,
         control: ControlState,
         session_factory: async_sessionmaker[AsyncSession],
-        sources_root: Path | None = None,
+        sources_root: Path,
     ) -> None:
         self.notes_root = notes_root
-        self.sources_root = sources_root or notes_root.parent / "sources"
+        self.sources_root = sources_root
         self.control = control
         self.session_factory = session_factory
         # One lock per note that has been written through this process. The
@@ -98,12 +98,10 @@ class LocalStore:
         """Read API key hashes from filesystem-first control state."""
         return self.control.api_keys()
 
-    async def ingest(
-        self, request: IngestRequest, *, payload_size_bytes: int | None = None
-    ) -> IngestResult:
+    async def ingest(self, request: IngestRequest) -> IngestResult:
         from coppermind_store.sources import ingest
 
-        return await ingest(self, request, payload_size_bytes=payload_size_bytes)
+        return await ingest(self, request)
 
     async def create_note(self, request: CreateNote) -> NoteDocument:
         settings = self.control.settings()

@@ -77,8 +77,6 @@ class Source(Base):
     origin: Mapped[str] = mapped_column(Text, nullable=False, default="")
     current_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     content_identity: Mapped[str] = mapped_column(Text, nullable=False)
-    tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    tombstone_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -130,5 +128,4 @@ class NoteSource(Base):
     source_id: Mapped[str] = mapped_column(
         Text, ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True
     )
-    relation: Mapped[str] = mapped_column(Text, nullable=False, default="derived_from")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

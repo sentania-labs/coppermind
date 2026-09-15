@@ -40,7 +40,6 @@ class FakeStore:
     def __init__(self) -> None:
         self.error: Exception | None = None
         self.ingested: IngestRequest | None = None
-        self.payload_size_bytes: int | None = None
         created = datetime(2026, 9, 8, tzinfo=UTC)
         self.full_record, self.full_key = create_key(
             "full", ["sources:write", "notes:write"], created_at=created
@@ -52,13 +51,10 @@ class FakeStore:
             "notes only", ["notes:write"], created_at=created
         )
 
-    async def ingest(
-        self, request: IngestRequest, *, payload_size_bytes: int | None = None
-    ) -> IngestResult:
+    async def ingest(self, request: IngestRequest) -> IngestResult:
         if self.error:
             raise self.error
         self.ingested = request
-        self.payload_size_bytes = payload_size_bytes
         return RESULT
 
     async def get_api_keys(self) -> ApiKeySet:
@@ -106,7 +102,6 @@ def test_ingest_answers_201_with_the_source_and_linked_note(tmp_path: Path):
     assert response.json() == RESULT.model_dump(mode="json")
     assert fake.ingested is not None
     assert fake.ingested.source.external_source_id == "rec_8f3a2c19"
-    assert fake.payload_size_bytes == len(response.request.content)
 
 
 def test_duplicate_and_oversize_ingest_keep_the_documented_envelope(tmp_path: Path):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import coppermind_store.sources as sources_module
@@ -131,11 +132,35 @@ async def test_oversize_ingest_is_refused_before_files_or_rows_are_written(
         assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 0
 
 
+async def test_a_duplicate_that_passes_the_pre_check_is_still_refused_as_a_duplicate(
+    store: LocalStore, session_factory
+):
+    """Two ingests of one external id, each past the pre-check before either commits.
+
+    The unique key is what refuses the loser, and the answer has to stay the
+    permanent 409 rather than the 503 that sends an operator after a healthy
+    database.
+    """
+    outcomes = await asyncio.gather(
+        store.ingest(sample()), store.ingest(sample()), return_exceptions=True
+    )
+    refusals = [item for item in outcomes if isinstance(item, BaseException)]
+    assert len(refusals) == 1, outcomes
+    assert isinstance(refusals[0], SourceAlreadyExists)
+
+    winner = next(item for item in outcomes if not isinstance(item, BaseException))
+    assert [path.name for path in store.sources_root.iterdir()] == [winner.source.id]
+    assert len(list(store.notes_root.rglob("*.md"))) == 1
+    async with session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 1
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 1
+
+
 class InterruptedIngest(BaseException):
     pass
 
 
-async def test_interruption_before_the_note_leaves_no_complete_bundle_or_rows(
+async def test_interruption_before_the_note_leaves_no_bundle_or_rows(
     store: LocalStore, session_factory, monkeypatch: pytest.MonkeyPatch
 ):
     real_create = sources_module.create_exclusive_bytes
@@ -145,7 +170,7 @@ async def test_interruption_before_the_note_leaves_no_complete_bundle_or_rows(
         nonlocal calls
         calls += 1
         # Two artifacts and the manifest have landed. Interrupt the final
-        # note write and verify the manifest completion marker is withdrawn.
+        # note write and verify nothing of the bundle survives it.
         if calls == 4:
             raise InterruptedIngest()
         return real_create(path, data, **kwargs)
@@ -155,9 +180,8 @@ async def test_interruption_before_the_note_leaves_no_complete_bundle_or_rows(
     with pytest.raises(InterruptedIngest):
         await store.ingest(sample())
 
-    assert list(store.sources_root.rglob("manifest.json")) == []
     assert list(store.notes_root.rglob("*.md")) == []
-    assert len(list(store.sources_root.rglob("*.*"))) == 2
+    assert list(store.sources_root.iterdir()) == []
     async with session_factory() as session:
         assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 0
         assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 0

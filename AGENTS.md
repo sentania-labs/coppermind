@@ -10,9 +10,16 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - **One writer.** Only the store opens a note file for writing. The API, and
   later the curator and indexer, ask it over the contract in
   `coppermind/store_protocol.py`. Nothing else may grow write code.
-- **Filesystem first, database second.** Files are the truth; every
-  PostgreSQL row is a mirror that can be rebuilt from `/data`. Reject changes
-  that make the database the only copy of something.
+- **Filesystem first, database second.** Files are the truth, and nearly
+  every PostgreSQL row is a mirror that can be rebuilt from `/data`. Reject
+  changes that lengthen the list of things the database is the only copy of.
+  That list has one entry today: a source's `provider` plus
+  `external_source_id` is unique only because of
+  `uq_sources_provider_external_id`, with no claim on the filesystem. If
+  PostgreSQL fails after the bundle is written but before the ingest commits,
+  a complete bundle stays on disk with no row behind it, and the caller's
+  retry writes a second complete bundle for the same external id. There is no
+  reconciler, so nothing resolves that pair.
 - **Admin is its own service and image**, not a route group in the API.
 - **Every setting has a control in the interface and a working default.** A
   fresh install must run with nothing pre-configured.

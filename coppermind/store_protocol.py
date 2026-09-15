@@ -241,14 +241,11 @@ class IngestRequest(BaseModel):
 
 class CreatedSource(BaseModel):
     id: SourceId
-    revision: int = 1
-    created: bool = True
 
 
 class CreatedNote(BaseModel):
     id: NoteId
     path: str
-    created: bool = True
 
 
 class IngestResult(BaseModel):
@@ -299,9 +296,7 @@ class Store(Protocol):
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag
     ) -> NoteDocument: ...
 
-    async def ingest(
-        self, request: IngestRequest, *, payload_size_bytes: int | None = None
-    ) -> IngestResult: ...
+    async def ingest(self, request: IngestRequest) -> IngestResult: ...
 
     async def get_api_keys(self) -> ApiKeySet: ...
 

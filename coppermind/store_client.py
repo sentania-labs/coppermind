@@ -90,19 +90,11 @@ class HttpStoreClient:
         )
         return NoteDocument.model_validate(response.json())
 
-    async def ingest(
-        self, request: IngestRequest, *, payload_size_bytes: int | None = None
-    ) -> IngestResult:
-        headers = (
-            {"X-Coppermind-Payload-Bytes": str(payload_size_bytes)}
-            if payload_size_bytes is not None
-            else None
-        )
+    async def ingest(self, request: IngestRequest) -> IngestResult:
         response = await self._send(
             "POST",
             f"{INTERNAL_PREFIX}/ingest",
             json=request.model_dump(mode="json", exclude_none=True),
-            headers=headers,
         )
         return IngestResult.model_validate(response.json())
 

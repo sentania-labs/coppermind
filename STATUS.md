@@ -26,7 +26,9 @@ vertical path proved end to end, then widened.
   full-scope key while the first stays usable.
 - Every `/v1` route requires `Bearer cm_<key_id>_<secret>`. A missing or bad
   key answers 401 and a key without the route's scope answers 403. Note reads
-  need `notes:read`; creates and replacements need `notes:write`. Successful
+  need `notes:read`; creates and replacements need `notes:write`; ingest needs
+  both `sources:write` and `notes:write`, so a key holding one of the two
+  answers 403. Successful
   verification and key hashes are cached for five minutes, so a key created
   after a load is picked up at the next cache expiry rather than at once.
   Health, readiness and OpenAPI remain open, and Compose remains bound to
@@ -47,6 +49,26 @@ vertical path proved end to end, then widened.
   note.
 - `GET /v1/notes/{id}` returns the note as a document, carrying
   `ETag: "sha256:<hash of the file bytes>"`.
+- `POST /v1/ingest` takes a source and the note to open for it, and creates
+  both or neither. The artifacts land under
+  `/data/sources/<source_id>/r0001/`, then `manifest.json` last, so a bundle
+  without a manifest is an unfinished one; the Review note is written in the
+  same database transaction with the source identifier in its `sources`
+  frontmatter key. A second ingest of the same `provider` plus
+  `external_source_id` answers 409 `source_exists` and writes nothing, and a
+  repeat that races the first past the pre-check is refused by
+  `uq_sources_provider_external_id` with the same 409. An ingest that fails
+  after the bundle directory exists removes it, so a failure leaves no files
+  behind. A request over `limits.ingest_max_bytes` (25 MiB by default,
+  settable like every other setting) answers 413 `payload_too_large` before
+  anything is written, but the check is made after the whole body has been
+  read and parsed: it refuses the request, it does not spare the process the
+  memory.
+  One thing the database alone knows: the external identifier claim lives
+  only in that unique key. PostgreSQL failing after the bundle is on disk but
+  before the commit answers 503 `metadata_unavailable`, rolls the rows back
+  and leaves the bundle removed, but the caller cannot tell whether the write
+  landed, and nothing on the filesystem would stop a later duplicate.
 - `PUT /v1/notes/{id}` replaces a note's frontmatter and body on the condition
   that `If-Match` names the ETag the file has now. The body is the document
   shape a read returns, so a client reads, edits and sends it back; the
@@ -111,8 +133,12 @@ vertical path proved end to end, then widened.
 Everything below is planned and has a place in the design. None of it exists
 in the tree, so do not read the absence as a decision to leave it out.
 
-- **Ingest.** `POST /v1/ingest`, source bundles, revisions, idempotency and
-  the generated source projections.
+- **Ingest beyond the first revision.** A source is created once and never
+  revised: `r0002` and later, an idempotency key that returns the first
+  answer instead of 409, the generated source projections into the notes
+  filesystem, and tombstoning a source. Tombstones in particular have no
+  columns in the mirror and no keys in `manifest.json`, so adding them costs
+  a migration of its own and a manifest `schema_version` bump.
 - **Reconciliation.** Nothing yet notices a file created, moved or deleted on
   a device. An edit in place is the exception and does read back: a note read
   by its identifier is parsed from the file every time, so a body or

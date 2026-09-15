@@ -86,7 +86,7 @@ def store(
     wiring: Wiring, control: ControlState, session_factory: async_sessionmaker[AsyncSession]
 ) -> LocalStore:
     wiring.notes_dir.mkdir(parents=True, exist_ok=True)
-    return LocalStore(wiring.notes_dir, control, session_factory)
+    return LocalStore(wiring.notes_dir, control, session_factory, wiring.sources_dir)
 
 
 @pytest.fixture
@@ -96,4 +96,4 @@ def unreachable_store(wiring: Wiring, control: ControlState) -> LocalStore:
         "postgresql+asyncpg://coppermind:coppermind@127.0.0.1:5999/coppermind_absent"
     )
     wiring.notes_dir.mkdir(parents=True, exist_ok=True)
-    return LocalStore(wiring.notes_dir, control, make_session_factory(engine))
+    return LocalStore(wiring.notes_dir, control, make_session_factory(engine), wiring.sources_dir)

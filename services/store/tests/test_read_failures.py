@@ -18,7 +18,7 @@ def local_store(tmp_path: Path) -> LocalStore:
     wiring = Wiring(data_dir=tmp_path / "data")
     control = ControlState(wiring.state_dir)
     control.ensure_defaults()
-    return LocalStore(wiring.notes_dir, control, cast(Any, object()))
+    return LocalStore(wiring.notes_dir, control, cast(Any, object()), wiring.sources_dir)
 
 
 async def test_a_file_that_vanishes_after_location_is_not_found(

@@ -86,6 +86,29 @@ curl -sS -X PUT http://127.0.0.1:8080/v1/notes/<id> \
       }'
 ```
 
+Bring something in from outside. An ingest posts a source and the note to
+open for it, and creates both or neither. `examples/ingest/plaud-sample.json`
+is a recorder's transcript, its summary and its device metadata:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/v1/ingest \
+  -H "Authorization: Bearer $COPPERMIND_KEY" \
+  -H 'Content-Type: application/json' \
+  --data-binary @examples/ingest/plaud-sample.json
+```
+
+The answer carries the new source identifier and the Review note that cites
+it. The artifacts are files beside the manifest:
+
+```bash
+docker compose exec store ls -R "/data/sources/<source_id>"
+```
+
+Sending it a second time answers 409 `source_exists` and writes nothing: a
+source is created once, keyed by its `provider` and `external_source_id`. A
+body over `limits.ingest_max_bytes` answers 413 `payload_too_large`. The key
+needs both `sources:write` and `notes:write`.
+
 The generated OpenAPI document is at `http://127.0.0.1:8080/openapi.json`.
 
 Until the separate Admin service adds its graphical keys page, additional

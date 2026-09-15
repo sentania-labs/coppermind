@@ -3,13 +3,16 @@
 The database transaction claims the external identifier before the store
 touches the filesystem. Artifact files are exclusive, then `manifest.json`
 is written last so an interrupted bundle is never mistaken for complete. The
-linked Review note is the final filesystem write in the same transaction.
+linked Review note is the final filesystem write in the same transaction, and
+an ingest that does not reach it removes the directory it created, so a
+failure leaves nothing behind rather than an unreferenced bundle.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -49,16 +52,10 @@ if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
 
 
-async def ingest(
-    store: LocalStore,
-    request: IngestRequest,
-    *,
-    payload_size_bytes: int | None = None,
-) -> IngestResult:
+async def ingest(store: LocalStore, request: IngestRequest) -> IngestResult:
     settings = store.control.settings()
     schema = store.control.schema()
-    payload_size = payload_size_bytes if payload_size_bytes is not None else _payload_size(request)
-    if payload_size > settings.limits.ingest_max_bytes:
+    if _payload_size(request) > settings.limits.ingest_max_bytes:
         raise PayloadTooLarge(settings.limits.ingest_max_bytes)
 
     source_id = new_id()
@@ -166,12 +163,7 @@ async def ingest(
             await session.flush()
             session.add_all(
                 [
-                    NoteSource(
-                        note_id=note_id,
-                        source_id=source_id,
-                        relation="derived_from",
-                        created_at=now,
-                    ),
+                    NoteSource(note_id=note_id, source_id=source_id, created_at=now),
                     *[
                         SourceArtifact(
                             source_id=source_id,
@@ -188,30 +180,27 @@ async def ingest(
             await session.flush()
 
             try:
-                revision_path.mkdir(parents=True, exist_ok=False)
-                for artifact, data in artifacts:
-                    create_exclusive_bytes(revision_path / artifact.name, data)
-                create_exclusive_bytes(manifest_path, manifest)
-            except FileExistsError as exc:
-                raise SourcesFilesystemUnavailable(str(exc)) from exc
-            except OSError as exc:
-                raise SourcesFilesystemUnavailable(str(exc)) from exc
+                try:
+                    revision_path.mkdir(parents=True, exist_ok=False)
+                    for artifact, data in artifacts:
+                        create_exclusive_bytes(revision_path / artifact.name, data)
+                    create_exclusive_bytes(manifest_path, manifest)
+                except OSError as exc:
+                    raise SourcesFilesystemUnavailable(str(exc)) from exc
 
-            try:
-                create_exclusive_bytes(note_path, note_data)
-            except FileExistsError as exc:
-                manifest_path.unlink(missing_ok=True)
-                raise PathCollision(relative) from exc
-            except OSError as exc:
-                manifest_path.unlink(missing_ok=True)
-                raise NotesFilesystemUnavailable(str(exc)) from exc
+                try:
+                    create_exclusive_bytes(note_path, note_data)
+                except FileExistsError as exc:
+                    raise PathCollision(relative) from exc
+                except OSError as exc:
+                    raise NotesFilesystemUnavailable(str(exc)) from exc
             except BaseException:
-                manifest_path.unlink(missing_ok=True)
+                shutil.rmtree(source_path, ignore_errors=True)
                 raise
     except SourceAlreadyExists:
         raise
     except IntegrityError as exc:
-        constraint = getattr(exc.orig, "constraint_name", "")
+        constraint = _violated_constraint(exc)
         if constraint == "uq_sources_provider_external_id":
             raise SourceAlreadyExists(
                 request.source.provider, request.source.external_source_id
@@ -232,6 +221,16 @@ async def ingest(
         source=CreatedSource(id=source_id),
         note=CreatedNote(id=note_id, path=relative),
     )
+
+
+def _violated_constraint(exc: IntegrityError) -> str:
+    """The constraint a unique violation names, as asyncpg reported it.
+
+    SQLAlchemy's asyncpg adapter raises its own DBAPI error carrying only the
+    SQLSTATE and chains the asyncpg exception, which is the object that knows
+    the constraint, as its cause.
+    """
+    return getattr(getattr(exc.orig, "__cause__", None), "constraint_name", "") or ""
 
 
 def _payload_size(request: IngestRequest) -> int:
@@ -270,7 +269,5 @@ def _manifest(
                 "artifacts": artifacts,
             }
         ],
-        "tombstoned_at": None,
-        "tombstone_reason": None,
     }
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
