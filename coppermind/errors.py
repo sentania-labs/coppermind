@@ -20,9 +20,11 @@ from coppermind.store_protocol import (
     NoteUnparseable,
     NotFound,
     PathCollision,
+    PreconditionRequired,
     StoreError,
     StoreUnavailable,
     ValidationFailed,
+    VersionConflict,
 )
 
 METADATA_UNAVAILABLE_MESSAGE = (
@@ -71,6 +73,10 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
         return 422, envelope("validation_error", str(error), errors=error.errors)
     if isinstance(error, PathCollision):
         return 409, envelope("path_collision", str(error), existing_path=error.existing_path)
+    if isinstance(error, VersionConflict):
+        return 409, envelope("version_conflict", str(error), current_version=error.current_etag)
+    if isinstance(error, PreconditionRequired):
+        return 428, envelope("precondition_required", str(error))
     if isinstance(error, NoteUnparseable):
         # The reason quotes the frontmatter lines the parser failed on, so it is
         # the caller's note content and it goes behind the same surface split
