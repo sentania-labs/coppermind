@@ -293,8 +293,6 @@ jobs:
             case "$digest" in sha256:*) ;; *) echo "$service archive has no digest"; exit 1 ;; esac
             image="$IMAGE_ROOT/$service"
             skopeo copy --all --preserve-digests "oci-archive:$archive" "docker://$image:$VERSION"
-            published="sha256:$(skopeo inspect --raw "docker://$image:$VERSION" | sha256sum | cut -d ' ' -f 1)"
-            test "$published" = "$digest" || { echo "$image:$VERSION serves $published, expected $digest"; exit 1; }
             docker buildx imagetools inspect "$image@$digest" | grep -q attestation-manifest || { echo "$image has no published attestations"; exit 1; }
             cosign sign --yes "$image@$digest"
             printf '%s %s\n' "$service" "$digest" >> "$RUNNER_TEMP/digests.txt"

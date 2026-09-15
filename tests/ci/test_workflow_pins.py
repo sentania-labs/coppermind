@@ -29,6 +29,11 @@ FORBIDDEN_PERMISSIONS = {
     "id-token": "could mint a signing identity",
 }
 
+# The one condition that may carry publication authority. Anything else, including
+# a disjunction that happens to name both halves, is true on pushes that are not
+# a version tag.
+TAG_GATE = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
+
 
 def load(workflow: Path) -> dict[str, Any]:
     return YAML(typ="safe").load(workflow.read_text(encoding="utf-8"))
@@ -103,11 +108,10 @@ def test_publish_authority_is_confined_to_tag_only_jobs():
         for name, job in (document.get("jobs") or {}).items():
             for scope, why in FORBIDDEN_PERMISSIONS.items():
                 if granted(document, job, scope) == "write":
-                    condition = str(job.get("if", ""))
-                    if "event_name == 'push'" not in condition or "refs/tags/" not in condition:
+                    if str(job.get("if", "")).strip() != TAG_GATE:
                         problems.append(
                             f"{workflow.name}:{name} has {scope}: write and so {why} "
-                            "outside a tag push"
+                            f"unless its condition is exactly {TAG_GATE}"
                         )
     assert not problems, "\n".join(problems)
 

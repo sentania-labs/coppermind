@@ -28,12 +28,13 @@ services = json.load(sys.stdin)["services"]
 problems = []
 for name in sorted(set(published) - set(services)):
     problems.append(f"{name} is missing from the rendered configuration")
+for name, rendered in sorted(services.items()):
+    if "build" in rendered:
+        problems.append(f"{name} still builds from the working tree, so it would not run the published image")
 for name, image in sorted(published.items()):
     rendered = services.get(name)
     if rendered is None:
         continue
-    if "build" in rendered:
-        problems.append(f"{name} still builds from the working tree, so it would not run the published image")
     expected = f"{root}/{image}:{version}"
     actual = rendered.get("image")
     if actual != expected:
@@ -41,5 +42,5 @@ for name, image in sorted(published.items()):
 if problems:
     print("\n".join(problems), file=sys.stderr)
     raise SystemExit(1)
-print(f"published overlay: {len(published)} services run published images and build nothing")
+print(f"published overlay: {len(services)} rendered services build nothing, {len(published)} run published images")
 '
