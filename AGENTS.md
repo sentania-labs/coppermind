@@ -48,7 +48,9 @@ until the helper honours it.
   replace (`PUT /v1/notes/{id}`, `replace_note`) composes the frontmatter
   block from what was sent, so a comment between the keys and a hand-arranged
   key order do not survive it. Every other edit of a note file stays round
-  trip.
+  trip. Adoption parses the existing block that way but dumps only generated
+  missing keys and splices them before the delimiter, so existing bytes and
+  line endings stay untouched.
 - **SQLAlchemy connects lazily**, so a transaction that has not issued any SQL
   will not notice that PostgreSQL is gone. `LocalStore.create_note` issues a
   `SELECT 1` before touching the filesystem on purpose: without it a database

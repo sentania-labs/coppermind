@@ -1,4 +1,4 @@
-"""Read-side reconciliation of known identities from the notes filesystem."""
+"""Reconciliation of known and device-created notes from the notes filesystem."""
 
 from __future__ import annotations
 
@@ -14,7 +14,9 @@ from coppermind_store.fs import content_hash
 from coppermind_store.notes import LocalStore
 from coppermind_store.reconciler import UNPARSED_REASON, UNREADABLE_REASON, reconcile_once
 
+from coppermind import frontmatter as fm
 from coppermind.db.models import Note
+from coppermind.ids import is_valid_id
 from coppermind.store_protocol import CreateNote, NoteQuery, NoteUnparseable, NotFound
 
 
@@ -108,18 +110,116 @@ async def test_stale_path_does_not_name_the_wrong_broken_note(store: LocalStore)
         raise AssertionError("broken note did not report its own identity")
 
 
-async def test_unknown_device_created_file_is_left_unchanged(store: LocalStore):
+async def test_a_settled_device_created_file_is_adopted_and_retrievable(store: LocalStore):
     unknown = store.notes_root / "Review" / "Made on phone.md"
     unknown.parent.mkdir(parents=True, exist_ok=True)
-    original = b"# Made on phone\n\nNo identity yet.\n"
+    body = "# Made on phone\r\n\r\nNo identity yet.\r\n"
+    original = (
+        "---\r\n"
+        "tags: [phone] # keep this style\r\n"
+        "my_key: hand-written # keep this comment\r\n"
+        "---\r\n"
+        f"{body}"
+    ).encode()
+    unknown.write_bytes(original)
+
+    counts = await reconcile_once(store)
+    adopted_text = unknown.read_bytes().decode("utf-8")
+    frontmatter, adopted_body = fm.parse(adopted_text)
+    note_id = frontmatter[store.control.schema().role("id_key")]
+    fetched = await store.get_note(note_id)
+
+    assert is_valid_id(note_id)
+    assert adopted_body == body
+    assert (
+        adopted_text.index("tags: [phone] # keep this style")
+        < adopted_text.index("my_key: hand-written # keep this comment")
+        < adopted_text.index("schema_version: 1")
+    )
+    assert "\n" not in adopted_text.replace("\r\n", "")
+    assert fetched.id == note_id
+    assert fetched.path == "Review/Made on phone.md"
+    assert fetched.body == body
+    assert counts["adopted"] == 1
+
+
+async def test_a_device_created_file_waits_for_quiet_before_adoption(store: LocalStore):
+    unknown = store.notes_root / "Review" / "Still syncing.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    original = b"# Still syncing\n\nFirst piece.\n"
+    unknown.write_bytes(original)
+    remembered: reconciler.UnidentifiedStats = {}
+
+    waiting = await reconcile_once(store, quiet_period_s=3600, unidentified=remembered)
+
+    assert waiting["adopted"] == 0
+    assert waiting["deferred"] == 1
+    assert unknown.read_bytes() == original
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 0
+
+    settled = await reconcile_once(store, unidentified=remembered)
+    frontmatter, body = fm.parse(unknown.read_text(encoding="utf-8"))
+
+    assert settled["adopted"] == 1
+    assert body == original.decode()
+
+
+async def test_adoption_never_overwrites_a_device_write(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    unknown = store.notes_root / "Review" / "Racing sync.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    unknown.write_text("# Racing sync\n\nFirst piece.\n", encoding="utf-8")
+    real_adopt = store.adopt_note
+
+    async def device_writes_first(relative, expected_hash, *, replace_id=None):
+        unknown.write_text("# Racing sync\n\nFirst piece.\nSecond piece.\n", encoding="utf-8")
+        return await real_adopt(relative, expected_hash, replace_id=replace_id)
+
+    monkeypatch.setattr(store, "adopt_note", device_writes_first)
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 0
+    assert counts["deferred"] == 1
+    assert unknown.read_text(encoding="utf-8") == "# Racing sync\n\nFirst piece.\nSecond piece.\n"
+
+
+async def test_an_invalid_device_created_file_is_reported_and_left_byte_exact(
+    store: LocalStore,
+):
+    unknown = store.notes_root / "Review" / "Needs repair.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    original = b"---\ntype: not-a-real-type # keep this\n---\n# Needs repair\n"
     unknown.write_bytes(original)
 
     counts = await reconcile_once(store)
 
+    assert counts["adopted"] == 0
+    assert counts["unparsed"] == 1
+    assert unknown.read_bytes() == original
     async with store.session_factory() as session:
         assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 0
-    assert unknown.read_bytes() == original
-    assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 0}
+
+
+async def test_a_copied_identity_gets_a_fresh_id_without_changing_the_owner(
+    store: LocalStore,
+):
+    original = await store.create_note(
+        CreateNote(title="Runbook", frontmatter={"type": "reference"})
+    )
+    original_path = store.notes_root / original.path
+    copied_path = original_path.with_name("Runbook copy.md")
+    copied_path.write_bytes(original_path.read_bytes())
+
+    counts = await reconcile_once(store)
+    copied_frontmatter, _ = fm.parse(copied_path.read_text(encoding="utf-8"))
+    copied_id = copied_frontmatter[store.control.schema().role("id_key")]
+
+    assert counts["adopted"] == 1
+    assert copied_id != original.id
+    assert (await store.get_note(original.id)).path == original.path
+    assert (await store.get_note(copied_id)).path == "Review/Runbook copy.md"
 
 
 async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: LocalStore):
@@ -132,7 +232,14 @@ async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: 
     counts = await reconcile_once(store)
     row = await _row(store, note.id)
 
-    assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 1, "deferred": 0}
+    assert counts == {
+        "adopted": 0,
+        "changed": 0,
+        "moved": 0,
+        "missing": 0,
+        "unparsed": 1,
+        "deferred": 0,
+    }
     assert row.state == "unparsed"
     assert row.path == note.path
     assert row.content_hash == content_hash(broken)
@@ -240,7 +347,14 @@ async def test_two_live_copies_leave_the_row_alone_instead_of_reporting_it_gone(
     counts = await reconcile_once(store)
     row = await _row(store, note.id)
 
-    assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 0}
+    assert counts == {
+        "adopted": 0,
+        "changed": 0,
+        "moved": 0,
+        "missing": 0,
+        "unparsed": 0,
+        "deferred": 0,
+    }
     assert row.state == "ok"
     assert row.path == note.path
 
@@ -279,6 +393,7 @@ async def test_an_interval_scan_trusts_a_stat_and_the_daily_rehash_does_not(stor
     assert path.stat().st_size == before.st_size
 
     assert await reconcile_once(store) == {
+        "adopted": 0,
         "changed": 0,
         "moved": 0,
         "missing": 0,
@@ -288,6 +403,7 @@ async def test_an_interval_scan_trusts_a_stat_and_the_daily_rehash_does_not(stor
     assert (await _row(store, note.id)).title == "Runbook"
 
     assert await reconcile_once(store, full=True) == {
+        "adopted": 0,
         "changed": 1,
         "moved": 0,
         "missing": 0,
@@ -307,11 +423,19 @@ async def test_a_file_still_inside_the_quiet_period_waits_rather_than_going_miss
     deferred = await reconcile_once(store, quiet_period_s=3600)
     settling = await _row(store, note.id)
 
-    assert deferred == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 1}
+    assert deferred == {
+        "adopted": 0,
+        "changed": 0,
+        "moved": 0,
+        "missing": 0,
+        "unparsed": 0,
+        "deferred": 1,
+    }
     assert settling.state == "ok"
     assert settling.title == "Runbook"
 
     assert await reconcile_once(store) == {
+        "adopted": 0,
         "changed": 1,
         "moved": 0,
         "missing": 0,
@@ -498,7 +622,7 @@ async def test_a_conflict_copy_cannot_capture_a_row_whose_file_is_settling(store
         counts = await reconcile_once(store, quiet_period_s=3600)
         row = await _row(store, note.id)
         assert counts["moved"] == 0
-        assert counts["deferred"] == 1
+        assert counts["deferred"] == 2
         assert row.path == note.path
         assert (await store.get_note(note.id)).path == note.path
 
@@ -526,20 +650,18 @@ async def test_a_file_written_during_a_slow_pass_is_still_deferred(store: LocalS
     assert (await _row(store, note.id)).title == "Runbook"
 
 
-async def test_a_file_with_no_known_identity_is_read_once_then_stat_trusted(
-    store: LocalStore, monkeypatch
-):
-    """Pointing Coppermind at an existing vault must not cost a parse per pass."""
+async def test_a_rejected_identity_is_read_once_then_stat_trusted(store: LocalStore, monkeypatch):
+    """An unchanged rejected file must not cost a parse per pass."""
     unknown = store.notes_root / "Review" / "Made on phone.md"
     unknown.parent.mkdir(parents=True, exist_ok=True)
-    unknown.write_bytes(b"# Made on phone\n\nNo identity yet.\n")
-    remembered: dict[str, tuple[int, datetime]] = {}
+    unknown.write_bytes(b"---\nid: invalid\n---\n# Made on phone\n")
+    remembered: reconciler.UnidentifiedStats = {}
     read: list[str] = []
     real_observe = reconciler._observe
 
-    def counted(safe_path, relative, data, mtime, schema, by_id, entry):
+    def counted(safe_path, relative, data, mtime, schema, by_id, entry, *, settled):
         read.append(relative)
-        return real_observe(safe_path, relative, data, mtime, schema, by_id, entry)
+        return real_observe(safe_path, relative, data, mtime, schema, by_id, entry, settled=settled)
 
     monkeypatch.setattr(reconciler, "_observe", counted)
 
@@ -552,7 +674,7 @@ async def test_a_file_with_no_known_identity_is_read_once_then_stat_trusted(
     await reconcile_once(store, unidentified=remembered, full=True)
     assert len(read) == 2
 
-    unknown.write_bytes(b"# Made on phone\n\nEdited on the device.\n")
+    unknown.write_bytes(b"---\nid: invalid\n---\n# Made on phone\n\nEdited on the device.\n")
     await reconcile_once(store, unidentified=remembered)
     assert len(read) == 3
     assert unknown.read_bytes().endswith(b"Edited on the device.\n")
@@ -563,8 +685,8 @@ async def test_a_forgotten_path_stops_being_remembered_once_its_file_is_gone(
 ):
     unknown = store.notes_root / "Review" / "Made on phone.md"
     unknown.parent.mkdir(parents=True, exist_ok=True)
-    unknown.write_bytes(b"# Made on phone\n\nNo identity yet.\n")
-    remembered: dict[str, tuple[int, datetime]] = {}
+    unknown.write_bytes(b"---\nid: invalid\n---\n# Made on phone\n")
+    remembered: reconciler.UnidentifiedStats = {}
 
     await reconcile_once(store, unidentified=remembered)
     assert "Review/Made on phone.md" in remembered
@@ -580,7 +702,7 @@ async def test_a_known_note_moved_to_an_unremembered_path_is_still_identified(
 ):
     """The stat shortcut must never hide a note that arrived somewhere new."""
     note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
-    remembered: dict[str, tuple[int, datetime]] = {}
+    remembered: reconciler.UnidentifiedStats = {}
     await reconcile_once(store, unidentified=remembered)
     moved = store.notes_root / "Work" / "Operations Runbook.md"
     moved.parent.mkdir()

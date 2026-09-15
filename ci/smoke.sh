@@ -95,6 +95,19 @@ raise SystemExit(0 if any(item["id"] == sys.argv[2] for item in items) else 1)' 
     fail "note $note_id did not appear under filter $filter after one scan"
 }
 
+wait_for_adopted_path() {
+    local path="$1" tries="${2:-180}" note_id code
+    for _ in $(seq 1 "$tries"); do
+        note_id="$(compose exec -T editor sed -n 's/^id: //p' "/data/notes/$path" | tr -d '[:space:]')"
+        if [ -n "$note_id" ]; then
+            code="$(status_of "${AUTH[@]}" "$API/v1/notes/$note_id")"
+            [ "$code" = "200" ] && { printf '%s' "$note_id"; return 0; }
+        fi
+        sleep 1
+    done
+    fail "device-created note at $path was not adopted after it settled"
+}
+
 step "bring the stack up"
 compose up -d --wait --remove-orphans
 ok "compose reported every service healthy"
@@ -137,6 +150,28 @@ compose exec -T api test ! -r /run/coppermind/postgres/postgres-password \
 compose exec -T store test -r /run/coppermind/postgres/postgres-password \
     || fail "the store cannot read the PostgreSQL password"
 ok "the API cannot read the database password and the store can"
+
+step "write a new note from the editor container and keep it in flight across a scan"
+phone_path="Device/Made on phone.md"
+scans_before="$(compose logs store 2>&1 | grep -c 'reconciliation completed' || true)"
+compose exec -T editor sh -c \
+    'mkdir -p /data/notes/Device; printf "%s\n" "# Made on phone" "" "First piece." > "$1"; touch /tmp/coppermind-writing; while test -e /tmp/coppermind-writing; do printf "%s\n" "Next piece." >> "$1"; sleep 10; done' \
+    sh "/data/notes/$phone_path" >/dev/null 2>&1 &
+for _ in $(seq 1 90); do
+    scans_now="$(compose logs store 2>&1 | grep -c 'reconciliation completed' || true)"
+    [ "$scans_now" -gt "$scans_before" ] && break
+    sleep 1
+done
+[ "$scans_now" -gt "$scans_before" ] || fail "no scheduled scan ran while the note was in flight"
+compose exec -T editor test -f "/data/notes/$phone_path" \
+    || fail "the in-flight note disappeared"
+compose exec -T editor sh -c '! grep -q "^id: " "$1"' sh "/data/notes/$phone_path" \
+    || fail "the store adopted a device-created note before it settled"
+compose exec -T editor rm /tmp/coppermind-writing
+phone_id="$(wait_for_adopted_path "$phone_path")"
+compose exec -T editor grep -Fqx "First piece." "/data/notes/$phone_path" \
+    || fail "adoption changed the note content"
+ok "the in-flight file stayed untouched, then became retrievable as $phone_id after quiet"
 
 step "ingest the sample source and its linked Review note"
 ingested="$(mktemp)"
@@ -359,13 +394,15 @@ ok "filters see the reviewed device edit and select the expected subset"
 
 step "page through four notes two at a time"
 first_page="$(mktemp)"
-code="$(curl -sS -o "$first_page" -w '%{http_code}' "${AUTH[@]}" "$API/v1/notes?limit=2")"
+code="$(curl -sS -o "$first_page" -w '%{http_code}' "${AUTH[@]}" \
+    "$API/v1/notes?limit=2&folder=Review")"
 [ "$code" = "200" ] || { cat "$first_page"; fail "first page returned $code, expected 200"; }
 cursor="$(field "$first_page" next_cursor)"
 [ -n "$cursor" ] && [ "$cursor" != "None" ] || fail "the first page did not carry a cursor"
 second_page="$(mktemp)"
 code="$(curl -sS -G -o "$second_page" -w '%{http_code}' "${AUTH[@]}" \
-    --data-urlencode 'limit=2' --data-urlencode "cursor=$cursor" "$API/v1/notes")"
+    --data-urlencode 'limit=2' --data-urlencode "cursor=$cursor" \
+    --data-urlencode 'folder=Review' "$API/v1/notes")"
 [ "$code" = "200" ] || { cat "$second_page"; fail "second page returned $code, expected 200"; }
 python3 -c 'import json,sys
 items = json.load(open(sys.argv[1]))["items"] + json.load(open(sys.argv[2]))["items"]

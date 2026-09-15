@@ -231,3 +231,52 @@ def patch(text: str, changes: dict[str, Any], *, unset: list[str] | None = None)
     for key, value in changes.items():
         frontmatter[key] = value
     return _compose(frontmatter, body, yaml)
+
+
+def append_missing(text: str, changes: dict[str, Any]) -> str:
+    """Append absent keys without rewriting any existing frontmatter bytes.
+
+    Adoption adds system-owned defaults to a file a person wrote. The whole
+    existing block is still parsed in round trip mode, but only the generated
+    additions are dumped. They are spliced immediately before the closing
+    delimiter using the block's line endings, so comments, quoting,
+    indentation, ordering and the body remain byte exact.
+    """
+    block, body = split(text)
+    has_block = text.startswith(f"{DELIMITER}\n") or text.startswith(f"{DELIMITER}\r\n")
+    if not has_block:
+        return compose(changes, body)
+    yaml = _yaml()
+    if block.strip():
+        loaded, indent, sequence_offset = _load_guessing_indent(block, yaml)
+        frontmatter = _mapping(loaded)
+        _indent_like(yaml, indent, sequence_offset)
+    else:
+        frontmatter = {}
+    additions = {key: value for key, value in changes.items() if key not in frontmatter}
+    if not additions:
+        return text
+    fragment = _dump(additions, yaml)
+    newline = "\r\n" if text.startswith(f"{DELIMITER}\r\n") else "\n"
+    fragment = fragment.replace("\n", newline)
+    opening_length = len(DELIMITER) + len(newline)
+    closing_offset = _find_closing_delimiter(text[opening_length:])
+    if closing_offset is None:  # split already checked this; keeps the invariant local
+        raise FrontmatterError("frontmatter block is never closed", category="unterminated_block")
+    insertion = opening_length + closing_offset
+    return f"{text[:insertion]}{fragment}{text[insertion:]}"
+
+
+def replace_scalar(text: str, key: str, expected: str, replacement: str) -> str:
+    """Replace one plain top-level scalar while preserving the rest exactly."""
+    frontmatter, _ = parse(text)
+    if frontmatter.get(key) != expected:
+        raise FrontmatterError("frontmatter scalar changed", category="scalar_changed")
+    pattern = re.compile(
+        rf"(?m)^({re.escape(key)}:[ \t]*)(?P<quote>['\"]?)"
+        rf"{re.escape(expected)}(?P=quote)(?P<tail>[ \t]*(?:#[^\r\n]*)?)(?=\r?$)"
+    )
+    replaced, count = pattern.subn(rf"\g<1>\g<quote>{replacement}\g<quote>\g<tail>", text)
+    if count != 1:
+        raise FrontmatterError("frontmatter scalar is not plain", category="scalar_not_plain")
+    return replaced

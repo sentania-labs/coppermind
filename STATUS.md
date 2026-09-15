@@ -70,16 +70,21 @@ vertical path proved end to end, then widened.
   on a device is mirrored by the identity in its frontmatter. Only a file the
   scan did not find becomes `missing`: one it can see at a known note's path
   but cannot parse, open or identify is `unparsed` there, and two live copies
-  of one identity leave the row as it was rather than guessing. An interval
+  without a certain owner leave the row as it was rather than guessing. An interval
   scan stats every note file and reads only the ones a stat says may have
-  changed. A file carrying no identity this store knows, which is every file
-  in an existing tree Coppermind was pointed at, is read once and then
-  stat-trusted the same way, so an unfamiliar tree costs one stat per file per
-  pass rather than a read and a parse. That memory holds 10,000 such paths per
-  store process; where more files than that carry no known identity, the ones
-  past the bound are read and parsed every pass until write-side
-  reconciliation gives them identities. A file changed inside the quiet period
-  waits for the next pass. Trusting a stat is safe because it is not the only
+  changed. A device-created file waits until its mtime has been quiet for the
+  configured period, then the store assigns an identity and fills only absent
+  required frontmatter from the shipped defaults. It checks the observed hash
+  again immediately before the atomic replacement, so another device write
+  wins without losing bytes. The tested line endings, inline comments, key
+  order, list style and body stay in place. A copied known identity gets a
+  fresh one only when the original at the recorded path is certain; an invalid
+  file is left byte exact, counted as unparsed and logged rather than mirrored
+  as a broken note. The process remembers up
+  to 10,000 settling or rejected paths by stat, so an unchanged rejected tree
+  costs one stat per file per pass rather than repeated reads and parses. A
+  file changed inside the quiet period waits for the next pass. Trusting a stat
+  is safe because it is not the only
   pass: once a day, at the configured local time, the store rereads and
   rehashes every note file, which is what catches an edit that left the file's
   size and timestamp where they were. That pass stays due until one completes
@@ -89,10 +94,9 @@ vertical path proved end to end, then widened.
   report not ready rather than serving state nothing is refreshing, as does a
   long silence with no scan landing; the first scan after a start gets a grace
   of its own first, because it reads everything and there is no measured
-  runtime yet to judge it by. Files whose identity is not already known are
-  left byte for byte alone. The interval, the quiet period and the rehash time
-  are product settings with working defaults; their graphical controls arrive
-  with the separate Admin service.
+  runtime yet to judge it by. The interval, the quiet period and the rehash
+  time are product settings with working defaults; their graphical controls
+  arrive with the separate Admin service.
 - `POST /v1/ingest` takes a source and the note to open for it, and creates
   both or neither. A deterministic `.external-id-<sha256>.json` file claims
   each `provider` plus `external_source_id` before the bundle is written. The
@@ -267,10 +271,6 @@ in the tree, so do not read the absence as a decision to leave it out.
   source are not built. Tombstones in particular have no columns in the mirror
   and no keys in `manifest.json`, so adding them costs a migration of its own
   and a manifest `schema_version` bump.
-- **Write-side reconciliation.** A note created on a device has no row and no
-  identifier, so the read-side scanner deliberately leaves it alone. Assigning
-  its identity and filling required frontmatter is the next reconciliation
-  increment. Until then, treat the API as the way to create notes.
 - **A whole-file note body.** `PUT` takes the JSON document shape only; the
   `text/markdown` whole-file body does not exist yet. A replace also rewrites
   the frontmatter block from what was sent, so the keys land in the schema's

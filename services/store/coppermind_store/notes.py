@@ -33,7 +33,7 @@ import binascii
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
@@ -45,7 +45,7 @@ from coppermind.api_keys import ApiKeySet
 from coppermind.atomicio import commit_staged, create_exclusive_bytes, stage_bytes
 from coppermind.db.models import Note
 from coppermind.db.session import transaction
-from coppermind.ids import new_id
+from coppermind.ids import is_valid_id, new_id
 from coppermind.logging import get_logger
 from coppermind.naming import note_stem, sanitize_folder, unique_stem
 from coppermind.schema import FrontmatterSchema
@@ -80,6 +80,8 @@ log = get_logger("coppermind-store")
 # How many mirror rows a listing holds in memory at a time. A selective filter
 # still walks the mirror, and this bounds the materialized batch.
 _SCAN_BATCH = 200
+
+AdoptionOutcome = Literal["adopted", "changed", "invalid", "collision"]
 
 
 class LocalStore:
@@ -406,6 +408,129 @@ class LocalStore:
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
 
+    async def adopt_note(
+        self, relative: str, expected_hash: str, *, replace_id: str | None = None
+    ) -> AdoptionOutcome:
+        """Give a settled device-created file an identity and mirror it.
+
+        The scan supplies the hash it observed after the quiet period. The
+        file is read again under the store's lock and checked once more
+        immediately before an atomic replacement, so a device write wins the
+        race without losing bytes. Missing required keys receive schema
+        defaults. Existing keys and body content are never replaced.
+
+        `replace_id` is the identity copied into a second live file. The row's
+        recorded path keeps that identity and this file receives a new one.
+        """
+        try:
+            path = resolve(self.notes_root, relative)
+        except ValueError:
+            return "invalid"
+        schema = self.control.schema()
+        settings = self.control.settings()
+        async with self._lock_for(f"adopt:{relative}"):
+            try:
+                current, _ = _read(relative, path)
+            except NotFound:
+                return "changed"
+            if content_hash(current) != expected_hash:
+                return "changed"
+            try:
+                text = current.decode("utf-8")
+                frontmatter, body = fm.parse(text)
+            except (UnicodeDecodeError, fm.FrontmatterError):
+                return "invalid"
+
+            id_key = schema.role("id_key")
+            carried_id = frontmatter.get(id_key)
+            if replace_id is not None:
+                if carried_id != replace_id:
+                    return "changed"
+                note_id = new_id()
+            elif carried_id is None:
+                note_id = new_id()
+            elif is_valid_id(carried_id):
+                note_id = carried_id
+            else:
+                return "invalid"
+
+            changes = _adoption_changes(frontmatter, schema, settings, note_id)
+            try:
+                adopted_text = fm.append_missing(text, changes)
+                if replace_id is not None:
+                    adopted_text = fm.replace_scalar(adopted_text, id_key, replace_id, note_id)
+                adopted_frontmatter, adopted_body = fm.parse(adopted_text)
+            except fm.FrontmatterError:
+                return "invalid"
+            if schema.validate_frontmatter(adopted_frontmatter):
+                return "invalid"
+            data = adopted_text.encode("utf-8")
+            now = datetime.now(tz=UTC)
+
+            try:
+                async with transaction(self.session_factory) as session:
+                    await session.execute(sa.text("SELECT 1"))
+                    if await session.scalar(sa.select(Note.id).where(Note.id == note_id)):
+                        return "collision"
+                    occupied = await session.scalar(
+                        sa.select(Note.id)
+                        .where(Note.path == relative, Note.state != "missing")
+                        .limit(1)
+                    )
+                    if occupied is not None:
+                        return "collision"
+
+                    if data != current:
+                        try:
+                            staged = stage_bytes(path, data)
+                        except OSError as exc:
+                            raise NotesFilesystemUnavailable(str(exc)) from exc
+                        try:
+                            latest, _ = _read(relative, path)
+                            if content_hash(latest) != expected_hash:
+                                staged.unlink(missing_ok=True)
+                                return "changed"
+                            commit_staged(staged, path)
+                        except NotFound:
+                            staged.unlink(missing_ok=True)
+                            return "changed"
+                        except OSError as exc:
+                            staged.unlink(missing_ok=True)
+                            raise NotesFilesystemUnavailable(str(exc)) from exc
+                        except BaseException:
+                            staged.unlink(missing_ok=True)
+                            raise
+                    else:
+                        latest, _ = _read(relative, path)
+                        if content_hash(latest) != expected_hash:
+                            return "changed"
+
+                    try:
+                        file_stat = path.stat()
+                    except OSError as exc:
+                        raise NotesFilesystemUnavailable(str(exc)) from exc
+                    session.add(
+                        Note(
+                            id=note_id,
+                            path=relative,
+                            title=_title_of(adopted_body, path),
+                            content_hash=content_hash(data),
+                            size_bytes=len(data),
+                            mtime=datetime.fromtimestamp(file_stat.st_mtime, tz=UTC),
+                            frontmatter=_jsonable(adopted_frontmatter),
+                            **_mirror_columns(adopted_frontmatter, schema),
+                            state="ok",
+                            first_seen_at=now,
+                            updated_at=now,
+                        )
+                    )
+            except BaseException as exc:
+                typed = _metadata_failure(exc)
+                if typed is None:
+                    raise
+                raise typed from exc
+        return "adopted"
+
     def _lock_for(self, note_id: NoteId) -> asyncio.Lock:
         """The lock serialising writes to one note. Only asked for a located note."""
         lock = self._locks.get(note_id)
@@ -664,6 +789,24 @@ def _build_frontmatter(
     if not values.get(date_key):
         values[date_key] = _today(settings).isoformat()
     return _ordered(values, schema)
+
+
+def _adoption_changes(
+    frontmatter: dict[str, Any],
+    schema: FrontmatterSchema,
+    settings: ProductSettings,
+    note_id: str,
+) -> dict[str, Any]:
+    """Only the absent keys needed to make a device-created note valid."""
+    available = schema.defaults()
+    available[schema.role("id_key")] = note_id
+    available.setdefault(schema.role("schema_version_key"), 1)
+    available.setdefault(schema.role("date_key"), _today(settings))
+    return {
+        definition.name: available[definition.name]
+        for definition in schema.keys
+        if definition.name not in frontmatter and definition.name in available
+    }
 
 
 def _replacement_frontmatter(
