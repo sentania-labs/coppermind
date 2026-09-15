@@ -7,6 +7,13 @@ load and dump would reorder every key in every file the system touches, and
 Obsidian Sync would then push a whole rewritten notes filesystem to every
 device. A minimal diff keeps a system write to the keys it actually changed.
 
+That minimal diff assumes ordinary line endings. The block is reassembled from
+the round trip dump, which emits line feeds, so a frontmatter block written
+with carriage returns comes back entirely in line feeds and syncs whole. The
+body keeps its own line endings either way. Preserving the block's line
+endings here is a follow-up, because it changes the whole document replace as
+well as the frontmatter patch.
+
 Unknown keys are never removed. Anything a person or another tool put in the
 frontmatter survives a Coppermind write untouched.
 """

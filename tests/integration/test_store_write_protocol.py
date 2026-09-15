@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import date
 
 import coppermind_store.notes as notes_module
 import httpx
@@ -708,3 +709,91 @@ async def test_a_frontmatter_patch_can_unset_an_optional_field(store: LocalStore
     assert "account:" not in fm.split(after)[0]
     assert fm.split(after)[1] == before_body
     assert "account" not in patched.frontmatter
+
+
+async def test_a_patched_date_lands_as_a_date_not_quoted_text(store: LocalStore, session_factory):
+    """A date key set through the patch reads as a date, the way every write path writes one."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+
+    patched = await store.patch_frontmatter(
+        created.id,
+        PatchFrontmatter(set={"date": "2026-09-10"}),
+        created.content_hash,
+    )
+
+    assert "date: 2026-09-10\n" in fm.split(path.read_text(encoding="utf-8"))[0]
+    assert patched.frontmatter["date"] == "2026-09-10"
+    async with session_factory() as session:
+        row = (await session.execute(sa.select(Note).where(Note.id == created.id))).scalar_one()
+    assert row.date == date(2026, 9, 10)
+
+
+async def test_a_patch_that_changes_nothing_leaves_the_file_alone(store: LocalStore):
+    """An idempotent client re-marking a reviewed note must not make Obsidian Sync push it."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+    stat_before = path.stat()
+
+    patched = await store.patch_frontmatter(
+        created.id,
+        PatchFrontmatter(set={"reviewed": False}),
+        created.content_hash,
+    )
+
+    stat_after = path.stat()
+    assert path.read_bytes() == before
+    assert stat_after.st_ino == stat_before.st_ino
+    assert stat_after.st_mtime_ns == stat_before.st_mtime_ns
+    assert patched.content_hash == created.content_hash
+
+
+async def test_unsetting_a_required_field_is_refused_and_changes_nothing(store: LocalStore):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationFailed) as raised:
+        await store.patch_frontmatter(
+            created.id,
+            PatchFrontmatter(unset=["type"]),
+            created.content_hash,
+        )
+
+    assert raised.value.errors == ["type: required, so it cannot be removed"]
+    assert path.read_bytes() == before
+
+
+async def test_unsetting_the_identifier_is_refused_and_changes_nothing(store: LocalStore):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationFailed) as raised:
+        await store.patch_frontmatter(
+            created.id,
+            PatchFrontmatter(unset=["id"]),
+            created.content_hash,
+        )
+
+    assert raised.value.errors == ["id: the identifier of a note cannot be removed"]
+    assert path.read_bytes() == before
+
+
+async def test_a_key_named_in_both_set_and_unset_is_refused_and_changes_nothing(
+    store: LocalStore,
+):
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationFailed) as raised:
+        await store.patch_frontmatter(
+            created.id,
+            PatchFrontmatter(set={"account": "Ameren"}, unset=["account"]),
+            created.content_hash,
+        )
+
+    assert raised.value.errors == ["account: named in both set and unset"]
+    assert path.read_bytes() == before

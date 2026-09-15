@@ -129,6 +129,24 @@ vertical path proved end to end, then widened.
   carrying `current_version`, and the file is untouched. The compare and the
   write happen under a per-note lock in the store, so two writers holding
   the same ETag cannot both win.
+- `PATCH /v1/notes/{id}/frontmatter` changes named frontmatter fields without
+  replacing the note. The body is `set` (keys to write) and `unset` (keys to
+  remove); the note's own body is read from the file and is never accepted
+  from the caller, so an edit made in Obsidian while a phone marks the note
+  reviewed survives. Untouched keys keep their position, their comments and
+  their YAML types, and a date lands as a date the same way a create and a
+  replace write one. That minimal file difference holds for a frontmatter
+  block written with ordinary line endings: a block written with carriage
+  returns is rewritten whole in line feeds and Obsidian Sync pushes all of it.
+  A patch whose result is byte identical to the file writes nothing and moves
+  no mtime, so marking an already reviewed note reviewed is free. The
+  identifier cannot be set or removed, a key the schema requires cannot be
+  removed, and a key named in both `set` and `unset` is refused: each answers
+  422 `validation_error` and leaves the file alone, as does frontmatter the
+  schema rejects. Without `If-Match` the answer is 428
+  `precondition_required`; with an ETag the file no longer hashes to, 409
+  `version_conflict` carrying `current_version`. The compare and the write
+  happen under the same per-note lock a replace uses.
 - The store is the only writer of the notes filesystem, reachable only over
   the internal contract on `:8081` with a bearer token. The API holds no
   state and calls it.
@@ -206,13 +224,18 @@ in the tree, so do not read the absence as a decision to leave it out.
   serving another note's content. A replace of such a note answers the same
   404, whatever ETag it carries. Until the reconciler lands, treat the API as
   the way to create notes.
-- **Frontmatter patching.** `PUT` takes the JSON document shape only; the
-  `text/markdown` whole-file body and `PATCH /v1/notes/{id}/frontmatter` do
-  not exist yet. A replace rewrites the frontmatter block from what was sent,
-  so the keys land in the schema's order with any key the schema does not
-  know after them, and neither a hand order nor a comment a person left
-  between the keys survives it; the patch is the minimal-diff path for a
+- **A whole-file note body.** `PUT` takes the JSON document shape only; the
+  `text/markdown` whole-file body does not exist yet. A replace also rewrites
+  the frontmatter block from what was sent, so the keys land in the schema's
+  order with any key the schema does not know after them, and neither a hand
+  order nor a comment a person left between the keys survives it.
+  `PATCH /v1/notes/{id}/frontmatter` is the minimal-difference path for a
   one-key change such as marking a note reviewed.
+- **Line endings in the frontmatter block.** Both write paths reassemble the
+  block from the YAML dump, which emits line feeds, so a block written with
+  carriage returns is rewritten whole and Obsidian Sync pushes every line of
+  it. The body keeps its own line endings. The repair belongs in the shared
+  compose, which is why it is deferred rather than done inside the patch.
 - **Obsidian Sync, the curator and the indexer.** No sync, no filing by
   rules, no search.
 - **History through the API.** Nothing reads Git history or restores a note

@@ -1,8 +1,9 @@
 """`/v1/notes`.
 
-Create a note, read one back by its identifier, and replace one on the
-condition that it has not changed since it was read. All three are thin:
-validation, the call to the store, and the ETag. Nothing here touches a file.
+Create a note, read one back by its identifier, replace one on the condition
+that it has not changed since it was read, and change named frontmatter fields
+without replacing it. All four are thin: validation, the call to the store,
+and the ETag. Nothing here touches a file.
 
 A new note lands in the review folder, which is where anything that has not
 been read yet belongs. The identifier in the response is the one written into
@@ -98,7 +99,13 @@ async def patch_frontmatter(
     client: HttpStoreClient = Depends(store),
     _: Principal = Depends(require_scopes("notes:write")),
 ) -> Response:
-    """Change named frontmatter fields without replacing the note."""
+    """Change named frontmatter fields without replacing the note.
+
+    Every other line of the file is left as it is, which for a frontmatter
+    block written with ordinary line endings makes the file differ in the
+    named keys alone. A block written with carriage returns is rewritten
+    whole in line feeds, and Obsidian Sync then pushes all of it.
+    """
     try:
         note = await client.patch_frontmatter(note_id, payload, etag_from_if_match(if_match))
     except StoreError as error:

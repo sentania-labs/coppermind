@@ -235,7 +235,7 @@ class LocalStore:
 
         relative, path = await self._locate(note_id)
         async with self._lock_for(note_id):
-            current = _frontmatter_at(note_id, relative, path, schema, if_match)
+            _, current = _bytes_at(note_id, relative, path, schema, if_match)
             frontmatter = _keeping_types(sent, current)
             data = fm.compose(frontmatter, body).encode("utf-8")
             sources = frontmatter.get(schema.role("sources_key"), [])
@@ -283,16 +283,28 @@ class LocalStore:
         """Change only the named frontmatter fields at the caller's version.
 
         The round-trip YAML mapping retains every untouched line, including a
-        person's ordering and comments. The body comes from the same current
-        file and is never accepted from the caller.
+        person's ordering and comments, so the file differs in the one key the
+        caller named. That holds for a frontmatter block written with ordinary
+        line endings; a block written with carriage returns comes back whole in
+        line feeds, and Obsidian Sync pushes all of it.
+
+        The body comes from the same current file and is never accepted from
+        the caller. A patch whose result is byte identical to the file writes
+        nothing, so marking an already reviewed note reviewed does not move the
+        mtime that Obsidian Sync watches.
         """
         schema = self.control.schema()
+        problems = _patch_problems(request, schema)
+        if problems:
+            raise ValidationFailed(problems)
+        changes = _with_kinds(request.set, schema)
+
         relative, path = await self._locate(note_id)
         async with self._lock_for(note_id):
-            current_data = _bytes_at(note_id, relative, path, schema, if_match)
-            current_text = current_data.decode("utf-8")
-            data = fm.patch(current_text, request.set, unset=request.unset).encode("utf-8")
-            current_frontmatter, _ = fm.parse(current_text)
+            current_data, current_frontmatter = _bytes_at(note_id, relative, path, schema, if_match)
+            data = fm.patch(current_data.decode("utf-8"), changes, unset=request.unset).encode(
+                "utf-8"
+            )
             frontmatter, body = fm.parse(data.decode("utf-8"))
 
             id_key = schema.role("id_key")
@@ -301,6 +313,9 @@ class LocalStore:
             problems = schema.validate_frontmatter(frontmatter)
             if problems:
                 raise ValidationFailed(problems)
+
+            if data == current_data:
+                return await self.get_note(note_id)
 
             sources = frontmatter.get(schema.role("sources_key"), [])
             now = datetime.now(tz=UTC)
@@ -439,7 +454,7 @@ def _replace_if_unchanged(
     except OSError as exc:
         raise NotesFilesystemUnavailable(str(exc)) from exc
     try:
-        _frontmatter_at(note_id, relative, path, schema, if_match)
+        _bytes_at(note_id, relative, path, schema, if_match)
         commit_staged(staged, path)
     except OSError as exc:
         staged.unlink(missing_ok=True)
@@ -449,30 +464,23 @@ def _replace_if_unchanged(
         raise
 
 
-def _frontmatter_at(
+def _bytes_at(
     note_id: NoteId, relative: str, path: Path, schema: FrontmatterSchema, if_match: ETag
-) -> dict[str, Any]:
-    """The frontmatter of a located note whose file still hashes to `if_match`.
+) -> tuple[bytes, dict[str, Any]]:
+    """The bytes and frontmatter of a located note whose file still hashes to `if_match`.
 
     The identity check comes before the compare, so a row whose file is now
     another note is a miss whatever ETag was sent, not a conflict naming the
-    other note's hash.
+    other note's hash. One parse serves both the identity check and the
+    caller, so nothing but that check and the compare sits inside the window
+    `_replace_if_unchanged` holds open before the rename.
     """
-    current = _bytes_at(note_id, relative, path, schema, if_match)
-    frontmatter, _ = _parse(note_id, relative, current, schema)
-    return frontmatter
-
-
-def _bytes_at(
-    note_id: NoteId, relative: str, path: Path, schema: FrontmatterSchema, if_match: ETag
-) -> bytes:
-    """The current bytes after identity and version checks."""
     current, _ = _read(note_id, path)
-    _parse(note_id, relative, current, schema)
+    frontmatter, _ = _parse(note_id, relative, current, schema)
     current_hash = content_hash(current)
     if current_hash != if_match:
         raise VersionConflict(current_hash)
-    return current
+    return current, frontmatter
 
 
 def _read(note_id: NoteId, path: Path) -> tuple[bytes, float]:
@@ -565,24 +573,53 @@ def _keeping_types(frontmatter: dict[str, Any], current: dict[str, Any]) -> dict
     }
 
 
+def _with_kinds(values: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any]:
+    """The caller's values with each known key written in the kind the schema gives it.
+
+    A date key is written as a YAML date, not a quoted string, so the file
+    reads the way a person would write it in Obsidian and no write path,
+    whole document or single key, adds quotes to it.
+    """
+    kinds = {definition.name: definition.kind for definition in schema.keys}
+    return {
+        key: (_as_date(value) or value) if kinds.get(key) == "date" else value
+        for key, value in values.items()
+    }
+
+
 def _ordered(values: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any]:
     """Known keys in schema order with their kinds applied, then the rest as given."""
+    values = _with_kinds(values, schema)
     ordered: dict[str, Any] = {}
     known_keys = {definition.name for definition in schema.keys}
     for definition in schema.keys:
         if definition.name in values and values[definition.name] is not None:
-            value = values[definition.name]
-            # A date key is written as a YAML date, not a quoted string, so the
-            # file reads the way a person would write it in Obsidian and a
-            # round trip through the store does not add quotes to it.
-            if definition.kind == "date":
-                value = _as_date(value) or value
-            ordered[definition.name] = value
+            ordered[definition.name] = values[definition.name]
     # Keys the schema does not know about are kept, after the known ones.
     for key, value in values.items():
         if key not in known_keys:
             ordered[key] = value
     return ordered
+
+
+def _patch_problems(request: PatchFrontmatter, schema: FrontmatterSchema) -> list[str]:
+    """Problems with the patch request itself, found before any file is read.
+
+    A key named in both halves has no single meaning, and neither the
+    identifier a note is found by nor a key the schema requires is a patch's
+    to remove. Refusing here means the file is never opened, let alone
+    written.
+    """
+    id_key = schema.role("id_key")
+    required = {definition.name for definition in schema.keys if definition.required}
+    unset = set(request.unset)
+    problems = [f"{key}: named in both set and unset" for key in request.set if key in unset]
+    for key in request.unset:
+        if key == id_key:
+            problems.append(f"{key}: the identifier of a note cannot be removed")
+        elif key in required:
+            problems.append(f"{key}: required, so it cannot be removed")
+    return problems
 
 
 def _mirror_columns(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any]:
