@@ -129,7 +129,7 @@ jobs:
 
   # One build per service, as an OCI tarball carrying provenance and an SBOM.
   # The tarball is the artifact the smoke job runs, so what is smoke tested is
-  # byte for byte what a later publish job would push.
+  # byte for byte what the publish job pushes on a version tag.
   image:
     needs: [checks, scan, release-tag]
     runs-on: ubuntu-latest

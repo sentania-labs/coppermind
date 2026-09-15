@@ -107,12 +107,14 @@ def test_publish_authority_is_confined_to_tag_only_jobs():
         document = load(workflow)
         for name, job in (document.get("jobs") or {}).items():
             for scope, why in FORBIDDEN_PERMISSIONS.items():
-                if granted(document, job, scope) == "write":
-                    if str(job.get("if", "")).strip() != TAG_GATE:
-                        problems.append(
-                            f"{workflow.name}:{name} has {scope}: write and so {why} "
-                            f"unless its condition is exactly {TAG_GATE}"
-                        )
+                if (
+                    granted(document, job, scope) == "write"
+                    and str(job.get("if", "")).strip() != TAG_GATE
+                ):
+                    problems.append(
+                        f"{workflow.name}:{name} has {scope}: write and so {why} "
+                        f"unless its condition is exactly {TAG_GATE}"
+                    )
     assert not problems, "\n".join(problems)
 
 

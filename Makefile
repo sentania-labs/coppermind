@@ -8,7 +8,6 @@ SHELL := /bin/bash
 
 SERVICES ?= store api git obsidian-sync
 COMPOSE := docker compose
-COMPOSE_CI := docker compose -f docker-compose.yml -f docker-compose.ci.yml
 
 setup:
 	uv sync --all-packages
@@ -46,8 +45,11 @@ db-down:
 # Everything a pull request must pass before an image is built.
 check: lint typecheck test compose-check prose-check
 
-# `docker compose config` parses and validates both files, which catches a
-# broken quickstart before anyone tries to run it.
+# `docker compose config` parses and validates the quickstart and the sync
+# simulation, which catches a broken quickstart before anyone tries to run it.
+# The overlay check renders each image overlay instead, because only the
+# rendered result shows a service that still builds from the working tree or
+# names an image the overlay never meant to run.
 compose-check:
 	$(COMPOSE) config >/dev/null
 	$(COMPOSE) -f docker-compose.yml -f docker-compose.sync-smoke.yml config >/dev/null
