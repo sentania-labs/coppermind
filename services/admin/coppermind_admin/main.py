@@ -117,8 +117,9 @@ reconciliation too, and correcting it restores all of them together."""
 
 ADMIN_RECORD_REMEDY = """Restore that file from a backup, or follow the password recovery steps in
 the README: remove the admin record from the state directory, bring the stack up, and claim Admin
-again with the code bootstrap issues. The notes filesystem and the database are untouched, and
-rebuilding the data volume is neither needed nor appropriate."""
+again with the code bootstrap issues. The notes filesystem and its database records stay
+untouched, though claiming again signs every open Admin session out, and rebuilding the data
+volume is neither needed nor appropriate."""
 
 
 def unreadable_state_file(path: Path, problem: str, remedy: str) -> HTMLResponse:
