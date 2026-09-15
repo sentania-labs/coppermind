@@ -8,10 +8,10 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from coppermind import frontmatter as fm
-from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes
+from coppermind.atomicio import commit_staged, create_exclusive_bytes, stage_bytes
 from coppermind.naming import note_stem, sanitize_folder, sanitize_stem, unique_stem
 from coppermind.settings import ProductSettings
-from coppermind.store_protocol import NotesFilesystemUnavailable, artifact_text
+from coppermind.store_protocol import NotesFilesystemUnavailable, PathCollision, artifact_text
 from coppermind_store.fs import NOTE_SUFFIX, existing_stems, resolve
 
 
@@ -49,7 +49,7 @@ def write_projection(
             artifacts,
         )
         if target.exists():
-            atomic_write_bytes(target, data)
+            _replace_projection(notes_root, target, data, source_id)
             created = False
         else:
             create_exclusive_bytes(target, data)
@@ -59,6 +59,47 @@ def write_projection(
         raise
     except (OSError, ValueError, fm.FrontmatterError) as exc:
         raise NotesFilesystemUnavailable(str(exc)) from exc
+
+
+def _replace_projection(notes_root: Path, target: Path, data: bytes, source_id: str) -> None:
+    """Rename `data` over generated output only while it is still this source's.
+
+    The new bytes are staged and made durable first, so what stands between the
+    last check and the rename is the check itself. Obsidian Sync can deliver one
+    of the captain's own notes onto this path at any moment, and a file this
+    store did not generate for this source is never written over.
+    """
+    staged = stage_bytes(target, data)
+    try:
+        relative = target.relative_to(notes_root).as_posix()
+        if projection_revision(notes_root, relative, source_id) is None:
+            raise PathCollision(relative)
+        commit_staged(staged, target)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
+
+
+def projection_revision(notes_root: Path, relative: str, source_id: str) -> int | None:
+    """The revision the file at this path projects for this source.
+
+    None means the path holds something else: a projection of another source,
+    one of the captain's own notes that has come to occupy it, or nothing at
+    all. Generated output is only ever replaced where it is found, so a path
+    that does not answer for this source is never written over.
+    """
+    if not relative:
+        return None
+    try:
+        frontmatter, _ = fm.parse(resolve(notes_root, relative).read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, fm.FrontmatterError):
+        return None
+    except OSError as exc:
+        raise NotesFilesystemUnavailable(str(exc)) from exc
+    if frontmatter.get("managed") is not True or frontmatter.get("source_id") != source_id:
+        return None
+    revision = frontmatter.get("source_revision")
+    return revision if isinstance(revision, int) else None
 
 
 def new_projection_path(

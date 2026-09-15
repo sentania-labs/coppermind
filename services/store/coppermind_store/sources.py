@@ -65,7 +65,11 @@ from coppermind_store.notes import (
     _stem_for,
     _title_of,
 )
-from coppermind_store.projections import new_projection_path, write_projection
+from coppermind_store.projections import (
+    new_projection_path,
+    projection_revision,
+    write_projection,
+)
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
@@ -77,13 +81,13 @@ async def get_source(store: LocalStore, source_id: str) -> SourceManifest:
         raise SourceNotFound(source_id)
     path = store.sources_root / source_id / "manifest.json"
     try:
-        path.stat()
+        document = await asyncio.to_thread(_manifest_document, path)
     except FileNotFoundError as exc:
         raise SourceNotFound(source_id) from exc
     except OSError as exc:
         raise SourcesFilesystemUnavailable("the source manifest is unreadable") from exc
     try:
-        manifest = SourceManifest.model_validate(_read_json(path, "source manifest"))
+        manifest = SourceManifest.model_validate(document)
     except ValueError as exc:
         raise SourcesFilesystemUnavailable("the source manifest is invalid") from exc
     if manifest.source_id != source_id:
@@ -398,7 +402,7 @@ async def _ingest_existing(
     if replaying:
         recorded_path = manifest.get("projection_path")
         projection_path = recorded_path if isinstance(recorded_path, str) and recorded_path else ""
-        held_revision = _projection_revision(store.notes_root, projection_path, source_id)
+        held_revision = projection_revision(store.notes_root, projection_path, source_id)
         projection_created = False
         if held_revision is None:
             projection_path = ""
@@ -462,7 +466,7 @@ async def _ingest_existing(
         projection_path = (
             str(recorded_path)
             if isinstance(recorded_path, str)
-            and _projection_revision(store.notes_root, recorded_path, source_id) is not None
+            and projection_revision(store.notes_root, recorded_path, source_id) is not None
             else new_projection_path(
                 store.notes_root,
                 settings,
@@ -585,6 +589,11 @@ def _claimed_source(claim_data: bytes, request: IngestRequest) -> dict[str, Any]
     ):
         raise SourcesFilesystemUnavailable("the external-id claim is invalid")
     return claim
+
+
+def _manifest_document(path: Path) -> dict[str, Any]:
+    path.stat()
+    return _read_json(path, "source manifest")
 
 
 def _read_json(path: Path, label: str) -> dict[str, Any]:
@@ -842,28 +851,6 @@ def _read_revision_artifacts(
         raise SourcesFilesystemUnavailable(
             "the current source revision changed while it was being read"
         ) from exc
-
-
-def _projection_revision(notes_root: Path, relative: str, source_id: str) -> int | None:
-    """The revision the file at this path projects for this source.
-
-    None means the path holds something else: a projection of another source,
-    one of the captain's own notes that has come to occupy it, or nothing at
-    all. Generated output is only ever replaced where it is found, so a path
-    that does not answer for this source is never written over.
-    """
-    if not relative:
-        return None
-    try:
-        frontmatter, _ = fm.parse(resolve(notes_root, relative).read_text(encoding="utf-8"))
-    except (FileNotFoundError, ValueError, fm.FrontmatterError):
-        return None
-    except OSError as exc:
-        raise NotesFilesystemUnavailable(str(exc)) from exc
-    if frontmatter.get("managed") is not True or frontmatter.get("source_id") != source_id:
-        return None
-    revision = frontmatter.get("source_revision")
-    return revision if isinstance(revision, int) else None
 
 
 def _projection_artifacts(

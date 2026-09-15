@@ -451,7 +451,7 @@ async def test_a_notes_fault_during_a_new_revision_leaves_nothing_to_clean_up_by
     def notes_volume_blip(*_args, **_kwargs):
         raise NotesFilesystemUnavailable("the notes filesystem went away")
 
-    monkeypatch.setattr(sources_module, "_projection_revision", notes_volume_blip)
+    monkeypatch.setattr(sources_module, "projection_revision", notes_volume_blip)
     with pytest.raises(NotesFilesystemUnavailable):
         await store.ingest(changed)
 
@@ -470,9 +470,10 @@ async def test_a_sources_fault_recording_a_repaired_projection_reports_it_and_le
     The captain's own file has taken the recorded path, so the replay rebuilds
     the projection somewhere else and has to record where. That manifest write
     is on the sources volume, and a fault there is that volume's to report. The
-    projection it would have recorded goes with it: nothing points at it, the
-    reconciler skips that folder, and a retrying client would otherwise leave
-    the captain one more copy of the whole transcript per attempt.
+    projection it would have recorded goes with it: no manifest points at it and
+    it names no note id, so reconciliation records it as an unidentified file
+    and nothing reports it, while a retrying client would otherwise leave the
+    captain one more copy of the whole transcript per attempt.
     """
     ingested = await store.ingest(sample())
     kept = store.notes_root / ingested.projection_path
