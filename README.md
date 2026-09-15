@@ -19,7 +19,23 @@ docker compose up -d
 That is the whole setup. A one-shot bootstrap container creates the volumes,
 generates the internal credentials and a default API key, and writes the
 settings, frontmatter schema and API key hash with working defaults. Nothing
-has to be hand populated before the stack runs. Read the default key from its
+has to be hand populated before the stack runs.
+
+Open Admin at `http://127.0.0.1:8082/admin`. On the first visit it asks for the
+one-time claim code and the admin password you want to use. Read the code from
+the restricted bootstrap file:
+
+```bash
+docker compose run --rm --no-deps --entrypoint cat bootstrap \
+  /data/state/internal/claim-code
+```
+
+Claiming deletes that code. Admin then requires a password-backed browser
+session until you log out or the configured 12-hour default expires. Its
+overview intentionally reports only that you are signed in; settings, API
+keys, status, and Obsidian Sync connection arrive as separate increments.
+
+Read the default API key from its
 restricted bootstrap volume into the current shell:
 
 ```bash
@@ -136,7 +152,7 @@ does not reduce memory use. The key needs both `sources:write` and
 
 The generated OpenAPI document is at `http://127.0.0.1:8080/openapi.json`.
 
-Until the separate Admin service adds its graphical keys page, additional
+Until Admin adds its graphical keys page, additional
 keys and rotations use the Store command. It prints a new credential once and
 keeps only its hash. Grant one or more of the scopes shown by `--help`, move
 callers to it, then revoke the old key by its id:
@@ -156,7 +172,7 @@ docker compose exec git git -C /data/notes log --stat
 
 The Obsidian Sync helper is supervised and answers its control endpoint, but
 it does not sync to a device yet. Connecting a real account is refused on
-purpose until the Admin service provides the captain's requested guided setup.
+purpose until Admin's later Connect page provides the requested guided setup.
 That flow will create Coppermind's own new encrypted remote vault, collect its
 encryption password, and restart the helper on save. The captain's existing
 Obsidian vault remains a data source whose content arrives through the ingest
@@ -195,6 +211,7 @@ docker compose exec obsidian-sync node /app/control.mjs resume
 | Service | Does | State |
 |---|---|---|
 | `api` | the public contract on `:8080` | five-minute key cache; no durable state |
+| `admin` | server-rendered operator interface on `:8082` | claim and password in `/data/state/admin.json`; sessions in PostgreSQL |
 | `store` | the only process that writes the notes filesystem | `/data`, one replica always |
 | `git` | records the history of the notes filesystem; no network, no credential | `/data/notes/.git`, one replica always |
 | `obsidian-sync` | supervises the sync client and exposes internal lifecycle control; real sync refused for now | `/data/state/sync`, one replica always |

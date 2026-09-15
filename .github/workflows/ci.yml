@@ -136,7 +136,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [store, api, git, obsidian-sync]
+        service: [store, api, admin, git, obsidian-sync]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -225,7 +225,7 @@ jobs:
           merge-multiple: true
       - name: Load the tested images
         run: |
-          for service in store api git obsidian-sync; do
+          for service in store api admin git obsidian-sync; do
             skopeo copy "oci-archive:$RUNNER_TEMP/images/$service.tar" \
               "docker-daemon:coppermind/$service:ci"
             docker image ls "coppermind/$service:ci"

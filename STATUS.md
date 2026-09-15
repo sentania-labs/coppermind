@@ -8,6 +8,17 @@ vertical path proved end to end, then widened.
 
 ## Working
 
+- Admin is a separate service and image on loopback port 8082. A fresh install
+  opens on a server-rendered Claim page. Bootstrap creates the one-time code at
+  `/data/state/internal/claim-code`, records that location in its log, and
+  keeps the same code across restarts. A successful claim writes only the
+  Argon2 password hash and claim time to mode 0600 `admin.json`, then removes
+  the code. Later claim attempts are refused. Password login creates an
+  expiring, hashed PostgreSQL session with the shipped 12-hour default. The
+  protected overview says only that the operator is signed in, because its
+  counters and controls belong to later increments. Logout removes the
+  session and the protected page redirects to Login again. This path was
+  driven through its rendered pages in Chrome against a fresh compose stack.
 - `docker compose up -d` on a clean checkout reaches a healthy stack with no
   manual setup and no hand populated setting. The one-shot `bootstrap`
   container creates `/data`, generates the internal bearer token and the
@@ -394,15 +405,13 @@ in the tree, so do not read the absence as a decision to leave it out.
   connection is still not built.
 - **History through the API.** Nothing reads Git history or restores a note
   from it yet; `docker compose exec git git -C /data/notes log` is the way in.
-- **Admin.** A separate service and image in the design, not a route group in
-  the API. Nothing exists yet, so settings are edited as files under
-  `/data/state` for now, which is exactly the state the design says is not
-  shippable. It is shippable in the sense that the defaults work; it is not
-  yet the finished product. Its graphical API keys page also arrives later;
-  until then `python3 -m coppermind_store.keys` is the interim path for adding
-  and rotating keys.
+- **Remaining Admin pages.** API keys, Obsidian Sync connection, settings,
+  schema, filing rules, jobs, source problems, and real overview counters are
+  not built. Until the graphical API keys page arrives,
+  `python3 -m coppermind_store.keys` remains the interim path for adding and
+  rotating keys.
 - **Helm packaging and lab deployment.** The Helm chart and the lab handoff
-  are not built. Publishing the four existing service images and a release
+  are not built. Publishing the existing service images and a release
   from a version tag is in place and is under Working above; no automation
   pushes a tag or changes GHCR package visibility.
 

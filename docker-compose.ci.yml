@@ -24,6 +24,10 @@ services:
     image: coppermind/api:ci
     build: !reset null
 
+  admin:
+    image: coppermind/admin:ci
+    build: !reset null
+
   git:
     image: coppermind/git:ci
     build: !reset null

@@ -30,6 +30,12 @@ x-api-image: &api-image
     context: .
     dockerfile: services/api/Dockerfile
 
+x-admin-image: &admin-image
+  image: ghcr.io/sentania-labs/coppermind/admin:latest
+  build:
+    context: .
+    dockerfile: services/admin/Dockerfile
+
 x-git-image: &git-image
   image: ghcr.io/sentania-labs/coppermind/git:latest
   build:
@@ -130,6 +136,21 @@ services:
     depends_on:
       store:
         condition: service_healthy
+
+  # Operator pages have their own image, port and session boundary. Admin
+  # mounts control state but never the notes filesystem itself.
+  admin:
+    <<: *admin-image
+    restart: unless-stopped
+    environment: *wiring
+    volumes:
+      - data:/data
+      - postgres-password:/run/coppermind/postgres:ro
+    ports:
+      - "${COPPERMIND_ADMIN_BIND:-127.0.0.1:8082}:8082"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
 
   # Keeps the history of the notes filesystem in /data/notes/.git: polls, and
   # commits what has settled. It writes nothing but `.git` and its status file,

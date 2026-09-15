@@ -38,6 +38,8 @@ def test_it_creates_the_trees_secrets_and_settings_a_fresh_install_needs(tmp_pat
     assert (wiring.state_dir / "settings.yaml").is_file()
     assert (wiring.state_dir / "schema.yaml").is_file()
     assert (wiring.state_dir / "keys.json").is_file()
+    assert (wiring.state_dir / "internal" / "claim-code").is_file()
+    assert S_IMODE((wiring.state_dir / "internal" / "claim-code").stat().st_mode) == 0o600
 
 
 def test_the_internal_token_is_not_readable_by_anyone_else(tmp_path: Path):
@@ -78,6 +80,7 @@ def test_running_twice_never_rotates_a_secret_or_resets_a_setting(tmp_path: Path
     password = wiring.db_password_file.read_text(encoding="utf-8")
     api_key = wiring.default_api_key_file.read_text(encoding="utf-8")
     key_hash = ControlState(wiring.state_dir).api_keys().keys[0].hash
+    claim_code = (wiring.state_dir / "internal" / "claim-code").read_text(encoding="utf-8")
 
     settings_file = wiring.state_dir / "settings.yaml"
     settings_file.write_text(
@@ -89,6 +92,7 @@ def test_running_twice_never_rotates_a_secret_or_resets_a_setting(tmp_path: Path
     assert wiring.db_password_file.read_text(encoding="utf-8") == password
     assert wiring.default_api_key_file.read_text(encoding="utf-8") == api_key
     assert ControlState(wiring.state_dir).api_keys().keys[0].hash == key_hash
+    assert (wiring.state_dir / "internal" / "claim-code").read_text(encoding="utf-8") == claim_code
     assert "Inbox" in settings_file.read_text(encoding="utf-8")
 
 
