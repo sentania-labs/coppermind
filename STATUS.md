@@ -19,12 +19,11 @@ vertical path proved end to end, then widened.
   counters and controls belong to later increments. Logout removes the
   session and the protected page redirects to Login again. Claim, login and
   logout accept the rendered forms only, and every refusal returns to the page
-  that names its own cause, including a correct password whose session cookie
-  the browser refused to keep. The session cookie is
-  issued Secure by default, which browsers honour on the loopback address this
-  ships with; `admin.cookie_secure` in `settings.yaml` turns it off for a
-  deliberately plaintext deployment. Admin mounts only `/data/state`, so the notes
-  filesystem is not reachable from it at all. A session database outage
+  that names its own cause, including a control state file Admin cannot read,
+  which is named on screen along with what was rejected. The session cookie is
+  always Secure, which browsers honour on the loopback address this ships with
+  and which makes TLS a requirement for any other address. Admin mounts only
+  `/data/state`, so the notes filesystem is not reachable from it at all. A session database outage
   renders an operator-facing page under an honest 503 rather than failing. This path was driven through its
   rendered pages in Chrome against a fresh compose stack.
 - `docker compose up -d` on a clean checkout reaches a healthy stack with no
@@ -415,8 +414,8 @@ in the tree, so do not read the absence as a decision to leave it out.
   from it yet; `docker compose exec git git -C /data/notes log` is the way in.
 - **Remaining Admin pages.** API keys, Obsidian Sync connection, settings,
   schema, filing rules, jobs, source problems, and real overview counters are
-  not built, so `admin.session_hours` and `admin.cookie_secure` are edited as
-  file settings until the settings page carries their controls. Until the graphical API keys page arrives,
+  not built, so `admin.session_hours` is edited as a file setting until the
+  settings page carries its control. Until the graphical API keys page arrives,
   `python3 -m coppermind_store.keys` remains the interim path for adding and
   rotating keys.
 - **Helm packaging and lab deployment.** The Helm chart and the lab handoff

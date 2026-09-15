@@ -52,15 +52,12 @@ Nothing else is touched: the notes filesystem, the database, the API keys and
 the internal credentials all stay as they are. Do not rebuild the `data`
 volume for this. That destroys the notes filesystem to reset one password.
 
-The session cookie is issued Secure, which browsers keep over HTTPS and on the
-loopback address above. If you republish Admin on another address with
-`COPPERMIND_ADMIN_BIND` and reach it over plain HTTP, the browser throws that
-cookie away; Admin notices that the browser came back without it and says so on
-the Login page rather than looping. Put TLS in front of it, or set
-`admin.cookie_secure` to false in `/data/state/settings.yaml` to run it
-deliberately in the clear until the settings page carries that control.
-Republishing Admin also puts its login in reach of anyone who can reach that
-port, and login has no attempt limiting yet.
+The session cookie is always Secure, which browsers send over HTTPS and on the
+loopback address above. Republishing Admin on another address with
+`COPPERMIND_ADMIN_BIND` therefore requires TLS in front of it: over plain HTTP
+the browser will not send the cookie back and login cannot complete. There is
+no plaintext option. Republishing Admin also puts its login in reach of anyone
+who can reach that port, and login has no attempt limiting yet.
 
 Read the default API key from its
 restricted bootstrap volume into the current shell:

@@ -12,7 +12,6 @@ from urllib.parse import parse_qs
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import ValidationError
-from starlette.datastructures import URL
 from starlette.middleware.base import RequestResponseEndpoint
 
 from coppermind.db.session import make_engine, make_session_factory
@@ -23,6 +22,7 @@ from coppermind.statefiles import StateStore
 from coppermind_admin import __version__
 from coppermind_admin.auth import (
     AdminCredentials,
+    AdminRecordUnreadable,
     AlreadyClaimed,
     InvalidClaimCode,
     PostgresSessions,
@@ -32,10 +32,6 @@ from coppermind_admin.auth import (
 
 SERVICE = "coppermind-admin"
 COOKIE = "coppermind_admin_session"
-# Carried once by the redirect a successful login sends the browser to, and
-# stripped as soon as a session validates. Arriving here with the marker and
-# without the session cookie is the browser having dropped it.
-SIGNED_IN = "signed_in"
 PUBLIC = {
     "/admin/claim",
     "/admin/login",
@@ -57,12 +53,6 @@ LOGIN_NOTICES = {
     "unauthorized": "That password was not accepted.",
     "already_claimed": "Admin has already been claimed. Log in with the admin password.",
     "session_expired": "That session has ended. Log in again.",
-    "cookie_not_kept": (
-        "That password was accepted, but your browser did not keep the session cookie, so "
-        "Admin could not sign you in. A browser drops it when Admin is reached over plain "
-        "HTTP while secure cookies are on: reach Admin over HTTPS, or set admin.cookie_secure "
-        "to false in /data/state/settings.yaml to run it deliberately in the clear."
-    ),
 }
 
 
@@ -112,11 +102,6 @@ def error_response(destination: str, code: str) -> RedirectResponse:
     return RedirectResponse(f"/admin/{destination}?error={code}", status_code=303)
 
 
-def without_marker(url: URL) -> str:
-    cleaned = url.remove_query_params(SIGNED_IN)
-    return f"{cleaned.path}?{cleaned.query}" if cleaned.query else cleaned.path
-
-
 def rejection_detail(error: Exception) -> str:
     if isinstance(error, ValidationError):
         return "\n".join(
@@ -126,16 +111,24 @@ def rejection_detail(error: Exception) -> str:
     return str(error)
 
 
-def settings_unreadable(path: Path, problem: str) -> HTMLResponse:
+SETTINGS_REMEDY = """Correct that file and log in again. Nothing was changed by this attempt.
+The rest of Coppermind reads the same file fresh, so a bad value stops note creation and
+reconciliation too, and correcting it restores all of them together."""
+
+ADMIN_RECORD_REMEDY = """Restore that file from a backup, or follow the password recovery steps in
+the README: remove the admin record from the state directory, bring the stack up, and claim Admin
+again with the code bootstrap issues. The notes filesystem and the database are untouched, and
+rebuilding the data volume is neither needed nor appropriate."""
+
+
+def unreadable_state_file(path: Path, problem: str, remedy: str) -> HTMLResponse:
     return HTMLResponse(
         page(
-            "Settings unreadable",
-            f"""<h1>Admin cannot read its settings</h1>
+            "Unreadable control state",
+            f"""<h1>Admin cannot read {html.escape(path.name)}</h1>
 <p class="error">{html.escape(str(path))} could not be read, so Admin cannot start a session.</p>
 <p>What it rejected:</p><pre>{html.escape(problem)}</pre>
-<p class="muted">Correct that file and log in again. Nothing was changed by this attempt. The
-rest of Coppermind reads the same file fresh, so a bad value stops note creation and
-reconciliation too, and correcting it restores all of them together.</p>""",
+<p class="muted">{remedy}</p>""",
         ),
         status_code=500,
     )
@@ -200,16 +193,12 @@ def create_app(wiring: Wiring | None = None, sessions: Sessions | None = None) -
             except SessionsUnavailable:
                 return unavailable()
             if signed_in:
-                if SIGNED_IN in request.query_params:
-                    return RedirectResponse(without_marker(request.url), status_code=303)
                 request.state.admin_session = token
                 return await call_next(request)
         if not credentials.is_claimed():
             return RedirectResponse("/admin/claim", status_code=303)
         if token:
             return error_response("login", "session_expired")
-        if SIGNED_IN in request.query_params:
-            return error_response("login", "cookie_not_kept")
         return RedirectResponse("/admin/login", status_code=303)
 
     @app.get("/", include_in_schema=False)
@@ -275,24 +264,32 @@ required></label><button>Log in</button></form>""",
     @app.post("/v1/admin/login", include_in_schema=False)
     async def login(request: Request) -> Response:
         password = (await submitted(request)).get("password", "")
-        if not password or not await credentials.verify_password(password):
+        if not password:
+            return error_response("login", "unauthorized")
+        try:
+            verified = await credentials.verify_password(password)
+        except AdminRecordUnreadable as exc:
+            return unreadable_state_file(credentials.path, str(exc), ADMIN_RECORD_REMEDY)
+        if not verified:
             return error_response("login", "unauthorized")
         try:
             product = product_settings()
         except (OSError, ValueError) as exc:
-            return settings_unreadable(state.path_for("settings"), rejection_detail(exc))
+            return unreadable_state_file(
+                state.path_for("settings"), rejection_detail(exc), SETTINGS_REMEDY
+            )
         lifetime = timedelta(hours=product.admin.session_hours)
         try:
             token = await request.app.state.sessions.create(lifetime)
         except SessionsUnavailable:
             return unavailable()
-        response: Response = RedirectResponse(f"/admin?{SIGNED_IN}=1", status_code=303)
+        response: Response = RedirectResponse("/admin", status_code=303)
         response.set_cookie(
             COOKIE,
             token,
             httponly=True,
             samesite="strict",
-            secure=product.admin.cookie_secure,
+            secure=True,
             path="/",
         )
         return response

@@ -34,6 +34,10 @@ class SessionsUnavailable(Exception):
     """The session database could not be reached."""
 
 
+class AdminRecordUnreadable(Exception):
+    """The admin record is there but is not a usable credential record."""
+
+
 class AdminCredentials:
     """The one durable admin credential record from control state.
 
@@ -83,9 +87,16 @@ class AdminCredentials:
     async def verify_password(self, password: str) -> bool:
         try:
             encoded = self.state.read("admin").body["password_hash"]
+        except (OSError, ValueError, KeyError) as exc:
+            raise AdminRecordUnreadable(str(exc)) from exc
+        try:
             return await asyncio.to_thread(_HASHER.verify, encoded, password)
-        except (OSError, ValueError, KeyError, TypeError, InvalidHashError, VerificationError):
+        except VerificationError:
             return False
+        except (TypeError, InvalidHashError) as exc:
+            raise AdminRecordUnreadable(
+                f"password_hash is not a usable Argon2 hash: {exc}"
+            ) from exc
 
 
 class Sessions(Protocol):

@@ -43,11 +43,9 @@ class MemorySessions:
         return self.available
 
 
-def _client(tmp_path: Path, base_url: str = "https://testserver", **overrides: object):
+def _client(tmp_path: Path, base_url: str = "https://testserver"):
     wiring = Wiring(data_dir=tmp_path / "data")
-    settings = default_settings().model_dump(mode="json")
-    settings["admin"].update(overrides)
-    StateStore(wiring.state_dir).ensure("settings", settings)
+    StateStore(wiring.state_dir).ensure("settings", default_settings().model_dump(mode="json"))
     claim_code = wiring.state_dir / "internal" / "claim-code"
     claim_code.parent.mkdir(parents=True)
     claim_code.write_text(CLAIM_CODE + "\n", encoding="utf-8")
@@ -136,7 +134,7 @@ def test_rendered_forms_drive_claim_login_and_logout(fresh):
 
     logged_in = login(client)
     assert logged_in.status_code == 303
-    assert logged_in.headers["location"] == "/admin?signed_in=1"
+    assert logged_in.headers["location"] == "/admin"
     assert client.cookies.get(COOKIE) == "test-session-token"
     assert "HttpOnly" in logged_in.headers["set-cookie"]
     assert "You are signed in" in client.get("/admin").text
@@ -148,18 +146,13 @@ def test_rendered_forms_drive_claim_login_and_logout(fresh):
     assert client.get("/admin").history[0].headers["location"] == "/admin/login"
 
 
-def test_the_signed_in_marker_is_spent_once_and_an_ended_session_says_so(fresh):
-    """The marker must not outlive the redirect that carried it."""
+def test_an_ended_session_says_so_on_the_login_page(fresh):
+    """The cookie outlives the row, so an ordinary expiry is reported as one."""
     client, _, sessions = fresh
     claim(client)
-    logged_in = login(client)
-
-    landed = client.get(logged_in.headers["location"], follow_redirects=False)
-    assert landed.status_code == 303
-    assert landed.headers["location"] == "/admin"
+    login(client)
     assert "You are signed in" in client.get("/admin").text
 
-    # The cookie outlives the row, so an ordinary expiry is reported as one.
     sessions.tokens.clear()
     ended = client.get("/admin", follow_redirects=False)
     assert ended.headers["location"] == "/admin/login?error=session_expired"
@@ -188,20 +181,12 @@ def test_a_refused_password_returns_to_login_saying_so(fresh):
     assert COOKIE not in client.cookies
 
 
-def test_the_session_cookie_is_secure_by_default_and_optional(tmp_path: Path):
+def test_the_session_cookie_is_always_secure(tmp_path: Path):
     client, _, _ = _client(tmp_path)
     with client:
         claim(client)
         assert "Secure" in login(client).headers["set-cookie"]
         assert "You are signed in" in client.get("/admin").text
-
-    plaintext, _, _ = _client(
-        tmp_path / "plaintext", base_url="http://testserver", cookie_secure=False
-    )
-    with plaintext:
-        claim(plaintext)
-        assert "Secure" not in login(plaintext).headers["set-cookie"]
-        assert "You are signed in" in plaintext.get("/admin").text
 
 
 def test_the_documented_loopback_address_keeps_the_secure_cookie(tmp_path: Path):
@@ -209,7 +194,7 @@ def test_the_documented_loopback_address_keeps_the_secure_cookie(tmp_path: Path)
     with client:
         claim(client)
         logged_in = login(client)
-        assert logged_in.headers["location"] == "/admin?signed_in=1"
+        assert logged_in.headers["location"] == "/admin"
         assert "Secure" in logged_in.headers["set-cookie"]
 
 
@@ -219,21 +204,8 @@ def test_an_address_admin_cannot_judge_still_gets_its_session(tmp_path: Path):
     with client:
         claim(client)
         logged_in = login(client)
-        assert logged_in.headers["location"] == "/admin?signed_in=1"
+        assert logged_in.headers["location"] == "/admin"
         assert sessions.tokens
-
-
-def test_a_browser_that_drops_the_session_cookie_is_told_why(tmp_path: Path):
-    """A real browser on plain http discards the Secure cookie it was sent."""
-    client, _, _ = _client(tmp_path, base_url="http://coppermind.example:8082")
-    with client:
-        claim(client)
-        landed = client.post("/v1/admin/login", data={"password": PASSWORD})
-        assert landed.status_code == 200
-        assert str(landed.url).endswith("/admin/login?error=cookie_not_kept")
-        assert "did not keep the session cookie" in landed.text
-        assert "admin.cookie_secure" in landed.text
-        assert "That session has ended." not in landed.text
 
 
 def test_the_session_cookie_lasts_the_browser_session_not_the_row(fresh):
@@ -268,7 +240,7 @@ def test_a_settings_file_admin_cannot_read_names_the_file_and_the_key(fresh):
     assert "admin.bogus" in mistyped.text
     assert "Extra inputs are not permitted" in mistyped.text
 
-    settings_file.write_text("admin:\n  session_hours: 12\n   cookie_secure: false\n", "utf-8")
+    settings_file.write_text("general:\n  timezone: UTC\n   reconcile: broken\n", "utf-8")
     mangled = login(client)
     assert mangled.status_code == 500
     assert str(settings_file) in mangled.text
@@ -278,6 +250,26 @@ def test_a_settings_file_admin_cannot_read_names_the_file_and_the_key(fresh):
     missing = login(client)
     assert missing.status_code == 500
     assert str(settings_file) in missing.text
+
+
+def test_an_admin_record_admin_cannot_read_is_not_blamed_on_the_password(fresh):
+    """A truncated or restored-in-part admin.json is not a wrong password."""
+    client, wiring, sessions = fresh
+    claim(client)
+    record = wiring.state_dir / "admin.json"
+
+    record.write_text('{"schema_version": 1, "password_h', encoding="utf-8")
+    refused = login(client)
+    assert refused.status_code == 500
+    assert str(record) in refused.text
+    assert "That password was not accepted." not in refused.text
+    assert "claim Admin" in refused.text
+    assert not sessions.tokens
+
+    record.write_text('{"schema_version": 1, "password_hash": "not-a-hash"}', encoding="utf-8")
+    unusable = login(client)
+    assert unusable.status_code == 500
+    assert str(record) in unusable.text
 
 
 def test_a_session_database_outage_answers_503_rather_than_failing(fresh):
