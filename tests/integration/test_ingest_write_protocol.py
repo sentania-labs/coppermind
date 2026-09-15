@@ -445,6 +445,56 @@ async def test_a_volume_fault_on_the_projection_is_an_outage_not_a_missing_proje
         await store.get_source_projection(ingested.source.id)
 
 
+async def test_a_notes_fault_during_a_new_revision_leaves_nothing_to_clean_up_by_hand(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """A revision no manifest names is removed however the attempt failed.
+
+    The notes volume is consulted while the revision directory is on disk but
+    not yet recorded. A blip there must not leave a half revision that the next
+    attempt refuses as incomplete until an operator removes it.
+    """
+    first = await store.ingest(sample())
+    changed = sample()
+    changed.source.artifacts[0].content = "Scott: corrected source content"
+
+    def notes_volume_blip(*_args, **_kwargs):
+        raise NotesFilesystemUnavailable("the notes filesystem went away")
+
+    monkeypatch.setattr(sources_module, "_projection_revision", notes_volume_blip)
+    with pytest.raises(NotesFilesystemUnavailable):
+        await store.ingest(changed)
+
+    assert not (store.sources_root / first.source.id / "r0002").exists()
+    monkeypatch.undo()
+    retried = await store.ingest(changed)
+    assert retried.source.revision == 2
+    assert retried.source.created is True
+
+
+async def test_a_sources_fault_recording_a_repaired_projection_is_not_a_database_outage(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """The operator is told which volume failed, not to go and check PostgreSQL.
+
+    The captain's own file has taken the recorded path, so the replay rebuilds
+    the projection somewhere else and has to record where. That manifest write
+    is on the sources volume, and a fault there is that volume's to report.
+    """
+    ingested = await store.ingest(sample())
+    (store.notes_root / ingested.projection_path).write_text(
+        "---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# Mine now\n", encoding="utf-8"
+    )
+
+    def read_only_volume(*_args, **_kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(sources_module, "atomic_write_bytes", read_only_volume)
+
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.ingest(sample())
+
+
 async def test_an_unrecorded_projection_path_is_not_found_rather_than_searched_for(
     store: LocalStore,
 ):

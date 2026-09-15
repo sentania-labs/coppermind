@@ -269,7 +269,8 @@ vertical path proved end to end, then widened.
   Git helper, which carries none of the shared package, excludes the configured
   name as given, so settings validation refuses any `notes.sources_folder` the
   Store would rewrite (a leading dot, a trailing space, a character it strips)
-  rather than let the projections enter Git history. Write-side
+  and refuses an empty one, which would scatter projections through the vault
+  root, rather than let the projections enter Git history. Write-side
   reconciliation is not built on this branch, so its separate rule for never
   adopting managed projections must be settled when that work lands.
 - `GET /v1/sources/{id}` reads the filesystem manifest. Its artifact route

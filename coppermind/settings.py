@@ -69,6 +69,12 @@ class NotesSettings(BaseModel):
         and split.
         """
         portable = sanitize_folder(value)
+        if not portable:
+            raise ValueError(
+                f"{value!r} names no folder, so the Store would write projections into the vault "
+                "root while the Git helper kept excluding the folder it last accepted; give a "
+                "folder name the two can both hold"
+            )
         if portable != value:
             raise ValueError(
                 f"{value!r} is written to the notes filesystem as {portable!r}, and the Git "

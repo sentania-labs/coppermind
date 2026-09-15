@@ -106,11 +106,11 @@ async def get_source_artifact(
         raise ArtifactNotFound(source_id, revision, name)
     try:
         path = resolve(store.sources_root / source_id / f"r{revision:04d}", name)
-        data = path.read_bytes()
+        data = await asyncio.to_thread(
+            _verified_artifact_bytes, path, artifact.size_bytes, artifact.sha256
+        )
     except (OSError, ValueError) as exc:
         raise SourcesFilesystemUnavailable(f"the source artifact is unreadable: {name}") from exc
-    if len(data) != artifact.size_bytes or hashlib.sha256(data).hexdigest() != artifact.sha256:
-        raise SourcesFilesystemUnavailable(f"the source artifact failed verification: {name}")
     return SourceArtifactDocument(
         **artifact.model_dump(),
         source_id=source_id,
@@ -445,7 +445,10 @@ async def _ingest_existing(
             )
         if manifest.get("projection_path") != projection_path:
             manifest["projection_path"] = projection_path
-            atomic_write_bytes(manifest_path, _json_bytes(manifest))
+            try:
+                atomic_write_bytes(manifest_path, _json_bytes(manifest))
+            except OSError as exc:
+                raise SourcesFilesystemUnavailable(str(exc)) from exc
         return IngestResult(
             source=CreatedSource(
                 id=source_id,
@@ -515,9 +518,13 @@ async def _ingest_existing(
             relative_path=projection_path,
         )
     except OSError as exc:
+        raise SourcesFilesystemUnavailable(str(exc)) from exc
+    finally:
+        # Reached with the replacement started only on the way out with the
+        # revision recorded, so this removes a revision no manifest names,
+        # whatever fault left it behind.
         if not manifest_replacement_started:
             shutil.rmtree(revision_path, ignore_errors=True)
-        raise SourcesFilesystemUnavailable(str(exc)) from exc
 
     source = await session.get(Source, source_id)
     if source is None:
@@ -830,6 +837,13 @@ def _verify_revision_artifacts(
             raise SourcesFilesystemUnavailable(
                 f"the current source revision artifact failed verification: {name}"
             )
+
+
+def _verified_artifact_bytes(path: Path, size_bytes: int, sha256: str) -> bytes:
+    data = path.read_bytes()
+    if len(data) != size_bytes or hashlib.sha256(data).hexdigest() != sha256:
+        raise SourcesFilesystemUnavailable(f"the source artifact failed verification: {path.name}")
+    return data
 
 
 def _read_revision_artifacts(

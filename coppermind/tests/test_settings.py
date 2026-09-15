@@ -52,6 +52,18 @@ def test_a_sources_folder_the_store_would_rewrite_is_refused(configured: str, wr
     assert "must match" in message
 
 
+def test_an_empty_sources_folder_is_refused():
+    """An empty name would scatter projections through the vault root.
+
+    The Git helper refuses the same value and keeps the folder it last accepted,
+    so nothing would exclude the projections it then stopped matching.
+    """
+    with pytest.raises(ValidationError) as raised:
+        ProductSettings.model_validate({"notes": {"sources_folder": ""}})
+
+    assert "notes.sources_folder" in str(raised.value)
+
+
 def test_a_portable_sources_folder_is_accepted():
     assert (
         ProductSettings.model_validate(
