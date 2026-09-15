@@ -1,16 +1,17 @@
 """Control state as the store sees it.
 
-The store owns `/data/state`. On boot it makes sure every control file exists
-with its shipped defaults, so a fresh install has working settings and a
-working frontmatter schema without anyone populating anything. Reads go
-straight to the file, which is small, and always reflect what Admin last
-wrote.
+The store owns `/data/state`. On boot it makes sure settings and the
+frontmatter schema exist with their shipped defaults, so a fresh install has
+both without anyone populating anything. `keys.json` has no shipped default to
+write: bootstrap mints the first key and creates the file. Reads go straight to
+the file, which is small, and always reflect what Admin last wrote.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from coppermind.api_keys import ApiKeySet
 from coppermind.schema import FrontmatterSchema, default_schema
 from coppermind.settings import ProductSettings, default_settings
 from coppermind.statefiles import StateStore
@@ -35,3 +36,6 @@ class ControlState:
         body = dict(self.store.read("schema").body)
         body.pop("revision", None)
         return FrontmatterSchema.model_validate(body)
+
+    def api_keys(self) -> ApiKeySet:
+        return ApiKeySet.model_validate(self.store.read("keys").body)

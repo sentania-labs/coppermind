@@ -13,6 +13,7 @@ from urllib.parse import quote
 
 import httpx
 
+from coppermind.api_keys import ApiKeySet
 from coppermind.store_protocol import (
     CreateNote,
     ETag,
@@ -83,6 +84,10 @@ class HttpStoreClient:
             headers={"If-Match": f'"{if_match}"'},
         )
         return NoteDocument.model_validate(response.json())
+
+    async def get_api_keys(self) -> ApiKeySet:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/api-keys")
+        return ApiKeySet.model_validate(response.json())
 
     async def is_ready(self) -> bool:
         """True when the store reports itself ready. Never raises."""

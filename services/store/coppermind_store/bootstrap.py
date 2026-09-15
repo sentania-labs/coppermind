@@ -7,10 +7,10 @@ pre-created secret:
 - `/data` gains its notes, sources and state trees, owned by uid 1000, which
   every Coppermind image runs as.
 - Separate credential directories gain an internal bearer token and a
-  PostgreSQL password, both generated here and never printed, never committed
-  and never passed as an environment value.
-- The control state files arrive at revision 1 with their shipped defaults, so
-  Admin opens on working settings rather than an empty form.
+  PostgreSQL password, plus a default public API key in its own restricted
+  volume. They are never printed, committed or passed as environment values.
+- The control state files arrive at revision 1 with their shipped defaults,
+  including only the Argon2 hash of the default API key.
 
 Everything is idempotent. A second run leaves existing secrets and existing
 settings exactly as they are, so restarting the stack never rotates a
@@ -28,6 +28,7 @@ from pathlib import Path
 from coppermind.atomicio import atomic_write_text
 from coppermind.settings import Wiring
 from coppermind_store.control import ControlState
+from coppermind_store.keys import ensure_default_key
 
 TOKEN_BYTES = 32
 
@@ -75,20 +76,26 @@ def run(wiring: Wiring | None = None) -> int:
     _ensure_dir(settings.state_dir, uid, gid, 0o755)
     _ensure_dir(settings.internal_token_file.parent, uid, gid, 0o755)
     _ensure_dir(settings.db_password_file.parent, uid, gid, 0o755)
+    _ensure_dir(settings.default_api_key_file.parent, uid, gid, 0o755)
 
     created_token = _ensure_secret(settings.internal_token_file, uid, gid, 0o600)
     created_password = _ensure_secret(settings.db_password_file, uid, gid, 0o644)
 
     control = ControlState(settings.state_dir)
     control.ensure_defaults()
+    default_api_key = ensure_default_key(control, settings.default_api_key_file)
     for name in ("settings", "schema"):
         _own(control.store.path_for(name), uid, gid, 0o644)
+    _own(settings.default_api_key_file, uid, gid, 0o600)
+    _own(control.store.path_for("keys"), uid, gid, 0o600)
 
     print(
         "bootstrap complete: "
         f"data={settings.data_dir} "
         f"internal_token={'generated' if created_token else 'kept'} "
-        f"postgres_password={'generated' if created_password else 'kept'}",
+        f"postgres_password={'generated' if created_password else 'kept'} "
+        f"default_api_key={default_api_key} "
+        f"default_api_key_file={settings.default_api_key_file}",
         flush=True,
     )
     return 0

@@ -61,6 +61,9 @@ wait_for_commit_after() {
 step "bring the stack up"
 compose up -d --wait --remove-orphans
 ok "compose reported every service healthy, the Git helper included"
+default_key="$(compose run --rm --no-deps --entrypoint cat bootstrap \
+    /run/coppermind/api/default-api-key | tr -d '[:space:]')"
+[ -n "$default_key" ] || fail "bootstrap did not surface a default API key"
 
 step "the helper made the notes filesystem a repository on its own"
 for _ in $(seq 1 30); do
@@ -76,6 +79,7 @@ compose stop git
 before="$(baseline_after_stop)"
 created="$(mktemp)"
 code="$(curl -sS -o "$created" -w '%{http_code}' -X POST "$API/v1/notes" \
+    -H "Authorization: Bearer $default_key" \
     -H 'Content-Type: application/json' \
     -d '{"title":"Git Helper Catch Up","body":"- written while the helper was stopped\n","frontmatter":{"type":"reference","context":"internal"}}')"
 [ "$code" = "201" ] || { cat "$created"; fail "create returned $code, expected 201"; }
