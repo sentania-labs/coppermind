@@ -7,6 +7,7 @@ the fact that nothing here touches a file.
 """
 
 import asyncio
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -190,6 +191,36 @@ async def test_a_verification_never_outlives_the_records_it_was_decided_from():
 
     seconds = auth_module.CACHE_TTL_SECONDS + 1
     assert await authenticator.authenticate(f"Bearer {READ_KEY}") is None
+    assert fake.key_reads == 2
+
+
+async def test_a_reload_during_verification_refuses_the_key_it_revoked(monkeypatch):
+    """Argon2 runs long enough for the snapshot under it to expire and reload."""
+    fake = FakeStore()
+    seconds = 0.0
+    authenticator = auth_module.ApiKeyAuthenticator(fake, clock=lambda: seconds)
+    loop = asyncio.get_running_loop()
+    verifying = asyncio.Event()
+    finish = threading.Event()
+    real_verify = auth_module.verify_secret
+
+    def gated_verify(encoded_hash: str, secret: str) -> bool:
+        loop.call_soon_threadsafe(verifying.set)
+        finish.wait()
+        return real_verify(encoded_hash, secret)
+
+    monkeypatch.setattr(auth_module, "verify_secret", gated_verify)
+    attempt = asyncio.create_task(authenticator.authenticate(f"Bearer {KEY}"))
+    await verifying.wait()
+
+    fake.key_records = [
+        KEY_RECORD.model_copy(update={"revoked_at": datetime(2026, 9, 9, tzinfo=UTC)})
+    ]
+    seconds = auth_module.CACHE_TTL_SECONDS + 1
+    await authenticator.records()
+    finish.set()
+
+    assert await attempt is None
     assert fake.key_reads == 2
 
 

@@ -119,9 +119,10 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         filesystem stays readable and writable by Obsidian Sync throughout; it
         is the API surface that steps back, not the notes.
 
-        The control files count too. Every note operation loads them first, so
-        a settings or schema file the models reject breaks the whole surface,
-        and reporting ready next to that would be a false green.
+        The control files count too. Every note operation loads settings and
+        the schema first, and the API authenticates against the key records, so
+        a control file the models reject breaks the whole surface and reporting
+        ready next to that would be a false green.
         """
         writable, detail = is_writable(request.app.state.wiring.notes_dir)
         checks = [Check(name="notes_filesystem", ok=writable, detail=detail)]
@@ -146,10 +147,17 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
 def _control_state_problem(control: ControlState) -> str:
     """Describe the first control file that will not load, or return an empty string.
 
-    These are the two calls every note operation makes before it does anything
-    else, so what they do here is what they will do there.
+    Settings and the schema are the two calls every note operation makes before
+    it does anything else, so what they do here is what they will do there.
+    `keys.json` is what the API authenticates every request against, so key
+    state it cannot read takes the whole public surface down with it. A key set
+    that loads and holds no usable key is an operator's choice, not a fault.
     """
-    for filename, load in (("settings.yaml", control.settings), ("schema.yaml", control.schema)):
+    for filename, load in (
+        ("settings.yaml", control.settings),
+        ("schema.yaml", control.schema),
+        ("keys.json", control.api_keys),
+    ):
         try:
             load()
         except Exception as exc:  # noqa: BLE001 - readiness reports faults, never raises them

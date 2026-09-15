@@ -69,7 +69,10 @@ vertical path proved end to end, then widened.
   existing one, and the notes filesystem is untouched and still fully
   editable. Starting PostgreSQL brings API operations back with no
   intervention; what changed in the notes filesystem during the outage waits
-  for the reconciler under "Not built yet".
+  for the reconciler under "Not built yet". Control state is checked the same
+  way: a settings, schema or key file the models reject answers 503 and names
+  the file, while key state that loads and happens to hold no usable key is an
+  operator's choice and stays ready.
 - Control state files are revisioned. A write states the revision it replaces
   and is refused if the file moved on. Readiness loads both of them, so a
   hand edit the models reject takes the store out of rotation with the file

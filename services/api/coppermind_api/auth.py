@@ -55,6 +55,7 @@ class ApiKeyAuthenticator:
         self._clock = clock
         self._records: dict[str, ApiKeyRecord] = {}
         self._records_expire_at = 0.0
+        self._records_generation = 0
         self._verified: dict[bytes, _Verified] = {}
         self._loading: asyncio.Task[dict[str, ApiKeyRecord]] | None = None
         self._lock = asyncio.Lock()
@@ -85,6 +86,7 @@ class ApiKeyAuthenticator:
             self._loading = None
         self._records = {record.key_id: record for record in key_set.keys}
         self._records_expire_at = self._clock() + self._ttl
+        self._records_generation += 1
         self._verified = {}
         return self._records
 
@@ -102,16 +104,23 @@ class ApiKeyAuthenticator:
             return cached.principal
 
         key_id, secret = parsed
-        records = await self.records()
-        decided_until = self._records_expire_at
-        record = records.get(key_id)
-        if record is None or record.revoked_at is not None:
-            return None
-        # Argon2 is deliberately expensive, so it never runs on the event loop.
-        if not await anyio.to_thread.run_sync(
-            verify_secret, record.hash, secret, limiter=self._verify_limiter
-        ):
-            return None
+        # Verifying is slow enough for the records to expire and reload under
+        # it, so the decision is only kept when it still stands against the
+        # snapshot in force once the verification returns.
+        while True:
+            records = await self.records()
+            generation = self._records_generation
+            decided_until = self._records_expire_at
+            record = records.get(key_id)
+            if record is None or record.revoked_at is not None:
+                return None
+            # Argon2 is deliberately expensive, so it never runs on the event loop.
+            if not await anyio.to_thread.run_sync(
+                verify_secret, record.hash, secret, limiter=self._verify_limiter
+            ):
+                return None
+            if self._records_generation == generation:
+                break
 
         principal = Principal(record.key_id, frozenset(record.scopes))
         async with self._lock:

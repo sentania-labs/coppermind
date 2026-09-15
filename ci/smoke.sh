@@ -16,6 +16,8 @@ set -euo pipefail
 
 COMPOSE_FILES="${COMPOSE_FILES:--f docker-compose.yml}"
 API="${API:-http://127.0.0.1:8080}"
+# The API's bounded key cache life, as README.md and STATUS.md document it.
+KEY_CACHE_SECONDS=300
 # shellcheck disable=SC2086
 compose() { docker compose $COMPOSE_FILES "$@"; }
 
@@ -76,8 +78,16 @@ AUTH=(-H "Authorization: Bearer $default_key")
 code="$(status_of -X POST "$API/v1/notes" -H 'Content-Type: application/json' \
     -d '{"title":"No credential"}')"
 [ "$code" = "401" ] || fail "a create with no key returned $code, expected 401"
-code="$(status_of -X POST "$API/v1/notes" -H "Authorization: Bearer $wrong_scope_key" \
-    -H 'Content-Type: application/json' -d '{"title":"Wrong scope"}')"
+# A key minted after the API last loaded its key cache is not seen until that
+# cache expires, so the refusal is polled for within the documented lifetime.
+deadline=$(( SECONDS + KEY_CACHE_SECONDS + 10 ))
+while :; do
+    code="$(status_of -X POST "$API/v1/notes" -H "Authorization: Bearer $wrong_scope_key" \
+        -H 'Content-Type: application/json' -d '{"title":"Wrong scope"}')"
+    [ "$code" = "401" ] || break
+    [ "$SECONDS" -lt "$deadline" ] || break
+    sleep 5
+done
 [ "$code" = "403" ] || fail "a create with a read-only key returned $code, expected 403"
 ok "no key is refused with 401 and a read-only key is refused with 403"
 

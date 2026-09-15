@@ -21,6 +21,7 @@ from coppermind_store.main import create_app
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from coppermind.api_keys import API_SCOPES, ApiKeyRecord, ApiKeySet, create_key
 from coppermind.settings import Wiring
 from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import (
@@ -375,9 +376,49 @@ def test_a_missing_schema_role_makes_readiness_name_the_role(tmp_path):
     assert "sources_key" in control_check["detail"]
 
 
+def bootstrapped_app(tmp_path, keys: list[ApiKeyRecord] | None = None):
+    """A store whose control state bootstrap has already written, as a live one's has."""
+    wiring = store_wiring(tmp_path)
+    control = ControlState(wiring.state_dir)
+    control.ensure_defaults()
+    control.store.write(
+        "keys", ApiKeySet(keys=keys or []).model_dump(mode="json"), if_revision=None
+    )
+    return create_app(wiring)
+
+
+def control_check(response) -> dict:
+    return next(check for check in response.json()["checks"] if check["name"] == "control_state")
+
+
 def test_a_healthy_store_reports_its_control_files_as_ready(tmp_path):
-    with TestClient(store_app(tmp_path)) as client:
-        body = client.get("/readyz").json()
-    control = next(check for check in body["checks"] if check["name"] == "control_state")
+    record, _ = create_key("bootstrap default", list(API_SCOPES), bootstrap_default=True)
+    with TestClient(bootstrapped_app(tmp_path, [record])) as client:
+        response = client.get("/readyz")
+    control = control_check(response)
     assert control["ok"] is True
     assert control["detail"] == ""
+
+
+def test_key_state_the_models_reject_makes_the_store_report_not_ready(tmp_path):
+    """Every public request authenticates against this file, so a green beside it is false."""
+    wiring = store_wiring(tmp_path)
+    control = ControlState(wiring.state_dir)
+    control.ensure_defaults()
+    (wiring.state_dir / "keys.json").write_text(
+        '{"schema_version": 1, "revision": 1, "keys": [{"key_id": "not an id"}]}\n',
+        encoding="utf-8",
+    )
+    with TestClient(create_app(wiring)) as client:
+        response = client.get("/readyz")
+    assert response.status_code == 503
+    assert control_check(response)["ok"] is False
+    assert "keys.json" in control_check(response)["detail"]
+
+
+def test_key_state_that_holds_no_usable_key_is_still_ready(tmp_path):
+    """Revoking every key is an operator's configuration, not a fault to report."""
+    record, _ = create_key("retired", ["notes:read"])
+    revoked = record.model_copy(update={"revoked_at": datetime(2026, 9, 9, tzinfo=UTC)})
+    with TestClient(bootstrapped_app(tmp_path, [revoked])) as client:
+        assert control_check(client.get("/readyz"))["ok"] is True
