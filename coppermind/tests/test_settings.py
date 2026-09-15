@@ -32,6 +32,35 @@ def test_an_unknown_timezone_is_rejected():
     assert "general.timezone" in str(raised.value)
 
 
+@pytest.mark.parametrize(
+    ("configured", "written"),
+    [(".sources", "sources"), ("Sources:2026", "Sources 2026")],
+)
+def test_a_sources_folder_the_store_would_rewrite_is_refused(configured: str, written: str):
+    """The Store sanitises this folder and the Git helper takes it as given.
+
+    A name the two spell differently would leave Git excluding a folder nothing
+    writes to, so every generated projection would enter Git history.
+    """
+    with pytest.raises(ValidationError) as raised:
+        ProductSettings.model_validate({"notes": {"sources_folder": configured}})
+
+    message = str(raised.value)
+    assert "notes.sources_folder" in message
+    assert repr(configured) in message
+    assert repr(written) in message
+    assert "must match" in message
+
+
+def test_a_portable_sources_folder_is_accepted():
+    assert (
+        ProductSettings.model_validate(
+            {"notes": {"sources_folder": "Sources 2026"}}
+        ).notes.sources_folder
+        == "Sources 2026"
+    )
+
+
 def test_wiring_assembles_a_url_from_a_password_file(tmp_path: Path):
     password = tmp_path / "postgres-password"
     # A character that has to be percent encoded, because a generated password

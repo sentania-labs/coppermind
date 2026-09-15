@@ -131,6 +131,7 @@ def test_source_manifest_text_binary_and_projection_are_readable(source_client):
     assert binary.json()["sha256"] == "abc"
     projection = client.get(f"/v1/sources/{SOURCE_ID}/projection", headers=headers)
     assert projection.text == "# Recording (source)\n"
+    assert projection.headers["x-content-type-options"] == "nosniff"
 
 
 def test_an_ingested_artifact_type_never_reaches_a_response_header(source_client):

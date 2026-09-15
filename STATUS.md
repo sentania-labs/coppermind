@@ -264,18 +264,21 @@ vertical path proved end to end, then widened.
   reconciler excludes the sources folder and Obsidian Sync does not. A note the
   captain files into that folder himself is still followed there rather than
   reported deleted, because a row the pass would otherwise call gone is looked
-  for among the skipped files first. Git excludes the folder as long as Store
-  and Git resolve its configured name the same way; the Store sanitises
-  `notes.sources_folder` and the Git helper takes it verbatim, so a value the
-  Store rewrites (a trailing space, a character it strips) leaves Git excluding
-  a different name and the projections enter Git history. Write-side
+  for among the skipped files first. Git excludes the folder, and the two agree
+  on its name by construction: the Store writes to the sanitised name while the
+  Git helper, which carries none of the shared package, excludes the configured
+  name as given, so settings validation refuses any `notes.sources_folder` the
+  Store would rewrite (a leading dot, a trailing space, a character it strips)
+  rather than let the projections enter Git history. Write-side
   reconciliation is not built on this branch, so its separate rule for never
   adopting managed projections must be settled when that work lands.
 - `GET /v1/sources/{id}` reads the filesystem manifest. Its artifact route
   returns an artifact that decodes as UTF-8 text as the response body, always
   as `text/plain` and never as the ingested type, and describes every other
   artifact as JSON with its size and SHA-256, after verifying the stored bytes.
-  `GET /v1/sources/{id}/projection` returns the generated Markdown.
+  `GET /v1/sources/{id}/projection` returns the generated Markdown. A source
+  or projection that is not there answers 404; a volume that cannot be read
+  answers 503 rather than reporting the bundle gone.
   All need `sources:read`. `PUT`, `PATCH` and `DELETE` anywhere under a source
   return 405 `method_not_allowed` from the API itself, whether or not the
   Store is reachable; neither the public nor internal surface offers a way to

@@ -77,8 +77,12 @@ async def get_source(store: LocalStore, source_id: str) -> SourceManifest:
     if not is_valid_id(source_id):
         raise SourceNotFound(source_id)
     path = store.sources_root / source_id / "manifest.json"
-    if not path.is_file():
-        raise SourceNotFound(source_id)
+    try:
+        path.stat()
+    except FileNotFoundError as exc:
+        raise SourceNotFound(source_id) from exc
+    except OSError as exc:
+        raise SourcesFilesystemUnavailable("the source manifest is unreadable") from exc
     try:
         manifest = SourceManifest.model_validate(_read_json(path, "source manifest"))
     except ValueError as exc:
@@ -127,8 +131,10 @@ async def get_source_projection(store: LocalStore, source_id: str) -> SourceProj
         ):
             raise FileNotFoundError(path)
         content = path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError) as exc:
+    except (FileNotFoundError, ValueError) as exc:
         raise ArtifactNotFound(source_id, manifest.current_revision, "projection") from exc
+    except OSError as exc:
+        raise NotesFilesystemUnavailable(str(exc)) from exc
     return SourceProjection(
         source_id=source_id,
         path=path.relative_to(store.notes_root).as_posix(),
@@ -432,8 +438,8 @@ async def _ingest_existing(
                 title=note.title,
                 note_date=note.date or datetime.now(tz=UTC).date(),
                 generated_at=_manifest_time(current.get("ingested_at"), "ingested_at"),
-                artifacts=_read_revision_artifacts(
-                    source_path, current_revision, current_artifacts
+                artifacts=await asyncio.to_thread(
+                    _read_revision_artifacts, source_path, current_revision, current_artifacts
                 ),
                 relative_path=projection_path or None,
             )
@@ -831,7 +837,6 @@ def _read_revision_artifacts(
     revision: int,
     artifacts: list[dict[str, Any]],
 ) -> list[tuple[dict[str, Any], bytes]]:
-    _verify_revision_artifacts(source_path, revision, artifacts)
     try:
         return [
             (
@@ -858,8 +863,10 @@ def _projection_revision(notes_root: Path, relative: str, source_id: str) -> int
         return None
     try:
         frontmatter, _ = fm.parse(resolve(notes_root, relative).read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError, fm.FrontmatterError):
+    except (FileNotFoundError, ValueError, fm.FrontmatterError):
         return None
+    except OSError as exc:
+        raise NotesFilesystemUnavailable(str(exc)) from exc
     if frontmatter.get("managed") is not True or frontmatter.get("source_id") != source_id:
         return None
     revision = frontmatter.get("source_revision")

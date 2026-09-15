@@ -67,7 +67,10 @@ async def get_source_projection(
     return Response(
         content=projection.content,
         media_type="text/markdown",
-        headers={"X-Coppermind-Projection-Path": quote(projection.path)},
+        headers={
+            "X-Coppermind-Projection-Path": quote(projection.path),
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

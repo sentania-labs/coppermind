@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
+from coppermind.naming import sanitize_folder
 from coppermind.statefiles import StateStore
 
 MIB = 1024 * 1024
@@ -55,6 +56,26 @@ class NotesSettings(BaseModel):
     attachments_folder: str = "_Attachments"
     journal_folder: str = "Journal"
     dated_types: list[str] = Field(default_factory=lambda: ["meeting", "journal"])
+
+    @field_validator("sources_folder")
+    @classmethod
+    def validate_sources_folder(cls, value: str) -> str:
+        """Refuse a name the Store and the Git helper would resolve differently.
+
+        The Store writes projections to the sanitised name while the Git helper,
+        which carries none of this package, excludes the configured name as it
+        is given. A value the two spell differently would put every generated
+        transcript into Git history, so it is refused here rather than accepted
+        and split.
+        """
+        portable = sanitize_folder(value)
+        if portable != value:
+            raise ValueError(
+                f"{value!r} is written to the notes filesystem as {portable!r}, and the Git "
+                f"exclusion uses the name as given; the two must match, so configure "
+                f"{portable!r}"
+            )
+        return value
 
 
 class ReconcileSettings(BaseModel):

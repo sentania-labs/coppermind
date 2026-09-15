@@ -24,9 +24,11 @@ from coppermind.store_protocol import (
     IngestArtifact,
     IngestRequest,
     MetadataUnavailable,
+    NotesFilesystemUnavailable,
     PathCollision,
     PayloadTooLarge,
     SourceClaimMissing,
+    SourceNotFound,
     SourcesFilesystemUnavailable,
 )
 
@@ -402,6 +404,45 @@ async def test_a_new_revision_never_writes_over_another_source_projection(store:
     regenerated = await store.get_source_projection(second.source.id)
     assert regenerated.path == second.projection_path
     assert "Scott: corrected source content" in regenerated.content
+
+
+async def test_a_volume_fault_on_a_source_read_is_an_outage_not_a_missing_source(
+    store: LocalStore,
+):
+    """A bundle the store cannot read is not a bundle that is gone.
+
+    An operator told 404 concludes the immutable source was lost. The manifest
+    here is intact but unreadable, which is the mount fault the contract
+    already has a typed answer for.
+    """
+    ingested = await store.ingest(sample())
+    manifest_path = store.sources_root / ingested.source.id / "manifest.json"
+    manifest_path.unlink()
+    manifest_path.mkdir()
+
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.get_source(ingested.source.id)
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.get_source_artifact(ingested.source.id, 1, "transcript.txt")
+    with pytest.raises(SourceNotFound):
+        await store.get_source("01K4Q8Z2A0P1Q2R3S4T5U6V7W8")
+
+
+async def test_a_volume_fault_on_the_projection_is_an_outage_not_a_missing_projection(
+    store: LocalStore,
+):
+    """404 on this route means the manifest records no projection.
+
+    A notes volume that cannot be read has to answer differently, or the two
+    are indistinguishable to the operator reading the answer.
+    """
+    ingested = await store.ingest(sample())
+    projection = store.notes_root / ingested.projection_path
+    projection.unlink()
+    projection.mkdir()
+
+    with pytest.raises(NotesFilesystemUnavailable):
+        await store.get_source_projection(ingested.source.id)
 
 
 async def test_an_unrecorded_projection_path_is_not_found_rather_than_searched_for(
