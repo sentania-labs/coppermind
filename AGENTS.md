@@ -27,17 +27,20 @@ present.
 ## Layout and commands
 
 `coppermind/` is both the uv workspace root and the shared package; each
-`services/<name>/` is a workspace member and one image, built with the
-repository root as the build context. `make` is the only entry point that
-matters, and CI calls the same targets: see the [Makefile](Makefile) for the
-list. `make check` is what the `checks` job runs; `make db-up test-integration
-db-down` needs Docker.
+`services/<name>/` is one image, built with the repository root as the build
+context, and each Python one is a workspace member. `make` is the only entry
+point that matters, and CI calls the same targets: see the
+[Makefile](Makefile) for the list. `make check` is what the `checks` job runs;
+`make db-up test-integration db-down` needs Docker.
 
-`services/git` alone does not depend on the shared package, so its image
-carries no database drivers and survives settings sections it does not know.
-It reads its own settings keys; `services/git/tests/test_settings.py` holds its
-defaults equal to `coppermind.settings`, so a new `git.*` setting fails there
-until the helper honours it.
+`services/git` and `services/obsidian-sync` do not depend on the shared
+package, so their images carry no database drivers and survive settings
+sections they do not know. `services/obsidian-sync` is Node, not Python: it is
+outside the uv workspace, and `make test` runs its `node --test` suite after
+pytest, so `make check` needs Node 22 as well as uv. The Git helper reads its
+own settings keys; `services/git/tests/test_settings.py` holds its defaults
+equal to `coppermind.settings`, so a new `git.*` setting fails there until the
+helper honours it.
 
 ## Sharp edges found the hard way
 
