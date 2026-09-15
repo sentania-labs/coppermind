@@ -462,7 +462,10 @@ async def _ingest_existing(
                 sync_directory(manifest_path.parent)
             except OSError as exc:
                 if projection_created and not manifest_replacement_started:
-                    resolve(store.notes_root, projection_path).unlink(missing_ok=True)
+                    try:
+                        resolve(store.notes_root, projection_path).unlink(missing_ok=True)
+                    except OSError as notes_exc:
+                        raise NotesFilesystemUnavailable(str(notes_exc)) from notes_exc
                 raise SourcesFilesystemUnavailable(str(exc)) from exc
         return IngestResult(
             source=CreatedSource(

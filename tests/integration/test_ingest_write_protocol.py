@@ -698,6 +698,45 @@ async def test_a_sources_fault_recording_a_repaired_projection_reports_it_and_le
     )
 
 
+async def test_a_notes_fault_removing_a_repaired_projection_reports_the_notes_volume(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """One volume holds both trees, so the fault that strands the page is the same one.
+
+    The sources write fails, and removing the page it would have recorded fails
+    for the very same reason. The operator has to be sent to the volume that is
+    actually unwell: answering that the metadata store is unavailable points at
+    a healthy PostgreSQL while the page nothing references stays in the vault.
+    """
+    ingested = await store.ingest(sample())
+    kept = store.notes_root / ingested.projection_path
+    kept.write_text("---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# Mine now\n", encoding="utf-8")
+    real_resolve = sources_module.resolve
+
+    class UnremovableFile:
+        def __init__(self, path):
+            self._path = path
+
+        def __getattr__(self, name):
+            return getattr(self._path, name)
+
+        def unlink(self, missing_ok: bool = False) -> None:
+            raise OSError(30, "Read-only file system")
+
+    def read_only_volume(*_args, **_kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(sources_module, "stage_bytes", read_only_volume)
+    monkeypatch.setattr(
+        sources_module,
+        "resolve",
+        lambda root, relative: UnremovableFile(real_resolve(root, relative)),
+    )
+
+    with pytest.raises(NotesFilesystemUnavailable):
+        await store.ingest(sample())
+
+
 async def test_an_ambiguous_manifest_commit_keeps_the_newly_referenced_projection(
     store: LocalStore, monkeypatch: pytest.MonkeyPatch
 ):
