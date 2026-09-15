@@ -46,15 +46,42 @@ class PathCollision(StoreError):
         self.existing_path = existing_path
 
 
-class SourceAlreadyExists(StoreError):
-    """The provider's external identifier has already been ingested."""
+class SourceClaimMissing(StoreError):
+    """The durable external-id claim is gone while its mirror row survives.
+
+    The filesystem is the truth and it no longer claims this identifier, but
+    the database still holds the source it named, so ingesting again would
+    make a second source for one external identifier. Nothing was written.
+    Restoring `/data/sources` from a snapshot without restoring PostgreSQL, or
+    removing the claim file by hand, is what produces this.
+    """
 
     def __init__(self, provider: str, external_source_id: str) -> None:
         super().__init__(
-            f"source {provider}/{external_source_id} already exists; the original was not changed"
+            f"the durable claim for source {provider}/{external_source_id} is missing while its "
+            "database row survives, so nothing was written; restore /data/sources and the "
+            "database from the same point in time, or remove the stale row, then retry"
         )
         self.provider = provider
         self.external_source_id = external_source_id
+
+
+class IncompleteRevision(StoreError):
+    """A revision directory is on disk that the manifest does not record.
+
+    An earlier revision write was interrupted between creating the directory
+    and recording the revision, so the bundle holds files nothing references.
+    The volume is healthy. Nothing was written and nothing was removed,
+    because deciding whether those files matter is the operator's call.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__(
+            f"the source bundle holds the revision directory {path}, which its manifest does not "
+            "record, so an earlier revision write was interrupted; nothing was written and "
+            "nothing was removed. Inspect that directory, remove it, then retry"
+        )
+        self.path = path
 
 
 class PayloadTooLarge(StoreError):
@@ -240,12 +267,35 @@ class IngestRequest(BaseModel):
 
 
 class CreatedSource(BaseModel):
+    """The source this ingest created, revised or replayed.
+
+    `unstored_fields` names what the request sent differently from what is
+    stored and this increment does not keep. A source is identified by its
+    artifact bytes alone, so a correction to `captured_at`, `metadata`,
+    `source_type`, `origin` or an artifact `mime_type` with the bytes
+    unchanged has nowhere to land yet. Naming it is what keeps the answer
+    honest instead of discarding the correction in silence. It is empty on
+    every other answer.
+
+    It covers the fields describing the source and nothing else. An ingest
+    that does not create the note ignores the whole `note` object of the
+    request, title, body and frontmatter alike, because the note is the
+    captain's once it exists and Coppermind does not write over his edits.
+    So `unstored_fields: []` beside `note.created: false` means the stored
+    source matches what was sent; it says nothing about the note payload,
+    which was not used at all.
+    """
+
     id: SourceId
+    revision: int = Field(ge=1)
+    created: bool
+    unstored_fields: list[str] = Field(default_factory=list)
 
 
 class CreatedNote(BaseModel):
     id: NoteId
     path: str
+    created: bool
 
 
 class IngestResult(BaseModel):

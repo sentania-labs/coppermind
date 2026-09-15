@@ -55,16 +55,62 @@ vertical path proved end to end, then widened.
   artifacts land under `/data/sources/<source_id>/r0001/`, then
   `manifest.json` last, so a bundle without a manifest is an unfinished one;
   the Review note is written in the same database transaction with the source
-  identifier in its `sources` frontmatter key. A second ingest of the same
-  `provider` plus `external_source_id` loses the exclusive claim creation,
-  answers 409 `source_exists` and writes nothing.
+  identifier in its `sources` frontmatter key. Creating the pair answers 201;
+  every answer that creates no note answers 200. A revision is identified by
+  its artifact bytes alone, so resending an identical payload answers 200 with
+  `created: false`, the existing source and note identifiers, and the current
+  revision. Changed artifact content appends an immutable numbered revision
+  and answers 200 without rewriting the Review note or changing its reviewed
+  state. Before confirming a replay, the store reads every artifact in the
+  current revision and verifies its recorded SHA-256 digest. A missing or
+  damaged artifact answers 503 `sources_filesystem_unavailable` rather than
+  reporting that the source is intact, and the database mirror is not rebuilt
+  from the unverified manifest. The response carries real `created` values for
+  both records and the source revision. A payload whose artifacts are
+  unchanged while a field describing them differs (`captured_at`, `metadata`,
+  `source_type`, `origin` or an artifact's `mime_type`) is still a replay:
+  200, `created: false`, the same source and note identifiers, one note.
+  Storing a correction to those fields is not built in this increment, so the
+  answer names every one of them in `source.unstored_fields` rather than
+  discarding it in silence. A caller that reads an empty `unstored_fields`
+  knows the stored source matches what it sent. Keeping those corrections
+  arrives with the remaining source capabilities under "Not built yet".
+  `unstored_fields` describes the source and nothing else. An ingest that does
+  not create the note ignores the request's whole `note` object, title, body
+  and frontmatter alike, because the note belongs to the captain once it
+  exists. A caller resending a changed note body with an existing external id
+  gets 200, `note.created: false` and an empty `unstored_fields`, and its note
+  payload was not used: the way to edit a note is `PUT /v1/notes/{id}`.
+  An interrupted revision write can leave a numbered revision directory that
+  `manifest.json` does not record. The next ingest of changed artifacts for
+  that source answers 409 `incomplete_revision` naming the directory, rather
+  than a 503 blaming a healthy volume. It removes nothing: the operator
+  inspects `/data/sources/<source_id>/<rNNNN>/`, removes it, then retries.
+  If replacing `manifest.json` begins but its durability acknowledgement
+  fails, the revision directory is retained because the replacement may
+  already be live. A retry verifies the revision's artifacts before it can
+  report a replay.
   `uq_sources_provider_external_id` remains the database mirror's second
-  guard. A failure before the note is complete removes the claim and bundle,
-  so a later legitimate retry can proceed. PostgreSQL failing at commit after
-  the filesystem writes answers 503 `metadata_unavailable` and rolls the rows
-  back, but retains the complete bundle, Review note and external-id claim.
-  The caller cannot know the write outcome, but retrying receives 409 and
-  cannot create a duplicate. A submitted body over `limits.ingest_max_bytes`
+  guard, and it now answers in its own voice: an ingest that finds no claim
+  file while the mirror still holds that `provider` plus `external_source_id`
+  is refused with 409 `source_claim_missing`, not a 503 blaming PostgreSQL.
+  Nothing is written, including the claim the refused attempt made. That state
+  comes from restoring `/data/sources` from a snapshot without restoring the
+  database, or from removing a claim file by hand; the operator action is to
+  restore both from the same point in time, or delete the stale `sources` row,
+  then retry. Nothing heals it automatically, because the filesystem is the
+  truth and it no longer claims the identifier. A failure before the note is
+  complete removes the bundle and then the claim, so a later legitimate retry
+  can proceed. PostgreSQL failing at commit after the filesystem writes
+  answers 503 `metadata_unavailable` and rolls the rows back, but retains the
+  complete bundle, Review note and external-id claim.
+  A retry resolves from the claim and completed files, repairs a missing
+  mirror when needed, and cannot create a duplicate. That repair runs on the
+  replay path, so a retry carrying a corrected capture time still rebuilds the
+  rows and then reports the correction as unstored. Rebuilding the note link
+  means reading every note, so it runs in a worker thread: a retry recovering
+  from an outage does not stop the store answering readiness and other
+  requests while it walks. A submitted body over `limits.ingest_max_bytes`
   (25 MiB by default, settable like every other setting) answers 413
   `payload_too_large` before filesystem or database writes. The API preserves
   the public body length across the Store contract, but checks it only after
@@ -137,12 +183,17 @@ vertical path proved end to end, then widened.
 Everything below is planned and has a place in the design. None of it exists
 in the tree, so do not read the absence as a decision to leave it out.
 
-- **Ingest beyond the first revision.** A source is created once and never
-  revised: `r0002` and later, an idempotency key that returns the first
-  answer instead of 409, the generated source projections into the notes
-  filesystem, and tombstoning a source. Tombstones in particular have no
-  columns in the mirror and no keys in `manifest.json`, so adding them costs
-  a migration of its own and a manifest `schema_version` bump.
+- **Remaining source capabilities.** Storing a correction to a field that
+  describes a source (`captured_at`, `metadata`, `source_type`, `origin` or an
+  artifact `mime_type`) when the artifacts are unchanged is not built; today
+  those are reported back as unstored. A correction carried in alongside
+  changed artifacts does land, because it rides the new revision. Keeping the
+  rest means recording them per revision, which costs keys in `manifest.json`,
+  a manifest `schema_version` bump and columns on `source_revisions`.
+  Generated source projections into the notes filesystem and tombstoning a
+  source are not built. Tombstones in particular have no columns in the mirror
+  and no keys in `manifest.json`, so adding them costs a migration of its own
+  and a manifest `schema_version` bump.
 - **Reconciliation.** Nothing yet notices a file created, moved or deleted on
   a device. An edit in place is the exception and does read back: a note read
   by its identifier is parsed from the file every time, so a body or
@@ -185,6 +236,14 @@ in the tree, so do not read the absence as a decision to leave it out.
   on in a `.env` file would break the "no manual setup" rule, so the bundled
   instance is simply the default and the external path arrives with the
   deployment work.
+- Correcting only a field that describes a source (`captured_at`,
+  `metadata`, `source_type`, `origin` or an artifact `mime_type`) is reported
+  and not stored. The ingest succeeds as a replay and names the fields in
+  `source.unstored_fields`, but the manifest and the mirror keep the values
+  they already had, so an automation that means to correct one of them must
+  wait for the storage chunk under "Remaining source capabilities". An
+  automation that stamps a fresh capture time on every retry sees
+  `unstored_fields: ["captured_at"]` on every retry and nothing else changes.
 - A note file removed outside the store leaves its row behind, because
   nothing reconciles the mirror yet. Creating a note with that title again
   answers 409 `path_collision` every time until the reconciler lands or the

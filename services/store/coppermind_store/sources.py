@@ -1,15 +1,20 @@
-"""Create-only source ingestion.
+"""Idempotent source ingestion with immutable revisions.
 
 A deterministic filesystem claim owns each external identifier. Artifact
-files are exclusive, then `manifest.json` is written last so an interrupted
-bundle is never mistaken for complete. The linked Review note is the final
-filesystem write in the same database transaction. A write-phase failure
-removes the claim and bundle; a commit failure retains the complete files and
-claim so a retry cannot duplicate them.
+files are exclusive and each revision is recorded in `manifest.json` only
+after its files are durable. The linked Review note is created once and is
+never part of a replay or revision write. A write-phase failure removes what
+that attempt created, unless replacing `manifest.json` has begun and the new
+revision may already be live; a commit failure retains complete files so the
+next retry can resolve through the claim and repair the database mirror.
+Either of those, or a process killed mid-write, can leave a revision directory
+the manifest does not record, which the next ingest names and leaves alone
+rather than deleting.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import shutil
@@ -19,24 +24,30 @@ from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from coppermind import frontmatter as fm
-from coppermind.atomicio import create_exclusive_bytes
+from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes
 from coppermind.db.models import Note, NoteSource, Source, SourceArtifact, SourceRevision
 from coppermind.db.session import transaction
-from coppermind.ids import new_id
+from coppermind.ids import is_valid_id, new_id
 from coppermind.naming import sanitize_folder, unique_stem
+from coppermind.schema import FrontmatterSchema
+from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
     CreatedNote,
     CreatedSource,
     CreateNote,
+    IncompleteRevision,
+    IngestArtifact,
     IngestRequest,
     IngestResult,
     NotesFilesystemUnavailable,
     PathCollision,
     PayloadTooLarge,
-    SourceAlreadyExists,
+    SourceClaimMissing,
     SourcesFilesystemUnavailable,
+    StoreError,
     ValidationFailed,
 )
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
@@ -47,6 +58,7 @@ from coppermind_store.notes import (
     _metadata_failure,
     _mirror_columns,
     _stem_for,
+    _title_of,
 )
 
 if TYPE_CHECKING:
@@ -64,9 +76,6 @@ async def ingest(
     if max(_payload_size(request), payload_size_bytes or 0) > settings.limits.ingest_max_bytes:
         raise PayloadTooLarge(settings.limits.ingest_max_bytes)
 
-    source_id = new_id()
-    note_id = new_id()
-    now = datetime.now(tz=UTC)
     artifacts = [(artifact, artifact.bytes()) for artifact in request.source.artifacts]
     artifact_metadata = [
         {
@@ -78,14 +87,70 @@ async def ingest(
         for artifact, data in artifacts
     ]
     identity = _content_identity(artifact_metadata)
+    claim_path = _external_id_claim_path(
+        store.sources_root,
+        request.source.provider,
+        request.source.external_source_id,
+    )
+    try:
+        async with (
+            store._source_lock_for(claim_path.name),
+            transaction(store.session_factory) as session,
+        ):
+            await session.execute(sa.text("SELECT 1"))
+            try:
+                claim_data = claim_path.read_bytes()
+            except FileNotFoundError:
+                result = await _ingest_new(
+                    store,
+                    session,
+                    request,
+                    artifacts,
+                    artifact_metadata,
+                    identity,
+                    claim_path,
+                    schema,
+                    settings,
+                )
+            except OSError as exc:
+                raise SourcesFilesystemUnavailable(str(exc)) from exc
+            else:
+                result = await _ingest_existing(
+                    store,
+                    session,
+                    request,
+                    artifacts,
+                    artifact_metadata,
+                    identity,
+                    claim_data,
+                    schema,
+                )
+    except BaseException as exc:
+        typed = _metadata_failure(exc)
+        if typed is not None:
+            raise typed from exc
+        raise
+    return result
 
+
+async def _ingest_new(
+    store: LocalStore,
+    session: AsyncSession,
+    request: IngestRequest,
+    artifacts: list[tuple[IngestArtifact, bytes]],
+    artifact_metadata: list[dict[str, Any]],
+    identity: str,
+    claim_path: Path,
+    schema: FrontmatterSchema,
+    settings: ProductSettings,
+) -> IngestResult:
+    source_id = new_id()
+    note_id = new_id()
+    now = datetime.now(tz=UTC)
     note_request = CreateNote(
         title=request.note.title,
         body=request.note.body,
-        frontmatter={
-            **request.note.frontmatter,
-            schema.role("sources_key"): [source_id],
-        },
+        frontmatter={**request.note.frontmatter, schema.role("sources_key"): [source_id]},
     )
     frontmatter = _build_frontmatter(note_request, schema, settings, note_id)
     problems = schema.validate_frontmatter(frontmatter)
@@ -103,35 +168,16 @@ async def ingest(
     body = _body_with_heading(note_request.title, note_request.body)
     note_data = fm.compose(frontmatter, body).encode("utf-8")
     note_digest = content_hash(note_data)
-
     source_path = store.sources_root / source_id
     revision_path = source_path / "r0001"
-    manifest_path = source_path / "manifest.json"
-    claim_path = _external_id_claim_path(
-        store.sources_root,
-        request.source.provider,
-        request.source.external_source_id,
-    )
-    claim = _external_id_claim(request, source_id)
-    manifest = _manifest(request, source_id, now, identity, artifact_metadata)
+
     claim_created = False
     filesystem_complete = False
-
     try:
-        async with transaction(store.session_factory) as session:
-            await session.execute(sa.text("SELECT 1"))
-
-            try:
-                create_exclusive_bytes(claim_path, claim)
-            except FileExistsError as exc:
-                raise SourceAlreadyExists(
-                    request.source.provider, request.source.external_source_id
-                ) from exc
-            except OSError as exc:
-                raise SourcesFilesystemUnavailable(str(exc)) from exc
-            claim_created = True
-
-            session.add(
+        create_exclusive_bytes(claim_path, _external_id_claim(request, source_id))
+        claim_created = True
+        session.add_all(
+            [
                 Source(
                     id=source_id,
                     provider=request.source.provider,
@@ -142,105 +188,478 @@ async def ingest(
                     content_identity=identity,
                     created_at=now,
                     updated_at=now,
-                )
-            )
-            # The filesystem claim is authoritative. This constraint mirrors
-            # it and remains a second guard for stale or imported rows.
-            await session.flush()
+                ),
+                SourceRevision(
+                    source_id=source_id,
+                    revision=1,
+                    content_identity=identity,
+                    ingested_at=now,
+                    captured_at=request.source.captured_at,
+                    metadata_json=_jsonable(request.source.metadata),
+                ),
+                Note(
+                    id=note_id,
+                    path=relative,
+                    title=note_request.title,
+                    content_hash=note_digest,
+                    size_bytes=len(note_data),
+                    mtime=now,
+                    frontmatter=_jsonable(frontmatter),
+                    **_mirror_columns(frontmatter, schema),
+                    state="ok",
+                    first_seen_at=now,
+                    updated_at=now,
+                ),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                NoteSource(note_id=note_id, source_id=source_id, created_at=now),
+                *_artifact_rows(source_id, 1, artifact_metadata),
+            ]
+        )
+        await session.flush()
 
-            session.add_all(
-                [
-                    SourceRevision(
-                        source_id=source_id,
-                        revision=1,
-                        content_identity=identity,
-                        ingested_at=now,
-                        captured_at=request.source.captured_at,
-                        metadata_json=_jsonable(request.source.metadata),
-                    ),
-                    Note(
-                        id=note_id,
-                        path=relative,
-                        title=note_request.title,
-                        content_hash=note_digest,
-                        size_bytes=len(note_data),
-                        mtime=now,
-                        frontmatter=_jsonable(frontmatter),
-                        **_mirror_columns(frontmatter, schema),
-                        state="ok",
-                        first_seen_at=now,
-                        updated_at=now,
-                    ),
-                ]
-            )
-            await session.flush()
-            session.add_all(
-                [
-                    NoteSource(note_id=note_id, source_id=source_id, created_at=now),
-                    *[
-                        SourceArtifact(
-                            source_id=source_id,
-                            revision=1,
-                            name=item["name"],
-                            mime_type=item["mime_type"],
-                            sha256=item["sha256"],
-                            size_bytes=item["size_bytes"],
-                        )
-                        for item in artifact_metadata
-                    ],
-                ]
-            )
-            await session.flush()
-
-            try:
-                try:
-                    revision_path.mkdir(parents=True, exist_ok=False)
-                    for artifact, data in artifacts:
-                        create_exclusive_bytes(revision_path / artifact.name, data)
-                    create_exclusive_bytes(manifest_path, manifest)
-                except OSError as exc:
-                    raise SourcesFilesystemUnavailable(str(exc)) from exc
-
-                try:
-                    create_exclusive_bytes(note_path, note_data)
-                except FileExistsError as exc:
-                    raise PathCollision(relative) from exc
-                except OSError as exc:
-                    raise NotesFilesystemUnavailable(str(exc)) from exc
-                filesystem_complete = True
-            except BaseException:
-                shutil.rmtree(source_path, ignore_errors=True)
-                raise
-    except SourceAlreadyExists:
-        raise
+        revision_path.mkdir(parents=True, exist_ok=False)
+        for artifact, data in artifacts:
+            create_exclusive_bytes(revision_path / artifact.name, data)
+        create_exclusive_bytes(
+            source_path / "manifest.json",
+            _manifest(request, source_id, now, identity, artifact_metadata),
+        )
+        try:
+            create_exclusive_bytes(note_path, note_data)
+        except FileExistsError as exc:
+            raise PathCollision(relative) from exc
+        except OSError as exc:
+            raise NotesFilesystemUnavailable(str(exc)) from exc
+        filesystem_complete = True
     except IntegrityError as exc:
         constraint = _violated_constraint(exc)
         if constraint == "uq_sources_provider_external_id":
-            raise SourceAlreadyExists(
+            raise SourceClaimMissing(
                 request.source.provider, request.source.external_source_id
             ) from exc
         if constraint == "uq_notes_path":
             raise PathCollision(relative) from exc
-        typed = _metadata_failure(exc)
-        if typed is not None:
-            raise typed from exc
         raise
-    except BaseException as exc:
-        typed = _metadata_failure(exc)
-        if typed is not None:
-            raise typed from exc
-        raise
+    except OSError as exc:
+        raise SourcesFilesystemUnavailable(str(exc)) from exc
     finally:
         if claim_created and not filesystem_complete:
+            shutil.rmtree(source_path, ignore_errors=True)
             try:
                 claim_path.unlink(missing_ok=True)
             except OSError as exc:
                 raise SourcesFilesystemUnavailable(str(exc)) from exc
-
     return IngestResult(
-        source=CreatedSource(id=source_id),
-        note=CreatedNote(id=note_id, path=relative),
+        source=CreatedSource(id=source_id, revision=1, created=True),
+        note=CreatedNote(id=note_id, path=relative, created=True),
     )
+
+
+async def _ingest_existing(
+    store: LocalStore,
+    session: AsyncSession,
+    request: IngestRequest,
+    artifacts: list[tuple[IngestArtifact, bytes]],
+    artifact_metadata: list[dict[str, Any]],
+    identity: str,
+    claim_data: bytes,
+    schema: FrontmatterSchema,
+) -> IngestResult:
+    claim = _claimed_source(claim_data, request)
+    source_id = claim["source_id"]
+    source_path = store.sources_root / source_id
+    manifest_path = source_path / "manifest.json"
+    manifest = _read_json(manifest_path, "source manifest")
+    if (
+        manifest.get("source_id") != source_id
+        or manifest.get("provider") != request.source.provider
+        or manifest.get("external_source_id") != request.source.external_source_id
+    ):
+        raise StoreError("the external-id claim and source manifest disagree")
+
+    current_revision = _positive_int(manifest.get("current_revision"), "current_revision")
+    current = _manifest_revision(manifest, current_revision)
+    current_artifacts = _manifest_artifacts(current)
+    replaying = _content_identity(current_artifacts) == identity
+    if replaying:
+        await asyncio.to_thread(
+            _verify_revision_artifacts,
+            source_path,
+            current_revision,
+            current_artifacts,
+        )
+
+    note_id, note_path, note_snapshot = await _linked_note(store, session, source_id, schema)
+    await _ensure_mirror(session, manifest, note_id, note_path, note_snapshot, schema)
+
+    if replaying:
+        return IngestResult(
+            source=CreatedSource(
+                id=source_id,
+                revision=current_revision,
+                created=False,
+                unstored_fields=_descriptive_differences(
+                    request, manifest, current, artifact_metadata
+                ),
+            ),
+            note=CreatedNote(id=note_id, path=note_path, created=False),
+        )
+
+    revision = current_revision + 1
+    now = datetime.now(tz=UTC)
+    revision_path = source_path / f"r{revision:04d}"
+    try:
+        revision_path.mkdir(parents=False, exist_ok=False)
+    except FileExistsError as exc:
+        raise IncompleteRevision(f"{source_id}/{revision_path.name}") from exc
+    except OSError as exc:
+        raise SourcesFilesystemUnavailable(str(exc)) from exc
+
+    manifest_replacement_started = False
+    try:
+        for artifact, data in artifacts:
+            create_exclusive_bytes(revision_path / artifact.name, data)
+        revisions = list(manifest.get("revisions", []))
+        revisions.append(_revision_document(request, revision, now, identity, artifact_metadata))
+        manifest.update(
+            {
+                "source_type": request.source.source_type,
+                "origin": request.source.origin,
+                "current_revision": revision,
+                "revisions": revisions,
+            }
+        )
+        manifest_replacement_started = True
+        atomic_write_bytes(manifest_path, _json_bytes(manifest))
+    except OSError as exc:
+        if not manifest_replacement_started:
+            shutil.rmtree(revision_path, ignore_errors=True)
+        raise SourcesFilesystemUnavailable(str(exc)) from exc
+
+    source = await session.get(Source, source_id)
+    if source is None:
+        raise StoreError("the source mirror could not be rebuilt")
+    source.source_type = request.source.source_type
+    source.origin = request.source.origin
+    source.current_revision = revision
+    source.content_identity = identity
+    source.updated_at = now
+    session.add(
+        SourceRevision(
+            source_id=source_id,
+            revision=revision,
+            content_identity=identity,
+            ingested_at=now,
+            captured_at=request.source.captured_at,
+            metadata_json=_jsonable(request.source.metadata),
+        )
+    )
+    await session.flush()
+    session.add_all(_artifact_rows(source_id, revision, artifact_metadata))
+    await session.flush()
+    return IngestResult(
+        source=CreatedSource(id=source_id, revision=revision, created=True),
+        note=CreatedNote(id=note_id, path=note_path, created=False),
+    )
+
+
+def _descriptive_differences(
+    request: IngestRequest,
+    manifest: dict[str, Any],
+    current: dict[str, Any],
+    artifact_metadata: list[dict[str, Any]],
+) -> list[str]:
+    """The fields describing a source that this replay sent differently.
+
+    A source is identified by its artifact bytes, so none of these can make a
+    revision of their own and this increment keeps none of them. Naming the
+    ones that differ is what makes the replay answer honest rather than a
+    silent discard.
+    """
+    differing = []
+    if not _same_instant(request.source.captured_at, current.get("captured_at")):
+        differing.append("captured_at")
+    if _jsonable(request.source.metadata) != (current.get("metadata") or {}):
+        differing.append("metadata")
+    if request.source.source_type != manifest.get("source_type"):
+        differing.append("source_type")
+    if request.source.origin != manifest.get("origin"):
+        differing.append("origin")
+    stored_types = {
+        str(item.get("name")): item.get("mime_type") for item in current.get("artifacts", [])
+    }
+    if any(item["mime_type"] != stored_types.get(item["name"]) for item in artifact_metadata):
+        differing.append("mime_type")
+    return differing
+
+
+def _same_instant(value: datetime | None, stored: Any) -> bool:
+    if value is None or stored is None:
+        return value is None and stored is None
+    try:
+        return datetime.fromisoformat(stored) == value
+    except (TypeError, ValueError):
+        return False
+
+
+def _claimed_source(claim_data: bytes, request: IngestRequest) -> dict[str, Any]:
+    try:
+        claim = json.loads(claim_data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SourcesFilesystemUnavailable("the external-id claim is unreadable") from exc
+    if (
+        claim.get("schema_version") != 1
+        or claim.get("provider") != request.source.provider
+        or claim.get("external_source_id") != request.source.external_source_id
+        or not is_valid_id(claim.get("source_id"))
+    ):
+        raise SourcesFilesystemUnavailable("the external-id claim is invalid")
+    return claim
+
+
+def _read_json(path: Path, label: str) -> dict[str, Any]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SourcesFilesystemUnavailable(f"the {label} is unreadable") from exc
+    if not isinstance(document, dict):
+        raise SourcesFilesystemUnavailable(f"the {label} is invalid")
+    return document
+
+
+async def _linked_note(
+    store: LocalStore, session: AsyncSession, source_id: str, schema: FrontmatterSchema
+) -> tuple[str, str, tuple[bytes, dict[str, Any], str, datetime] | None]:
+    row = (
+        await session.execute(
+            sa.select(Note.id, Note.path)
+            .join(NoteSource, NoteSource.note_id == Note.id)
+            .where(NoteSource.source_id == source_id)
+        )
+    ).one_or_none()
+    if row is not None:
+        return row.id, row.path, None
+    return await asyncio.to_thread(_scan_for_linked_note, store.notes_root, source_id, schema)
+
+
+def _scan_for_linked_note(
+    notes_root: Path, source_id: str, schema: FrontmatterSchema
+) -> tuple[str, str, tuple[bytes, dict[str, Any], str, datetime]]:
+    """Find the note citing a source by reading the notes filesystem.
+
+    Reached only when the mirror lost the link, so the files are the one place
+    it survives. Every note is read and parsed, which is why the caller runs
+    this in a worker thread: the store is one process with one worker, and a
+    walk of a real notes filesystem on its event loop would stop readiness and
+    every other request while one degraded retry recovers.
+    """
+    matches: list[tuple[str, str, tuple[bytes, dict[str, Any], str, datetime]]] = []
+    try:
+        paths = list(notes_root.rglob(f"*{NOTE_SUFFIX}"))
+    except OSError as exc:
+        raise NotesFilesystemUnavailable(str(exc)) from exc
+    for path in paths:
+        try:
+            data = path.read_bytes()
+            parsed, body = fm.parse(data.decode("utf-8"))
+            stat = path.stat()
+        except (OSError, UnicodeDecodeError, fm.FrontmatterError):
+            continue
+        sources = parsed.get(schema.role("sources_key"), [])
+        note_id = parsed.get(schema.role("id_key"))
+        if source_id in sources and is_valid_id(note_id):
+            note_id = str(note_id)
+            relative = path.relative_to(notes_root).as_posix()
+            matches.append(
+                (
+                    note_id,
+                    relative,
+                    (
+                        data,
+                        parsed,
+                        body,
+                        datetime.fromtimestamp(stat.st_mtime, tz=UTC),
+                    ),
+                )
+            )
+    if len(matches) != 1:
+        raise StoreError("the durable source claim does not resolve to exactly one note")
+    return matches[0]
+
+
+async def _ensure_mirror(
+    session: AsyncSession,
+    manifest: dict[str, Any],
+    note_id: str,
+    note_path: str,
+    note_snapshot: tuple[bytes, dict[str, Any], str, datetime] | None,
+    schema: FrontmatterSchema,
+) -> None:
+    source_id = manifest.get("source_id")
+    revisions = manifest.get("revisions")
+    if not is_valid_id(source_id) or not isinstance(revisions, list) or not revisions:
+        raise SourcesFilesystemUnavailable("the source manifest is invalid")
+    source_id = str(source_id)
+    current_revision = _positive_int(manifest.get("current_revision"), "current_revision")
+    current = _manifest_revision(manifest, current_revision)
+    created_at = _manifest_time(revisions[0].get("ingested_at"), "ingested_at")
+    updated_at = _manifest_time(current.get("ingested_at"), "ingested_at")
+
+    source = await session.get(Source, source_id)
+    if source is None:
+        conflicting = await session.scalar(
+            sa.select(Source.id).where(
+                Source.provider == manifest.get("provider"),
+                Source.external_source_id == manifest.get("external_source_id"),
+            )
+        )
+        if conflicting is not None:
+            raise StoreError("the source mirror conflicts with the durable external-id claim")
+        source = Source(
+            id=source_id,
+            provider=str(manifest.get("provider", "")),
+            external_source_id=str(manifest.get("external_source_id", "")),
+            source_type=str(manifest.get("source_type", "")),
+            origin=str(manifest.get("origin", "")),
+            current_revision=current_revision,
+            content_identity=str(current.get("content_identity", "")),
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+        session.add(source)
+        await session.flush()
+    else:
+        source.source_type = str(manifest.get("source_type", ""))
+        source.origin = str(manifest.get("origin", ""))
+        source.current_revision = current_revision
+        source.content_identity = str(current.get("content_identity", ""))
+        source.updated_at = updated_at
+
+    for item in revisions:
+        revision = _positive_int(item.get("revision"), "revision")
+        if await session.get(SourceRevision, (source_id, revision)) is None:
+            session.add(
+                SourceRevision(
+                    source_id=source_id,
+                    revision=revision,
+                    content_identity=str(item.get("content_identity", "")),
+                    ingested_at=_manifest_time(item.get("ingested_at"), "ingested_at"),
+                    captured_at=(
+                        _manifest_time(item["captured_at"], "captured_at")
+                        if item.get("captured_at")
+                        else None
+                    ),
+                    metadata_json=item.get("metadata", {}),
+                )
+            )
+            await session.flush()
+            session.add_all(_artifact_rows(source_id, revision, item.get("artifacts", [])))
+    await session.flush()
+
+    if await session.get(Note, note_id) is None:
+        if note_snapshot is None:
+            raise StoreError("the linked note mirror is incomplete")
+        data, frontmatter, body, mtime = note_snapshot
+        session.add(
+            Note(
+                id=note_id,
+                path=note_path,
+                title=_title_of(body, Path(note_path)),
+                content_hash=content_hash(data),
+                size_bytes=len(data),
+                mtime=mtime,
+                frontmatter=_jsonable(frontmatter),
+                **_mirror_columns(frontmatter, schema),
+                state="ok",
+                first_seen_at=mtime,
+                updated_at=mtime,
+            )
+        )
+        await session.flush()
+    if await session.get(NoteSource, (note_id, source_id)) is None:
+        session.add(NoteSource(note_id=note_id, source_id=source_id, created_at=created_at))
+        await session.flush()
+
+
+def _artifact_rows(
+    source_id: str, revision: int, artifacts: list[dict[str, Any]]
+) -> list[SourceArtifact]:
+    return [
+        SourceArtifact(
+            source_id=source_id,
+            revision=revision,
+            name=str(item["name"]),
+            mime_type=str(item["mime_type"]),
+            sha256=str(item["sha256"]),
+            size_bytes=int(item["size_bytes"]),
+        )
+        for item in artifacts
+    ]
+
+
+def _positive_int(value: Any, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise SourcesFilesystemUnavailable(f"the source manifest has an invalid {field}")
+    return value
+
+
+def _manifest_revision(manifest: dict[str, Any], revision: int) -> dict[str, Any]:
+    revisions = manifest.get("revisions", [])
+    matches = [item for item in revisions if item.get("revision") == revision]
+    if len(matches) != 1:
+        raise SourcesFilesystemUnavailable("the source manifest has inconsistent revisions")
+    return matches[0]
+
+
+def _manifest_artifacts(revision: dict[str, Any]) -> list[dict[str, Any]]:
+    artifacts = revision.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise SourcesFilesystemUnavailable("the source manifest has invalid artifacts")
+    for artifact in artifacts:
+        if (
+            not isinstance(artifact, dict)
+            or not isinstance(artifact.get("name"), str)
+            or not isinstance(artifact.get("sha256"), str)
+        ):
+            raise SourcesFilesystemUnavailable("the source manifest has invalid artifacts")
+    return artifacts
+
+
+def _verify_revision_artifacts(
+    source_path: Path,
+    revision: int,
+    artifacts: list[dict[str, Any]],
+) -> None:
+    """Verify the authoritative files before confirming a replay."""
+    revision_path = source_path / f"r{revision:04d}"
+    for artifact in artifacts:
+        name = str(artifact["name"])
+        try:
+            path = resolve(revision_path, name)
+            with path.open("rb") as handle:
+                actual = hashlib.file_digest(handle, "sha256").hexdigest()
+        except (OSError, ValueError) as exc:
+            raise SourcesFilesystemUnavailable(
+                f"the current source revision artifact is unreadable: {name}"
+            ) from exc
+        if actual != artifact["sha256"]:
+            raise SourcesFilesystemUnavailable(
+                f"the current source revision artifact failed verification: {name}"
+            )
+
+
+def _manifest_time(value: Any, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise SourcesFilesystemUnavailable(f"the source manifest has an invalid {field}") from exc
+    if parsed.tzinfo is None:
+        raise SourcesFilesystemUnavailable(f"the source manifest has an invalid {field}")
+    return parsed
 
 
 def _violated_constraint(exc: IntegrityError) -> str:
@@ -278,8 +697,12 @@ def _external_id_claim(request: IngestRequest, source_id: str) -> bytes:
 
 
 def _content_identity(artifacts: list[dict[str, Any]]) -> str:
-    names_and_hashes = sorted(f"{item['name']}:{item['sha256']}" for item in artifacts)
-    return hashlib.sha256("\n".join(names_and_hashes).encode("utf-8")).hexdigest()
+    names_and_hashes = sorted(
+        [[str(item["name"]), str(item["sha256"])] for item in artifacts],
+        key=lambda item: (item[0], item[1]),
+    )
+    framed = json.dumps(names_and_hashes, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(framed.encode("utf-8")).hexdigest()
 
 
 def _manifest(
@@ -289,7 +712,6 @@ def _manifest(
     identity: str,
     artifacts: list[dict[str, Any]],
 ) -> bytes:
-    captured = request.source.captured_at
     document = {
         "schema_version": 1,
         "source_id": source_id,
@@ -298,15 +720,28 @@ def _manifest(
         "source_type": request.source.source_type,
         "origin": request.source.origin,
         "current_revision": 1,
-        "revisions": [
-            {
-                "revision": 1,
-                "ingested_at": ingested_at.isoformat(),
-                "captured_at": captured.isoformat() if captured else None,
-                "content_identity": identity,
-                "metadata": _jsonable(request.source.metadata),
-                "artifacts": artifacts,
-            }
-        ],
+        "revisions": [_revision_document(request, 1, ingested_at, identity, artifacts)],
     }
+    return _json_bytes(document)
+
+
+def _revision_document(
+    request: IngestRequest,
+    revision: int,
+    ingested_at: datetime,
+    identity: str,
+    artifacts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    captured = request.source.captured_at
+    return {
+        "revision": revision,
+        "ingested_at": ingested_at.isoformat(),
+        "captured_at": captured.isoformat() if captured else None,
+        "content_identity": identity,
+        "metadata": _jsonable(request.source.metadata),
+        "artifacts": artifacts,
+    }
+
+
+def _json_bytes(document: dict[str, Any]) -> bytes:
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")

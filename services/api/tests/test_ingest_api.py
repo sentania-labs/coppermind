@@ -1,4 +1,4 @@
-"""The public create-only ingest contract."""
+"""The public idempotent ingest contract."""
 
 import json
 from datetime import UTC, datetime
@@ -16,7 +16,6 @@ from coppermind.store_protocol import (
     IngestRequest,
     IngestResult,
     PayloadTooLarge,
-    SourceAlreadyExists,
 )
 
 INGEST = {
@@ -29,10 +28,11 @@ INGEST = {
     "note": {"title": "Architecture sync"},
 }
 RESULT = IngestResult(
-    source=CreatedSource(id="01K4Q8Z2A0P1Q2R3S4T5U6V7W8"),
+    source=CreatedSource(id="01K4Q8Z2A0P1Q2R3S4T5U6V7W8", revision=1, created=True),
     note=CreatedNote(
         id="01K4Q8Z3N7V2X9M1B5C6D8E0F2",
         path="Review/Architecture sync.md",
+        created=True,
     ),
 )
 
@@ -40,6 +40,7 @@ RESULT = IngestResult(
 class FakeStore:
     def __init__(self) -> None:
         self.error: Exception | None = None
+        self.result = RESULT
         self.ingested: IngestRequest | None = None
         self.payload_size_bytes: int | None = None
         self.ingest_limit_bytes: int | None = None
@@ -66,7 +67,7 @@ class FakeStore:
             raise PayloadTooLarge(self.ingest_limit_bytes)
         self.ingested = request
         self.payload_size_bytes = payload_size_bytes
-        return RESULT
+        return self.result
 
     async def get_api_keys(self) -> ApiKeySet:
         return ApiKeySet(keys=[self.full_record, self.sources_record, self.notes_record])
@@ -116,6 +117,37 @@ def test_ingest_answers_201_with_the_source_and_linked_note(tmp_path: Path):
     assert fake.payload_size_bytes == len(response.request.content)
 
 
+def test_replay_answers_200_with_created_false(tmp_path: Path):
+    app, fake = client_for(tmp_path)
+    fake.result = RESULT.model_copy(
+        update={
+            "source": RESULT.source.model_copy(update={"created": False}),
+            "note": RESULT.note.model_copy(update={"created": False}),
+        }
+    )
+    with TestClient(app) as client:
+        app.state.store = fake
+        app.state.api_key_auth._store = fake
+        response = client.post(
+            "/v1/ingest",
+            json=INGEST,
+            headers={"Authorization": f"Bearer {fake.full_key}"},
+        )
+    assert response.status_code == 200
+    assert response.json()["source"]["created"] is False
+    assert response.json()["note"]["created"] is False
+
+
+def test_openapi_documents_both_ingest_success_outcomes(tmp_path: Path):
+    app, fake = client_for(tmp_path)
+    with TestClient(app) as client:
+        app.state.store = fake
+        app.state.api_key_auth._store = fake
+        responses = client.get("/openapi.json").json()["paths"]["/v1/ingest"]["post"]["responses"]
+    assert "200" in responses
+    assert "201" in responses
+
+
 def test_ingest_limit_uses_the_raw_public_body_size(tmp_path: Path):
     app, fake = client_for(tmp_path)
     compact_size = len(json.dumps(INGEST, separators=(",", ":")).encode("utf-8"))
@@ -140,17 +172,12 @@ def test_ingest_limit_uses_the_raw_public_body_size(tmp_path: Path):
     assert fake.ingested is None
 
 
-def test_duplicate_and_oversize_ingest_keep_the_documented_envelope(tmp_path: Path):
+def test_oversize_ingest_keeps_the_documented_envelope(tmp_path: Path):
     app, fake = client_for(tmp_path)
     with TestClient(app) as client:
         app.state.store = fake
         app.state.api_key_auth._store = fake
         headers = {"Authorization": f"Bearer {fake.full_key}"}
-
-        fake.error = SourceAlreadyExists("plaud", "rec_8f3a2c19")
-        duplicate = client.post("/v1/ingest", json=INGEST, headers=headers)
-        assert duplicate.status_code == 409
-        assert duplicate.json()["error"] == "source_exists"
 
         fake.error = PayloadTooLarge(1024)
         oversize = client.post("/v1/ingest", json=INGEST, headers=headers)

@@ -108,6 +108,12 @@ cat "$ingested"; echo
 source_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"]["id"])' "$ingested")"
 ingest_note_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["note"]["id"])' "$ingested")"
 ingest_note_path="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["note"]["path"])' "$ingested")"
+[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"]["revision"])' "$ingested")" = "1" ] \
+    || fail "the first ingest did not report source revision 1"
+[ "$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["source"]["created"]).lower())' "$ingested")" = "true" ] \
+    || fail "the first ingest did not report the source as created"
+[ "$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["note"]["created"]).lower())' "$ingested")" = "true" ] \
+    || fail "the first ingest did not report the note as created"
 compose exec -T store test -f "/data/sources/$source_id/manifest.json" \
     || fail "the source manifest is missing"
 compose exec -T store test -f "/data/sources/$source_id/r0001/transcript.txt" \
@@ -121,16 +127,22 @@ printf '%s\n' "$ingest_note" | grep -Fqx -- "  - $source_id" \
     || fail "the ingest created more than one Review note"
 ok "source $source_id and note $ingest_note_id exist and are linked"
 
-step "repeat the external id and prove the original stays unchanged"
+step "replay the identical source and prove nothing new is created"
 source_before="$(compose exec -T store sh -c "find '/data/sources/$source_id' -type f -exec sha256sum {} \\; | sort")"
 note_before="$(hash_on_volume "$ingest_note_path")"
 duplicate="$(mktemp)"
 code="$(curl -sS -o "$duplicate" -w '%{http_code}' -X POST "$API/v1/ingest" \
     "${AUTH[@]}" -H 'Content-Type: application/json' \
     --data-binary @examples/ingest/plaud-sample.json)"
-[ "$code" = "409" ] || { cat "$duplicate"; fail "repeat ingest returned $code, expected 409"; }
-[ "$(field "$duplicate" error)" = "source_exists" ] \
-    || fail "the repeated external id was not reported as source_exists"
+[ "$code" = "200" ] || { cat "$duplicate"; fail "replay returned $code, expected 200"; }
+[ "$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["source"]["created"]).lower())' "$duplicate")" = "false" ] \
+    || fail "the replay did not report created false"
+[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"]["revision"])' "$duplicate")" = "1" ] \
+    || fail "the replay did not report revision 1"
+[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"]["id"])' "$duplicate")" = "$source_id" ] \
+    || fail "the replay returned a different source id"
+[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["note"]["id"])' "$duplicate")" = "$ingest_note_id" ] \
+    || fail "the replay returned a different note id"
 [ "$(compose exec -T store sh -c 'find /data/sources -mindepth 1 -maxdepth 1 -type d | wc -l' | tr -d '[:space:]')" = "1" ] \
     || fail "the repeated external id created another source bundle"
 [ "$(compose exec -T store sh -c 'find /data/notes/Review -maxdepth 1 -type f -name "*.md" | wc -l' | tr -d '[:space:]')" = "1" ] \
@@ -139,7 +151,43 @@ code="$(curl -sS -o "$duplicate" -w '%{http_code}' -X POST "$API/v1/ingest" \
     || fail "the repeated external id changed the source bundle"
 [ "$(hash_on_volume "$ingest_note_path")" = "$note_before" ] \
     || fail "the repeated external id changed the Review note"
-ok "the repeated external id returned 409, with one unchanged source and note"
+ok "the replay returned the original ids with created false and one unchanged note"
+
+step "edit the Review note, revise the source, and prove the note stays his"
+compose exec -T store python3 -c \
+    'import sys; p = sys.argv[1]; t = open(p).read(); t = t.replace("reviewed: false", "reviewed: true", 1); open(p, "w").write(t.replace("Target architecture agreed", "Captain corrected the note", 1))' \
+    "/data/notes/$ingest_note_path"
+reviewed_note="$(compose exec -T store cat "/data/notes/$ingest_note_path")"
+reviewed_hash="$(hash_on_volume "$ingest_note_path")"
+revised="$(mktemp)"
+code="$(python3 -c 'import json,sys
+document = json.load(open("examples/ingest/plaud-sample.json"))
+document["source"]["artifacts"][0]["content"] = "Scott: corrected source content"
+document["note"]["body"] = "This must not replace the reviewed note"
+json.dump(document, sys.stdout)' | curl -sS -o "$revised" -w '%{http_code}' -X POST "$API/v1/ingest" \
+    "${AUTH[@]}" -H 'Content-Type: application/json' --data-binary @-)"
+[ "$code" = "200" ] || { cat "$revised"; fail "revision ingest returned $code, expected 200"; }
+[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"]["revision"])' "$revised")" = "2" ] \
+    || fail "the changed source did not report revision 2"
+[ "$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["source"]["created"]).lower())' "$revised")" = "true" ] \
+    || fail "the changed source did not report a new revision"
+[ "$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["note"]["created"]).lower())' "$revised")" = "false" ] \
+    || fail "the changed source reported another note"
+[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"]["id"])' "$revised")" = "$source_id" ] \
+    || fail "the revision returned a different source id"
+[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["note"]["id"])' "$revised")" = "$ingest_note_id" ] \
+    || fail "the revision returned a different note id"
+compose exec -T store grep -Fq "Let's start with the architecture review" \
+    "/data/sources/$source_id/r0001/transcript.txt" \
+    || fail "revision 1 was changed or removed"
+compose exec -T store grep -Fqx "Scott: corrected source content" \
+    "/data/sources/$source_id/r0002/transcript.txt" \
+    || fail "revision 2 does not carry the corrected source"
+[ "$(hash_on_volume "$ingest_note_path")" = "$reviewed_hash" ] \
+    || fail "the source revision changed the Review note"
+[ "$(compose exec -T store cat "/data/notes/$ingest_note_path")" = "$reviewed_note" ] \
+    || fail "the source revision reset the Review note content or state"
+ok "revision 2 preserved revision 1 and the captain's reviewed note exactly"
 
 step "create a note through the API"
 created="$(mktemp)"

@@ -61,15 +61,22 @@ until the helper honours it.
 - **`grep` patterns over frontmatter need `-F`.** `sources: []` is an
   unterminated bracket expression as a basic regular expression.
 - **Conditional writes are guarded by an in-process lock.** `LocalStore`
-  compares `If-Match` against the file under a per-note `asyncio.Lock`, which
-  is only a guard while the store is one process: one uvicorn worker, one
-  replica. Adding `--workers` to the store's Dockerfile or a second replica
-  reopens the race the lock closes.
+  compares `If-Match` against the file under a per-note `asyncio.Lock`, and
+  ingest decides replay against revision under a per-claim one, which is only
+  a guard while the store is one process: one uvicorn worker, one replica.
+  Adding `--workers` to the store's Dockerfile or a second replica reopens the
+  races those locks close.
 - **Source external IDs have filesystem claims.** Ingest creates the
   deterministic `.external-id-<sha256>.json` claim before its source bundle.
-  A write-phase failure removes both; a database commit failure retains the
-  completed bundle, Review note and claim, so a retry returns 409 while the
-  database mirror is unavailable or rebuilt.
+  Replay and revision decisions resolve through that claim and the manifest,
+  not a database row alone. A write-phase failure removes incomplete files; a
+  database commit failure retains a completed bundle, Review note and claim,
+  so a retry returns the existing result and repairs the mirror from disk.
+- **An atomic replace can succeed before its directory sync fails.** Once a
+  source manifest replacement begins, cleanup must retain the new revision
+  because the live manifest may already point to it. Replay verifies the
+  current artifact files and their recorded digests before confirming that
+  nothing changed or rebuilding PostgreSQL from the manifest.
 
 ## Maintaining this file
 
