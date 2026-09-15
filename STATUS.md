@@ -108,7 +108,9 @@ vertical path proved end to end, then widened.
   already carries an identity this store knows is left alone, even when another
   file holds the same identity: nothing observable tells a copy apart from a
   move whose delete has not arrived yet, and the service will not guess. The
-  process remembers up
+  pass counts that collision and names every path claiming the identity, beside
+  the files it refused, so an operator sees both sides rather than an
+  identifier alone. The process remembers up
   to 10,000 rejected paths by stat, so an unchanged rejected tree costs one
   stat per file per pass rather than repeated reads and parses. Only a durable
   rejection is remembered; a file still inside the quiet period is read again

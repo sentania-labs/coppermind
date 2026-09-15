@@ -175,8 +175,14 @@ notes filesystem in the background every 60 seconds by default. Known notes
 edited, moved, renamed or deleted on a device converge in the next scan, while
 the API continues answering. A note reads as `missing` only when the scan did
 not find its file; one it can see but cannot parse or open reads as `unparsed`
-instead. A file created on a device remains untouched and unknown until
-write-side reconciliation lands.
+instead. A note created on a device is left untouched while it is still being
+written, and once its writes have been quiet for the configured period the
+store gives it an identity, appends the frontmatter keys the schema requires
+of it and mirrors it, so it lists and reads back without anything being done
+to it by hand. That adoption takes on every Markdown file under the notes root
+it can parse, including ones a plugin keeps, so do not point this at an
+existing notes filesystem yet: [STATUS.md](STATUS.md) has the scope it writes
+into and the scope it skips.
 
 ## Working on it
 
