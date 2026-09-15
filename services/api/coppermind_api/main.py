@@ -134,14 +134,6 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
                 detail="" if store_ready else "the store is not ready; note operations will 503",
             )
         ]
-        try:
-            # Read through the authenticator's five-minute cache, so a probe
-            # loop does not become store traffic of its own.
-            keys_ok = await request.app.state.api_key_auth.has_active_key()
-            detail = "" if keys_ok else "no active API key is available"
-        except AuthenticationUnavailable:
-            keys_ok, detail = False, "API key control state is unavailable"
-        checks.append(Check(name="api_keys", ok=keys_ok, detail=detail))
         readiness = Readiness.of(checks)
         return JSONResponse(
             status_code=200 if readiness.ready else 503,

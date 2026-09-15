@@ -101,11 +101,6 @@ class ApiKeyAuthenticator:
         }
         return self._records
 
-    async def has_active_key(self) -> bool:
-        """Answer readiness from the same cache the request path reads."""
-        records = await self.records()
-        return any(record.revoked_at is None for record in records.values())
-
     async def authenticate(self, authorization: str | None) -> Principal | None:
         if not authorization or not authorization.startswith("Bearer "):
             return None

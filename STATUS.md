@@ -14,7 +14,9 @@ vertical path proved end to end, then widened.
   PostgreSQL password as files on volumes (never environment values), creates
   a working full-scope default API key in a separate restricted volume, and
   writes `settings.yaml`, `schema.yaml` and the key's Argon2 hash at revision
-  1. Running it again keeps every existing secret, key and setting.
+  1. Running it again keeps every existing secret, key and setting. Revoke
+  that default and it stays revoked: the reveal file is replaced by a sentence
+  saying so, rather than a credential that answers 401.
 - Every `/v1` route requires `Bearer cm_<key_id>_<secret>`. A missing or bad
   key answers 401 and a key without the route's scope answers 403. Note reads
   need `notes:read`; creates and replacements need `notes:write`. Successful

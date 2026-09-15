@@ -24,6 +24,11 @@ from coppermind.settings import Wiring
 from coppermind.statefiles import RevisionConflict
 from coppermind_store.control import ControlState
 
+REVOKED_NOTICE = (
+    "the default API key was revoked; create a new key with: "
+    "python3 -m coppermind_store.keys create"
+)
+
 
 def _load_keys(control: ControlState) -> tuple[ApiKeySet, bool]:
     path = control.store.path_for("keys")
@@ -60,23 +65,31 @@ def revoke_key(control: ControlState, key_id: str) -> None:
         )
 
 
-def ensure_default_key(control: ControlState, secret_file: Path) -> bool:
-    """Ensure bootstrap's full-scope default key, returning whether it minted one.
+def ensure_default_key(control: ControlState, secret_file: Path) -> str:
+    """Ensure bootstrap's full-scope default key, saying what became of it.
 
-    The reveal file is kept whenever it names a key record it verifies against,
-    so a restart never rotates a credential in use. Anything else, including a
-    run interrupted between the reveal write and the record write, mints a
-    fresh key and overwrites the file, which rotates only a credential that was
-    never usable.
+    The reveal file is kept whenever it names a live key record it verifies
+    against, so a restart never rotates a credential in use. A revoked record
+    stays revoked: the file is replaced by a sentence saying so, because an
+    operator who reads it should be told rather than handed a credential that
+    answers 401. Anything else, including a first start and a run interrupted
+    between the reveal write and the record write, mints a fresh key and
+    overwrites the file, which rotates only a credential nobody could use.
     """
     key_set, exists = _load_keys(control)
     if secret_file.exists() and secret_file.stat().st_size > 0:
-        parsed = split_credential(secret_file.read_text(encoding="utf-8").strip())
+        revealed = secret_file.read_text(encoding="utf-8").strip()
+        if revealed == REVOKED_NOTICE:
+            return "revoked"
+        parsed = split_credential(revealed)
         if parsed is not None:
             key_id, secret = parsed
             current = next((record for record in key_set.keys if record.key_id == key_id), None)
             if current is not None and verify_secret(current.hash, secret):
-                return False
+                if current.revoked_at is None:
+                    return "kept"
+                atomic_write_text(secret_file, REVOKED_NOTICE + "\n", mode=0o600)
+                return "revoked"
 
     record, credential = create_key("bootstrap default", list(API_SCOPES))
     atomic_write_text(secret_file, credential + "\n", mode=0o600)
@@ -86,7 +99,7 @@ def ensure_default_key(control: ControlState, secret_file: Path) -> bool:
         key_set.model_dump(mode="json"),
         if_revision=key_set.revision if exists else None,
     )
-    return True
+    return "generated"
 
 
 def parser() -> argparse.ArgumentParser:

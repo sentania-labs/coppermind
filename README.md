@@ -27,6 +27,9 @@ COPPERMIND_KEY="$(docker compose run --rm --no-deps --entrypoint cat bootstrap \
   /run/coppermind/api/default-api-key)"
 ```
 
+Revoke that default once you have minted your own key and the file says so in
+place of the credential, because a revoked default is never minted again.
+
 Create a note:
 
 ```bash

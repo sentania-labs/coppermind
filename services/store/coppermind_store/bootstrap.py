@@ -83,7 +83,7 @@ def run(wiring: Wiring | None = None) -> int:
 
     control = ControlState(settings.state_dir)
     control.ensure_defaults()
-    created_api_key = ensure_default_key(control, settings.default_api_key_file)
+    default_api_key = ensure_default_key(control, settings.default_api_key_file)
     for name in ("settings", "schema"):
         _own(control.store.path_for(name), uid, gid, 0o644)
     _own(settings.default_api_key_file, uid, gid, 0o600)
@@ -94,7 +94,7 @@ def run(wiring: Wiring | None = None) -> int:
         f"data={settings.data_dir} "
         f"internal_token={'generated' if created_token else 'kept'} "
         f"postgres_password={'generated' if created_password else 'kept'} "
-        f"default_api_key={'generated' if created_api_key else 'kept'} "
+        f"default_api_key={default_api_key} "
         f"default_api_key_file={settings.default_api_key_file}",
         flush=True,
     )

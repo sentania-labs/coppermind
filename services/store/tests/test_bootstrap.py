@@ -5,6 +5,7 @@ from stat import S_IMODE
 
 from coppermind_store.bootstrap import run
 from coppermind_store.control import ControlState
+from coppermind_store.keys import REVOKED_NOTICE, revoke_key
 
 from coppermind.api_keys import split_credential, verify_secret
 from coppermind.settings import Wiring
@@ -116,3 +117,22 @@ def test_a_reveal_file_without_its_record_is_replaced_by_a_usable_pair(tmp_path:
     record = ControlState(wiring.state_dir).api_keys().keys[0]
     assert record.key_id == key_id
     assert verify_secret(record.hash, secret)
+
+
+def test_a_revoked_default_key_stays_revoked_and_says_so(tmp_path: Path):
+    """The documented way to read the default must not hand out a dead credential."""
+    wiring = wiring_for(tmp_path)
+    run(wiring)
+    control = ControlState(wiring.state_dir)
+    revoked_id = control.api_keys().keys[0].key_id
+    revoke_key(control, revoked_id)
+
+    assert run(wiring) == 0
+    assert wiring.default_api_key_file.read_text(encoding="utf-8").strip() == REVOKED_NOTICE
+    records = ControlState(wiring.state_dir).api_keys().keys
+    assert [record.key_id for record in records] == [revoked_id]
+    assert records[0].revoked_at is not None
+
+    assert run(wiring) == 0
+    assert wiring.default_api_key_file.read_text(encoding="utf-8").strip() == REVOKED_NOTICE
+    assert len(ControlState(wiring.state_dir).api_keys().keys) == 1

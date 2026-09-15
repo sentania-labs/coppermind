@@ -171,12 +171,12 @@ async def test_the_cache_expires_so_a_revoked_key_stops_working():
 
 
 async def test_a_key_minted_after_the_cache_was_warmed_still_works():
-    """Readiness and traffic warm the same cache; a new key must not wait it out."""
+    """Traffic warms the cache; a key minted after it must not wait the cache out."""
     fake = FakeStore()
     seconds = 0.0
     authenticator = auth_module.ApiKeyAuthenticator(fake, clock=lambda: seconds)
 
-    assert await authenticator.has_active_key() is True
+    assert await authenticator.authenticate(f"Bearer {KEY}") is not None
     assert fake.key_reads == 1
 
     late_record, late_key = create_key(
@@ -235,22 +235,6 @@ async def test_a_hung_store_costs_one_attempt_for_every_waiting_credential():
     fake.release.set()
 
     assert await asyncio.gather(*waiters) == ["unavailable"] * 25
-    assert fake.key_reads == 1
-
-
-async def test_readiness_joins_the_load_a_request_already_started():
-    """A readiness probe must not add a store attempt per poll during an outage."""
-    fake = GatedKeyStore(StoreUnavailable("the store never answered"))
-    authenticator = auth_module.ApiKeyAuthenticator(fake)
-
-    request = asyncio.create_task(authenticator.authenticate(f"Bearer {KEY}"))
-    probe = asyncio.create_task(authenticator.has_active_key())
-    await fake.started.wait()
-    fake.release.set()
-
-    for waiter in (request, probe):
-        with pytest.raises(auth_module.AuthenticationUnavailable):
-            await waiter
     assert fake.key_reads == 1
 
 
