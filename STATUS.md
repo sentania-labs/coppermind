@@ -307,6 +307,16 @@ vertical path proved end to end, then widened.
   the Git helper's failure storyline and the simulated Obsidian Sync
   lifecycle, against those exact images. Every action is pinned to a commit
   SHA, and a test enforces that.
+- A version tag adds the publication gates on top of the same run: the tag has
+  to be annotated and reachable from `main`, and only then are the tested
+  archives pushed to `ghcr.io/sentania-labs/coppermind`, signed with cosign,
+  read back and smoke tested with no credentials at all, recorded as a GitHub
+  release listing their digests, and named by `latest`, which only ever moves
+  forward. Publication authority is held by tag-triggered jobs alone and
+  `tests/ci/test_workflow_pins.py` enforces that. Nothing here has run against
+  a live registry yet, so the first real tag is what proves it, and that first
+  tag needs one manual GHCR step: see
+  [CONTRIBUTING.md](CONTRIBUTING.md).
 - The independently built `obsidian-sync` image supervises a sync client and
   exposes authenticated connect, pause, resume and status controls on the
   compose network. A fresh install has the supervisor available and honestly
@@ -391,8 +401,10 @@ in the tree, so do not read the absence as a decision to leave it out.
   yet the finished product. Its graphical API keys page also arrives later;
   until then `python3 -m coppermind_store.keys` is the interim path for adding
   and rotating keys.
-- **Publication and release.** CI deliberately holds no token that could push
-  an image anywhere. Publishing, signing and the Helm chart come later.
+- **Helm packaging and lab deployment.** The Helm chart and the lab handoff
+  are not built. Publishing the four existing service images and a release
+  from a version tag is in place and is under Working above; no automation
+  pushes a tag or changes GHCR package visibility.
 
 ## Known gaps in what is here
 

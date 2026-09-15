@@ -8,8 +8,7 @@ accepts cannot slip past a string match:
    whatever it points at today.
 2. No job queues on the self hosted `lab` pool. That pool exists to reach the
    lab and nothing here needs to.
-3. No job is granted a token that could publish. Publication arrives with the
-   release pull request, not before.
+3. Publication authority belongs only to tag-triggered release jobs.
 
 """
 
@@ -29,6 +28,11 @@ FORBIDDEN_PERMISSIONS = {
     "packages": "could push an image",
     "id-token": "could mint a signing identity",
 }
+
+# The one condition that may carry publication authority. Anything else, including
+# a disjunction that happens to name both halves, is true on pushes that are not
+# a version tag.
+TAG_GATE = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
 
 
 def load(workflow: Path) -> dict[str, Any]:
@@ -97,13 +101,43 @@ def test_nothing_in_this_repository_queues_on_the_lab_runner_pool():
     assert not problems, "\n".join(problems)
 
 
-def test_no_job_can_publish_an_image_in_this_slice():
-    """Until the release pull request, no run of CI may hold a token that pushes."""
+def test_publish_authority_is_confined_to_tag_only_jobs():
     problems: list[str] = []
     for workflow in WORKFLOWS:
         document = load(workflow)
         for name, job in (document.get("jobs") or {}).items():
             for scope, why in FORBIDDEN_PERMISSIONS.items():
-                if granted(document, job, scope) == "write":
-                    problems.append(f"{workflow.name}:{name} has {scope}: write and so {why}")
+                if (
+                    granted(document, job, scope) == "write"
+                    and str(job.get("if", "")).strip() != TAG_GATE
+                ):
+                    problems.append(
+                        f"{workflow.name}:{name} has {scope}: write and so {why} "
+                        f"unless its condition is exactly {TAG_GATE}"
+                    )
     assert not problems, "\n".join(problems)
+
+
+def test_latest_promotion_serializes_across_tags():
+    """The promotion guard is a read then write, so two tags must not overlap.
+
+    `ci/promote-latest.sh` reads the version `latest` serves and refuses to go
+    backwards, then copies this tag's digests over it. A concurrency group that
+    varies by ref puts two tags' promotions in different queues, and the older
+    one can land last.
+    """
+    workflow = load(WORKFLOWS[0])
+    promote = workflow["jobs"]["promote-latest"]
+    group = str(promote["concurrency"]["group"])
+    assert "${{" not in group, (
+        f"promote-latest queues in {group}, which varies by run, so two tags "
+        "can promote at once and the older one can win"
+    )
+    assert promote["concurrency"]["cancel-in-progress"] is False
+
+
+def test_release_waits_for_every_image_and_the_running_stack():
+    workflow = load(WORKFLOWS[0])
+    publish = workflow["jobs"]["publish"]
+    assert set(publish["needs"]) == {"image", "smoke", "integration", "release-tag"}
+    assert publish["runs-on"] == "ubuntu-latest"
