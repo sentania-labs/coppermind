@@ -68,9 +68,10 @@ curl -sS -H "Authorization: Bearer $COPPERMIND_KEY" \
 ```
 
 List notes and narrow them by folder, reviewed state, type, context, account,
-date bounds or tag. Each summary is read from the note's current file, and
-carries the `state` that read saw. Pass the answer's `next_cursor` back to get
-the following page:
+date bounds or tag. Each summary comes from the latest scheduled filesystem
+scan and carries its observed `state`: `ok`, `unparsed` or `missing`. Pass the
+answer's `next_cursor` back to get the following page. Cursors use permanent
+note identities, so a rename does not change where paging resumes:
 
 ```bash
 curl -sS -G -H "Authorization: Bearer $COPPERMIND_KEY" \
@@ -169,10 +170,13 @@ why, note writes, reads and listings answer 503 `metadata_unavailable`, and
 the notes filesystem itself carries on unaffected. Start it again and API
 operations recover on their own, with no restart and nothing to clear by hand.
 A note edited in place while PostgreSQL was down reads back as soon as it
-returns, because a note is parsed from its file on every read and every
-listing. A note created, moved or deleted on the volume is a separate matter:
-nothing notices those yet, and they wait for the reconciler that a later pull
-request in this slice delivers.
+returns, because a by-ID read parses the current file. The store scans the
+notes filesystem in the background every 60 seconds by default. Known notes
+edited, moved, renamed or deleted on a device converge in the next scan, while
+the API continues answering. A note reads as `missing` only when the scan did
+not find its file; one it can see but cannot parse or open reads as `unparsed`
+instead. A file created on a device remains untouched and unknown until
+write-side reconciliation lands.
 
 ## Working on it
 

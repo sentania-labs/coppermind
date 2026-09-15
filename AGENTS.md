@@ -66,6 +66,17 @@ until the helper honours it.
   a guard while the store is one process: one uvicorn worker, one replica.
   Adding `--workers` to the store's Dockerfile or a second replica reopens the
   races those locks close.
+- **A missing row keeps its last known path.** Another identified note can
+  later occupy that path, so `notes.path` is deliberately not unique. File
+  creation excludes existing bytes and refuses a non-missing mirrored path;
+  listing pages by immutable note ID, never by the moveable path.
+- **Only observed absence makes a note missing.** The reconciler records a
+  file it can see but cannot identify, parse or open as `unparsed` at its own
+  path, and leaves a row untouched when two live copies claim one identity.
+  Reporting a file the captain still has as deleted is the failure this
+  service exists to prevent, so a `_scan` skip at a path some row claims
+  records its disposition first (seen, held or deferred); a bare `continue`
+  there reads as absence.
 - **Source external IDs have filesystem claims.** Ingest creates the
   deterministic `.external-id-<sha256>.json` claim before its source bundle.
   Replay and revision decisions resolve through that claim and the manifest,

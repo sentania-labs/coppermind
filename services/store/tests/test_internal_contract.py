@@ -9,11 +9,14 @@ production.
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from datetime import UTC, date, datetime
 
 import httpx
 import pytest
 from coppermind_store import __version__
+from coppermind_store import main as main_module
 from coppermind_store.auth import InternalAuth
 from coppermind_store.control import ControlState
 from coppermind_store.internal_api import router as internal_router
@@ -388,6 +391,56 @@ def test_healthz_reports_the_version_the_image_was_built_from(tmp_path):
 
     with TestClient(store_app(tmp_path, build_version="v1.2.0")) as stamped:
         assert stamped.get("/healthz").json()["version"] == "v1.2.0"
+
+
+def test_a_scan_in_progress_does_not_stop_the_service_answering(tmp_path, monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+
+    async def held_scan(_store, _status):
+        started.set()
+        await asyncio.to_thread(release.wait)
+
+    monkeypatch.setattr(main_module, "run_reconciler", held_scan)
+    with TestClient(store_app(tmp_path)) as client:
+        assert started.wait(timeout=2)
+        assert client.get("/healthz").status_code == 200
+        release.set()
+
+
+def test_readiness_reports_a_reconciler_that_has_stopped_completing(tmp_path, monkeypatch):
+    """A mirror nothing is refreshing is reported, not only logged."""
+
+    async def idle(_store, _status):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(main_module, "run_reconciler", idle)
+    app = store_app(tmp_path)
+    with TestClient(app) as client:
+        healthy = next(
+            check
+            for check in client.get("/readyz").json()["checks"]
+            if check["name"] == "reconciliation"
+        )
+        assert healthy["ok"] is True
+
+        for _ in range(3):
+            app.state.reconcile_status.deferred("NotesFilesystemUnavailable")
+        wedged = next(
+            check
+            for check in client.get("/readyz").json()["checks"]
+            if check["name"] == "reconciliation"
+        )
+        assert wedged["ok"] is False
+        assert "NotesFilesystemUnavailable" in wedged["detail"]
+
+        app.state.reconcile_status.completed()
+        recovered = next(
+            check
+            for check in client.get("/readyz").json()["checks"]
+            if check["name"] == "reconciliation"
+        )
+        assert recovered["ok"] is True
 
 
 def broken_settings_app(tmp_path, body: str | None = None):
