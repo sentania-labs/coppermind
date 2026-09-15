@@ -82,6 +82,11 @@ log = get_logger("coppermind-store")
 _SCAN_BATCH = 200
 
 AdoptionOutcome = Literal["adopted", "changed", "invalid", "collision"]
+# The outcome and why it happened. "invalid" alone names five different
+# refusals, and the reconciler's log line is the only thing that surfaces a
+# file the store has decided not to adopt. The cause is content free by
+# construction: a parser category or a schema key name, never note bytes.
+AdoptionResult = tuple[AdoptionOutcome, str]
 
 
 class LocalStore:
@@ -408,14 +413,15 @@ class LocalStore:
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
 
-    async def adopt_note(self, relative: str, expected_hash: str) -> AdoptionOutcome:
+    async def adopt_note(self, relative: str, expected_hash: str) -> AdoptionResult:
         """Give a settled device-created file an identity and mirror it.
 
         The scan supplies the hash it observed after the quiet period. The
         file is read again under the store's lock and checked once more
         immediately before an atomic replacement, so a device write wins the
-        race without losing bytes. Missing required keys receive schema
-        defaults. Existing keys and body content are never replaced.
+        race without losing bytes. Only absent keys the schema requires of this
+        note receive defaults; an optional key a person did not write stays
+        unwritten, and existing keys and body content are never replaced.
 
         A file already carrying an identity this store knows is not adopted:
         the reconciler never proposes one, because nothing observable tells a
@@ -424,21 +430,23 @@ class LocalStore:
         try:
             path = resolve(self.notes_root, relative)
         except ValueError:
-            return "invalid"
+            return "invalid", "path is not inside the notes filesystem"
         schema = self.control.schema()
         settings = self.control.settings()
         async with self._lock_for(f"adopt:{relative}"):
             try:
                 current, _ = _read(relative, path)
             except NotFound:
-                return "changed"
+                return "changed", "the file is no longer there"
             if content_hash(current) != expected_hash:
-                return "changed"
+                return "changed", "the file changed after it was read"
             try:
                 text = current.decode("utf-8")
                 frontmatter, body = fm.parse(text)
-            except (UnicodeDecodeError, fm.FrontmatterError):
-                return "invalid"
+            except UnicodeDecodeError:
+                return "invalid", "the file is not valid UTF-8"
+            except fm.FrontmatterError as exc:
+                return "invalid", exc.category
 
             carried_id = frontmatter.get(schema.role("id_key"))
             if carried_id is None:
@@ -446,16 +454,17 @@ class LocalStore:
             elif is_valid_id(carried_id):
                 note_id = carried_id
             else:
-                return "invalid"
+                return "invalid", "the id it carries is not a valid identifier"
 
             changes = _adoption_changes(frontmatter, schema, settings, note_id)
             try:
                 adopted_text = fm.append_missing(text, changes)
                 adopted_frontmatter, adopted_body = fm.parse(adopted_text)
-            except fm.FrontmatterError:
-                return "invalid"
-            if schema.validate_frontmatter(adopted_frontmatter):
-                return "invalid"
+            except fm.FrontmatterError as exc:
+                return "invalid", exc.category
+            problems = schema.validate_frontmatter(adopted_frontmatter)
+            if problems:
+                return "invalid", "; ".join(problems)
             data = adopted_text.encode("utf-8")
             now = datetime.now(tz=UTC)
 
@@ -463,14 +472,14 @@ class LocalStore:
                 async with transaction(self.session_factory) as session:
                     await session.execute(sa.text("SELECT 1"))
                     if await session.scalar(sa.select(Note.id).where(Note.id == note_id)):
-                        return "collision"
+                        return "collision", "the id it carries is already a note"
                     occupied = await session.scalar(
                         sa.select(Note.id)
                         .where(Note.path == relative, Note.state != "missing")
                         .limit(1)
                     )
                     if occupied is not None:
-                        return "collision"
+                        return "collision", "another note already claims this path"
 
                     if data != current:
                         try:
@@ -481,11 +490,11 @@ class LocalStore:
                             latest, _ = _read(relative, path)
                             if content_hash(latest) != expected_hash:
                                 staged.unlink(missing_ok=True)
-                                return "changed"
+                                return "changed", "a device wrote to the file first"
                             commit_staged(staged, path)
                         except NotFound:
                             staged.unlink(missing_ok=True)
-                            return "changed"
+                            return "changed", "the file is no longer there"
                         except OSError as exc:
                             staged.unlink(missing_ok=True)
                             raise NotesFilesystemUnavailable(str(exc)) from exc
@@ -495,7 +504,7 @@ class LocalStore:
                     else:
                         latest, _ = _read(relative, path)
                         if content_hash(latest) != expected_hash:
-                            return "changed"
+                            return "changed", "a device wrote to the file first"
 
                     try:
                         file_stat = path.stat()
@@ -521,7 +530,7 @@ class LocalStore:
                 if typed is None:
                     raise
                 raise typed from exc
-        return "adopted"
+        return "adopted", "identity written into the file"
 
     def _lock_for(self, note_id: NoteId) -> asyncio.Lock:
         """The lock serialising writes to one note. Only asked for a located note."""
@@ -789,15 +798,23 @@ def _adoption_changes(
     settings: ProductSettings,
     note_id: str,
 ) -> dict[str, Any]:
-    """Only the absent keys needed to make a device-created note valid."""
+    """Only the absent keys needed to make a device-created note valid.
+
+    A key the schema does not require of this note is left out even when it
+    ships a default, because adoption writes into a file a person owns and
+    every key it adds syncs back to their devices.
+    """
     available = schema.defaults()
     available[schema.role("id_key")] = note_id
     available.setdefault(schema.role("schema_version_key"), 1)
     available.setdefault(schema.role("date_key"), _today(settings))
+    required = schema.required_keys(frontmatter)
     return {
         definition.name: available[definition.name]
         for definition in schema.keys
-        if definition.name not in frontmatter and definition.name in available
+        if definition.name in required
+        and definition.name not in frontmatter
+        and definition.name in available
     }
 
 

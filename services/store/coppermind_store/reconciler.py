@@ -3,6 +3,10 @@
 Files with no known identity receive one through the store after they have
 been quiet. The scan itself only observes bytes and proposes candidates, so
 the store can perform its ordinary database-first, hash-guarded atomic write.
+A pass adopts at most `_ADOPTIONS_PER_PASS` files and leaves the rest for the
+next one. A candidate the store refused, or could not write, keeps its stat
+like any other rejected file, so cheap passes stop sweeping it and the daily
+thorough rehash is what tries it again.
 
 An interval scan stats every note file and reads only the ones a stat says may
 have changed, so the steady-state cost is one stat per file rather than a read
@@ -99,7 +103,9 @@ _UNIDENTIFIED_LIMIT = 10_000
 # transaction and a rewritten file that Obsidian Sync then pushes to every
 # device. The bound spreads that first adoption over successive passes rather
 # than one burst, and costs nothing: a file left over is a candidate again on
-# the next pass.
+# the next pass. It counts files actually adopted, not files tried, so a
+# subtree that cannot be written never consumes the whole bound and starves
+# the rest of the notes filesystem of its turn.
 _ADOPTIONS_PER_PASS = 50
 
 MISSING_REASON = "not observed during reconciliation"
@@ -370,31 +376,38 @@ async def reconcile_once(
     remembered.update(scan.unidentified)
     observations = _choose_observations(scan, by_id)
     adopted = 0
-    unparsed = scan.unidentified_unparsed
-    unadopted = max(len(scan.adoption_candidates) - _ADOPTIONS_PER_PASS, 0)
-    for candidate in scan.adoption_candidates[:_ADOPTIONS_PER_PASS]:
+    rejected = scan.unidentified_unparsed
+    unwritable = 0
+    retry = 0
+    untried = iter(scan.adoption_candidates)
+    for candidate in untried:
         try:
-            outcome = await store.adopt_note(candidate.path, candidate.content_hash)
+            outcome, cause = await store.adopt_note(candidate.path, candidate.content_hash)
         except NotesFilesystemUnavailable as exc:
             # One durable per-file fault must not stop every other note
             # converging, exactly as it does not inside the scan itself. A
             # mount that is wholly gone still fails the pass from `_scan`.
-            unadopted += 1
+            # The stat is kept so an unwritable subtree is not swept on every
+            # cheap pass; the daily thorough scan reads it again regardless and
+            # is what retries it.
+            unwritable += 1
+            _remember(remembered, candidate.path, candidate.stat_seen)
             log.warning("device-created note not adopted", path=candidate.path, reason=str(exc))
             continue
         if outcome == "adopted":
             adopted += 1
-        elif outcome == "invalid":
-            unparsed += 1
-            _remember(remembered, candidate.path, candidate.stat_seen)
-            log.warning(
-                "device-created note left unchanged",
-                path=candidate.path,
-                reason="frontmatter validation failed",
-            )
+            if adopted == _ADOPTIONS_PER_PASS:
+                break
+        elif outcome == "changed":
+            # The bytes moved under the read. Nothing is wrong with the file,
+            # so it is read afresh and proposed again on the next pass.
+            retry += 1
+            log.info("device-created note not adopted", path=candidate.path, reason=cause)
         else:
-            unadopted += 1
-            log.warning("device-created note not adopted", path=candidate.path, reason=outcome)
+            rejected += 1
+            _remember(remembered, candidate.path, candidate.stat_seen)
+            log.warning("device-created note left unchanged", path=candidate.path, reason=cause)
+    backlog = retry + sum(1 for _ in untried)
     # An identity seen on disk but not chosen, two live copies or an unchanged
     # stat, keeps whatever the mirror already says. Only an identity nothing on
     # disk carried is a candidate for missing, and only when this pass read
@@ -409,11 +422,13 @@ async def reconcile_once(
 
     counts = {
         "adopted": adopted,
-        "unadopted": unadopted,
+        "backlog": backlog,
+        "rejected": rejected,
+        "unwritable": unwritable,
         "changed": 0,
         "moved": 0,
         "missing": 0,
-        "unparsed": unparsed,
+        "unparsed": 0,
         "deferred": scan.deferred,
     }
     now = datetime.now(tz=UTC)

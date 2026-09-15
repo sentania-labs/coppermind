@@ -86,6 +86,19 @@ class FrontmatterSchema(BaseModel):
                 )
         return out
 
+    def required_keys(self, frontmatter: dict[str, Any]) -> set[str]:
+        """The keys this frontmatter must carry, conditional ones included.
+
+        A key is required outright or because another key currently holds a
+        value that asks for it, which is the same rule
+        `validate_frontmatter` reports on.
+        """
+        return {
+            definition.name
+            for definition in self.keys
+            if definition.required or _requires(definition, frontmatter)
+        }
+
     def validate_frontmatter(self, frontmatter: dict[str, Any]) -> list[str]:
         """Return a list of human readable problems, empty when the note is valid.
 

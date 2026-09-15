@@ -62,7 +62,10 @@ class FrontmatterError(ValueError):
 
 _WORD_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
 _ITEM_WITH_NO_VALUE = re.compile(r"^([ \t]*-)[ \t]*$", re.MULTILINE)
-_LONE_CARRIAGE_RETURN = re.compile(r"\r(?!\n)")
+
+# The line endings `split` reads a delimiter line by. It ends the block on a
+# line feed, so a delimiter closed by a bare carriage return costs the body.
+_DELIMITER_ENDINGS = ("\n", "\r\n")
 
 
 def _category(exc: YAMLError) -> str:
@@ -255,19 +258,29 @@ def append_missing(text: str, changes: dict[str, Any]) -> str:
     delimiter using the block's line endings, so comments, quoting,
     indentation, ordering and the body remain byte exact.
 
-    A file whose lines end in a bare carriage return is refused rather than
-    written. `split` terminates the block on a line feed, so it reports no body
-    for such a file, and adopting one would mirror and serve it empty. Reading
-    those endings is a correction to the shared parser, not to adoption.
+    A block whose own delimiter lines end in a bare carriage return is refused
+    rather than written. `split` ends the block on a line feed, so for those it
+    reports no body at all, and adopting one would mirror and serve it empty.
+    Only the two delimiter lines are read this way: a carriage return anywhere
+    in the body is the person's own byte and never blocks a write. Reading the
+    endings themselves is a correction to the shared parser, not to adoption.
     """
-    if _LONE_CARRIAGE_RETURN.search(text):
-        raise FrontmatterError(
-            "note uses carriage return line endings",
-            category="unsupported_line_endings",
-        )
     block, body, opening_length = _split(text)
     if opening_length < 0:
         return compose(changes, body)
+    newline = text[len(DELIMITER) : opening_length]
+    closing_offset = _find_closing_delimiter(text[opening_length:])
+    if closing_offset is None:  # split already checked this; keeps the invariant local
+        raise FrontmatterError("frontmatter block is never closed", category="unterminated_block")
+    insertion = opening_length + closing_offset
+    after_closing = text[insertion + len(DELIMITER) :]
+    if newline not in _DELIMITER_ENDINGS or (
+        after_closing and not after_closing.startswith(_DELIMITER_ENDINGS)
+    ):
+        raise FrontmatterError(
+            "frontmatter delimiter ends in a bare carriage return",
+            category="unsupported_line_endings",
+        )
     yaml = _yaml()
     if block.strip():
         loaded, indent, sequence_offset = _load_guessing_indent(block, yaml)
@@ -278,11 +291,5 @@ def append_missing(text: str, changes: dict[str, Any]) -> str:
     additions = {key: value for key, value in changes.items() if key not in frontmatter}
     if not additions:
         return text
-    fragment = _dump(additions, yaml)
-    newline = text[len(DELIMITER) : opening_length]
-    fragment = fragment.replace("\n", newline)
-    closing_offset = _find_closing_delimiter(text[opening_length:])
-    if closing_offset is None:  # split already checked this; keeps the invariant local
-        raise FrontmatterError("frontmatter block is never closed", category="unterminated_block")
-    insertion = opening_length + closing_offset
+    fragment = _dump(additions, yaml).replace("\n", newline)
     return f"{text[:insertion]}{fragment}{text[insertion:]}"

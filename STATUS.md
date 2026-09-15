@@ -74,24 +74,31 @@ vertical path proved end to end, then widened.
   scan stats every note file and reads only the ones a stat says may have
   changed. A device-created file carrying no identity waits until its mtime
   has been quiet for the configured period, then the store assigns an identity
-  and fills only absent required frontmatter from the shipped defaults.
-  Adoption writes that identity into the person's own file, so pointing the
+  and fills the absent frontmatter that schema requires of that note from the
+  shipped defaults. A key the schema marks optional is left out even when it
+  ships a default, because the minimum necessary bytes go into a file a person
+  owns. Adoption writes that identity into their own file, so pointing the
   store at a notes filesystem that already holds notes rewrites every one of
-  them once. That happens gradually: a fixed 50 files per pass, so an existing
-  tree arrives over successive scans rather than as one burst through Obsidian
-  Sync, and the remainder is simply picked up next pass. Adoption checks the
-  observed hash again immediately before the atomic replacement, so another
-  device write wins without losing bytes. The tested line endings, inline
-  comments, key order, list style and body stay in place. An invalid file is
-  left byte exact, counted as unparsed and logged rather than mirrored as a
-  broken note, and so is a file whose lines end in a bare carriage return,
-  which the shared parser reads as having no body. A file the store cannot
-  write is counted unadopted and retried next pass; because it names no
-  identity the mirror knows, it never holds back a deletion report or the
-  daily rehash. A file that already carries an identity this store knows is
-  left alone, even when another file holds the same identity: nothing
-  observable tells a copy apart from a move whose delete has not arrived yet,
-  and the service will not guess. The process remembers up
+  them once. That happens gradually: a fixed 50 adoptions per pass, counted in
+  files actually taken on rather than files tried, so an existing tree arrives
+  over successive scans rather than as one burst through Obsidian Sync, and the
+  remainder is simply picked up next pass. Adoption checks the observed hash
+  again immediately before the atomic replacement, so another device write wins
+  without losing bytes. The tested line endings, inline comments, key order,
+  list style and body stay in place. A file the store refuses, because its
+  frontmatter does not validate, because it carries a malformed identifier, or
+  because its frontmatter delimiter lines end in a bare carriage return that
+  the shared parser reads as having no body, is left byte exact and counted
+  rejected with the reason it was refused. A carriage return in the body is the
+  person's own byte and never blocks adoption. A file the store cannot write is
+  counted unwritable with the same detail. Both keep their stat like any other
+  rejected file, so cheap passes stop sweeping them and the daily thorough
+  rehash is what tries them again; because neither names an identity the mirror
+  knows, neither holds back a deletion report or the rehash itself. A file that
+  already carries an identity this store knows is left alone, even when another
+  file holds the same identity: nothing observable tells a copy apart from a
+  move whose delete has not arrived yet, and the service will not guess. The
+  process remembers up
   to 10,000 settling or rejected paths by stat, so an unchanged rejected tree
   costs one stat per file per pass rather than repeated reads and parses. A
   file changed inside the quiet period waits for the next pass. Trusting a stat
