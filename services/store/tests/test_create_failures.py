@@ -13,10 +13,18 @@ from coppermind.store_protocol import CreateNote, MetadataUnavailable
 
 
 class SessionWithLostCommitResult:
-    async def execute(self, statement: Any) -> None:
-        return None
+    async def execute(self, statement: Any) -> Any:
+        return EmptyResult()
 
     def add(self, row: Any) -> None:
+        return None
+
+
+class EmptyResult:
+    def scalars(self) -> "EmptyResult":
+        return self
+
+    def first(self) -> None:
         return None
 
 

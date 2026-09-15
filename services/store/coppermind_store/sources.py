@@ -171,6 +171,21 @@ async def _ingest_new(
     source_path = store.sources_root / source_id
     revision_path = source_path / "r0001"
 
+    # The same live-row check `create_note` makes. Historical paths are not
+    # unique, so this asks whether any live row holds the path rather than
+    # leaving a dropped constraint to answer.
+    occupied = (
+        (
+            await session.execute(
+                sa.select(Note.id).where(Note.path == relative, Note.state != "missing").limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if occupied is not None:
+        raise PathCollision(relative)
+
     claim_created = False
     filesystem_complete = False
     try:
@@ -241,8 +256,6 @@ async def _ingest_new(
             raise SourceClaimMissing(
                 request.source.provider, request.source.external_source_id
             ) from exc
-        if constraint == "uq_notes_path":
-            raise PathCollision(relative) from exc
         raise
     except OSError as exc:
         raise SourcesFilesystemUnavailable(str(exc)) from exc

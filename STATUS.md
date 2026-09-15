@@ -58,16 +58,41 @@ vertical path proved end to end, then widened.
   filter (`folder`, `type`, `context`, `account` or `tag`) sent empty answers
   422 `validation_error`, because an unset form field arriving as `folder=`
   must not come back as an ordinary empty page. The opaque cursor pages in
-  mirrored path order, with a default limit of 50 and an allowed range of 1
-  through 200. Path-keyed paging has to be revisited when note move and rename
-  land, because those change the key a cursor resumes from. For a known path,
-  the store reads the current file before filtering and returning its summary,
-  so an in-place edit delivered by Obsidian Sync is visible without waiting for
-  reconciliation. Every summary carries the `state` the store observed, `ok`,
-  `unparsed` or `missing`, so a summary rebuilt from the mirror because the
-  file could not be read is never mistaken for one read from disk. With
-  PostgreSQL unavailable, listing answers 503 `metadata_unavailable`, never an
-  empty page.
+  immutable identifier order, with a default limit of 50 and an allowed range
+  of 1 through 200, so a rename between pages cannot move the cursor boundary.
+  Summaries come from the latest reconciliation scan and carry the state it
+  observed, `ok`, `unparsed` or `missing`, with `state_reason` naming what the
+  scan saw when that state is not `ok`. With PostgreSQL unavailable,
+  listing answers 503 `metadata_unavailable`, never an empty page.
+- The store scans the notes filesystem on its own schedule, every 60 seconds
+  by default. The filesystem walk runs outside the request loop, so requests
+  continue while a scan is in progress. A known note edited, moved or renamed
+  on a device is mirrored by the identity in its frontmatter. Only a file the
+  scan did not find becomes `missing`: one it can see at a known note's path
+  but cannot parse, open or identify is `unparsed` there, and two live copies
+  of one identity leave the row as it was rather than guessing. An interval
+  scan stats every note file and reads only the ones a stat says may have
+  changed. A file carrying no identity this store knows, which is every file
+  in an existing tree Coppermind was pointed at, is read once and then
+  stat-trusted the same way, so an unfamiliar tree costs one stat per file per
+  pass rather than a read and a parse. That memory holds 10,000 such paths per
+  store process; where more files than that carry no known identity, the ones
+  past the bound are read and parsed every pass until write-side
+  reconciliation gives them identities. A file changed inside the quiet period
+  waits for the next pass. Trusting a stat is safe because it is not the only
+  pass: once a day, at the configured local time, the store rereads and
+  rehashes every note file, which is what catches an edit that left the file's
+  size and timestamp where they were. That pass stays due until one completes
+  having deferred nothing, so a rehash that could not run, or that had to
+  leave a file for later, is retried on the next interval rather than skipped
+  for the day. Several scans in a row that cannot complete make `/readyz`
+  report not ready rather than serving state nothing is refreshing, as does a
+  long silence with no scan landing; the first scan after a start gets a grace
+  of its own first, because it reads everything and there is no measured
+  runtime yet to judge it by. Files whose identity is not already known are
+  left byte for byte alone. The interval, the quiet period and the rehash time
+  are product settings with working defaults; their graphical controls arrive
+  with the separate Admin service.
 - `POST /v1/ingest` takes a source and the note to open for it, and creates
   both or neither. A deterministic `.external-id-<sha256>.json` file claims
   each `provider` plus `external_source_id` before the bundle is written. The
@@ -185,8 +210,8 @@ vertical path proved end to end, then widened.
   `metadata_unavailable`, a refused write leaves no file behind and touches no
   existing one, and the notes filesystem is untouched and still fully
   editable. Starting PostgreSQL brings API operations back with no
-  intervention; what changed in the notes filesystem during the outage waits
-  for the reconciler under "Not built yet". Control state is checked the same
+  intervention; what changed in the notes filesystem during the outage
+  converges on the next scan that completes. Control state is checked the same
   way: a settings, schema or key file the models reject answers 503 and names
   the file, while key state that loads and happens to hold no usable key is an
   operator's choice and stays ready. Readiness names the source bundle
@@ -242,20 +267,10 @@ in the tree, so do not read the absence as a decision to leave it out.
   source are not built. Tombstones in particular have no columns in the mirror
   and no keys in `manifest.json`, so adding them costs a migration of its own
   and a manifest `schema_version` bump.
-- **Reconciliation.** Nothing yet notices a file created, moved or deleted on
-  a device. An edit in place is the exception and does read back: a note read
-  by its identifier is parsed from the file every time, so a body or
-  frontmatter change made in Obsidian is reflected on the next read and list.
-  Listing can only inspect paths already present in the mirror, so it is not a
-  complete inventory of device-created, moved or renamed files yet. What
-  needs the reconciler is anything that invalidates or lacks the mirrored
-  path. A note created on a device has no row and cannot be read by
-  identifier at all; a note moved, renamed or deleted there leaves a row
-  pointing nowhere, and the read answers 404 `not_found`. So does a read whose
-  row points at a file that now carries a different identifier, rather than
-  serving another note's content. A replace of such a note answers the same
-  404, whatever ETag it carries. Until the reconciler lands, treat the API as
-  the way to create notes.
+- **Write-side reconciliation.** A note created on a device has no row and no
+  identifier, so the read-side scanner deliberately leaves it alone. Assigning
+  its identity and filling required frontmatter is the next reconciliation
+  increment. Until then, treat the API as the way to create notes.
 - **A whole-file note body.** `PUT` takes the JSON document shape only; the
   `text/markdown` whole-file body does not exist yet. A replace also rewrites
   the frontmatter block from what was sent, so the keys land in the schema's
@@ -300,17 +315,11 @@ in the tree, so do not read the absence as a decision to leave it out.
   wait for the storage chunk under "Remaining source capabilities". An
   automation that stamps a fresh capture time on every retry sees
   `unstored_fields: ["captured_at"]` on every retry and nothing else changes.
-- A note file removed outside the store leaves its row behind, because
-  nothing reconciles the mirror yet. Creating a note with that title again
-  answers 409 `path_collision` every time until the reconciler lands or the
-  row is cleared by hand.
 - Nothing repairs a note whose frontmatter a person broke. Reads of it answer
   409 `note_unparseable` and the file is left exactly as it is; putting it
-  right means editing it on a device, because the reconciler and Admin are not
-  here yet. The identifier that answer names is the one asked for, and a stale
-  mirror row can point at a different note's file, so with an unreconciled
-  rename the wrong note is named. The file's own bytes never reach the answer;
-  issue #2 tracks the rest.
+  right means editing it on a device, because Admin is not here yet. When the
+  broken file still carries one known identity, reconciliation associates the
+  failure with that identity rather than with a stale path.
 - The Git helper polls; there is no filesystem event watcher. With the
   shipped settings a change is recorded within about six minutes, and a note
   edited for a long stretch without a 60 second pause lands as one snapshot
