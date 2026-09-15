@@ -23,14 +23,14 @@ Thirteen increments have landed on top of the initial repository skeleton
 | 2026-09-12 | #4 | The Git helper: automatic history of the notes filesystem, no credentials, no network |
 | 2026-09-14 | #5 | Conditional note replacement (`PUT` with `If-Match`), so a stale edit is refused instead of silently overwritten |
 | 2026-09-14 | #6 | Scoped bearer API keys required on every route |
-| 2026-09-15 | #8 | `POST /v1/ingest`: a source and its note are created together or not at all |
+| 2026-09-15 | #8 | `POST /v1/ingest`: a source and its note are created together, with a recorded claim and file-first writes so a database failure after the files land can be retried without duplicating anything |
 | 2026-09-15 | #9 | Replaying an identical ingest is a no-op; changed content appends a new revision instead of a new note |
 | 2026-09-15 | #10 | Targeted frontmatter edits (mark a note reviewed) without rewriting the whole file |
 | 2026-09-15 | #11 | Listing and filtering notes, with paging that survives a rename between pages |
 | 2026-09-15 | #12 | The reconciler's read side: edits, moves, renames, and deletes made on a device are picked up without anyone calling an API |
 | 2026-09-15 | #13 | The reconciler's write side: a note created on a device gets an identity assigned automatically once it settles |
 | 2026-09-15 | #7 | The Obsidian Sync helper service (supervised, but real connections are refused on purpose for now, see below) |
-| 2026-09-15 | #15 | The release pipeline: a pushed version tag builds, signs, and publishes all six images and cuts a GitHub release |
+| 2026-09-15 | #15 | The release pipeline: a pushed version tag builds, signs, and publishes the five images that exist today (`store`, `api`, `admin`, `git`, `obsidian-sync`) and cuts a GitHub release |
 | 2026-09-15 | #16 | Admin's front door: first-boot claim and password login, as its own service |
 | 2026-09-15 | #14 | Ingested sources are projected into the notes filesystem as read-only pages a phone can open |
 

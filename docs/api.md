@@ -40,7 +40,7 @@ The story behind these decisions is [architecture.md](architecture.md).
 | `payload_too_large` | 413 | Over a configured size limit; carries `limit_bytes` |
 | `gone` | 410 | The resource existed but was deliberately removed (a tombstoned source) |
 | `method_not_allowed` | 405 | A mutating verb against a read-only resource, such as any write to `/v1/sources/**` |
-| `metadata_unavailable` | 503 | PostgreSQL is down and the operation needs it (listing, search, Admin mutations) |
+| `metadata_unavailable` | 503 | PostgreSQL is down and the operation needs it. That covers listing, search, and Admin mutations, but also an ordinary note read, create, or replace by ID: resolving a note's path goes through the mirror, so those stop too. Only a file edited directly on the notes filesystem, outside the API, keeps working |
 | `store_unavailable` | 503 | The store service itself cannot be reached |
 | `already_running` | 409 | A job of the same kind is already in progress |
 
@@ -67,7 +67,7 @@ than routed anywhere.
 
 | Method and path | Scope | What it does | Success | Failure |
 |---|---|---|---|---|
-| `POST /v1/ingest` | `sources:write`, `notes:write` | Create a source bundle and its opening note together, or neither | 201 on first creation; 200 `created: false` on an identical replay; 200 with a new `source.revision` when content changed | 422; 413 over the ingest size limit |
+| `POST /v1/ingest` | `sources:write`, `notes:write` | Create a source bundle and its opening note. The files land first; if the database commit that follows fails, the completed bundle, note, and claim are kept rather than rolled back, and a retry repairs the mirror without duplicating anything | 201 on first creation; 200 `created: false` on an identical replay (the supported way to retry safely, not a failure); 200 with a new `source.revision` when content changed | 422; 413 over the ingest size limit; 503 if the database commit fails after the files are written, resolved by retrying |
 | `GET /v1/sources` | `sources:read` | List sources, filterable by `provider, from, to` | 200 | |
 | `GET /v1/sources/{id}` | `sources:read` | The source manifest | 200 | 404; 410 if tombstoned |
 | `GET /v1/sources/{id}/revisions/{n}/artifacts/{name}` | `sources:read` | Stream one artifact, with its recorded MIME type | 200 | 404 |

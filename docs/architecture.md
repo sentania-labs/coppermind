@@ -64,7 +64,7 @@ blast radius if it goes down.
 | `admin` | The operator interface, on its own port, its own image, its own login. Never touches the notes filesystem directly, only `/data/state`. | The web control panel is unreachable; the rest of the system keeps running exactly as it was. |
 | `git` | Watches the notes filesystem and commits a snapshot of it on a debounce. No network, no credential, nothing it can push anywhere. | History stops accumulating; nothing already committed is at risk; catches up automatically once restarted. |
 | `obsidian-sync` | Supervises the client that will carry the notes filesystem to a phone and a laptop through Obsidian's own Sync service. | No devices see new notes; nothing on the server side is affected. |
-| PostgreSQL | Holds only mirrors and derived data: note metadata, search index, job history, key hashes. Every row here can be rebuilt from `/data` by one job. | Listing and search stop; by-ID reads and file edits on disk keep working; nothing is lost, it just has to catch back up. |
+| PostgreSQL | Holds only mirrors and derived data: note metadata, search index, job history, key hashes. Every row here can be rebuilt from `/data` by one job. | Every note operation through the API stops, including a by-ID read, because resolving a note's path goes through this mirror; listing and search stop too. A file edited directly on the notes filesystem, bypassing the API, is untouched and stays editable. Nothing is lost; everything catches up once PostgreSQL returns. |
 
 Two more are designed but not built yet, and have no image or code in the
 tree: `curator` (files a reviewed note into the right folder by rule) and
@@ -74,8 +74,14 @@ point in the build; see [roadmap.md](roadmap.md) for when they land.
 ## How data moves
 
 A source (a recording, an email, whatever comes in later) is posted to the
-ingest endpoint. That one call writes the source bundle, a note to review,
-and a database transaction, together or not at all. From there:
+ingest endpoint. That call writes the source bundle to disk, the note to
+review, and the database mirror, and on success all three exist together.
+The filesystem is written first and is the one that has to survive: if
+PostgreSQL fails at the commit step after the files are already down, the
+completed bundle, the Review note, and the claim that identifies the source
+are kept rather than rolled back, and the request answers 503. A retry
+resolves from those files, repairs the missing database row, and never
+creates a duplicate. From there:
 
 ```
 someone's tool  --ingest-->  api  --internal call-->  store  --writes-->  notes filesystem, source bundle
@@ -131,8 +137,13 @@ yet; see the roadmap for when Kubernetes work starts.
 
 A merge to `main` lands the work. A pushed, annotated version tag
 (`vX.Y.Z`) is what actually ships it: that tag triggers the build, the
-publish, the signing, and a GitHub release, all six images stamped with the
-same version. There is no separate version-bump pull request. The full
+publish, the signing, and a GitHub release, every image stamped with the
+same version. The plan named six images (api, store, git, obsidian-sync,
+curator, indexer) plus admin as a seventh once the captain's amendment made
+it its own service; curator and indexer have no code yet, so today's release
+publishes five: `store`, `api`, `admin`, `git`, and `obsidian-sync`.
+Bootstrap and the migration step reuse the store image rather than shipping
+their own. There is no separate version-bump pull request. The full
 mechanics and the one manual step the first release needs are in
 [CONTRIBUTING.md](../CONTRIBUTING.md).
 
