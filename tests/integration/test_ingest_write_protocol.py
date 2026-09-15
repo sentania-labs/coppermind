@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import time
@@ -17,6 +18,7 @@ from coppermind_store.notes import LocalStore
 from coppermind import frontmatter as fm
 from coppermind.db.models import Note, NoteSource, Source, SourceArtifact, SourceRevision
 from coppermind.store_protocol import (
+    ArtifactNotFound,
     CreateNote,
     IncompleteRevision,
     IngestArtifact,
@@ -350,6 +352,45 @@ async def test_t_src_1_every_stored_source_revision_is_readable(store: LocalStor
     projection = await store.get_source_projection(ingested.source.id)
     assert projection.path == ingested.projection_path
     assert "Binary artifact: application/octet-stream, 3 bytes" in projection.content
+
+
+async def test_a_text_typed_artifact_that_is_not_utf8_is_described_not_refused(
+    store: LocalStore,
+):
+    """A client's declared type is a claim about bytes the contract never checks.
+
+    Undecodable bytes are a payload the projection describes instead of reading;
+    they are not a notes filesystem outage, and they must not block the ingest.
+    """
+    request = sample()
+    request.source.artifacts[0] = IngestArtifact(
+        name="transcript.txt",
+        mime_type="text/plain",
+        content_base64=base64.b64encode("Sch\u00f6n".encode("latin-1")).decode("ascii"),
+    )
+
+    ingested = await store.ingest(request)
+
+    artifact = await store.get_source_artifact(ingested.source.id, 1, "transcript.txt")
+    assert artifact.content is None
+    assert artifact.size_bytes == 5
+    projection = await store.get_source_projection(ingested.source.id)
+    assert "Binary artifact: text/plain, 5 bytes" in projection.content
+
+
+async def test_an_unrecorded_projection_path_is_not_found_rather_than_searched_for(
+    store: LocalStore,
+):
+    """The manifest is the only record of where a projection lives."""
+    ingested = await store.ingest(sample())
+    manifest_path = store.sources_root / ingested.source.id / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["projection_path"] == ingested.projection_path
+    manifest["projection_path"] = ""
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ArtifactNotFound):
+        await store.get_source_projection(ingested.source.id)
 
 
 async def test_retry_after_a_revision_commit_failure_returns_the_completed_revision(

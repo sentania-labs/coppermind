@@ -903,26 +903,69 @@ async def test_a_real_source_projection_is_never_adopted_as_a_note(store: LocalS
 async def test_read_side_does_not_treat_a_managed_projection_as_a_known_note(
     store: LocalStore,
 ):
-    """The sources folder is skipped, so nothing in it speaks for a note.
+    """Generated output speaks for no note, even when the walk reads it.
 
-    This proves the folder skip alone. Nothing outside that folder is excluded
-    for being marked managed, and write-side adoption is not built yet.
+    A projection is read like any other file so a note filed beside its source
+    is followed, and `managed: true` is what stops it answering for an identity.
     """
-    note = await store.create_note(CreateNote(title="Generated", frontmatter={"type": "reference"}))
-    original = store.notes_root / note.path
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
     projection = store.notes_root / "_Sources" / "Plaud" / "Generated.md"
     projection.parent.mkdir(parents=True)
     projection.write_text(
-        fm.patch(original.read_text(encoding="utf-8"), {"managed": True}),
+        fm.compose(
+            {"schema_version": 1, "managed": True, "source_id": "01K4Q8Z2A0P1Q2R3S4T5U6V7W8"},
+            "# Generated (source)\n",
+        ),
         encoding="utf-8",
     )
-    original.unlink()
 
     counts = await reconcile_once(store)
 
     assert counts["moved"] == 0
-    assert counts["missing"] == 1
-    assert (await _row(store, note.id)).state == "missing"
+    assert counts["missing"] == 0
+    assert counts["unparsed"] == 0
+    row = await _row(store, note.id)
+    assert row.state == "ok"
+    assert row.path == note.path
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 1
+
+
+async def test_a_note_filed_into_the_sources_folder_is_moved_not_reported_deleted(
+    store: LocalStore,
+):
+    """The captain filing a note beside its source has not deleted it.
+
+    Adoption never writes into the sources folder, but the walk still reads it,
+    so a note carried in there is followed rather than reported gone.
+    """
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    filed = store.notes_root / "_Sources" / "Plaud" / "Runbook.md"
+    filed.parent.mkdir(parents=True)
+    (store.notes_root / note.path).rename(filed)
+
+    counts = await reconcile_once(store)
+
+    assert counts["missing"] == 0
+    assert counts["moved"] == 1
+    row = await _row(store, note.id)
+    assert row.state == "ok"
+    assert row.path == "_Sources/Plaud/Runbook.md"
+    assert (await store.get_note(note.id)).path == row.path
+
+    assert await reconcile_once(store) == {
+        "adopted": 0,
+        "backlog": 0,
+        "rejected": 0,
+        "unwritable": 0,
+        "duplicates": 0,
+        "changed": 0,
+        "moved": 0,
+        "missing": 0,
+        "unparsed": 0,
+        "deferred": 0,
+    }
+    assert (await _row(store, note.id)).state == "ok"
 
 
 async def test_a_note_in_a_newly_configured_sources_folder_is_not_reported_deleted(

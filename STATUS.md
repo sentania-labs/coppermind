@@ -250,22 +250,32 @@ vertical path proved end to end, then widened.
   configured sources folder, by default
   `_Sources/<Provider>/<YYYY-MM-DD Title>.md`. Its frontmatter marks it
   managed and records the source identity, revision and generation time. Text
-  artifacts are readable in the document; non-text artifacts are listed with
-  their MIME type, size and SHA-256, in the order the manifest records them. A
+  artifacts are readable in the document; an artifact that is not text, or
+  whose bytes do not decode as UTF-8 whatever its declared type, is listed with
+  its MIME type, size and SHA-256, in the order the manifest records them. A
   changed source revision regenerates the same projection path from the
   immutable bundle, so a person's edit to a projection is not merged or
-  preserved. Generation happens on ingest or on a new revision only: nothing
-  backfills, so a source ingested before this landed has no projection and its
-  projection route answers 404 until it is ingested again. Projections are
-  generated output: the current read-side reconciler excludes the sources
-  folder, Git excludes it, and Obsidian Sync does not. Write-side
+  preserved. The manifest's `projection_path` is the only record of where a
+  projection lives: it is written in the same manifest write that lands the
+  revision, and a source whose manifest does not name one has no projection.
+  Generation happens on ingest or on a new revision only: nothing backfills, so
+  a source ingested before this landed answers 404 on its projection route
+  until it is ingested again. Projections are generated output: the read-side
+  reconciler excludes the sources folder and Obsidian Sync does not. A note the
+  captain files into that folder himself is still followed there rather than
+  reported deleted, because a row the pass would otherwise call gone is looked
+  for among the skipped files first. Git excludes the folder as long as Store
+  and Git resolve its configured name the same way; the Store sanitises
+  `notes.sources_folder` and the Git helper takes it verbatim, so a value the
+  Store rewrites (a trailing space, a character it strips) leaves Git excluding
+  a different name and the projections enter Git history. Write-side
   reconciliation is not built on this branch, so its separate rule for never
   adopting managed projections must be settled when that work lands.
 - `GET /v1/sources/{id}` reads the filesystem manifest. Its artifact route
-  returns UTF-8 text types as the response body, as `text/plain` with the
-  ingested type in `X-Coppermind-Declared-Type`, and describes non-text
-  artifacts as JSON with their size and SHA-256, after verifying the stored
-  bytes. `GET /v1/sources/{id}/projection` returns the generated Markdown.
+  returns an artifact that decodes as UTF-8 text as the response body, always
+  as `text/plain` and never as the ingested type, and describes every other
+  artifact as JSON with its size and SHA-256, after verifying the stored bytes.
+  `GET /v1/sources/{id}/projection` returns the generated Markdown.
   All need `sources:read`. `PUT`, `PATCH` and `DELETE` anywhere under a source
   return 405 `method_not_allowed` from the API itself, whether or not the
   Store is reachable; neither the public nor internal surface offers a way to

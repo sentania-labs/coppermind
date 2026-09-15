@@ -11,7 +11,7 @@ from coppermind import frontmatter as fm
 from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes
 from coppermind.naming import note_stem, sanitize_folder, sanitize_stem, unique_stem
 from coppermind.settings import ProductSettings
-from coppermind.store_protocol import NotesFilesystemUnavailable, is_text_mime
+from coppermind.store_protocol import NotesFilesystemUnavailable, artifact_text
 from coppermind_store.fs import NOTE_SUFFIX, existing_stems, resolve
 
 
@@ -61,31 +61,25 @@ def write_projection(
         raise NotesFilesystemUnavailable(str(exc)) from exc
 
 
-def find_projection(notes_root: Path, settings: ProductSettings, source_id: str) -> Path:
-    matches = _find(notes_root, settings, source_id)
-    if not matches:
-        raise FileNotFoundError(source_id)
-    if len(matches) > 1:
-        raise NotesFilesystemUnavailable(
-            f"more than one generated projection names source {source_id}"
-        )
-    return matches[0]
+def new_projection_path(
+    notes_root: Path,
+    settings: ProductSettings,
+    *,
+    provider: str,
+    title: str,
+    note_date: date,
+) -> str:
+    """Choose the path a source's first projection will occupy.
 
-
-def _find(notes_root: Path, settings: ProductSettings, source_id: str) -> list[Path]:
-    folder = sanitize_folder(settings.notes.sources_folder)
-    root = resolve(notes_root, folder)
-    if not root.exists():
-        return []
-    matches = []
-    for path in root.rglob(f"*{NOTE_SUFFIX}"):
-        try:
-            frontmatter, _ = fm.parse(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, fm.FrontmatterError):
-            continue
-        if frontmatter.get("managed") is True and frontmatter.get("source_id") == source_id:
-            matches.append(path)
-    return matches
+    The manifest is the only record of where a projection lives, so a caller
+    that is about to create one names the path first and records it in the same
+    manifest write that lands the revision.
+    """
+    try:
+        target = _new_path(notes_root, settings, provider, title, note_date)
+        return target.relative_to(notes_root).as_posix()
+    except (OSError, ValueError) as exc:
+        raise NotesFilesystemUnavailable(str(exc)) from exc
 
 
 def _new_path(
@@ -127,8 +121,9 @@ def _append_artifacts(
 ) -> None:
     for metadata, data in artifacts:
         lines.extend([f"### {metadata['name']}", ""])
-        if is_text_mime(str(metadata["mime_type"])):
-            lines.extend([data.decode("utf-8").rstrip(), ""])
+        text = artifact_text(data, str(metadata["mime_type"]))
+        if text is not None:
+            lines.extend([text.rstrip(), ""])
         else:
             lines.extend(
                 [

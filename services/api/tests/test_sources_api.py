@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
 from coppermind_api.deps import store
@@ -44,6 +45,7 @@ MANIFEST = SourceManifest(
 class FakeStore:
     def __init__(self, *, reachable: bool = True) -> None:
         self.reachable = reachable
+        self.projection_path = "_Sources/Plaud/2026-09-08 Recording.md"
         created = datetime(2026, 9, 8, tzinfo=UTC)
         self.read_record, self.read_key = create_key(
             "source reader", ["sources:read"], created_at=created
@@ -64,12 +66,15 @@ class FakeStore:
     async def get_source_artifact(
         self, source_id: str, revision: int, name: str
     ) -> SourceArtifactDocument:
-        content = "hello" if name == "transcript.txt" else None
+        content = None if name == "recording.bin" else "hello"
+        mime_type = "application/octet-stream" if content is None else "text/plain"
+        if name == "crafted.txt":
+            mime_type = "text/plain\r\nX-Evil: 1"
         return SourceArtifactDocument(
             source_id=source_id,
             revision=revision,
             name=name,
-            mime_type="text/plain" if content else "application/octet-stream",
+            mime_type=mime_type,
             sha256="abc",
             size_bytes=5,
             content=content,
@@ -78,7 +83,7 @@ class FakeStore:
     async def get_source_projection(self, source_id: str) -> SourceProjection:
         return SourceProjection(
             source_id=source_id,
-            path="_Sources/Plaud/2026-09-08 Recording.md",
+            path=self.projection_path,
             content="# Recording (source)\n",
         )
 
@@ -118,7 +123,6 @@ def test_source_manifest_text_binary_and_projection_are_readable(source_client):
     assert text.text == "hello"
     assert text.headers["x-coppermind-size-bytes"] == "5"
     assert text.headers["content-type"] == "text/plain; charset=utf-8"
-    assert text.headers["x-coppermind-declared-type"] == "text/plain"
     assert text.headers["x-content-type-options"] == "nosniff"
     binary = client.get(
         f"/v1/sources/{SOURCE_ID}/revisions/1/artifacts/recording.bin", headers=headers
@@ -127,6 +131,40 @@ def test_source_manifest_text_binary_and_projection_are_readable(source_client):
     assert binary.json()["sha256"] == "abc"
     projection = client.get(f"/v1/sources/{SOURCE_ID}/projection", headers=headers)
     assert projection.text == "# Recording (source)\n"
+
+
+def test_an_ingested_artifact_type_never_reaches_a_response_header(source_client):
+    """The declared type is free client text, so this origin does not echo it."""
+    client, fake = source_client
+    response = client.get(
+        f"/v1/sources/{SOURCE_ID}/revisions/1/artifacts/crafted.txt",
+        headers={"Authorization": f"Bearer {fake.read_key}"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/plain; charset=utf-8"
+    assert "x-evil" not in response.headers
+    assert all(
+        "\r" not in value and "\n" not in value and value.isascii()
+        for value in response.headers.values()
+    )
+
+
+def test_a_projection_path_outside_latin_1_is_still_readable(source_client):
+    """A vault title keeps its script; a header carries it percent-encoded."""
+    client, fake = source_client
+    fake.projection_path = "_Sources/Plaud/日本語ノート.md"
+
+    response = client.get(
+        f"/v1/sources/{SOURCE_ID}/projection",
+        headers={"Authorization": f"Bearer {fake.read_key}"},
+    )
+
+    assert response.status_code == 200
+    assert response.text == "# Recording (source)\n"
+    header = response.headers["x-coppermind-projection-path"]
+    assert header.isascii()
+    assert unquote(header) == fake.projection_path
 
 
 def test_source_reads_require_the_source_read_scope(source_client):

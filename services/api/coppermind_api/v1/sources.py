@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, Response
 
@@ -38,16 +40,14 @@ async def get_source_artifact(
         artifact = await client.get_source_artifact(source_id, revision, name)
     except StoreError as error:
         return failure(error)
-    declared = artifact.mime_type.encode("ascii", "replace").decode("ascii")
     headers = {
         "X-Coppermind-SHA256": artifact.sha256,
         "X-Coppermind-Size-Bytes": str(artifact.size_bytes),
-        "X-Coppermind-Declared-Type": declared,
         "X-Content-Type-Options": "nosniff",
     }
     if artifact.content is not None:
-        # The stored type is what an ingesting client claimed, so it names the
-        # artifact in a header rather than deciding how this origin serves it.
+        # The ingested type is free client text. The manifest records it; this
+        # origin decides for itself how the bytes it serves are interpreted.
         return Response(
             content=artifact.content, media_type="text/plain; charset=utf-8", headers=headers
         )
@@ -67,7 +67,7 @@ async def get_source_projection(
     return Response(
         content=projection.content,
         media_type="text/markdown",
-        headers={"X-Coppermind-Projection-Path": projection.path},
+        headers={"X-Coppermind-Projection-Path": quote(projection.path)},
     )
 
 

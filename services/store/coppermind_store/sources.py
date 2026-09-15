@@ -54,7 +54,7 @@ from coppermind.store_protocol import (
     SourcesFilesystemUnavailable,
     StoreError,
     ValidationFailed,
-    is_text_mime,
+    artifact_text,
 )
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
 from coppermind_store.notes import (
@@ -66,7 +66,7 @@ from coppermind_store.notes import (
     _stem_for,
     _title_of,
 )
-from coppermind_store.projections import find_projection, write_projection
+from coppermind_store.projections import new_projection_path, write_projection
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
@@ -107,25 +107,20 @@ async def get_source_artifact(
         raise SourcesFilesystemUnavailable(f"the source artifact is unreadable: {name}") from exc
     if len(data) != artifact.size_bytes or hashlib.sha256(data).hexdigest() != artifact.sha256:
         raise SourcesFilesystemUnavailable(f"the source artifact failed verification: {name}")
-    try:
-        content = data.decode("utf-8") if is_text_mime(artifact.mime_type) else None
-    except UnicodeDecodeError as exc:
-        raise SourcesFilesystemUnavailable(
-            f"the text source artifact is not UTF-8: {name}"
-        ) from exc
     return SourceArtifactDocument(
-        **artifact.model_dump(), source_id=source_id, revision=revision, content=content
+        **artifact.model_dump(),
+        source_id=source_id,
+        revision=revision,
+        content=artifact_text(data, artifact.mime_type),
     )
 
 
 async def get_source_projection(store: LocalStore, source_id: str) -> SourceProjection:
     manifest = await get_source(store, source_id)
     try:
-        path = (
-            resolve(store.notes_root, manifest.projection_path)
-            if manifest.projection_path
-            else find_projection(store.notes_root, store.control.settings(), source_id)
-        )
+        if not manifest.projection_path:
+            raise FileNotFoundError(source_id)
+        path = resolve(store.notes_root, manifest.projection_path)
         if not _projection_is_current(path, source_id, manifest.current_revision):
             raise FileNotFoundError(path)
         content = path.read_text(encoding="utf-8")
@@ -417,19 +412,13 @@ async def _ingest_existing(
 
     if replaying:
         recorded_path = manifest.get("projection_path")
+        projection_path = recorded_path if isinstance(recorded_path, str) and recorded_path else ""
         try:
-            projection = (
-                resolve(store.notes_root, recorded_path)
-                if isinstance(recorded_path, str) and recorded_path
-                else find_projection(store.notes_root, settings, source_id)
-            )
-            if not projection.is_file():
-                raise FileNotFoundError(projection)
-            projection_path = projection.relative_to(store.notes_root).as_posix()
-        except (FileNotFoundError, ValueError):
-            projection_path = ""
-        if not projection_path or not _projection_is_current(
-            resolve(store.notes_root, projection_path), source_id, current_revision
+            projection = resolve(store.notes_root, projection_path) if projection_path else None
+        except ValueError:
+            projection, projection_path = None, ""
+        if projection is None or not _projection_is_current(
+            projection, source_id, current_revision
         ):
             note = await session.get(Note, note_id)
             if note is None:
@@ -475,10 +464,24 @@ async def _ingest_existing(
         raise SourcesFilesystemUnavailable(str(exc)) from exc
 
     manifest_replacement_started = False
-    projection_path = ""
     try:
         for artifact, data in artifacts:
             create_exclusive_bytes(revision_path / artifact.name, data)
+        note = await session.get(Note, note_id)
+        if note is None:
+            raise StoreError("the linked note mirror is incomplete")
+        recorded_path = manifest.get("projection_path")
+        projection_path = (
+            str(recorded_path)
+            if isinstance(recorded_path, str) and recorded_path
+            else new_projection_path(
+                store.notes_root,
+                settings,
+                provider=str(manifest["provider"]),
+                title=note.title,
+                note_date=note.date or now.date(),
+            )
+        )
         revisions = list(manifest.get("revisions", []))
         revisions.append(_revision_document(request, revision, now, identity, artifact_metadata))
         manifest.update(
@@ -487,14 +490,12 @@ async def _ingest_existing(
                 "origin": request.source.origin,
                 "current_revision": revision,
                 "revisions": revisions,
+                "projection_path": projection_path,
             }
         )
         manifest_replacement_started = True
         atomic_write_bytes(manifest_path, _json_bytes(manifest))
-        note = await session.get(Note, note_id)
-        if note is None:
-            raise StoreError("the linked note mirror is incomplete")
-        projection_path, _ = write_projection(
+        write_projection(
             store.notes_root,
             settings,
             source_id=source_id,
@@ -504,13 +505,8 @@ async def _ingest_existing(
             note_date=note.date or now.date(),
             generated_at=now,
             artifacts=_projection_artifacts(artifacts, artifact_metadata),
-            relative_path=(
-                str(manifest["projection_path"]) if manifest.get("projection_path") else None
-            ),
+            relative_path=projection_path,
         )
-        if manifest.get("projection_path") != projection_path:
-            manifest["projection_path"] = projection_path
-            atomic_write_bytes(manifest_path, _json_bytes(manifest))
     except OSError as exc:
         if not manifest_replacement_started:
             shutil.rmtree(revision_path, ignore_errors=True)

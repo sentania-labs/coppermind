@@ -30,19 +30,26 @@ ETag = str
 NoteId = str
 SourceId = str
 
-_TEXT_APPLICATION_TYPES = {
-    "application/json",
-    "application/ld+json",
-    "application/xml",
-    "application/yaml",
-    "application/x-yaml",
-}
-
 
 def is_text_mime(mime_type: str) -> bool:
-    """Whether an artifact MIME type has a readable UTF-8 representation."""
+    """Whether an artifact MIME type claims a readable text representation."""
     base = mime_type.partition(";")[0].strip().casefold()
-    return base.startswith("text/") or base in _TEXT_APPLICATION_TYPES or base.endswith("+json")
+    return base.startswith("text/") or base == "application/json"
+
+
+def artifact_text(data: bytes, mime_type: str) -> str | None:
+    """The artifact's readable text, or None when it has none.
+
+    A declared text type is a client's claim about bytes the contract never
+    constrains, so only a successful decode makes an artifact legible. Anything
+    else is described rather than read, here and everywhere.
+    """
+    if not is_text_mime(mime_type):
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 class StoreError(Exception):
