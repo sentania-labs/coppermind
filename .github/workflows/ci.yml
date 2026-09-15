@@ -303,7 +303,10 @@ jobs:
           IMAGE_ROOT: ghcr.io/${{ github.repository }}
           DIGESTS: ${{ runner.temp }}/digests.txt
         run: bash ci/verify-published.sh
-      - name: Create release after publication proof
+      # Composed once and written by whichever path runs, so a re-run after a
+      # later step failed lands the same release rather than dead-ending on a
+      # tag that already has one.
+      - name: Record the release after publication proof
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ github.ref_name }}
@@ -311,9 +314,17 @@ jobs:
           {
             echo "Published images (signed, with provenance and SBOM attestations):"
             while read -r service digest; do echo "- ghcr.io/${GITHUB_REPOSITORY}/$service@$digest"; done < "$RUNNER_TEMP/digests.txt"
+            echo
+            gh api -X POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$VERSION" -q .body
           } > "$RUNNER_TEMP/release-notes.md"
-          gh release create "$VERSION" --verify-tag --generate-notes --title "$VERSION" \
-            --notes-file "$RUNNER_TEMP/release-notes.md" "$RUNNER_TEMP/digests.txt"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release edit "$VERSION" --verify-tag --title "$VERSION" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+            gh release upload "$VERSION" "$RUNNER_TEMP/digests.txt" --clobber
+          else
+            gh release create "$VERSION" --verify-tag --title "$VERSION" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" "$RUNNER_TEMP/digests.txt"
+          fi
       - name: Hand the published digests to promotion
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

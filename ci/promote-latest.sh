@@ -6,33 +6,40 @@ set -euo pipefail
 : "${DIGESTS:?digest record is required}"
 test -s "$DIGESTS" || { echo "digest record is empty" >&2; exit 1; }
 
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
 # The quickstart runs whatever latest names, so latest may only move forward.
 # A re-run of an older tag's job, or two tags promoting out of order, would
 # otherwise hand a clean checkout an older build with nothing reporting it.
-# The version already on the image is the record of where latest stands, and
-# only a registry saying latest does not exist may skip the comparison: any
-# other failure leaves the question unanswered, which is not an answer.
-serving_version() {
-  local image="$1" out
-  if out="$(skopeo inspect --format '{{ index .Labels "org.opencontainers.image.version" }}' \
-      "docker://$image:latest" 2>&1)"; then
-    printf '%s' "$out"
-    return 0
-  fi
-  if printf '%s' "$out" | grep -qiE 'manifest unknown|manifest_unknown|name unknown|name_unknown|repository name not known'; then
-    return 0
-  fi
-  echo "$image:latest could not be read, so whether latest would move backwards is unknown" >&2
-  printf '%s\n' "$out" >&2
-  return 1
-}
-
+# The version already on the image is the record of where latest stands, so a
+# registry saying latest does not exist is the only answer that may skip the
+# comparison. Every other outcome leaves the question unanswered, and an
+# unanswered question is not permission to move the tag.
 while read -r service digest; do
   [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "$service has an invalid digest" >&2; exit 1; }
   image="$IMAGE_ROOT/$service"
-  serving="$(serving_version "$image")"
-  [ -n "$serving" ] || continue
-  [[ "$serving" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+
+  status=0
+  skopeo inspect --format '{{ index .Labels "org.opencontainers.image.version" }}' \
+    "docker://$image:latest" >"$work/label" 2>"$work/error" || status=$?
+
+  if [ "$status" -ne 0 ]; then
+    if grep -qiE 'manifest unknown|manifest_unknown|name unknown|name_unknown|repository name not known' "$work/error"; then
+      continue
+    fi
+    echo "$image:latest could not be read (skopeo exit $status), so whether latest would move backwards is unknown" >&2
+    cat "$work/error" >&2
+    exit 1
+  fi
+
+  serving="$(tr -d '\r' <"$work/label")"
+  if [[ ! "$serving" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "$image:latest exists but names no readable version, so whether latest would move backwards is unknown" >&2
+    echo "its version label read as: $serving" >&2
+    exit 1
+  fi
+
   if [ "$serving" != "$VERSION" ] &&
      [ "$(printf '%s\n%s\n' "$VERSION" "$serving" | sort -V | head -n 1)" = "$VERSION" ]; then
     echo "$image:latest already names $serving, which is newer than $VERSION" >&2
