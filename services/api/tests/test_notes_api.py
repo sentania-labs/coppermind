@@ -199,47 +199,91 @@ async def test_a_key_minted_after_the_cache_was_warmed_still_works():
     assert fake.key_reads == 2
 
 
-class SlowKeyStore(FakeStore):
-    """A store whose key read answers several event loop turns later."""
+class GatedKeyStore(FakeStore):
+    """A store whose key read begins, then waits for the test to let it answer."""
 
-    def __init__(self, turns: int = 3) -> None:
+    def __init__(self, key_error: Exception | None = None) -> None:
         super().__init__()
-        self.turns = turns
+        self.key_error = key_error
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
 
     async def get_api_keys(self) -> ApiKeySet:
         self.key_reads += 1
         answer = ApiKeySet(keys=list(self.key_records))
-        for _ in range(self.turns):
-            await asyncio.sleep(0)
+        self.started.set()
+        await self.release.wait()
+        if self.key_error is not None:
+            raise self.key_error
         return answer
+
+
+async def test_a_hung_store_costs_one_attempt_for_every_waiting_credential():
+    """A store that stops answering must not be asked once per cold credential."""
+    fake = GatedKeyStore(StoreUnavailable("the store never answered"))
+    authenticator = auth_module.ApiKeyAuthenticator(fake)
+
+    async def attempt() -> str:
+        try:
+            await authenticator.authenticate(f"Bearer {KEY}")
+        except auth_module.AuthenticationUnavailable:
+            return "unavailable"
+        return "answered"
+
+    waiters = [asyncio.create_task(attempt()) for _ in range(25)]
+    await fake.started.wait()
+    fake.release.set()
+
+    assert await asyncio.gather(*waiters) == ["unavailable"] * 25
+    assert fake.key_reads == 1
+
+
+async def test_readiness_joins_the_load_a_request_already_started():
+    """A readiness probe must not add a store attempt per poll during an outage."""
+    fake = GatedKeyStore(StoreUnavailable("the store never answered"))
+    authenticator = auth_module.ApiKeyAuthenticator(fake)
+
+    request = asyncio.create_task(authenticator.authenticate(f"Bearer {KEY}"))
+    probe = asyncio.create_task(authenticator.has_active_key())
+    await fake.started.wait()
+    fake.release.set()
+
+    for waiter in (request, probe):
+        with pytest.raises(auth_module.AuthenticationUnavailable):
+            await waiter
+    assert fake.key_reads == 1
 
 
 async def test_concurrent_unknown_keys_cost_one_store_read_per_floor_window():
     """An unauthenticated flood must not become one store read per request."""
-    fake = SlowKeyStore()
+    fake = GatedKeyStore()
     seconds = 0.0
     authenticator = auth_module.ApiKeyAuthenticator(fake, clock=lambda: seconds)
     unknown = "Bearer cm_00000000000000ff_never-minted"
 
-    answers = await asyncio.gather(*(authenticator.authenticate(unknown) for _ in range(25)))
+    waiters = [asyncio.create_task(authenticator.authenticate(unknown)) for _ in range(25)]
+    await fake.started.wait()
+    fake.release.set()
 
-    assert all(answer is None for answer in answers)
+    assert await asyncio.gather(*waiters) == [None] * 25
     assert fake.key_reads == 1
 
 
 async def test_an_overlapping_load_cannot_restore_a_revoked_key():
     """One load is in flight at a time, so no late answer can overwrite a newer one."""
-    fake = SlowKeyStore()
+    fake = GatedKeyStore()
     seconds = 0.0
     authenticator = auth_module.ApiKeyAuthenticator(fake, clock=lambda: seconds)
 
     first = asyncio.create_task(authenticator.records())
-    await asyncio.sleep(0)
+    await fake.started.wait()
     fake.key_records = [
         KEY_RECORD.model_copy(update={"revoked_at": datetime(2026, 9, 9, tzinfo=UTC)}),
         READ_KEY_RECORD,
     ]
     second = asyncio.create_task(authenticator.records())
+    await asyncio.sleep(0)
+    fake.release.set()
     await asyncio.gather(first, second)
 
     assert fake.key_reads == 1

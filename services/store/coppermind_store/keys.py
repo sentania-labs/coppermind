@@ -61,38 +61,25 @@ def revoke_key(control: ControlState, key_id: str) -> None:
 
 
 def ensure_default_key(control: ControlState, secret_file: Path) -> bool:
-    """Ensure bootstrap's full-scope default key and reveal file agree.
+    """Ensure bootstrap's full-scope default key, returning whether it minted one.
 
-    The reveal file is written before its hash record. If bootstrap is
-    interrupted between those writes, the next run repairs ``keys.json`` from
-    the credential instead of rotating it or leaving a fresh install unusable.
+    The reveal file is kept whenever it names a key record it verifies against,
+    so a restart never rotates a credential in use. Anything else, including a
+    run interrupted between the reveal write and the record write, mints a
+    fresh key and overwrites the file, which rotates only a credential that was
+    never usable.
     """
-    credential = ""
+    key_set, exists = _load_keys(control)
     if secret_file.exists() and secret_file.stat().st_size > 0:
-        credential = secret_file.read_text(encoding="utf-8").strip()
-        parsed = split_credential(credential)
-        if parsed is None:
-            raise RuntimeError(f"the default API key file at {secret_file} is malformed")
-        key_id, secret = parsed
-        key_set, exists = _load_keys(control)
-        current = next((record for record in key_set.keys if record.key_id == key_id), None)
-        if current is not None:
-            if current.revoked_at is not None:
+        parsed = split_credential(secret_file.read_text(encoding="utf-8").strip())
+        if parsed is not None:
+            key_id, secret = parsed
+            current = next((record for record in key_set.keys if record.key_id == key_id), None)
+            if current is not None and verify_secret(current.hash, secret):
                 return False
-            if not verify_secret(current.hash, secret):
-                raise RuntimeError("the default API key file does not match its key record")
-            return False
-        record, _ = create_key(
-            "bootstrap default",
-            list(API_SCOPES),
-            key_id=key_id,
-            secret=secret,
-        )
-    else:
-        key_set, exists = _load_keys(control)
-        record, credential = create_key("bootstrap default", list(API_SCOPES))
-        atomic_write_text(secret_file, credential + "\n", mode=0o600)
 
+    record, credential = create_key("bootstrap default", list(API_SCOPES))
+    atomic_write_text(secret_file, credential + "\n", mode=0o600)
     key_set.keys.append(record)
     control.store.write(
         "keys",

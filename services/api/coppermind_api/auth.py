@@ -16,8 +16,8 @@ from coppermind.store_protocol import Store
 CACHE_TTL_SECONDS = 300.0
 # A key minted since the last load must work now, not in five minutes. An
 # unknown key id may therefore cost a load, and this floor is how often: one
-# load per window however many requests arrive, because every load is taken
-# under the lock and waiters re-check the window rather than loading again.
+# load per window however many requests arrive, because callers that meet a
+# load already running await that one attempt instead of starting another.
 UNKNOWN_KEY_RELOAD_FLOOR_SECONDS = 1.0
 # Argon2 at the shipped cost holds 64 MiB per verification, so the number that
 # can run at once is capped rather than left to the default thread limiter.
@@ -60,6 +60,7 @@ class ApiKeyAuthenticator:
         self._records_expire_at = 0.0
         self._reload_allowed_at = 0.0
         self._verified: dict[bytes, _Verified] = {}
+        self._loading: asyncio.Task[dict[str, ApiKeyRecord]] | None = None
         self._lock = asyncio.Lock()
         self._verify_limiter = anyio.CapacityLimiter(VERIFY_CONCURRENCY)
 
@@ -67,23 +68,30 @@ class ApiKeyAuthenticator:
         """Return the key records, loading them at most once per cache life."""
         if self._records_expire_at > self._clock():
             return self._records
-        async with self._lock:
-            if self._records_expire_at > self._clock():
-                return self._records
-            return await self._load()
+        return await self._load()
 
     async def _reload_for_unknown_key(self) -> dict[str, ApiKeyRecord]:
-        async with self._lock:
-            if self._reload_allowed_at > self._clock():
-                return self._records
-            return await self._load()
+        if self._reload_allowed_at > self._clock():
+            return self._records
+        return await self._load()
 
     async def _load(self) -> dict[str, ApiKeyRecord]:
-        """Read the key set. The caller holds the lock, so one read runs at a time."""
+        """Join the read already running, or start the only one that will run.
+
+        A store that answers slowly, or not at all, therefore costs one attempt
+        and one answer for every caller waiting on it rather than one each.
+        """
+        if self._loading is None:
+            self._loading = asyncio.create_task(self._read_key_set())
+        return await asyncio.shield(self._loading)
+
+    async def _read_key_set(self) -> dict[str, ApiKeyRecord]:
         try:
             key_set = await self._store.get_api_keys()
         except Exception as exc:  # store errors become one public 503
             raise AuthenticationUnavailable from exc
+        finally:
+            self._loading = None
         now = self._clock()
         self._records = {record.key_id: record for record in key_set.keys}
         self._records_expire_at = now + self._ttl

@@ -80,3 +80,39 @@ def test_running_twice_never_rotates_a_secret_or_resets_a_setting(tmp_path: Path
     assert wiring.default_api_key_file.read_text(encoding="utf-8") == api_key
     assert ControlState(wiring.state_dir).api_keys().keys[0].hash == key_hash
     assert "Inbox" in settings_file.read_text(encoding="utf-8")
+
+
+def test_an_unusable_reveal_file_mints_a_working_key_instead_of_failing(tmp_path: Path):
+    """A damaged reveal file no service reads must not stop the stack starting."""
+    wiring = wiring_for(tmp_path)
+    wiring.default_api_key_file.parent.mkdir(parents=True)
+    wiring.default_api_key_file.write_text("not-a-credential\n", encoding="utf-8")
+
+    assert run(wiring) == 0
+
+    credential = wiring.default_api_key_file.read_text(encoding="utf-8").strip()
+    parsed = split_credential(credential)
+    assert parsed is not None
+    key_id, secret = parsed
+    record = ControlState(wiring.state_dir).api_keys().keys[0]
+    assert record.key_id == key_id
+    assert verify_secret(record.hash, secret)
+
+
+def test_a_reveal_file_without_its_record_is_replaced_by_a_usable_pair(tmp_path: Path):
+    """The crash between the two writes leaves a credential nobody could have used."""
+    wiring = wiring_for(tmp_path)
+    run(wiring)
+    orphan = wiring.default_api_key_file.read_text(encoding="utf-8")
+    (wiring.state_dir / "keys.json").unlink()
+
+    assert run(wiring) == 0
+
+    credential = wiring.default_api_key_file.read_text(encoding="utf-8")
+    assert credential != orphan
+    parsed = split_credential(credential.strip())
+    assert parsed is not None
+    key_id, secret = parsed
+    record = ControlState(wiring.state_dir).api_keys().keys[0]
+    assert record.key_id == key_id
+    assert verify_secret(record.hash, secret)
