@@ -248,8 +248,9 @@ vertical path proved end to end, then widened.
   PostgreSQL backed integration tests; dependency, secret and repository
   scans; one image build per service as an OCI tarball with provenance and an
   SBOM, scanned; and a compose smoke run of the whole storyline above, plus
-  the Git helper's failure storyline, against those exact images. Every action
-  is pinned to a commit SHA, and a test enforces that.
+  the Git helper's failure storyline and the simulated Obsidian Sync
+  lifecycle, against those exact images. Every action is pinned to a commit
+  SHA, and a test enforces that.
 - The independently built `obsidian-sync` image supervises a sync client and
   exposes authenticated connect, pause, resume and status controls on the
   compose network. A fresh install has the supervisor available and honestly
