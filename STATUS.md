@@ -284,9 +284,14 @@ vertical path proved end to end, then widened.
   name as given, so settings validation refuses any `notes.sources_folder` the
   Store would rewrite (a leading dot, a trailing space, a character it strips)
   and refuses an empty one, which would scatter projections through the vault
-  root, rather than let the projections enter Git history. Write-side
-  reconciliation is not built on this branch, so its separate rule for never
-  adopting managed projections must be settled when that work lands.
+  root, rather than let the projections enter Git history. That agreement
+  covers the folder in force, not a folder that used to be in force, so do not
+  rename `notes.sources_folder` once sources have been ingested: nothing moves
+  the pages already generated, they stay under the old name, the Git helper
+  stops excluding that name, and the next snapshot commits them. Deleting them
+  afterwards takes them out of the working tree but not out of Git history.
+  Write-side reconciliation is not built on this branch, so its separate rule
+  for never adopting managed projections must be settled when that work lands.
 - `GET /v1/sources/{id}` reads the filesystem manifest. Its artifact route
   returns an artifact that decodes as UTF-8 text as the response body, always
   as `text/plain` and never as the ingested type, and describes every other
