@@ -65,3 +65,16 @@ def test_an_unparseable_state_file_is_refused_with_its_parse_location(tmp_path: 
     with pytest.raises(ValueError) as raised:
         state.read("settings")
     assert "line 3" in str(raised.value)
+
+
+def test_a_state_file_with_an_unusable_revision_is_refused_by_name(tmp_path: Path):
+    state = store(tmp_path)
+    state.ensure("settings", default_settings().model_dump(mode="json"))
+    path = state.path_for("settings")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("revision: 1", "revision:"), encoding="utf-8"
+    )
+    with pytest.raises(ValueError) as raised:
+        state.read("settings")
+    assert "settings.yaml" in str(raised.value)
+    assert "revision" in str(raised.value)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from pathlib import Path
 
@@ -293,6 +294,86 @@ def test_an_admin_record_admin_cannot_read_is_not_blamed_on_the_password(fresh):
         answered = login(client)
         assert answered.status_code == 500
         assert str(record) in answered.text
+
+
+def test_a_damaged_argon2_hash_is_not_reported_as_a_wrong_password(fresh):
+    """The header still parses, so only the body is gone. That is not the password."""
+    client, wiring, _ = fresh
+    claim(client)
+    record = wiring.state_dir / "admin.json"
+
+    intact = json.loads(record.read_text(encoding="utf-8"))
+    intact["password_hash"] = intact["password_hash"][:-10]
+    record.write_text(json.dumps(intact), encoding="utf-8")
+
+    answered = login(client)
+    assert answered.status_code == 500
+    assert str(record) in answered.text
+    assert "That password was not accepted." not in answered.text
+
+
+def test_a_state_file_whose_revision_was_emptied_names_the_file(fresh):
+    """Deleting a value and leaving its key is an ordinary hand-edit slip."""
+    client, wiring, _ = fresh
+    claim(client)
+    settings_file = wiring.state_dir / "settings.yaml"
+
+    settings_file.write_text(
+        settings_file.read_text(encoding="utf-8").replace("revision: 1", "revision:"),
+        encoding="utf-8",
+    )
+    answered = login(client)
+    assert answered.status_code == 500
+    assert str(settings_file) in answered.text
+    assert "revision" in answered.text
+
+    record = wiring.state_dir / "admin.json"
+    blanked = json.loads(record.read_text(encoding="utf-8")) | {"revision": None}
+    record.write_text(json.dumps(blanked), encoding="utf-8")
+    named = login(client)
+    assert named.status_code == 500
+    assert str(record) in named.text
+
+
+def test_a_recovery_claim_during_a_session_outage_stays_unclaimed_and_retryable(fresh):
+    """Fail closed: no new credential while the old sessions cannot be ended."""
+    client, wiring, sessions = fresh
+    claim(client)
+    login(client)
+    record = wiring.state_dir / "admin.json"
+    claim_code = wiring.state_dir / "internal" / "claim-code"
+
+    record.unlink()
+    claim_code.write_text(CLAIM_CODE + "\n", encoding="utf-8")
+    sessions.available = False
+
+    refused = claim(client, password="a different admin password")
+    assert refused.status_code == 503
+    assert not record.exists()
+    assert claim_code.is_file()
+
+    sessions.available = True
+    assert claim(client, password="a different admin password").headers["location"] == (
+        "/admin/login"
+    )
+    assert record.is_file()
+    assert not sessions.tokens
+    assert client.get("/admin", follow_redirects=False).headers["location"] == (
+        "/admin/login?error=session_expired"
+    )
+
+
+def test_a_refused_claim_code_never_ends_a_live_session(fresh):
+    """Sessions are only revoked once the code is accepted."""
+    client, wiring, sessions = fresh
+    claim(client)
+    login(client)
+    (wiring.state_dir / "admin.json").unlink()
+    (wiring.state_dir / "internal" / "claim-code").write_text(CLAIM_CODE, encoding="utf-8")
+
+    refused = claim(client, code="not the code")
+    assert refused.headers["location"] == "/admin/claim?error=invalid_claim_code"
+    assert sessions.tokens
 
 
 def test_a_session_database_outage_answers_503_rather_than_failing(fresh):

@@ -6,13 +6,14 @@ import asyncio
 import hashlib
 import json
 import secrets
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
 import sqlalchemy as sa
 from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerificationError
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -55,7 +56,15 @@ class AdminCredentials:
     def is_claimed(self) -> bool:
         return self.path.is_file()
 
-    async def claim(self, code: str, password: str) -> None:
+    async def claim(
+        self, code: str, password: str, before_write: Callable[[], Awaitable[None]]
+    ) -> None:
+        """Take the admin record for the holder of the claim code.
+
+        `before_write` runs once the code is accepted and before anything is
+        written, so whatever it guarantees (today, that no session outlives the
+        credential being replaced) either holds or the claim does not happen.
+        """
         async with self._claim_lock:
             if self.is_claimed():
                 raise AlreadyClaimed
@@ -67,6 +76,7 @@ class AdminCredentials:
             # non-ASCII character, which compare_digest refuses on str.
             if not expected or not secrets.compare_digest(code.strip().encode(), expected.encode()):
                 raise InvalidClaimCode
+            await before_write()
             password_hash = await asyncio.to_thread(_HASHER.hash, password)
             body = {
                 "schema_version": 1,
@@ -94,9 +104,9 @@ class AdminCredentials:
             raise AdminRecordUnreadable("password_hash is not an ASCII Argon2 hash string")
         try:
             return await asyncio.to_thread(_HASHER.verify, encoded, password)
-        except VerificationError:
+        except VerifyMismatchError:
             return False
-        except InvalidHashError as exc:
+        except (VerificationError, InvalidHashError) as exc:
             raise AdminRecordUnreadable(
                 f"password_hash is not a usable Argon2 hash: {exc}"
             ) from exc

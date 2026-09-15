@@ -254,13 +254,11 @@ required></label><button>Log in</button></form>""",
         if not code or len(password) < 12:
             return error_response("claim", "validation_error")
         try:
-            await credentials.claim(code, password)
+            await credentials.claim(code, password, request.app.state.sessions.revoke_all)
         except AlreadyClaimed:
             return error_response("login", "already_claimed")
         except InvalidClaimCode:
             return error_response("claim", "invalid_claim_code")
-        try:
-            await request.app.state.sessions.revoke_all()
         except SessionsUnavailable:
             return unavailable()
         return RedirectResponse("/admin/login", status_code=303)

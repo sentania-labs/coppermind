@@ -78,7 +78,10 @@ class StateStore:
         path = self.path_for(name)
         text = path.read_text(encoding="utf-8")
         loaded = _load(path, text)
-        revision = int(loaded.get("revision", 1))
+        try:
+            revision = int(loaded.get("revision", 1))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{path.name}: revision is not a number") from exc
         return StateFile(name, revision, loaded)
 
     def write(self, name: str, body: dict[str, Any], *, if_revision: int | None) -> StateFile:
