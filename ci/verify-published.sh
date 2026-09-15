@@ -9,13 +9,28 @@ expected="$(printf '%s\n' store api git obsidian-sync)"
 actual="$(awk '{ print $1 }' "$DIGESTS")"
 test "$actual" = "$expected" || { echo "digest record does not name every service once" >&2; exit 1; }
 
-# Remove the publishing credential before every registry read below. A public
-# release that only its publisher can pull is not a release operators can use.
-docker logout ghcr.io >/dev/null 2>&1 || true
+# Every registry read below runs with an empty credential store, so a public
+# release that only its publisher can pull fails here. The caller's own
+# ghcr.io login is left alone.
+anonymous="$(mktemp -d)"
+trap 'rm -rf "$anonymous"' EXIT
+export DOCKER_CONFIG="$anonymous"
+export REGISTRY_AUTH_FILE="$anonymous/auth.json"
 while read -r service digest; do
   [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "$service has an invalid digest" >&2; exit 1; }
   image="$IMAGE_ROOT/$service"
-  published="sha256:$(skopeo inspect --raw "docker://$image:$VERSION" | sha256sum | cut -d ' ' -f 1)"
+  if ! skopeo inspect --raw "docker://$image:$VERSION" >"$anonymous/manifest" 2>"$anonymous/error"; then
+    cat "$anonymous/error" >&2
+    if grep -qiE 'manifest unknown|not found|unauthorized|denied' "$anonymous/error"; then
+      echo "$image:$VERSION was pushed but cannot be read anonymously." >&2
+      echo "The likely cause is GHCR package visibility: a package is private" >&2
+      echo "when it is first published and does not inherit the repository's" >&2
+      echo "visibility. The remedy is to set the store, api, git and" >&2
+      echo "obsidian-sync packages to public once, then re-run this job." >&2
+    fi
+    exit 1
+  fi
+  published="sha256:$(sha256sum <"$anonymous/manifest" | cut -d ' ' -f 1)"
   test "$published" = "$digest" || { echo "$image:$VERSION differs from the release record" >&2; exit 1; }
   cosign verify "$image@$digest" \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \

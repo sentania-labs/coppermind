@@ -273,28 +273,13 @@ jobs:
           pattern: image-oci-*
           path: ${{ runner.temp }}/images
           merge-multiple: true
-      - name: Check for a completed release retry
-        id: retry
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ github.ref_name }}
-        run: |
-          if gh release view "$VERSION" >/dev/null 2>&1; then
-            mkdir -p "$RUNNER_TEMP/completed"
-            gh release download "$VERSION" --pattern digests.txt --dir "$RUNNER_TEMP/completed"
-            echo "reused=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "reused=false" >> "$GITHUB_OUTPUT"
-          fi
       - name: Login to GHCR
-        if: steps.retry.outputs.reused != 'true'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish tested archives with attestations and sign them
-        if: steps.retry.outputs.reused != 'true'
         env:
           VERSION: ${{ github.ref_name }}
           IMAGE_ROOT: ghcr.io/${{ github.repository }}
@@ -312,14 +297,13 @@ jobs:
             cosign sign --yes "$image@$digest"
             printf '%s %s\n' "$service" "$digest" >> "$RUNNER_TEMP/digests.txt"
           done
-      - name: Verify completed release or new anonymous publication
+      - name: Verify anonymous publication
         env:
           VERSION: ${{ github.ref_name }}
           IMAGE_ROOT: ghcr.io/${{ github.repository }}
-          DIGESTS: ${{ steps.retry.outputs.reused == 'true' && format('{0}/completed/digests.txt', runner.temp) || format('{0}/digests.txt', runner.temp) }}
+          DIGESTS: ${{ runner.temp }}/digests.txt
         run: bash ci/verify-published.sh
       - name: Create release after publication proof
-        if: steps.retry.outputs.reused != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ github.ref_name }}

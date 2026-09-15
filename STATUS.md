@@ -393,7 +393,13 @@ in the tree, so do not read the absence as a decision to leave it out.
   and rotating keys.
 - **Helm packaging and lab deployment.** Version tags now publish the four
   existing service images and a GitHub release. The Helm chart and lab handoff
-  remain later work.
+  remain later work. The first version tag creates its GHCR packages private,
+  because a new package does not inherit the repository's visibility, so the
+  publish job pushes and signs the images and then fails its anonymous-pull
+  check until the captain sets the `store`, `api`, `git` and `obsidian-sync`
+  packages to public once. No automation changes that visibility. That first
+  real tag is also the first exercise of the anonymous-pull proof, which has
+  never run against a live registry before it.
 
 ## Known gaps in what is here
 

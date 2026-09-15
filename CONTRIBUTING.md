@@ -42,6 +42,14 @@ targets. There is no command in the workflow that you cannot run here.
    and push the tag. No version-bump pull request. The quickstart tracks
    `latest`; anything deploying Coppermind for real pins a version or a digest
    in its own repository.
+6. **The first tag needs one manual step, once.** GHCR creates a package
+   private on its first publish and does not inherit the repository's
+   visibility, so the first `vX.Y.Z` pushes and signs the four images and then
+   fails its anonymous-pull check with a manifest-unknown error. The captain
+   sets the `store`, `api`, `git` and `obsidian-sync` packages to public in the
+   repository's package settings, once, and re-runs the job. Nothing in CI
+   changes package visibility. Until a real tag has gone through this, the
+   anonymous-pull proof is untested; the first real tag is what completes it.
 
 Write the body in operational terms: what changes for someone running it,
 what the blast radius is, how to recover if it is wrong. Name which regime the
