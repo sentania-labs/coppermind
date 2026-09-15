@@ -32,7 +32,6 @@ import base64
 import binascii
 import json
 from datetime import UTC, date, datetime
-from math import isfinite
 from pathlib import Path
 from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
@@ -1021,12 +1020,17 @@ def _storable(text: str) -> str:
 def _jsonable(value: Any) -> Any:
     """Convert a round tripped YAML mapping into plain JSON friendly types.
 
-    Total on purpose. A person's frontmatter may hold a tagged scalar, binary
-    or a set, a float may be a NaN or an infinity, and a string may carry a
-    NUL; none of those can be stored in the mirror's JSONB column, and an
-    escaping one would fail an insert after the file had already been written.
-    The file stays the truth, so anything that is not a JSON value is mirrored
-    as its text.
+    A person's frontmatter may hold a tagged scalar, binary or a set, and a
+    string may carry a NUL; none of those can be stored in the mirror's JSONB
+    column, and one escaping into an insert would fail it after the file had
+    already been written. The file stays the truth, so anything that is not a
+    JSON value is mirrored as its text.
+
+    A number is passed through as it stands, an infinity included. A value a
+    caller sent that PostgreSQL will not take has to reach the insert and be
+    refused there, because the public write contract answers that request with
+    a validation error and no file, rather than storing something else in its
+    place.
     """
     if isinstance(value, dict):
         return {_storable(str(k)): _jsonable(v) for k, v in value.items()}
@@ -1036,8 +1040,6 @@ def _jsonable(value: Any) -> Any:
         return value.isoformat()
     if isinstance(value, str):
         return _storable(value)
-    if isinstance(value, bool) or value is None or isinstance(value, int):
+    if isinstance(value, bool) or value is None or isinstance(value, int | float):
         return value
-    if isinstance(value, float):
-        return value if isfinite(value) else str(value)
     return _storable(str(value))
