@@ -20,7 +20,10 @@ make down                              # stop; `make clean` also drops volumes
 ```
 
 `make check` and `make scan` predict CI exactly, because CI calls the same
-targets. There is no command in the workflow that you cannot run here.
+targets. There is no command in a pull request's workflow that you cannot run
+here. Publication from a version tag is the exception: pushing, signing and
+promoting images needs registry credentials CI holds and you do not, and it
+only ever runs on a tag.
 
 ## The bar for a pull request
 
