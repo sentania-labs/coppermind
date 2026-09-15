@@ -164,7 +164,6 @@ async def test_the_folder_filter_takes_the_folder_exactly_as_written(store: Loca
     assert await ids("Review") == {note.id}
     assert await ids("/Review") == set()
     assert await ids("Review/") == set()
-    assert await ids("") == set()
 
 
 async def test_cursor_pages_four_notes_two_at_a_time_without_gaps(store: LocalStore):

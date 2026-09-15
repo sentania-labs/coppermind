@@ -354,20 +354,26 @@ NoteState = Literal["ok", "unparsed", "missing"]
 
 
 class NoteQuery(BaseModel):
-    """Filters and keyset cursor for listing notes known to the store."""
+    """Filters and keyset cursor for listing notes known to the store.
+
+    A text filter sent empty is refused rather than applied. An unset form
+    field that arrives as `folder=` would otherwise match nothing and come
+    back as an ordinary empty page, which is the one answer a listing must
+    not give for a question it could not ask.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     cursor: str | None = None
     limit: int = Field(default=50, ge=1, le=200)
-    folder: str | None = None
+    folder: str | None = Field(default=None, min_length=1)
     reviewed: bool | None = None
-    type: str | None = None
-    context: str | None = None
-    account: str | None = None
+    type: str | None = Field(default=None, min_length=1)
+    context: str | None = Field(default=None, min_length=1)
+    account: str | None = Field(default=None, min_length=1)
     from_date: date_type | None = Field(default=None, alias="from")
     to_date: date_type | None = Field(default=None, alias="to")
-    tag: str | None = None
+    tag: str | None = Field(default=None, min_length=1)
     state: NoteState | None = None
 
 

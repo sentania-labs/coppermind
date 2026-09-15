@@ -81,9 +81,11 @@ from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, is_no
 
 log = get_logger("coppermind-store")
 
-# How many mirror rows a listing reads from PostgreSQL at a time. A page is
-# filled from as few batches as the filters allow, so the work a request
-# does is bounded by what it returns rather than by the size of the mirror.
+# How many mirror rows a listing holds in memory at a time. A filter that
+# matches little still walks the mirror, because matching reads the files
+# themselves and there is no index yet; what the batch bounds is how much of
+# the mirror is materialized at once, and the thread offload keeps that walk
+# off the event loop.
 _SCAN_BATCH = 200
 
 

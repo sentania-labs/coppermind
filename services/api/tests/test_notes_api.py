@@ -241,6 +241,14 @@ def test_listing_passes_every_filter_and_the_cursor_to_the_store(client):
     )
 
 
+def test_an_empty_text_filter_is_refused_rather_than_answered_with_an_empty_page(client):
+    test_client, fake = client
+    for filter_name in ("folder", "type", "context", "account", "tag"):
+        response = test_client.get("/v1/notes", params={filter_name: ""})
+        assert response.status_code == 422
+        assert fake.listed is None
+
+
 def test_listing_reports_metadata_unavailable_instead_of_an_empty_page(client):
     test_client, fake = client
     fake.error = MetadataUnavailable("connection refused")
