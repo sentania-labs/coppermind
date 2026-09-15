@@ -30,6 +30,10 @@ REVOKED_NOTICE = (
     "the default API key was revoked; create a new key with: "
     "python3 -m coppermind_store.keys create"
 )
+UNRECOVERABLE_NOTICE = (
+    "the default API key credential was lost and cannot be recovered; "
+    "create a new key with: python3 -m coppermind_store.keys create"
+)
 
 
 def _load_keys(control: ControlState) -> tuple[ApiKeySet, bool]:
@@ -81,27 +85,27 @@ def _reveals(secret_file: Path, record: ApiKeyRecord) -> bool:
 def ensure_default_key(control: ControlState, secret_file: Path) -> str:
     """Ensure bootstrap's full-scope default key, saying what became of it.
 
-    `keys.json` decides, not the reveal file, because the control state is what
-    a backup carries and what revocation is recorded in. A revoked default
-    stays revoked however the credential volume was lost: the reveal file is
-    replaced by a sentence saying so, and no replacement is minted. A live
-    default whose credential is still readable is kept untouched. A live
-    default whose credential is gone is re-issued, which rotates only a
-    credential nobody could use, and a default that was never recorded is
-    generated.
+    `keys.json` decides, and the record's own `bootstrap_default` mark is what
+    it decides by, so a key an operator happens to name the same thing is never
+    treated as bootstrap's. Bootstrap mints exactly once, on the install that
+    has no such record. After that the record stands: a revoked default stays
+    revoked, a default whose credential is still readable is kept untouched,
+    and a default whose credential was lost is reported unrecoverable with the
+    record left alone, because minting a replacement would leave the first one
+    live and full scope for whoever still holds it.
     """
     key_set, exists = _load_keys(control)
-    current = next(
-        (record for record in reversed(key_set.keys) if record.name == DEFAULT_KEY_NAME), None
-    )
+    current = next((record for record in key_set.keys if record.bootstrap_default), None)
     if current is not None:
         if current.revoked_at is not None:
             atomic_write_text(secret_file, REVOKED_NOTICE + "\n", mode=0o600)
             return "revoked"
         if _reveals(secret_file, current):
             return "kept"
+        atomic_write_text(secret_file, UNRECOVERABLE_NOTICE + "\n", mode=0o600)
+        return "unrecoverable"
 
-    record, credential = create_key(DEFAULT_KEY_NAME, list(API_SCOPES))
+    record, credential = create_key(DEFAULT_KEY_NAME, list(API_SCOPES), bootstrap_default=True)
     atomic_write_text(secret_file, credential + "\n", mode=0o600)
     key_set.keys.append(record)
     control.store.write(
@@ -109,7 +113,7 @@ def ensure_default_key(control: ControlState, secret_file: Path) -> str:
         key_set.model_dump(mode="json"),
         if_revision=key_set.revision if exists else None,
     )
-    return "re-issued" if current is not None else "generated"
+    return "generated"
 
 
 def parser() -> argparse.ArgumentParser:

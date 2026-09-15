@@ -45,6 +45,9 @@ class ApiKeyRecord(BaseModel):
     scopes: list[str]
     created_at: datetime
     revoked_at: datetime | None = None
+    # The durable mark of the key bootstrap owns. A display name is an
+    # operator's to choose, so it can never stand in for this.
+    bootstrap_default: bool = False
 
     @field_validator("key_id")
     @classmethod
@@ -98,6 +101,7 @@ def create_key(
     key_id: str | None = None,
     secret: str | None = None,
     created_at: datetime | None = None,
+    bootstrap_default: bool = False,
 ) -> tuple[ApiKeyRecord, str]:
     """Create a key record and the credential that can be shown once."""
     actual_key_id = key_id or secrets.token_hex(8)
@@ -108,6 +112,7 @@ def create_key(
         hash=_HASHER.hash(actual_secret),
         scopes=scopes,
         created_at=created_at or datetime.now(tz=UTC),
+        bootstrap_default=bootstrap_default,
     )
     return record, f"{KEY_PREFIX}{actual_key_id}_{actual_secret}"
 

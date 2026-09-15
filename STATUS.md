@@ -18,7 +18,12 @@ vertical path proved end to end, then widened.
   that default and it stays revoked. The revocation takes effect for
   authentication as soon as the API's cache next loads; the reveal file is
   replaced by a sentence saying so at the next `docker compose up`, so until
-  that restart it still holds the dead credential.
+  that restart it still holds the dead credential. Bootstrap mints the default
+  once, on the install with no record of one, and decides that from the
+  record's own mark in `keys.json` rather than its name. Lose the credential
+  volume while the default is live and the next start reports it
+  unrecoverable and leaves the record alone, rather than minting a second
+  full-scope key while the first stays usable.
 - Every `/v1` route requires `Bearer cm_<key_id>_<secret>`. A missing or bad
   key answers 401 and a key without the route's scope answers 403. Note reads
   need `notes:read`; creates and replacements need `notes:write`. Successful

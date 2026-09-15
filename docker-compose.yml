@@ -144,8 +144,8 @@ services:
 volumes:
   # Everything a backup needs: the notes filesystem, source bundles and the
   # control state files. Back up `default-api-key` with it to keep the default
-  # credential readable; without it a live default is re-issued on the next
-  # start, and a revoked one stays revoked either way.
+  # credential readable; without it a live default becomes unrecoverable and is
+  # never re-minted, and a revoked one stays revoked either way.
   data:
   pgdata:
   internal-token:

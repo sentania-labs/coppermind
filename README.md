@@ -32,6 +32,13 @@ never minted again, and it stops authenticating as soon as the API's cache
 next loads, but the file above still holds the dead credential until the next
 `docker compose up` replaces it with a sentence saying it was revoked.
 
+Bootstrap mints the default once and never a second time. Lose the
+`default-api-key` volume while the default is still live and that credential
+is gone for good: the next start reports it unrecoverable, leaves the record
+as it is rather than minting a replacement that would leave the first one
+live, and puts a sentence in the file telling you to run the keys command
+below.
+
 Create a note:
 
 ```bash
