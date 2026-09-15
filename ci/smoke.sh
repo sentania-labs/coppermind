@@ -153,6 +153,7 @@ ok "the API cannot read the database password and the store can"
 
 step "write a new note from the editor container and keep it in flight across a scan"
 phone_path="Device/Made on phone.md"
+# shellcheck disable=SC2016
 compose exec -T editor sh -c \
     'mkdir -p /data/notes/Device; printf "%s\n" "# Made on phone" "" "First piece." > "$1"; touch /tmp/coppermind-writing; while test -e /tmp/coppermind-writing; do printf "%s\n" "Next piece." >> "$1"; sleep 10; done' \
     sh "/data/notes/$phone_path" >/dev/null 2>&1 &
@@ -174,6 +175,7 @@ done
 [ "$scans_now" -gt "$scans_before" ] || fail "no scheduled scan ran while the note was in flight"
 compose exec -T editor test -f "/data/notes/$phone_path" \
     || fail "the in-flight note disappeared"
+# shellcheck disable=SC2016
 compose exec -T editor sh -c '! grep -q "^id: " "$1"' sh "/data/notes/$phone_path" \
     || fail "the store adopted a device-created note before it settled"
 compose exec -T editor rm /tmp/coppermind-writing

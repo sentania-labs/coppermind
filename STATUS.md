@@ -327,7 +327,7 @@ in the tree, so do not read the absence as a decision to leave it out.
   indentation survives it.
   `PATCH /v1/notes/{id}/frontmatter` is the minimal-difference path for a
   one-key change such as marking a note reviewed.
-- **Line endings in the frontmatter block.** Both write paths reassemble the
+- **Line endings in the frontmatter block.** Both API write paths reassemble the
   block from the YAML dump, which emits line feeds, so a block written with
   carriage returns is rewritten whole and Obsidian Sync pushes every line of
   it. The body keeps its own line endings. The repair belongs in the shared
