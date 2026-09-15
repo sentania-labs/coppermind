@@ -66,13 +66,6 @@ READ_KEY_RECORD, READ_KEY = create_key(
     secret="unit-test-read-only-secret",
     created_at=datetime(2026, 9, 8, tzinfo=UTC),
 )
-NOTE_WRITE_RECORD, NOTE_WRITE_KEY = create_key(
-    "note writer",
-    ["notes:write"],
-    key_id="c1d2e3f4a5b6c7d8",
-    secret="unit-test-note-writer-secret",
-    created_at=datetime(2026, 9, 8, tzinfo=UTC),
-)
 
 
 class FakeStore:
@@ -83,6 +76,7 @@ class FakeStore:
         self.created: CreateNote | None = None
         self.replaced: tuple[str, ReplaceNote, str] | None = None
         self.key_reads = 0
+        self.key_records = [KEY_RECORD, READ_KEY_RECORD]
 
     async def create_note(self, request: CreateNote) -> NoteDocument:
         if self.error:
@@ -106,7 +100,7 @@ class FakeStore:
 
     async def get_api_keys(self) -> ApiKeySet:
         self.key_reads += 1
-        return ApiKeySet(keys=[KEY_RECORD, READ_KEY_RECORD, NOTE_WRITE_RECORD])
+        return ApiKeySet(keys=list(self.key_records))
 
 
 @pytest.fixture
@@ -155,15 +149,53 @@ def test_a_key_without_the_needed_scope_is_forbidden(client):
     assert fake.created is None
 
 
-def test_journal_create_needs_both_note_and_journal_write_scopes(client):
-    test_client, fake = client
-    response = test_client.post(
-        "/v1/notes",
-        json={"title": "Today", "frontmatter": {"type": "journal"}},
-        headers={"Authorization": f"Bearer {NOTE_WRITE_KEY}"},
+async def test_the_cache_expires_so_a_revoked_key_stops_working():
+    """The five-minute bound is what limits how long a revoked key survives."""
+    fake = FakeStore()
+    seconds = 0.0
+    authenticator = auth_module.ApiKeyAuthenticator(fake, clock=lambda: seconds)
+
+    assert await authenticator.authenticate(f"Bearer {KEY}") is not None
+    assert fake.key_reads == 1
+
+    fake.key_records = [
+        KEY_RECORD.model_copy(update={"revoked_at": datetime(2026, 9, 9, tzinfo=UTC)})
+    ]
+    assert await authenticator.authenticate(f"Bearer {KEY}") is not None
+    assert fake.key_reads == 1
+
+    seconds = auth_module.CACHE_TTL_SECONDS + 1
+    assert await authenticator.authenticate(f"Bearer {KEY}") is None
+    assert fake.key_reads == 2
+
+
+async def test_a_key_minted_after_the_cache_was_warmed_still_works():
+    """Readiness and traffic warm the same cache; a new key must not wait it out."""
+    fake = FakeStore()
+    seconds = 0.0
+    authenticator = auth_module.ApiKeyAuthenticator(fake, clock=lambda: seconds)
+
+    assert await authenticator.has_active_key() is True
+    assert fake.key_reads == 1
+
+    late_record, late_key = create_key(
+        "minted after the probe",
+        ["notes:read"],
+        key_id="d1e2f3a4b5c6d7e8",
+        secret="unit-test-late-secret",
+        created_at=datetime(2026, 9, 8, tzinfo=UTC),
     )
-    assert response.status_code == 403
-    assert fake.created is None
+    fake.key_records = [KEY_RECORD, READ_KEY_RECORD, late_record]
+
+    # Inside the floor an unknown id is refused without touching the store.
+    assert await authenticator.authenticate(f"Bearer {late_key}") is None
+    assert fake.key_reads == 1
+
+    seconds = auth_module.UNKNOWN_KEY_RELOAD_FLOOR_SECONDS
+    principal = await authenticator.authenticate(f"Bearer {late_key}")
+    assert principal is not None
+    assert principal.scopes == frozenset({"notes:read"})
+    assert fake.key_reads == 2
 
 
 def test_successful_authentication_is_cached_without_rehashing(client, monkeypatch):

@@ -48,11 +48,3 @@ def require_scopes(*scopes: str) -> Callable[..., Principal]:
         return principal
 
     return dependency
-
-
-def forbid_missing_scope(principal: Principal, scope: str) -> None:
-    if not principal.has(scope):
-        raise HTTPException(
-            status_code=403,
-            detail=envelope("forbidden", "the API key does not grant the required scope"),
-        )

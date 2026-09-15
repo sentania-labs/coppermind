@@ -135,19 +135,13 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             )
         ]
         try:
-            key_set = await client.get_api_keys()
-            active_keys = [record for record in key_set.keys if record.revoked_at is None]
-            checks.append(
-                Check(
-                    name="api_keys",
-                    ok=bool(active_keys),
-                    detail="" if active_keys else "no active API key is available",
-                )
-            )
-        except Exception:  # the public readiness body never carries a control-file cause
-            checks.append(
-                Check(name="api_keys", ok=False, detail="API key control state is unavailable")
-            )
+            # Read through the authenticator's five-minute cache, so a probe
+            # loop does not become store traffic of its own.
+            keys_ok = await request.app.state.api_key_auth.has_active_key()
+            detail = "" if keys_ok else "no active API key is available"
+        except AuthenticationUnavailable:
+            keys_ok, detail = False, "API key control state is unavailable"
+        checks.append(Check(name="api_keys", ok=keys_ok, detail=detail))
         readiness = Readiness.of(checks)
         return JSONResponse(
             status_code=200 if readiness.ready else 503,

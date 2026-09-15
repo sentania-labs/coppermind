@@ -26,7 +26,7 @@ from coppermind.store_protocol import (
     etag_from_if_match,
 )
 from coppermind_api.auth import Principal
-from coppermind_api.deps import forbid_missing_scope, require_scopes, store
+from coppermind_api.deps import require_scopes, store
 from coppermind_api.errors import failure
 
 router = APIRouter(prefix="/v1/notes", tags=["notes"])
@@ -36,10 +36,8 @@ router = APIRouter(prefix="/v1/notes", tags=["notes"])
 async def create_note(
     payload: CreateNote,
     client: HttpStoreClient = Depends(store),
-    principal: Principal = Depends(require_scopes("notes:write")),
+    _: Principal = Depends(require_scopes("notes:write")),
 ) -> Response:
-    if payload.frontmatter.get("type") == "journal":
-        forbid_missing_scope(principal, "journal:write")
     try:
         note = await client.create_note(payload)
     except StoreError as error:

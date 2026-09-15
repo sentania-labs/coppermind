@@ -21,6 +21,7 @@ from coppermind.api_keys import (
 )
 from coppermind.atomicio import atomic_write_text
 from coppermind.settings import Wiring
+from coppermind.statefiles import RevisionConflict
 from coppermind_store.control import ControlState
 
 
@@ -122,11 +123,15 @@ def run(argv: list[str] | None = None, wiring: Wiring | None = None) -> int:
     args = parser().parse_args(argv)
     settings = wiring or Wiring()
     control = ControlState(settings.state_dir)
-    if args.command == "create":
-        credential = add_key(control, args.name, args.scopes or list(API_SCOPES))
-        print(credential)
-    elif args.command == "revoke":
-        revoke_key(control, args.key_id)
+    try:
+        if args.command == "create":
+            credential = add_key(control, args.name, args.scopes or list(API_SCOPES))
+            print(credential)
+        elif args.command == "revoke":
+            revoke_key(control, args.key_id)
+    except (ValueError, RevisionConflict) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     return 0
 
 

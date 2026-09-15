@@ -8,10 +8,15 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import anyio.to_thread
+
 from coppermind.api_keys import ApiKeyRecord, split_credential, verify_secret
 from coppermind.store_protocol import Store
 
 CACHE_TTL_SECONDS = 300.0
+# A key minted since the last load must work now, not in five minutes. This
+# floor is what keeps a flood of unknown key ids from becoming store traffic.
+UNKNOWN_KEY_RELOAD_FLOOR_SECONDS = 1.0
 
 
 class AuthenticationUnavailable(Exception):
@@ -48,8 +53,38 @@ class ApiKeyAuthenticator:
         self._clock = clock
         self._records: dict[str, ApiKeyRecord] = {}
         self._records_expire_at = 0.0
+        self._reload_allowed_at = 0.0
         self._verified: dict[bytes, _Verified] = {}
         self._lock = asyncio.Lock()
+
+    async def records(self) -> dict[str, ApiKeyRecord]:
+        """Return the key records, reloading them at most once per cache life."""
+        if self._records_expire_at > self._clock():
+            return self._records
+        return await self._reload()
+
+    async def _reload(self) -> dict[str, ApiKeyRecord]:
+        try:
+            key_set = await self._store.get_api_keys()
+        except Exception as exc:  # store errors become one public 503
+            raise AuthenticationUnavailable from exc
+        records = {record.key_id: record for record in key_set.keys}
+        now = self._clock()
+        async with self._lock:
+            self._records = records
+            self._records_expire_at = now + self._ttl
+            self._reload_allowed_at = now + UNKNOWN_KEY_RELOAD_FLOOR_SECONDS
+            self._verified = {
+                digest: result
+                for digest, result in self._verified.items()
+                if result.expires_at > now
+            }
+        return records
+
+    async def has_active_key(self) -> bool:
+        """Answer readiness from the same cache the request path reads."""
+        records = await self.records()
+        return any(record.revoked_at is None for record in records.values())
 
     async def authenticate(self, authorization: str | None) -> Principal | None:
         if not authorization or not authorization.startswith("Bearer "):
@@ -59,36 +94,22 @@ class ApiKeyAuthenticator:
         if parsed is None:
             return None
 
-        now = self._clock()
         fingerprint = hashlib.sha256(credential.encode("utf-8")).digest()
         cached = self._verified.get(fingerprint)
-        if cached is not None and cached.expires_at > now:
+        if cached is not None and cached.expires_at > self._clock():
             return cached.principal
 
-        async with self._lock:
-            now = self._clock()
-            cached = self._verified.get(fingerprint)
-            if cached is not None and cached.expires_at > now:
-                return cached.principal
-            if self._records_expire_at <= now:
-                try:
-                    key_set = await self._store.get_api_keys()
-                except Exception as exc:  # store errors become one public 503
-                    raise AuthenticationUnavailable from exc
-                self._records = {record.key_id: record for record in key_set.keys}
-                self._records_expire_at = now + self._ttl
-                self._verified = {
-                    digest: result
-                    for digest, result in self._verified.items()
-                    if result.expires_at > now
-                }
+        key_id, secret = parsed
+        record = (await self.records()).get(key_id)
+        if record is None and self._reload_allowed_at <= self._clock():
+            record = (await self._reload()).get(key_id)
+        if record is None or record.revoked_at is not None:
+            return None
+        # Argon2 is deliberately expensive, so it never runs on the event loop.
+        if not await anyio.to_thread.run_sync(verify_secret, record.hash, secret):
+            return None
 
-            key_id, secret = parsed
-            record = self._records.get(key_id)
-            if record is None or record.revoked_at is not None:
-                return None
-            if not verify_secret(record.hash, secret):
-                return None
-            principal = Principal(record.key_id, frozenset(record.scopes))
-            self._verified[fingerprint] = _Verified(principal, now + self._ttl)
-            return principal
+        principal = Principal(record.key_id, frozenset(record.scopes))
+        async with self._lock:
+            self._verified[fingerprint] = _Verified(principal, self._clock() + self._ttl)
+        return principal

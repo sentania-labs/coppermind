@@ -17,10 +17,15 @@ vertical path proved end to end, then widened.
   1. Running it again keeps every existing secret, key and setting.
 - Every `/v1` route requires `Bearer cm_<key_id>_<secret>`. A missing or bad
   key answers 401 and a key without the route's scope answers 403. Note reads
-  need `notes:read`; creates and replacements need `notes:write`; a journal
-  create also needs `journal:write`. Successful verification and key hashes
-  are cached for five minutes. Health, readiness and OpenAPI remain open, and
-  Compose remains bound to loopback by default.
+  need `notes:read`; creates and replacements need `notes:write`. Successful
+  verification and key hashes are cached for five minutes, and a key created
+  since the last load is picked up on its first use rather than waiting the
+  cache out. Health, readiness and OpenAPI remain open, and Compose remains
+  bound to loopback by default.
+  The content-typed journal scopes, `journal:read` and `journal:write`, are
+  defined in the scope vocabulary but nothing enforces them in this
+  increment: only route-level scopes are enforced, so a `notes:write` key can
+  write a note whose type is `journal`.
 - `POST /v1/notes` creates a note. It lands as a Markdown file in the notes
   filesystem, under the review folder, named by the portable naming rules
   (date prefix for dated types, Windows-reserved characters and device names

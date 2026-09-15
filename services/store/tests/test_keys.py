@@ -30,3 +30,13 @@ def test_create_command_prints_a_key_and_persists_only_its_hash(tmp_path: Path, 
 
     assert run(["revoke", key_id], wiring) == 0
     assert ControlState(wiring.state_dir).api_keys().keys[0].revoked_at is not None
+
+
+def test_an_unknown_key_id_is_an_error_message_not_a_traceback(tmp_path: Path, capsys) -> None:
+    wiring = Wiring(data_dir=tmp_path / "data")
+    wiring.state_dir.mkdir(parents=True)
+
+    assert run(["revoke", "0123456789abcdef"], wiring) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "0123456789abcdef" in captured.err
