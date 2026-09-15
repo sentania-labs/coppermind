@@ -170,6 +170,29 @@ async def test_the_cache_expires_so_a_revoked_key_stops_working():
     assert fake.key_reads == 2
 
 
+async def test_a_verification_never_outlives_the_records_it_was_decided_from():
+    """Two cached windows must not chain into twice the five-minute bound."""
+    fake = FakeStore()
+    seconds = 0.0
+    authenticator = auth_module.ApiKeyAuthenticator(fake, clock=lambda: seconds)
+
+    assert await authenticator.authenticate(f"Bearer {KEY}") is not None
+    assert fake.key_reads == 1
+
+    fake.key_records = [
+        KEY_RECORD,
+        READ_KEY_RECORD.model_copy(update={"revoked_at": datetime(2026, 9, 9, tzinfo=UTC)}),
+    ]
+
+    seconds = auth_module.CACHE_TTL_SECONDS - 1
+    assert await authenticator.authenticate(f"Bearer {READ_KEY}") is not None
+    assert fake.key_reads == 1
+
+    seconds = auth_module.CACHE_TTL_SECONDS + 1
+    assert await authenticator.authenticate(f"Bearer {READ_KEY}") is None
+    assert fake.key_reads == 2
+
+
 class GatedKeyStore(FakeStore):
     """A store whose key read begins, then waits for the test to let it answer."""
 

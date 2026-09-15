@@ -34,6 +34,8 @@ class Principal:
 
 @dataclass(frozen=True)
 class _Verified:
+    """A verification, valid no longer than the key records it was decided from."""
+
     principal: Principal
     expires_at: float
 
@@ -81,12 +83,9 @@ class ApiKeyAuthenticator:
             raise AuthenticationUnavailable from exc
         finally:
             self._loading = None
-        now = self._clock()
         self._records = {record.key_id: record for record in key_set.keys}
-        self._records_expire_at = now + self._ttl
-        self._verified = {
-            digest: result for digest, result in self._verified.items() if result.expires_at > now
-        }
+        self._records_expire_at = self._clock() + self._ttl
+        self._verified = {}
         return self._records
 
     async def authenticate(self, authorization: str | None) -> Principal | None:
@@ -103,7 +102,9 @@ class ApiKeyAuthenticator:
             return cached.principal
 
         key_id, secret = parsed
-        record = (await self.records()).get(key_id)
+        records = await self.records()
+        decided_until = self._records_expire_at
+        record = records.get(key_id)
         if record is None or record.revoked_at is not None:
             return None
         # Argon2 is deliberately expensive, so it never runs on the event loop.
@@ -114,5 +115,5 @@ class ApiKeyAuthenticator:
 
         principal = Principal(record.key_id, frozenset(record.scopes))
         async with self._lock:
-            self._verified[fingerprint] = _Verified(principal, self._clock() + self._ttl)
+            self._verified[fingerprint] = _Verified(principal, decided_until)
         return principal
