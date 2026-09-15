@@ -116,3 +116,24 @@ def test_a_file_delivered_while_the_bytes_are_staged_is_not_written_over(
 
     assert target.read_text(encoding="utf-8") == MINE
     assert not list(target.parent.glob(".*.tmp"))
+
+
+def test_a_symlink_at_the_chosen_name_is_refused_rather_than_followed(tmp_path: Path):
+    """A link is not generated output, and its target is not this folder.
+
+    A projection landing wherever a link points leaves the store-owned folder,
+    which is the one thing keeping transcripts out of adoption and out of the
+    notes Git history.
+    """
+    relative = place(tmp_path)
+    link = tmp_path / relative
+    link.parent.mkdir(parents=True, exist_ok=True)
+    escaped = tmp_path / "Review" / "escaped.md"
+    link.symlink_to(escaped)
+
+    with pytest.raises(ProjectionNotPlaced) as refused:
+        write(tmp_path, relative)
+
+    assert not escaped.exists()
+    assert link.is_symlink()
+    assert refused.value.path == relative

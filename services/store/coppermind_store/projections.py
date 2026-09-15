@@ -38,7 +38,7 @@ def write_projection(
     created, False that generated output was replaced where it stood.
     """
     try:
-        target = resolve(notes_root, relative_path)
+        target = _page_path(notes_root, relative_path)
         data = _document(
             source_id,
             revision,
@@ -58,6 +58,21 @@ def write_projection(
         raise
     except (OSError, ValueError, fm.FrontmatterError) as exc:
         raise NotesFilesystemUnavailable(str(exc)) from exc
+
+
+def _page_path(notes_root: Path, relative_path: str) -> Path:
+    """The page's own path, with the name it was given never followed.
+
+    Resolving the whole path would follow a symlink standing at that name, and
+    the page would be written wherever the link points, outside the folder the
+    Git helper excludes and the reconciler refuses to adopt from. Only the
+    folder is resolved: a link at the name is then simply a file this store did
+    not generate, and `create_exclusive_bytes` refuses it like any other.
+    """
+    parent, _, name = relative_path.rpartition("/")
+    if name in {"", ".", ".."}:
+        raise ValueError(f"path does not name a page: {relative_path}")
+    return resolve(notes_root, parent) / name
 
 
 def _replace_projection(
