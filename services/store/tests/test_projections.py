@@ -137,3 +137,22 @@ def test_a_symlink_at_the_chosen_name_is_refused_rather_than_followed(tmp_path: 
     assert not escaped.exists()
     assert link.is_symlink()
     assert refused.value.path == relative
+
+
+def test_a_directory_at_the_chosen_name_is_refused_rather_than_called_an_outage(tmp_path: Path):
+    """Something that is not a readable file is an occupied name, not a bad mount.
+
+    Answering that the volume is unwell sends the operator to a healthy mount
+    and repeats forever, because nothing about the next attempt differs.
+    """
+    relative = place(tmp_path)
+    standing = tmp_path / relative
+    standing.mkdir(parents=True)
+
+    with pytest.raises(ProjectionNotPlaced) as refused:
+        write(tmp_path, relative)
+
+    assert standing.is_dir()
+    assert not list(standing.iterdir())
+    assert not list(standing.parent.glob(".*.tmp"))
+    assert refused.value.path == relative

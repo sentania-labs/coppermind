@@ -567,9 +567,6 @@ def _scan(
             relative_path = path.relative_to(root)
             if any(part in _IGNORED_DIRECTORIES for part in relative_path.parts):
                 continue
-            store_owned = any(
-                relative_path.parts[: len(folder)] == folder for folder in unadoptable
-            )
             relative = relative_path.as_posix()
             entry = by_path.get(relative)
             try:
@@ -658,7 +655,7 @@ def _scan(
             if isinstance(result, AdoptionCandidate):
                 if settling:
                     deferred += 1
-                elif store_owned:
+                elif any(relative_path.parts[: len(folder)] == folder for folder in unadoptable):
                     # A folder the store owns is not a place a person writes a
                     # note, so nothing below one is given an identity. The file
                     # is still read, because a known note moved into one must

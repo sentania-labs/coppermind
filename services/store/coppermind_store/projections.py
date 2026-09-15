@@ -47,7 +47,7 @@ def write_projection(
             artifacts,
         )
         if target.exists():
-            _replace_projection(notes_root, target, data, source_id, revision)
+            _replace_projection(notes_root, target, data, source_id, revision, relative_path)
             return False
         try:
             create_exclusive_bytes(target, data)
@@ -76,7 +76,7 @@ def _page_path(notes_root: Path, relative_path: str) -> Path:
 
 
 def _replace_projection(
-    notes_root: Path, target: Path, data: bytes, source_id: str, revision: int
+    notes_root: Path, target: Path, data: bytes, source_id: str, revision: int, relative: str
 ) -> None:
     """Rename `data` over generated output only while it is still this source's.
 
@@ -87,7 +87,6 @@ def _replace_projection(
     """
     staged = stage_bytes(target, data)
     try:
-        relative = target.relative_to(notes_root).as_posix()
         if projection_revision(notes_root, relative, source_id) is None:
             raise ProjectionNotPlaced(source_id, revision, relative)
         commit_staged(staged, target)
@@ -100,15 +99,22 @@ def projection_revision(notes_root: Path, relative: str, source_id: str) -> int 
     """The revision the file at this path projects for this source.
 
     None means the path holds something else: a projection of another source,
-    one of the captain's own notes that has come to occupy it, or nothing at
-    all. Generated output is only ever replaced where it is found, so a path
-    that does not answer for this source is never written over.
+    one of the captain's own notes that has come to occupy it, a directory
+    standing at the name, or nothing at all. Generated output is only ever
+    replaced where it is found, so a path that does not answer for this source
+    is never written over.
     """
     if not relative:
         return None
     try:
         frontmatter, _ = fm.parse(resolve(notes_root, relative).read_text(encoding="utf-8"))
-    except (FileNotFoundError, ValueError, fm.FrontmatterError):
+    except (
+        FileNotFoundError,
+        IsADirectoryError,
+        NotADirectoryError,
+        ValueError,
+        fm.FrontmatterError,
+    ):
         return None
     except OSError as exc:
         raise NotesFilesystemUnavailable(str(exc)) from exc
