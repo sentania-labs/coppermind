@@ -173,8 +173,10 @@ A note edited in place while PostgreSQL was down reads back as soon as it
 returns, because a by-ID read parses the current file. The store scans the
 notes filesystem in the background every 60 seconds by default. Known notes
 edited, moved, renamed or deleted on a device converge in the next scan, while
-the API continues answering. A file created on a device remains untouched and
-unknown until write-side reconciliation lands.
+the API continues answering. A note reads as `missing` only when the scan did
+not find its file; one it can see but cannot parse or open reads as `unparsed`
+instead. A file created on a device remains untouched and unknown until
+write-side reconciliation lands.
 
 ## Working on it
 

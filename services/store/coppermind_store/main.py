@@ -32,7 +32,7 @@ from coppermind_store.control import ControlState
 from coppermind_store.fs import is_writable
 from coppermind_store.internal_api import router as internal_router
 from coppermind_store.notes import LocalStore
-from coppermind_store.reconciler import run_reconciler
+from coppermind_store.reconciler import ReconcilerStatus, run_reconciler
 
 SERVICE = "coppermind-store"
 
@@ -55,8 +55,10 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         app.state.store = LocalStore(
             settings.notes_dir, control, factory, sources_root=settings.sources_dir
         )
+        app.state.reconcile_status = ReconcilerStatus()
         reconcile_task = asyncio.create_task(
-            run_reconciler(app.state.store), name="coppermind-reconciler"
+            run_reconciler(app.state.store, app.state.reconcile_status),
+            name="coppermind-reconciler",
         )
         app.state.engine = engine
         log.info(
@@ -132,7 +134,9 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         The control files count too. Every note operation loads settings and
         the schema first, and the API authenticates against the key records, so
         a control file the models reject breaks the whole surface and reporting
-        ready next to that would be a false green.
+        ready next to that would be a false green. So does a reconciler whose
+        scans have stopped completing, because the listed state of every note
+        is then whatever the last successful scan left behind.
         """
         writable, detail = is_writable(request.app.state.wiring.notes_dir)
         checks = [Check(name="notes_filesystem", ok=writable, detail=detail)]
@@ -140,6 +144,13 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         checks.append(Check(name="sources_filesystem", ok=sources_writable, detail=sources_detail))
         control_detail = _control_state_problem(request.app.state.store.control)
         checks.append(Check(name="control_state", ok=not control_detail, detail=control_detail))
+        # Listings answer from the reconciler's mirror, so a reconciler that
+        # has stopped converging means the store is serving state nothing is
+        # refreshing. That is reported here rather than only in the log.
+        reconcile_detail = request.app.state.reconcile_status.problem()
+        checks.append(
+            Check(name="reconciliation", ok=not reconcile_detail, detail=reconcile_detail)
+        )
         try:
             async with request.app.state.engine.connect() as connection:
                 await connection.execute(sa.text("SELECT 1"))

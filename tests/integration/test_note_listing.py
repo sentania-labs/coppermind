@@ -7,6 +7,7 @@ from datetime import date
 import pytest
 from coppermind_store import notes as notes_module
 from coppermind_store.notes import LocalStore
+from coppermind_store.reconciler import reconcile_once
 
 from coppermind.store_protocol import (
     CreateNote,
@@ -74,7 +75,7 @@ async def test_filters_use_the_current_files_for_every_known_note(store: LocalSt
         .replace("# Ameren Architecture", "# Current Ameren Architecture", 1)
     )
     ameren_path.write_text(edited, encoding="utf-8")
-    await store.reconcile()
+    await reconcile_once(store)
 
     async def ids(**filters: object) -> set[str]:
         page = await store.list_notes(NoteQuery.model_validate(filters))
@@ -115,7 +116,7 @@ async def test_state_filters_observe_missing_and_unparseable_known_paths(store: 
         broken_path.read_text(encoding="utf-8").replace("tags: []", "tags: ["),
         encoding="utf-8",
     )
-    await store.reconcile()
+    await reconcile_once(store)
 
     missing_page = await store.list_notes(NoteQuery(state="missing"))
     broken_page = await store.list_notes(NoteQuery(state="unparsed"))
@@ -144,7 +145,7 @@ async def test_a_note_removed_on_a_device_lists_as_missing_beside_a_present_one(
         context="internal",
     )
     (store.notes_root / removed.path).unlink()
-    await store.reconcile()
+    await reconcile_once(store)
 
     page = await store.list_notes(NoteQuery())
 
@@ -240,7 +241,7 @@ async def test_rename_between_pages_does_not_change_where_the_cursor_resumes(
     moved_path = store.notes_root / "Filed" / "Renamed.md"
     moved_path.parent.mkdir()
     old_path.rename(moved_path)
-    await store.reconcile()
+    await reconcile_once(store)
 
     second = await store.list_notes(NoteQuery(limit=2, cursor=first.next_cursor))
     returned = [item.id for item in [*first.items, *second.items]]

@@ -70,6 +70,12 @@ until the helper honours it.
   later occupy that path, so `notes.path` is deliberately not unique. File
   creation excludes existing bytes and refuses a non-missing mirrored path;
   listing pages by immutable note ID, never by the moveable path.
+- **Only observed absence makes a note missing.** The reconciler records a
+  file it can see but cannot identify, parse or open as `unparsed` at its own
+  path, and leaves a row untouched when two live copies claim one identity.
+  Reporting a file the captain still has as deleted is the failure this
+  service exists to prevent, so a new skip in `_scan` needs a disposition,
+  not a `continue`.
 - **Source external IDs have filesystem claims.** Ingest creates the
   deterministic `.external-id-<sha256>.json` claim before its source bundle.
   Replay and revision decisions resolve through that claim and the manifest,

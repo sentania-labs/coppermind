@@ -64,7 +64,7 @@ external_editor() {
 }
 
 wait_for_note_path() {
-    local note_id="$1" want="$2" tries="${3:-75}" response got code
+    local note_id="$1" want="$2" tries="${3:-180}" response got code
     response="$(mktemp)"
     for _ in $(seq 1 "$tries"); do
         [ "$(status_of "$API/healthz")" = "200" ] \
@@ -79,27 +79,8 @@ wait_for_note_path() {
     fail "note $note_id did not reconcile to $want"
 }
 
-wait_for_note_state() {
-    local note_id="$1" want="$2" tries="${3:-75}" response code
-    response="$(mktemp)"
-    for _ in $(seq 1 "$tries"); do
-        [ "$(status_of "$API/healthz")" = "200" ] \
-            || fail "the API stopped answering during reconciliation"
-        code="$(curl -sS -G -o "$response" -w '%{http_code}' "${AUTH[@]}" \
-            --data-urlencode "state=$want" "$API/v1/notes")"
-        if [ "$code" = "200" ] && python3 -c 'import json,sys
-items = json.load(open(sys.argv[1]))["items"]
-raise SystemExit(0 if any(item["id"] == sys.argv[2] for item in items) else 1)' \
-            "$response" "$note_id"; then
-            return 0
-        fi
-        sleep 1
-    done
-    fail "note $note_id did not reconcile to state $want"
-}
-
 wait_for_note_filter() {
-    local note_id="$1" filter="$2" tries="${3:-75}" response code
+    local note_id="$1" filter="$2" tries="${3:-180}" response code
     response="$(mktemp)"
     for _ in $(seq 1 "$tries"); do
         [ "$(status_of "$API/healthz")" = "200" ] \
@@ -406,7 +387,7 @@ ok "the scheduled scan followed the identity while the API kept answering"
 
 step "delete that note on the volume and wait for an honest missing listing"
 external_editor rm "/data/notes/$reconciled_path"
-wait_for_note_state "$runbook_note_id" missing
+wait_for_note_filter "$runbook_note_id" "state=missing"
 [ "$(status_of "${AUTH[@]}" "$API/v1/notes/$runbook_note_id")" = "404" ] \
     || fail "the deleted note still read as present"
 ok "the deleted note reads as gone and lists as missing while the API keeps answering"

@@ -106,12 +106,6 @@ class LocalStore:
         """Read API key hashes from filesystem-first control state."""
         return self.control.api_keys()
 
-    async def reconcile(self) -> dict[str, int]:
-        """Refresh known metadata from note identities observed on disk."""
-        from coppermind_store.reconciler import reconcile_once
-
-        return await reconcile_once(self)
-
     async def ingest(
         self, request: IngestRequest, *, payload_size_bytes: int | None = None
     ) -> IngestResult:
@@ -147,11 +141,19 @@ class LocalStore:
                 # connects lazily, so without this a PostgreSQL outage would only
                 # surface at commit, after the file had already been created.
                 await session.execute(sa.text("SELECT 1"))
+                # Historical paths are not unique, so this asks whether any
+                # live row holds the path rather than asserting only one can.
                 occupied = (
-                    await session.execute(
-                        sa.select(Note.id).where(Note.path == relative, Note.state != "missing")
+                    (
+                        await session.execute(
+                            sa.select(Note.id)
+                            .where(Note.path == relative, Note.state != "missing")
+                            .limit(1)
+                        )
                     )
-                ).scalar_one_or_none()
+                    .scalars()
+                    .first()
+                )
                 if occupied is not None:
                     raise PathCollision(relative)
                 try:

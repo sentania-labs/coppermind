@@ -66,11 +66,18 @@ vertical path proved end to end, then widened.
 - The store scans the notes filesystem on its own schedule, every 60 seconds
   by default. The filesystem walk runs outside the request loop, so requests
   continue while a scan is in progress. A known note edited, moved or renamed
-  on a device is mirrored by the identity in its frontmatter; a deletion keeps
-  its last known path but changes its state to `missing`. Files whose identity
-  is not already known are left byte for byte alone. The scan interval is a
-  product setting with a working default; its graphical control arrives with
-  the separate Admin service.
+  on a device is mirrored by the identity in its frontmatter. Only a file the
+  scan did not find becomes `missing`: one it can see but cannot parse or open
+  is `unparsed` at its own path, and two live copies of one identity leave the
+  row as it was rather than guessing. An interval scan stats every note file
+  and reads only the ones a stat says may have changed, a file changed inside
+  the quiet period waits for the next pass, and the daily rehash is the pass
+  that rereads everything. Several scans in a row that cannot complete make
+  `/readyz` report not ready rather than serving state nothing is refreshing.
+  Files whose identity is not already known are left byte for byte alone. The
+  interval, the quiet period and the rehash time are product settings with
+  working defaults; their graphical controls arrive with the separate Admin
+  service.
 - `POST /v1/ingest` takes a source and the note to open for it, and creates
   both or neither. A deterministic `.external-id-<sha256>.json` file claims
   each `provider` plus `external_source_id` before the bundle is written. The

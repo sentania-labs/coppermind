@@ -60,7 +60,9 @@ class ReconcileSettings(BaseModel):
 
     scan_interval_s: int = Field(default=60, ge=1)
     quiet_period_s: int = Field(default=30, ge=0)
-    full_rehash_daily_at: str = "03:30"
+    # Local wall clock, in the timezone under `general`. The reconciler reads
+    # this every interval, so it is checked here rather than where it is used.
+    full_rehash_daily_at: str = Field(default="03:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 class GitSettings(BaseModel):

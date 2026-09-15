@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import os
+
+import pytest
 import sqlalchemy as sa
+from coppermind_store.fs import content_hash
 from coppermind_store.notes import LocalStore
+from coppermind_store.reconciler import UNREADABLE_REASON, reconcile_once
 
 from coppermind.db.models import Note
 from coppermind.store_protocol import CreateNote, NoteQuery, NoteUnparseable, NotFound
@@ -23,7 +28,7 @@ async def test_device_edit_refreshes_the_mirror_and_reads_back_by_id(store: Loca
         .replace(b"# Runbook", b"# Current Runbook")
     )
 
-    counts = await store.reconcile()
+    counts = await reconcile_once(store)
     fetched = await store.get_note(note.id)
     row = await _row(store, note.id)
 
@@ -41,7 +46,7 @@ async def test_device_move_and_rename_follow_the_identity(store: LocalStore):
     moved.parent.mkdir()
     (store.notes_root / note.path).rename(moved)
 
-    counts = await store.reconcile()
+    counts = await reconcile_once(store)
     fetched = await store.get_note(note.id)
 
     assert counts["moved"] == 1
@@ -54,7 +59,7 @@ async def test_device_delete_is_missing_instead_of_present(store: LocalStore):
     note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
     (store.notes_root / note.path).unlink()
 
-    counts = await store.reconcile()
+    counts = await reconcile_once(store)
     page = await store.list_notes(NoteQuery())
 
     assert counts["missing"] == 1
@@ -79,7 +84,7 @@ async def test_stale_path_does_not_name_the_wrong_broken_note(store: LocalStore)
     moved_path.write_text(broken, encoding="utf-8")
     moved_path.rename(stale_path)
 
-    await store.reconcile()
+    await reconcile_once(store)
 
     assert (await _row(store, stale.id)).state == "missing"
     moved_row = await _row(store, moved.id)
@@ -105,9 +110,134 @@ async def test_unknown_device_created_file_is_left_unchanged(store: LocalStore):
     original = b"# Made on phone\n\nNo identity yet.\n"
     unknown.write_bytes(original)
 
-    counts = await store.reconcile()
+    counts = await reconcile_once(store)
 
     async with store.session_factory() as session:
         assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 0
     assert unknown.read_bytes() == original
     assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0}
+
+
+async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: LocalStore):
+    """A device that broke the bytes has not deleted the note."""
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    path = store.notes_root / note.path
+    broken = path.read_bytes().replace(b"# Runbook", b"# Runb\xffok")
+    path.write_bytes(broken)
+
+    counts = await reconcile_once(store)
+    row = await _row(store, note.id)
+
+    assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 1}
+    assert row.state == "unparsed"
+    assert row.path == note.path
+    assert row.content_hash == content_hash(broken)
+    assert row.size_bytes == len(broken)
+    assert [item.id for item in (await store.list_notes(NoteQuery(state="unparsed"))).items] == [
+        note.id
+    ]
+    with pytest.raises(NoteUnparseable):
+        await store.get_note(note.id)
+
+
+async def test_a_break_that_takes_the_id_line_still_holds_the_known_path(store: LocalStore):
+    """Identity is unrecoverable, so the row that names the path claims the file."""
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    path = store.notes_root / note.path
+    text = path.read_text(encoding="utf-8").replace(
+        f"id: {note.id}", f"id: {note.id} # mine\nid: ["
+    )
+    path.write_text(text, encoding="utf-8")
+
+    await reconcile_once(store)
+    row = await _row(store, note.id)
+
+    assert row.state == "unparsed"
+    assert row.path == note.path
+    assert row.content_hash == content_hash(path.read_bytes())
+
+
+async def test_two_live_copies_leave_the_row_alone_instead_of_reporting_it_gone(
+    store: LocalStore,
+):
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    original = store.notes_root / note.path
+    copy = store.notes_root / "Copy.md"
+    moved = store.notes_root / "Moved.md"
+    copy.write_bytes(original.read_bytes())
+    original.rename(moved)
+
+    counts = await reconcile_once(store)
+    row = await _row(store, note.id)
+
+    assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0}
+    assert row.state == "ok"
+    assert row.path == note.path
+
+
+async def test_one_unreadable_file_does_not_stop_the_others_converging(store: LocalStore):
+    """A durable per-file fault is its own state, not a missing note or a dead scan."""
+    unreadable = await store.create_note(
+        CreateNote(title="Runbook", frontmatter={"type": "reference"})
+    )
+    healthy = await store.create_note(
+        CreateNote(title="Meeting", frontmatter={"type": "reference"})
+    )
+    broken_path = store.notes_root / unreadable.path
+    broken_path.unlink()
+    broken_path.symlink_to(broken_path.name)
+    healthy_path = store.notes_root / healthy.path
+    healthy_path.write_bytes(healthy_path.read_bytes().replace(b"# Meeting", b"# Standup"))
+
+    await reconcile_once(store)
+
+    unreadable_row = await _row(store, unreadable.id)
+    assert unreadable_row.state == "unparsed"
+    assert unreadable_row.state_reason == UNREADABLE_REASON
+    assert unreadable_row.path == unreadable.path
+    assert (await _row(store, healthy.id)).title == "Standup"
+
+
+async def test_an_interval_scan_trusts_a_stat_and_the_daily_rehash_does_not(store: LocalStore):
+    """The steady-state pass costs a stat per file; the full pass rereads them."""
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    await reconcile_once(store)
+    path = store.notes_root / note.path
+    before = path.stat()
+    path.write_bytes(path.read_bytes().replace(b"# Runbook", b"# Runbouk"))
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert path.stat().st_size == before.st_size
+
+    assert await reconcile_once(store) == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0}
+    assert (await _row(store, note.id)).title == "Runbook"
+
+    assert await reconcile_once(store, full=True) == {
+        "changed": 1,
+        "moved": 0,
+        "missing": 0,
+        "unparsed": 0,
+    }
+    assert (await _row(store, note.id)).title == "Runbouk"
+
+
+async def test_a_file_still_inside_the_quiet_period_waits_rather_than_going_missing(
+    store: LocalStore,
+):
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    path = store.notes_root / note.path
+    path.write_bytes(path.read_bytes().replace(b"# Runbook", b"# Current Runbook"))
+
+    deferred = await reconcile_once(store, quiet_period_s=3600)
+    settling = await _row(store, note.id)
+
+    assert deferred == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0}
+    assert settling.state == "ok"
+    assert settling.title == "Runbook"
+
+    assert await reconcile_once(store) == {
+        "changed": 1,
+        "moved": 0,
+        "missing": 0,
+        "unparsed": 0,
+    }
+    assert (await _row(store, note.id)).title == "Current Runbook"

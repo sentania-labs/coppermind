@@ -21,7 +21,10 @@ class SessionWithLostCommitResult:
 
 
 class EmptyResult:
-    def scalar_one_or_none(self) -> None:
+    def scalars(self) -> "EmptyResult":
+        return self
+
+    def first(self) -> None:
         return None
 
 
