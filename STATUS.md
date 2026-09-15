@@ -61,7 +61,8 @@ vertical path proved end to end, then widened.
   immutable identifier order, with a default limit of 50 and an allowed range
   of 1 through 200, so a rename between pages cannot move the cursor boundary.
   Summaries come from the latest reconciliation scan and carry the state it
-  observed, `ok`, `unparsed` or `missing`. With PostgreSQL unavailable,
+  observed, `ok`, `unparsed` or `missing`, with `state_reason` naming what the
+  scan saw when that state is not `ok`. With PostgreSQL unavailable,
   listing answers 503 `metadata_unavailable`, never an empty page.
 - The store scans the notes filesystem on its own schedule, every 60 seconds
   by default. The filesystem walk runs outside the request loop, so requests
@@ -71,21 +72,22 @@ vertical path proved end to end, then widened.
   is `unparsed` at its own path, and two live copies of one identity leave the
   row as it was rather than guessing. An interval scan stats every note file
   and reads only the ones a stat says may have changed. A file carrying no
-  identity this store knows, which is every file in a vault Coppermind was
-  pointed at, is read once and then stat-trusted the same way, so an unknown
-  vault costs one stat per file per pass rather than a read and a parse. That
-  memory holds 10,000 such paths per store process; in a vault with more
-  unidentified files than that, the ones past the bound are read and parsed
-  every pass until write-side reconciliation gives them identities. A file
-  changed inside the quiet period waits for the next pass. Trusting a stat is
-  safe
-  because it is not the only pass: once a day, at the configured local time,
-  the store rereads and rehashes every note file, which is what catches an
-  edit that left the file's size and timestamp where they were. That pass is
-  due until it completes, so one that could not run is retried on the next
-  interval rather than skipped for the day. Several scans in a row that
-  cannot complete make
-  `/readyz` report not ready rather than serving state nothing is refreshing.
+  identity this store knows, which is every file in an existing tree
+  Coppermind was pointed at, is read once and then stat-trusted the same way,
+  so an unfamiliar tree costs one stat per file per pass rather than a read
+  and a parse. That memory holds 10,000 such paths per store process; where
+  more files than that carry no known identity, the ones past the bound are
+  read and parsed every pass until write-side reconciliation gives them
+  identities. A file changed inside the quiet period waits for the next pass.
+  Trusting a stat is safe because it is not the only pass: once a day, at the
+  configured local time, the store rereads and rehashes every note file, which
+  is what catches an edit that left the file's size and timestamp where they
+  were. That pass is due until it completes, so one that could not run is
+  retried on the next interval rather than skipped for the day. Several scans
+  in a row that cannot complete make `/readyz` report not ready rather than
+  serving state nothing is refreshing, as does a long silence with no scan
+  landing; the first scan after a start gets a grace of its own first, because
+  it reads everything and there is no measured runtime yet to judge it by.
   Files whose identity is not already known are left byte for byte alone. The
   interval, the quiet period and the rehash time are product settings with
   working defaults; their graphical controls arrive with the separate Admin
@@ -207,8 +209,8 @@ vertical path proved end to end, then widened.
   `metadata_unavailable`, a refused write leaves no file behind and touches no
   existing one, and the notes filesystem is untouched and still fully
   editable. Starting PostgreSQL brings API operations back with no
-  intervention; what changed in the notes filesystem during the outage waits
-  for the reconciler under "Not built yet". Control state is checked the same
+  intervention; what changed in the notes filesystem during the outage
+  converges on the next scan that completes. Control state is checked the same
   way: a settings, schema or key file the models reject answers 503 and names
   the file, while key state that loads and happens to hold no usable key is an
   operator's choice and stays ready. Readiness names the source bundle

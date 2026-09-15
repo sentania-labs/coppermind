@@ -6,8 +6,8 @@ ignored until the write-side reconciliation increment.
 An interval scan stats every note file and reads only the ones a stat says may
 have changed, so the steady-state cost is one stat per file rather than a read
 and a sha256 of the whole notes filesystem every minute. A file carrying no
-identity this store knows, which is every file in a vault Coppermind was
-pointed at, is read once and then stat-trusted the same way, for up to
+identity this store knows, which is every file in an existing tree Coppermind
+was pointed at, is read once and then stat-trusted the same way, for up to
 `_UNIDENTIFIED_LIMIT` such paths; past that bound the remaining unknown files
 are read and parsed on every pass. The scheduled daily rehash is the pass that
 reads everything, which is what catches a change a device made without moving

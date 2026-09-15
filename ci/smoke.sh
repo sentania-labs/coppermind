@@ -5,9 +5,11 @@
 # checkout with no manual setup, a note created through the API lands as a
 # Markdown file with correct frontmatter in the notes filesystem, a write
 # conditional on a stale ETag cannot overwrite an edit made on the volume
-# while one carrying the current ETag lands, readiness fails honestly when
-# PostgreSQL is stopped, and everything recovers when it returns. Read from
-# the volume, never through the API, whenever the claim is about a file.
+# while one carrying the current ETag lands, a note moved, renamed or deleted
+# on the volume converges in the scheduled scan while the API keeps answering,
+# readiness fails honestly when PostgreSQL is stopped, and everything recovers
+# when it returns. Read from the volume, never through the API, whenever the
+# claim is about a file.
 #
 # Usage:
 #   bash ci/smoke.sh
