@@ -285,11 +285,11 @@ class LocalStore:
         The round-trip YAML mapping retains every untouched line, including a
         person's ordering, comments and the note's list style, so the file
         differs in the one key the caller named whether the note was written
-        by Coppermind, by Obsidian or by hand. Two shapes are exceptions: a
-        block written with carriage returns comes back whole in line feeds,
-        and a block mixing a flush list with mappings nested at another width
-        keeps the list style and normalises those mappings to standard
-        nesting. Obsidian Sync pushes those rewritten lines.
+        by Coppermind, by Obsidian or by hand. A targeted change preserves the
+        note's content and its ordinary formatting, while some unusual
+        formatting is normalised and syncs with it; what survives and what
+        does not is recorded shape by shape in
+        `coppermind/tests/test_frontmatter.py::test_a_patch_preserves_the_note_and_its_ordinary_formatting`.
 
         The body comes from the same current file and is never accepted from
         the caller. A patch whose result is byte identical to the file writes

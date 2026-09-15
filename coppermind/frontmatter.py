@@ -61,6 +61,7 @@ class FrontmatterError(ValueError):
 
 
 _WORD_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
+_ITEM_WITH_NO_VALUE = re.compile(r"^([ \t]*-)[ \t]*$", re.MULTILINE)
 
 
 def _category(exc: YAMLError) -> str:
@@ -136,18 +137,29 @@ def parse(text: str) -> tuple[dict[str, Any], str]:
     return _mapping(loaded), body
 
 
+def _indent_of(block: str) -> tuple[int | None, int | None]:
+    """The loader's guess for a block, or no guess when it cannot be made."""
+    try:
+        _, indent, sequence_offset = load_yaml_guess_indent(block, yaml=_yaml())
+    except (YAMLError, IndexError):
+        return None, None
+    return indent, sequence_offset
+
+
 def _load_guessing_indent(block: str, yaml: YAML) -> tuple[Any, int | None, int | None]:
-    """Load a block and name its indentation, or load it in the house style.
+    """Load a block and name the indentation it already uses.
 
     The guess walks the raw lines before anything is parsed, and that walk is
-    not total: a list item a person left blank runs it off the end of a line.
-    A guess that cannot be made is no guess, so such a note still patches.
+    not total: a list item a person left blank has no value to measure and
+    runs the walk off the end of its line. Lending that one line a value keeps
+    the rest of the block measurable, so a blank entry left on a phone does
+    not cost the note the style of every list in it.
     """
     try:
         try:
             return load_yaml_guess_indent(block, yaml=yaml)
         except IndexError:
-            return yaml.load(block), None, None
+            return (yaml.load(block), *_indent_of(_ITEM_WITH_NO_VALUE.sub(r"\1 x", block)))
     except YAMLError as exc:
         raise _unparseable(exc) from exc
 

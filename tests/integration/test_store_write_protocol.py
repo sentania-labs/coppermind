@@ -906,7 +906,9 @@ async def test_a_patch_keeps_a_list_a_person_wrote_flush_with_its_key(store: Loc
 
     after = path.read_text(encoding="utf-8")
     assert "\n- architecture\n" in after
-    assert [line for line in after.splitlines() if line not in hand_written.splitlines()] == [
-        "reviewed: true"
-    ]
+    before_lines = hand_written.splitlines()
+    after_lines = after.splitlines()
+    assert [line for line in after_lines if line not in before_lines] == ["reviewed: true"]
+    assert [line for line in before_lines if line not in after_lines] == ["reviewed: false"]
+    assert [line for line in after_lines if line != line.rstrip()] == []
     assert patched.frontmatter["reviewed"] is True

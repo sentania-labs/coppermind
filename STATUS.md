@@ -141,12 +141,11 @@ vertical path proved end to end, then widened.
   their YAML types, and a date lands as a date the same way a create and a
   replace write one. The block is written back in the note's own list style,
   so a list a person wrote flush with its key stays flush and a block with no
-  list keeps its mapping nesting. That minimal file difference holds for
-  ordinary formatting, with two exceptions: a block written with carriage
-  returns is rewritten whole in line feeds, and a block mixing a flush list
-  with mappings nested at another width keeps the list style and normalises
-  those mappings to standard nesting. Obsidian Sync pushes those rewritten
-  lines.
+  list keeps its mapping nesting. A targeted change preserves the note's
+  content and its ordinary formatting, while some unusual formatting is
+  normalised and syncs with it; what survives and what does not is recorded
+  shape by shape in
+  `coppermind/tests/test_frontmatter.py::test_a_patch_preserves_the_note_and_its_ordinary_formatting`.
   A patch whose result is byte identical to the file writes nothing and moves
   no mtime, so marking an already reviewed note reviewed is free. The
   identifier cannot be set or removed, a key the schema requires cannot be

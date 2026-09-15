@@ -103,11 +103,11 @@ async def patch_frontmatter(
 
     Every other line of the file is left as it is, in the note's own list
     style, which for an ordinary frontmatter block makes the file differ in
-    the named keys alone. Two shapes are exceptions: a block written with
-    carriage returns is rewritten whole in line feeds, and a block mixing a
-    flush list with mappings nested at another width keeps the list style and
-    normalises those mappings to standard nesting. Obsidian Sync then pushes
-    those rewritten lines.
+    the named keys alone. A targeted change preserves the note's content and
+    its ordinary formatting, while some unusual formatting is normalised and
+    syncs with it; what survives and what does not is recorded shape by shape
+    in
+    `coppermind/tests/test_frontmatter.py::test_a_patch_preserves_the_note_and_its_ordinary_formatting`.
     """
     try:
         note = await client.patch_frontmatter(note_id, payload, etag_from_if_match(if_match))
