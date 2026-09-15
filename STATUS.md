@@ -309,8 +309,9 @@ vertical path proved end to end, then widened.
   returns an artifact that decodes as UTF-8 text as the response body, always
   as `text/plain` and never as the ingested type, and describes every other
   artifact as JSON with its size and SHA-256, after verifying the stored bytes.
-  A source or artifact that is not there answers 404; a volume that cannot be
-  read answers 503 rather than reporting the bundle gone.
+  A source with no manifest, and an artifact the manifest does not record,
+  answer 404; bytes the manifest records that the volume cannot deliver, whole
+  and matching their digest, answer 503 rather than reporting the bundle gone.
   Both need `sources:read`. `PUT`, `PATCH` and `DELETE` on a source or an
   artifact return 405 `method_not_allowed`, because only reads are routed:
   neither the public nor the internal surface offers a way to change source
