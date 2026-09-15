@@ -338,8 +338,11 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     needs: publish
     runs-on: ubuntu-latest
+    # One group for every tag, on purpose. The promotion script reads the
+    # version `latest` currently serves and then writes over it, and that
+    # comparison is only sound while no other tag's promotion runs in between.
     concurrency:
-      group: ci-promote-latest-${{ github.ref_name }}
+      group: ci-promote-latest
       cancel-in-progress: false
     permissions:
       contents: read

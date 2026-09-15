@@ -41,7 +41,11 @@ targets. There is no command in the workflow that you cannot run here.
 5. **Tags release.** From a merged `main` commit, `git tag -a vX.Y.Z -m vX.Y.Z`
    and push the tag. No version-bump pull request. The quickstart tracks
    `latest`; anything deploying Coppermind for real pins a version or a digest
-   in its own repository.
+   in its own repository. Promotion of `latest` runs one job at a time across
+   every tag, so when two tags land close together GitHub can drop the one
+   still waiting its turn. That leaves `latest` where it was rather than
+   pointing at the wrong build: re-run the promotion job on the newest tag's
+   run and it moves forward.
 6. **The first tag needs one manual step, once.** GHCR creates a package
    private on its first publish and does not inherit the repository's
    visibility, so the first `vX.Y.Z` pushes and signs the four images and then

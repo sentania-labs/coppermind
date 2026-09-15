@@ -118,6 +118,24 @@ def test_publish_authority_is_confined_to_tag_only_jobs():
     assert not problems, "\n".join(problems)
 
 
+def test_latest_promotion_serializes_across_tags():
+    """The promotion guard is a read then write, so two tags must not overlap.
+
+    `ci/promote-latest.sh` reads the version `latest` serves and refuses to go
+    backwards, then copies this tag's digests over it. A concurrency group that
+    varies by ref puts two tags' promotions in different queues, and the older
+    one can land last.
+    """
+    workflow = load(WORKFLOWS[0])
+    promote = workflow["jobs"]["promote-latest"]
+    group = str(promote["concurrency"]["group"])
+    assert "${{" not in group, (
+        f"promote-latest queues in {group}, which varies by run, so two tags "
+        "can promote at once and the older one can win"
+    )
+    assert promote["concurrency"]["cancel-in-progress"] is False
+
+
 def test_release_waits_for_every_image_and_the_running_stack():
     workflow = load(WORKFLOWS[0])
     publish = workflow["jobs"]["publish"]
