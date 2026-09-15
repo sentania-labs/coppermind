@@ -86,28 +86,61 @@ class FrontmatterSchema(BaseModel):
                 )
         return out
 
+    def required_keys(self, frontmatter: dict[str, Any]) -> set[str]:
+        """The keys this frontmatter must carry, conditional ones included.
+
+        A key is required outright or because another key currently holds a
+        value that asks for it, which is the same rule
+        `validate_frontmatter` reports on.
+        """
+        return {
+            definition.name
+            for definition in self.keys
+            if definition.required or _requires(definition, frontmatter)
+        }
+
     def validate_frontmatter(self, frontmatter: dict[str, Any]) -> list[str]:
         """Return a list of human readable problems, empty when the note is valid.
+
+        A problem quotes the note's own value, so it belongs where note content
+        belongs: an answer to whoever sent the note, never an operational log.
+        `invalid_keys` is the form that may be logged.
 
         Unknown keys are not problems. They are passed through untouched, so a
         person can keep their own keys in a note without Coppermind objecting.
         """
-        problems: list[str] = []
+        return [problem for _, problem in self._problems(frontmatter)]
+
+    def invalid_keys(self, frontmatter: dict[str, Any]) -> list[str]:
+        """The names of the keys a note fails on, carrying none of its content.
+
+        Key names come from this schema rather than from the note, which is what
+        makes them safe to log next to a note's path.
+        """
+        return sorted({name for name, _ in self._problems(frontmatter)})
+
+    def _problems(self, frontmatter: dict[str, Any]) -> list[tuple[str, str]]:
+        problems: list[tuple[str, str]] = []
         for definition in self.keys:
             present = definition.name in frontmatter
             value = frontmatter.get(definition.name)
             if definition.required and (not present or value is None):
-                problems.append(f"{definition.name}: required")
+                problems.append((definition.name, f"{definition.name}: required"))
                 continue
             if not present or value is None:
                 if definition.required_when and _requires(definition, frontmatter):
                     problems.append(
-                        f"{definition.name}: required when "
-                        f"{definition.required_when} is one of "
-                        f"{', '.join(definition.required_when_values)}"
+                        (
+                            definition.name,
+                            f"{definition.name}: required when "
+                            f"{definition.required_when} is one of "
+                            f"{', '.join(definition.required_when_values)}",
+                        )
                     )
                 continue
-            problems.extend(_check_value(definition, value))
+            problems.extend(
+                (definition.name, problem) for problem in _check_value(definition, value)
+            )
         return problems
 
 

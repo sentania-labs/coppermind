@@ -1,4 +1,4 @@
-"""Read-side reconciliation of known identities from the notes filesystem."""
+"""Reconciliation of known and device-created notes from the notes filesystem."""
 
 from __future__ import annotations
 
@@ -9,13 +9,28 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from coppermind_store import notes as notes_module
 from coppermind_store import reconciler
 from coppermind_store.fs import content_hash
 from coppermind_store.notes import LocalStore
 from coppermind_store.reconciler import UNPARSED_REASON, UNREADABLE_REASON, reconcile_once
+from structlog.testing import capture_logs
 
+from coppermind import frontmatter as fm
 from coppermind.db.models import Note
-from coppermind.store_protocol import CreateNote, NoteQuery, NoteUnparseable, NotFound
+from coppermind.ids import is_valid_id
+from coppermind.store_protocol import (
+    CreateNote,
+    NoteQuery,
+    NotesFilesystemUnavailable,
+    NoteUnparseable,
+    NotFound,
+)
+
+
+def _control(store: LocalStore) -> dict[str, object]:
+    """What the reconciler reads once a pass and hands to every adoption."""
+    return {"schema": store.control.schema(), "settings": store.control.settings()}
 
 
 async def _row(store: LocalStore, note_id: str) -> Note:
@@ -108,18 +123,743 @@ async def test_stale_path_does_not_name_the_wrong_broken_note(store: LocalStore)
         raise AssertionError("broken note did not report its own identity")
 
 
-async def test_unknown_device_created_file_is_left_unchanged(store: LocalStore):
+async def test_a_settled_device_created_file_is_adopted_and_retrievable(store: LocalStore):
     unknown = store.notes_root / "Review" / "Made on phone.md"
     unknown.parent.mkdir(parents=True, exist_ok=True)
-    original = b"# Made on phone\n\nNo identity yet.\n"
+    body = "# Made on phone\r\n\r\nNo identity yet.\r\n"
+    original = (
+        "---\r\n"
+        "tags: [phone] # keep this style\r\n"
+        "my_key: hand-written # keep this comment\r\n"
+        "---\r\n"
+        f"{body}"
+    ).encode()
+    unknown.write_bytes(original)
+
+    counts = await reconcile_once(store)
+    adopted_text = unknown.read_bytes().decode("utf-8")
+    frontmatter, adopted_body = fm.parse(adopted_text)
+    note_id = frontmatter[store.control.schema().role("id_key")]
+    fetched = await store.get_note(note_id)
+
+    assert is_valid_id(note_id)
+    assert adopted_body == body
+    assert (
+        adopted_text.index("tags: [phone] # keep this style")
+        < adopted_text.index("my_key: hand-written # keep this comment")
+        < adopted_text.index("schema_version: 1")
+    )
+    assert "\n" not in adopted_text.replace("\r\n", "")
+    assert fetched.id == note_id
+    assert fetched.path == "Review/Made on phone.md"
+    assert fetched.body == body
+    assert counts["adopted"] == 1
+
+
+async def test_adoption_always_writes_identity_when_schema_marks_it_optional(
+    store: LocalStore,
+):
+    schema_record = store.control.store.read("schema")
+    schema_body = dict(schema_record.body)
+    id_key = schema_body["roles"]["id_key"]
+    for definition in schema_body["keys"]:
+        if definition["name"] == id_key:
+            definition["required"] = False
+    store.control.store.write("schema", schema_body, if_revision=schema_record.revision)
+    unknown = store.notes_root / "Review" / "Optional identity.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    unknown.write_bytes(b"# Optional identity\n")
+
+    first = await reconcile_once(store)
+    frontmatter, _ = fm.parse(unknown.read_text(encoding="utf-8"))
+    note_id = frontmatter[id_key]
+    second = await reconcile_once(store)
+
+    assert first["adopted"] == 1
+    assert is_valid_id(note_id)
+    assert (await store.get_note(note_id)).path == "Review/Optional identity.md"
+    assert second["adopted"] == 0
+    assert second["unparsed"] == 0
+
+
+async def test_adoption_rechecks_requirements_activated_by_applied_defaults(
+    store: LocalStore,
+):
+    schema_record = store.control.store.read("schema")
+    schema_body = dict(schema_record.body)
+    roles = schema_body["roles"]
+    for definition in schema_body["keys"]:
+        if definition["name"] == roles["context_key"]:
+            definition["default"] = "customer"
+        if definition["name"] == roles["account_key"]:
+            definition["default"] = "Default account"
+    store.control.store.write("schema", schema_body, if_revision=schema_record.revision)
+    unknown = store.notes_root / "Review" / "Default customer.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    unknown.write_bytes(b"# Default customer\n")
+
+    counts = await reconcile_once(store)
+    frontmatter, _ = fm.parse(unknown.read_text(encoding="utf-8"))
+
+    assert counts["adopted"] == 1
+    assert frontmatter[roles["context_key"]] == "customer"
+    assert frontmatter[roles["account_key"]] == "Default account"
+    assert store.control.schema().validate_frontmatter(frontmatter) == []
+
+
+async def test_a_device_created_file_waits_for_quiet_before_adoption(store: LocalStore):
+    unknown = store.notes_root / "Review" / "Still syncing.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    original = b"# Still syncing\n\nFirst piece.\n"
+    unknown.write_bytes(original)
+    remembered: reconciler.UnidentifiedStats = {}
+
+    waiting = await reconcile_once(store, quiet_period_s=3600, unidentified=remembered)
+
+    assert waiting["adopted"] == 0
+    assert waiting["deferred"] == 1
+    assert unknown.read_bytes() == original
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 0
+
+    settled = await reconcile_once(store, unidentified=remembered)
+    frontmatter, body = fm.parse(unknown.read_text(encoding="utf-8"))
+
+    assert settled["adopted"] == 1
+    assert body == original.decode()
+
+
+async def test_a_settling_path_does_not_consume_the_rejected_file_memory(
+    store: LocalStore,
+):
+    """A whole notes filesystem settles at once, so those paths must not be kept.
+
+    The memory exists for durable rejections. A file still inside the quiet
+    period is about to be read again anyway, so keeping it only crowds out the
+    rejections the bound is there to hold.
+    """
+    unknown = store.notes_root / "Review" / "Still syncing.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    unknown.write_bytes(b"# Still syncing\n\nFirst piece.\n")
+    rejected = store.notes_root / "Review" / "Bad id.md"
+    rejected.write_bytes(b"---\nid: not-a-ulid\n---\n# Hand edited\n")
+    remembered: reconciler.UnidentifiedStats = {}
+
+    waiting = await reconcile_once(store, quiet_period_s=3600, unidentified=remembered)
+
+    assert waiting["deferred"] == 2
+    assert remembered == {}
+
+    settled = await reconcile_once(store, unidentified=remembered)
+
+    assert settled["adopted"] == 1
+    assert settled["rejected"] == 1
+    assert list(remembered) == ["Review/Bad id.md"]
+
+
+async def test_a_folder_the_store_owns_is_never_adopted_into(store: LocalStore):
+    """Trash, sources and attachments are the store's own, not places to adopt."""
+    settings = store.control.settings().notes
+    owned = {
+        settings.trash_folder: b"# Thrown away\n",
+        settings.sources_folder: b"# Generated\n",
+        settings.attachments_folder: b"# Attached\n",
+    }
+    for folder, data in owned.items():
+        (store.notes_root / folder).mkdir(parents=True, exist_ok=True)
+        (store.notes_root / folder / "Left alone.md").write_bytes(data)
+    ordinary = store.notes_root / "Review" / "Made on phone.md"
+    ordinary.parent.mkdir(parents=True, exist_ok=True)
+    ordinary.write_bytes(b"# Made on phone\n")
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 1
+    assert counts["rejected"] == 0
+    assert counts["unwritable"] == 0
+    for folder, data in owned.items():
+        assert (store.notes_root / folder / "Left alone.md").read_bytes() == data
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 1
+
+
+async def test_a_nested_trash_folder_is_excluded_by_its_whole_path(store: LocalStore):
+    """A configured folder may nest, so the exclusion is a path, not a first segment."""
+    current = store.control.store.read("settings")
+    body = dict(current.body)
+    body["notes"] = {**body.get("notes", {}), "trash_folder": "Archive/Trash"}
+    body.pop("revision", None)
+    store.control.store.write("settings", body, if_revision=current.revision)
+    nested = store.notes_root / "Archive" / "Trash" / "Thrown away.md"
+    nested.parent.mkdir(parents=True, exist_ok=True)
+    original = b"# Thrown away\n"
+    nested.write_bytes(original)
+    sibling = store.notes_root / "Archive" / "Kept.md"
+    sibling.write_bytes(b"# Kept\n")
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 1
+    assert nested.read_bytes() == original
+    assert fm.parse(sibling.read_text(encoding="utf-8"))[0][store.control.schema().role("id_key")]
+
+
+async def test_a_note_moved_into_the_trash_folder_is_followed_not_reported_gone(
+    store: LocalStore,
+):
+    """Skipping adoption there must not skip the file, or the note looks deleted."""
+    note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    trash = store.notes_root / store.control.settings().notes.trash_folder
+    trash.mkdir(parents=True, exist_ok=True)
+    moved = trash / "Runbook.md"
+    (store.notes_root / note.path).rename(moved)
+
+    counts = await reconcile_once(store)
+    row = await _row(store, note.id)
+
+    assert counts["missing"] == 0
+    assert counts["moved"] == 1
+    assert row.state == "ok"
+    assert row.path == f"{store.control.settings().notes.trash_folder}/Runbook.md"
+
+
+async def test_a_file_ingest_generated_is_refused_rather_than_re_adopted(store: LocalStore):
+    """Source associations mark output the store wrote, not a note a person made."""
+    generated = store.notes_root / "Review" / "Opened for a source.md"
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    original = (
+        b"---\nschema_version: 1\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\ndate: 2026-09-15\n"
+        b"type: note\ncontext: internal\nreviewed: false\nsources: [01K4Q8Z3N7V2X9M1B5C6D8E0G7]\n"
+        b"---\n# Opened for a source\n"
+    )
+    generated.write_bytes(original)
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 0
+    assert counts["rejected"] == 1
+    assert generated.read_bytes() == original
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 0
+
+
+async def test_one_unmirrorable_file_does_not_wedge_every_later_pass(store: LocalStore):
+    """A YAML value the mirror column cannot hold must cost one file, not the pass."""
+    gone = await store.create_note(CreateNote(title="Meeting", frontmatter={"type": "reference"}))
+    (store.notes_root / gone.path).unlink()
+    tagged = store.notes_root / "Review" / "Tagged scalar.md"
+    tagged.parent.mkdir(parents=True, exist_ok=True)
+    tagged.write_bytes(b"---\nblob: !!binary |\n  aGVsbG8=\nthing: !custom hello\n---\n# Odd\n")
+    nul = store.notes_root / "Review" / "Nul byte.md"
+    nul.write_bytes(b'---\nk: "a\\u0000b"\n---\n# Nul\n')
+    healthy = store.notes_root / "Review" / "Healthy.md"
+    healthy.write_bytes(b"# Healthy\n")
+
+    counts = await reconcile_once(store)
+    id_key = store.control.schema().role("id_key")
+
+    def adopted_id(path: Path) -> str:
+        return str(fm.parse(path.read_text(encoding="utf-8"))[0][id_key])
+
+    assert counts["missing"] == 1
+    assert counts["unwritable"] == 0
+    assert (await _row(store, gone.id)).state == "missing"
+    assert (await store.get_note(adopted_id(healthy))).title == "Healthy"
+    # A value no column can hold is mirrored without it rather than leaving a
+    # file the store rewrote and never delivered.
+    assert (await store.get_note(adopted_id(nul))).frontmatter["k"] == "ab"
+    assert (await store.get_note(adopted_id(tagged))).title == "Odd"
+
+    second = await reconcile_once(store, full=True)
+
+    assert second["adopted"] == 0
+    assert second["unwritable"] == 0
+
+
+async def test_a_refusal_heavy_sweep_keeps_letting_other_work_run(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """Every refusal returns before its first await, so the loop must yield itself.
+
+    A first pass over a tree the schema mostly refuses sweeps it end to end, and
+    without a turn for the event loop nothing else in the store is served for
+    the length of that sweep.
+    """
+    root = store.notes_root / "Review"
+    root.mkdir(parents=True, exist_ok=True)
+    for index in range(5):
+        (root / f"Refused {index}.md").write_bytes(b"---\ntype: therapy-session\n---\n")
+    ticks = 0
+    running = True
+
+    async def other_work() -> None:
+        nonlocal ticks
+        while running:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    read_schema = 0
+    real_schema = store.control.schema
+
+    def counted_schema():
+        nonlocal read_schema
+        read_schema += 1
+        return real_schema()
+
+    seen: list[int] = []
+    real_adopt = store.adopt_note
+
+    async def note_the_tick(relative, expected_hash, **control):
+        seen.append(ticks)
+        return await real_adopt(relative, expected_hash, **control)
+
+    monkeypatch.setattr(store.control, "schema", counted_schema)
+    monkeypatch.setattr(store, "adopt_note", note_the_tick)
+    ticker = asyncio.create_task(other_work())
+    counts = await reconcile_once(store)
+    running = False
+    await ticker
+
+    assert counts["rejected"] == 5
+    assert len(seen) == 5
+    assert seen[-1] > seen[0]
+    assert read_schema == 1
+
+
+async def test_adoption_retains_nothing_per_path_it_was_offered(store: LocalStore):
+    """Every path ever offered would otherwise keep a lock for the process's life."""
+    root = store.notes_root / "Review"
+    root.mkdir(parents=True, exist_ok=True)
+    for index in range(3):
+        (root / f"Refused {index}.md").write_bytes(b"---\ntype: therapy-session\n---\n")
+    (root / "Healthy.md").write_bytes(b"# Healthy\n")
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 1
+    assert counts["rejected"] == 3
+    assert store._locks == {}
+
+
+async def test_adoption_never_overwrites_a_device_write(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    unknown = store.notes_root / "Review" / "Racing sync.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    unknown.write_text("# Racing sync\n\nFirst piece.\n", encoding="utf-8")
+    real_adopt = store.adopt_note
+
+    async def device_writes_first(relative, expected_hash, **control):
+        unknown.write_text("# Racing sync\n\nFirst piece.\nSecond piece.\n", encoding="utf-8")
+        return await real_adopt(relative, expected_hash, **control)
+
+    monkeypatch.setattr(store, "adopt_note", device_writes_first)
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 0
+    assert counts["backlog"] == 1
+    assert counts["rejected"] == 0
+    assert unknown.read_text(encoding="utf-8") == "# Racing sync\n\nFirst piece.\nSecond piece.\n"
+
+
+async def test_an_invalid_device_created_file_is_reported_and_left_byte_exact(
+    store: LocalStore,
+):
+    unknown = store.notes_root / "Review" / "Needs repair.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    original = b"---\ntype: not-a-real-type # keep this\n---\n# Needs repair\n"
     unknown.write_bytes(original)
 
     counts = await reconcile_once(store)
 
+    assert counts["adopted"] == 0
+    assert counts["rejected"] == 1
+    assert counts["unparsed"] == 0
+    assert unknown.read_bytes() == original
     async with store.session_factory() as session:
         assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 0
+
+
+async def test_a_value_the_mirror_cannot_store_leaves_the_file_byte_exact(
+    store: LocalStore,
+):
+    """A refusal before the write, because a failed insert cannot give the bytes back."""
+    root = store.notes_root / "Review"
+    root.mkdir(parents=True, exist_ok=True)
+    infinite = root / "Readings.md"
+    infinite_bytes = b"---\nvalue: 1e400\n---\n# Readings\n"
+    infinite.write_bytes(infinite_bytes)
+    surrogate = root / "Escaped.md"
+    surrogate_bytes = b'---\nk: "a\\uD800b"\n---\n# Escaped\n'
+    surrogate.write_bytes(surrogate_bytes)
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 0
+    assert counts["unwritable"] == 0
+    assert counts["rejected"] == 2
+    assert infinite.read_bytes() == infinite_bytes
+    assert surrogate.read_bytes() == surrogate_bytes
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 0
+
+    outcome, cause = await store.adopt_note(
+        "Review/Readings.md", content_hash(infinite_bytes), **_control(store)
+    )
+
+    assert outcome == "invalid"
+    assert "1e400" not in cause
+
+
+async def test_a_broken_known_note_is_counted_apart_from_a_rejected_stranger(
+    store: LocalStore,
+):
+    """The log line is the only operator window, so the two must not merge."""
+    known = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
+    (store.notes_root / known.path).write_bytes(b"---\nid: [\n---\n# Runbook\n")
+    stranger = store.notes_root / "Review" / "Needs repair.md"
+    stranger.write_bytes(b"---\ntype: not-a-real-type\n---\n# Needs repair\n")
+
+    counts = await reconcile_once(store)
+
+    assert counts["unparsed"] == 1
+    assert counts["rejected"] == 1
+    assert (await _row(store, known.id)).state == "unparsed"
+
+
+async def test_a_refusal_names_what_actually_happened(store: LocalStore):
+    """This cause is the only thing that surfaces a file never being adopted."""
+    root = store.notes_root / "Review"
+    root.mkdir(parents=True, exist_ok=True)
+
+    async def refusal(name: str, data: bytes) -> str:
+        path = root / name
+        path.write_bytes(data)
+        outcome, cause = await store.adopt_note(
+            f"Review/{name}", content_hash(data), **_control(store)
+        )
+        assert outcome == "invalid"
+        return cause
+
+    bad_schema = await refusal("Bad schema.md", b"---\ntype: therapy-session\n---\n")
+    bad_id = await refusal("Bad id.md", b"---\nid: not-a-ulid\n---\n# Hand edited\n")
+    bad_endings = await refusal("Bad endings.md", b"---\rtags: [a]\r---\r# Phone\r")
+    bad_block = await refusal("Bad block.md", b"---\nid: [\n---\n# Broken\n")
+
+    assert bad_schema == "keys the schema refused: type"
+    assert bad_id == "the id it carries is not a valid identifier"
+    assert bad_endings == "unsupported_line_endings"
+    assert len({bad_schema, bad_id, bad_endings, bad_block}) == 4
+
+
+async def test_a_refusal_never_carries_the_person_s_own_value(store: LocalStore):
+    """Logs are collected and shipped, so a cause names keys, never content."""
+    private = store.notes_root / "Personal" / "Journal.md"
+    private.parent.mkdir(parents=True, exist_ok=True)
+    data = b"---\ntype: therapy-session\naccount: Ameren\n---\n# Thursday\n"
+    private.write_bytes(data)
+
+    outcome, cause = await store.adopt_note(
+        "Personal/Journal.md", content_hash(data), **_control(store)
+    )
+
+    assert outcome == "invalid"
+    assert "therapy-session" not in cause
+    assert "Ameren" not in cause
+    assert "type" in cause
+
+
+async def test_the_schema_refuses_a_candidate_without_asking_for_a_connection(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """An over-limit tree is rediscovered every pass, so a refusal stays cheap."""
+    refused = store.notes_root / "Review" / "Out of vocabulary.md"
+    refused.parent.mkdir(parents=True, exist_ok=True)
+    data = b"---\ntype: therapy-session\n---\n# Out of vocabulary\n"
+    refused.write_bytes(data)
+
+    def no_database(*args, **kwargs):
+        raise AssertionError("adoption asked for a connection before judging the file")
+
+    monkeypatch.setattr(store, "session_factory", no_database)
+    control = _control(store)
+    outcome, cause = await store.adopt_note(
+        "Review/Out of vocabulary.md", content_hash(data), **control
+    )
+
+    assert outcome == "invalid"
+    assert cause == "keys the schema refused: type"
+
+
+async def test_a_property_left_blank_on_a_phone_is_filled_rather_than_refused(
+    store: LocalStore,
+):
+    """Obsidian writes this shape for a property added and left empty."""
+    unknown = store.notes_root / "Review" / "Grocery list.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    unknown.write_bytes(b"---\ndate:\ntags: [errands]\n---\n# Grocery list\n")
+
+    counts = await reconcile_once(store)
+    frontmatter, body = fm.parse(unknown.read_text(encoding="utf-8"))
+    fetched = await store.get_note(frontmatter[store.control.schema().role("id_key")])
+
+    assert counts["adopted"] == 1
+    assert counts["rejected"] == 0
+    assert store.control.schema().validate_frontmatter(frontmatter) == []
+    assert frontmatter["date"] is not None
+    assert list(frontmatter["tags"]) == ["errands"]
+    assert body == "# Grocery list\n"
+    assert fetched.body == "# Grocery list\n"
+
+
+async def test_a_file_that_disappears_from_the_unchanged_branch_is_only_changed(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """A candidate that needs no new bytes must not cost the whole pass.
+
+    A file already carrying every required key is written nothing, so adoption
+    takes the branch that only re-reads it. A device deleting it in that window
+    is an ordinary race, not a reason to lose every other note's update.
+    """
+    gone = await store.create_note(CreateNote(title="Meeting", frontmatter={"type": "reference"}))
+    (store.notes_root / gone.path).unlink()
+    complete = store.notes_root / "Review" / "Restored.md"
+    complete.parent.mkdir(parents=True, exist_ok=True)
+    complete.write_bytes(
+        b"---\nschema_version: 1\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\ndate: 2026-09-15\n"
+        b"type: note\ncontext: internal\nreviewed: false\nsources: []\n---\n# Restored\n"
+    )
+    real_read = notes_module._read
+    reads: list[str] = []
+
+    def a_device_deletes_it_after_the_first_read(relative, path):
+        result = real_read(relative, path)
+        if relative == "Review/Restored.md":
+            reads.append(relative)
+            if len(reads) == 1:
+                path.unlink()
+        return result
+
+    monkeypatch.setattr(notes_module, "_read", a_device_deletes_it_after_the_first_read)
+    counts = await reconcile_once(store)
+
+    assert len(reads) == 1
+    assert counts["adopted"] == 0
+    assert counts["backlog"] == 1
+    assert counts["missing"] == 1
+    assert (await _row(store, gone.id)).state == "missing"
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 1
+
+
+async def test_one_failed_adoption_does_not_stop_the_others_converging(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """A per-file write fault is its own state, not a dead pass for every note.
+
+    An unadoptable file carries no identity the mirror knows, so it must not
+    suppress a deletion report or hold the daily rehash due behind it.
+    """
+    gone = await store.create_note(CreateNote(title="Meeting", frontmatter={"type": "reference"}))
+    (store.notes_root / gone.path).unlink()
+    root = store.notes_root / "Review"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "Read only.md").write_bytes(b"# Read only\n")
+    (root / "Healthy.md").write_bytes(b"# Healthy\n")
+    real_adopt = store.adopt_note
+
+    async def one_path_is_unwritable(relative, expected_hash, **control):
+        if relative == "Review/Read only.md":
+            raise NotesFilesystemUnavailable("read-only file system")
+        return await real_adopt(relative, expected_hash, **control)
+
+    monkeypatch.setattr(store, "adopt_note", one_path_is_unwritable)
+    counts = await reconcile_once(store)
+    healthy, _ = fm.parse((root / "Healthy.md").read_text(encoding="utf-8"))
+
+    assert counts["adopted"] == 1
+    assert counts["unwritable"] == 1
+    assert counts["deferred"] == 0
+    assert counts["missing"] == 1
+    assert (await _row(store, gone.id)).state == "missing"
+    assert is_valid_id(healthy[store.control.schema().role("id_key")])
+    assert (root / "Read only.md").read_bytes() == b"# Read only\n"
+
+
+async def test_an_unwritable_subtree_never_starves_the_rest_of_the_tree(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """The budget counts files adopted, not files tried.
+
+    A budget spent on attempts lets one unwritable subtree fill every slot and
+    leave the rest of the notes filesystem permanently unadopted, so the pass
+    must reach every healthy file whatever order the walk hands them over in.
+    """
+    monkeypatch.setattr(reconciler, "_ADOPTIONS_PER_PASS", 4)
+    locked = store.notes_root / "Locked"
+    locked.mkdir(parents=True, exist_ok=True)
+    healthy = store.notes_root / "Review"
+    healthy.mkdir(parents=True, exist_ok=True)
+    for index in range(3):
+        (locked / f"Locked {index}.md").write_bytes(f"# Locked {index}\n".encode())
+        (healthy / f"Healthy {index}.md").write_bytes(f"# Healthy {index}\n".encode())
+    real_adopt = store.adopt_note
+
+    async def one_subtree_is_unwritable(relative, expected_hash, **control):
+        if relative.startswith("Locked/"):
+            raise NotesFilesystemUnavailable("read-only file system")
+        return await real_adopt(relative, expected_hash, **control)
+
+    monkeypatch.setattr(store, "adopt_note", one_subtree_is_unwritable)
+    counts = await reconcile_once(store)
+    id_key = store.control.schema().role("id_key")
+
+    assert counts["adopted"] == 3
+    assert counts["unwritable"] == 3
+    assert counts["backlog"] == 0
+    assert all(
+        is_valid_id(fm.parse((healthy / f"Healthy {index}.md").read_text("utf-8"))[0][id_key])
+        for index in range(3)
+    )
+    assert all(
+        (locked / f"Locked {index}.md").read_bytes() == f"# Locked {index}\n".encode()
+        for index in range(3)
+    )
+
+
+async def test_an_unwritable_file_is_retried_by_the_thorough_scan_not_every_pass(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """A cheap pass must stop sweeping a subtree it already knows it cannot write."""
+    locked = store.notes_root / "Locked"
+    locked.mkdir(parents=True, exist_ok=True)
+    (locked / "Locked.md").write_bytes(b"# Locked\n")
+    attempts: list[str] = []
+    real_adopt = store.adopt_note
+
+    async def always_unwritable(relative, expected_hash, **control):
+        attempts.append(relative)
+        raise NotesFilesystemUnavailable("read-only file system")
+
+    monkeypatch.setattr(store, "adopt_note", always_unwritable)
+    remembered: reconciler.UnidentifiedStats = {}
+    first = await reconcile_once(store, unidentified=remembered)
+    cheap = await reconcile_once(store, unidentified=remembered)
+
+    assert first["unwritable"] == 1
+    assert cheap["unwritable"] == 0
+    assert attempts == ["Locked/Locked.md"]
+
+    monkeypatch.setattr(store, "adopt_note", real_adopt)
+    thorough = await reconcile_once(store, unidentified=remembered, full=True)
+
+    assert thorough["adopted"] == 1
+
+
+async def test_adoption_is_bounded_per_pass_so_an_existing_tree_arrives_gradually(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    """A tree already full of notes is adopted over passes, not in one burst."""
+    monkeypatch.setattr(reconciler, "_ADOPTIONS_PER_PASS", 2)
+    root = store.notes_root / "Review"
+    root.mkdir(parents=True, exist_ok=True)
+    for index in range(3):
+        (root / f"Existing {index}.md").write_bytes(f"# Existing {index}\n".encode())
+
+    first = await reconcile_once(store)
+
+    assert first["adopted"] == 2
+    assert first["backlog"] == 1
+    assert first["deferred"] == 0
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 2
+
+    second = await reconcile_once(store)
+
+    assert second["adopted"] == 1
+    assert second["backlog"] == 0
+    identities = {
+        fm.parse((root / f"Existing {index}.md").read_text(encoding="utf-8"))[0][
+            store.control.schema().role("id_key")
+        ]
+        for index in range(3)
+    }
+    assert len(identities) == 3
+    assert all(is_valid_id(note_id) for note_id in identities)
+
+
+async def test_a_carriage_return_delimiter_is_left_alone_rather_than_served_empty(
+    store: LocalStore,
+):
+    """`split` reports no body for these, so adopting one would mirror it empty."""
+    unknown = store.notes_root / "Review" / "Written on a phone.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    original = b"---\rtags: [phone]\r---\r# Written on a phone\r"
+    unknown.write_bytes(original)
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 0
+    assert counts["rejected"] == 1
     assert unknown.read_bytes() == original
-    assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 0}
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 0
+
+
+async def test_a_carriage_return_in_the_body_does_not_block_adoption(store: LocalStore):
+    """The parser reads this file correctly, so its own bytes must not refuse it."""
+    unknown = store.notes_root / "Review" / "Pasted on a phone.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    body = "# Pasted on a phone\n\nline one\rline two\n"
+    unknown.write_bytes(f"---\ntags: [phone]\n---\n{body}".encode())
+
+    counts = await reconcile_once(store)
+    frontmatter, _ = fm.parse(unknown.read_text(encoding="utf-8"))
+    fetched = await store.get_note(frontmatter[store.control.schema().role("id_key")])
+
+    assert counts["adopted"] == 1
+    assert counts["rejected"] == 0
+    assert fetched.body == body
+
+
+async def test_adoption_adds_only_the_keys_the_schema_requires(store: LocalStore):
+    """Adoption writes into a file a person owns, so it writes the minimum."""
+    unknown = store.notes_root / "Review" / "Made on phone.md"
+    unknown.parent.mkdir(parents=True, exist_ok=True)
+    unknown.write_bytes(b"# Made on phone\n")
+    schema = store.control.schema()
+
+    counts = await reconcile_once(store)
+    frontmatter, _ = fm.parse(unknown.read_text(encoding="utf-8"))
+
+    optional = {
+        definition.name
+        for definition in schema.keys
+        if definition.name not in schema.required_keys(frontmatter)
+    }
+    assert counts["adopted"] == 1
+    assert schema.validate_frontmatter(frontmatter) == []
+    assert optional.isdisjoint(frontmatter)
+
+
+async def test_a_copy_of_a_known_identity_is_left_alone_rather_than_re_identified(
+    store: LocalStore,
+):
+    """Nothing observable tells a copy from a move whose delete has not landed."""
+    original = await store.create_note(
+        CreateNote(title="Runbook", frontmatter={"type": "reference"})
+    )
+    original_path = store.notes_root / original.path
+    copied_path = original_path.with_name("Runbook copy.md")
+    copied_path.write_bytes(original_path.read_bytes())
+
+    counts = await reconcile_once(store)
+
+    assert counts["adopted"] == 0
+    assert copied_path.read_bytes() == original_path.read_bytes()
+    assert (await store.get_note(original.id)).path == original.path
+    async with store.session_factory() as session:
+        assert (await session.scalar(sa.select(sa.func.count()).select_from(Note))) == 1
 
 
 async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: LocalStore):
@@ -132,7 +872,18 @@ async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: 
     counts = await reconcile_once(store)
     row = await _row(store, note.id)
 
-    assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 1, "deferred": 0}
+    assert counts == {
+        "adopted": 0,
+        "backlog": 0,
+        "rejected": 0,
+        "unwritable": 0,
+        "duplicates": 0,
+        "changed": 0,
+        "moved": 0,
+        "missing": 0,
+        "unparsed": 1,
+        "deferred": 0,
+    }
     assert row.state == "unparsed"
     assert row.path == note.path
     assert row.content_hash == content_hash(broken)
@@ -240,9 +991,57 @@ async def test_two_live_copies_leave_the_row_alone_instead_of_reporting_it_gone(
     counts = await reconcile_once(store)
     row = await _row(store, note.id)
 
-    assert counts == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 0}
+    assert counts == {
+        "adopted": 0,
+        "backlog": 0,
+        "rejected": 0,
+        "unwritable": 0,
+        "duplicates": 1,
+        "changed": 0,
+        "moved": 0,
+        "missing": 0,
+        "unparsed": 0,
+        "deferred": 0,
+    }
     assert row.state == "ok"
     assert row.path == note.path
+
+
+async def test_a_copied_identity_is_reported_with_both_paths_and_neither_is_touched(
+    store: LocalStore,
+):
+    """A template a plugin copies leaves two files claiming one identity.
+
+    The store resolves neither, which is the shipped behaviour, but an operator
+    has to be able to see it: the pass counts it and names both files, not the
+    identity alone.
+    """
+    note = await store.create_note(CreateNote(title="Meeting", frontmatter={"type": "reference"}))
+    await reconcile_once(store)
+    template = store.notes_root / note.path
+    original = template.read_bytes()
+    copied = store.notes_root / "Meetings" / "2026-09-20.md"
+    copied.parent.mkdir(parents=True, exist_ok=True)
+    copied.write_bytes(original)
+
+    with capture_logs() as logged:
+        counts = await reconcile_once(store)
+    row = await _row(store, note.id)
+
+    assert counts["duplicates"] == 1
+    assert counts["missing"] == 0
+    assert counts["adopted"] == 0
+    assert template.read_bytes() == original
+    assert copied.read_bytes() == original
+    assert row.state == "ok"
+    assert row.path == note.path
+    reported = [
+        entry for entry in logged if entry["event"] == "duplicate note identity left unresolved"
+    ]
+    assert len(reported) == 1
+    assert reported[0]["log_level"] == "warning"
+    assert reported[0]["note_id"] == note.id
+    assert set(reported[0]["paths"]) == {note.path, "Meetings/2026-09-20.md"}
 
 
 async def test_one_unreadable_file_does_not_stop_the_others_converging(store: LocalStore):
@@ -279,6 +1078,11 @@ async def test_an_interval_scan_trusts_a_stat_and_the_daily_rehash_does_not(stor
     assert path.stat().st_size == before.st_size
 
     assert await reconcile_once(store) == {
+        "adopted": 0,
+        "backlog": 0,
+        "rejected": 0,
+        "unwritable": 0,
+        "duplicates": 0,
         "changed": 0,
         "moved": 0,
         "missing": 0,
@@ -288,6 +1092,11 @@ async def test_an_interval_scan_trusts_a_stat_and_the_daily_rehash_does_not(stor
     assert (await _row(store, note.id)).title == "Runbook"
 
     assert await reconcile_once(store, full=True) == {
+        "adopted": 0,
+        "backlog": 0,
+        "rejected": 0,
+        "unwritable": 0,
+        "duplicates": 0,
         "changed": 1,
         "moved": 0,
         "missing": 0,
@@ -307,11 +1116,27 @@ async def test_a_file_still_inside_the_quiet_period_waits_rather_than_going_miss
     deferred = await reconcile_once(store, quiet_period_s=3600)
     settling = await _row(store, note.id)
 
-    assert deferred == {"changed": 0, "moved": 0, "missing": 0, "unparsed": 0, "deferred": 1}
+    assert deferred == {
+        "adopted": 0,
+        "backlog": 0,
+        "rejected": 0,
+        "unwritable": 0,
+        "duplicates": 0,
+        "changed": 0,
+        "moved": 0,
+        "missing": 0,
+        "unparsed": 0,
+        "deferred": 1,
+    }
     assert settling.state == "ok"
     assert settling.title == "Runbook"
 
     assert await reconcile_once(store) == {
+        "adopted": 0,
+        "backlog": 0,
+        "rejected": 0,
+        "unwritable": 0,
+        "duplicates": 0,
         "changed": 1,
         "moved": 0,
         "missing": 0,
@@ -526,14 +1351,12 @@ async def test_a_file_written_during_a_slow_pass_is_still_deferred(store: LocalS
     assert (await _row(store, note.id)).title == "Runbook"
 
 
-async def test_a_file_with_no_known_identity_is_read_once_then_stat_trusted(
-    store: LocalStore, monkeypatch
-):
-    """Pointing Coppermind at an existing vault must not cost a parse per pass."""
+async def test_a_rejected_identity_is_read_once_then_stat_trusted(store: LocalStore, monkeypatch):
+    """An unchanged rejected file must not cost a parse per pass."""
     unknown = store.notes_root / "Review" / "Made on phone.md"
     unknown.parent.mkdir(parents=True, exist_ok=True)
-    unknown.write_bytes(b"# Made on phone\n\nNo identity yet.\n")
-    remembered: dict[str, tuple[int, datetime]] = {}
+    unknown.write_bytes(b"---\nid: invalid\n---\n# Made on phone\n")
+    remembered: reconciler.UnidentifiedStats = {}
     read: list[str] = []
     real_observe = reconciler._observe
 
@@ -552,7 +1375,7 @@ async def test_a_file_with_no_known_identity_is_read_once_then_stat_trusted(
     await reconcile_once(store, unidentified=remembered, full=True)
     assert len(read) == 2
 
-    unknown.write_bytes(b"# Made on phone\n\nEdited on the device.\n")
+    unknown.write_bytes(b"---\nid: invalid\n---\n# Made on phone\n\nEdited on the device.\n")
     await reconcile_once(store, unidentified=remembered)
     assert len(read) == 3
     assert unknown.read_bytes().endswith(b"Edited on the device.\n")
@@ -563,8 +1386,8 @@ async def test_a_forgotten_path_stops_being_remembered_once_its_file_is_gone(
 ):
     unknown = store.notes_root / "Review" / "Made on phone.md"
     unknown.parent.mkdir(parents=True, exist_ok=True)
-    unknown.write_bytes(b"# Made on phone\n\nNo identity yet.\n")
-    remembered: dict[str, tuple[int, datetime]] = {}
+    unknown.write_bytes(b"---\nid: invalid\n---\n# Made on phone\n")
+    remembered: reconciler.UnidentifiedStats = {}
 
     await reconcile_once(store, unidentified=remembered)
     assert "Review/Made on phone.md" in remembered
@@ -580,7 +1403,7 @@ async def test_a_known_note_moved_to_an_unremembered_path_is_still_identified(
 ):
     """The stat shortcut must never hide a note that arrived somewhere new."""
     note = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
-    remembered: dict[str, tuple[int, datetime]] = {}
+    remembered: reconciler.UnidentifiedStats = {}
     await reconcile_once(store, unidentified=remembered)
     moved = store.notes_root / "Work" / "Operations Runbook.md"
     moved.parent.mkdir()

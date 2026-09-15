@@ -47,11 +47,22 @@ helper honours it.
 - **Frontmatter is edited in ruamel round trip mode, never loaded and dumped.**
   A dump reorders keys and drops comments, and Obsidian Sync would then push
   every rewritten file to every device. `coppermind/frontmatter.py` and its
-  tests hold the line. One deliberate, accepted exception: the full-document
-  replace (`PUT /v1/notes/{id}`, `replace_note`) composes the frontmatter
-  block from what was sent, so a comment between the keys and a hand-arranged
-  key order do not survive it. Every other edit of a note file stays round
-  trip.
+  tests hold the line. Ordinary adoption is append only: it parses the existing
+  block in round trip mode but dumps only the generated missing keys and
+  splices them in before the closing delimiter, so every existing byte and line
+  ending survives. It always adds the schema's identity role even if an edited
+  schema marks that key optional, because the file must remain the durable copy
+  of the identity; `test_adoption_always_writes_identity_when_schema_marks_it_optional`
+  pins that rule. Two deliberate, accepted exceptions reassemble the block
+  instead. The full-document replace (`PUT /v1/notes/{id}`, `replace_note`)
+  composes it from what was sent, so a comment between the keys and a
+  hand-arranged key order do not survive it. And a required key a person left
+  with no value, which is what Obsidian writes for a blank property, cannot be
+  spliced in without writing that key twice, so `fm.fill_missing` sends only
+  those files through `fm.patch`: key order, comments and quoting survive, the
+  block's line endings do not, so a CRLF block comes back with line feed
+  delimiters beside whichever lines the dump left alone. Every other edit of a
+  note file stays round trip.
 - **SQLAlchemy connects lazily**, so a transaction that has not issued any SQL
   will not notice that PostgreSQL is gone. `LocalStore.create_note` issues a
   `SELECT 1` before touching the filesystem on purpose: without it a database

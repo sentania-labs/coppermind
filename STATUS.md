@@ -72,14 +72,58 @@ vertical path proved end to end, then widened.
   but cannot parse, open or identify is `unparsed` there, and two live copies
   of one identity leave the row as it was rather than guessing. An interval
   scan stats every note file and reads only the ones a stat says may have
-  changed. A file carrying no identity this store knows, which is every file
-  in an existing tree Coppermind was pointed at, is read once and then
-  stat-trusted the same way, so an unfamiliar tree costs one stat per file per
-  pass rather than a read and a parse. That memory holds 10,000 such paths per
-  store process; where more files than that carry no known identity, the ones
-  past the bound are read and parsed every pass until write-side
-  reconciliation gives them identities. A file changed inside the quiet period
-  waits for the next pass. Trusting a stat is safe because it is not the only
+  changed. A device-created file carrying no identity waits until its mtime
+  has been quiet for the configured period, then the store assigns an identity
+  and writes that identity into the file even if an edited schema marks its key
+  optional, because the filesystem must remain the durable copy. It fills other
+  absent frontmatter the schema requires of that note from the shipped defaults.
+  Any other key the schema marks optional is left out even when it ships a
+  default, because the minimum necessary bytes go into a file a person owns.
+  Pointing the
+  store at a notes filesystem that already holds notes rewrites every one of
+  them once. That happens gradually: a fixed 50 adoptions per pass, counted in
+  files actually taken on rather than files tried, so an existing tree arrives
+  over successive scans rather than as one burst through Obsidian Sync, and the
+  remainder is simply picked up next pass. Adoption checks the observed hash
+  again immediately before the atomic replacement, so another device write wins
+  without losing bytes. The tested line endings, inline comments, key order,
+  list style and body stay in place. One shape is the exception: a required
+  property a person added and left blank, which is what Obsidian writes for an
+  empty property, cannot be appended without writing the key twice, so those
+  files take the ordinary targeted property change and have their properties
+  block reassembled. Key order, comments and quoting survive that; the block's
+  own line endings do not. Every other adoption only appends. A file the store
+  refuses, because its frontmatter does not validate, because it carries a
+  malformed identifier, because a value it carries is one the mirror cannot
+  store at all, or because its frontmatter delimiter lines end in a bare
+  carriage return that the shared parser reads as having no body, is left byte
+  exact and counted rejected. The reason names the parser category, the schema
+  keys at fault or the kind of fault, and never the person's own values,
+  because logs are collected and shipped. A carriage return in the body is the
+  person's own byte and never blocks adoption, and neither does a NUL inside a
+  value: the file keeps that byte and the mirror, which is the rebuildable
+  copy, drops it.
+  Everything a file is judged on is decided before a database connection is
+  asked for, so a note the schema refuses costs a read
+  and a parse however often the scan rediscovers it. A file the store cannot
+  write is counted unwritable with the same detail. Both keep their stat like
+  any other
+  rejected file, so cheap passes stop sweeping them and the daily thorough
+  rehash is what tries them again; because neither names an identity the mirror
+  knows, neither holds back a deletion report or the rehash itself. A file that
+  already carries an identity this store knows is left alone, even when another
+  file holds the same identity: nothing observable tells a copy apart from a
+  move whose delete has not arrived yet, and the service will not guess. The
+  pass counts that collision and names every path claiming the identity, beside
+  the files it refused, so an operator sees both sides rather than an
+  identifier alone. The process remembers up
+  to 10,000 rejected paths by stat, so an unchanged rejected tree costs one
+  stat per file per pass rather than repeated reads and parses. Only a durable
+  rejection is remembered; a file still inside the quiet period is read again
+  on the next pass instead, so a whole notes filesystem arriving at once
+  cannot fill that memory with paths that are about to settle. A file changed
+  inside the quiet period waits for the next pass. Trusting a stat
+  is safe because it is not the only
   pass: once a day, at the configured local time, the store rereads and
   rehashes every note file, which is what catches an edit that left the file's
   size and timestamp where they were. That pass stays due until one completes
@@ -89,10 +133,22 @@ vertical path proved end to end, then widened.
   report not ready rather than serving state nothing is refreshing, as does a
   long silence with no scan landing; the first scan after a start gets a grace
   of its own first, because it reads everything and there is no measured
-  runtime yet to judge it by. Files whose identity is not already known are
-  left byte for byte alone. The interval, the quiet period and the rehash time
-  are product settings with working defaults; their graphical controls arrive
-  with the separate Admin service.
+  runtime yet to judge it by. The interval, the quiet period and the rehash
+  time are product settings with working defaults; their graphical controls
+  arrive with the separate Admin service.
+- **What adoption will and will not write into.** Adoption skips `.git`,
+  `.obsidian` and `.trash`, everything below the configured trash, sources and
+  attachments folders (`_Trash`, `_Sources` and `_Attachments` by default), and
+  any file whose frontmatter already carries source associations, because
+  ingest wrote that and generated output is not a note a person made. Those
+  files are still read, so a known note moved into one of those folders is
+  followed there rather than reported gone; they are only never given an
+  identity. Everything else under the notes root that parses is adopted, and
+  that is wider than it sounds: a template, an Excalidraw drawing, a Kanban
+  board and anything else a plugin keeps as an ordinary Markdown file are all
+  rewritten and mirrored as notes. Narrowing that, with a control for it, is
+  follow-up work and is not built. Until it is, do not run a migration against
+  the captain's real notes filesystem.
 - `POST /v1/ingest` takes a source and the note to open for it, and creates
   both or neither. A deterministic `.external-id-<sha256>.json` file claims
   each `provider` plus `external_source_id` before the bundle is written. The
@@ -303,10 +359,6 @@ in the tree, so do not read the absence as a decision to leave it out.
   source are not built. Tombstones in particular have no columns in the mirror
   and no keys in `manifest.json`, so adding them costs a migration of its own
   and a manifest `schema_version` bump.
-- **Write-side reconciliation.** A note created on a device has no row and no
-  identifier, so the read-side scanner deliberately leaves it alone. Assigning
-  its identity and filling required frontmatter is the next reconciliation
-  increment. Until then, treat the API as the way to create notes.
 - **A whole-file note body.** `PUT` takes the JSON document shape only; the
   `text/markdown` whole-file body does not exist yet. A replace also rewrites
   the frontmatter block from what was sent, so the keys land in the schema's
@@ -315,11 +367,17 @@ in the tree, so do not read the absence as a decision to leave it out.
   indentation survives it.
   `PATCH /v1/notes/{id}/frontmatter` is the minimal-difference path for a
   one-key change such as marking a note reviewed.
-- **Line endings in the frontmatter block.** Both write paths reassemble the
+- **Line endings in the frontmatter block.** Both API write paths reassemble the
   block from the YAML dump, which emits line feeds, so a block written with
   carriage returns is rewritten whole and Obsidian Sync pushes every line of
   it. The body keeps its own line endings. The repair belongs in the shared
   compose, which is why it is deferred rather than done inside the patch.
+  Separately, `split` ends the block on a line feed, so a file whose lines end
+  in a bare carriage return is read as having no body at all: `GET` serves it
+  empty and a note takes its filename as its title. Adoption refuses those
+  files rather than mirroring one wrongly. The correction belongs in `split`
+  and changes every reader of it, `parse`, `patch` and the whole document
+  replace, which is why it is its own piece of work.
 - **Obsidian Sync, the curator and the indexer.** No sync, no filing by
   rules, no search. The helper that will supervise the sync client is under
   Working, but real sync is still refused there, and its graphical Admin
