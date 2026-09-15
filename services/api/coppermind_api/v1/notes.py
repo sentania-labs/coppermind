@@ -101,10 +101,11 @@ async def patch_frontmatter(
 ) -> Response:
     """Change named frontmatter fields without replacing the note.
 
-    Every other line of the file is left as it is, which for a frontmatter
-    block written with ordinary line endings makes the file differ in the
-    named keys alone. A block written with carriage returns is rewritten
-    whole in line feeds, and Obsidian Sync then pushes all of it.
+    Every other line of the file is left as it is, at the indentation it
+    already uses, which for a frontmatter block written with ordinary line
+    endings makes the file differ in the named keys alone. A block written
+    with carriage returns is rewritten whole in line feeds, and Obsidian Sync
+    then pushes all of it.
     """
     try:
         note = await client.patch_frontmatter(note_id, payload, etag_from_if_match(if_match))

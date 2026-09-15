@@ -889,3 +889,24 @@ async def test_a_null_value_in_set_is_refused_and_changes_nothing(store: LocalSt
         "account: null is not a value to write; name the key in unset to remove it"
     ]
     assert path.read_bytes() == before
+
+
+async def test_a_patch_keeps_a_list_a_person_wrote_flush_with_its_key(store: LocalStore):
+    """A hand written note must differ in the patched key alone, not in its list style."""
+    created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
+    path = store.notes_root / created.path
+    hand_written = path.read_text(encoding="utf-8").replace("  - architecture", "- architecture")
+    path.write_text(hand_written, encoding="utf-8")
+
+    patched = await store.patch_frontmatter(
+        created.id,
+        PatchFrontmatter(set={"reviewed": True}),
+        content_hash(hand_written.encode("utf-8")),
+    )
+
+    after = path.read_text(encoding="utf-8")
+    assert "\n- architecture\n" in after
+    assert [line for line in after.splitlines() if line not in hand_written.splitlines()] == [
+        "reviewed: true"
+    ]
+    assert patched.frontmatter["reviewed"] is True

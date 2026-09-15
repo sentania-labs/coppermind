@@ -66,3 +66,43 @@ def test_unset_removes_a_key():
 
 def test_composing_an_empty_mapping_yields_a_plain_body():
     assert fm.compose({}, "# Title\n") == "# Title\n"
+
+
+FLUSH_LIST_NOTE = """---
+id: 01K4Q8Z3N7V2X9M1B5C6D8E0F2
+type: meeting
+tags:
+- architecture
+- lab
+---
+# Ameren Architecture Sync
+"""
+
+NESTED_MAP_NOTE = """---
+id: 01K4Q8Z3N7V2X9M1B5C6D8E0F2
+type: meeting
+review:
+    by: scott
+    round: 1
+---
+# Ameren Architecture Sync
+"""
+
+
+@pytest.mark.parametrize(
+    ("note", "kept"),
+    [
+        (NOTE, "  - architecture"),
+        (FLUSH_LIST_NOTE, "- architecture"),
+        (NESTED_MAP_NOTE, "    by: scott"),
+    ],
+    ids=["two space list", "list flush with its key", "mapping nested four"],
+)
+def test_a_patch_writes_the_block_back_at_the_indentation_the_file_uses(note: str, kept: str):
+    """A note written by hand or another tool must not sync whole for one key."""
+    updated = fm.patch(note, {"reviewed": True})
+
+    before = note.splitlines()
+    after = updated.splitlines()
+    assert [line for line in after if line not in before] == ["reviewed: true"]
+    assert kept in after

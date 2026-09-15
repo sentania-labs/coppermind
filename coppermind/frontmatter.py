@@ -14,6 +14,11 @@ body keeps its own line endings either way. Preserving the block's line
 endings here is a follow-up, because it changes the whole document replace as
 well as the frontmatter patch.
 
+Round trip mode does not preserve the source's indentation either, so a
+targeted `patch` asks the loader to guess the block's own indentation and
+writes it back that way. A whole document `compose`, which builds the block
+from what was sent rather than from the file, keeps the house style.
+
 Unknown keys are never removed. Anything a person or another tool put in the
 frontmatter survives a Coppermind write untouched.
 """
@@ -26,6 +31,7 @@ from typing import Any
 
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
+from ruamel.yaml.util import load_yaml_guess_indent
 
 DELIMITER = "---"
 
@@ -100,6 +106,24 @@ def _find_closing_delimiter(text: str) -> int | None:
     return None
 
 
+def _unparseable(exc: YAMLError) -> FrontmatterError:
+    mark = getattr(exc, "problem_mark", None)
+    return FrontmatterError(
+        str(exc),
+        category=_category(exc),
+        line=getattr(mark, "line", None),
+        column=getattr(mark, "column", None),
+    )
+
+
+def _mapping(loaded: Any) -> dict[str, Any]:
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise FrontmatterError("frontmatter is not a mapping", category="not_a_mapping")
+    return loaded
+
+
 def parse(text: str) -> tuple[dict[str, Any], str]:
     """Return the frontmatter mapping and the body of a note file."""
     block, body = split(text)
@@ -108,32 +132,40 @@ def parse(text: str) -> tuple[dict[str, Any], str]:
     try:
         loaded = _yaml().load(block)
     except YAMLError as exc:
-        mark = getattr(exc, "problem_mark", None)
-        raise FrontmatterError(
-            str(exc),
-            category=_category(exc),
-            line=getattr(mark, "line", None),
-            column=getattr(mark, "column", None),
-        ) from exc
-    if loaded is None:
-        return {}, body
-    if not isinstance(loaded, dict):
-        raise FrontmatterError("frontmatter is not a mapping", category="not_a_mapping")
-    return loaded, body
+        raise _unparseable(exc) from exc
+    return _mapping(loaded), body
+
+
+def _indent_like(yaml: YAML, indent: int | None, sequence_offset: int | None) -> None:
+    """Write a block back at the indentation the file already uses.
+
+    The loader's own guess names the indentation of the block's first list,
+    or, when it has no list, the nesting of its mappings. Anything it cannot
+    name, and anything a dump cannot express, keeps the house style.
+    """
+    if indent is None or indent < 2:
+        return
+    if sequence_offset is None:
+        yaml.indent(mapping=indent)
+    elif 0 <= sequence_offset <= indent - 2:
+        yaml.indent(sequence=indent, offset=sequence_offset)
+
+
+def _dump(frontmatter: dict[str, Any], yaml: YAML) -> str:
+    if not frontmatter:
+        return ""
+    stream = io.StringIO()
+    yaml.dump(frontmatter, stream)
+    return stream.getvalue()
 
 
 def dump(frontmatter: dict[str, Any]) -> str:
     """Serialise a frontmatter mapping to its YAML block, without delimiters."""
-    if not frontmatter:
-        return ""
-    stream = io.StringIO()
-    _yaml().dump(frontmatter, stream)
-    return stream.getvalue()
+    return _dump(frontmatter, _yaml())
 
 
-def compose(frontmatter: dict[str, Any], body: str) -> str:
-    """Build note file text from a frontmatter mapping and a body."""
-    block = dump(frontmatter)
+def _compose(frontmatter: dict[str, Any], body: str, yaml: YAML) -> str:
+    block = _dump(frontmatter, yaml)
     if not block:
         return body
     if not block.endswith("\n"):
@@ -141,16 +173,32 @@ def compose(frontmatter: dict[str, Any], body: str) -> str:
     return f"{DELIMITER}\n{block}{DELIMITER}\n{body}"
 
 
+def compose(frontmatter: dict[str, Any], body: str) -> str:
+    """Build note file text from a frontmatter mapping and a body."""
+    return _compose(frontmatter, body, _yaml())
+
+
 def patch(text: str, changes: dict[str, Any], *, unset: list[str] | None = None) -> str:
     """Apply `changes` to the frontmatter of `text` and return the new text.
 
     Only the touched keys move. A key that is already present keeps its
     position; a new key is appended after the existing ones. A file with no
-    frontmatter gains a block.
+    frontmatter gains a block. The block is written back at its own
+    indentation, so a list written flush with its key stays flush rather than
+    syncing to every device as a rewritten list.
     """
-    frontmatter, body = parse(text)
+    block, body = split(text)
+    yaml = _yaml()
+    frontmatter: dict[str, Any] = {}
+    if block.strip():
+        try:
+            loaded, indent, sequence_offset = load_yaml_guess_indent(block, yaml=yaml)
+        except YAMLError as exc:
+            raise _unparseable(exc) from exc
+        frontmatter = _mapping(loaded)
+        _indent_like(yaml, indent, sequence_offset)
     for key in unset or []:
         frontmatter.pop(key, None)
     for key, value in changes.items():
         frontmatter[key] = value
-    return compose(frontmatter, body)
+    return _compose(frontmatter, body, yaml)

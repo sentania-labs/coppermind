@@ -139,9 +139,12 @@ vertical path proved end to end, then widened.
   from the caller, so an edit made in Obsidian while a phone marks the note
   reviewed survives. Untouched keys keep their position, their comments and
   their YAML types, and a date lands as a date the same way a create and a
-  replace write one. That minimal file difference holds for a frontmatter
-  block written with ordinary line endings: a block written with carriage
-  returns is rewritten whole in line feeds and Obsidian Sync pushes all of it.
+  replace write one. The block is written back at the indentation the file
+  already uses, so a list a person wrote flush with its key stays flush and a
+  nested mapping keeps its own nesting. That minimal file difference holds for
+  a frontmatter block written with ordinary line endings: a block written with
+  carriage returns is rewritten whole in line feeds and Obsidian Sync pushes
+  all of it.
   A patch whose result is byte identical to the file writes nothing and moves
   no mtime, so marking an already reviewed note reviewed is free. The
   identifier cannot be set or removed, a key the schema requires cannot be
@@ -236,7 +239,8 @@ in the tree, so do not read the absence as a decision to leave it out.
   `text/markdown` whole-file body does not exist yet. A replace also rewrites
   the frontmatter block from what was sent, so the keys land in the schema's
   order with any key the schema does not know after them, and neither a hand
-  order nor a comment a person left between the keys survives it.
+  order, a comment a person left between the keys nor the block's own
+  indentation survives it.
   `PATCH /v1/notes/{id}/frontmatter` is the minimal-difference path for a
   one-key change such as marking a note reviewed.
 - **Line endings in the frontmatter block.** Both write paths reassemble the
