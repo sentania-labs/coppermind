@@ -1,0 +1,13 @@
+{
+  "name": "@coppermind/obsidian-sync",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Supervised Obsidian Sync helper for Coppermind",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -3,7 +3,9 @@
 #   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
 #
 # Images come from the tarballs the image job built and tested, so the smoke
-# test exercises exactly what would be published, never a fresh build.
+# test exercises exactly what would be published, never a fresh build. It
+# changes no behaviour of its own; the simulated sync client is a separate
+# overlay, docker-compose.sync-smoke.yml.
 services:
 
   bootstrap:
@@ -28,4 +30,8 @@ services:
 
   editor:
     image: coppermind/store:ci
+    build: !reset null
+
+  obsidian-sync:
+    image: coppermind/obsidian-sync:ci
     build: !reset null

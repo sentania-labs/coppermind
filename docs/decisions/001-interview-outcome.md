@@ -36,7 +36,7 @@ first-party Helm chart exists in the org. Ten interview questions followed.
 | Q9 control state | versioned files under /data/state; PostgreSQL fully rebuildable; backup is /data | (default accepted) |
 | Q10 transport | none in Coppermind; slice 1 ends at the ingest API with a documented sample request | "you are building a data service/sync/storage engine. YOu don't do the transport from plaud/email/etc into the vault. Obsidian sneaks in just because of the filesystem access." |
 | PostgreSQL | chart and compose support bring-your-own as well as a bundled single instance | "or cloudnativepg?" |
-| Sync login | one-time login from an Admin "Connect Obsidian Sync" page that passes credentials to the sync container and stores only the resulting token under /data/state, with a paste-a-token option and a reveal-once for sealing into GitOps | (captain's description) |
+| Sync login | one-time login from an Admin "Connect Obsidian Sync" page that passes credentials to the sync container and stores only the resulting token under /data/state, with a paste-a-token option and a reveal-once for sealing into GitOps<br>Superseded 2026-09-15 on credential placement: the account token and vault encryption key live on the `obsidian-sync-credentials` volume at `/var/lib/obsidian-sync`, not under /data/state. STATUS.md and README.md document the current placement. | (captain's description) |
 | Wording | "notes filesystem", never "the vault", except when naming Obsidian's own concept | "it's not a vault - we are decomposing vault." |
 
 Two further decisions came when the captain approved the implementation plan
