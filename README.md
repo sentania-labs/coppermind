@@ -165,11 +165,35 @@ curl -sS -X POST http://127.0.0.1:8080/v1/ingest \
   --data-binary @examples/ingest/plaud-sample.json
 ```
 
-The answer carries the new source identifier and the Review note that cites
-it. The artifacts are files beside the manifest:
+The answer carries the new source identifier, the Review note that cites it,
+and `projection_path`, the generated page that makes the source itself
+readable. The artifacts are files beside the manifest, and the page is an
+ordinary Markdown file in the notes filesystem, so Obsidian Sync carries it to
+a phone and it reads with Coppermind stopped:
 
 ```bash
 docker compose exec store ls -R "/data/sources/<source_id>"
+docker compose exec store cat \
+  "/data/notes/_Sources/Plaud/2026-09-08 Ameren Architecture Sync.md"
+```
+
+That page is generated, not yours: a new source revision rewrites it in place,
+so edit the Review note instead. The folder it lands in is the
+`notes.sources_folder` setting, and Git excludes it, so transcripts stay out
+of the notes history.
+
+Read a source through the API as well, with a key holding `sources:read`. The
+manifest comes back as JSON, an artifact that decodes as text comes back as
+the response body as `text/plain`, and anything else is described by its size
+and SHA-256 rather than served. Sources are read-only there: no route changes
+one, so `PUT`, `PATCH` and `DELETE` answer 405 `method_not_allowed`.
+
+```bash
+curl -sS -H "Authorization: Bearer $COPPERMIND_KEY" \
+  http://127.0.0.1:8080/v1/sources/<source_id>
+
+curl -sS -H "Authorization: Bearer $COPPERMIND_KEY" \
+  "http://127.0.0.1:8080/v1/sources/<source_id>/revisions/1/artifacts/transcript.txt"
 ```
 
 Sending the same payload a second time answers 200 with `created: false` and
