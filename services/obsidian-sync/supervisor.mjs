@@ -23,11 +23,12 @@ const RESTART_CEILING_MS = 2_000;
 const RESTART_STABLE_MS = 2_000;
 
 // Nothing here may reach the operator's Obsidian account or their remote vault
-// object. First-connect behaviour and where the account credential lives are
-// both open captain decisions, so every path that would run the real client
-// refuses instead and says why.
+// object. Coppermind gets its own new encrypted remote vault, and creating it
+// and collecting its encryption password is the guided Admin setup that does
+// not exist yet, so every path that would run the real client refuses instead
+// and says why.
 const REAL_SYNC_REFUSED =
-  "real Obsidian sync is refused pending captain decisions on first-connect behaviour and credential placement";
+  "real Obsidian sync is refused until the guided Admin setup creates Coppermind's own encrypted remote vault and collects its credentials";
 
 let child = null;
 let childStartedAt = 0;

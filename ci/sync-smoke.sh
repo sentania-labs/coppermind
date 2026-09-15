@@ -65,8 +65,29 @@ restore_refusing_helper() {
 step "bring the stack up with the simulated client"
 compose up -d --wait --remove-orphans
 trap restore_refusing_helper EXIT
-compose exec -T obsidian-sync sh -c \
-    'test "$HOME" = /var/lib/obsidian-sync && test -w "$HOME" && test "${HOME#/data/}" = "$HOME"'
+# The account token and vault encryption key must land on their own volume,
+# not in the container writable layer and not in the data backup, so this
+# proves the credential home is a mount point and a different one from /data.
+# shellcheck disable=SC2016
+compose exec -T obsidian-sync node -e '
+const fs = require("fs");
+const CREDENTIALS = "/var/lib/obsidian-sync";
+const refuse = (why) => { console.error(why); process.exit(1); };
+if (process.env.HOME !== CREDENTIALS) refuse(`HOME is ${process.env.HOME}, not ${CREDENTIALS}`);
+try { fs.accessSync(CREDENTIALS, fs.constants.W_OK); } catch { refuse(`${CREDENTIALS} is not writable`); }
+const mounts = fs
+  .readFileSync("/proc/self/mountinfo", "utf8")
+  .split("\n")
+  .filter(Boolean)
+  .map((line) => line.split(" "));
+const mountOf = (target) => mounts.filter((fields) => fields[4] === target).pop();
+const credentials = mountOf(CREDENTIALS);
+const data = mountOf("/data");
+if (!credentials) refuse(`${CREDENTIALS} is not a mount point: credentials would live in the container writable layer`);
+if (!data) refuse("/data is not a mount point");
+const volume = (fields) => `${fields[2]} ${fields[3]}`;
+if (volume(credentials) === volume(data)) refuse(`${CREDENTIALS} is the same volume as /data, so credentials would sit in the data backup`);
+' || fail "the credential volume is not isolated from /data"
 
 initial="$(control status)"
 [ "$(printf '%s' "$initial" | field simulated)" = "True" ] \

@@ -170,20 +170,20 @@ test("real mode refuses every path that would reach the account or the remote va
   assert.equal(boot.sync_mode, null);
   assert.equal(boot.conflict_strategy, null);
   assert.equal(boot.paused, false);
-  assert.match(boot.last_error, /pending captain decisions/);
+  assert.match(boot.last_error, /guided Admin setup/);
   assert.equal("device_name" in boot, false);
 
   for (const route of ["/connect", "/pause", "/resume"]) {
     const [code, body] = await request(route, "POST", { vault_name: "Captain vault" });
     assert.equal(code, 501, `${route} did not refuse`);
     assert.equal(body.error, "real_sync_refused");
-    assert.match(body.detail, /pending captain decisions/);
+    assert.match(body.detail, /guided Admin setup/);
   }
 
   const [, after] = await request("/status");
   assert.equal(after.syncing, false);
   assert.equal(after.state, "refused");
-  assert.match(after.last_error, /pending captain decisions/);
+  assert.match(after.last_error, /guided Admin setup/);
   await assert.rejects(readFile(invoked), { code: "ENOENT" }, "the Obsidian client was invoked");
 });
 
