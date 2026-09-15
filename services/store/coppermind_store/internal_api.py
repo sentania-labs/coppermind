@@ -26,7 +26,6 @@ from coppermind.store_protocol import (
     ReplaceNote,
     SourceArtifactDocument,
     SourceManifest,
-    SourceProjection,
     StoreError,
     etag_from_if_match,
 )
@@ -113,16 +112,6 @@ async def get_source_artifact(
 ) -> SourceArtifactDocument | JSONResponse:
     try:
         return await _store(request).get_source_artifact(source_id, revision, name)
-    except StoreError as error:
-        return _failure(error)
-
-
-@router.get("/sources/{source_id}/projection", response_model=SourceProjection)
-async def get_source_projection(
-    source_id: str, request: Request
-) -> SourceProjection | JSONResponse:
-    try:
-        return await _store(request).get_source_projection(source_id)
     except StoreError as error:
         return _failure(error)
 

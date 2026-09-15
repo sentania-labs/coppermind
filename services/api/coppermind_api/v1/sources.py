@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from urllib.parse import quote
-
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, Response
 
@@ -52,26 +50,6 @@ async def get_source_artifact(
             content=artifact.content, media_type="text/plain; charset=utf-8", headers=headers
         )
     return JSONResponse(content=artifact.model_dump(mode="json"), headers=headers)
-
-
-@router.get("/{source_id}/projection")
-async def get_source_projection(
-    source_id: str,
-    client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("sources:read")),
-) -> Response:
-    try:
-        projection = await client.get_source_projection(source_id)
-    except StoreError as error:
-        return failure(error)
-    return Response(
-        content=projection.content,
-        media_type="text/markdown",
-        headers={
-            "X-Coppermind-Projection-Path": quote(projection.path),
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
 
 
 @router.api_route(

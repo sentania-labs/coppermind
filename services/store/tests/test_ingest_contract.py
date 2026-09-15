@@ -20,7 +20,6 @@ from coppermind.store_protocol import (
     SourceArtifactDocument,
     SourceClaimMissing,
     SourceManifest,
-    SourceProjection,
     SourceRevision,
     SourcesFilesystemUnavailable,
 )
@@ -101,11 +100,6 @@ class FakeStore:
             content="hello",
         )
 
-    async def get_source_projection(self, source_id: str) -> SourceProjection:
-        return SourceProjection(
-            source_id=source_id, path="_Sources/Plaud/Recording.md", content="#"
-        )
-
 
 def app_for(store: FakeStore) -> FastAPI:
     app = FastAPI()
@@ -157,7 +151,6 @@ async def test_source_reads_round_trip_through_the_contract():
         assert (await client.get_source(RESULT.source.id)).current_revision == 1
         artifact = await client.get_source_artifact(RESULT.source.id, 1, "transcript.txt")
         assert artifact.content == "hello"
-        assert (await client.get_source_projection(RESULT.source.id)).content == "#"
     finally:
         await client.aclose()
 

@@ -380,12 +380,6 @@ class SourceArtifactDocument(SourceArtifact):
     content: str | None = None
 
 
-class SourceProjection(BaseModel):
-    source_id: SourceId
-    path: str
-    content: str
-
-
 class ReplaceNote(BaseModel):
     """Replace a note's frontmatter and body, keeping its identifier and path.
 
@@ -519,8 +513,6 @@ class Store(Protocol):
     async def get_source_artifact(
         self, source_id: SourceId, revision: int, name: str
     ) -> SourceArtifactDocument: ...
-
-    async def get_source_projection(self, source_id: SourceId) -> SourceProjection: ...
 
     async def get_api_keys(self) -> ApiKeySet: ...
 

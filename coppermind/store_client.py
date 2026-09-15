@@ -40,7 +40,6 @@ from coppermind.store_protocol import (
     SourceId,
     SourceManifest,
     SourceNotFound,
-    SourceProjection,
     SourcesFilesystemUnavailable,
     StoreError,
     StoreUnavailable,
@@ -149,12 +148,6 @@ class HttpStoreClient:
             f"{_segment(name)}",
         )
         return SourceArtifactDocument.model_validate(response.json())
-
-    async def get_source_projection(self, source_id: SourceId) -> SourceProjection:
-        response = await self._send(
-            "GET", f"{INTERNAL_PREFIX}/sources/{_segment(source_id)}/projection"
-        )
-        return SourceProjection.model_validate(response.json())
 
     async def get_api_keys(self) -> ApiKeySet:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/api-keys")

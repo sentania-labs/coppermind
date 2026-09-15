@@ -3,7 +3,6 @@
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import unquote
 
 import pytest
 from coppermind_api.deps import store
@@ -16,7 +15,6 @@ from coppermind.store_protocol import (
     SourceArtifact,
     SourceArtifactDocument,
     SourceManifest,
-    SourceProjection,
     SourceRevision,
     StoreUnavailable,
 )
@@ -45,7 +43,6 @@ MANIFEST = SourceManifest(
 class FakeStore:
     def __init__(self, *, reachable: bool = True) -> None:
         self.reachable = reachable
-        self.projection_path = "_Sources/Plaud/2026-09-08 Recording.md"
         created = datetime(2026, 9, 8, tzinfo=UTC)
         self.read_record, self.read_key = create_key(
             "source reader", ["sources:read"], created_at=created
@@ -80,13 +77,6 @@ class FakeStore:
             content=content,
         )
 
-    async def get_source_projection(self, source_id: str) -> SourceProjection:
-        return SourceProjection(
-            source_id=source_id,
-            path=self.projection_path,
-            content="# Recording (source)\n",
-        )
-
     async def is_ready(self) -> bool:
         return True
 
@@ -110,7 +100,7 @@ def source_client(tmp_path: Path):
         yield pair
 
 
-def test_source_manifest_text_binary_and_projection_are_readable(source_client):
+def test_a_source_manifest_and_its_text_and_binary_artifacts_are_readable(source_client):
     client, fake = source_client
     headers = {"Authorization": f"Bearer {fake.read_key}"}
     assert client.get(f"/v1/sources/{SOURCE_ID}", headers=headers).json() == MANIFEST.model_dump(
@@ -129,9 +119,6 @@ def test_source_manifest_text_binary_and_projection_are_readable(source_client):
     )
     assert binary.json()["content"] is None
     assert binary.json()["sha256"] == "abc"
-    projection = client.get(f"/v1/sources/{SOURCE_ID}/projection", headers=headers)
-    assert projection.text == "# Recording (source)\n"
-    assert projection.headers["x-content-type-options"] == "nosniff"
 
 
 def test_an_ingested_artifact_type_never_reaches_a_response_header(source_client):
@@ -149,23 +136,6 @@ def test_an_ingested_artifact_type_never_reaches_a_response_header(source_client
         "\r" not in value and "\n" not in value and value.isascii()
         for value in response.headers.values()
     )
-
-
-def test_a_projection_path_outside_latin_1_is_still_readable(source_client):
-    """A vault title keeps its script; a header carries it percent-encoded."""
-    client, fake = source_client
-    fake.projection_path = "_Sources/Plaud/日本語ノート.md"
-
-    response = client.get(
-        f"/v1/sources/{SOURCE_ID}/projection",
-        headers={"Authorization": f"Bearer {fake.read_key}"},
-    )
-
-    assert response.status_code == 200
-    assert response.text == "# Recording (source)\n"
-    header = response.headers["x-coppermind-projection-path"]
-    assert header.isascii()
-    assert unquote(header) == fake.projection_path
 
 
 def test_source_reads_require_the_source_read_scope(source_client):

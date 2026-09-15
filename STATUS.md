@@ -259,8 +259,11 @@ vertical path proved end to end, then widened.
   projection lives: it is written in the same manifest write that lands the
   revision, and a source whose manifest does not name one has no projection.
   Generation happens on ingest or on a new revision only: nothing backfills, so
-  a source ingested before this landed answers 404 on its projection route
-  until it is ingested again. Projections are generated output: the read-side
+  a source ingested before this landed has no projection until it is ingested
+  again. An ingest answers with the path its projection occupies, and that is
+  how a client learns where the file landed; nothing serves the projection back
+  over the API, because being readable without the service is its whole point.
+  Projections are generated output: the read-side
   reconciler excludes the sources folder and Obsidian Sync does not. A note the
   captain files into that folder himself is still followed there rather than
   reported deleted, because a row the pass would otherwise call gone is looked
@@ -277,10 +280,9 @@ vertical path proved end to end, then widened.
   returns an artifact that decodes as UTF-8 text as the response body, always
   as `text/plain` and never as the ingested type, and describes every other
   artifact as JSON with its size and SHA-256, after verifying the stored bytes.
-  `GET /v1/sources/{id}/projection` returns the generated Markdown. A source
-  or projection that is not there answers 404; a volume that cannot be read
-  answers 503 rather than reporting the bundle gone.
-  All need `sources:read`. `PUT`, `PATCH` and `DELETE` anywhere under a source
+  A source or artifact that is not there answers 404; a volume that cannot be
+  read answers 503 rather than reporting the bundle gone.
+  Both need `sources:read`. `PUT`, `PATCH` and `DELETE` anywhere under a source
   return 405 `method_not_allowed` from the API itself, whether or not the
   Store is reachable; neither the public nor internal surface offers a way to
   change source data.

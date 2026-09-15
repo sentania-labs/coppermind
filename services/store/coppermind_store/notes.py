@@ -72,7 +72,6 @@ from coppermind.store_protocol import (
     SourceArtifactDocument,
     SourceId,
     SourceManifest,
-    SourceProjection,
     StoreError,
     ValidationFailed,
     VersionConflict,
@@ -136,11 +135,6 @@ class LocalStore:
         from coppermind_store.sources import get_source_artifact
 
         return await get_source_artifact(self, source_id, revision, name)
-
-    async def get_source_projection(self, source_id: SourceId) -> SourceProjection:
-        from coppermind_store.sources import get_source_projection
-
-        return await get_source_projection(self, source_id)
 
     async def create_note(self, request: CreateNote) -> NoteDocument:
         settings = self.control.settings()

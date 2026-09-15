@@ -50,7 +50,6 @@ from coppermind.store_protocol import (
     SourceClaimMissing,
     SourceManifest,
     SourceNotFound,
-    SourceProjection,
     SourcesFilesystemUnavailable,
     StoreError,
     ValidationFailed,
@@ -116,29 +115,6 @@ async def get_source_artifact(
         source_id=source_id,
         revision=revision,
         content=artifact_text(data, artifact.mime_type),
-    )
-
-
-async def get_source_projection(store: LocalStore, source_id: str) -> SourceProjection:
-    manifest = await get_source(store, source_id)
-    try:
-        if not manifest.projection_path:
-            raise FileNotFoundError(source_id)
-        path = resolve(store.notes_root, manifest.projection_path)
-        if (
-            _projection_revision(store.notes_root, manifest.projection_path, source_id)
-            != manifest.current_revision
-        ):
-            raise FileNotFoundError(path)
-        content = path.read_text(encoding="utf-8")
-    except (FileNotFoundError, ValueError) as exc:
-        raise ArtifactNotFound(source_id, manifest.current_revision, "projection") from exc
-    except OSError as exc:
-        raise NotesFilesystemUnavailable(str(exc)) from exc
-    return SourceProjection(
-        source_id=source_id,
-        path=path.relative_to(store.notes_root).as_posix(),
-        content=content,
     )
 
 
@@ -423,13 +399,14 @@ async def _ingest_existing(
         recorded_path = manifest.get("projection_path")
         projection_path = recorded_path if isinstance(recorded_path, str) and recorded_path else ""
         held_revision = _projection_revision(store.notes_root, projection_path, source_id)
+        projection_created = False
         if held_revision is None:
             projection_path = ""
         if held_revision != current_revision:
             note = await session.get(Note, note_id)
             if note is None:
                 raise StoreError("the linked note mirror is incomplete") from None
-            projection_path, _ = write_projection(
+            projection_path, projection_created = write_projection(
                 store.notes_root,
                 settings,
                 source_id=source_id,
@@ -448,6 +425,8 @@ async def _ingest_existing(
             try:
                 atomic_write_bytes(manifest_path, _json_bytes(manifest))
             except OSError as exc:
+                if projection_created:
+                    resolve(store.notes_root, projection_path).unlink(missing_ok=True)
                 raise SourcesFilesystemUnavailable(str(exc)) from exc
         return IngestResult(
             source=CreatedSource(

@@ -18,7 +18,6 @@ from coppermind_store.notes import LocalStore
 from coppermind import frontmatter as fm
 from coppermind.db.models import Note, NoteSource, Source, SourceArtifact, SourceRevision
 from coppermind.store_protocol import (
-    ArtifactNotFound,
     CreateNote,
     IncompleteRevision,
     IngestArtifact,
@@ -31,6 +30,16 @@ from coppermind.store_protocol import (
     SourceNotFound,
     SourcesFilesystemUnavailable,
 )
+
+
+def projection_text(store: LocalStore, relative: str) -> str:
+    """The generated projection as the captain's vault holds it.
+
+    The file is this increment's public output: it is what he opens on his
+    phone with the service down, so it is read here from the notes filesystem
+    rather than through any route.
+    """
+    return (store.notes_root / relative).read_text(encoding="utf-8")
 
 
 def sample(external_id: str = "rec_8f3a2c19") -> IngestRequest:
@@ -351,9 +360,8 @@ async def test_t_src_1_every_stored_source_revision_is_readable(store: LocalStor
     assert binary.content is None
     assert binary.size_bytes == 3
     assert binary.sha256 == hashlib.sha256(b"\x00\x01\x02").hexdigest()
-    projection = await store.get_source_projection(ingested.source.id)
-    assert projection.path == ingested.projection_path
-    assert "Binary artifact: application/octet-stream, 3 bytes" in projection.content
+    projection = projection_text(store, ingested.projection_path)
+    assert "Binary artifact: application/octet-stream, 3 bytes" in projection
 
 
 async def test_a_text_typed_artifact_that_is_not_utf8_is_described_not_refused(
@@ -376,8 +384,9 @@ async def test_a_text_typed_artifact_that_is_not_utf8_is_described_not_refused(
     artifact = await store.get_source_artifact(ingested.source.id, 1, "transcript.txt")
     assert artifact.content is None
     assert artifact.size_bytes == 5
-    projection = await store.get_source_projection(ingested.source.id)
-    assert "Binary artifact: text/plain, 5 bytes" in projection.content
+    assert "Binary artifact: text/plain, 5 bytes" in projection_text(
+        store, ingested.projection_path
+    )
 
 
 async def test_a_new_revision_never_writes_over_another_source_projection(store: LocalStore):
@@ -398,12 +407,10 @@ async def test_a_new_revision_never_writes_over_another_source_projection(store:
 
     assert second.source.revision == 2
     assert second.projection_path != first.projection_path
-    kept = await store.get_source_projection(other.source.id)
-    assert kept.path == other.projection_path
-    assert "Scott: Let's start with the architecture review..." in kept.content
-    regenerated = await store.get_source_projection(second.source.id)
-    assert regenerated.path == second.projection_path
-    assert "Scott: corrected source content" in regenerated.content
+    kept = projection_text(store, other.projection_path)
+    assert f"source_id: {other.source.id}" in kept
+    assert "Scott: Let's start with the architecture review..." in kept
+    assert "Scott: corrected source content" in projection_text(store, second.projection_path)
 
 
 async def test_a_volume_fault_on_a_source_read_is_an_outage_not_a_missing_source(
@@ -426,23 +433,6 @@ async def test_a_volume_fault_on_a_source_read_is_an_outage_not_a_missing_source
         await store.get_source_artifact(ingested.source.id, 1, "transcript.txt")
     with pytest.raises(SourceNotFound):
         await store.get_source("01K4Q8Z2A0P1Q2R3S4T5U6V7W8")
-
-
-async def test_a_volume_fault_on_the_projection_is_an_outage_not_a_missing_projection(
-    store: LocalStore,
-):
-    """404 on this route means the manifest records no projection.
-
-    A notes volume that cannot be read has to answer differently, or the two
-    are indistinguishable to the operator reading the answer.
-    """
-    ingested = await store.ingest(sample())
-    projection = store.notes_root / ingested.projection_path
-    projection.unlink()
-    projection.mkdir()
-
-    with pytest.raises(NotesFilesystemUnavailable):
-        await store.get_source_projection(ingested.source.id)
 
 
 async def test_a_notes_fault_during_a_new_revision_leaves_nothing_to_clean_up_by_hand(
@@ -472,19 +462,22 @@ async def test_a_notes_fault_during_a_new_revision_leaves_nothing_to_clean_up_by
     assert retried.source.created is True
 
 
-async def test_a_sources_fault_recording_a_repaired_projection_is_not_a_database_outage(
+async def test_a_sources_fault_recording_a_repaired_projection_reports_it_and_leaves_no_copy(
     store: LocalStore, monkeypatch: pytest.MonkeyPatch
 ):
     """The operator is told which volume failed, not to go and check PostgreSQL.
 
     The captain's own file has taken the recorded path, so the replay rebuilds
     the projection somewhere else and has to record where. That manifest write
-    is on the sources volume, and a fault there is that volume's to report.
+    is on the sources volume, and a fault there is that volume's to report. The
+    projection it would have recorded goes with it: nothing points at it, the
+    reconciler skips that folder, and a retrying client would otherwise leave
+    the captain one more copy of the whole transcript per attempt.
     """
     ingested = await store.ingest(sample())
-    (store.notes_root / ingested.projection_path).write_text(
-        "---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# Mine now\n", encoding="utf-8"
-    )
+    kept = store.notes_root / ingested.projection_path
+    kept.write_text("---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# Mine now\n", encoding="utf-8")
+    folder = kept.parent
 
     def read_only_volume(*_args, **_kwargs):
         raise OSError(30, "Read-only file system")
@@ -493,12 +486,26 @@ async def test_a_sources_fault_recording_a_repaired_projection_is_not_a_database
 
     with pytest.raises(SourcesFilesystemUnavailable):
         await store.ingest(sample())
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.ingest(sample())
+
+    assert [path.name for path in folder.iterdir()] == [kept.name]
+    monkeypatch.undo()
+    replay = await store.ingest(sample())
+    assert replay.projection_path != ingested.projection_path
+    assert sorted(path.name for path in folder.iterdir()) == sorted(
+        [kept.name, replay.projection_path.rsplit("/", 1)[-1]]
+    )
 
 
-async def test_an_unrecorded_projection_path_is_not_found_rather_than_searched_for(
+async def test_an_unrecorded_projection_path_is_rebuilt_rather_than_searched_for(
     store: LocalStore,
 ):
-    """The manifest is the only record of where a projection lives."""
+    """The manifest is the only record of where a projection lives.
+
+    A manifest that names none is a source with no projection, whatever sits in
+    the sources folder, so the next ingest builds one and records where.
+    """
     ingested = await store.ingest(sample())
     manifest_path = store.sources_root / ingested.source.id / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -506,8 +513,16 @@ async def test_an_unrecorded_projection_path_is_not_found_rather_than_searched_f
     manifest["projection_path"] = ""
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    with pytest.raises(ArtifactNotFound):
-        await store.get_source_projection(ingested.source.id)
+    replay = await store.ingest(sample())
+
+    assert replay.projection_path != ""
+    assert (
+        json.loads(manifest_path.read_text(encoding="utf-8"))["projection_path"]
+        == replay.projection_path
+    )
+    assert "Scott: Let's start with the architecture review..." in projection_text(
+        store, replay.projection_path
+    )
 
 
 async def test_retry_after_a_revision_commit_failure_returns_the_completed_revision(
@@ -572,9 +587,9 @@ async def test_manifest_sync_failure_retains_a_possibly_committed_revision(
     replay = await store.ingest(changed)
     assert replay.source.revision == 2
     assert replay.source.created is False
-    projection = await store.get_source_projection(first.source.id)
-    assert "source_revision: 2" in projection.content
-    assert "Scott: corrected source content" in projection.content
+    projection = projection_text(store, replay.projection_path)
+    assert "source_revision: 2" in projection
+    assert "Scott: corrected source content" in projection
 
 
 @pytest.mark.parametrize("damage", ["missing", "altered"])
