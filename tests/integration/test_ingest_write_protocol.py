@@ -15,10 +15,12 @@ from coppermind_store.notes import LocalStore
 from coppermind import frontmatter as fm
 from coppermind.db.models import Note, NoteSource, Source, SourceArtifact, SourceRevision
 from coppermind.store_protocol import (
+    DescriptiveCorrectionUnsupported,
     IngestRequest,
     MetadataUnavailable,
     PathCollision,
     PayloadTooLarge,
+    SourceClaimMissing,
 )
 
 
@@ -343,49 +345,78 @@ async def test_replay_cannot_overwrite_a_concurrent_note_edit(
     assert note_path.read_text(encoding="utf-8") == edited
 
 
-async def test_t_ing_3_a_descriptive_correction_alone_appends_a_revision(
+async def test_a_descriptive_correction_alone_is_refused_and_writes_nothing(
     store: LocalStore, session_factory
 ):
-    """Correcting only the fields that describe the artifacts is never discarded."""
+    """A source is its artifact bytes, so a describing field cannot be revised yet."""
     first = await store.ingest(sample())
-    note_path = store.notes_root / first.note.path
-    edited = fm.patch(note_path.read_text(encoding="utf-8"), {"reviewed": True})
-    note_path.write_text(edited, encoding="utf-8")
-    note_bytes = note_path.read_bytes()
+    before = {
+        path.relative_to(store.notes_root.parent): path.read_bytes()
+        for path in store.notes_root.parent.rglob("*")
+        if path.is_file()
+    }
 
     corrected = sample()
     corrected.source.captured_at = datetime.fromisoformat("2026-09-08T15:47:00-05:00")
     corrected.source.metadata["language"] = "en-US"
     corrected.source.origin = "Plaud NotePin (office)"
-    second = await store.ingest(corrected)
+    corrected.source.source_type = "document"
 
-    assert second.source.id == first.source.id
-    assert second.source.revision == 2
-    assert second.source.created is True
-    assert second.note.id == first.note.id
-    assert second.note.created is False
-    assert note_path.read_bytes() == note_bytes
+    with pytest.raises(DescriptiveCorrectionUnsupported) as raised:
+        await store.ingest(corrected)
 
-    source_root = store.sources_root / first.source.id
-    assert (source_root / "r0001" / "transcript.txt").read_text(encoding="utf-8") == (
-        source_root / "r0002" / "transcript.txt"
-    ).read_text(encoding="utf-8")
-    manifest = json.loads((source_root / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["current_revision"] == 2
-    assert manifest["origin"] == "Plaud NotePin (office)"
-    assert [item["revision"] for item in manifest["revisions"]] == [1, 2]
-    assert manifest["revisions"][0]["metadata"]["language"] == "en"
-    assert manifest["revisions"][0]["captured_at"] == "2026-09-08T14:02:11-05:00"
-    assert manifest["revisions"][1]["metadata"]["language"] == "en-US"
-    assert manifest["revisions"][1]["captured_at"] == "2026-09-08T15:47:00-05:00"
-
+    assert sorted(raised.value.fields) == ["captured_at", "metadata", "origin", "source_type"]
+    after = {
+        path.relative_to(store.notes_root.parent): path.read_bytes()
+        for path in store.notes_root.parent.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+    assert not (store.sources_root / first.source.id / "r0002").exists()
     async with session_factory() as session:
         source = await session.get(Source, first.source.id)
-        assert source.current_revision == 2
-        assert source.origin == "Plaud NotePin (office)"
-        assert await session.scalar(sa.select(sa.func.count()).select_from(SourceRevision)) == 2
+        assert source.current_revision == 1
+        assert source.origin == "Plaud NotePin"
+        assert source.source_type == "transcript"
+        assert await session.scalar(sa.select(sa.func.count()).select_from(SourceRevision)) == 1
         assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 1
-        assert len(list(store.notes_root.rglob("*.md"))) == 1
+
+
+async def test_one_corrected_describing_field_is_named_on_its_own(store: LocalStore):
+    """The refusal names what differs, so an operator is not left guessing."""
+    await store.ingest(sample())
+    corrected = sample()
+    corrected.source.origin = "Plaud NotePin (office)"
+
+    with pytest.raises(DescriptiveCorrectionUnsupported) as raised:
+        await store.ingest(corrected)
+
+    assert raised.value.fields == ["origin"]
+    assert "origin" in str(raised.value)
+
+
+async def test_a_missing_claim_over_a_surviving_row_is_refused_not_an_outage(
+    store: LocalStore, session_factory
+):
+    """/data/sources restored without the database must not answer 503."""
+    first = await store.ingest(sample())
+    claim = next(store.sources_root.glob(".external-id-*.json"))
+    claim.unlink()
+
+    with pytest.raises(SourceClaimMissing) as raised:
+        await store.ingest(sample())
+
+    assert raised.value.provider == "plaud"
+    assert raised.value.external_source_id == "rec_8f3a2c19"
+    assert not isinstance(raised.value, MetadataUnavailable)
+    assert list(store.sources_root.glob(".external-id-*.json")) == []
+    assert [path.name for path in store.sources_root.iterdir() if path.is_dir()] == [
+        first.source.id
+    ]
+    assert len(list(store.notes_root.rglob("*.md"))) == 1
+    async with session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Source)) == 1
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 1
 
 
 async def test_a_note_delivered_before_the_write_survives_the_refused_ingest(

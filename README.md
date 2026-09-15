@@ -105,9 +105,11 @@ docker compose exec store ls -R "/data/sources/<source_id>"
 ```
 
 Sending the same payload a second time answers 200 with `created: false` and
-the original identifiers. Changing an artifact, or only a field describing it
-such as `captured_at`, `metadata`, `source_type` or `origin`, appends a
-numbered source revision without rewriting the Review note. A source remains
+the original identifiers. Changing an artifact appends a numbered source
+revision without rewriting the Review note. Changing only a field that
+describes the source, such as `captured_at` or `metadata`, while the artifacts
+stay the same answers 409 `descriptive_correction_unsupported` and writes
+nothing, because that correction has no home yet. A source remains
 keyed by its `provider` and `external_source_id`. A
 body over `limits.ingest_max_bytes` answers 413 `payload_too_large`. The API
 measures the submitted body before forwarding its parsed request, but only

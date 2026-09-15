@@ -46,6 +46,45 @@ class PathCollision(StoreError):
         self.existing_path = existing_path
 
 
+class SourceClaimMissing(StoreError):
+    """The durable external-id claim is gone while its mirror row survives.
+
+    The filesystem is the truth and it no longer claims this identifier, but
+    the database still holds the source it named, so ingesting again would
+    make a second source for one external identifier. Nothing was written.
+    Restoring `/data/sources` from a snapshot without restoring PostgreSQL, or
+    removing the claim file by hand, is what produces this.
+    """
+
+    def __init__(self, provider: str, external_source_id: str) -> None:
+        super().__init__(
+            f"the durable claim for source {provider}/{external_source_id} is missing while its "
+            "database row survives, so nothing was written; restore /data/sources and the "
+            "database from the same point in time, or remove the stale row, then retry"
+        )
+        self.provider = provider
+        self.external_source_id = external_source_id
+
+
+class DescriptiveCorrectionUnsupported(StoreError):
+    """The artifacts replay but a field describing them was corrected.
+
+    Correcting `captured_at`, `metadata`, `source_type` or `origin` without
+    changing an artifact is not supported yet, so the request is refused
+    rather than accepted and silently discarded. Nothing was written and the
+    stored source is exactly as it was.
+    """
+
+    def __init__(self, fields: list[str]) -> None:
+        super().__init__(
+            "the artifacts are unchanged but the stored source differs in "
+            + ", ".join(fields)
+            + "; correcting a field that describes a source without changing an artifact is not "
+            "supported yet, so nothing was written"
+        )
+        self.fields = fields
+
+
 class PayloadTooLarge(StoreError):
     def __init__(self, limit_bytes: int) -> None:
         super().__init__(f"the ingest payload exceeds the {limit_bytes} byte limit")

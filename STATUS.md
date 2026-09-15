@@ -55,19 +55,30 @@ vertical path proved end to end, then widened.
   artifacts land under `/data/sources/<source_id>/r0001/`, then
   `manifest.json` last, so a bundle without a manifest is an unfinished one;
   the Review note is written in the same database transaction with the source
-  identifier in its `sources` frontmatter key. A revision is identified by the
-  artifact bytes together with the fields that describe them (`captured_at`,
-  `metadata`, `source_type` and `origin`), so resending a fully identical
-  payload answers 200 with `created: false`, the existing source and note
-  identifiers, and the current revision. Anything different, corrected
-  artifact content or a corrected descriptive field alone, appends an
-  immutable numbered revision and answers 200 without rewriting the Review
-  note or changing its reviewed state. A correction is never accepted and
-  discarded. The response carries real `created` values for both records and
-  the source revision.
+  identifier in its `sources` frontmatter key. A revision is identified by its
+  artifact bytes alone, so resending an identical payload answers 200 with
+  `created: false`, the existing source and note identifiers, and the current
+  revision. Changed artifact content appends an immutable numbered revision
+  and answers 200 without rewriting the Review note or changing its reviewed
+  state. The response carries real `created` values for both records and the
+  source revision. A payload whose artifacts are unchanged while
+  `captured_at`, `metadata`, `source_type` or `origin` differs is refused with
+  409 `descriptive_correction_unsupported` naming the differing fields:
+  correcting those fields alone is not built yet, and the store refuses rather
+  than accepting a correction it would discard. Nothing is written and the
+  stored source is untouched.
   `uq_sources_provider_external_id` remains the database mirror's second
-  guard. A failure before the note is complete removes the claim and bundle,
-  so a later legitimate retry can proceed. PostgreSQL failing at commit after
+  guard, and it now answers in its own voice: an ingest that finds no claim
+  file while the mirror still holds that `provider` plus `external_source_id`
+  is refused with 409 `source_claim_missing`, not a 503 blaming PostgreSQL.
+  Nothing is written, including the claim the refused attempt made. That state
+  comes from restoring `/data/sources` from a snapshot without restoring the
+  database, or from removing a claim file by hand; the operator action is to
+  restore both from the same point in time, or delete the stale `sources` row,
+  then retry. Nothing heals it automatically, because the filesystem is the
+  truth and it no longer claims the identifier. A failure before the note is
+  complete removes the bundle and then the claim, so a later legitimate retry
+  can proceed. PostgreSQL failing at commit after
   the filesystem writes answers 503 `metadata_unavailable` and rolls the rows
   back, but retains the complete bundle, Review note and external-id claim.
   A retry resolves from the claim and completed files, repairs a missing
@@ -191,10 +202,12 @@ in the tree, so do not read the absence as a decision to leave it out.
   on in a `.env` file would break the "no manual setup" rule, so the bundled
   instance is simply the default and the external path arrives with the
   deployment work.
-- Because `captured_at` is part of what identifies a source revision, a
-  caller that stamps a fresh capture time on every retry gets a new revision
-  each time rather than a replay. A retry of an uncertain answer must resend
-  the payload it originally sent, timestamps included.
+- Correcting only a field that describes a source (`captured_at`,
+  `metadata`, `source_type` or `origin`) has no path yet: the ingest is
+  refused with 409 `descriptive_correction_unsupported` rather than kept. An
+  automation that stamps a fresh capture time on every retry therefore gets
+  that refusal instead of the replay it expects, so a retry of an uncertain
+  answer must resend the payload it originally sent, timestamps included.
 - A note file removed outside the store leaves its row behind, because
   nothing reconciles the mirror yet. Creating a note with that title again
   answers 409 `path_collision` every time until the reconciler lands or the

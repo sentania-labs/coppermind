@@ -33,12 +33,14 @@ from coppermind.store_protocol import (
     CreatedNote,
     CreatedSource,
     CreateNote,
+    DescriptiveCorrectionUnsupported,
     IngestArtifact,
     IngestRequest,
     IngestResult,
     NotesFilesystemUnavailable,
     PathCollision,
     PayloadTooLarge,
+    SourceClaimMissing,
     SourcesFilesystemUnavailable,
     StoreError,
     ValidationFailed,
@@ -79,7 +81,7 @@ async def ingest(
         }
         for artifact, data in artifacts
     ]
-    identity = _content_identity(request, artifact_metadata)
+    identity = _content_identity(artifact_metadata)
     claim_path = _external_id_claim_path(
         store.sources_root,
         request.source.provider,
@@ -118,14 +120,6 @@ async def ingest(
                     claim_data,
                     schema,
                 )
-    except IntegrityError as exc:
-        constraint = _violated_constraint(exc)
-        if constraint == "uq_notes_path":
-            raise PathCollision("the Review note path") from exc
-        typed = _metadata_failure(exc)
-        if typed is not None:
-            raise typed from exc
-        raise
     except BaseException as exc:
         typed = _metadata_failure(exc)
         if typed is not None:
@@ -236,12 +230,24 @@ async def _ingest_new(
         except OSError as exc:
             raise NotesFilesystemUnavailable(str(exc)) from exc
         filesystem_complete = True
+    except IntegrityError as exc:
+        constraint = _violated_constraint(exc)
+        if constraint == "uq_sources_provider_external_id":
+            raise SourceClaimMissing(
+                request.source.provider, request.source.external_source_id
+            ) from exc
+        if constraint == "uq_notes_path":
+            raise PathCollision(relative) from exc
+        raise
     except OSError as exc:
         raise SourcesFilesystemUnavailable(str(exc)) from exc
     finally:
         if claim_created and not filesystem_complete:
-            claim_path.unlink(missing_ok=True)
             shutil.rmtree(source_path, ignore_errors=True)
+            try:
+                claim_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise SourcesFilesystemUnavailable(str(exc)) from exc
     return IngestResult(
         source=CreatedSource(id=source_id, revision=1, created=True),
         note=CreatedNote(id=note_id, path=relative, created=True),
@@ -270,12 +276,18 @@ async def _ingest_existing(
     ):
         raise StoreError("the external-id claim and source manifest disagree")
 
+    current_revision = _positive_int(manifest.get("current_revision"), "current_revision")
+    current = _manifest_revision(manifest, current_revision)
+    replaying = current.get("content_identity") == identity
+    if replaying:
+        differing = _descriptive_differences(request, manifest, current)
+        if differing:
+            raise DescriptiveCorrectionUnsupported(differing)
+
     note_id, note_path, note_snapshot = await _linked_note(store, session, source_id, schema)
     await _ensure_mirror(session, manifest, note_id, note_path, note_snapshot, schema)
 
-    current_revision = _positive_int(manifest.get("current_revision"), "current_revision")
-    current = _manifest_revision(manifest, current_revision)
-    if current.get("content_identity") == identity:
+    if replaying:
         return IngestResult(
             source=CreatedSource(id=source_id, revision=current_revision, created=False),
             note=CreatedNote(id=note_id, path=note_path, created=False),
@@ -331,6 +343,37 @@ async def _ingest_existing(
         source=CreatedSource(id=source_id, revision=revision, created=True),
         note=CreatedNote(id=note_id, path=note_path, created=False),
     )
+
+
+def _descriptive_differences(
+    request: IngestRequest, manifest: dict[str, Any], current: dict[str, Any]
+) -> list[str]:
+    """The fields describing a source that differ from what is stored.
+
+    A source is identified by its artifact bytes, so these fields cannot make
+    a revision of their own. Naming the ones that differ is what turns a
+    correction the store cannot keep into a refusal rather than a silent
+    discard.
+    """
+    differing = []
+    if not _same_instant(request.source.captured_at, current.get("captured_at")):
+        differing.append("captured_at")
+    if _jsonable(request.source.metadata) != (current.get("metadata") or {}):
+        differing.append("metadata")
+    if request.source.source_type != manifest.get("source_type"):
+        differing.append("source_type")
+    if request.source.origin != manifest.get("origin"):
+        differing.append("origin")
+    return differing
+
+
+def _same_instant(value: datetime | None, stored: Any) -> bool:
+    if value is None or stored is None:
+        return value is None and stored is None
+    try:
+        return datetime.fromisoformat(stored) == value
+    except (TypeError, ValueError):
+        return False
 
 
 def _claimed_source(claim_data: bytes, request: IngestRequest) -> dict[str, Any]:
@@ -573,25 +616,9 @@ def _external_id_claim(request: IngestRequest, source_id: str) -> bytes:
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
-def _content_identity(request: IngestRequest, artifacts: list[dict[str, Any]]) -> str:
-    """Everything a revision records about the source, as one digest.
-
-    A revision is the artifact bytes together with the fields that describe
-    them, so correcting a capture time, metadata, the source type or the
-    origin is a new revision rather than a replay that discards the
-    correction.
-    """
-    captured = request.source.captured_at
-    document = {
-        "artifacts": sorted(
-            f"{item['name']}:{item['mime_type']}:{item['sha256']}" for item in artifacts
-        ),
-        "captured_at": captured.isoformat() if captured else None,
-        "metadata": _jsonable(request.source.metadata),
-        "origin": request.source.origin,
-        "source_type": request.source.source_type,
-    }
-    return hashlib.sha256(_json_bytes(document)).hexdigest()
+def _content_identity(artifacts: list[dict[str, Any]]) -> str:
+    names_and_hashes = sorted(f"{item['name']}:{item['sha256']}" for item in artifacts)
+    return hashlib.sha256("\n".join(names_and_hashes).encode("utf-8")).hexdigest()
 
 
 def _manifest(

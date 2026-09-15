@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from coppermind.store_protocol import (
+    DescriptiveCorrectionUnsupported,
     MetadataUnavailable,
     NotesFilesystemUnavailable,
     NoteUnparseable,
@@ -22,6 +23,7 @@ from coppermind.store_protocol import (
     PathCollision,
     PayloadTooLarge,
     PreconditionRequired,
+    SourceClaimMissing,
     SourcesFilesystemUnavailable,
     StoreError,
     StoreUnavailable,
@@ -80,6 +82,15 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
         return 422, envelope("validation_error", str(error), errors=error.errors)
     if isinstance(error, PathCollision):
         return 409, envelope("path_collision", str(error), existing_path=error.existing_path)
+    if isinstance(error, SourceClaimMissing):
+        return 409, envelope(
+            "source_claim_missing",
+            str(error),
+            provider=error.provider,
+            external_source_id=error.external_source_id,
+        )
+    if isinstance(error, DescriptiveCorrectionUnsupported):
+        return 409, envelope("descriptive_correction_unsupported", str(error), fields=error.fields)
     if isinstance(error, PayloadTooLarge):
         return 413, envelope("payload_too_large", str(error), limit_bytes=error.limit_bytes)
     if isinstance(error, VersionConflict):

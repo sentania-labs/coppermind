@@ -10,9 +10,11 @@ from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import (
     CreatedNote,
     CreatedSource,
+    DescriptiveCorrectionUnsupported,
     IngestRequest,
     IngestResult,
     PayloadTooLarge,
+    SourceClaimMissing,
     SourcesFilesystemUnavailable,
 )
 
@@ -101,6 +103,8 @@ async def test_replay_answers_200_over_the_internal_contract():
     [
         (PayloadTooLarge(1024), PayloadTooLarge),
         (SourcesFilesystemUnavailable("read only"), SourcesFilesystemUnavailable),
+        (SourceClaimMissing("plaud", "recording-1"), SourceClaimMissing),
+        (DescriptiveCorrectionUnsupported(["captured_at"]), DescriptiveCorrectionUnsupported),
     ],
 )
 async def test_ingest_errors_keep_their_type_over_http(error, expected):
@@ -108,7 +112,44 @@ async def test_ingest_errors_keep_their_type_over_http(error, expected):
     store.error = error
     client = connected(store)
     try:
-        with pytest.raises(expected):
+        with pytest.raises(expected) as raised:
             await client.ingest(REQUEST)
     finally:
         await client.aclose()
+    assert str(raised.value) == str(error)
+
+
+async def test_a_refused_correction_answers_409_with_the_fields_it_names():
+    """The refusal is a conflict an automation can read, never a 503."""
+    store = FakeStore()
+    store.error = DescriptiveCorrectionUnsupported(["captured_at", "origin"])
+    async with httpx.AsyncClient(
+        base_url="http://store", transport=httpx.ASGITransport(app=app_for(store))
+    ) as client:
+        response = await client.post(
+            "/internal/v1/ingest",
+            json=REQUEST.model_dump(mode="json", exclude_none=True),
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "descriptive_correction_unsupported"
+    assert body["fields"] == ["captured_at", "origin"]
+
+
+async def test_a_missing_claim_answers_409_naming_the_external_id():
+    store = FakeStore()
+    store.error = SourceClaimMissing("plaud", "recording-1")
+    async with httpx.AsyncClient(
+        base_url="http://store", transport=httpx.ASGITransport(app=app_for(store))
+    ) as client:
+        response = await client.post(
+            "/internal/v1/ingest",
+            json=REQUEST.model_dump(mode="json", exclude_none=True),
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "source_claim_missing"
+    assert body["provider"] == "plaud"
+    assert body["external_source_id"] == "recording-1"
