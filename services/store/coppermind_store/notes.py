@@ -150,6 +150,7 @@ class LocalStore:
         folder = sanitize_folder(settings.notes.review_folder)
         folder_path = resolve(self.notes_root, folder)
         stem = _stem_for(request.title, frontmatter, schema, settings)
+        base_stem = stem
         stem = unique_stem(stem, existing_stems(folder_path))
         relative = f"{folder}/{stem}{NOTE_SUFFIX}" if folder else f"{stem}{NOTE_SUFFIX}"
         target = folder_path / f"{stem}{NOTE_SUFFIX}"
@@ -196,7 +197,7 @@ class LocalStore:
                         # the listing and the create. Recompute the stem from
                         # the live directory listing and try again with the
                         # next free suffix.
-                        stem = unique_stem(stem, existing_stems(folder_path))
+                        stem = unique_stem(base_stem, existing_stems(folder_path))
                         continue
                     except OSError as exc:
                         raise NotesFilesystemUnavailable(str(exc)) from exc

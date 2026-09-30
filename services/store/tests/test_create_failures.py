@@ -191,3 +191,45 @@ async def test_concurrent_create_exhausts_retries_then_409(
     # each with a file written and then an exception, the directory still
     # has those files. We verify that PathCollision was raised; file
     # cleanup is tested by the existing create_exclusive_bytes tests.
+
+
+async def test_concurrent_create_retries_correctly_after_two_losses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """After losing twice (files created each time), the stem is " (3)" because
+    the original unsuffixed stem is preserved as base_stem and recomputed from a
+    fresh directory listing each time."""
+    wiring = Wiring(data_dir=tmp_path / "data")
+    control = ControlState(wiring.state_dir)
+    control.ensure_defaults()
+    wiring.notes_dir.mkdir(parents=True)
+
+    call_count = 0
+
+    def fake_exclusive(path, data, *, mode=0o644):
+        nonlocal call_count
+        call_count += 1
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if call_count <= 2:
+            # Lose the first two calls: write the colliding file then raise.
+            path.write_bytes(data)
+            raise FileExistsError(str(path))
+        # Third call succeeds
+        path.write_bytes(data)
+
+    monkeypatch.setattr(notes_module, "create_exclusive_bytes", fake_exclusive)
+    monkeypatch.setattr(notes_module, "transaction", _mock_transaction)
+
+    wiring.notes_dir.mkdir(parents=True, exist_ok=True)
+    store = LocalStore(wiring.notes_dir, control, cast(Any, object()), wiring.sources_dir)
+
+    created = await store.create_note(
+        CreateNote(title="Weekly sync", frontmatter={"type": "meeting"})
+    )
+
+    # meeting is a dated type: original stem is "<date> Weekly sync".
+    # After two losses the directory listing sees the original + two collisions,
+    # so the retry stem is " (3)".
+    assert created.path.endswith(" (3).md")
+    # The original id is preserved
+    assert created.id is not None
