@@ -164,27 +164,45 @@ class LocalStore:
                 # connects lazily, so without this a PostgreSQL outage would only
                 # surface at commit, after the file had already been created.
                 await session.execute(sa.text("SELECT 1"))
-                # Historical paths are not unique, so this asks whether any
-                # live row holds the path rather than asserting only one can.
-                occupied = (
-                    (
-                        await session.execute(
-                            sa.select(Note.id)
-                            .where(Note.path == relative, Note.state != "missing")
-                            .limit(1)
+                # Try to create the file, retrying the stem if another process
+                # won the exclusive-create race.  Five attempts lets a burst
+                # of concurrent creates all land without one 409ing the others.
+                stem_attempts = 0
+                while stem_attempts < 5:
+                    stem_attempts += 1
+                    relative = f"{folder}/{stem}{NOTE_SUFFIX}" if folder else f"{stem}{NOTE_SUFFIX}"
+                    target = folder_path / f"{stem}{NOTE_SUFFIX}"
+                    # Historical paths are not unique, so this asks whether any
+                    # live row holds the path rather than asserting only one
+                    # can.
+                    occupied = (
+                        (
+                            await session.execute(
+                                sa.select(Note.id)
+                                .where(Note.path == relative, Note.state != "missing")
+                                .limit(1)
+                            )
                         )
+                        .scalars()
+                        .first()
                     )
-                    .scalars()
-                    .first()
-                )
-                if occupied is not None:
+                    if occupied is not None:
+                        raise PathCollision(relative)
+                    try:
+                        create_exclusive_bytes(target, data)
+                        break
+                    except FileExistsError:
+                        # Another process created a file at this path between
+                        # the listing and the create. Recompute the stem from
+                        # the live directory listing and try again with the
+                        # next free suffix.
+                        stem = unique_stem(stem, existing_stems(folder_path))
+                        continue
+                    except OSError as exc:
+                        raise NotesFilesystemUnavailable(str(exc)) from exc
+                else:
                     raise PathCollision(relative)
-                try:
-                    create_exclusive_bytes(target, data)
-                except FileExistsError as exc:
-                    raise PathCollision(relative) from exc
-                except OSError as exc:
-                    raise NotesFilesystemUnavailable(str(exc)) from exc
+
                 created = True
 
                 now = datetime.now(tz=UTC)
