@@ -216,7 +216,12 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
     @app.middleware("http")
     async def protect_forms(request: Request, call_next: RequestResponseEndpoint) -> Response:
         cookie = request.cookies.get(CSRF_COOKIE, "")
-        token = cookie if re.fullmatch(r"[a-f0-9]{64}", cookie) else secrets.token_hex(32)
+        session = request.cookies.get(COOKIE, "")
+        path = request.url.path.rstrip("/") or "/"
+        if session and path not in PUBLIC:
+            token = request.app.state.sessions.csrf_token(session)
+        else:
+            token = cookie if re.fullmatch(r"[a-f0-9]{64}", cookie) else secrets.token_hex(32)
         context = csrf_token.set(token)
         try:
             if request.method == "POST":
@@ -235,7 +240,7 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
                         return error_response(destination, "too_large")
                     return HTMLResponse(page("Refused", "<p>Submission too large.</p>"), 413)
                 supplied = fields.get("csrf", "")
-                if not cookie or not secrets.compare_digest(supplied.encode(), token.encode()):
+                if not supplied or not secrets.compare_digest(supplied.encode(), token.encode()):
                     return HTMLResponse(
                         page("Refused", "<p>CSRF token missing or invalid. Reload the form.</p>"),
                         403,

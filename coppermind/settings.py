@@ -118,10 +118,10 @@ class GitSettings(BaseModel):
 
     enabled: bool = Field(default=True, description="Enable Git history.")
     debounce_s: int = Field(
-        default=60, description="Seconds to wait after an edit before committing."
+        default=60, ge=1, description="Seconds to wait after an edit before committing."
     )
     poll_interval_s: int = Field(
-        default=300, description="Seconds between remote polling attempts."
+        default=300, ge=1, description="Seconds between remote polling attempts."
     )
     identity_name: str = Field(default="Coppermind", description="Name used for Git commits.")
     identity_email: str = Field(

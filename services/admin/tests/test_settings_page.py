@@ -37,6 +37,7 @@ def test_every_product_field_has_value_default_and_help(signed_in):
     "field,value",
     [
         ("admin.session_hours", "0"),
+        ("git.debounce_s", "0"),
         ("git.debounce_s", '"invalid"'),
         ("sync.plan", "unknown"),
         ("notes.dated_types", "not-json"),

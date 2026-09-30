@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from coppermind_admin.auth import AdminCredentials, SignedSessions
-from coppermind_admin.main import COOKIE, MAX_FORM_BYTES, create_app
+from coppermind_admin.main import COOKIE, CSRF_COOKIE, MAX_FORM_BYTES, create_app
 from fastapi.testclient import TestClient
 
 from coppermind.settings import Wiring, default_settings
@@ -139,6 +139,25 @@ def test_rendered_forms_drive_claim_login_and_logout(fresh):
     assert logged_out.headers["location"] == "/admin/login"
     assert COOKIE not in client.cookies
     assert client.get("/admin").history[0].headers["location"] == "/admin/login"
+
+
+def test_an_unsigned_csrf_cookie_cannot_authorize_a_signed_in_post(fresh):
+    client, _, _ = fresh
+    claim(client)
+    login(client)
+    attacker_token = "a" * 64
+    client.cookies.set(CSRF_COOKIE, attacker_token)
+
+    refused = client.post(
+        "/v1/admin/logout",
+        data={"csrf": attacker_token},
+        follow_redirects=False,
+    )
+
+    assert refused.status_code == 403
+    assert "CSRF token missing or invalid" in refused.text
+    assert COOKIE in client.cookies
+    assert "You are signed in" in client.get("/admin").text
 
 
 def test_an_ended_session_says_so_on_the_login_page(fresh):
