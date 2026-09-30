@@ -127,9 +127,23 @@ ok "/healthz, /readyz and OpenAPI answer 200 without a key"
 # quickstart publishes, exactly as a browser does.
 admin_jar=""
 admin() {
-    curl -sS -b "$admin_jar" -c "$admin_jar" -o /dev/null -w '%{redirect_url}' "$@"
+    local csrf_args=()
+    if [ "${1:-}" = "-X" ] && [ "${2:-}" = "POST" ]; then
+        csrf_args=(--data-urlencode "csrf=$admin_csrf")
+    fi
+    curl -sS -b "$admin_jar" -c "$admin_jar" -o /dev/null -w '%{redirect_url}' "${csrf_args[@]}" "$@"
 }
 admin_page() { curl -sS -b "$admin_jar" -c "$admin_jar" "$@"; }
+form_value() {
+    python3 -c 'import sys
+from html.parser import HTMLParser
+class Inputs(HTMLParser):
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "input" and attrs.get("name") == sys.argv[1]:
+            print(attrs.get("value", ""))
+Inputs().feed(sys.stdin.read())' "$1"
+}
 has_session_cookie() { grep -q coppermind_admin_session "$admin_jar"; }
 
 step "claim Admin with the code bootstrap left on the state volume"
@@ -145,6 +159,8 @@ claim_code="$(compose run --rm --no-deps --entrypoint cat bootstrap \
     /data/state/internal/claim-code | tr -d '[:space:]')"
 [ -n "$claim_code" ] || fail "bootstrap left no claim code on the state volume"
 
+admin_csrf="$(admin_page "$ADMIN/admin/claim" | form_value csrf)"
+[ -n "$admin_csrf" ] || fail "Claim form has no CSRF token"
 admin_password='smoke admin password'
 [ "$(admin -X POST "$ADMIN/v1/admin/claim" \
     --data-urlencode 'code=not the code' --data-urlencode "password=$admin_password")" \
@@ -177,6 +193,53 @@ has_session_cookie || fail "signing in did not issue a session cookie"
 admin_page "$ADMIN/admin" | grep -Fq 'You are signed in' \
     || fail "the protected overview did not render for a signed in operator"
 
+step "create an API key through Admin and reveal it only once"
+keys_revision="$(admin_page "$ADMIN/admin/keys" | form_value revision | head -1)"
+key_result="$(admin_page -f -X POST "$ADMIN/v1/admin/keys/create" \
+    --data-urlencode "csrf=$admin_csrf" --data-urlencode "revision=$keys_revision" \
+    --data-urlencode 'name=smoke-read-only' --data-urlencode 'scope:notes:read=on')"
+wrong_scope_key="$(printf '%s' "$key_result" | python3 -c 'import re,sys
+print(re.search(r"<pre id=\"credential\">([^<]+)</pre>", sys.stdin.read())[1])')"
+unset key_result
+[ -n "$wrong_scope_key" ] || fail "Admin did not reveal the new credential"
+keys_page="$(admin_page -f "$ADMIN/admin/keys")"
+if printf '%s' "$keys_page" | grep -Fq "$wrong_scope_key"; then
+    fail "a later view revealed the credential again"
+fi
+deadline=$(( SECONDS + KEY_CACHE_SECONDS + 10 ))
+while :; do
+    code="$(status_of -H "Authorization: Bearer $wrong_scope_key" "$API/v1/notes")"
+    [ "$code" = "401" ] || break
+    [ "$SECONDS" -lt "$deadline" ] || break
+    sleep 5
+done
+[ "$code" = "200" ] || fail "the Admin-created key could not list notes: $code"
+ok "the Admin-created key authenticated an API read and was not revealed again"
+
+step "save a product setting through its rendered form and read it back"
+settings_form="$(admin_page -f "$ADMIN/admin/settings" | python3 -c 'import sys
+from html.parser import HTMLParser
+from urllib.parse import urlencode
+class Inputs(HTMLParser):
+    values = {}
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "input" and "name" in attrs:
+            self.values[attrs["name"]] = attrs.get("value", "")
+parser = Inputs()
+parser.feed(sys.stdin.read())
+parser.values["git.debounce_s"] = "17"
+print(urlencode(parser.values))')"
+admin_page -f -X POST "$ADMIN/v1/admin/settings" --data "$settings_form" \
+    | grep -F 'Saved revision' >/dev/null || fail "Settings save did not report its new revision"
+[ "$(admin_page -f "$ADMIN/admin/settings" | form_value git.debounce_s)" = "17" ] \
+    || fail "the Settings page did not read back git.debounce_s"
+compose exec -T store python3 -c 'from coppermind_store.control import ControlState
+from pathlib import Path
+assert ControlState(Path("/data/state")).settings().git.debounce_s == 17' \
+    || fail "the Store did not read the changed setting from disk"
+ok "git.debounce_s saved through Admin and read back from the page and state file"
+
 [ "$(admin -X POST "$ADMIN/v1/admin/logout")" = "$ADMIN/admin/login" ] \
     || fail "logout did not return to the Login page"
 has_session_cookie && fail "logout left the session cookie in the browser"
@@ -188,9 +251,6 @@ step "the bootstrapped default key is usable without a setup step"
 default_key="$(compose run --rm --no-deps --entrypoint cat bootstrap \
     /run/coppermind/api/default-api-key | tr -d '[:space:]')"
 [ -n "$default_key" ] || fail "bootstrap did not surface a default API key"
-wrong_scope_key="$(compose exec -T store python3 -m coppermind_store.keys create \
-    --name smoke-read-only --scope notes:read | tr -d '[:space:]')"
-[ -n "$wrong_scope_key" ] || fail "the key command did not return a key"
 AUTH=(-H "Authorization: Bearer $default_key")
 
 code="$(status_of -X POST "$API/v1/notes" -H 'Content-Type: application/json' \

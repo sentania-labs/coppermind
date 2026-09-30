@@ -17,10 +17,9 @@ vertical path proved end to end, then widened.
   attempts are refused, and a login submitted on a system that is not claimed
   returns to the Claim page rather than reporting a bad password. Password
   login creates an expiring HMAC-signed cookie with the shipped 12-hour
-  default and no database session state. The protected overview says only that
-  the operator is signed in, because its counters and controls belong to later
-  increments. Logout clears the cookie from that browser and the protected
-  page redirects to Login again; because the session is the signed cookie and
+  default and no database session state. The protected overview links to API
+  Keys and Settings; its counters belong to later increments. Logout clears
+  the cookie from that browser and the protected page redirects to Login again; because the session is the signed cookie and
   not a row, an issued token stays valid until its expiry no matter where Log
   out is clicked, and re-claiming is the only thing that ends every session at
   once. Claim, login and logout accept the rendered forms only, and every
@@ -494,12 +493,13 @@ in the tree, so do not read the absence as a decision to leave it out.
   connection is still not built.
 - **History through the API.** Nothing reads Git history or restores a note
   from it yet; `docker compose exec git git -C /data/notes log` is the way in.
-- **Remaining Admin pages.** API keys, Obsidian Sync connection, settings,
-  schema, filing rules, jobs, source problems, and real overview counters are
-  not built, so `admin.session_hours` is edited as a file setting until the
-  settings page carries its control. Until the graphical API keys page arrives,
-  `python3 -m coppermind_store.keys` remains the interim path for adding and
-  rotating keys.
+- **Remaining Admin pages.** Obsidian Sync connection, schema, filing rules,
+  jobs, source problems, and real overview counters are not built. API Keys
+  and Settings now exist at `/admin/keys` and `/admin/settings`: signed-in
+  operators can create and revoke keys and edit every product setting with
+  revision checks. `python3 -m coppermind_store.keys` remains a recovery path
+  when Admin is unavailable. Rendered-page tests prove these controls; the
+  compose smoke script covers them, pending execution against real images.
 - **Helm packaging and lab deployment.** The Helm chart and the lab handoff
   are not built. Publishing the existing service images and a release from a
   version tag is in place and is under Working above; no automation pushes a

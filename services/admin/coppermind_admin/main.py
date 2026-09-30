@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import html
+import re
+import secrets
+from contextvars import ContextVar
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -40,9 +43,11 @@ PUBLIC = {
 }
 log = get_logger(SERVICE)
 
-# A claim code and a password are a few hundred bytes. The ceiling is here so an
-# unauthenticated POST cannot make Admin buffer a body of any size it likes.
-MAX_FORM_BYTES = 4096
+# Bound all form bodies, including the complete product settings form, so a
+# POST cannot make Admin buffer a body of any size it likes.
+MAX_FORM_BYTES = 65536
+CSRF_COOKIE = "coppermind_admin_csrf"
+csrf_token: ContextVar[str] = ContextVar("csrf_token", default="")
 
 # What each rejection tells the operator. The page named in the redirect is
 # the one that reads the notice, so a refused password is never reported as a
@@ -61,6 +66,11 @@ LOGIN_NOTICES = {
 
 
 def page(title: str, body: str) -> str:
+    body = re.sub(
+        r"(<form\b[^>]*>)",
+        lambda match: match[0] + f'<input type="hidden" name="csrf" value="{csrf_token.get()}">',
+        body,
+    )
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>{html.escape(title)} | Coppermind</title><style>
@@ -79,6 +89,8 @@ input {{
   box-sizing:border-box; width:100%; margin-top:.4rem; padding:.75rem;
   border:1px solid #8a918b; border-radius:.4rem; font:inherit
 }}
+input[type="checkbox"] {{ width:auto; margin-right:.5rem }}
+fieldset {{ margin-top:1.5rem; border:1px solid #d3cdbd; border-radius:.4rem }}
 button {{
   margin-top:1.25rem; border:0; border-radius:.4rem; padding:.75rem 1rem;
   background:#245c3b; color:#fff; font:inherit; font-weight:700; cursor:pointer
@@ -199,6 +211,46 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
 
     app = FastAPI(title="Coppermind Admin", version=version)
     app.state.sessions = sessions or SignedSessions(credentials)
+    app.state.control = state
+
+    @app.middleware("http")
+    async def protect_forms(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        cookie = request.cookies.get(CSRF_COOKIE, "")
+        token = cookie if re.fullmatch(r"[a-f0-9]{64}", cookie) else secrets.token_hex(32)
+        context = csrf_token.set(token)
+        try:
+            if request.method == "POST":
+                try:
+                    # Cache the bounded body so route handlers use the same form parser.
+                    body = bytearray()
+                    async for chunk in request.stream():
+                        body += chunk
+                        if len(body) > MAX_FORM_BYTES:
+                            raise SubmissionTooLarge
+                    request._body = bytes(body)
+                    fields = await submitted(request)
+                except SubmissionTooLarge:
+                    destination = request.url.path.rsplit("/", 1)[-1]
+                    if destination in {"claim", "login"}:
+                        return error_response(destination, "too_large")
+                    return HTMLResponse(page("Refused", "<p>Submission too large.</p>"), 413)
+                supplied = fields.get("csrf", "")
+                if not cookie or not secrets.compare_digest(supplied.encode(), token.encode()):
+                    return HTMLResponse(
+                        page("Refused", "<p>CSRF token missing or invalid. Reload the form.</p>"),
+                        403,
+                    )
+            response = await call_next(request)
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            if token != cookie:
+                response.set_cookie(
+                    CSRF_COOKIE, token, secure=True, httponly=True, samesite="strict"
+                )
+            return response
+        finally:
+            csrf_token.reset(context)
+
     log.info("admin started")
 
     @app.middleware("http")
@@ -253,7 +305,7 @@ required></label><button>Log in</button></form>""",
             page(
                 "Overview",
                 """<h1>Coppermind Admin</h1><p>You are signed in.</p>
-<p class="muted">Configuration and status arrive in later increments.</p>
+<p><a href="/admin/keys">API Keys</a> | <a href="/admin/settings">Settings</a></p>
 <form method="post" action="/v1/admin/logout"><button>Log out</button></form>""",
             )
         )
@@ -334,6 +386,11 @@ required></label><button>Log in</button></form>""",
             content=readiness.model_dump(mode="json"),
         )
 
+    from coppermind_admin.pages import keys
+    from coppermind_admin.pages import settings as settings_page
+
+    app.include_router(keys.router)
+    app.include_router(settings_page.router)
     return app
 
 

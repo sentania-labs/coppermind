@@ -157,7 +157,7 @@ def test_a_revoked_default_key_stays_revoked_and_says_so(tmp_path: Path):
     run(wiring)
     control = ControlState(wiring.state_dir)
     revoked_id = control.api_keys().keys[0].key_id
-    revoke_key(control, revoked_id)
+    revoke_key(control.store, revoked_id, if_revision=control.api_keys().revision)
 
     assert run(wiring) == 0
     assert wiring.default_api_key_file.read_text(encoding="utf-8").strip() == REVOKED_NOTICE
@@ -176,7 +176,7 @@ def test_a_restored_backup_never_resurrects_a_revoked_default(tmp_path: Path, ca
     run(wiring)
     control = ControlState(wiring.state_dir)
     revoked_id = control.api_keys().keys[0].key_id
-    revoke_key(control, revoked_id)
+    revoke_key(control.store, revoked_id, if_revision=control.api_keys().revision)
     wiring.default_api_key_file.unlink()
     capsys.readouterr()
 
@@ -212,10 +212,14 @@ def test_an_operator_key_named_like_the_default_is_not_bootstrap_owned(tmp_path:
     wiring = wiring_for(tmp_path)
     run(wiring)
     control = ControlState(wiring.state_dir)
-    revoke_key(control, control.api_keys().keys[0].key_id)
+    revoke_key(
+        control.store, control.api_keys().keys[0].key_id, if_revision=control.api_keys().revision
+    )
     run(wiring)
 
-    impostor = add_key(ControlState(wiring.state_dir), DEFAULT_KEY_NAME, ["notes:read"])
+    impostor = add_key(
+        control.store, DEFAULT_KEY_NAME, ["notes:read"], if_revision=control.api_keys().revision
+    )
     parsed = split_credential(impostor)
     assert parsed is not None
     impostor_id, _ = parsed
