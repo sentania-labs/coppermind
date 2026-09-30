@@ -152,6 +152,7 @@ services:
     restart: unless-stopped
     environment: *wiring
     volumes:
+      - internal-token:/run/coppermind/internal:ro
       - type: volume
         source: data
         target: /data/state
@@ -207,9 +208,8 @@ services:
 
   # Supervises the Obsidian client and owns only its own state under
   # /data/state/sync. Its account token and vault encryption key belong on the
-  # separate credential volume, outside the data backup. Real sync is refused
-  # until the later Admin service can guide creation of Coppermind's own
-  # encrypted remote vault and collect its credentials.
+  # separate credential volume, outside the data backup. Admin guides creation
+  # of Coppermind's own encrypted remote vault and collects its credentials once.
   # The simulated client used to prove the lifecycle lives in
   # docker-compose.sync-smoke.yml and is deliberately not settable here.
   obsidian-sync:
@@ -235,5 +235,5 @@ volumes:
   postgres-password:
   default-api-key:
   # Deliberately outside the data backup. Restoring data without this volume
-  # requires a fresh Obsidian login through the future guided Admin setup.
+  # requires a fresh Obsidian login through the guided Admin setup.
   obsidian-sync-credentials:

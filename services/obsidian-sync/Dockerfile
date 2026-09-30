@@ -1,5 +1,5 @@
 # The Obsidian Sync helper is independently built and versioned. It contains
-# only Node and its dependency-free supervisor.
+# Node, the official client and its dependency-free supervisor.
 FROM node:22-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
 
 ARG BUILD_VERSION=dev
@@ -18,10 +18,18 @@ RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# The Obsidian client itself is not installed: nothing invokes it while real
-# sync is refused, so the slice that calls it brings it back with its call site.
+RUN npm install -g obsidian-headless@0.0.14 \
+    && ob login --help \
+    && ob sync-create-remote --help \
+    && ob sync-list-remote --help \
+    && ob sync-setup --help \
+    && ob sync --help \
+    && ob sync-status --help \
+    && ob sync-unlink --help \
+    && ob logout --help \
+    && npm cache clean --force
 WORKDIR /app
-COPY services/obsidian-sync/supervisor.mjs services/obsidian-sync/health.mjs services/obsidian-sync/control.mjs ./
+COPY services/obsidian-sync/supervisor.mjs services/obsidian-sync/health.mjs services/obsidian-sync/control.mjs services/obsidian-sync/settings.mjs ./
 COPY services/obsidian-sync/fake ./fake
 
 # The account token and vault encryption key live in this dedicated home,

@@ -1,9 +1,11 @@
 import { timingSafeEqual } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import process from "node:process";
+
+import { deviceName } from "./settings.mjs";
 
 const DATA_DIR = process.env.COPPERMIND_DATA_DIR || "/data";
 const STATE_DIR = path.join(DATA_DIR, "state", "sync");
@@ -16,19 +18,10 @@ const PORT = Number.parseInt(process.env.COPPERMIND_SYNC_PORT || "8092", 10);
 const LOG_LEVELS = { DEBUG: 10, INFO: 20, WARNING: 30, ERROR: 40 };
 const LOG_THRESHOLD =
   LOG_LEVELS[(process.env.COPPERMIND_LOG_LEVEL || "INFO").trim().toUpperCase()] ?? LOG_LEVELS.INFO;
-// The simulated client is the only supervised child today, so these are its
-// restart bounds and nothing else's.
+// Bound restart storms while retaining automatic recovery.
 const RESTART_BASE_MS = 250;
 const RESTART_CEILING_MS = 2_000;
 const RESTART_STABLE_MS = 2_000;
-
-// Nothing here may reach the operator's Obsidian account or their remote vault
-// object. Coppermind gets its own new encrypted remote vault, and creating it
-// and collecting its encryption password is the guided Admin setup that does
-// not exist yet, so every path that would run the real client refuses instead
-// and says why.
-const REAL_SYNC_REFUSED =
-  "real Obsidian sync is refused until the guided Admin setup creates Coppermind's own encrypted remote vault and collects its credentials";
 
 let child = null;
 let childStartedAt = 0;
@@ -48,7 +41,10 @@ const status = {
   // True whenever the supervised child is the bundled simulator rather than
   // the Obsidian client. Nothing in a simulated run reaches a remote vault.
   simulated: FAKE,
-  real_sync_supported: false,
+  real_sync_supported: true,
+  device_name: null,
+  last_sync_at: null,
+  client_status: null,
   vault_name: null,
   // Only ever set from what the running client reports about itself.
   sync_mode: null,
@@ -95,18 +91,24 @@ async function loadConnection() {
     if (typeof value.vault_name !== "string" || value.vault_name.length === 0) {
       throw new Error("connection file has no remote vault name");
     }
-    connection = value;
-    const paused = FAKE && value.paused === true;
+    connection = {
+      vault_name: value.vault_name,
+      vault_id: value.vault_id,
+      device_name: value.device_name,
+      paused: value.paused === true,
+    };
+    const paused = value.paused === true;
     Object.assign(status, {
       configured: true,
       paused,
       vault_name: value.vault_name,
-      state: FAKE ? (paused ? "paused" : "starting") : "refused",
-      last_error: FAKE ? null : REAL_SYNC_REFUSED,
+      device_name: value.device_name,
+      state: paused ? "paused" : "starting",
+      last_error: null,
     });
   } catch (error) {
     if (error.code !== "ENOENT") {
-      Object.assign(status, { state: "error", last_error: String(error.message || error) });
+      Object.assign(status, { state: "error", last_error: "Cannot read sync connection" });
     }
   }
 }
@@ -148,31 +150,21 @@ async function stopChild() {
 
 async function startSync() {
   if (!connection || status.paused || stopping || child) return;
-  if (!FAKE) {
-    await publishStatus({
-      state: "refused",
-      syncing: false,
-      sync_pid: null,
-      last_error: REAL_SYNC_REFUSED,
-    });
-    log("WARNING", "real sync refused", { vault_name: status.vault_name });
-    return;
-  }
   await publishStatus({ state: "starting", syncing: false, sync_pid: null });
-  const proc = spawn(process.execPath, [path.join(import.meta.dirname, "fake", "sync.mjs")], {
-    env: process.env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const proc = FAKE
+    ? spawn(process.execPath, [path.join(import.meta.dirname, "fake", "sync.mjs")], {
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+    : spawn("ob", ["sync", "--path", path.join(DATA_DIR, "notes"), "--continuous"], {
+        stdio: "ignore",
+      });
   child = proc;
   childStartedAt = Date.now();
-  proc.stdout.on("data", (chunk) => {
-    const output = chunk.toString().trim();
-    log("INFO", "sync output", { output });
-    for (const line of output.split("\n")) observeClientReport(line);
+  // Real client output is never forwarded. Login prints the account email.
+  // The simulator emits only its fixed configuration report.
+  if (FAKE) proc.stdout.on("data", (chunk) => {
+    for (const line of chunk.toString().split("\n")) observeClientReport(line);
   });
-  proc.stderr.on("data", (chunk) =>
-    log("WARNING", "sync error output", { output: chunk.toString().trim() }),
-  );
   proc.once("error", (error) => handleChildExit(proc, null, null, error));
   proc.once("exit", (code, signal) => handleChildExit(proc, code, signal));
   await publishStatus({
@@ -185,7 +177,7 @@ async function startSync() {
 }
 
 function scheduleRestart() {
-  if (!connection || status.paused || stopping || !FAKE) return;
+  if (!connection || status.paused || stopping) return;
   clearTimeout(restartTimer);
   const delay = Math.min(RESTART_BASE_MS * 2 ** restartAttempts, RESTART_CEILING_MS);
   restartAttempts += 1;
@@ -199,7 +191,7 @@ async function handleChildExit(proc, code, signal, error = null) {
   if (Date.now() - childStartedAt >= RESTART_STABLE_MS) restartAttempts = 0;
   const expected = stopping || status.paused;
   const message = error
-    ? String(error.message || error)
+    ? "sync process could not start"
     : `sync process exited (${code ?? signal ?? "unknown"})`;
   await publishStatus({
     state: expected ? (status.paused ? "paused" : "stopping") : "restarting",
@@ -213,23 +205,139 @@ async function handleChildExit(proc, code, signal, error = null) {
   }
 }
 
-async function connect(body) {
-  if (!FAKE) return [501, { error: "real_sync_refused", detail: REAL_SYNC_REFUSED }];
-  const vaultName = body.vault_name;
-  if (typeof vaultName !== "string" || vaultName.length === 0) {
-    return [400, { error: "vault_name_required" }];
+// Short-lived command output stays in memory. No argv, stdout, stderr or
+// exception object is logged. Failures publish a scrubbed, bounded detail.
+async function command(args, secrets = [], json = false, accepted = [0]) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("ob", args, { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "", err = "", oversized = false;
+    const timer = setTimeout(() => proc.kill("SIGKILL"), 60_000);
+    const collect = (chunk, stderr) => {
+      if (out.length + err.length + chunk.length > 262144) {
+        oversized = true;
+        proc.kill("SIGKILL");
+      } else if (stderr) err += chunk; else out += chunk;
+    };
+    proc.stdout.setEncoding("utf8");
+    proc.stderr.setEncoding("utf8");
+    proc.stdout.on("data", (chunk) => collect(chunk, false));
+    proc.stderr.on("data", (chunk) => collect(chunk, true));
+    proc.once("error", () => { clearTimeout(timer); reject(new Error("Obsidian client unavailable")); });
+    proc.once("close", (code) => {
+      clearTimeout(timer);
+      if (!accepted.includes(code) || oversized) {
+        for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) {
+          err = err.split(secret).join("[redacted]");
+          err = err.split(JSON.stringify(secret).slice(1, -1)).join("[redacted]");
+        }
+        // Only setup has a request-scoped redaction list. Boot and other
+        // controls retain a generic error rather than arbitrary client prose.
+        const detail = secrets.length ? err.trim().slice(0, 1500) : "";
+        reject(new Error(`Obsidian ${args[0]} failed. Check credentials, MFA and connectivity.${detail ? ` ${detail}` : ""}`));
+      } else if (json) {
+        try { resolve(JSON.parse(out)); }
+        catch { reject(new Error("Obsidian client returned invalid JSON")); }
+      } else resolve(null);
+    });
+  });
+}
+
+async function refreshClientStatus(secrets = []) {
+  if (FAKE || !connection) return;
+  try {
+    let report = await command(["sync-status", "--path", path.join(DATA_DIR, "notes"), "--json"], secrets, true);
+    let serialized = JSON.stringify(report);
+    for (const secret of secrets) {
+      serialized = serialized.split(JSON.stringify(secret).slice(1, -1)).join("[redacted]");
+    }
+    report = JSON.parse(serialized);
+    // 0.0.14 reports configuration, not delivery timestamps or credentials.
+    const safe = {};
+    for (const key of ["vaultId", "vaultName", "vaultPath", "syncMode", "conflictStrategy", "deviceName", "configDir", "fileTypes", "configs", "excludedFolders"]) {
+      if (key in report) safe[key] = report[key];
+    }
+    await publishStatus({ client_status: safe, sync_mode: safe.syncMode ?? null,
+      conflict_strategy: safe.conflictStrategy ?? null });
+  } catch {
+    await publishStatus({ last_error: "Obsidian sync status unavailable" });
   }
-  if (child && status.syncing) return [409, { error: "already_connected" }];
-  connection = { vault_name: vaultName, paused: false };
-  restartAttempts = 0;
-  await saveConnection();
-  await publishStatus({ configured: true, paused: false, vault_name: vaultName });
-  await startSync();
+}
+
+async function connect(body) {
+  const vaultName = body?.vault_name;
+  if (typeof vaultName !== "string" || !vaultName.trim()) return [400, { error: "vault_name_required" }];
+  for (const key of ["email", "password", "encryption_password"]) {
+    if (typeof body[key] !== "string" || !body[key]) return [400, { error: "credentials_required" }];
+  }
+  if (typeof body.existing_vault !== "boolean" ||
+      (body.mfa_code != null && typeof body.mfa_code !== "string")) return [400, { error: "invalid_connect" }];
+  if (connection) return [409, { error: "already_connected" }];
+  const secrets = [body.email, body.password, body.mfa_code, body.encryption_password].filter(Boolean);
+  try {
+    const device = await deviceName(path.join(DATA_DIR, "state", "settings.yaml"));
+    if (body.device_name != null && body.device_name !== device) {
+      return [409, { error: "device_setting_changed" }];
+    }
+    // These names are durable. Refuse overlapping input before writing any
+    // settings, client configuration, or connection metadata.
+    if ([vaultName, device].some((value) => secrets.some((secret) => value.includes(secret)))) {
+      return [400, { error: "names_must_not_contain_credentials" }];
+    }
+    let vaultId = "simulated";
+    if (!FAKE) {
+      const login = ["login", "--email", body.email, "--password", body.password];
+      if (body.mfa_code) login.push("--mfa", body.mfa_code);
+      await command(login, secrets);
+      if (!body.existing_vault) await command(["sync-create-remote", "--name", vaultName,
+        "--encryption", "end-to-end", "--password", body.encryption_password], secrets);
+      const remote = await command(["sync-list-remote", "--json"], secrets, true);
+      const matches = [...remote.vaults, ...remote.shared].filter((v) => v.name === vaultName);
+      if (matches.length !== 1) throw new Error("Remote vault name is absent or ambiguous. Use a unique name and join an existing vault after a creation retry.");
+      vaultId = matches[0].id;
+      if (typeof vaultId !== "string" || !vaultId || secrets.some((secret) => vaultId.includes(secret))) {
+        throw new Error("Obsidian client returned an invalid remote vault ID");
+      }
+      await command(["sync-setup", "--vault", vaultId, "--path", path.join(DATA_DIR, "notes"),
+        "--password", body.encryption_password, "--device-name", device, "--json"], secrets, true);
+    }
+    const next = { vault_name: vaultName, vault_id: vaultId, device_name: device, paused: false };
+    await writeJsonAtomically(CONNECTION_FILE, next);
+    connection = next;
+    restartAttempts = 0;
+    await publishStatus({ configured: true, paused: false, vault_name: vaultName, device_name: device });
+    await startSync();
+    await refreshClientStatus(secrets);
+    return [200, publicStatus()];
+  } catch (error) {
+    const detail = error.message.startsWith("Remote vault name") || error.message.startsWith("Obsidian ")
+      ? error.message : "Sync setup failed. Check settings and retry.";
+    await publishStatus({ last_error: detail });
+    return [502, { error: "connect_failed", detail }];
+  }
+}
+
+async function disconnect() {
+  clearTimeout(restartTimer);
+  status.paused = true;
+  if (connection) { connection.paused = true; await saveConnection(); }
+  await stopChild();
+  if (!FAKE) {
+    // A failed setup can leave an account token without a local connection.
+    let unlinkError;
+    try { await command(["sync-unlink", "--path", path.join(DATA_DIR, "notes")], [], false, [0, 3]); }
+    catch (error) { if (connection) unlinkError = error; }
+    await command(["logout"]);
+    if (unlinkError) throw unlinkError;
+  }
+  await rm(CONNECTION_FILE, { force: true });
+  connection = null;
+  await publishStatus({ state: "not_connected", configured: false, paused: false,
+    syncing: false, sync_pid: null, vault_name: null, device_name: null,
+    client_status: null, sync_mode: null, conflict_strategy: null, last_sync_at: null, last_error: null });
   return [200, publicStatus()];
 }
 
 async function pause() {
-  if (!FAKE) return [501, { error: "real_sync_refused", detail: REAL_SYNC_REFUSED }];
   if (!connection) return [409, { error: "not_configured" }];
   connection.paused = true;
   status.paused = true;
@@ -241,7 +349,6 @@ async function pause() {
 }
 
 async function resume() {
-  if (!FAKE) return [501, { error: "real_sync_refused", detail: REAL_SYNC_REFUSED }];
   if (!connection) return [409, { error: "not_configured" }];
   connection.paused = false;
   status.paused = false;
@@ -281,6 +388,7 @@ function send(response, code, body) {
   response.end(`${JSON.stringify(body)}\n`);
 }
 
+let controlBusy = false;
 const server = http.createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/livez") {
@@ -295,15 +403,21 @@ const server = http.createServer(async (request, response) => {
       send(response, 200, publicStatus());
       return;
     }
-    const body = await readBody(request);
-    let result;
-    if (request.method === "POST" && request.url === "/connect") result = await connect(body);
-    else if (request.method === "POST" && request.url === "/pause") result = await pause();
-    else if (request.method === "POST" && request.url === "/resume") result = await resume();
-    else result = [404, { error: "not_found" }];
-    send(response, result[0], result[1]);
-  } catch (error) {
-    send(response, 400, { error: "bad_request", detail: String(error.message || error) });
+    if (controlBusy) { send(response, 409, { error: "control_busy" }); return; }
+    controlBusy = true;
+    try {
+      const body = await readBody(request);
+      let result;
+      if (request.method === "POST" && request.url === "/connect") result = await connect(body);
+      else if (request.method === "POST" && request.url === "/pause") result = await pause();
+      else if (request.method === "POST" && request.url === "/resume") result = await resume();
+      else if (request.method === "POST" && request.url === "/disconnect") result = await disconnect();
+      else result = [404, { error: "not_found" }];
+      send(response, result[0], result[1]);
+    } finally { controlBusy = false; }
+  } catch {
+    await publishStatus({ last_error: "Sync request failed" }).catch(() => {});
+    send(response, 400, { error: "bad_request", detail: "Sync request failed" });
   }
 });
 
@@ -329,6 +443,7 @@ server.listen(PORT, "0.0.0.0", async () => {
   await publishStatus({ control_port: address.port });
   log("INFO", "control endpoint started", { port: address.port, simulated: status.simulated });
   if (connection && !status.paused) await startSync().catch(() => {});
+  await refreshClientStatus();
 });
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));

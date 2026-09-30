@@ -109,8 +109,7 @@ class SyncSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     plan: SyncPlan = "standard"
-    # Null marks these overrides as unset. Ingest derives plan limits when its
-    # consumer lands.
+    # Null uses the selected plan's limits. Explicit overrides remain available.
     max_file_bytes: int | None = None
     max_total_bytes: int | None = None
     device_name: str = "coppermind-server"
@@ -119,6 +118,20 @@ class SyncSettings(BaseModel):
     excluded_folders: list[str] = Field(default_factory=lambda: ["_Trash"])
     file_types: list[str] = Field(default_factory=lambda: ["image", "audio", "video", "pdf"])
     sync_configs: list[str] = Field(default_factory=list)
+
+    @property
+    def file_limit_bytes(self) -> int:
+        """Resolve the per-file ceiling from the plan unless explicitly overridden."""
+        if self.max_file_bytes is not None:
+            return self.max_file_bytes
+        return (5 if self.plan == "standard" else 200) * MIB
+
+    @property
+    def total_limit_bytes(self) -> int:
+        """Resolve the base plan storage; Plus add-ons use the existing override."""
+        if self.max_total_bytes is not None:
+            return self.max_total_bytes
+        return (1 if self.plan == "standard" else 10) * 1024 * MIB
 
 
 class CuratorSettings(BaseModel):
