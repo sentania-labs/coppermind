@@ -634,15 +634,18 @@ def _parse(
     try:
         frontmatter, body = fm.parse(data.decode("utf-8"))
     except (fm.FrontmatterError, UnicodeDecodeError) as exc:
-        # A person broke this file on a device. Before announcing the file
-        # as unparseable, try to learn the identity from the raw block so
-        # a rename onto a stale path can answer NotFound rather than
-        # NoteUnparseable. The id key name comes from the schema, not the
-        # file, so it cannot carry content.
-        text = data.decode("utf-8")
-        recovered_id = _recover_id_from_raw(text, schema.role("id_key"))
-        if recovered_id is not None and recovered_id != note_id:
-            raise NotFound(note_id) from None
+        if isinstance(exc, fm.FrontmatterError):
+            # A person broke this file on a device. Before announcing the file
+            # as unparseable, try to learn the identity from the raw block so
+            # a rename onto a stale path can answer NotFound rather than
+            # NoteUnparseable. The id key name comes from the schema, not the
+            # file, so it cannot carry content.  Decode only here because a
+            # FrontmatterError implies the bytes were valid UTF-8 (the decode
+            # in the try block succeeded enough to reach the YAML parser).
+            text = data.decode("utf-8")
+            recovered_id = _recover_id_from_raw(text, schema.role("id_key"))
+            if recovered_id is not None and recovered_id != note_id:
+                raise NotFound(note_id) from None
         # A person broke this file on a device. That is not a fault of the
         # store, and the answer says so rather than blaming Coppermind.
         # The parser's reason quotes the offending lines, so it is the

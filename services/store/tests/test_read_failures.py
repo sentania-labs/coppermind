@@ -236,3 +236,28 @@ async def test_broken_frontmatter_with_no_recoverable_id_raises_unparseable(
     with pytest.raises(NoteUnparseable) as raised:
         await store.get_note(NOTE_ID)
     assert raised.value.note_id == NOTE_ID
+
+
+async def test_undecodable_bytes_still_answer_unparseable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Undecodable bytes do not cause a UnicodeDecodeError in the error path.
+
+    The original except handler decoded data again, which would re-raise
+    UnicodeDecodeError when the parse failure was caused by invalid bytes.
+    The fix only attempts id recovery for FrontmatterError, so a file with
+    invalid UTF-8 in its body still answers NoteUnparseable cleanly.
+    """
+    store = local_store(tmp_path)
+    broken = tmp_path / "Runbook.md"
+    broken.write_bytes(b"---\nid: x\n---\n\xff\xfe")
+
+    async def locate(_: str) -> tuple[str, Path]:
+        return "Review/Runbook.md", broken
+
+    monkeypatch.setattr(store, "_locate", locate)
+
+    with pytest.raises(NoteUnparseable) as raised:
+        await store.get_note(NOTE_ID)
+    assert raised.value.note_id == NOTE_ID
+    assert raised.value.reason is not None
