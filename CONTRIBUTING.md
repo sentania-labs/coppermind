@@ -20,6 +20,8 @@ make failure                           # helpers stopped and started with edits 
 make down                              # stop; `make clean` also drops volumes
 ```
 
+Run `make setup` first in a fresh checkout before any other target to populate the venv. A worker that skips it will see `ModuleNotFoundError: No module named 'coppermind_store'`.
+
 `make check` and `make scan` predict CI exactly, because CI calls the same
 targets. There is no command in a pull request's workflow that you cannot run
 here. Publication from a version tag is the exception: pushing, signing and
