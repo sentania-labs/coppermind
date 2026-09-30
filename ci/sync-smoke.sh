@@ -2,7 +2,7 @@
 # The simulated client proves the Obsidian Sync helper lifecycle without an
 # account. This brings the stack up itself, layers the simulated client on top
 # of whatever compose files it was given, and puts the helper back in its
-# normal refusing mode with no connection left behind.
+# normal disconnected mode with no connection left behind.
 #
 # Usage:
 #   bash ci/sync-smoke.sh
@@ -32,7 +32,7 @@ field() {
 wait_for() {
     local wanted="$1" previous_pid="${2:-}" state pid
     for _ in $(seq 1 100); do
-        state="$(control status)"
+        state="$(control status 2>/dev/null)" || { sleep 0.1; continue; }
         if [ "$(printf '%s' "$state" | field state)" = "$wanted" ]; then
             pid="$(printf '%s' "$state" | field sync_pid)"
             if [ -z "$previous_pid" ] || [ "$pid" != "$previous_pid" ]; then
@@ -47,10 +47,11 @@ wait_for() {
 
 # Runs however the script exits, so a failed assertion cannot leave a simulated
 # connection on the volume for the next run to trip over.
-restore_refusing_helper() {
+restore_helper() {
     local code=$?
     step "leave nothing simulated behind"
-    compose exec -T obsidian-sync rm -f /data/state/sync/connection.json || true
+    control disconnect || true
+    rm -f "${admin_jar:-}"
     plain_compose up -d --wait --force-recreate --no-deps obsidian-sync || true
     [ "$code" -eq 0 ] || return
     local restored
@@ -64,7 +65,7 @@ restore_refusing_helper() {
 
 step "bring the stack up with the simulated client"
 compose up -d --wait --remove-orphans
-trap restore_refusing_helper EXIT
+trap restore_helper EXIT
 # The account token and vault encryption key must land on their own volume,
 # not in the container writable layer and not in the data backup, so this
 # proves the credential home is a mount point and a different one from /data.
@@ -94,15 +95,38 @@ initial="$(control status)"
     || fail "helper is not running the simulated client"
 [ "$(printf '%s' "$initial" | field syncing)" = "False" ] || fail "fresh helper claims syncing"
 
-connected="$(control connect "Simulated remote vault")"
+step "connect from the signed-in Admin page"
+ADMIN="${ADMIN:-http://127.0.0.1:8082}"
+admin_jar="$(mktemp)"
+# Standalone smoke can claim a fresh installation; the full storyline has
+# already claimed it with this same synthetic test password.
+claim_code="$(compose exec -T admin sh -c 'cat /data/state/internal/claim-code 2>/dev/null || true')"
+if [ -n "$claim_code" ]; then
+    printf 'code=%s&password=smoke+admin+password' "$claim_code" | \
+        curl -fsS -o /dev/null --data-binary @- "$ADMIN/v1/admin/claim"
+fi
+printf 'password=smoke+admin+password' | \
+    curl -fsS -c "$admin_jar" -o /dev/null --data-binary @- "$ADMIN/v1/admin/login"
+curl -fsS -b "$admin_jar" "$ADMIN/admin/sync" | grep -Fq 'Encryption password' \
+    || fail "Admin did not render Connect"
+admin_action() {
+    local action="$1" form="${2:-submit=yes}" result
+    result="$(printf '%s' "$form" | curl -fsS -b "$admin_jar" -o /dev/null \
+        -w '%{redirect_url}' --data-binary @- "$ADMIN/admin/sync/$action")"
+    [ "$result" = "$ADMIN/admin/sync?result=saved" ] || fail "Admin $action failed"
+}
+admin_action connect 'email=smoke%40example.invalid&password=simulated-account&encryption_password=simulated-encryption&encryption_confirm=simulated-encryption&mfa_code=&vault_name=Simulated+remote+vault&device_name=coppermind-server&plan=standard&existing_vault=false'
+connected="$(control status)"
 [ "$(printf '%s' "$connected" | field state)" = "syncing" ] || fail "connect did not start sync"
 [ "$(printf '%s' "$connected" | field vault_name)" = "Simulated remote vault" ] \
     || fail "connect did not record the vault name it was given"
 
-paused="$(control pause)"
+admin_action pause
+paused="$(control status)"
 [ "$(printf '%s' "$paused" | field state)" = "paused" ] || fail "pause did not stop sync"
 
-resumed="$(control resume)"
+admin_action resume
+resumed="$(control status)"
 [ "$(printf '%s' "$resumed" | field state)" = "syncing" ] || fail "resume did not start sync"
 old_pid="$(printf '%s' "$resumed" | field sync_pid)"
 
@@ -121,3 +145,9 @@ persisted="$(compose exec -T obsidian-sync cat /data/state/sync/status.json)"
     || fail "status file does not report the active simulated client"
 [ "$(printf '%s' "$persisted" | field sync_mode)" = "simulated" ] \
     || fail "status file does not report the client as simulated"
+
+step "restart the helper with its persisted connection"
+compose restart obsidian-sync
+wait_for syncing >/dev/null
+admin_action disconnect
+[ "$(control status | field state)" = "not_connected" ] || fail "disconnect did not clear state"
