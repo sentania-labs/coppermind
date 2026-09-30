@@ -9,6 +9,11 @@ the files are the product, and everything else is rebuildable from them.
 
 The design contract is the decision records in
 [docs/decisions](docs/decisions): what was chosen, what was rejected, and why.
+The full architecture and plan behind this repository is
+[docs/architecture.md](docs/architecture.md); current status against that
+plan, what is merged, what is next, and what is deliberately deferred, is
+[docs/roadmap.md](docs/roadmap.md); the plan for checking it against real
+use is [docs/acceptance-plan.md](docs/acceptance-plan.md).
 
 ## Quickstart
 
