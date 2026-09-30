@@ -234,41 +234,44 @@ minutes after a change settles, it is a commit:
 docker compose exec git git -C /data/notes log --stat
 ```
 
-The Obsidian Sync helper is supervised and answers its control endpoint, but
-it does not sync to a device yet. Connecting a real account is refused on
-purpose until Admin's later Connect page provides the requested guided setup.
-That flow will create Coppermind's own new encrypted remote vault, collect its
-encryption password, and restart the helper on save. The captain's existing
-Obsidian vault remains a data source whose content arrives through the ingest
-API. Nothing here touches an Obsidian account or remote vault object today.
+Open [Obsidian Sync in Admin](http://127.0.0.1:8082/admin/sync) after signing
+in. Choose Standard or Plus, a new encrypted remote vault name (or explicitly
+join an existing remote vault), and a device name. Enter the Obsidian email,
+password, optional MFA code, and the encryption password twice. Joining an
+existing remote vault merges its content with this notes filesystem.
 
-The future account token and vault encryption key have their own
-`obsidian-sync-credentials` volume, outside the `data` backup. Restoring the
-notes filesystem without that credential volume requires a fresh Obsidian
-login through the guided Admin setup.
+The helper installs official `obsidian-headless` 0.0.14. Connect logs in,
+creates or finds the named remote vault, configures `/data/notes`, and starts
+continuous sync. Pause, resume and disconnect are on the same Admin page.
+A restart resumes a saved connection unless it was paused. Disconnect unlinks
+the local client and logs out; it does not delete the remote vault.
 
-```bash
-docker compose exec obsidian-sync node /app/control.mjs status
-docker compose exec obsidian-sync node /app/control.mjs connect "My Remote Vault"
-# 501 real_sync_refused
-```
+Submitted credentials are not saved or rendered back. The resulting account
+token and encryption key belong on `obsidian-sync-credentials`, mounted at
+`/var/lib/obsidian-sync`, outside the data backup. The client also keeps its
+configuration and sync database there. Restoring data without that volume
+requires disconnecting the stale connection and connecting again.
 
-What the status does and does not say:
+Status includes `real_sync_supported: true`, remote vault and device names,
+and the configuration returned by `ob sync-status --json`. Version 0.0.14
+does not report delivery time, so `last_sync_at` is null. `liveness` remains
+`child_process_only`: a running child does not prove that a note reached a
+phone. `simulated` identifies the stand-in used by `make sync-smoke`.
 
-- `simulated` is true only while `make sync-smoke` is running the bundled
-  stand-in client; `real_sync_supported` is false everywhere today.
-- `sync_mode` and `conflict_strategy` stay null until a client reports them.
-- `liveness` is `child_process_only`: the supervisor watches the client
-  process, so it cannot tell a running client from a delivering one.
+The Admin tests exercise HTTP requests against a fake helper. Node tests
+cover a stubbed `ob`, and the Compose smoke script drives the simulated
+lifecycle through Admin; neither ran in the FDY-0179 worker, which has no
+Node or Docker. No real account is used in CI. The operator must connect the
+phone to the same remote vault and verify delivery there.
 
-Pause and resume use the same internal control endpoint through the packaged
-command. Both are refused for the same reason connect is, so nothing can
-persist a paused connection that would read as a working one:
+The plan selector resolves the configured file and total limits using the
+[Obsidian plan limits](https://obsidian.md/help/sync/plans), with existing
+explicit overrides preserved. It does not change the purchased subscription;
+the remote service enforces the account's actual limits.
 
-```bash
-docker compose exec obsidian-sync node /app/control.mjs pause
-docker compose exec obsidian-sync node /app/control.mjs resume
-```
+For internal diagnostics, `node /app/control.mjs status`, `pause`, `resume`
+and `disconnect` run inside the helper container. `connect` takes the full
+JSON request from stdin or a file path; never put credentials in its arguments.
 
 ## What is running
 
@@ -278,7 +281,7 @@ docker compose exec obsidian-sync node /app/control.mjs resume
 | `admin` | server-rendered operator interface on `:8082` | password hash and session signing secret in `/data/state/admin.json`; session state in its signed cookie |
 | `store` | the only process that writes the notes filesystem | `/data`, one replica always |
 | `git` | records the history of the notes filesystem; no network, no credential | `/data/notes/.git`, one replica always |
-| `obsidian-sync` | supervises the sync client and exposes internal lifecycle control; real sync refused for now | `/data/state/sync`, one replica always |
+| `obsidian-sync` | supervises the official sync client with guided Admin connection | `/data/state/sync`, one replica always |
 | `postgres` | mirrored and derived state, rebuildable from `/data` | `pgdata` volume |
 | `bootstrap`, `migrate` | one-shot, run on every `up` and exit | none |
 

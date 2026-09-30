@@ -119,3 +119,14 @@ def test_wiring_defaults_point_at_the_compose_stack():
     assert wiring.state_dir == Path("/data/state")
     assert wiring.internal_token_file == Path("/run/coppermind/internal/internal-token")
     assert wiring.db_password_file == Path("/run/coppermind/postgres/postgres-password")
+
+
+def test_sync_plan_resolves_limits_and_preserves_explicit_overrides():
+    from coppermind.settings import MIB, SyncSettings
+
+    standard = SyncSettings()
+    plus = SyncSettings(plan="plus")
+    assert (standard.file_limit_bytes, standard.total_limit_bytes) == (5 * MIB, 1024 * MIB)
+    assert (plus.file_limit_bytes, plus.total_limit_bytes) == (200 * MIB, 10 * 1024 * MIB)
+    overridden = SyncSettings(plan="plus", max_file_bytes=7, max_total_bytes=19)
+    assert (overridden.file_limit_bytes, overridden.total_limit_bytes) == (7, 19)

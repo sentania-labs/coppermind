@@ -27,6 +27,7 @@ from coppermind_admin.auth import (
     InvalidClaimCode,
     SignedSessions,
 )
+from coppermind_admin.pages import sync
 
 SERVICE = "coppermind-admin"
 COOKIE = "coppermind_admin_session"
@@ -199,6 +200,7 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
 
     app = FastAPI(title="Coppermind Admin", version=version)
     app.state.sessions = sessions or SignedSessions(credentials)
+    app.include_router(sync.router(settings))
     log.info("admin started")
 
     @app.middleware("http")

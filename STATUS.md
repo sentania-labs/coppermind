@@ -418,41 +418,33 @@ vertical path proved end to end, then widened.
   a live registry yet, so the first real tag is what proves it, and that first
   tag needs one manual GHCR step: see
   [CONTRIBUTING.md](CONTRIBUTING.md).
-- The independently built `obsidian-sync` image supervises a sync client and
-  exposes authenticated connect, pause, resume and status controls on the
-  compose network. A fresh install has the supervisor available and honestly
-  disconnected, with that state in `/data/state/sync/status.json`.
-  **Real sync is refused on purpose.** Connect, pause, resume and boot from a
-  persisted connection all return the same refusal and never invoke the
-  client. The captain chose a new encrypted remote vault for Coppermind,
-  separate from his existing vault. His existing vault remains a data source
-  whose content arrives through the ingest API, so the two vaults never merge.
-  Real connect stays refused until Admin provides the guided setup he asked
-  for: create the remote vault when needed, collect its encryption password,
-  save, and restart the helper. No note has been delivered to a device from
-  here, and no account has been used; the phone half of the core path is not
-  proved yet.
-  The future account token and vault encryption key have their own
-  `obsidian-sync-credentials` volume mounted at `/var/lib/obsidian-sync`, not
-  the shared `data` backup volume. Restoring the notes filesystem without that
-  credential volume requires a fresh login through the guided Admin setup.
-  A bundled stand-in client, switched on only by `make sync-smoke` through
-  `docker-compose.sync-smoke.yml`, proves connect, pause, resume and recovery
-  after the supervised child is killed, then puts the helper back in its
-  refusing mode with no connection left behind.
-  The status file says what it knows and no more: `simulated` and
-  `real_sync_supported` flags, `sync_mode` and `conflict_strategy` left null
-  until a client reports them, and `liveness: child_process_only` because the
-  supervisor watches a process, not delivery. It publishes no device name,
-  because the one setting that names this device is `sync.device_name` in
-  `/data/state/settings.yaml` and the helper does not read it yet: the slice
-  that connects for real must read that key and pin its default equal to
-  `coppermind.settings`, the way `services/git/tests/test_settings.py` already
-  does for the Git helper. The Obsidian client is not installed in the image
-  either; it returns with the call site that uses it.
-  Graphical control stays deferred to the guided Admin setup. The packaged
-  control command exposes the refused lifecycle today, but typed first connect
-  is not accepted as an exception to the every-setting-has-a-GUI bar.
+- **Obsidian Sync update, 2026-09-30 (unit-tested Admin, runtime proof pending).**
+  `/admin/sync` provides guided create-or-join setup, plan and device controls,
+  status, pause, resume and disconnect. Python tests drove these forms against
+  an authenticated fake HTTP helper and checked that submitted credentials do
+  not return in pages or state files. The image pins official
+  `obsidian-headless` 0.0.14 on the existing Node 22 base. Its published
+  `cli.js` was inspected: login and create have no JSON flag; listing, setup
+  and status do. Login and creation use exit codes, then listing resolves the
+  unique remote vault name. Setup uses `/data/notes` and the device setting.
+  The dependency-free settings reader handles the block scalar emitted by
+  Admin, plus JSON settings; complex hand-written YAML device scalars are
+  refused rather than interpreted as a different device name.
+  The helper supervises continuous sync, resumes a saved unpaused connection
+  on boot, and unlinks and logs out on disconnect. Its connection file contains
+  only remote vault name and ID, device name and paused state. Submitted email,
+  password, MFA and encryption password are not persisted; the client's token,
+  derived encryption key and operational state live on its separate credential
+  volume under `/var/lib/obsidian-sync`.
+  `real_sync_supported` is true. Status exposes remote vault and device names,
+  client-reported configuration, and `last_sync_at: null`, because 0.0.14
+  supplies no delivery timestamp. `liveness: child_process_only` remains
+  deliberate. Client output is not forwarded to logs.
+  Stubbed-client Node tests cover command order, failure secrecy, boot and
+  disconnect. `ci/sync-smoke.sh` now drives the simulated connection and
+  lifecycle through Admin. Neither Node tests nor Compose ran in this worker,
+  which has no Node, npm or Docker; those runtime checks belong to branch CI.
+  No real account was used, and phone delivery remains an operator proof.
 
 ## Not built yet
 
