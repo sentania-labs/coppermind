@@ -261,3 +261,35 @@ async def test_undecodable_bytes_still_answer_unparseable(
         await store.get_note(NOTE_ID)
     assert raised.value.note_id == NOTE_ID
     assert raised.value.reason is not None
+
+
+async def test_unterminated_block_still_answers_unparseable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A file whose frontmatter block has no closing delimiter still answers
+
+    NoteUnparseable rather than leaking a FrontmatterError as a 500.
+
+    The ``_recover_id_from_raw`` helper calls ``fm.split`` to extract the
+    block for id recovery. When the block is never closed, ``fm.split``
+    raises ``FrontmatterError``; the helper now catches that and returns
+    ``None``, so the caller falls through to the normal
+    ``NoteUnparseable`` path.
+    """
+    store = local_store(tmp_path)
+    broken = tmp_path / "Runbook.md"
+    # Write a valid-looking frontmatter with the closing delimiter removed.
+    broken.write_text(
+        "---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# Runbook\n".replace("\n---\n", "\n", 1),
+        encoding="utf-8",
+    )
+
+    async def locate(_: str) -> tuple[str, Path]:
+        return "Review/Runbook.md", broken
+
+    monkeypatch.setattr(store, "_locate", locate)
+
+    with pytest.raises(NoteUnparseable) as raised:
+        await store.get_note(NOTE_ID)
+    assert raised.value.note_id == NOTE_ID
+    assert raised.value.reason is not None

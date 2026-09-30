@@ -843,7 +843,12 @@ def _recover_id_from_raw(
     writes as the identity.  ``None`` means the key could not be found in the
     raw block, so nothing can be compared against.
     """
-    block, _ = fm.split(text)
+    try:
+        block, _ = fm.split(text)
+    except fm.FrontmatterError:
+        # The block is never closed (or another split error); fall back to
+        # the caller's normal NoteUnparseable path rather than leaking a 500.
+        return None
     if not block.strip():
         return None
     pattern = re.compile(rf"^{re.escape(id_key)}\s*:\s*(.+)$")
