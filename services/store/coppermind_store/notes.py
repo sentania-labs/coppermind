@@ -31,6 +31,7 @@ import asyncio
 import base64
 import binascii
 import json
+import re
 from datetime import UTC, date, datetime
 from math import isfinite
 from pathlib import Path
@@ -652,6 +653,18 @@ def _parse(
     try:
         frontmatter, body = fm.parse(data.decode("utf-8"))
     except (fm.FrontmatterError, UnicodeDecodeError) as exc:
+        if isinstance(exc, fm.FrontmatterError):
+            # A person broke this file on a device. Before announcing the file
+            # as unparseable, try to learn the identity from the raw block so
+            # a rename onto a stale path can answer NotFound rather than
+            # NoteUnparseable. The id key name comes from the schema, not the
+            # file, so it cannot carry content.  Decode only here because a
+            # FrontmatterError implies the bytes were valid UTF-8 (the decode
+            # in the try block succeeded enough to reach the YAML parser).
+            text = data.decode("utf-8")
+            recovered_id = _recover_id_from_raw(text, schema.role("id_key"))
+            if recovered_id is not None and recovered_id != note_id:
+                raise NotFound(note_id) from None
         # A person broke this file on a device. That is not a fault of the
         # store, and the answer says so rather than blaming Coppermind.
         # The parser's reason quotes the offending lines, so it is the
@@ -835,6 +848,39 @@ def _parse_failure_fields(exc: fm.FrontmatterError | UnicodeDecodeError) -> dict
             "frontmatter_column": exc.column,
         }
     return {"category": "undecodable_bytes", "byte_offset": exc.start}
+
+
+def _recover_id_from_raw(
+    text: str,
+    id_key: str,
+) -> str | None:
+    """Return the id value on a line matching ``<id_key>: <value>`` inside the frontmatter block.
+
+    The frontmatter block is split from the body using ``fm.split``, then the
+    block lines are scanned for a literal key-value pair.  The value is
+    stripped of inline comments and quoting so it matches what the store
+    writes as the identity.  ``None`` means the key could not be found in the
+    raw block, so nothing can be compared against.
+    """
+    try:
+        block, _ = fm.split(text)
+    except fm.FrontmatterError:
+        # The block is never closed (or another split error); fall back to
+        # the caller's normal NoteUnparseable path rather than leaking a 500.
+        return None
+    if not block.strip():
+        return None
+    pattern = re.compile(rf"^{re.escape(id_key)}\s*:\s*(.+)$")
+    for raw_line in block.splitlines():
+        line = raw_line.split("#", 1)[0] if "#" in raw_line else raw_line
+        m = pattern.match(line)
+        if m:
+            value = m.group(1).strip()
+            # Strip surrounding quotes the YAML spec allows.
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+            return value
+    return None
 
 
 def _build_frontmatter(
