@@ -152,3 +152,144 @@ async def test_a_broken_note_never_puts_its_own_text_in_the_log(
     # The internal surface, which the store alone answers, still gets it all.
     for secret in secrets:
         assert secret in raised.value.reason
+
+
+# --- New tests for the identity-first recovery on parse failure ---
+
+
+async def test_broken_frontmatter_carrying_another_id_raises_not_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A file on disk cannot parse but carries a different note's identifier.
+
+    The store tries to recover the id from the raw frontmatter block before
+    announcing a parse failure. When the recovered id does not match the
+    requested identifier, the honest answer is a miss, not an unparseable
+    file belonging to the requested note.
+    """
+    store = local_store(tmp_path)
+    broken = tmp_path / "Runbook.md"
+    broken.write_text(
+        "---\naccount: AcmeCorp\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F3\n"
+        "account: SecretMerger\n---\n# Runbook\n",
+        encoding="utf-8",
+    )
+
+    async def locate(_: str) -> tuple[str, Path]:
+        return "Review/Runbook.md", broken
+
+    monkeypatch.setattr(store, "_locate", locate)
+
+    with pytest.raises(NotFound) as raised:
+        await store.get_note(NOTE_ID)
+    assert raised.value.note_id == NOTE_ID
+
+
+async def test_broken_frontmatter_carrying_its_own_id_raises_unparseable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A file on disk cannot parse and carries the requested identifier.
+
+    The store recovers the id from the raw block, finds it matches the
+    requested note, and so raises ``NoteUnparseable`` rather than hiding the
+    broken file behind a ``NotFound``.
+    """
+    store = local_store(tmp_path)
+    broken = tmp_path / "Runbook.md"
+    broken.write_text(
+        "---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n"
+        "account: AcmeCorp\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n"
+        "---\n# Runbook\n",
+        encoding="utf-8",
+    )
+
+    async def locate(_: str) -> tuple[str, Path]:
+        return "Review/Runbook.md", broken
+
+    monkeypatch.setattr(store, "_locate", locate)
+
+    with pytest.raises(NoteUnparseable) as raised:
+        await store.get_note(NOTE_ID)
+    assert raised.value.note_id == NOTE_ID
+
+
+async def test_broken_frontmatter_with_no_recoverable_id_raises_unparseable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A file on disk cannot parse and carries no recoverable identifier.
+
+    Without an id to recover, the store falls back to the ordinary
+    ``NoteUnparseable`` answer.
+    """
+    store = local_store(tmp_path)
+    broken = tmp_path / "Runbook.md"
+    broken.write_text(
+        "---\ntags: [unclosed\nsalary_band: L7\n---\n# Runbook\n",
+        encoding="utf-8",
+    )
+
+    async def locate(_: str) -> tuple[str, Path]:
+        return "Review/Runbook.md", broken
+
+    monkeypatch.setattr(store, "_locate", locate)
+
+    with pytest.raises(NoteUnparseable) as raised:
+        await store.get_note(NOTE_ID)
+    assert raised.value.note_id == NOTE_ID
+
+
+async def test_undecodable_bytes_still_answer_unparseable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Undecodable bytes do not cause a UnicodeDecodeError in the error path.
+
+    The original except handler decoded data again, which would re-raise
+    UnicodeDecodeError when the parse failure was caused by invalid bytes.
+    The fix only attempts id recovery for FrontmatterError, so a file with
+    invalid UTF-8 in its body still answers NoteUnparseable cleanly.
+    """
+    store = local_store(tmp_path)
+    broken = tmp_path / "Runbook.md"
+    broken.write_bytes(b"---\nid: x\n---\n\xff\xfe")
+
+    async def locate(_: str) -> tuple[str, Path]:
+        return "Review/Runbook.md", broken
+
+    monkeypatch.setattr(store, "_locate", locate)
+
+    with pytest.raises(NoteUnparseable) as raised:
+        await store.get_note(NOTE_ID)
+    assert raised.value.note_id == NOTE_ID
+    assert raised.value.reason is not None
+
+
+async def test_unterminated_block_still_answers_unparseable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A file whose frontmatter block has no closing delimiter still answers
+
+    NoteUnparseable rather than leaking a FrontmatterError as a 500.
+
+    The ``_recover_id_from_raw`` helper calls ``fm.split`` to extract the
+    block for id recovery. When the block is never closed, ``fm.split``
+    raises ``FrontmatterError``; the helper now catches that and returns
+    ``None``, so the caller falls through to the normal
+    ``NoteUnparseable`` path.
+    """
+    store = local_store(tmp_path)
+    broken = tmp_path / "Runbook.md"
+    # Write a valid-looking frontmatter with the closing delimiter removed.
+    broken.write_text(
+        "---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\n---\n# Runbook\n".replace("\n---\n", "\n", 1),
+        encoding="utf-8",
+    )
+
+    async def locate(_: str) -> tuple[str, Path]:
+        return "Review/Runbook.md", broken
+
+    monkeypatch.setattr(store, "_locate", locate)
+
+    with pytest.raises(NoteUnparseable) as raised:
+        await store.get_note(NOTE_ID)
+    assert raised.value.note_id == NOTE_ID
+    assert raised.value.reason is not None
