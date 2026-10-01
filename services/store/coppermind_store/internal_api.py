@@ -172,7 +172,8 @@ async def move_note(
     if_match: Annotated[str | None, Header()] = None,
 ) -> Response:
     try:
-        note = await _store(request).move_note(note_id, payload, etag_from_if_match(if_match) if if_match else None)
+        if_match_val = etag_from_if_match(if_match) if if_match else None
+        note = await _store(request).move_note(note_id, payload, if_match_val)
     except StoreError as error:
         return _failure(error)
     return JSONResponse(
@@ -188,9 +189,7 @@ async def rename_note(
     if_match: Annotated[str | None, Header()] = None,
 ) -> Response:
     try:
-        note = await _store(request).rename_note(
-            note_id, payload, etag_from_if_match(if_match)
-        )
+        note = await _store(request).rename_note(note_id, payload, etag_from_if_match(if_match))
     except StoreError as error:
         return _failure(error)
     return JSONResponse(

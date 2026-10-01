@@ -10,31 +10,39 @@ They prove the acceptance criteria:
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
-from typing import Any
 
 import pytest
 import sqlalchemy as sa
+from coppermind_store.control import ControlState
+from coppermind_store.notes import LocalStore
+from sqlalchemy import JSON
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    create_async_engine,
+)
+from sqlalchemy.pool import StaticPool
+
 from coppermind.db.models import Base, Note
-from coppermind.db.session import make_engine, make_session_factory
+from coppermind.db.session import make_session_factory
 from coppermind.ids import new_id
-from coppermind.settings import Wiring
 from coppermind.store_protocol import (
-    FolderItem,
     FolderTree,
     MoveNote,
+    NotFound,
+    PathCollision,
     RenameNote,
     ValidationFailed,
     VersionConflict,
 )
-from coppermind_store.control import ControlState
-from coppermind_store.notes import LocalStore
 
 pytestmark = pytest.mark.asyncio
 
+_make_store_engine: AsyncEngine | None = None
 
-def _make_store(tmp_path: Path):
+
+async def _make_store(tmp_path: Path):
     """Create a LocalStore backed by a temp directory with an in-memory SQLite DB."""
     notes_root = tmp_path / "notes"
     notes_root.mkdir()
@@ -44,13 +52,25 @@ def _make_store(tmp_path: Path):
     control = ControlState(state_dir)
     control.ensure_defaults()
 
-    engine = make_engine("sqlite+aiosqlite://")
-    factory = make_session_factory(engine)
+    db_path = tmp_path / "test.db"
+    global _make_store_engine
+    if _make_store_engine is None:
+        _make_store_engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+    factory = make_session_factory(_make_store_engine)
+
+    # Convert JSONB to JSON for SQLite compatibility.
+    for table in Base.metadata.tables.values():
+        for col in table.columns:
+            if isinstance(col.type, (JSONB, type(sa.ARRAY(None)))):
+                col.type = JSON()
 
     # Create tables
-    asyncio.get_event_loop().run_until_complete(
-        engine.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn))
-    )
+    async with _make_store_engine.connect() as conn:
+        await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn))
 
     store = LocalStore(
         notes_root=notes_root,
@@ -93,6 +113,8 @@ async def _insert_note_row(store, note_id, path, title, frontmatter):
                 updated_at=now,
             )
         )
+
+        await session.commit()
 
 
 def _content_hash(store: LocalStore, path: str) -> str:
@@ -203,9 +225,7 @@ async def test_rename_keeps_the_note_id(store: LocalStore):
     await _insert_note_row(store, note_id, "Review/Test.md", "Test", frontmatter)
 
     old_hash = _content_hash(store, "Review/Test.md")
-    result = await store.rename_note(
-        note_id, RenameNote(title="New Title"), if_match=old_hash
-    )
+    result = await store.rename_note(note_id, RenameNote(title="New Title"), if_match=old_hash)
 
     assert result.id == note_id
     assert result.path == "Review/Test.md"  # path unchanged
@@ -310,10 +330,45 @@ async def test_list_folders_empty_when_no_notes(store: LocalStore):
 
 @pytest.fixture
 async def store(tmp_path: Path):
-    return _make_store(tmp_path)
+    return await _make_store(tmp_path)
 
 
 @pytest.fixture
 def store_for_sync(tmp_path: Path):
     """Sync fixture for tests that don't need async setup."""
-    return _make_store(tmp_path)
+    return _make_store_sync(tmp_path)
+
+
+def _make_store_sync(tmp_path: Path):
+    """Sync store creation for non-async fixtures."""
+    notes_root = tmp_path / "notes"
+    notes_root.mkdir()
+    sources_root = tmp_path / "sources"
+    sources_root.mkdir()
+    state_dir = tmp_path / "state"
+    control = ControlState(state_dir)
+    control.ensure_defaults()
+
+    global _make_store_engine
+    db_path = tmp_path / "test.db"
+    if _make_store_engine is None:
+        _make_store_engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+    factory = make_session_factory(_make_store_engine)
+
+    # Convert JSONB to JSON for SQLite compatibility.
+    for table in Base.metadata.tables.values():
+        for col in table.columns:
+            if isinstance(col.type, (JSONB, type(sa.ARRAY(None)))):
+                col.type = JSON()
+
+    store = LocalStore(
+        notes_root=notes_root,
+        control=control,
+        session_factory=factory,
+        sources_root=sources_root,
+    )
+    return store

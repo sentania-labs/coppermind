@@ -6,11 +6,10 @@ replace the store with a fake and verify the HTTP mapping.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from coppermind_api import __version__
 from coppermind_api.deps import store
 from coppermind_api.main import create_app
 from fastapi.testclient import TestClient
@@ -25,7 +24,6 @@ from coppermind.store_protocol import (
     PathCollision,
     RenameNote,
     StoreUnavailable,
-    ValidationFailed,
     VersionConflict,
 )
 
@@ -40,13 +38,9 @@ NOTE = NoteDocument(
     updated_at=datetime(2026, 9, 8, tzinfo=UTC),
 )
 
-MOVED = NOTE.model_copy(
-    update={"path": "Work/2026-09-08 Ameren Architecture Sync.md"}
-)
+MOVED = NOTE.model_copy(update={"path": "Work/2026-09-08 Ameren Architecture Sync.md"})
 
-REMOVED = NOTE.model_copy(
-    update={"path": "Review/Ameren Architecture Sync.md"}
-)
+REMOVED = NOTE.model_copy(update={"path": "Review/Ameren Architecture Sync.md"})
 
 KEY_ID = "a1b2c3d4e5f6a7b8"
 KEY_SECRET = "unit-test-full-scope-secret"
@@ -95,9 +89,7 @@ class FakeStore:
         self.moved = (note_id, request, if_match)
         return MOVED
 
-    async def rename_note(
-        self, note_id: str, request: RenameNote, if_match: str
-    ) -> NoteDocument:
+    async def rename_note(self, note_id: str, request: RenameNote, if_match: str) -> NoteDocument:
         if self.error:
             raise self.error
         self.renamed = (note_id, request, if_match)
@@ -197,7 +189,7 @@ def test_a_move_to_a_missing_note_returns_404(client):
     test_client, fake = client
     fake.error = NotFound("nonexistent")
     response = test_client.post(
-        f"/v1/notes/nonexistent/move",
+        "/v1/notes/nonexistent/move",
         json={"target_folder": "Work"},
         headers={"Authorization": f"Bearer {KEY}"},
     )
@@ -251,7 +243,7 @@ def test_a_rename_to_a_missing_note_returns_404(client):
     test_client, fake = client
     fake.error = NotFound("nonexistent")
     response = test_client.post(
-        f"/v1/notes/nonexistent/rename",
+        "/v1/notes/nonexistent/rename",
         json={"title": "New"},
         headers={"Authorization": f"Bearer {KEY}", "If-Match": '"sha256:abc"'},
     )
@@ -269,7 +261,7 @@ def test_get_folders_returns_the_tree(client):
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["children"] == FOLDER_TREE.children
+    assert body["children"] == FOLDER_TREE.model_dump()["children"]
     assert fake.folders_returned == 1
 
 

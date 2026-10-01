@@ -18,7 +18,6 @@ from coppermind.store_protocol import (
     ArtifactNotFound,
     CreateNote,
     ETag,
-    FolderItem,
     FolderTree,
     IncompleteRevision,
     IngestRequest,

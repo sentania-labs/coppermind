@@ -54,12 +54,13 @@ from coppermind.schema import FrontmatterSchema
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
     CreateNote,
+    ETag,
     FolderItem,
     FolderTree,
-    ETag,
     IngestRequest,
     IngestResult,
     MetadataUnavailable,
+    MoveNote,
     NoteDocument,
     NoteId,
     NoteQuery,
@@ -71,7 +72,6 @@ from coppermind.store_protocol import (
     Page,
     PatchFrontmatter,
     PathCollision,
-    MoveNote,
     RenameNote,
     ReplaceNote,
     SourceArtifactDocument,
@@ -489,41 +489,54 @@ class LocalStore:
         # Locate the note
         relative, path = await self._locate(note_id)
         async with self._lock_for(note_id):
-            current_data, _, current_mtime = _bytes_at(
-                note_id, relative, path, schema, if_match
-            )
+            current_data, _, current_mtime = _bytes_at(note_id, relative, path, schema, if_match)
             frontmatter, body = fm.parse(current_data.decode("utf-8"))
 
             # Determine new stem and filename
             note_type = frontmatter.get(schema.role("type_key"), "note")
             note_date = frontmatter.get(schema.role("date_key"))
             title = _title_of(body, path)
-            stem = note_stem(title, note_date=note_date, dated=note_type in settings.notes.dated_types)
-
-            # Check for collision at target
-            folder_path = resolve(self.notes_root, target_folder)
-            stem = unique_stem(stem, existing_stems(folder_path))
-            new_relative = f"{target_folder}/{stem}{NOTE_SUFFIX}" if target_folder else f"{stem}{NOTE_SUFFIX}"
-            new_target = folder_path / f"{stem}{NOTE_SUFFIX}"
-
-            # Check if target path already exists (collision)
-            occupied = (
-                (
-                    await self.session_factory().execute(
-                        sa.select(Note.id)
-                        .where(Note.path == new_relative, Note.state != "missing")
-                        .limit(1)
-                    )
-                )
-                .scalars()
-                .first()
+            stem = note_stem(
+                title, note_date=note_date, dated=note_type in settings.notes.dated_types
             )
+
+            folder_path = resolve(self.notes_root, target_folder)
+
+            # Check for collision at the intended target path BEFORE
+            # unique_stem deduplicates; a collision must be reported, not
+            # silently renamed.
+            intended_relative = (
+                f"{target_folder}/{stem}{NOTE_SUFFIX}" if target_folder else f"{stem}{NOTE_SUFFIX}"
+            )
+            async with self.session_factory() as session:
+                occupied_result = await session.execute(
+                    sa.select(Note.id)
+                    .where(Note.path == intended_relative, Note.state != "missing")
+                    .limit(1)
+                )
+                occupied = occupied_result.scalars().first()
+            if occupied is not None:
+                raise PathCollision(intended_relative)
+
+            # Deduplicate via unique_stem so the filename is unique on disk.
+            stem = unique_stem(stem, existing_stems(folder_path))
+            new_relative = (
+                f"{target_folder}/{stem}{NOTE_SUFFIX}" if target_folder else f"{stem}{NOTE_SUFFIX}"
+            )
+            async with self.session_factory() as session:
+                occupied_result = await session.execute(
+                    sa.select(Note.id)
+                    .where(Note.path == new_relative, Note.state != "missing")
+                    .limit(1)
+                )
+                occupied = occupied_result.scalars().first()
             if occupied is not None:
                 raise PathCollision(new_relative)
 
             now = datetime.now(tz=UTC)
             try:
                 # Write the file at the new location (exclusively, to avoid races)
+                new_target = folder_path / f"{stem}{NOTE_SUFFIX}"
                 create_exclusive_bytes(new_target, current_data)
             except OSError as exc:
                 raise NotesFilesystemUnavailable(str(exc)) from exc
@@ -541,7 +554,6 @@ class LocalStore:
                         updated_at=now,
                     )
                 )
-                session.commit()
 
         return NoteDocument(
             id=note_id,
@@ -587,7 +599,6 @@ class LocalStore:
             id_key = schema.role("id_key")
             if frontmatter.get(id_key) != current_frontmatter.get(id_key):
                 raise ValidationFailed([f"{id_key}: the identifier cannot be changed"])
-
 
             problems = schema.validate_frontmatter(frontmatter)
             if problems:
@@ -660,7 +671,6 @@ class LocalStore:
         yet seen.
         """
         notes_root = self.notes_root
-        root_children: list[FolderItem] = []
         seen_folders: dict[str, dict] = {}
 
         if not notes_root.is_dir():
@@ -682,7 +692,6 @@ class LocalStore:
             # Build folder tree structure
             for i in range(len(parts)):
                 folder_key = "/".join(parts[: i + 1]) if i > 0 else parts[0]
-                folder_path = "/".join(parts[: i + 2]) if i < len(parts) - 1 else ""
                 parent_key_for_child = "/".join(parts[: i + 1]) if i > 0 else ""
 
                 if folder_key not in seen_folders:
@@ -702,14 +711,16 @@ class LocalStore:
 
             # Store count
             if parts:
-                top_key = parts[0]
                 for folder_key in folder_note_count:
                     if folder_key in seen_folders:
-                        seen_folders[folder_key]["note_count"] = folder_note_count[folder_key]
+                        seen_folders[folder_key]["note_count"] = (
+                            seen_folders[folder_key].get("note_count", 0)
+                            + folder_note_count[folder_key]
+                        )
 
         # Build the tree from seen_folders
         top_level: dict[str, str] = {}
-        for key, info in seen_folders.items():
+        for key, _info in seen_folders.items():
             parts = key.split("/")
             if len(parts) == 1:
                 top_level[parts[0]] = key
@@ -1090,7 +1101,7 @@ def _bytes_at(
     current, mtime = _read(note_id, path)
     frontmatter, _ = _parse(note_id, relative, current, schema)
     current_hash = content_hash(current)
-    if current_hash != if_match:
+    if if_match is not None and current_hash != if_match:
         raise VersionConflict(current_hash)
     return current, frontmatter, mtime
 

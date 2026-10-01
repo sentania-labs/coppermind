@@ -444,7 +444,7 @@ class FolderItem(BaseModel):
     name: str
     path: str
     note_count: int
-    children: list["FolderItem"] = Field(default_factory=list)
+    children: list[FolderItem] = Field(default_factory=list)
 
 
 class FolderTree(BaseModel):
@@ -567,7 +567,6 @@ class Store(Protocol):
     ) -> NoteDocument: ...
 
     async def list_folders(self) -> FolderTree: ...
-
 
 
 def etag_from_if_match(header: str | None) -> ETag:
