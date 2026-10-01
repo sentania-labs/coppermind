@@ -40,7 +40,10 @@ def test_every_product_field_has_value_default_and_help(signed_in):
         ("git.debounce_s", "0"),
         ("git.poll_interval_s", "0"),
         ("git.debounce_s", '"invalid"'),
+        ("git.identity_name", "   "),
         ("sync.plan", "unknown"),
+        ("sync.device_name", ""),
+        ("limits.ingest_max_bytes", "-1"),
         ("notes.dated_types", "not-json"),
     ],
 )

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
@@ -130,6 +130,13 @@ class GitSettings(BaseModel):
     )
     gc_auto: bool = Field(default=True, description="Allow automatic Git garbage collection.")
 
+    @field_validator("identity_name", "identity_email")
+    @classmethod
+    def validate_identity(cls, value: str, info: ValidationInfo) -> str:
+        if not value.strip():
+            raise ValueError(f"git.{info.field_name} must not be blank")
+        return value
+
 
 class SyncSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -162,6 +169,13 @@ class SyncSettings(BaseModel):
     sync_configs: list[str] = Field(
         default_factory=list, description="Configuration categories to sync, as a JSON array."
     )
+
+    @field_validator("device_name")
+    @classmethod
+    def validate_device_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("sync.device_name must not be blank")
+        return value
 
     @property
     def file_limit_bytes(self) -> int:
@@ -206,7 +220,9 @@ class EventSettings(BaseModel):
 class LimitSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    ingest_max_bytes: int = Field(default=25 * MIB, description="Maximum ingest payload in bytes.")
+    ingest_max_bytes: int = Field(
+        default=25 * MIB, gt=0, description="Maximum ingest payload in bytes."
+    )
     # Null marks this override as unset. Attachment ingest derives the sync
     # file ceiling when its consumer lands.
     attachment_max_bytes: int | None = Field(
