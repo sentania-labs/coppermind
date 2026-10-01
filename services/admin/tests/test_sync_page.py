@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from coppermind.settings import Wiring, default_settings, read_settings
 from coppermind.statefiles import StateStore
+from services.admin.tests.test_admin import form_token
 
 FORM = {
     "email": "operator@example.invalid",
@@ -88,8 +89,18 @@ def sync_client(tmp_path, monkeypatch):
 
 
 def sign_in(client):
-    client.post("/v1/admin/claim", data={"code": "test-claim", "password": "test-admin-password"})
-    client.post("/v1/admin/login", data={"password": "test-admin-password"})
+    client.post(
+        "/v1/admin/claim",
+        data={
+            "code": "test-claim",
+            "password": "test-admin-password",
+            "csrf": form_token(client, "/admin/claim"),
+        },
+    )
+    client.post(
+        "/v1/admin/login",
+        data={"password": "test-admin-password", "csrf": form_token(client, "/admin/login")},
+    )
 
 
 def assert_clean(response):
@@ -105,7 +116,9 @@ def test_guided_connect_and_lifecycle(sync_client):
     page = client.get("/admin/sync")
     assert 'value="coppermind-server"' in page.text
     assert 'value="standard" selected' in page.text
-    response = client.post("/admin/sync/connect", data=FORM)
+    response = client.post(
+        "/admin/sync/connect", data=FORM | {"csrf": form_token(client, "/admin")}
+    )
     assert response.status_code == 200
     assert "Phone notes" in response.text
     assert "Kitchen server" in response.text
@@ -126,7 +139,9 @@ def test_guided_connect_and_lifecycle(sync_client):
         ("resume", "syncing"),
         ("disconnect", "not_connected"),
     ]:
-        response = client.post(f"/admin/sync/{action}", data={"submit": "yes"})
+        response = client.post(
+            f"/admin/sync/{action}", data={"submit": "yes", "csrf": form_token(client, "/admin")}
+        )
         assert expected in response.text
         assert_clean(response)
     for file in state.state_dir.rglob("*"):
@@ -147,7 +162,9 @@ def test_guided_connect_and_lifecycle(sync_client):
 def test_validation_never_echoes_credentials(sync_client, change):
     client, _, calls, _ = sync_client
     sign_in(client)
-    response = client.post("/admin/sync/connect", data=FORM | change)
+    response = client.post(
+        "/admin/sync/connect", data=FORM | change | {"csrf": form_token(client, "/admin")}
+    )
     assert "Check the required fields" in response.text
     assert_clean(response)
     assert calls == []
@@ -157,7 +174,10 @@ def test_helper_error_body_is_never_rendered(sync_client):
     client, _, calls, fail = sync_client
     sign_in(client)
     fail.append(True)
-    response = client.post("/admin/sync/connect", data=FORM | {"existing_vault": "true"})
+    response = client.post(
+        "/admin/sync/connect",
+        data=FORM | {"existing_vault": "true", "csrf": form_token(client, "/admin")},
+    )
     assert "Sync request failed" in response.text
     assert_clean(response)
     assert calls[0][1]["existing_vault"] is True

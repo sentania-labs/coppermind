@@ -216,10 +216,17 @@ does not reduce memory use. The key needs both `sources:write` and
 
 The generated OpenAPI document is at `http://127.0.0.1:8080/openapi.json`.
 
-Until Admin adds its graphical keys page, additional keys and rotations use
-the Store command. It prints a new credential once and keeps only its hash.
-Grant one or more of the scopes shown by `--help`, move callers to it, then
-revoke the old key by its id:
+Use Admin's [API Keys page](http://127.0.0.1:8082/admin/keys) to list, create
+and revoke keys. Creation shows the credential exactly once; copy it before
+leaving the result page. Choose its scopes, move callers to it, then confirm
+revocation of the old key. Changes reach the API within five minutes.
+
+The [Settings page](http://127.0.0.1:8082/admin/settings) edits every product
+setting with its default and help text. A stale form is refused; reload it
+before saving again.
+
+If Admin is unavailable, the Store command remains a recovery path. It prints
+a new credential once and keeps only its hash:
 
 ```bash
 docker compose exec store python3 -m coppermind_store.keys create \
