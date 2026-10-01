@@ -422,6 +422,37 @@ class PatchFrontmatter(BaseModel):
     unset: list[str] = Field(default_factory=list)
 
 
+class MoveNote(BaseModel):
+    """Move a note to another folder inside the notes filesystem."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_folder: str = Field(..., min_length=1)
+
+
+class RenameNote(BaseModel):
+    """Rename a note's title. Links to it are not rewritten by design."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+
+
+class FolderItem(BaseModel):
+    """One folder in the tree with a note count and children."""
+
+    name: str
+    path: str
+    note_count: int
+    children: list["FolderItem"] = Field(default_factory=list)
+
+
+class FolderTree(BaseModel):
+    """The full folder tree with note counts."""
+
+    children: list[FolderItem]
+
+
 class NoteDocument(BaseModel):
     """A note as the rest of the system sees it."""
 
@@ -526,6 +557,17 @@ class Store(Protocol):
     ) -> SourceArtifactDocument: ...
 
     async def get_api_keys(self) -> ApiKeySet: ...
+
+    async def move_note(
+        self, note_id: NoteId, request: MoveNote, if_match: ETag | None
+    ) -> NoteDocument: ...
+
+    async def rename_note(
+        self, note_id: NoteId, request: RenameNote, if_match: ETag
+    ) -> NoteDocument: ...
+
+    async def list_folders(self) -> FolderTree: ...
+
 
 
 def etag_from_if_match(header: str | None) -> ETag:

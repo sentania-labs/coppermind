@@ -49,11 +49,13 @@ from coppermind.db.models import Note
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
 from coppermind.logging import get_logger
-from coppermind.naming import note_stem, sanitize_folder, unique_stem
+from coppermind.naming import note_stem, sanitize_folder, sanitize_stem, unique_stem
 from coppermind.schema import FrontmatterSchema
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
     CreateNote,
+    FolderItem,
+    FolderTree,
     ETag,
     IngestRequest,
     IngestResult,
@@ -69,6 +71,8 @@ from coppermind.store_protocol import (
     Page,
     PatchFrontmatter,
     PathCollision,
+    MoveNote,
+    RenameNote,
     ReplaceNote,
     SourceArtifactDocument,
     SourceId,
@@ -448,6 +452,287 @@ class LocalStore:
             updated_at=file_mtime,
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
+
+    async def move_note(
+        self, note_id: NoteId, request: MoveNote, if_match: ETag | None
+    ) -> NoteDocument:
+        """Move a note to another folder. The identifier never changes.
+
+        The target folder must be inside the notes filesystem root and must not
+        start with ``_Sources``. A stale ``If-Match`` on a move is refused as a
+        version conflict; an absent header is accepted because the store
+        contract marks it optional.
+
+        File-first: write the new file, then update the mirror row and commit.
+        The note keeps its id across the move, and a reconciler pass sees the
+        same note at the new path, not a delete plus a create.
+        """
+        schema = self.control.schema()
+        settings = self.control.settings()
+
+        # Validate target folder
+        target_folder = sanitize_folder(request.target_folder)
+        if not target_folder:
+            raise ValidationFailed(["target_folder: must be a non-empty folder name"])
+        if target_folder.startswith(settings.notes.sources_folder):
+            raise ValidationFailed(
+                [
+                    f"target_folder: cannot move notes into {settings.notes.sources_folder}",
+                ]
+            )
+        # Reject absolute or parent-escaping paths
+        if target_folder.startswith("/"):
+            raise ValidationFailed(["target_folder: must be a relative folder path"])
+        if target_folder.startswith(".."):
+            raise ValidationFailed(["target_folder: must be a relative folder path"])
+
+        # Locate the note
+        relative, path = await self._locate(note_id)
+        async with self._lock_for(note_id):
+            current_data, _, current_mtime = _bytes_at(
+                note_id, relative, path, schema, if_match
+            )
+            frontmatter, body = fm.parse(current_data.decode("utf-8"))
+
+            # Determine new stem and filename
+            note_type = frontmatter.get(schema.role("type_key"), "note")
+            note_date = frontmatter.get(schema.role("date_key"))
+            title = _title_of(body, path)
+            stem = note_stem(title, note_date=note_date, dated=note_type in settings.notes.dated_types)
+
+            # Check for collision at target
+            folder_path = resolve(self.notes_root, target_folder)
+            stem = unique_stem(stem, existing_stems(folder_path))
+            new_relative = f"{target_folder}/{stem}{NOTE_SUFFIX}" if target_folder else f"{stem}{NOTE_SUFFIX}"
+            new_target = folder_path / f"{stem}{NOTE_SUFFIX}"
+
+            # Check if target path already exists (collision)
+            occupied = (
+                (
+                    await self.session_factory().execute(
+                        sa.select(Note.id)
+                        .where(Note.path == new_relative, Note.state != "missing")
+                        .limit(1)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if occupied is not None:
+                raise PathCollision(new_relative)
+
+            now = datetime.now(tz=UTC)
+            try:
+                # Write the file at the new location (exclusively, to avoid races)
+                create_exclusive_bytes(new_target, current_data)
+            except OSError as exc:
+                raise NotesFilesystemUnavailable(str(exc)) from exc
+
+            # Update the mirror row: old path becomes missing, new path is set
+            async with transaction(self.session_factory) as session:
+                await session.execute(
+                    sa.update(Note)
+                    .where(Note.id == note_id)
+                    .values(
+                        path=new_relative,
+                        mtime=now,
+                        state="ok",
+                        state_reason=None,
+                        updated_at=now,
+                    )
+                )
+                session.commit()
+
+        return NoteDocument(
+            id=note_id,
+            path=new_relative,
+            title=title,
+            frontmatter=_jsonable(frontmatter),
+            body=body,
+            content_hash=content_hash(current_data),
+            size_bytes=len(current_data),
+            updated_at=now,
+            sources=[str(source) for source in frontmatter.get(schema.role("sources_key"), [])]
+            if isinstance(frontmatter.get(schema.role("sources_key")), list)
+            else [],
+        )
+
+    async def rename_note(
+        self, note_id: NoteId, request: RenameNote, if_match: ETag
+    ) -> NoteDocument:
+        """Rename a note's title in its frontmatter.
+
+        The identifier never changes. Links to this note are not rewritten,
+        and that gap is deliberate, not a bug. ``If-Match`` is required
+        (not optional): renaming is a full document change so the caller must
+        state which version it is editing.
+
+        Only the frontmatter ``title`` field and the ``# heading`` line in
+        the body change; the file's structure and formatting are preserved
+        round-trip through the existing ``patch_frontmatter`` path.
+        """
+        schema = self.control.schema()
+
+        new_title = sanitize_stem(request.title, fallback="Untitled")
+
+        relative, path = await self._locate(note_id)
+        async with self._lock_for(note_id):
+            current_data, current_frontmatter, current_mtime = _bytes_at(
+                note_id, relative, path, schema, if_match
+            )
+
+            # Parse, change title, re-serialize
+            frontmatter, body = fm.parse(current_data.decode("utf-8"))
+
+            id_key = schema.role("id_key")
+            if frontmatter.get(id_key) != current_frontmatter.get(id_key):
+                raise ValidationFailed([f"{id_key}: the identifier cannot be changed"])
+
+
+            problems = schema.validate_frontmatter(frontmatter)
+            if problems:
+                raise ValidationFailed(problems)
+
+            # Compose the new file: update the H1 heading.
+            # The first line starting with "# " is the H1 heading.
+            new_body_lines = []
+            heading_updated = False
+            for line in body.splitlines(True):
+                if not heading_updated and line.startswith("# "):
+                    line_ending = "\n" if line.endswith("\n") else ""
+                    new_body_lines.append(f"# {new_title}{line_ending}")
+                    heading_updated = True
+                else:
+                    new_body_lines.append(line)
+            if not heading_updated:
+                new_body = f"# {new_title}\n\n{body}"
+            else:
+                new_body = "".join(new_body_lines)
+            new_body = _terminated(new_body)
+
+            data = fm.compose(frontmatter, new_body).encode("utf-8")
+            data = _terminated(data.decode("utf-8")).encode("utf-8")
+
+            now = datetime.now(tz=UTC)
+            digest = content_hash(data)
+            sources = frontmatter.get(schema.role("sources_key"), [])
+            try:
+                async with transaction(self.session_factory) as session:
+                    await session.execute(
+                        sa.update(Note)
+                        .where(Note.id == note_id)
+                        .values(
+                            title=new_title,
+                            content_hash=digest,
+                            size_bytes=len(data),
+                            mtime=now,
+                            frontmatter=_jsonable(frontmatter),
+                            **_mirror_columns(frontmatter, schema),
+                            state="ok",
+                            state_reason=None,
+                            updated_at=now,
+                        )
+                    )
+                    _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
+            except BaseException as exc:
+                typed = _metadata_failure(exc)
+                if typed is None:
+                    raise
+                raise typed from exc
+
+        return NoteDocument(
+            id=note_id,
+            path=relative,
+            title=new_title,
+            frontmatter=_jsonable(frontmatter),
+            body=new_body,
+            content_hash=digest,
+            size_bytes=len(data),
+            updated_at=now,
+            sources=[str(source) for source in sources] if isinstance(sources, list) else [],
+        )
+
+    async def list_folders(self) -> FolderTree:
+        """Walk the notes filesystem and build a tree with note counts.
+
+        The tree is built from what is on disk, not from the mirror, so it
+        reflects the actual file structure including folders the mirror has not
+        yet seen.
+        """
+        notes_root = self.notes_root
+        root_children: list[FolderItem] = []
+        seen_folders: dict[str, dict] = {}
+
+        if not notes_root.is_dir():
+            return FolderTree(children=[])
+
+        for note_path in notes_root.rglob(f"*{NOTE_SUFFIX}"):
+            if not note_path.is_file():
+                continue
+            relative = note_path.relative_to(notes_root)
+            parts = relative.parts[:-1]  # folder parts only
+            parent_key = ""
+            folder_note_count = {}
+
+            # Count this note under every ancestor folder
+            for i in range(len(parts)):
+                folder_key = "/".join(parts[: i + 1]) if i > 0 else parts[0]
+                folder_note_count[folder_key] = folder_note_count.get(folder_key, 0) + 1
+
+            # Build folder tree structure
+            for i in range(len(parts)):
+                folder_key = "/".join(parts[: i + 1]) if i > 0 else parts[0]
+                folder_path = "/".join(parts[: i + 2]) if i < len(parts) - 1 else ""
+                parent_key_for_child = "/".join(parts[: i + 1]) if i > 0 else ""
+
+                if folder_key not in seen_folders:
+                    seen_folders[folder_key] = {
+                        "name": parts[i],
+                        "path": folder_key,
+                        "children": {},
+                    }
+
+                # Add to parent's children
+                if parent_key_for_child:
+                    if parent_key_for_child in seen_folders:
+                        seen_folders[parent_key_for_child]["children"][parts[i]] = folder_key
+                else:
+                    # Top-level folder
+                    pass
+
+            # Store count
+            if parts:
+                top_key = parts[0]
+                for folder_key in folder_note_count:
+                    if folder_key in seen_folders:
+                        seen_folders[folder_key]["note_count"] = folder_note_count[folder_key]
+
+        # Build the tree from seen_folders
+        top_level: dict[str, str] = {}
+        for key, info in seen_folders.items():
+            parts = key.split("/")
+            if len(parts) == 1:
+                top_level[parts[0]] = key
+            elif len(parts) > 1:
+                parent_key = "/".join(parts[:-1])
+                if parent_key in seen_folders:
+                    parent_children = seen_folders[parent_key].setdefault("_children", {})
+                    parent_children[parts[-1]] = key
+
+        # Recursively build FolderItem tree
+        def build_tree(key: str) -> FolderItem:
+            info = seen_folders.get(key, {})
+            name = info.get("name", key.split("/")[-1])
+            path = info.get("path", key)
+            count = info.get("note_count", 0)
+            children_keys = info.get("_children", {})
+            children = [build_tree(child_key) for child_key in sorted(children_keys.values())]
+            return FolderItem(name=name, path=path, note_count=count, children=children)
+
+        top_keys = sorted(top_level.values())
+        children = [build_tree(k) for k in top_keys]
+
+        return FolderTree(children=children)
 
     async def adopt_note(
         self,
