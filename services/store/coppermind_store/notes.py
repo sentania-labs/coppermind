@@ -148,8 +148,19 @@ class LocalStore:
             raise ValidationFailed(problems)
         sources = frontmatter.get(schema.role("sources_key"), [])
 
-        folder = sanitize_folder(settings.notes.review_folder)
-        folder_path = resolve(self.notes_root, folder)
+        if request.folder is not None:
+            folder = sanitize_folder(request.folder)
+            if not folder:
+                raise ValidationFailed(["folder: must be a non-empty path"])
+            _check_folder_safe(folder, settings)
+            try:
+                folder_path = resolve(self.notes_root, folder)
+            except ValueError as exc:
+                msg = f"folder: path escapes the notes filesystem: {request.folder}"
+                raise ValidationFailed([msg]) from exc
+        else:
+            folder = sanitize_folder(settings.notes.review_folder)
+            folder_path = resolve(self.notes_root, folder)
         stem = _stem_for(request.title, frontmatter, schema, settings)
         base_stem = stem
         stem = unique_stem(stem, existing_stems(folder_path))
@@ -1030,6 +1041,16 @@ def _patch_problems(request: PatchFrontmatter, schema: FrontmatterSchema) -> lis
         elif key in required:
             problems.append(f"{key}: required, so it cannot be removed")
     return problems
+
+
+def _check_folder_safe(folder: str, settings: ProductSettings) -> None:
+    """Refuse a folder that would place notes inside _Sources."""
+    sources_folder = sanitize_folder(settings.notes.sources_folder)
+    parts = [p for p in folder.split("/") if p]
+    for i in range(1, len(parts) + 1):
+        prefix = "/".join(parts[:i])
+        if prefix == sources_folder or prefix.startswith(f"{sources_folder}/"):
+            raise ValidationFailed([f"folder: cannot place a note inside {sources_folder}"])
 
 
 def _mirror_columns(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any]:
