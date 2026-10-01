@@ -52,18 +52,15 @@ only ever runs on a tag.
    still waiting its turn. That leaves `latest` where it was rather than
    pointing at the wrong build: re-run the promotion job on the newest tag's
    run and it moves forward.
-6. **The first tag needs one manual step, once.** GHCR creates a package
-   private on its first publish and does not inherit the repository's
-   visibility, so the first `vX.Y.Z` pushes and signs the five images and then
-   fails its anonymous-pull check with a manifest-unknown error. The captain
-   sets the `store`, `api`, `admin`, `git` and `obsidian-sync` packages to
-   public in the repository's package settings, once, and re-runs the job.
-   Nothing in CI changes package visibility. Until a real tag has gone through
-   this, the anonymous-pull proof is untested; the first real tag is what
-   completes it. Re-running publication works for 30 days, which is how long
-   a tag build keeps the image archives it publishes from. After that window
-   the archives are gone and the only way forward is pushing the tag again for
-   a fresh build.
+6. **Package visibility follows the repository.** The first tag (v0.1.0,
+   2026-09-30) created the five GHCR packages public on first publish, and the
+   anonymous-pull check passed on that same run. Nothing in CI changes package
+   visibility, so if the repository is ever made private the packages must be
+   made public by hand before a tag can pass the anonymous-pull check.
+   Re-running publication works for 30 days, which is how long a tag build
+   keeps the image archives it publishes from. After that window the archives
+   are gone and the only way forward is pushing the tag again for a fresh
+   build.
 
 Write the body in operational terms: what changes for someone running it,
 what the blast radius is, how to recover if it is wrong. Name which regime the
