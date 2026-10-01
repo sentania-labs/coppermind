@@ -121,7 +121,7 @@ if [ -n "$claim_code" ]; then
         --data-urlencode "csrf=$admin_csrf" --data-urlencode "code=$claim_code" \
         --data-urlencode 'password=smoke admin password' "$ADMIN/v1/admin/claim"
 fi
-admin_csrf="$(admin_page "$ADMIN/admin" | form_value csrf)"
+admin_csrf="$(admin_page "$ADMIN/admin/login" | form_value csrf)"
 [ -n "$admin_csrf" ] || fail "Sign-in form has no CSRF token"
 curl -fsS -b "$admin_jar" -c "$admin_jar" -o /dev/null \
     --data-urlencode "csrf=$admin_csrf" --data-urlencode 'password=smoke admin password' \
