@@ -38,13 +38,13 @@ settings a device needs (below) travel between devices.
 |---|---|---|
 | A recording arrives with its raw artifacts | `POST /v1/ingest`: bundle plus opening note, one transaction, idempotent replay, revisions on changed content. The provider plus external id pair maps directly onto a recording id. | delivered |
 | The raw material stays readable on a device | `_Sources/<Provider>/` projection, regenerated per revision | delivered for text; a binary artifact is listed, not shown |
-| The note lands where a person sees it | Every create and ingest writes to `Review/` with `reviewed: false` | delivered |
+| The note lands where a person sees it | Every create and ingest writes to the configured review folder (`Review/` by default) with `reviewed: false` unless the request's frontmatter says otherwise | delivered |
 | Metadata is applied after arrival | `PATCH /v1/notes/{id}/frontmatter` with `If-Match`, body untouched | delivered |
 | A person marks a note reviewed on any device | Edit the property in Obsidian, mirrored within about 90 seconds; or patch it | delivered |
 | The reviewed note gets filed | Curator | not built |
 | Move a note deliberately | `POST /v1/notes/{id}/move`; `folder` on create | not built (`folder` is in api.md, not live) |
 | An agent asks "what do I know about X" | `GET /v1/search` | not built; listing filters on frontmatter only |
-| A consumer asks how many notes await review | `GET /v1/status` | not built; a paged list of `folder=Review&reviewed=false` is the workaround |
+| A consumer asks how many notes await review | `GET /v1/status` | not built; a paged list filtered on the configured review folder (`folder=Review` by default) and `reviewed=false` is the workaround |
 | The operator's frontmatter vocabulary | Admin-editable schema | the schema file is honoured; the Admin page is not built |
 | Attachments on notes | `POST /v1/attachments` | not built |
 | History and recovery | Git helper snapshots | delivered; no API over history |
@@ -157,8 +157,9 @@ files, enriches, imports, or holds a copy. If the platform is down the notes
 workflow does not notice; if Coppermind is down the platform says so. The
 flows that justify a tool on the platform side, in order: a read key plus the
 sources query for "search my notes" and "is this note accurate against its
-source"; one `POST /v1/notes` for "save this to my review pile"; a paged
-Review count for a daily view until `GET /v1/status` exists.
+source"; one `POST /v1/notes` for "save this to my review pile"; a paged count
+of unreviewed notes in the configured review folder for a daily view until
+`GET /v1/status` exists.
 
 ## Decisions the operator made during this review
 
