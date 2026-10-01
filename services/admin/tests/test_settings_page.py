@@ -1,9 +1,8 @@
-import html
-import re
-
 """Every model field is editable with validated, revisioned form writes."""
 
+import html
 import json
+import re
 from html import escape
 
 import pytest
