@@ -414,10 +414,11 @@ vertical path proved end to end, then widened.
   read back and smoke tested with no credentials at all, recorded as a GitHub
   release listing their digests, and named by `latest`, which only ever moves
   forward. Publication authority is held by tag-triggered jobs alone and
-  `tests/ci/test_workflow_pins.py` enforces that. Nothing here has run against
-  a live registry yet, so the first real tag is what proves it, and that first
-  tag needs one manual GHCR step: see
-  [CONTRIBUTING.md](CONTRIBUTING.md).
+  `tests/ci/test_workflow_pins.py` enforces that. Proven live by v0.1.0 on
+  2026-09-30: the tag run published all five images to
+  `ghcr.io/sentania-labs/coppermind`, and they were created public because the
+  repository is public, with no manual package-settings step (see
+  [CONTRIBUTING.md](CONTRIBUTING.md)).
 - **Obsidian Sync update, 2026-09-30 (unit-tested Admin, runtime proof pending).**
   `/admin/sync` provides guided create-or-join setup, plan and device controls,
   status, pause, resume and disconnect. Python tests drove these forms against
@@ -494,7 +495,6 @@ in the tree, so do not read the absence as a decision to leave it out.
   `python3 -m coppermind_store.keys` remains a recovery path when Admin is
   unavailable. Rendered-page tests and a local uvicorn/curl run exercise the
   new pages; compose smoke covers them but requires Docker to execute.
-
 - **Helm packaging and lab deployment.** The Helm chart and the lab handoff
   are not built. Publishing the existing service images and a release from a
   version tag is in place and is under Working above; no automation pushes a

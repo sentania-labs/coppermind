@@ -145,7 +145,6 @@ class SyncSettings(BaseModel):
         default="standard", description="Obsidian Sync plan used to derive size limits."
     )
     # Null uses the selected plan's limits. Explicit overrides remain available.
-
     max_file_bytes: int | None = Field(
         default=None, description="File size limit in bytes; null uses the plan limit."
     )
@@ -224,7 +223,6 @@ class LimitSettings(BaseModel):
     ingest_max_bytes: int = Field(
         default=25 * MIB, gt=0, description="Maximum ingest payload in bytes."
     )
-
     # Null marks this override as unset. Attachment ingest derives the sync
     # file ceiling when its consumer lands.
     attachment_max_bytes: int | None = Field(
