@@ -142,6 +142,13 @@ def test_rendered_forms_drive_claim_login_and_logout(fresh):
 
 
 def test_an_unsigned_csrf_cookie_cannot_authorize_a_signed_in_post(fresh):
+    """A forged cookie plus form field that match each other must not succeed.
+
+    The CSRF cookie is host-wide so any HTTP service on the same host can set
+    it.  For non-public POST paths Admin derives the token via HMAC from the
+    session secret; a forged pair of cookie and form field that match each
+    other but lack a valid session binding are refused with 403.
+    """
     client, _, _ = fresh
     claim(client)
     login(client)

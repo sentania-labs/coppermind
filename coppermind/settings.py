@@ -138,7 +138,6 @@ class GitSettings(BaseModel):
         return value
 
 
-
 class SyncSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -192,7 +191,6 @@ class SyncSettings(BaseModel):
         if self.max_total_bytes is not None:
             return self.max_total_bytes
         return (1 if self.plan == "standard" else 10) * 1024 * MIB
-
 
 
 class CuratorSettings(BaseModel):

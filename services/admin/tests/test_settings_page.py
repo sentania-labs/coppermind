@@ -44,7 +44,6 @@ def test_every_product_field_has_value_default_and_help(signed_in):
         ("sync.plan", "unknown"),
         ("sync.device_name", ""),
         ("limits.ingest_max_bytes", "-1"),
-
         ("notes.dated_types", "not-json"),
     ],
 )
@@ -57,6 +56,28 @@ def test_invalid_setting_names_field_and_preserves_file(signed_in, field, value)
     assert response.status_code == 422
     assert field in response.text and 'class="error"' in response.text
     assert path.read_bytes() == before
+
+
+def test_git_debounce_and_poll_reject_zero_and_accept_one(signed_in):
+    """git.debounce_s and git.poll_interval_s carry the Git helper minimum of 1."""
+    client, wiring = signed_in
+    form = Inputs(client.get("/admin/settings").text).values
+    # 0 is refused, naming the field and the minimum.
+    for field in ("git.debounce_s", "git.poll_interval_s"):
+        response = client.post("/v1/admin/settings", data=form | {field: "0"})
+        assert response.status_code == 422
+        assert field in response.text
+        assert "1" in response.text
+    # 1 is accepted (the minimum).
+    # Fetch a fresh form to get the current revision.
+    fresh_form = Inputs(client.get("/admin/settings").text).values
+    for field in ("git.debounce_s", "git.poll_interval_s"):
+        post_data = dict(fresh_form)
+        post_data[field] = "1"
+        response = client.post("/v1/admin/settings", data=post_data)
+        assert response.status_code == 200, f"{field}: {response.status_code} {response.text[:200]}"
+        assert "Saved revision" in response.text
+        fresh_form = Inputs(response.text).values  # refresh after each save
 
 
 def test_valid_save_updates_file_revision_and_refuses_stale_form(signed_in):
