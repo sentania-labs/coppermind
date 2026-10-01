@@ -233,35 +233,50 @@ async def _ingest_new(
     source_path = store.sources_root / source_id
     revision_path = source_path / "r0001"
 
-    # Compute the projection path first so we can include its wikilink in the note body.
-    # new_projection_path can raise NotesFilesystemUnavailable if the _Sources folder
-    # is unreadable, so we catch and re-raise as a sources filesystem error.
-    projection_date = _as_date(frontmatter.get(schema.role("date_key"))) or _today(settings)
-    try:
-        projection_path = await asyncio.to_thread(
-            new_projection_path,
-            store.notes_root,
-            settings,
-            provider=request.source.provider,
-            title=note_request.title,
-            note_date=projection_date,
+    # The same live-row check `create_note` makes. Historical paths are not
+    # unique, so this asks whether any live row holds the path rather than
+    # leaving a dropped constraint to answer.
+    occupied = (
+        (
+            await session.execute(
+                sa.select(Note.id).where(Note.path == relative, Note.state != "missing").limit(1)
+            )
         )
-    except NotesFilesystemUnavailable as exc:
-        raise SourcesFilesystemUnavailable(str(exc)) from exc
-    # The wikilink uses the projection file's stem (without extension) so Obsidian
-    # can resolve it by name on a device.
-    projection_stem = Path(projection_path).stem
-    trimmed_body = note_request.body.lstrip("\n") if note_request.body else ""
-    body_with_link = f"# {note_request.title}\n\n[[{projection_stem}]]\n{trimmed_body}"
-    note_data = fm.compose(frontmatter, body_with_link).encode("utf-8")
-    note_digest = content_hash(note_data)
+        .scalars()
+        .first()
+    )
+    if occupied is not None:
+        raise PathCollision(relative)
 
     claim_created = False
     filesystem_complete = False
+    projection_path = ""
     projection_created = False
     try:
         create_exclusive_bytes(claim_path, _external_id_claim(request, source_id))
         claim_created = True
+        # Compute the projection path inside the claim so the wikilink is
+        # available when composing the note file.  This also serialises
+        # concurrent ingests for the same external id.
+        projection_date = _as_date(frontmatter.get(schema.role("date_key"))) or _today(settings)
+        try:
+            projection_path = await asyncio.to_thread(
+                new_projection_path,
+                store.notes_root,
+                settings,
+                provider=request.source.provider,
+                title=note_request.title,
+                note_date=projection_date,
+            )
+        except NotesFilesystemUnavailable as exc:
+            raise SourcesFilesystemUnavailable(str(exc)) from exc
+        # The wikilink uses the projection file's stem (without extension)
+        # so Obsidian can resolve it by name on a device.
+        projection_stem = Path(projection_path).stem
+        trimmed_body = note_request.body.lstrip("\n") if note_request.body else ""
+        body_with_link = f"# {note_request.title}\n\n[[{projection_stem}]]\n{trimmed_body}"
+        note_data = fm.compose(frontmatter, body_with_link).encode("utf-8")
+        note_digest = content_hash(note_data)
         session.add_all(
             [
                 Source(
