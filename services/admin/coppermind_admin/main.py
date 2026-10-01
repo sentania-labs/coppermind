@@ -113,6 +113,19 @@ class SubmissionTooLarge(Exception):
     """The form body passed the ceiling before Admin finished reading it."""
 
 
+def _derive_csrf(sessions: SignedSessions, session: str) -> str:
+    """Derive a CSRF token bound to the signed session.
+
+    The cookie value is never used as a CSRF token; this derivation prevents
+    any service on the same host from forging a matching form field, because
+    only this process holds the session secret that signs the derivation.
+    """
+    try:
+        return sessions.csrf_token(session)
+    except AdminRecordUnreadable:
+        return ""
+
+
 async def submitted(request: Request) -> dict[str, str]:
     """The fields of a submitted form. Admin is driven by its pages only."""
     body = bytearray()
@@ -220,10 +233,12 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
         cookie = request.cookies.get(CSRF_COOKIE, "")
         session = request.cookies.get(COOKIE, "")
         path = request.url.path.rstrip("/") or "/"
-        if session and path not in PUBLIC:
-            token = request.app.state.sessions.csrf_token(session)
-        else:
+        if path in PUBLIC:
             token = cookie if re.fullmatch(r"[a-f0-9]{64}", cookie) else secrets.token_hex(32)
+        elif session:
+            token = _derive_csrf(request.app.state.sessions, session)
+        else:
+            token = secrets.token_hex(32)
         context = csrf_token.set(token)
         try:
             if request.method == "POST":
