@@ -173,6 +173,14 @@ class SignedSessions:
         payload = f"{version}.{expires_at}.{nonce}"
         return hmac.compare_digest(signature, self._signature(payload))
 
+    def csrf_token(self, token: str) -> str:
+        """Derive the form token from a server-authenticated session."""
+        return hmac.new(
+            self.credentials.session_secret(),
+            f"csrf.{token}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+
     def _signature(self, payload: str) -> str:
         digest = hmac.new(
             self.credentials.session_secret(), payload.encode(), hashlib.sha256

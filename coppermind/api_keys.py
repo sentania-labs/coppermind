@@ -15,6 +15,8 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from coppermind.statefiles import RevisionConflict, StateStore
+
 API_SCOPES = (
     "sources:read",
     "sources:write",
@@ -123,3 +125,35 @@ def verify_secret(encoded_hash: str, secret: str) -> bool:
         return _HASHER.verify(encoded_hash, secret)
     except (InvalidHashError, VerificationError, VerifyMismatchError):
         return False
+
+
+def load_keys(store: StateStore) -> ApiKeySet:
+    """Read current key state; revision zero denotes an absent file."""
+    try:
+        return ApiKeySet.model_validate(store.read("keys").body)
+    except FileNotFoundError:
+        return ApiKeySet(revision=0)
+
+
+def add_key(store: StateStore, name: str, scopes: list[str], *, if_revision: int) -> str:
+    """Append a key at the displayed revision and reveal its credential once."""
+    key_set = load_keys(store)
+    if key_set.revision != if_revision:
+        raise RevisionConflict(key_set.revision)
+    record, credential = create_key(name, scopes)
+    key_set.keys.append(record)
+    store.write("keys", key_set.model_dump(mode="json"), if_revision=if_revision or None)
+    return credential
+
+
+def revoke_key(store: StateStore, key_id: str, *, if_revision: int) -> None:
+    """Revoke a key at the displayed revision, retaining its audit record."""
+    key_set = load_keys(store)
+    if key_set.revision != if_revision:
+        raise RevisionConflict(key_set.revision)
+    record = next((key for key in key_set.keys if key.key_id == key_id), None)
+    if record is None:
+        raise ValueError(f"no API key with id {key_id}")
+    if record.revoked_at is None:
+        record.revoked_at = datetime.now(tz=UTC)
+        store.write("keys", key_set.model_dump(mode="json"), if_revision=if_revision)

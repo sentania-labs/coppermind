@@ -100,18 +100,39 @@ ADMIN="${ADMIN:-http://127.0.0.1:8082}"
 admin_jar="$(mktemp)"
 # Standalone smoke can claim a fresh installation; the full storyline has
 # already claimed it with this same synthetic test password.
+# Every Admin POST carries the session-bound CSRF token from the page that
+# renders the form, the same way ci/smoke.sh does.
+admin_page() { curl -sS -b "$admin_jar" -c "$admin_jar" "$@"; }
+form_value() {
+    python3 -c 'import sys
+from html.parser import HTMLParser
+class Inputs(HTMLParser):
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "input" and attrs.get("name") == sys.argv[1]:
+            print(attrs.get("value", ""))
+Inputs().feed(sys.stdin.read())' "$1"
+}
 claim_code="$(compose exec -T admin sh -c 'cat /data/state/internal/claim-code 2>/dev/null || true')"
 if [ -n "$claim_code" ]; then
-    printf 'code=%s&password=smoke+admin+password' "$claim_code" | \
-        curl -fsS -o /dev/null --data-binary @- "$ADMIN/v1/admin/claim"
+    admin_csrf="$(admin_page "$ADMIN/admin/claim" | form_value csrf)"
+    [ -n "$admin_csrf" ] || fail "Claim form has no CSRF token"
+    curl -fsS -b "$admin_jar" -c "$admin_jar" -o /dev/null \
+        --data-urlencode "csrf=$admin_csrf" --data-urlencode "code=$claim_code" \
+        --data-urlencode 'password=smoke admin password' "$ADMIN/v1/admin/claim"
 fi
-printf 'password=smoke+admin+password' | \
-    curl -fsS -c "$admin_jar" -o /dev/null --data-binary @- "$ADMIN/v1/admin/login"
-curl -fsS -b "$admin_jar" "$ADMIN/admin/sync" | grep -Fq 'Encryption password' \
-    || fail "Admin did not render Connect"
+admin_csrf="$(admin_page "$ADMIN/admin/login" | form_value csrf)"
+[ -n "$admin_csrf" ] || fail "Sign-in form has no CSRF token"
+curl -fsS -b "$admin_jar" -c "$admin_jar" -o /dev/null \
+    --data-urlencode "csrf=$admin_csrf" --data-urlencode 'password=smoke admin password' \
+    "$ADMIN/v1/admin/login"
+sync_page="$(admin_page -f "$ADMIN/admin/sync")" || fail "Admin did not render Connect"
+printf '%s' "$sync_page" | grep -Fq 'Encryption password' || fail "Admin did not render Connect"
+admin_csrf="$(printf '%s' "$sync_page" | form_value csrf)"
+[ -n "$admin_csrf" ] || fail "Sync page has no CSRF token"
 admin_action() {
     local action="$1" form="${2:-submit=yes}" result
-    result="$(printf '%s' "$form" | curl -fsS -b "$admin_jar" -o /dev/null \
+    result="$(printf 'csrf=%s&%s' "$admin_csrf" "$form" | curl -fsS -b "$admin_jar" -o /dev/null \
         -w '%{redirect_url}' --data-binary @- "$ADMIN/admin/sync/$action")"
     [ "$result" = "$ADMIN/admin/sync?result=saved" ] || fail "Admin $action failed"
 }

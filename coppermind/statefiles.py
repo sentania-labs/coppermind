@@ -11,6 +11,8 @@ it is replacing, so two Admin tabs cannot silently overwrite each other.
 
 from __future__ import annotations
 
+import fcntl
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -90,8 +92,22 @@ class StateStore:
         `if_revision` is the revision the caller believes it is replacing.
         Pass None only when creating the file for the first time.
         """
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        # All control-state writers serialize the revision check and replacement.
+        descriptor = os.open(self.state_dir, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            return self._write_locked(name, body, if_revision=if_revision)
+        finally:
+            os.close(descriptor)
+
+    def _write_locked(
+        self, name: str, body: dict[str, Any], *, if_revision: int | None
+    ) -> StateFile:
         path = self.path_for(name)
         current = self.read(name) if path.exists() else None
+        if current is None and if_revision is not None:
+            raise RevisionConflict(0)
         if current is not None and (if_revision is None or if_revision != current.revision):
             raise RevisionConflict(current.revision)
         next_revision = 1 if current is None else current.revision + 1

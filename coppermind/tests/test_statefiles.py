@@ -78,3 +78,33 @@ def test_a_state_file_with_an_unusable_revision_is_refused_by_name(tmp_path: Pat
         state.read("settings")
     assert "settings.yaml" in str(raised.value)
     assert "revision" in str(raised.value)
+
+
+def test_concurrent_writers_cannot_replace_the_same_revision(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    state = store(tmp_path)
+    state.ensure("settings", {"value": "original"})
+    barrier = Barrier(2)
+
+    def replace(value):
+        barrier.wait()
+        try:
+            return state.write("settings", {"value": value}, if_revision=1).revision
+        except RevisionConflict as exc:
+            return f"conflict at {exc.current_revision}"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(replace, ["first", "second"]))
+    assert 2 in results
+    assert "conflict at 2" in results
+    assert state.read("settings").revision == 2
+
+
+def test_deleted_state_does_not_accept_a_stale_revision(tmp_path):
+    state = store(tmp_path)
+    state.ensure("settings", {})
+    state.path_for("settings").unlink()
+    with pytest.raises(RevisionConflict):
+        state.write("settings", {}, if_revision=1)
