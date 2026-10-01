@@ -1,3 +1,5 @@
+import html
+import re
 """Every model field is editable with validated, revisioned form writes."""
 
 import json
@@ -66,8 +68,11 @@ def test_git_debounce_and_poll_reject_zero_and_accept_one(signed_in):
     for field in ("git.debounce_s", "git.poll_interval_s"):
         response = client.post("/v1/admin/settings", data=form | {field: "0"})
         assert response.status_code == 422
-        assert field in response.text
-        assert "1" in response.text
+        # The rejection paragraph itself names the field and the Git helper's minimum;
+        # the surrounding form always contains the field names and stray "1"s.
+        errors = re.findall(r'<p class="error">(.*?)</p>', response.text, re.S)
+        assert errors, response.text[:400]
+        assert f"{field}: Input should be greater than or equal to 1" in html.unescape(errors[0])
     # 1 is accepted (the minimum).
     # Fetch a fresh form to get the current revision.
     fresh_form = Inputs(client.get("/admin/settings").text).values
