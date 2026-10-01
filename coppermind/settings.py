@@ -33,7 +33,9 @@ SyncPlan = Literal["standard", "plus"]
 class GeneralSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    timezone: str = "America/Chicago"
+    timezone: str = Field(
+        default="America/Chicago", description="Timezone for local dates and scheduled work."
+    )
 
     @field_validator("timezone")
     @classmethod
@@ -50,12 +52,23 @@ class NotesSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    review_folder: str = "Review"
-    trash_folder: str = "_Trash"
-    sources_folder: str = "_Sources"
-    attachments_folder: str = "_Attachments"
-    journal_folder: str = "Journal"
-    dated_types: list[str] = Field(default_factory=lambda: ["meeting", "journal"])
+    review_folder: str = Field(default="Review", description="Folder for notes awaiting review.")
+    trash_folder: str = Field(default="_Trash", description="Folder for deleted notes.")
+    sources_folder: str = Field(
+        default="_Sources",
+        description=(
+            "Folder for generated source projections. Renaming it after sources exist "
+            "strands existing projections; move them deliberately before changing it."
+        ),
+    )
+    attachments_folder: str = Field(
+        default="_Attachments", description="Folder for note attachments."
+    )
+    journal_folder: str = Field(default="Journal", description="Folder for journal notes.")
+    dated_types: list[str] = Field(
+        default_factory=lambda: ["meeting", "journal"],
+        description="Note types whose filenames start with a date.",
+    )
 
     @field_validator("sources_folder")
     @classmethod
@@ -87,37 +100,68 @@ class NotesSettings(BaseModel):
 class ReconcileSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    scan_interval_s: int = Field(default=60, ge=1)
-    quiet_period_s: int = Field(default=30, ge=0)
+    scan_interval_s: int = Field(default=60, ge=1, description="Seconds between filesystem scans.")
+    quiet_period_s: int = Field(
+        default=30, ge=0, description="Seconds a file must remain quiet before adoption."
+    )
     # Local wall clock, in the timezone under `general`. The reconciler reads
     # this every interval, so it is checked here rather than where it is used.
-    full_rehash_daily_at: str = Field(default="03:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    full_rehash_daily_at: str = Field(
+        default="03:30",
+        pattern=r"^([01]\d|2[0-3]):[0-5]\d$",
+        description="Local time for the daily full rehash, in HH:MM format.",
+    )
 
 
 class GitSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = True
-    debounce_s: int = 60
-    poll_interval_s: int = 300
-    identity_name: str = "Coppermind"
-    identity_email: str = "coppermind@localhost"
-    gc_auto: bool = True
+    enabled: bool = Field(default=True, description="Enable Git history.")
+    debounce_s: int = Field(
+        default=60, ge=1, description="Seconds to wait after an edit before committing."
+    )
+    poll_interval_s: int = Field(
+        default=300, ge=1, description="Seconds between remote polling attempts."
+    )
+    identity_name: str = Field(default="Coppermind", description="Name used for Git commits.")
+    identity_email: str = Field(
+        default="coppermind@localhost",
+        description="Email identity used for Git commits, not an operator login.",
+    )
+    gc_auto: bool = Field(default=True, description="Allow automatic Git garbage collection.")
 
 
 class SyncSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    plan: SyncPlan = "standard"
+    plan: SyncPlan = Field(
+        default="standard", description="Obsidian Sync plan used to derive size limits."
+    )
     # Null uses the selected plan's limits. Explicit overrides remain available.
-    max_file_bytes: int | None = None
-    max_total_bytes: int | None = None
-    device_name: str = "coppermind-server"
-    mode: str = "bidirectional"
-    conflict_strategy: str = "merge"
-    excluded_folders: list[str] = Field(default_factory=lambda: ["_Trash"])
-    file_types: list[str] = Field(default_factory=lambda: ["image", "audio", "video", "pdf"])
-    sync_configs: list[str] = Field(default_factory=list)
+    max_file_bytes: int | None = Field(
+        default=None, description="File size limit in bytes; null uses the plan limit."
+    )
+    max_total_bytes: int | None = Field(
+        default=None, description="Total size limit in bytes; null uses the plan limit."
+    )
+    device_name: str = Field(
+        default="coppermind-server", description="Device name shown by Obsidian Sync."
+    )
+    mode: str = Field(default="bidirectional", description="Sync direction mode.")
+    conflict_strategy: str = Field(
+        default="merge", description="How sync resolves conflicting edits."
+    )
+    excluded_folders: list[str] = Field(
+        default_factory=lambda: ["_Trash"],
+        description="Folders excluded from syncing, as a JSON array.",
+    )
+    file_types: list[str] = Field(
+        default_factory=lambda: ["image", "audio", "video", "pdf"],
+        description="Attachment types to sync, as a JSON array.",
+    )
+    sync_configs: list[str] = Field(
+        default_factory=list, description="Configuration categories to sync, as a JSON array."
+    )
 
     @property
     def file_limit_bytes(self) -> int:
@@ -137,39 +181,45 @@ class SyncSettings(BaseModel):
 class CuratorSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = True
-    sweep_interval_s: int = 300
-    inbox_only: bool = True
+    enabled: bool = Field(default=True, description="Enable automatic filing.")
+    sweep_interval_s: int = Field(default=300, description="Seconds between filing sweeps.")
+    inbox_only: bool = Field(default=True, description="Restrict filing to the inbox.")
 
 
 class IndexerSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = True
-    language: str = "english"
-    reconcile_interval_s: int = 600
+    enabled: bool = Field(default=True, description="Enable search indexing.")
+    language: str = Field(default="english", description="Language used for text search.")
+    reconcile_interval_s: int = Field(
+        default=600, description="Seconds between index reconciliation passes."
+    )
 
 
 class EventSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    retention_days: int = 7
-    poll_fallback_s: int = 5
+    retention_days: int = Field(default=7, description="Days to retain events.")
+    poll_fallback_s: int = Field(default=5, description="Seconds between fallback event polls.")
 
 
 class LimitSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    ingest_max_bytes: int = 25 * MIB
+    ingest_max_bytes: int = Field(default=25 * MIB, description="Maximum ingest payload in bytes.")
     # Null marks this override as unset. Attachment ingest derives the sync
     # file ceiling when its consumer lands.
-    attachment_max_bytes: int | None = None
+    attachment_max_bytes: int | None = Field(
+        default=None, description="Attachment ceiling in bytes; null uses the sync file limit."
+    )
 
 
 class AdminSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    session_hours: int = Field(default=12, ge=1, le=24 * 365)
+    session_hours: int = Field(
+        default=12, ge=1, le=24 * 365, description="Hours before a signed Admin session expires."
+    )
 
 
 class ProductSettings(BaseModel):
@@ -177,17 +227,31 @@ class ProductSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: int = 1
-    general: GeneralSettings = Field(default_factory=GeneralSettings)
-    notes: NotesSettings = Field(default_factory=NotesSettings)
-    reconcile: ReconcileSettings = Field(default_factory=ReconcileSettings)
-    git: GitSettings = Field(default_factory=GitSettings)
-    sync: SyncSettings = Field(default_factory=SyncSettings)
-    curator: CuratorSettings = Field(default_factory=CuratorSettings)
-    indexer: IndexerSettings = Field(default_factory=IndexerSettings)
-    events: EventSettings = Field(default_factory=EventSettings)
-    limits: LimitSettings = Field(default_factory=LimitSettings)
-    admin: AdminSettings = Field(default_factory=AdminSettings)
+    schema_version: int = Field(default=1, description="Settings format version.")
+    general: GeneralSettings = Field(
+        default_factory=GeneralSettings, description="General product settings."
+    )
+    notes: NotesSettings = Field(
+        default_factory=NotesSettings, description="Notes filesystem layout."
+    )
+    reconcile: ReconcileSettings = Field(
+        default_factory=ReconcileSettings, description="Reconciliation schedule."
+    )
+    git: GitSettings = Field(default_factory=GitSettings, description="Git history settings.")
+    sync: SyncSettings = Field(default_factory=SyncSettings, description="Obsidian Sync settings.")
+    curator: CuratorSettings = Field(
+        default_factory=CuratorSettings, description="Automatic filing settings."
+    )
+    indexer: IndexerSettings = Field(
+        default_factory=IndexerSettings, description="Search indexing settings."
+    )
+    events: EventSettings = Field(
+        default_factory=EventSettings, description="Event processing settings."
+    )
+    limits: LimitSettings = Field(default_factory=LimitSettings, description="Payload limits.")
+    admin: AdminSettings = Field(
+        default_factory=AdminSettings, description="Admin session settings."
+    )
 
 
 def read_settings(store: StateStore) -> ProductSettings:

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from coppermind_admin.auth import AdminCredentials, SignedSessions
-from coppermind_admin.main import COOKIE, MAX_FORM_BYTES, create_app
+from coppermind_admin.main import COOKIE, CSRF_COOKIE, MAX_FORM_BYTES, create_app
 from fastapi.testclient import TestClient
 
 from coppermind.settings import Wiring, default_settings
@@ -34,14 +35,27 @@ def fresh(tmp_path: Path):
         yield client, wiring, sessions
 
 
+def form_token(client: TestClient, path: str) -> str:
+    response = client.get(path)
+    match = re.search(r'name="csrf" value="([a-f0-9]+)"', response.text)
+    assert match is not None
+    return match[1]
+
+
 def claim(client: TestClient, code: str = CLAIM_CODE, password: str = PASSWORD):
     return client.post(
-        "/v1/admin/claim", data={"code": code, "password": password}, follow_redirects=False
+        "/v1/admin/claim",
+        data={"code": code, "password": password, "csrf": form_token(client, "/admin/claim")},
+        follow_redirects=False,
     )
 
 
 def login(client: TestClient, password: str = PASSWORD):
-    return client.post("/v1/admin/login", data={"password": password}, follow_redirects=False)
+    return client.post(
+        "/v1/admin/login",
+        data={"password": password, "csrf": form_token(client, "/admin/login")},
+        follow_redirects=False,
+    )
 
 
 def test_fresh_admin_is_unclaimed_and_only_exposes_the_claim_and_login_pages(fresh):
@@ -118,11 +132,32 @@ def test_rendered_forms_drive_claim_login_and_logout(fresh):
     assert "HttpOnly" in logged_in.headers["set-cookie"]
     assert "You are signed in" in client.get("/admin").text
 
-    logged_out = client.post("/v1/admin/logout", data={}, follow_redirects=False)
+    logged_out = client.post(
+        "/v1/admin/logout", data={"csrf": form_token(client, "/admin")}, follow_redirects=False
+    )
     assert logged_out.status_code == 303
     assert logged_out.headers["location"] == "/admin/login"
     assert COOKIE not in client.cookies
     assert client.get("/admin").history[0].headers["location"] == "/admin/login"
+
+
+def test_an_unsigned_csrf_cookie_cannot_authorize_a_signed_in_post(fresh):
+    client, _, _ = fresh
+    claim(client)
+    login(client)
+    attacker_token = "a" * 64
+    client.cookies.set(CSRF_COOKIE, attacker_token)
+
+    refused = client.post(
+        "/v1/admin/logout",
+        data={"csrf": attacker_token},
+        follow_redirects=False,
+    )
+
+    assert refused.status_code == 403
+    assert "CSRF token missing or invalid" in refused.text
+    assert COOKIE in client.cookies
+    assert "You are signed in" in client.get("/admin").text
 
 
 def test_an_ended_session_says_so_on_the_login_page(fresh):
@@ -143,9 +178,10 @@ def test_a_logout_without_a_live_session_clears_the_dead_cookie(fresh):
     client, _, sessions = fresh
     claim(client)
     login(client)
+    csrf = form_token(client, "/admin")
     sessions.now = lambda: datetime.now(tz=UTC) + timedelta(hours=13)
 
-    stale = client.post("/v1/admin/logout", data={}, follow_redirects=False)
+    stale = client.post("/v1/admin/logout", data={"csrf": csrf}, follow_redirects=False)
     assert stale.status_code == 303
     assert stale.headers["location"] == "/admin/login?error=session_expired"
     assert COOKIE not in client.cookies
@@ -397,7 +433,9 @@ def test_logout_clears_this_browser_but_not_a_token_taken_elsewhere(fresh):
     captured = client.cookies.get(COOKIE)
     assert captured is not None
 
-    client.post("/v1/admin/logout", data={}, follow_redirects=False)
+    client.post(
+        "/v1/admin/logout", data={"csrf": form_token(client, "/admin")}, follow_redirects=False
+    )
     assert COOKIE not in client.cookies
     assert sessions.valid(captured)
     client.cookies.set(COOKIE, captured)

@@ -1,7 +1,7 @@
 """Create API keys in filesystem-first control state.
 
-The command is the interim rotation path until the separate Admin service
-ships its graphical keys page. It prints the credential once. ``keys.json``
+The command is a recovery path when the Admin keys page is unavailable.
+It prints the credential once. ``keys.json``
 receives only the Argon2 hash.
 """
 
@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 from coppermind.api_keys import (
     API_SCOPES,
     ApiKeyRecord,
     ApiKeySet,
+    add_key,
     create_key,
+    load_keys,
+    revoke_key,
     split_credential,
     verify_secret,
 )
@@ -41,34 +43,6 @@ def _load_keys(control: ControlState) -> tuple[ApiKeySet, bool]:
     if not path.exists():
         return ApiKeySet(), False
     return control.api_keys(), True
-
-
-def add_key(control: ControlState, name: str, scopes: list[str]) -> str:
-    """Append a key and return the credential that must be shown once."""
-    key_set, exists = _load_keys(control)
-    record, credential = create_key(name, scopes)
-    key_set.keys.append(record)
-    control.store.write(
-        "keys",
-        key_set.model_dump(mode="json"),
-        if_revision=key_set.revision if exists else None,
-    )
-    return credential
-
-
-def revoke_key(control: ControlState, key_id: str) -> None:
-    """Revoke an existing key without removing its audit record."""
-    key_set, exists = _load_keys(control)
-    record = next((candidate for candidate in key_set.keys if candidate.key_id == key_id), None)
-    if not exists or record is None:
-        raise ValueError(f"no API key with id {key_id}")
-    if record.revoked_at is None:
-        record.revoked_at = datetime.now(tz=UTC)
-        control.store.write(
-            "keys",
-            key_set.model_dump(mode="json"),
-            if_revision=key_set.revision,
-        )
 
 
 def _reveals(secret_file: Path, record: ApiKeyRecord) -> bool:
@@ -139,10 +113,15 @@ def run(argv: list[str] | None = None, wiring: Wiring | None = None) -> int:
     control = ControlState(settings.state_dir)
     try:
         if args.command == "create":
-            credential = add_key(control, args.name, args.scopes or list(API_SCOPES))
+            credential = add_key(
+                control.store,
+                args.name,
+                args.scopes or list(API_SCOPES),
+                if_revision=load_keys(control.store).revision,
+            )
             print(credential)
         elif args.command == "revoke":
-            revoke_key(control, args.key_id)
+            revoke_key(control.store, args.key_id, if_revision=load_keys(control.store).revision)
     except (ValueError, RevisionConflict) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
