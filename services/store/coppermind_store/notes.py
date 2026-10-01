@@ -149,6 +149,10 @@ class LocalStore:
         sources = frontmatter.get(schema.role("sources_key"), [])
 
         if request.folder is not None:
+            for seg in request.folder.split("/"):
+                if seg == "..":
+                    msg = f"folder: path escapes the notes filesystem: {request.folder}"
+                    raise ValidationFailed([msg])
             folder = sanitize_folder(request.folder)
             if not folder:
                 raise ValidationFailed(["folder: must be a non-empty path"])

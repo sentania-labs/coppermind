@@ -7,7 +7,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -17,7 +17,6 @@ from coppermind_store.internal_api import router
 from coppermind_store.notes import LocalStore
 from fastapi import FastAPI
 
-from coppermind.settings import Wiring
 from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import (
     CreatedNote,
@@ -26,7 +25,6 @@ from coppermind.store_protocol import (
     IncompleteRevision,
     IngestRequest,
     IngestResult,
-    NoteDocument,
     PayloadTooLarge,
     SourceArtifact,
     SourceArtifactDocument,
@@ -34,7 +32,6 @@ from coppermind.store_protocol import (
     SourceManifest,
     SourceRevision,
     SourcesFilesystemUnavailable,
-    StoreError,
     ValidationFailed,
 )
 
@@ -133,10 +130,69 @@ def connected(store: FakeStore) -> HttpStoreClient:
 # ---------------------------------------------------------------------------
 
 
+class _FakeResult:
+    """A fake SQLAlchemy result with scalars() that returns self."""
+
+    def __init__(self, row: Any = None) -> None:
+        self._row = row
+
+    def scalars(self) -> _FakeResult:
+        return self
+
+    def first(self) -> Any:
+        return self._row
+
+
+class _FakeSession:
+    """Minimal fake session that satisfies the transaction contract."""
+
+    def __init__(self) -> None:
+        self._rows: list[tuple[Any, ...]] = []
+
+    async def execute(self, *a: Any) -> _FakeResult:  # noqa: ARG002
+        return _FakeResult(self._rows[0] if self._rows else None)
+
+    def add(self, *a: Any) -> None:  # noqa: ARG002
+        pass
+
+    def add_all(self, *a: Any) -> None:  # noqa: ARG002
+        pass
+
+    def commit(self) -> None:
+        pass
+
+    async def flush(self) -> None:  # noqa: ARG002
+        pass
+
+
+class _FakeTransaction:
+    """Replacement for the database transaction async context manager."""
+
+    def __init__(self, *a: Any) -> None:  # noqa: ARG002
+        self._session = _FakeSession()
+
+    async def __aenter__(self) -> _FakeSession:
+        return self._session
+
+    async def __aexit__(self, *a: Any) -> None:  # noqa: ARG002
+        pass
+
+
+def _fake_transaction(*a: Any) -> _FakeTransaction:
+    """Replacement for the database transaction factory."""
+    return _FakeTransaction()
+
+
 @asynccontextmanager
 async def _store(tmp_path: Path):
     """Create a LocalStore backed by *tmp_path* with control defaults."""
-    wiring = Wiring(data_dir=tmp_path)
+    from unittest.mock import patch
+
+    import coppermind_store.notes as notes_module
+    import coppermind_store.sources as sources_module
+
+    import coppermind.db.session as session_module
+
     notes_dir = tmp_path / "notes"
     sources_dir = tmp_path / "sources"
     state_dir = tmp_path / "state"
@@ -145,10 +201,12 @@ async def _store(tmp_path: Path):
     control = ControlState(state_dir)
     control.ensure_defaults()
     store = LocalStore(notes_dir, control, cast(Any, object()), sources_dir)
-    try:
+    with (
+        patch.object(notes_module, "transaction", _fake_transaction),
+        patch.object(session_module, "transaction", _fake_transaction),
+        patch.object(sources_module, "transaction", _fake_transaction),
+    ):
         yield store
-    finally:
-        await store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -228,9 +286,7 @@ async def test_create_note_folder_refuses_path_escape(tmp_path: Path):
     """A folder with .. that escapes the notes root is refused."""
     async with _store(tmp_path) as store:
         with pytest.raises(ValidationFailed) as exc_info:
-            await store.create_note(
-                CreateNote(title="Escape", frontmatter={}, folder="../outside")
-            )
+            await store.create_note(CreateNote(title="Escape", frontmatter={}, folder="../outside"))
         assert any("escapes" in str(err).lower() for err in exc_info.value.errors)
 
 
