@@ -88,17 +88,30 @@ The order below follows issue 28's planning.
 
 - **Milestone 3:** Helm packaging and lab deployment. The Helm chart and the
   lab handoff run the same images from Compose under Kubernetes.
-- **Milestone 3.5:** Intake (A3, A7, A5). A drop folder with a deterministic
-  watcher that routes by file type and size through the ingest path; the
-  attachments route so decks and PDFs reach devices; and the digester hook
-  for per-type interpretation (ICS to calendar events, PDF and PPTX text
-  extraction).
-- **Milestone 4:** Dossiers (#31). A structured view that assembles a person's
-  notes and their sources for an agent query.
-- **Milestone 5:** Enricher (A6). Optional, off by default, image analysis
-  and frontmatter proposals through an OpenAI-compatible endpoint. Operates
-  under strict rules: frontmatter only, never overwrites a human value,
-  leaves provenance on every field.
+- **Milestone 3.5:** Intake (A3, A7, A5) plus attachments. A drop folder
+  with a deterministic watcher that routes by file type and size through
+  the ingest path; the attachments route so decks and PDFs reach devices;
+  and the digester hook for per-type interpretation (ICS to calendar
+  events, PDF and PPTX text extraction).
+- **Milestone 4: survives** (v0.4.0). Backup and restore job with the
+  runbook walked once; delete to trash; projections rebuild; schema key
+  rename rewriting every note through the store as one Git snapshot; the
+  complete documentation set.
+- **Milestone 5: dossiers and the enricher.** Dossiers first, as recorded
+  on issue 31: PostgreSQL rows for people and companies with aliases,
+  relationships, interests, each fact citing the reviewed note it came from;
+  queryable through `GET /v1/entities` and an Admin page; a projected entity
+  page per person or company in the notes filesystem whose top section is
+  the person's own notes and whose lower block, below a clear separator,
+  Coppermind regenerates from the database; facts added when a note is
+  marked reviewed; entity pages indexed like any note (full text now, vectors
+  when A8 lands). The enricher, as recorded on issues 28 and 31: proposes a
+  best guess for every field of an unreviewed note from the Fields and tags
+  guidance (#30), the note and source text and the dossiers; frontmatter
+  only; never overwrites a value a person set and never touches a reviewed
+  note; writes nothing about its doubts into a note (problems go to the
+  Admin dashboard); provenance per field; optional image, off by default;
+  plain docker compose up needs no model.
 
 ## Deliberately deferred
 
