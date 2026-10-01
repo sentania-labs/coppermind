@@ -1,6 +1,6 @@
 # Coppermind roadmap
 
-Current as of 2026-09-15. This is a living status board, not an archive: it
+Current as of 2026-10-01. This is a living status board, not an archive: it
 says what is merged into `main`, what is next in the order the approved plan
 laid out, and what is deliberately not being built yet and why. The design
 behind all of it, including what has already diverged from the original
@@ -14,12 +14,12 @@ scheduled.
 
 ## Merged
 
-Thirteen increments have landed on top of the initial repository skeleton
-(PR #1, 2026-09-09), all inside the first of the plan's four milestones
-("source to phone and back"):
+Twenty increments have landed on top of the initial repository skeleton (PR
+#1, 2026-09-09), all inside the first milestone ("source to phone and back"):
 
 | Landed | PR | What it added |
 |---|---|---|
+| 2026-09-09 | #1 | The notes filesystem store and API with note create and get |
 | 2026-09-12 | #4 | The Git helper: automatic history of the notes filesystem, no credentials, no network |
 | 2026-09-14 | #5 | Conditional note replacement (`PUT` with `If-Match`), so a stale edit is refused instead of silently overwritten |
 | 2026-09-14 | #6 | Scoped bearer API keys required on every route |
@@ -29,10 +29,16 @@ Thirteen increments have landed on top of the initial repository skeleton
 | 2026-09-15 | #11 | Listing and filtering notes, with paging that survives a rename between pages |
 | 2026-09-15 | #12 | The reconciler's read side: edits, moves, renames, and deletes made on a device are picked up without anyone calling an API |
 | 2026-09-15 | #13 | The reconciler's write side: a note created on a device gets an identity assigned automatically once it settles |
-| 2026-09-15 | #7 | The Obsidian Sync helper service (supervised, but real connections are refused on purpose for now, see below) |
+| 2026-09-15 | #7 | The Obsidian Sync helper service (supervised, but real connections are refused on purpose for now) |
+| 2026-09-15 | #14 | Ingested sources are projected into the notes filesystem as read-only pages a phone can open |
 | 2026-09-15 | #15 | The release pipeline: a pushed version tag builds, signs, and publishes the five images that exist today (`store`, `api`, `admin`, `git`, `obsidian-sync`) and cuts a GitHub release |
 | 2026-09-15 | #16 | Admin's front door: first-boot claim and password login, as its own service |
-| 2026-09-15 | #14 | Ingested sources are projected into the notes filesystem as read-only pages a phone can open |
+| 2026-09-30 | #17 | The approved architecture, roadmap, and acceptance plan written into the repository |
+| 2026-09-30 | #18 | Bump urllib3 to 2.8.0 for CVE-2026-97687/97688/97689; note `make setup` first |
+| 2026-09-30 | #19 | Fix concurrent creates producing incorrect suffixes |
+| 2026-09-30 | #21 | Guard id recovery behind a `FrontmatterError` check in the reconciler |
+| 2026-09-30 | #22 | Guided Obsidian Sync connection from Admin with the official headless client |
+| 2026-09-30 | #24 | Admin API Keys and Settings pages, graphical key management and setting edits with revision checks |
 
 Everything above runs from a plain `docker compose up -d` with nothing
 hand-configured first, and is proven by the same automated checks that run
@@ -40,25 +46,59 @@ in CI.
 
 ## Next, in order
 
-The approved decomposition (checkpointed after the increments above) calls
-for these next, still inside milestone 1 unless noted:
+Milestone 2 is split into three waves as set out in issue 28. Each wave is
+self-contained and delivers a usable step in the core workflow.
 
-1. **Admin's guided Obsidian Sync connection.** Today the sync helper
-   answers honestly but refuses every real connect, pause, resume, and
-   reconnect-on-restart call. This is the one piece standing between where
-   the build is now and the captain actually seeing a note travel to his
-   phone and back, which is milestone 1's whole point.
-2. **Move and rename** through the API, keeping a note's identity across
-   both (milestone 2 work, `M1` in the decomposition).
-3. **The curator**, which files a reviewed note into the right folder by
-   rule, and the **indexer**, which keeps search current (`CU1`, `IX1`,
-   milestone 2). Neither has code in the tree yet.
-4. **Admin's remaining pages**: API keys, settings, frontmatter schema,
-   filing rules, jobs, and real overview counters. Until these land, key
-   creation and rotation stay on the store's own command line, which
-   CONTRIBUTING and STATUS both call out as an interim stopgap the graphical
-   pages are meant to retire (`AD3` and the rest of `AD1`/`AD2`).
-5. **The Helm chart and lab handoff** (milestone 3), not started.
+### Wave 1: docs, small fixes, move and rename
+
+1. **Documentation pass.** README, STATUS, and the addendum are current and
+   accurate against a running stack.
+2. **A0 small fixes.** Remaining paper-cuts surfaced by the first live review:
+   a wikilink from the opening note to its `_Sources` page, and the `folder`
+   parameter on `POST /v1/notes`.
+3. **Move and rename.** `POST /v1/notes/{id}/move` and `POST
+   /v1/notes/{id}/rename`, keeping a note's identity across both, plus the
+   `GET /v1/folders` folder tree endpoint. Filed notes stay mirrored and
+   projections are not clobbered.
+
+### Wave 2: Fields, tags, indexer, search, status dashboard
+
+4. **Fields and tags page** (#30). Admin page for managing frontmatter field
+   kinds and vocabularies, renaming keys with the migration job, and the
+   tags vocabulary.
+5. **Indexer and search.** Full-text search over note bodies through PostgreSQL;
+   `GET /v1/search` endpoint.
+6. **Sources, status, and problems dashboard** (A4). `GET /v1/notes/{id}/sources`
+   to list the sources a note cites; overview counters in Admin; a problems
+   view at `GET /v1/admin/notes/problems` for notes the reconciler could not
+   parse or file.
+
+### Wave 3: curator and filing rules, failure matrix
+
+7. **Curator and filing rules.** The curator files a reviewed note into the
+   right folder by rule, with the Admin pages for rules (create, preview,
+   commit), frontmatter schema, and the jobs page.
+8. **Failure matrix.** A structured view of all reconciliation failures in
+   Admin, never written into a note (operator decisions, issue 28), so the
+   person sees the problem report on screen rather than in their notes.
+
+## Milestones 3, 3.5, 4, 5 (proposed)
+
+The order below follows issue 28's planning.
+
+- **Milestone 3:** Helm packaging and lab deployment. The Helm chart and the
+  lab handoff run the same images from Compose under Kubernetes.
+- **Milestone 3.5:** Intake (A3, A7, A5). A drop folder with a deterministic
+  watcher that routes by file type and size through the ingest path; the
+  attachments route so decks and PDFs reach devices; and the digester hook
+  for per-type interpretation (ICS to calendar events, PDF and PPTX text
+  extraction).
+- **Milestone 4:** Dossiers (#31). A structured view that assembles a person's
+  notes and their sources for an agent query.
+- **Milestone 5:** Enricher (A6). Optional, off by default, image analysis
+  and frontmatter proposals through an OpenAI-compatible endpoint. Operates
+  under strict rules: frontmatter only, never overwrites a human value,
+  leaves provenance on every field.
 
 ## Deliberately deferred
 
@@ -69,6 +109,8 @@ exhaustive; the full one is in [architecture.md](architecture.md)'s
 
 | Deferred | Why | Revisit when |
 |---|---|---|
+| A8: Vectors and pgvector | Hybrid search is a follow-on to full-text; a second stateful system would break the one-volume restore and add a consistency problem for a few thousand notes that does not need it yet | A concrete search need plain text search cannot serve |
+| A9: Import that is not the adopt reconciler | The remote vault starts empty on purpose; pointing the reconciler at years of existing notes would rewrite and push every one at once | After the fresh vault has proven itself, as a deliberate one-time Admin action |
 | Redis for event delivery | The PostgreSQL outbox already gives correctness through reconciliation; Redis only helps an external consumer, and there is not one yet | Something outside this system needs to consume Coppermind's events |
 | Importing the captain's existing Obsidian vault | The remote vault starts empty on purpose; pointing the reconciler at years of existing notes would rewrite and push every one of them at once | After the fresh vault has proven itself, as a deliberate one-time Admin action |
 | Vector or hybrid search | Plain PostgreSQL text search is what milestone 2 needs; there is no case yet that plain search cannot answer | A concrete search need plain text search cannot serve |
@@ -79,8 +121,8 @@ exhaustive; the full one is in [architecture.md](architecture.md)'s
 
 ## What this does not cover
 
-Bug-level detail (two open issues today: concurrent same-title creates
-answering 409 instead of a numbered suffix, and a stale mirror row naming
-the wrong note as unparseable) lives on the repository's issue tracker, not
-here. Day-to-day behavior of what is merged, including every documented
-limit and known gap, is [STATUS.md](../STATUS.md).
+Bug-level detail (concurrent same-title creates answering 409 instead of a
+numbered suffix, and a stale mirror row naming the wrong note as unparsed)
+lives on the repository's issue tracker, not here. Day-to-day behavior of
+what is merged, including every documented limit and known gap, is
+[STATUS.md](../STATUS.md).
