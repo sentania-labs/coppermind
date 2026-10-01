@@ -494,6 +494,7 @@ in the tree, so do not read the absence as a decision to leave it out.
   `python3 -m coppermind_store.keys` remains a recovery path when Admin is
   unavailable. Rendered-page tests and a local uvicorn/curl run exercise the
   new pages; compose smoke covers them but requires Docker to execute.
+
 - **Helm packaging and lab deployment.** The Helm chart and the lab handoff
   are not built. Publishing the existing service images and a release from a
   version tag is in place and is under Working above; no automation pushes a

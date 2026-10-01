@@ -196,6 +196,7 @@ admin_page "$ADMIN/admin" | grep -Fq 'You are signed in' \
 admin_csrf="$(admin_page -f "$ADMIN/admin" | form_value csrf)"
 [ -n "$admin_csrf" ] || fail "Signed-in page has no CSRF token"
 
+
 step "create an API key through Admin and reveal it only once"
 keys_revision="$(admin_page "$ADMIN/admin/keys" | form_value revision | head -1)"
 key_result="$(admin_page -f -X POST "$ADMIN/v1/admin/keys/create" \

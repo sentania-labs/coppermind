@@ -44,6 +44,7 @@ def test_every_product_field_has_value_default_and_help(signed_in):
         ("sync.plan", "unknown"),
         ("sync.device_name", ""),
         ("limits.ingest_max_bytes", "-1"),
+
         ("notes.dated_types", "not-json"),
     ],
 )

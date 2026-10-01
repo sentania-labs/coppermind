@@ -215,6 +215,7 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
     app.state.control = state
     app.include_router(sync.router(settings))
 
+
     @app.middleware("http")
     async def protect_forms(request: Request, call_next: RequestResponseEndpoint) -> Response:
         cookie = request.cookies.get(CSRF_COOKIE, "")
@@ -314,6 +315,7 @@ required></label><button>Log in</button></form>""",
                 """<h1>Coppermind Admin</h1><p>You are signed in.</p>
 <p><a href="/admin/keys">API Keys</a> | <a href="/admin/settings">Settings</a> |
 <a href="/admin/sync">Obsidian Sync</a></p>
+
 <form method="post" action="/v1/admin/logout"><button>Log out</button></form>""",
             )
         )

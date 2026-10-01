@@ -1,1 +1,1 @@
-"""Independent Admin page routers."""
+Independent Admin page routers.
