@@ -127,8 +127,9 @@ enricher is the one place a model is allowed, and only under these rules:
 - It proposes, the curator disposes. It writes frontmatter; filing remains a
   deterministic rule on `reviewed: true`. No model moves a file.
 - Frontmatter only, through `PATCH` with `If-Match`. The body is the person's.
-  If the model believes a note is wrong it sets `unresolved: true` and a
-  `review_notes` line; it does not edit prose.
+  It writes nothing into a note about its own doubts: low confidence or a
+  note it believes is wrong goes to the Admin problems dashboard (operator
+  decision, 2026-10-01, below).
 - It never overwrites a human value. A key set on a device, and anything on a
   note already reviewed, is frozen to it. Re-running fills blanks only.
 - It leaves provenance: model, version, time, per-field confidence. Below a
@@ -189,3 +190,26 @@ them over the per-file cap), and the drop folder's name.
 - Whether a device inherits the attachment-folder setting depends on
   `sync.sync_configs`, shipped empty. A new device drops images at the root
   until it is told otherwise.
+
+## Decided after this review (2026-10-01)
+
+The operator settled these the same evening; [#28](https://github.com/sentania-labs/coppermind/issues/28),
+[#30](https://github.com/sentania-labs/coppermind/issues/30) and
+[#31](https://github.com/sentania-labs/coppermind/issues/31) carry the words, and
+[roadmap.md](roadmap.md) carries the resulting plan.
+
+- Problems are shown on an Admin dashboard and never written into a note. No
+  `review_notes`, and the curator does not write `unresolved`: a note the rules
+  cannot file stays in the review folder untouched and appears on the dashboard.
+- Review is the person's. Setting `reviewed: true` is the confirmation and the
+  only trigger to file.
+- The enricher proposes a best guess for every field of an unreviewed note,
+  from the field and tag guidance (#30), the note and source text, and the
+  dossiers.
+- Dossiers (people, companies, relationships, interests) live in PostgreSQL
+  and are queryable; each gets a projected page in the notes filesystem with
+  the person's own notes at the top and a Coppermind-maintained block below a
+  clear separator. The indexer covers those pages like any note.
+- An Admin page sets guidance and rules for fields and tags (#30), built before
+  the curator.
+
