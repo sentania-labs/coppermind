@@ -54,7 +54,8 @@ def test_uvicorn_curl_uses_signed_in_csrf_for_keys_and_settings(tmp_path):
             str(port),
             "--no-access-log",
         ],
-        env=os.environ | {"COPPERMIND_DATA_DIR": str(tmp_path)},
+        env=os.environ
+        | {"COPPERMIND_DATA_DIR": str(tmp_path), "COPPERMIND_INTERNAL_TOKEN_FILE": str(token)},
         stdout=sys.stdout,
         stderr=sys.stderr,
     )
