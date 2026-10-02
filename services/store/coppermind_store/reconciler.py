@@ -371,7 +371,8 @@ async def reconcile_once(
     )
     remembered.clear()
     remembered.update(scan.unidentified)
-    observations, duplicates = _choose_observations(scan, by_id)
+    collisions_list: list[tuple[str, str, str]] = []
+    observations, duplicates = _choose_observations(scan, by_id, collisions_list)
     adopted = 0
     rejected = scan.unidentified_unparsed
     unwritable = 0
@@ -446,8 +447,19 @@ async def reconcile_once(
         "deferred": scan.deferred,
     }
     now = datetime.now(tz=UTC)
+
     try:
+        from coppermind.db.models import RecordedRejection
+
         async with transaction(store.session_factory) as session:
+            # Clear all collision rejections
+            await session.execute(
+                sa.delete(RecordedRejection).where(RecordedRejection.kind == "collision")
+            )
+
+            for note_id, p, kind in collisions_list:
+                session.add(RecordedRejection(kind=kind, reference=note_id, reason=p))
+
             for chunk in _chunks(pending, _MIRROR_BATCH):
                 rows = (await session.scalars(sa.select(Note).where(Note.id.in_(chunk)))).all()
                 for row in rows:
@@ -827,7 +839,7 @@ def _identity_from_broken(text: str | None, schema: FrontmatterSchema) -> str | 
 
 
 def _choose_observations(
-    scan: ScanResult, by_id: dict[str, MirrorEntry]
+    scan: ScanResult, by_id: dict[str, MirrorEntry], collisions: list[tuple[str, str, str]]
 ) -> tuple[dict[str, Observation], int]:
     """Pick the one file that speaks for each identity this scan saw.
 
@@ -845,6 +857,12 @@ def _choose_observations(
             # file produced no observation of its own, so its recorded path is
             # named here to report both sides of the collision.
             duplicates += 1
+            collisions.extend(
+                [
+                    (note_id, p, "collision")
+                    for p in [by_id[note_id].path, *(item.path for item in candidates)]
+                ]
+            )
             _unresolved(note_id, [by_id[note_id].path, *(item.path for item in candidates)])
             continue
         # A file that named this identity itself outranks one that only
@@ -859,6 +877,7 @@ def _choose_observations(
             chosen[note_id] = ranked[0]
         else:
             duplicates += 1
+            collisions.extend([(note_id, p, "collision") for p in [item.path for item in ranked]])
             _unresolved(note_id, [item.path for item in ranked])
     return chosen, duplicates
 

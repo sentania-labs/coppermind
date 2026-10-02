@@ -223,7 +223,25 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
     def product_settings() -> ProductSettings:
         return read_settings(state)
 
-    app = FastAPI(title="Coppermind Admin", version=version)
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+
+    from coppermind.store_client import HttpStoreClient
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        client = HttpStoreClient(
+            settings.store_url,
+            settings.read_internal_token(),
+            timeout=settings.store_timeout_s,
+        )
+        app.state.store = client
+        try:
+            yield
+        finally:
+            await client.aclose()
+
+    app = FastAPI(title="Coppermind Admin", version=version, lifespan=lifespan)
     app.state.sessions = sessions or SignedSessions(credentials)
     app.state.control = state
     app.include_router(sync.router(settings))
@@ -322,11 +340,30 @@ required></label><button>Log in</button></form>""",
         )
 
     @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
-    async def overview() -> HTMLResponse:
+    async def overview(request: Request) -> Response:
+        try:
+            status = await request.app.state.store.get_status()
+            c = status.counters
+            problems_count = c.rejected_ingests + c.name_collisions + c.unparseable_files
+
+            stats_html = f"""
+            <h2>Store Status</h2>
+            <ul>
+                <li>Notes awaiting review: {c.notes_awaiting_review}</li>
+                <li>Total sources: {c.sources}</li>
+                <li>Notes by state: {", ".join(f"{k}: {v}" for k, v in c.notes_by_state.items())}
+                </li>
+            </ul>
+            <p><a href="/admin/problems">Problems ({problems_count})</a></p>
+            """
+        except Exception as exc:
+            stats_html = f"<p class='error'>Failed to load status: {html.escape(str(exc))}</p>"
+
         return HTMLResponse(
             page(
                 "Overview",
-                """<h1>Coppermind Admin</h1><p>You are signed in.</p>
+                f"""<h1>Coppermind Admin</h1><p>You are signed in.</p>
+{stats_html}
 <p><a href="/admin/keys">API Keys</a> | <a href="/admin/settings">Settings</a> |
 <a href="/admin/sync">Obsidian Sync</a></p>
 <form method="post" action="/v1/admin/logout"><button>Log out</button></form>""",
@@ -413,6 +450,35 @@ required></label><button>Log in</button></form>""",
     from coppermind_admin.pages import settings as settings_page
 
     app.include_router(keys.router)
+
+    @app.get("/admin/problems", response_class=HTMLResponse, include_in_schema=False)
+    async def problems(request: Request) -> Response:
+        try:
+            problems = await request.app.state.store.get_problems()
+            problems_html = "<ul>"
+            for p in problems:
+                problems_html += (
+                    f"<li>{html.escape(p.kind)}: {html.escape(p.reason)} on "
+                    f"{html.escape(p.reference)}</li>"
+                )
+            problems_html += "</ul>"
+            if not problems:
+                problems_html = "<p>No problems found.</p>"
+            return HTMLResponse(
+                page(
+                    "Problems",
+                    f"<h1>Problems</h1>\n{problems_html}\n"
+                    f"<p><a href='/admin'>Back to Overview</a></p>",
+                )
+            )
+        except Exception as exc:
+            return HTMLResponse(
+                page(
+                    "Problems",
+                    f"<p class='error'>Failed to load problems: {html.escape(str(exc))}</p>",
+                )
+            )
+
     app.include_router(settings_page.router)
     return app
 

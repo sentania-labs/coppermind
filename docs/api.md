@@ -81,7 +81,7 @@ than routed anywhere.
 | `GET /v1/search` | `search:read` | Full-text search with `q` (websearch syntax), `reviewed_only`, `include_unreviewed`, and the same filters as listing | 200, page including `rank` and a `snippet`; every item carries `reviewed` | 503 `metadata_unavailable` |
 | `POST /v1/attachments` | `notes:write` | Upload a file (multipart); name comes from the filename | 201, `{path, embed: "![[name.png]]", size_bytes}` | 413 over the plan's file-size limit; 409 |
 | `GET /v1/attachments/{name}` | `notes:read` | Download an attachment | 200 | 404 |
-| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}` | 200 | |
+| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}` | 200 | 503 `store_unavailable` |
 | `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /openapi.json` | none | Process liveness, real readiness (checks PostgreSQL and the notes filesystem), Prometheus metrics, the generated API contract | 200 | 503 on `/readyz` when a real dependency is down |
 
 ## Admin: pages and their endpoints

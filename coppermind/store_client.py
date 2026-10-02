@@ -26,6 +26,7 @@ from coppermind.store_protocol import (
     NoteId,
     NoteQuery,
     NotesFilesystemUnavailable,
+    NoteSourceInfo,
     NoteSummary,
     NoteUnparseable,
     NotFound,
@@ -34,6 +35,7 @@ from coppermind.store_protocol import (
     PathCollision,
     PayloadTooLarge,
     PreconditionRequired,
+    ProblemInfo,
     ProjectionNotPlaced,
     ReplaceNote,
     SourceArtifactDocument,
@@ -41,7 +43,10 @@ from coppermind.store_protocol import (
     SourceId,
     SourceManifest,
     SourceNotFound,
+    SourceQuery,
     SourcesFilesystemUnavailable,
+    SourceSummary,
+    StatusResponse,
     StoreError,
     StoreUnavailable,
     ValidationFailed,
@@ -153,6 +158,30 @@ class HttpStoreClient:
     async def get_api_keys(self) -> ApiKeySet:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/api-keys")
         return ApiKeySet.model_validate(response.json())
+
+    async def list_sources(self, query: SourceQuery) -> Page[SourceSummary]:
+        response = await self._send(
+            "GET",
+            f"{INTERNAL_PREFIX}/sources",
+            params=query.model_dump(exclude_none=True, by_alias=True),
+        )
+        return Page[SourceSummary].model_validate(response.json())
+
+    async def get_note_sources(self, note_id: NoteId) -> list[NoteSourceInfo]:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/notes/{note_id}/sources")
+        from pydantic import TypeAdapter
+
+        return TypeAdapter(list[NoteSourceInfo]).validate_python(response.json())
+
+    async def get_problems(self) -> list[ProblemInfo]:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/problems")
+        from pydantic import TypeAdapter
+
+        return TypeAdapter(list[ProblemInfo]).validate_python(response.json())
+
+    async def get_status(self) -> StatusResponse:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/status")
+        return StatusResponse.model_validate(response.json())
 
     async def is_ready(self) -> bool:
         """True when the store reports itself ready. Never raises."""

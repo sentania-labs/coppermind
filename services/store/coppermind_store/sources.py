@@ -49,14 +49,21 @@ from coppermind.store_protocol import (
     IngestRequest,
     IngestResult,
     NotesFilesystemUnavailable,
+    NoteSourceInfo,
+    Page,
     PathCollision,
     PayloadTooLarge,
+    ProblemInfo,
     ProjectionNotPlaced,
     SourceArtifactDocument,
     SourceClaimMissing,
     SourceManifest,
     SourceNotFound,
+    SourceQuery,
     SourcesFilesystemUnavailable,
+    SourceSummary,
+    StatusCounters,
+    StatusResponse,
     StoreError,
     ValidationFailed,
     artifact_text,
@@ -137,7 +144,18 @@ async def ingest(
 ) -> IngestResult:
     settings = store.control.settings()
     schema = store.control.schema()
+
     if max(_payload_size(request), payload_size_bytes or 0) > settings.limits.ingest_max_bytes:
+        from coppermind.db.models import RecordedRejection
+
+        async with store.session_factory() as session, session.begin():
+            session.add(
+                RecordedRejection(
+                    kind="ingest",
+                    reference=f"{request.source.provider}:{request.source.external_source_id}",
+                    reason="PayloadTooLarge",
+                )
+            )
         raise PayloadTooLarge(settings.limits.ingest_max_bytes)
 
     artifacts = [(artifact, artifact.bytes()) for artifact in request.source.artifacts]
@@ -219,7 +237,18 @@ async def _ingest_new(
     )
     frontmatter = _build_frontmatter(note_request, schema, settings, note_id)
     problems = schema.validate_frontmatter(frontmatter)
+
     if problems:
+        from coppermind.db.models import RecordedRejection
+
+        async with store.session_factory() as session, session.begin():
+            session.add(
+                RecordedRejection(
+                    kind="ingest",
+                    reference=f"{request.source.provider}:{request.source.external_source_id}",
+                    reason="ValidationFailed",
+                )
+            )
         raise ValidationFailed(problems)
 
     folder = sanitize_folder(settings.notes.review_folder)
@@ -1006,3 +1035,148 @@ def _revision_document(
 
 def _json_bytes(document: dict[str, Any]) -> bytes:
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+async def list_sources(store, query: SourceQuery) -> Page[SourceSummary]:
+    async with store.session_factory() as session:
+        stmt = sa.select(Source).order_by(Source.created_at.desc(), Source.id.desc())
+        if query.provider:
+            stmt = stmt.where(Source.provider == query.provider)
+        if query.from_date:
+            stmt = stmt.where(sa.cast(Source.created_at, sa.Date) >= query.from_date)
+        if query.to_date:
+            stmt = stmt.where(sa.cast(Source.created_at, sa.Date) <= query.to_date)
+
+        if query.cursor:
+            try:
+                cursor_time_str, cursor_id = query.cursor.split(",", 1)
+                cursor_time = datetime.fromisoformat(cursor_time_str)
+                stmt = stmt.where(
+                    sa.or_(
+                        Source.created_at < cursor_time,
+                        sa.and_(Source.created_at == cursor_time, Source.id < cursor_id),
+                    )
+                )
+            except ValueError:
+                pass
+
+        stmt = stmt.limit(query.limit + 1)
+        rows = (await session.scalars(stmt)).all()
+
+        items = [
+            SourceSummary(
+                id=row.id,
+                provider=row.provider,
+                external_source_id=row.external_source_id,
+                source_type=row.source_type,
+                origin=row.origin,
+                current_revision=row.current_revision,
+                created_at=row.created_at,
+            )
+            for row in rows[: query.limit]
+        ]
+        next_cursor = None
+        if len(rows) > query.limit:
+            last = items[-1]
+            next_cursor = f"{last.created_at.isoformat()},{last.id}"
+
+        return Page(items=items, next_cursor=next_cursor)
+
+
+async def get_note_sources(store, note_id: str) -> list[NoteSourceInfo]:
+    from coppermind.errors import NotFound
+
+    async with store.session_factory() as session:
+        if await session.get(Note, note_id) is None:
+            raise NotFound(note_id)
+
+        stmt = (
+            sa.select(Source.id)
+            .select_from(NoteSource)
+            .where(NoteSource.note_id == note_id)
+            .order_by(NoteSource.created_at.desc())
+        )
+        source_ids = (await session.scalars(stmt)).all()
+
+    results = []
+    for sid in source_ids:
+        manifest_path = store.sources_root / sid[:2] / sid / "manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            results.append(NoteSourceInfo(id=sid, projection_path=manifest.get("projection_path")))
+        except (OSError, ValueError):
+            pass
+    return results
+
+
+async def get_status(store) -> StatusResponse:
+    from coppermind.db.models import Note, RecordedRejection, Source
+    from coppermind.settings import read_settings
+
+    settings = read_settings(store.control)
+    review_folder = settings.notes.review_folder
+
+    async with store.session_factory() as session:
+        # notes_awaiting_review
+        stmt = sa.select(sa.func.count(Note.id)).where(
+            Note.reviewed.is_(False), Note.path.startswith(f"{review_folder}/")
+        )
+        notes_awaiting_review = await session.scalar(stmt) or 0
+
+        # notes_by_state
+        stmt_state = sa.select(Note.state, sa.func.count(Note.id)).group_by(Note.state)
+        rows = (await session.execute(stmt_state)).all()
+        notes_by_state = {row[0]: row[1] for row in rows}
+
+        # sources
+        stmt2 = sa.select(sa.func.count(Source.id))
+        sources = await session.scalar(stmt2) or 0
+
+        # rejected_ingests
+        stmt3 = sa.select(sa.func.count(RecordedRejection.id)).where(
+            RecordedRejection.kind == "ingest"
+        )
+        rejected_ingests = await session.scalar(stmt3) or 0
+
+        # name_collisions
+        stmt4 = sa.select(sa.func.count(RecordedRejection.id)).where(
+            RecordedRejection.kind == "collision"
+        )
+        name_collisions = await session.scalar(stmt4) or 0
+
+        # unparseable_files
+        unparseable_files = notes_by_state.get("unparsed", 0)
+
+        return StatusResponse(
+            counters=StatusCounters(
+                notes_awaiting_review=notes_awaiting_review,
+                notes_by_state=notes_by_state,
+                sources=sources,
+                rejected_ingests=rejected_ingests,
+                name_collisions=name_collisions,
+                unparseable_files=unparseable_files,
+            )
+        )
+
+
+async def get_problems(store) -> list[ProblemInfo]:
+    from coppermind.db.models import Note, RecordedRejection
+
+    async with store.session_factory() as session:
+        # Get recorded rejections
+        stmt = sa.select(RecordedRejection)
+        rejections = (await session.scalars(stmt)).all()
+
+        problems = []
+        for r in rejections:
+            problems.append(ProblemInfo(kind=r.kind, reference=r.reference, reason=r.reason))
+
+        # Get unparsed notes
+        stmt_unparsed = sa.select(Note).where(Note.state == "unparsed")
+        unparsed = (await session.scalars(stmt_unparsed)).all()
+        for n in unparsed:
+            problems.append(
+                ProblemInfo(kind="unparseable_file", reference=n.path, reason="unparsed")
+            )
+
+        return problems

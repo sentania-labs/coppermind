@@ -19,11 +19,15 @@ CLAIM_CODE = "test-claim-code"
 
 
 def _client(tmp_path: Path, base_url: str = "https://testserver"):
-    wiring = Wiring(data_dir=tmp_path / "data")
+    token = tmp_path / "internal-token"
+    token.write_text("test-token", encoding="utf-8")
+    wiring = Wiring(data_dir=tmp_path / "data", internal_token_file=token)
     StateStore(wiring.state_dir).ensure("settings", default_settings().model_dump(mode="json"))
     claim_code = wiring.state_dir / "internal" / "claim-code"
     claim_code.parent.mkdir(parents=True)
     claim_code.write_text(CLAIM_CODE + "\n", encoding="utf-8")
+    token = wiring.state_dir / "internal" / "internal-token"
+    token.write_text("test-token", encoding="utf-8")
     sessions = SignedSessions(AdminCredentials(wiring.state_dir))
     return TestClient(create_app(wiring, sessions), base_url=base_url), wiring, sessions
 

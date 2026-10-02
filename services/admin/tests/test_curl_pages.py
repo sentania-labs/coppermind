@@ -24,6 +24,8 @@ def test_uvicorn_curl_uses_signed_in_csrf_for_keys_and_settings(tmp_path):
     claim_code = state.state_dir / "internal" / "claim-code"
     claim_code.parent.mkdir()
     claim_code.write_text("curl-test-claim")
+    token = state.state_dir / "internal" / "internal-token"
+    token.write_text("test-token")
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -53,8 +55,8 @@ def test_uvicorn_curl_uses_signed_in_csrf_for_keys_and_settings(tmp_path):
             "--no-access-log",
         ],
         env=os.environ | {"COPPERMIND_DATA_DIR": str(tmp_path)},
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
     )
     try:
         for _ in range(100):

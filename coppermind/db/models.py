@@ -131,3 +131,17 @@ class NoteSource(Base):
         Text, ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RecordedRejection(Base):
+    """A problem computed by the store but not written to the note."""
+
+    __tablename__ = "recorded_rejections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # The entity this problem is about. 'note', 'source', or 'ingest'.
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    # The note ID, source ID, or ingest claim path.
+    reference: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
