@@ -452,6 +452,14 @@ vertical path proved end to end, then widened.
 Everything below is planned and has a place in the design. None of it exists
 in the tree, so do not read the absence as a decision to leave it out.
 
+- **The curator, the indexer, and search.** Neither the curator (files a
+  reviewed note into the right folder by rule) nor the indexer (keeps the
+  search index current) has any code or image in the tree yet
+  (`docs/architecture.md`'s "moving parts" table says the same). A note
+  marked `reviewed: true` is not filed anywhere by the system; it stays
+  wherever it already is. `GET /v1/search` does not exist, so there is no
+  full-text search over note bodies; listing still filters on frontmatter
+  only.
 - **Remaining source capabilities.** Storing a correction to a field that
   describes a source (`captured_at`, `metadata`, `source_type`, `origin` or an
   artifact `mime_type`) when the artifacts are unchanged is not built; today
