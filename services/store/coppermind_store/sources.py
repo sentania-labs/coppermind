@@ -259,22 +259,23 @@ async def _ingest_new(
         # available when composing the note file.  This also serialises
         # concurrent ingests for the same external id.
         projection_date = _as_date(frontmatter.get(schema.role("date_key"))) or _today(settings)
-        try:
-            projection_path = await asyncio.to_thread(
-                new_projection_path,
-                store.notes_root,
-                settings,
-                provider=request.source.provider,
-                title=note_request.title,
-                note_date=projection_date,
-            )
-        except NotesFilesystemUnavailable as exc:
-            raise SourcesFilesystemUnavailable(str(exc)) from exc
-        # The wikilink uses the projection file's stem (without extension)
-        # so Obsidian can resolve it by name on a device.
-        projection_stem = Path(projection_path).stem
+        projection_path = await asyncio.to_thread(
+            new_projection_path,
+            store.notes_root,
+            settings,
+            provider=request.source.provider,
+            title=note_request.title,
+            note_date=projection_date,
+        )
+        # The wikilink carries the projection's full path (without the .md
+        # suffix) rather than only its stem: a projection's name is unique
+        # only within its provider folder, so a bare stem can collide with
+        # another provider's page of the same name.
+        projection_link_target = projection_path
+        if projection_link_target.endswith(NOTE_SUFFIX):
+            projection_link_target = projection_link_target[: -len(NOTE_SUFFIX)]
         trimmed_body = note_request.body.lstrip("\n") if note_request.body else ""
-        body_with_link = f"# {note_request.title}\n\n[[{projection_stem}]]\n{trimmed_body}"
+        body_with_link = f"# {note_request.title}\n\n[[{projection_link_target}]]\n{trimmed_body}"
         note_data = fm.compose(frontmatter, body_with_link).encode("utf-8")
         note_digest = content_hash(note_data)
         session.add_all(

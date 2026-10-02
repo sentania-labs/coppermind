@@ -48,9 +48,9 @@ new password is what ends every session at once, and the recovery steps below
 are how you do it. Admin's overview intentionally reports only that you are
 signed in; settings, API keys, status, and Obsidian Sync connection arrive as
 separate increments. Obsidian's 'Default location for new attachments' is a
-per-device setting that defaults to the vault root; set it from Settings >
-Files & links > Default location for attachments so new attachments land
-where your filing rules expect them.
+per-device setting that defaults to the notes filesystem root; set it from
+Settings > Files & links > Default location for attachments so new
+attachments land where your filing rules expect them.
 
 Forgot the admin password, or need to cut off a session cookie that got away
 from you? Both have the same answer: remove the admin record and claim again.

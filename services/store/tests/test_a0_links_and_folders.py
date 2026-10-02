@@ -229,9 +229,13 @@ async def test_ingest_opening_note_contains_wikilink_to_projection(tmp_path: Pat
         assert note_path.exists()
 
         raw_text = note_path.read_text()
-        # The body should contain the wikilink referencing the projection stem
-        projection_stem = Path(result.projection_path).stem
-        assert f"[[{projection_stem}]]" in raw_text
+        # The body should contain the wikilink referencing the projection's
+        # full path (without the .md suffix), not only its stem: a stem is
+        # unique only within its provider folder, so the bare stem could
+        # collide with a page of the same name under another provider.
+        projection_link_target = result.projection_path.removesuffix(".md")
+        assert "/" in projection_link_target
+        assert f"[[{projection_link_target}]]" in raw_text
         # The frontmatter sources key must still carry the source ULID
         frontmatter_block, _body_text = fm.split(raw_text)
         loaded = fm._yaml().load(frontmatter_block)
@@ -242,6 +246,44 @@ async def test_ingest_opening_note_contains_wikilink_to_projection(tmp_path: Pat
 # ---------------------------------------------------------------------------
 # AC2: POST /v1/notes honours folder and refuses escaping folders
 # ---------------------------------------------------------------------------
+
+
+async def test_ingest_wikilink_disambiguates_same_stem_across_providers(tmp_path: Path):
+    """Two sources with the same title under different providers get the same
+    projection stem but different provider folders; the wikilink must carry
+    the full path so it resolves to the right one rather than being ambiguous
+    between them."""
+    other_request = IngestRequest.model_validate(
+        {
+            "source": {
+                "provider": "otherprovider",
+                "external_source_id": "recording-1",
+                "source_type": "transcript",
+                "artifacts": [
+                    {"name": "transcript.txt", "mime_type": "text/plain", "content": "hello"}
+                ],
+            },
+            "note": {"title": "Recording"},
+        }
+    )
+    async with _store(tmp_path) as store:
+        plaud_result = await store.ingest(INGEST_REQUEST)
+        other_result = await store.ingest(other_request)
+
+        plaud_stem = Path(plaud_result.projection_path).stem
+        other_stem = Path(other_result.projection_path).stem
+        assert plaud_stem == other_stem
+
+        plaud_target = plaud_result.projection_path.removesuffix(".md")
+        other_target = other_result.projection_path.removesuffix(".md")
+        assert plaud_target != other_target
+
+        plaud_note_text = (tmp_path / "notes" / plaud_result.note.path).read_text()
+        other_note_text = (tmp_path / "notes" / other_result.note.path).read_text()
+        assert f"[[{plaud_target}]]" in plaud_note_text
+        assert f"[[{other_target}]]" in other_note_text
+        assert f"[[{other_target}]]" not in plaud_note_text
+        assert f"[[{plaud_target}]]" not in other_note_text
 
 
 async def test_create_note_with_folder(tmp_path: Path):
@@ -278,6 +320,28 @@ async def test_create_note_folder_refuses_inside_sources(tmp_path: Path):
         with pytest.raises(ValidationFailed) as exc_info:
             await store.create_note(
                 CreateNote(title="Bad folder", frontmatter={}, folder="_Sources/Plaud")
+            )
+        assert any("_Sources" in str(err) for err in exc_info.value.errors)
+
+
+async def test_create_note_folder_refuses_sources_root_case_insensitively(tmp_path: Path):
+    """A folder differing only in case from _Sources is refused the same way,
+    since a case-insensitive notes filesystem would treat them as the same
+    entry on disk."""
+    async with _store(tmp_path) as store:
+        with pytest.raises(ValidationFailed) as exc_info:
+            await store.create_note(
+                CreateNote(title="Bad folder", frontmatter={}, folder="_sources")
+            )
+        assert any("_Sources" in str(err) for err in exc_info.value.errors)
+
+
+async def test_create_note_folder_refuses_inside_sources_case_insensitively(tmp_path: Path):
+    """A folder nested inside a differently-cased _Sources is refused too."""
+    async with _store(tmp_path) as store:
+        with pytest.raises(ValidationFailed) as exc_info:
+            await store.create_note(
+                CreateNote(title="Bad folder", frontmatter={}, folder="_SOURCES/Plaud")
             )
         assert any("_Sources" in str(err) for err in exc_info.value.errors)
 

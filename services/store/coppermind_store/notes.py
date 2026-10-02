@@ -1048,13 +1048,21 @@ def _patch_problems(request: PatchFrontmatter, schema: FrontmatterSchema) -> lis
 
 
 def _check_folder_safe(folder: str, settings: ProductSettings) -> None:
-    """Refuse a folder that would place notes inside _Sources."""
-    sources_folder = sanitize_folder(settings.notes.sources_folder)
+    """Refuse a folder that would place notes inside _Sources.
+
+    Compared casefolded, since a notes filesystem that is case-insensitive
+    (or an Obsidian device that treats "_sources" and "_Sources" as the same
+    entry) would otherwise let a differently-cased folder name through the
+    check but collide with the real _Sources folder on disk.
+    """
+    sources_folder = sanitize_folder(settings.notes.sources_folder).casefold()
     parts = [p for p in folder.split("/") if p]
     for i in range(1, len(parts) + 1):
-        prefix = "/".join(parts[:i])
+        prefix = "/".join(parts[:i]).casefold()
         if prefix == sources_folder or prefix.startswith(f"{sources_folder}/"):
-            raise ValidationFailed([f"folder: cannot place a note inside {sources_folder}"])
+            raise ValidationFailed(
+                [f"folder: cannot place a note inside {settings.notes.sources_folder}"]
+            )
 
 
 def _mirror_columns(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any]:
