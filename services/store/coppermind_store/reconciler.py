@@ -41,7 +41,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import SQLAlchemyError
 
 from coppermind import frontmatter as fm
-from coppermind.db.models import Note
+from coppermind.db.models import Note, RecordedRejection
 from coppermind.db.session import transaction
 from coppermind.logging import get_logger
 from coppermind.settings import ProductSettings
@@ -447,18 +447,23 @@ async def reconcile_once(
         "deferred": scan.deferred,
     }
     now = datetime.now(tz=UTC)
-
     try:
-        from coppermind.db.models import RecordedRejection
-
         async with transaction(store.session_factory) as session:
-            # Clear all collision rejections
+            # Collisions are recomputed on every pass, so the recorded set is
+            # always the one this scan saw; nothing is written into a note.
             await session.execute(
                 sa.delete(RecordedRejection).where(RecordedRejection.kind == "collision")
             )
 
             for note_id, p, kind in collisions_list:
-                session.add(RecordedRejection(kind=kind, reference=note_id, reason=p))
+                session.add(
+                    RecordedRejection(
+                        kind=kind,
+                        reference=note_id,
+                        reason=f"{p} carries this note identity",
+                        created_at=now,
+                    )
+                )
 
             for chunk in _chunks(pending, _MIRROR_BATCH):
                 rows = (await session.scalars(sa.select(Note).where(Note.id.in_(chunk)))).all()

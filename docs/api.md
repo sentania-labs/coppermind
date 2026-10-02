@@ -56,7 +56,7 @@ The story behind these decisions is [architecture.md](architecture.md).
 | `POST /v1/notes/{id}/move` | `notes:move` | Move to another folder; `If-Match` optional | 200, `{path}` | 404; 409 `path_collision`; 422 |
 | `POST /v1/notes/{id}/rename` | `notes:write` | Rename the note's title; `If-Match` required. Links to it are not rewritten, and that gap is deliberate, not a bug | 200, `{path}` | 404; 409 |
 | `DELETE /v1/notes/{id}` | `notes:delete` | Move the note to the trash folder; `If-Match` required | 200, `{trash_path}` | 404; 409 |
-| `GET /v1/notes/{id}/sources` | `notes:read`, `sources:read` | List the sources a note cites | 200 | 404 |
+| `GET /v1/notes/{id}/sources` | `notes:read`, `sources:read` | List the sources a note cites, each as `{id, projection_path}` with the projection page its manifest records | 200, a list | 404 for an unknown note; 503 `metadata_unavailable` |
 | `GET /v1/folders` | `notes:read` | The folder tree with note counts | 200 | |
 
 ## Sources (read-only by design)
@@ -68,7 +68,7 @@ than routed anywhere.
 | Method and path | Scope | What it does | Success | Failure |
 |---|---|---|---|---|
 | `POST /v1/ingest` | `sources:write`, `notes:write` | Create a source bundle and its opening note. The files land first; if the database commit that follows fails, the completed bundle, note, and claim are kept rather than rolled back, and a retry repairs the mirror without duplicating anything | 201 on first creation; 200 `created: false` on an identical replay (the supported way to retry safely, not a failure); 200 with a new `source.revision` when content changed | 422; 413 over the ingest size limit; 503 if the database commit fails after the files are written, resolved by retrying |
-| `GET /v1/sources` | `sources:read` | List sources, filterable by `provider, from, to` | 200 | |
+| `GET /v1/sources` | `sources:read` | List sources newest first, filterable by `provider` and by `from`, `to` (inclusive dates the source was first ingested), paged with `cursor` and `limit` | 200, page of `{id, provider, external_source_id, source_type, origin, current_revision, created_at}` | 422 for a bad filter or cursor; 503 `metadata_unavailable`, never an empty page |
 | `GET /v1/sources/{id}` | `sources:read` | The source manifest | 200 | 404; 410 if tombstoned |
 | `GET /v1/sources/{id}/revisions/{n}/artifacts/{name}` | `sources:read` | Stream one artifact, with its recorded MIME type | 200 | 404 |
 | `GET /v1/sources/{id}/projection` | `sources:read` | The generated Markdown page for the latest revision | 200 `text/markdown` | 404 |
@@ -81,7 +81,7 @@ than routed anywhere.
 | `GET /v1/search` | `search:read` | Full-text search with `q` (websearch syntax), `reviewed_only`, `include_unreviewed`, and the same filters as listing | 200, page including `rank` and a `snippet`; every item carries `reviewed` | 503 `metadata_unavailable` |
 | `POST /v1/attachments` | `notes:write` | Upload a file (multipart); name comes from the filename | 201, `{path, embed: "![[name.png]]", size_bytes}` | 413 over the plan's file-size limit; 409 |
 | `GET /v1/attachments/{name}` | `notes:read` | Download an attachment | 200 | 404 |
-| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}` | 200 | 503 `store_unavailable` |
+| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, rejected_ingests, name_collisions, unparseable_files}`, computed from the metadata mirror and recorded rejections; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false` | 200 | 503 `metadata_unavailable` or `store_unavailable` |
 | `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /openapi.json` | none | Process liveness, real readiness (checks PostgreSQL and the notes filesystem), Prometheus metrics, the generated API contract | 200 | 503 on `/readyz` when a real dependency is down |
 
 ## Admin: pages and their endpoints
@@ -96,6 +96,7 @@ requiring hand-populated configuration.
 | Claim (first boot) | `POST /v1/admin/claim {code, password}` | Set the admin password using the one-time code the store logged and wrote to `/data/state/internal/claim-code` |
 | Login, logout | `POST /v1/admin/login`, `POST /v1/admin/logout` | Password-backed session |
 | Overview | `GET /v1/admin/status` | Counters, helper status and ages, last reconcile, last commit, last sync, failed jobs |
+| Problems | `GET /v1/admin/notes/problems` | Every refused ingest, name collision (several files carrying one note identity) and unparseable file, each linked to the note or source it is about. Computed from the mirror and recorded rejections; nothing is ever written into a note |
 | API keys | `GET/POST /v1/admin/keys`, `DELETE /v1/admin/keys/{key_id}` | Create (secret shown once), list, and revoke keys graphically instead of through the store's command line |
 | Obsidian Sync | `GET /v1/admin/sync`, `POST /v1/admin/sync/connect`, `POST /v1/admin/sync/token`, `POST /v1/admin/sync/pause`, `/resume`, `/disconnect` | Connect with email, password, optional MFA, and a vault name or a pasted token; reveal a token once, with a hint for sealing it into GitOps; pause and resume around bulk operations |
 | Settings | `GET/PUT /v1/admin/settings {if_revision, body}` | Every key in the settings table below, grouped by section |
@@ -125,7 +126,7 @@ The calls it exposes, grouped by what they touch:
   `rules`, `keys`, `admin`), each guarded by the revision the caller last
   read.
 - **Jobs and status:** start a job by kind, check a job's progress, read
-  overall store status.
+  overall store status, list the problems Admin shows.
 
 Typed failures a caller has to handle regardless of which implementation it
 is talking to: not found, a version conflict carrying the current ETag, a

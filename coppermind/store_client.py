@@ -12,6 +12,7 @@ from __future__ import annotations
 from urllib.parse import quote
 
 import httpx
+from pydantic import TypeAdapter
 
 from coppermind.api_keys import ApiKeySet
 from coppermind.store_protocol import (
@@ -54,6 +55,8 @@ from coppermind.store_protocol import (
 )
 
 INTERNAL_PREFIX = "/internal/v1"
+_NOTE_SOURCES = TypeAdapter(list[NoteSourceInfo])
+_PROBLEMS = TypeAdapter(list[ProblemInfo])
 
 
 def _segment(value: str) -> str:
@@ -163,21 +166,17 @@ class HttpStoreClient:
         response = await self._send(
             "GET",
             f"{INTERNAL_PREFIX}/sources",
-            params=query.model_dump(exclude_none=True, by_alias=True),
+            params=query.model_dump(mode="json", by_alias=True, exclude_none=True),
         )
         return Page[SourceSummary].model_validate(response.json())
 
     async def get_note_sources(self, note_id: NoteId) -> list[NoteSourceInfo]:
-        response = await self._send("GET", f"{INTERNAL_PREFIX}/notes/{note_id}/sources")
-        from pydantic import TypeAdapter
-
-        return TypeAdapter(list[NoteSourceInfo]).validate_python(response.json())
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/notes/{_segment(note_id)}/sources")
+        return _NOTE_SOURCES.validate_python(response.json())
 
     async def get_problems(self) -> list[ProblemInfo]:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/problems")
-        from pydantic import TypeAdapter
-
-        return TypeAdapter(list[ProblemInfo]).validate_python(response.json())
+        return _PROBLEMS.validate_python(response.json())
 
     async def get_status(self) -> StatusResponse:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/status")

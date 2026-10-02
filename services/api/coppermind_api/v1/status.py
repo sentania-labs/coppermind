@@ -1,3 +1,11 @@
+"""`/v1/status`: counters computed by the store from its mirror.
+
+Any valid key may read it. Every number comes from the metadata mirror and the
+recorded rejections; nothing here or behind it writes into a note.
+"""
+
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
@@ -5,23 +13,17 @@ from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import StatusResponse, StoreError
 from coppermind_api.auth import Principal
 from coppermind_api.deps import require_scopes, store
+from coppermind_api.errors import failure
 
-router = APIRouter()
+router = APIRouter(prefix="/v1", tags=["status"])
 
 
 @router.get("/status", response_model=StatusResponse)
 async def get_status(
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes()),  # any key
-):
+    _: Principal = Depends(require_scopes()),
+) -> StatusResponse | JSONResponse:
     try:
-        status = await client.get_status()
+        return await client.get_status()
     except StoreError as error:
-        from coppermind.errors import to_http
-
-        status_code, body = to_http(error, surface="public")
-        return JSONResponse(status_code=status_code, content=body)
-
-    # Note: version, capabilities, and per-helper states can be added to the response if needed.
-    # For this task, returning the Store's StatusResponse directly meets the acceptance criteria.
-    return status
+        return failure(error)
