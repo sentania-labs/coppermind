@@ -53,11 +53,10 @@ for these next, still inside milestone 1 unless noted:
 3. **The curator**, which files a reviewed note into the right folder by
    rule, and the **indexer**, which keeps search current (`CU1`, `IX1`,
    milestone 2). Neither has code in the tree yet.
-4. **Admin's remaining pages**: API keys, settings, frontmatter schema,
-   filing rules, jobs, and real overview counters. Until these land, key
-   creation and rotation stay on the store's own command line, which
-   CONTRIBUTING and STATUS both call out as an interim stopgap the graphical
-   pages are meant to retire (`AD3` and the rest of `AD1`/`AD2`).
+4. **Admin's remaining pages**: frontmatter schema, filing rules, jobs, and
+   real overview counters. API keys and settings landed in PR #24
+   (2026-10-01), so key creation and rotation no longer need the store's
+   command line; STATUS.md has the detail (`AD3` and the rest of `AD1`/`AD2`).
 5. **The Helm chart and lab handoff** (milestone 3), not started.
 
 ## Deliberately deferred
@@ -76,6 +75,17 @@ exhaustive; the full one is in [architecture.md](architecture.md)'s
 | Kubernetes and the Helm chart | Milestone 1 and 2 are still being proven on Compose; standing up the chart before the core path works would be building on an unproven foundation | Milestone 3 starts |
 | Single sign-on for Admin | A local claimed password is enough while Admin is reachable only on the lab's loopback network | Admin is ever exposed outside that network |
 | Multi-arch images, per-component versions | The lab runs one architecture; one tag already stamps every image consistently | The org's practice changes, or an arm64 host appears |
+
+## Workflow addendum
+
+The first real workflow was checked against v0.1.0 on a live instance on
+2026-10-01. [roadmap-addendum-2026-10-01.md](roadmap-addendum-2026-10-01.md)
+orders the remaining work by what that workflow needs rather than by the plan,
+records the operator's decisions from that review, and names three increments
+not in the plan above (a drop folder with a deterministic watcher, a digester
+hook, and an optional enricher). The asks are tracked as
+[#28](https://github.com/sentania-labs/coppermind/issues/28). The order in
+"Next, in order" above is unchanged until those asks are triaged.
 
 ## What this does not cover
 
