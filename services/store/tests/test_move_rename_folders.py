@@ -40,10 +40,19 @@ async def test_move_refuses_the_sources_tree(tmp_path: Path, folder: str) -> Non
 
 @pytest.mark.asyncio
 async def test_move_sanitizes_each_folder_component(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    with pytest.raises(Exception) as raised:
-        await store.move_note("note-id", MoveNote(target_folder="Work?/Customer*"), None)
-    assert not isinstance(raised.value, ValidationFailed)
+    from coppermind.store_protocol import CreateNote
+    from services.store.tests.test_move_rename_dated_and_failures import _store as mirrored
+
+    store, mirror = mirrored(tmp_path)
+    created = await store.create_note(CreateNote(title="Note", frontmatter={"type": "note"}))
+
+    moved = await store.move_note(created.id, MoveNote(target_folder="Work?/Customer*"), None)
+
+    assert moved.id == created.id
+    assert moved.path == "Work/Customer/Note.md"
+    assert (store.notes_root / "Work/Customer/Note.md").is_file()
+    assert not (store.notes_root / created.path).exists()
+    assert mirror.rows[created.id]["path"] == "Work/Customer/Note.md"
 
 
 @pytest.mark.asyncio

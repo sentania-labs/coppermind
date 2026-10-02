@@ -60,8 +60,7 @@ async def test_rename_keeps_identity_and_renames_the_file(store: LocalStore) -> 
 
 async def test_move_reports_a_live_path_collision(store: LocalStore) -> None:
     moving = await store.create_note(request("Same"))
-    existing = await store.create_note(request("Same"))
-    await store.move_note(existing.id, MoveNote(target_folder="Work"), None)
+    await store.create_note(request("Same").model_copy(update={"folder": "Work"}))
 
     with pytest.raises(PathCollision):
         await store.move_note(moving.id, MoveNote(target_folder="Work"), None)
@@ -178,3 +177,83 @@ async def test_move_rechecks_bytes_after_collision_query(
         assert moved.content_hash == notes.content_hash(changed)
         assert moved.body.endswith("Device edit\n")
         assert (store.notes_root / moved.path).read_bytes() == changed
+
+
+def meeting(title: str) -> CreateNote:
+    return CreateNote(
+        title=title,
+        body="Agenda\n",
+        frontmatter={
+            "date": "2026-10-02",
+            "type": "meeting",
+            "context": "internal",
+            "reviewed": False,
+            "sources": [],
+            "tags": [],
+        },
+    )
+
+
+async def test_an_api_created_meeting_note_moves_and_renames(
+    store: LocalStore, session_factory
+) -> None:
+    created = await store.create_note(meeting("Architecture Sync"))
+    moved = await store.move_note(created.id, MoveNote(target_folder="Work"), None)
+    renamed = await store.rename_note(
+        created.id, RenameNote(title="Design Review"), moved.content_hash
+    )
+
+    assert moved.path == "Work/2026-10-02 Architecture Sync.md"
+    assert renamed.id == created.id
+    assert renamed.path == "Work/2026-10-02 Design Review.md"
+    async with session_factory() as session:
+        row = await session.get(Note, created.id)
+        assert row is not None
+        assert row.path == renamed.path
+        assert row.content_hash == renamed.content_hash
+
+
+async def test_a_refused_rename_leaves_the_source_and_the_row_unchanged(
+    store: LocalStore, session_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pathlib import Path
+
+    from coppermind_store import notes
+
+    created = await store.create_note(request("Original"))
+    source = store.notes_root / created.path
+    original = source.read_bytes()
+    real_link = notes.os.link
+
+    def raced_link(src: Path, dst: Path) -> None:
+        Path(dst).write_bytes(b"Device wins")
+        real_link(src, dst)
+
+    monkeypatch.setattr(notes.os, "link", raced_link)
+    with pytest.raises(PathCollision):
+        await store.rename_note(created.id, RenameNote(title="Renamed"), created.content_hash)
+    monkeypatch.setattr(notes.os, "link", real_link)
+
+    assert source.read_bytes() == original
+    assert (await store.get_note(created.id)).content_hash == created.content_hash
+    async with session_factory() as session:
+        row = await session.get(Note, created.id)
+        assert row is not None
+        assert (row.path, row.content_hash) == (created.path, created.content_hash)
+        assert (await session.scalars(sa.select(OutboxEvent))).all() == []
+
+
+async def test_a_move_keeps_the_filename_and_a_same_folder_move_is_a_no_op(
+    store: LocalStore,
+) -> None:
+    await store.create_note(request("Same"))
+    second = await store.create_note(request("Same"))
+    assert second.path == "Review/Same (2).md"
+
+    unchanged = await store.move_note(second.id, MoveNote(target_folder="Review"), None)
+    assert unchanged.path == second.path
+    assert unchanged.content_hash == second.content_hash
+
+    moved = await store.move_note(second.id, MoveNote(target_folder="Work"), None)
+    assert moved.path == "Work/Same (2).md"
+    assert (store.notes_root / moved.path).is_file()

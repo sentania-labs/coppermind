@@ -439,7 +439,21 @@ class RenameNote(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    title: str
+    title: str = Field(min_length=1, description="The note's new H1 and filename basis.")
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def normalize_title(cls, value: Any) -> Any:
+        """Refuse a line break or NUL, then collapse whitespace like CreateNote.
+
+        The title becomes the H1 line, so a line break would inject body lines,
+        and PostgreSQL refuses a NUL only after the file has already changed.
+        """
+        if not isinstance(value, str):
+            return value
+        if any(char in value for char in "\r\n\0"):
+            raise ValueError("must be a single line without NUL characters")
+        return " ".join(value.split())
 
 
 class FolderItem(BaseModel):
