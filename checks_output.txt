@@ -1,0 +1,3 @@
+Running make setup...
+uv sync --all-packages
+Resolved 81 packages in 1.80s

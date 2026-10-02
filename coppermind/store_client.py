@@ -35,7 +35,7 @@ from coppermind.store_protocol import (
     PayloadTooLarge,
     PreconditionRequired,
     ProjectionNotPlaced,
-    ReplaceNote,
+    ReplaceNote, TagCount, SchemaResponse,
     SourceArtifactDocument,
     SourceClaimMissing,
     SourceId,
@@ -99,7 +99,7 @@ class HttpStoreClient:
         return Page[NoteSummary].model_validate(response.json())
 
     async def replace_note(
-        self, note_id: NoteId, request: ReplaceNote, if_match: ETag
+        self, note_id: NoteId, request: ReplaceNote, TagCount, SchemaResponse, if_match: ETag
     ) -> NoteDocument:
         response = await self._send(
             "PUT",
@@ -149,6 +149,15 @@ class HttpStoreClient:
             f"{_segment(name)}",
         )
         return SourceArtifactDocument.model_validate(response.json())
+
+    async def get_tag_counts(self) -> list[TagCount]:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/tags")
+        return [TagCount.model_validate(t) for t in response.json()]
+
+    async def get_schema(self) -> SchemaResponse:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/schema")
+        return SchemaResponse.model_validate(response.json())
+
 
     async def get_api_keys(self) -> ApiKeySet:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/api-keys")

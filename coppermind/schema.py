@@ -31,6 +31,12 @@ ROLE_NAMES = (
 )
 
 
+class TagSettings(BaseModel):
+    open: bool = True
+    meanings: dict[str, str] = Field(default_factory=dict)
+    aliases: dict[str, str] = Field(default_factory=dict)
+
+
 class KeyDefinition(BaseModel):
     """One frontmatter key."""
 
@@ -38,13 +44,21 @@ class KeyDefinition(BaseModel):
     kind: KeyKind = "string"
     required: bool = False
     default: Any = None
-    vocabulary: list[str] = Field(default_factory=list)
-    description: str = ""
+    vocabulary: dict[str, str] = Field(default_factory=dict)
+    guidance: str = ""
     # Name of another key that must be present when this key has a value in
     # `required_when_values`. This is how "account is required for a customer
     # note" is expressed as data instead of code.
     required_when: str | None = None
     required_when_values: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def upgrade_vocabulary(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "vocabulary" in data:
+            if isinstance(data["vocabulary"], list):
+                data["vocabulary"] = {v: "" for v in data["vocabulary"]}
+        return data
 
 
 class FrontmatterSchema(BaseModel):
@@ -53,6 +67,7 @@ class FrontmatterSchema(BaseModel):
     schema_version: int = 1
     keys: list[KeyDefinition]
     roles: dict[str, str]
+    tags: TagSettings = Field(default_factory=TagSettings)
 
     @model_validator(mode="after")
     def validate_roles(self) -> Self:
@@ -99,6 +114,21 @@ class FrontmatterSchema(BaseModel):
             if definition.required or _requires(definition, frontmatter)
         }
 
+def normalize_tags_in_place(self, frontmatter: dict[str, Any]) -> None:
+        tags_key = self.roles.get("tags_key")
+        if tags_key in frontmatter:
+            tags = frontmatter[tags_key]
+            if isinstance(tags, list):
+                new_tags = []
+                for tag in tags:
+                    if not isinstance(tag, str):
+                        new_tags.append(tag)
+                        continue
+                    canonical = self.tags.aliases.get(tag, tag)
+                    if canonical not in new_tags:
+                        new_tags.append(canonical)
+                frontmatter[tags_key] = new_tags
+
     def validate_frontmatter(self, frontmatter: dict[str, Any]) -> list[str]:
         """Return a list of human readable problems, empty when the note is valid.
 
@@ -109,8 +139,15 @@ class FrontmatterSchema(BaseModel):
         Unknown keys are not problems. They are passed through untouched, so a
         person can keep their own keys in a note without Coppermind objecting.
         """
-        return [problem for _, problem in self._problems(frontmatter)]
-
+        problems = [problem for _, problem in self._problems(frontmatter)]
+        tags_key = self.roles.get("tags_key")
+        if tags_key in frontmatter and not self.tags.open:
+            tags = frontmatter.get(tags_key)
+            if isinstance(tags, list):
+                for tag in tags:
+                    if isinstance(tag, str) and tag not in self.tags.meanings and tag not in self.tags.aliases:
+                        problems.append(f"{tags_key}: closed tags policy refuses unknown tag {tag!r}")
+        return problems
     def invalid_keys(self, frontmatter: dict[str, Any]) -> list[str]:
         """The names of the keys a note fails on, carrying none of its content.
 
@@ -191,35 +228,35 @@ def default_schema() -> FrontmatterSchema:
                 kind="int",
                 required=True,
                 default=1,
-                description="Note file format version.",
+                guidance="Note file format version.",
             ),
             KeyDefinition(
                 name="id",
                 kind="string",
                 required=True,
-                description="Permanent identifier. Never edit this by hand.",
+                guidance="Permanent identifier. Never edit this by hand.",
             ),
             KeyDefinition(
                 name="date",
                 kind="date",
                 required=True,
-                description="The day the note is about.",
+                guidance="The day the note is about.",
             ),
             KeyDefinition(
                 name="type",
                 kind="enum",
                 required=True,
                 default="note",
-                vocabulary=["meeting", "journal", "reference", "note"],
-                description="What the note is.",
+                vocabulary={"meeting": "", "journal": "", "reference": "", "note": ""},
+                guidance="What the note is.",
             ),
             KeyDefinition(
                 name="context",
                 kind="enum",
                 required=True,
                 default="internal",
-                vocabulary=["customer", "internal", "external", "personal"],
-                description="Where the note files.",
+                vocabulary={"customer": "", "internal": "", "external": "", "personal": ""},
+                guidance="Where the note files.",
             ),
             KeyDefinition(
                 name="account",
@@ -227,28 +264,28 @@ def default_schema() -> FrontmatterSchema:
                 required=False,
                 required_when="context",
                 required_when_values=["customer"],
-                description="Customer name. Required when context is customer.",
+                guidance="Customer name. Required when context is customer.",
             ),
             KeyDefinition(
                 name="reviewed",
                 kind="bool",
                 required=True,
                 default=False,
-                description="Set to true on a device when the note has been read and corrected.",
+                guidance="Set to true on a device when the note has been read and corrected.",
             ),
             KeyDefinition(
                 name="sources",
                 kind="list",
                 required=True,
                 default=[],
-                description="Identifiers of the source bundles this note came from.",
+                guidance="Identifiers of the source bundles this note came from.",
             ),
             KeyDefinition(
                 name="tags",
                 kind="list",
                 required=False,
                 default=[],
-                description="Free tags.",
+                guidance="Free tags.",
             ),
         ],
         roles={

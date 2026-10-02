@@ -69,7 +69,7 @@ from coppermind.store_protocol import (
     Page,
     PatchFrontmatter,
     PathCollision,
-    ReplaceNote,
+    ReplaceNote, TagCount, SchemaResponse,
     SourceArtifactDocument,
     SourceId,
     SourceManifest,
@@ -114,6 +114,29 @@ class LocalStore:
         self._locks: dict[str, asyncio.Lock] = {}
         self._source_locks: dict[str, asyncio.Lock] = {}
 
+    async def get_tag_counts(self) -> list[TagCount]:
+        try:
+            async with self.session_factory() as session:
+                rows = await session.execute(
+                    sa.select(
+                        sa.func.unnest(Note.tags).label("tag"),
+                        sa.func.count().label("count")
+                    )
+                    .where(Note.state != "missing")
+                    .group_by("tag")
+                    .order_by("tag")
+                )
+                return [TagCount(tag=row.tag, count=row.count) for row in rows]
+
+    async def get_schema(self) -> SchemaResponse:
+        state = self.control.store.read("schema")
+        doc = {k: v for k, v in state.body.items() if k != "revision"}
+        tags = await self.get_tag_counts()
+        return SchemaResponse(revision=state.revision, schema_doc=doc, tag_counts=tags)
+
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
+
     async def get_api_keys(self) -> ApiKeySet:
         """Read API key hashes from filesystem-first control state."""
         return self.control.api_keys()
@@ -143,6 +166,7 @@ class LocalStore:
 
         note_id = new_id()
         frontmatter = _build_frontmatter(request, schema, settings, note_id)
+        schema.normalize_tags_in_place(frontmatter)
         problems = schema.validate_frontmatter(frontmatter)
         if problems:
             raise ValidationFailed(problems)
@@ -311,7 +335,7 @@ class LocalStore:
         return Page[NoteSummary](items=page, next_cursor=next_cursor)
 
     async def replace_note(
-        self, note_id: NoteId, request: ReplaceNote, if_match: ETag
+        self, note_id: NoteId, request: ReplaceNote, TagCount, SchemaResponse, if_match: ETag
     ) -> NoteDocument:
         """Replace a note's frontmatter and body if it still hashes to `if_match`.
 
@@ -331,6 +355,7 @@ class LocalStore:
         """
         schema = self.control.schema()
         sent = _replacement_frontmatter(request, schema, note_id)
+        schema.normalize_tags_in_place(sent)
         problems = schema.validate_frontmatter(sent)
         if problems:
             raise ValidationFailed(problems)
@@ -415,6 +440,7 @@ class LocalStore:
             )
             frontmatter, body = fm.parse(data.decode("utf-8"))
 
+            schema.normalize_tags_in_place(frontmatter)
             id_key = schema.role("id_key")
             if frontmatter.get(id_key) != current_frontmatter.get(id_key):
                 raise ValidationFailed([f"{id_key}: the identifier of a note cannot be changed"])
@@ -529,6 +555,8 @@ class LocalStore:
         try:
             adopted_text = fm.fill_missing(text, changes)
             adopted_frontmatter, adopted_body = fm.parse(adopted_text)
+            schema.normalize_tags_in_place(adopted_frontmatter)
+            adopted_text = fm.compose(adopted_frontmatter, adopted_body)
         except fm.FrontmatterError as exc:
             return "invalid", exc.category
         # Everything this file is judged on is decided here, before a
@@ -955,7 +983,7 @@ def _adoption_changes(
 
 
 def _replacement_frontmatter(
-    request: ReplaceNote, schema: FrontmatterSchema, note_id: str
+    request: ReplaceNote, TagCount, SchemaResponse, schema: FrontmatterSchema, note_id: str
 ) -> dict[str, Any]:
     """The caller's frontmatter as sent, carrying the identifier the store keeps.
 

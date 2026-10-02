@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import re
 import secrets
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from datetime import timedelta
 from pathlib import Path
@@ -18,6 +19,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from coppermind.health import Check, Health, Readiness
 from coppermind.logging import configure_logging, get_logger
 from coppermind.settings import ProductSettings, Wiring, read_settings
+from coppermind.store_client import HttpStoreClient
 from coppermind.statefiles import StateStore
 from coppermind_admin import __version__
 from coppermind_admin.auth import (
@@ -223,7 +225,22 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
     def product_settings() -> ProductSettings:
         return read_settings(state)
 
-    app = FastAPI(title="Coppermind Admin", version=version)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        client = HttpStoreClient(
+            settings.store_url,
+            settings.read_internal_token(),
+            timeout=settings.store_timeout_s,
+        )
+        app.state.store = client
+        try:
+            yield
+        finally:
+            await client.aclose()
+
+    app = FastAPI(title="Coppermind Admin", version=version, lifespan=lifespan)
+
     app.state.sessions = sessions or SignedSessions(credentials)
     app.state.control = state
     app.include_router(sync.router(settings))
@@ -410,9 +427,11 @@ required></label><button>Log in</button></form>""",
         )
 
     from coppermind_admin.pages import keys
+    from coppermind_admin.pages import fields
     from coppermind_admin.pages import settings as settings_page
 
     app.include_router(keys.router)
+    app.include_router(fields.router)
     app.include_router(settings_page.router)
     return app
 

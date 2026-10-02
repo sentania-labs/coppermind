@@ -23,7 +23,7 @@ from coppermind.store_protocol import (
     NoteSummary,
     Page,
     PatchFrontmatter,
-    ReplaceNote,
+    ReplaceNote, TagCount, SchemaResponse,
     SourceArtifactDocument,
     SourceManifest,
     StoreError,
@@ -42,6 +42,22 @@ def _store(request: Request) -> LocalStore:
 def _failure(error: StoreError) -> JSONResponse:
     status_code, body = to_http(error, surface="internal")
     return JSONResponse(status_code=status_code, content=body)
+
+
+@router.get("/schema", response_model=SchemaResponse)
+async def get_schema(request: Request) -> SchemaResponse | JSONResponse:
+    try:
+        return await _store(request).get_schema()
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.get("/tags", response_model=list[TagCount])
+async def get_tag_counts(request: Request) -> list[TagCount] | JSONResponse:
+    try:
+        return await _store(request).get_tag_counts()
+    except StoreError as error:
+        return _failure(error)
 
 
 @router.get("/api-keys", response_model=ApiKeySet)
@@ -130,7 +146,7 @@ async def get_note(note_id: str, request: Request) -> Response:
 @router.put("/notes/{note_id}", response_model=NoteDocument)
 async def replace_note(
     note_id: str,
-    payload: ReplaceNote,
+    payload: ReplaceNote, TagCount, SchemaResponse,
     request: Request,
     if_match: Annotated[str | None, Header()] = None,
 ) -> Response:

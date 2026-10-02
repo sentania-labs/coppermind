@@ -497,6 +497,19 @@ class NoteSummary(BaseModel):
     updated_at: datetime
 
 
+
+
+class TagCount(BaseModel):
+    tag: str
+    count: int
+
+
+
+class SchemaResponse(BaseModel):
+    revision: int
+    schema_doc: dict[str, Any]
+    tag_counts: list[TagCount]
+
 class Page[T](BaseModel):
     items: list[T]
     next_cursor: str | None = None
@@ -530,6 +543,10 @@ class Store(Protocol):
     ) -> SourceArtifactDocument: ...
 
     async def get_api_keys(self) -> ApiKeySet: ...
+    async def get_tag_counts(self) -> list[TagCount]: ...
+    async def get_schema(self) -> SchemaResponse: ...
+
+
 
 
 def etag_from_if_match(header: str | None) -> ETag:
