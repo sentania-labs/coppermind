@@ -37,6 +37,7 @@ from coppermind.store_protocol import (
     PayloadTooLarge,
     PreconditionRequired,
     ProjectionNotPlaced,
+    RebuildMetadataResult,
     RenameNote,
     ReplaceNote,
     SourceArtifactDocument,
@@ -183,6 +184,10 @@ class HttpStoreClient:
     async def list_folders(self) -> FolderTree:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/folders")
         return FolderTree.model_validate(response.json())
+
+    async def rebuild_metadata(self) -> RebuildMetadataResult:
+        response = await self._send("POST", f"{INTERNAL_PREFIX}/jobs/rebuild_metadata")
+        return RebuildMetadataResult.model_validate(response.json())
 
     async def is_ready(self) -> bool:
         """True when the store reports itself ready. Never raises."""

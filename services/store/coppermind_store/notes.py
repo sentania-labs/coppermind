@@ -31,6 +31,7 @@ import asyncio
 import base64
 import binascii
 import json
+import os
 import re
 from datetime import UTC, date, datetime
 from math import isfinite
@@ -44,8 +45,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coppermind import frontmatter as fm
 from coppermind.api_keys import ApiKeySet
-from coppermind.atomicio import commit_staged, create_exclusive_bytes, stage_bytes
-from coppermind.db.models import Note
+from coppermind.atomicio import commit_staged, create_exclusive_bytes, stage_bytes, sync_directory
+from coppermind.db.models import Note, OutboxEvent
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
 from coppermind.logging import get_logger
@@ -72,6 +73,8 @@ from coppermind.store_protocol import (
     Page,
     PatchFrontmatter,
     PathCollision,
+    PreconditionRequired,
+    RebuildMetadataResult,
     RenameNote,
     ReplaceNote,
     SourceArtifactDocument,
@@ -96,6 +99,17 @@ AdoptionOutcome = Literal["adopted", "changed", "invalid", "collision"]
 # file the store has decided not to adopt. The cause is content free by
 # construction: a parser category or a schema key name, never note bytes.
 AdoptionResult = tuple[AdoptionOutcome, str]
+
+
+def _move_file(source: Path, target: Path) -> None:
+    """Rename one note durably, refusing an occupied target."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        raise FileExistsError(target)
+    os.rename(source, target)
+    sync_directory(target.parent)
+    if source.parent != target.parent:
+        sync_directory(source.parent)
 
 
 class LocalStore:
@@ -470,22 +484,23 @@ class LocalStore:
         schema = self.control.schema()
         settings = self.control.settings()
 
-        # Validate target folder
+        # Validate the path before sanitizing it. Sanitization must not turn an
+        # escaping request into an accepted in-root path.
+        raw_folder = request.target_folder.replace("\\", "/")
+        raw_parts = raw_folder.split("/")
+        if raw_folder.startswith("/") or any(part in {".", ".."} for part in raw_parts):
+            raise ValidationFailed(["target_folder: must be a relative folder path"])
+
         target_folder = sanitize_folder(request.target_folder)
         if not target_folder:
             raise ValidationFailed(["target_folder: must be a non-empty folder name"])
-        if target_folder.startswith(settings.notes.sources_folder):
+        sources_folder = sanitize_folder(settings.notes.sources_folder)
+        if target_folder.split("/", 1)[0].casefold() == sources_folder.casefold():
             raise ValidationFailed(
                 [
                     f"target_folder: cannot move notes into {settings.notes.sources_folder}",
                 ]
             )
-        # Reject absolute or parent-escaping paths
-        if target_folder.startswith("/"):
-            raise ValidationFailed(["target_folder: must be a relative folder path"])
-        if target_folder.startswith(".."):
-            raise ValidationFailed(["target_folder: must be a relative folder path"])
-
         # Locate the note
         relative, path = await self._locate(note_id)
         async with self._lock_for(note_id):
@@ -535,9 +550,8 @@ class LocalStore:
 
             now = datetime.now(tz=UTC)
             try:
-                # Write the file at the new location (exclusively, to avoid races)
                 new_target = folder_path / f"{stem}{NOTE_SUFFIX}"
-                create_exclusive_bytes(new_target, current_data)
+                _move_file(path, new_target)
             except OSError as exc:
                 raise NotesFilesystemUnavailable(str(exc)) from exc
 
@@ -552,6 +566,14 @@ class LocalStore:
                         state="ok",
                         state_reason=None,
                         updated_at=now,
+                    )
+                )
+                session.add(
+                    OutboxEvent(
+                        event_type="note.moved",
+                        note_id=note_id,
+                        payload={"from_path": relative, "path": new_relative},
+                        created_at=now,
                     )
                 )
 
@@ -583,6 +605,9 @@ class LocalStore:
         the body change; the file's structure and formatting are preserved
         round-trip through the existing ``patch_frontmatter`` path.
         """
+        if if_match is None:
+            raise PreconditionRequired()
+
         schema = self.control.schema()
 
         new_title = sanitize_stem(request.title, fallback="Untitled")
@@ -624,16 +649,42 @@ class LocalStore:
             data = fm.compose(frontmatter, new_body).encode("utf-8")
             data = _terminated(data.decode("utf-8")).encode("utf-8")
 
+            settings = self.control.settings()
+            note_type = frontmatter.get(schema.role("type_key"), "note")
+            note_date = frontmatter.get(schema.role("date_key"))
+            new_stem = note_stem(
+                new_title, note_date=note_date, dated=note_type in settings.notes.dated_types
+            )
+            new_path = path.with_name(f"{new_stem}{NOTE_SUFFIX}")
+            new_relative = new_path.relative_to(self.notes_root).as_posix()
+            if new_path != path and new_path.exists():
+                raise PathCollision(new_relative)
+            if new_path != path:
+                async with self.session_factory() as session:
+                    occupied = (
+                        await session.scalars(
+                            sa.select(Note.id)
+                            .where(Note.path == new_relative, Note.state != "missing")
+                            .limit(1)
+                        )
+                    ).first()
+                if occupied is not None:
+                    raise PathCollision(new_relative)
+
             now = datetime.now(tz=UTC)
             digest = content_hash(data)
             sources = frontmatter.get(schema.role("sources_key"), [])
             try:
+                _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
+                if new_path != path:
+                    _move_file(path, new_path)
                 async with transaction(self.session_factory) as session:
                     await session.execute(
                         sa.update(Note)
                         .where(Note.id == note_id)
                         .values(
                             title=new_title,
+                            path=new_relative,
                             content_hash=digest,
                             size_bytes=len(data),
                             mtime=now,
@@ -644,7 +695,14 @@ class LocalStore:
                             updated_at=now,
                         )
                     )
-                    _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
+                    session.add(
+                        OutboxEvent(
+                            event_type="note.renamed",
+                            note_id=note_id,
+                            payload={"from_path": relative, "path": new_relative},
+                            created_at=now,
+                        )
+                    )
             except BaseException as exc:
                 typed = _metadata_failure(exc)
                 if typed is None:
@@ -653,7 +711,7 @@ class LocalStore:
 
         return NoteDocument(
             id=note_id,
-            path=relative,
+            path=new_relative,
             title=new_title,
             frontmatter=_jsonable(frontmatter),
             body=new_body,
@@ -744,6 +802,12 @@ class LocalStore:
         children = [build_tree(k) for k in top_keys]
 
         return FolderTree(children=children)
+
+    async def rebuild_metadata(self) -> RebuildMetadataResult:
+        """Re-read every note file and rebuild its mirrored metadata."""
+        from coppermind_store.reconciler import reconcile_once
+
+        return RebuildMetadataResult(counts=await reconcile_once(self, full=True))
 
     async def adopt_note(
         self,

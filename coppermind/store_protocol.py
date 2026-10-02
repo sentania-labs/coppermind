@@ -453,6 +453,12 @@ class FolderTree(BaseModel):
     children: list[FolderItem]
 
 
+class RebuildMetadataResult(BaseModel):
+    """The observations made by a metadata rebuild pass."""
+
+    counts: dict[str, int]
+
+
 class NoteDocument(BaseModel):
     """A note as the rest of the system sees it."""
 
@@ -567,6 +573,8 @@ class Store(Protocol):
     ) -> NoteDocument: ...
 
     async def list_folders(self) -> FolderTree: ...
+
+    async def rebuild_metadata(self) -> RebuildMetadataResult: ...
 
 
 def etag_from_if_match(header: str | None) -> ETag:

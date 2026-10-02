@@ -25,6 +25,7 @@ from coppermind.store_protocol import (
     NoteSummary,
     Page,
     PatchFrontmatter,
+    RebuildMetadataResult,
     RenameNote,
     ReplaceNote,
     SourceArtifactDocument,
@@ -200,3 +201,11 @@ async def rename_note(
 @router.get("/folders", response_model=FolderTree)
 async def list_folders(request: Request) -> FolderTree:
     return await _store(request).list_folders()
+
+
+@router.post("/jobs/rebuild_metadata", response_model=RebuildMetadataResult)
+async def rebuild_metadata(request: Request) -> RebuildMetadataResult | JSONResponse:
+    try:
+        return await _store(request).rebuild_metadata()
+    except StoreError as error:
+        return _failure(error)
