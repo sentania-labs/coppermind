@@ -50,7 +50,7 @@ from coppermind.db.models import Note, OutboxEvent
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
 from coppermind.logging import get_logger
-from coppermind.naming import note_stem, sanitize_folder, sanitize_stem, unique_stem
+from coppermind.naming import note_stem, sanitize_folder, unique_stem
 from coppermind.schema import FrontmatterSchema
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
@@ -104,12 +104,27 @@ AdoptionResult = tuple[AdoptionOutcome, str]
 def _move_file(source: Path, target: Path) -> None:
     """Rename one note durably, refusing an occupied target."""
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        raise FileExistsError(target)
-    os.rename(source, target)
+    os.link(source, target)
     sync_directory(target.parent)
-    if source.parent != target.parent:
-        sync_directory(source.parent)
+    source.unlink()
+    sync_directory(source.parent)
+
+
+def _renamed_bytes(current: bytes, title: str) -> tuple[bytes, str]:
+    """Change the first H1 while preserving the original frontmatter bytes."""
+    text = current.decode("utf-8")
+    _, body = fm.split(text)
+    prefix = text[: len(text) - len(body)]
+    lines = body.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if line.startswith("# "):
+            ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            lines[index] = f"# {title}{ending}"
+            break
+    else:
+        lines.insert(0, f"# {title}\n\n")
+    new_body = "".join(lines)
+    return (prefix + new_body).encode("utf-8"), new_body
 
 
 class LocalStore:
@@ -495,7 +510,10 @@ class LocalStore:
         if not target_folder:
             raise ValidationFailed(["target_folder: must be a non-empty folder name"])
         sources_folder = sanitize_folder(settings.notes.sources_folder)
-        if target_folder.split("/", 1)[0].casefold() == sources_folder.casefold():
+        if (
+            target_folder.casefold() == sources_folder.casefold()
+            or target_folder.casefold().startswith(sources_folder.casefold() + "/")
+        ):
             raise ValidationFailed(
                 [
                     f"target_folder: cannot move notes into {settings.notes.sources_folder}",
@@ -517,27 +535,9 @@ class LocalStore:
 
             folder_path = resolve(self.notes_root, target_folder)
 
-            # Check for collision at the intended target path BEFORE
-            # unique_stem deduplicates; a collision must be reported, not
-            # silently renamed.
-            intended_relative = (
-                f"{target_folder}/{stem}{NOTE_SUFFIX}" if target_folder else f"{stem}{NOTE_SUFFIX}"
-            )
-            async with self.session_factory() as session:
-                occupied_result = await session.execute(
-                    sa.select(Note.id)
-                    .where(Note.path == intended_relative, Note.state != "missing")
-                    .limit(1)
-                )
-                occupied = occupied_result.scalars().first()
-            if occupied is not None:
-                raise PathCollision(intended_relative)
-
-            # Deduplicate via unique_stem so the filename is unique on disk.
-            stem = unique_stem(stem, existing_stems(folder_path))
-            new_relative = (
-                f"{target_folder}/{stem}{NOTE_SUFFIX}" if target_folder else f"{stem}{NOTE_SUFFIX}"
-            )
+            new_relative = f"{target_folder}/{stem}{NOTE_SUFFIX}"
+            if stem.casefold() in {name.casefold() for name in existing_stems(folder_path)}:
+                raise PathCollision(new_relative)
             async with self.session_factory() as session:
                 occupied_result = await session.execute(
                     sa.select(Note.id)
@@ -551,18 +551,30 @@ class LocalStore:
             now = datetime.now(tz=UTC)
             try:
                 new_target = folder_path / f"{stem}{NOTE_SUFFIX}"
+                current_data, frontmatter, current_mtime = _bytes_at(
+                    note_id, relative, path, schema, if_match
+                )
                 _move_file(path, new_target)
+                _, body = fm.parse(current_data.decode("utf-8"))
+                title = _title_of(body, new_target)
+            except FileExistsError as exc:
+                raise PathCollision(new_relative) from exc
             except OSError as exc:
                 raise NotesFilesystemUnavailable(str(exc)) from exc
 
-            # Update the mirror row: old path becomes missing, new path is set
+            # Update the same identity and its outbox event in one transaction.
             async with transaction(self.session_factory) as session:
                 await session.execute(
                     sa.update(Note)
                     .where(Note.id == note_id)
                     .values(
                         path=new_relative,
-                        mtime=now,
+                        title=title,
+                        content_hash=content_hash(current_data),
+                        size_bytes=len(current_data),
+                        frontmatter=_jsonable(frontmatter),
+                        **_mirror_columns(frontmatter, schema),
+                        mtime=datetime.fromtimestamp(current_mtime, tz=UTC),
                         state="ok",
                         state_reason=None,
                         updated_at=now,
@@ -594,23 +606,21 @@ class LocalStore:
     async def rename_note(
         self, note_id: NoteId, request: RenameNote, if_match: ETag
     ) -> NoteDocument:
-        """Rename a note's title in its frontmatter.
+        """Rename a note's filename and first H1 heading.
 
         The identifier never changes. Links to this note are not rewritten,
         and that gap is deliberate, not a bug. ``If-Match`` is required
         (not optional): renaming is a full document change so the caller must
         state which version it is editing.
 
-        Only the frontmatter ``title`` field and the ``# heading`` line in
-        the body change; the file's structure and formatting are preserved
-        round-trip through the existing ``patch_frontmatter`` path.
+        The original frontmatter bytes are preserved unchanged.
         """
         if if_match is None:
             raise PreconditionRequired()
 
         schema = self.control.schema()
 
-        new_title = sanitize_stem(request.title, fallback="Untitled")
+        new_title = request.title
 
         relative, path = await self._locate(note_id)
         async with self._lock_for(note_id):
@@ -618,8 +628,7 @@ class LocalStore:
                 note_id, relative, path, schema, if_match
             )
 
-            # Parse, change title, re-serialize
-            frontmatter, body = fm.parse(current_data.decode("utf-8"))
+            frontmatter = current_frontmatter
 
             id_key = schema.role("id_key")
             if frontmatter.get(id_key) != current_frontmatter.get(id_key):
@@ -629,25 +638,7 @@ class LocalStore:
             if problems:
                 raise ValidationFailed(problems)
 
-            # Compose the new file: update the H1 heading.
-            # The first line starting with "# " is the H1 heading.
-            new_body_lines = []
-            heading_updated = False
-            for line in body.splitlines(True):
-                if not heading_updated and line.startswith("# "):
-                    line_ending = "\n" if line.endswith("\n") else ""
-                    new_body_lines.append(f"# {new_title}{line_ending}")
-                    heading_updated = True
-                else:
-                    new_body_lines.append(line)
-            if not heading_updated:
-                new_body = f"# {new_title}\n\n{body}"
-            else:
-                new_body = "".join(new_body_lines)
-            new_body = _terminated(new_body)
-
-            data = fm.compose(frontmatter, new_body).encode("utf-8")
-            data = _terminated(data.decode("utf-8")).encode("utf-8")
+            data, new_body = _renamed_bytes(current_data, new_title)
 
             settings = self.control.settings()
             note_type = frontmatter.get(schema.role("type_key"), "note")
@@ -657,7 +648,11 @@ class LocalStore:
             )
             new_path = path.with_name(f"{new_stem}{NOTE_SUFFIX}")
             new_relative = new_path.relative_to(self.notes_root).as_posix()
-            if new_path != path and new_path.exists():
+            if new_path != path and new_stem.casefold() in {
+                candidate.stem.casefold()
+                for candidate in path.parent.iterdir()
+                if candidate != path and candidate.suffix == NOTE_SUFFIX and is_note_file(candidate)
+            }:
                 raise PathCollision(new_relative)
             if new_path != path:
                 async with self.session_factory() as session:
@@ -677,7 +672,10 @@ class LocalStore:
             try:
                 _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
                 if new_path != path:
-                    _move_file(path, new_path)
+                    try:
+                        _move_file(path, new_path)
+                    except FileExistsError as exc:
+                        raise PathCollision(new_relative) from exc
                 async with transaction(self.session_factory) as session:
                     await session.execute(
                         sa.update(Note)
@@ -740,7 +738,7 @@ class LocalStore:
             relative = note_path.relative_to(notes_root)
             parts = relative.parts[:-1]  # folder parts only
             parent_key = ""
-            folder_note_count = {}
+            folder_note_count: dict[str, int] = {}
 
             # Count this note under every ancestor folder
             for i in range(len(parts)):
@@ -779,7 +777,7 @@ class LocalStore:
         # Build the tree from seen_folders
         top_level: dict[str, str] = {}
         for key, _info in seen_folders.items():
-            parts = key.split("/")
+            parts = tuple(key.split("/"))
             if len(parts) == 1:
                 top_level[parts[0]] = key
             elif len(parts) > 1:
@@ -1152,7 +1150,7 @@ def _replace_if_unchanged(
 
 
 def _bytes_at(
-    note_id: NoteId, relative: str, path: Path, schema: FrontmatterSchema, if_match: ETag
+    note_id: NoteId, relative: str, path: Path, schema: FrontmatterSchema, if_match: ETag | None
 ) -> tuple[bytes, dict[str, Any], float]:
     """The bytes, frontmatter and mtime of a note at `if_match`.
 

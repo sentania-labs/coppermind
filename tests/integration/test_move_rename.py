@@ -89,3 +89,92 @@ async def test_folder_tree_counts_notes_in_descendants(store: LocalStore) -> Non
     customers = next(item for item in work.children if item.path == "Work/Customers")
     assert work.note_count == 2
     assert customers.note_count == 1
+
+
+async def test_move_refuses_an_unmirrored_destination(store: LocalStore) -> None:
+    created = await store.create_note(request("Same"))
+    target = store.notes_root / "Work/Same.md"
+    target.parent.mkdir()
+    target.write_bytes(b"Unmirrored device note")
+    original = (store.notes_root / created.path).read_bytes()
+    with pytest.raises(PathCollision):
+        await store.move_note(created.id, MoveNote(target_folder="Work"), None)
+    assert target.read_bytes() == b"Unmirrored device note"
+    assert (store.notes_root / created.path).read_bytes() == original
+    assert list(target.parent.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("operation", ["move", "rename"])
+async def test_destination_created_during_move_is_never_clobbered(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    from pathlib import Path
+
+    from coppermind_store import notes
+
+    created = await store.create_note(request("Original"))
+    target = store.notes_root / ("Work/Original.md" if operation == "move" else "Review/Renamed.md")
+    real_link = notes.os.link
+    real_rename = notes.os.rename
+
+    def raced_link(source: Path, destination: Path) -> None:
+        destination.write_bytes(b"Device wins")
+        real_link(source, destination)
+
+    def raced_rename(source: Path, destination: Path) -> None:
+        destination.write_bytes(b"Device wins")
+        real_rename(source, destination)
+
+    monkeypatch.setattr(notes.os, "link", raced_link)
+    monkeypatch.setattr(notes.os, "rename", raced_rename)
+    with pytest.raises(PathCollision):
+        if operation == "move":
+            await store.move_note(created.id, MoveNote(target_folder="Work"), None)
+        else:
+            await store.rename_note(created.id, RenameNote(title="Renamed"), created.content_hash)
+    assert target.read_bytes() == b"Device wins"
+    assert (store.notes_root / created.path).exists()
+
+
+async def test_rename_refuses_case_insensitive_stem_collision(store: LocalStore) -> None:
+    created = await store.create_note(request("Original"))
+    target = store.notes_root / "Review/foo.md"
+    target.write_bytes(b"Device note")
+    original = (store.notes_root / created.path).read_bytes()
+    with pytest.raises(PathCollision):
+        await store.rename_note(created.id, RenameNote(title="FOO"), created.content_hash)
+    assert target.read_bytes() == b"Device note"
+    assert (store.notes_root / created.path).read_bytes() == original
+
+
+@pytest.mark.parametrize("conditional", [True, False])
+async def test_move_rechecks_bytes_after_collision_query(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch, conditional: bool
+) -> None:
+    from coppermind_store import notes
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from coppermind.store_protocol import VersionConflict
+
+    created = await store.create_note(request("Original"))
+    path = store.notes_root / created.path
+    changed = path.read_bytes() + b"Device edit\n"
+    original_execute = AsyncSession.execute
+
+    async def execute_with_edit(self, statement, *args, **kwargs):
+        result = await original_execute(self, statement, *args, **kwargs)
+        if str(statement).startswith("SELECT notes.id"):
+            path.write_bytes(changed)
+        return result
+
+    monkeypatch.setattr(AsyncSession, "execute", execute_with_edit)
+    if conditional:
+        with pytest.raises(VersionConflict):
+            await store.move_note(created.id, MoveNote(target_folder="Work"), created.content_hash)
+        assert path.read_bytes() == changed
+        assert not (store.notes_root / "Work/Original.md").exists()
+    else:
+        moved = await store.move_note(created.id, MoveNote(target_folder="Work"), None)
+        assert moved.content_hash == notes.content_hash(changed)
+        assert moved.body.endswith("Device edit\n")
+        assert (store.notes_root / moved.path).read_bytes() == changed

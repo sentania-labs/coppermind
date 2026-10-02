@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from coppermind.api_keys import API_SCOPES, ApiKeySet, create_key
 from coppermind.settings import Wiring
 from coppermind.store_protocol import (
+    FolderItem,
     FolderTree,
     MoveNote,
     NoteDocument,
@@ -54,18 +55,8 @@ KEY_RECORD, KEY = create_key(
 
 FOLDER_TREE = FolderTree(
     children=[
-        {
-            "name": "Review",
-            "path": "Review",
-            "note_count": 1,
-            "children": [],
-        },
-        {
-            "name": "Work",
-            "path": "Work",
-            "note_count": 1,
-            "children": [],
-        },
+        FolderItem(name="Review", path="Review", note_count=1, children=[]),
+        FolderItem(name="Work", path="Work", note_count=1, children=[]),
     ]
 )
 
