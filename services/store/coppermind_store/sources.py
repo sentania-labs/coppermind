@@ -64,7 +64,6 @@ from coppermind.store_protocol import (
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
 from coppermind_store.notes import (
     _as_date,
-    _body_with_heading,
     _build_frontmatter,
     _jsonable,
     _metadata_failure,
@@ -231,9 +230,6 @@ async def _ingest_new(
     )
     relative = f"{folder}/{stem}{NOTE_SUFFIX}" if folder else f"{stem}{NOTE_SUFFIX}"
     note_path = folder_path / f"{stem}{NOTE_SUFFIX}"
-    body = _body_with_heading(note_request.title, note_request.body)
-    note_data = fm.compose(frontmatter, body).encode("utf-8")
-    note_digest = content_hash(note_data)
     source_path = store.sources_root / source_id
     revision_path = source_path / "r0001"
 
@@ -259,6 +255,29 @@ async def _ingest_new(
     try:
         create_exclusive_bytes(claim_path, _external_id_claim(request, source_id))
         claim_created = True
+        # Compute the projection path inside the claim so the wikilink is
+        # available when composing the note file.  This also serialises
+        # concurrent ingests for the same external id.
+        projection_date = _as_date(frontmatter.get(schema.role("date_key"))) or _today(settings)
+        projection_path = await asyncio.to_thread(
+            new_projection_path,
+            store.notes_root,
+            settings,
+            provider=request.source.provider,
+            title=note_request.title,
+            note_date=projection_date,
+        )
+        # The wikilink carries the projection's full path (without the .md
+        # suffix) rather than only its stem: a projection's name is unique
+        # only within its provider folder, so a bare stem can collide with
+        # another provider's page of the same name.
+        projection_link_target = projection_path
+        if projection_link_target.endswith(NOTE_SUFFIX):
+            projection_link_target = projection_link_target[: -len(NOTE_SUFFIX)]
+        trimmed_body = note_request.body.lstrip("\n") if note_request.body else ""
+        body_with_link = f"# {note_request.title}\n\n[[{projection_link_target}]]\n{trimmed_body}"
+        note_data = fm.compose(frontmatter, body_with_link).encode("utf-8")
+        note_digest = content_hash(note_data)
         session.add_all(
             [
                 Source(
@@ -307,14 +326,6 @@ async def _ingest_new(
         revision_path.mkdir(parents=True, exist_ok=False)
         for artifact, data in artifacts:
             create_exclusive_bytes(revision_path / artifact.name, data)
-        projection_path = await asyncio.to_thread(
-            new_projection_path,
-            store.notes_root,
-            settings,
-            provider=request.source.provider,
-            title=note_request.title,
-            note_date=_as_date(frontmatter.get(schema.role("date_key"))) or _today(settings),
-        )
         try:
             projection_created = await asyncio.to_thread(
                 write_projection,

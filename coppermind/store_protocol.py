@@ -224,6 +224,10 @@ class CreateNote(BaseModel):
     title: str = Field(min_length=1, description="The note's H1 and filename basis.")
     body: str = ""
     frontmatter: dict[str, Any] = Field(default_factory=dict)
+    folder: str | None = None
+    """Folder path inside the notes filesystem. Absent means the review folder; present
+    is that folder after sanitising and resolving the same way review_folder is. A folder
+    outside the notes root or into _Sources is refused with a validation error."""
 
     @field_validator("title", mode="before")
     @classmethod
