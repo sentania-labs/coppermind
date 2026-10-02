@@ -1,6 +1,6 @@
 # STATUS
 
-What works against `main` today. Updated 2026-09-15. Every claim here was
+What works against `main` today. Updated 2026-10-01. Every claim here was
 checked against a running compose stack on that date, not against CI alone.
 
 This is the first slice of the build. The shape is deliberately narrow: one
@@ -452,6 +452,14 @@ vertical path proved end to end, then widened.
 Everything below is planned and has a place in the design. None of it exists
 in the tree, so do not read the absence as a decision to leave it out.
 
+- **The curator, the indexer, and search.** Neither the curator (files a
+  reviewed note into the right folder by rule) nor the indexer (keeps the
+  search index current) has any code or image in the tree yet
+  (`docs/architecture.md`'s "moving parts" table says the same). A note
+  marked `reviewed: true` is not filed anywhere by the system; it stays
+  wherever it already is. `GET /v1/search` does not exist, so there is no
+  full-text search over note bodies; listing still filters on frontmatter
+  only.
 - **Remaining source capabilities.** Storing a correction to a field that
   describes a source (`captured_at`, `metadata`, `source_type`, `origin` or an
   artifact `mime_type`) when the artifacts are unchanged is not built; today
@@ -481,20 +489,17 @@ in the tree, so do not read the absence as a decision to leave it out.
   files rather than mirroring one wrongly. The correction belongs in `split`
   and changes every reader of it, `parse`, `patch` and the whole document
   replace, which is why it is its own piece of work.
-- **Obsidian Sync, the curator and the indexer.** No sync, no filing by
-  rules, no search. The helper that will supervise the sync client is under
-  Working, but real sync is still refused there, and its graphical Admin
-  connection is still not built.
 - **History through the API.** Nothing reads Git history or restores a note
   from it yet; `docker compose exec git git -C /data/notes log` is the way in.
 - **Remaining Admin pages.** Schema, filing rules, jobs, source problems and
-  real overview counters are not built. API Keys and Settings now exist at
-  `/admin/keys` and `/admin/settings`: signed-in operators can create and revoke
-  keys and edit every product setting with revision checks. The existing
-  Obsidian Sync connection page remains at `/admin/sync`.
+  real overview counters are not built. API Keys (`/admin/keys`), Settings
+  (`/admin/settings`) and Obsidian Sync (`/admin/sync`) now exist:
+  signed-in operators can create and revoke keys, edit every product setting
+  with revision checks, and guide the sync client through email, password,
+  optional MFA and a vault name.
   `python3 -m coppermind_store.keys` remains a recovery path when Admin is
   unavailable. Rendered-page tests and a local uvicorn/curl run exercise the
-  new pages; compose smoke covers them but requires Docker to execute.
+  pages; compose smoke covers them but requires Docker to execute.
 - **Helm packaging and lab deployment.** The Helm chart and the lab handoff
   are not built. Publishing the existing service images and a release from a
   version tag is in place and is under Working above; no automation pushes a
