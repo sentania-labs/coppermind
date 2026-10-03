@@ -40,25 +40,30 @@ def test_uvicorn_curl_uses_signed_in_csrf_for_keys_and_settings(tmp_path):
         body, code = result.stdout.rsplit("\n", 1)
         return int(code), body
 
-    server = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "coppermind_admin.main:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-            "--no-access-log",
-        ],
-        env=os.environ | {"COPPERMIND_DATA_DIR": str(tmp_path)},
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    log_path = tmp_path / "admin.log"
+    with log_path.open("w") as server_log:
+        server = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "coppermind_admin.main:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--no-access-log",
+            ],
+            env=os.environ | {"COPPERMIND_DATA_DIR": str(tmp_path)},
+            stdout=subprocess.DEVNULL,
+            stderr=server_log,
+        )
     try:
-        for _ in range(100):
-            assert server.poll() is None, "Admin exited before it was ready"
+        # Imports on a cold network filesystem can exceed the old five-second
+        # budget. Require readiness, with a bounded wait and startup diagnostics.
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            assert server.poll() is None, log_path.read_text()
             try:
                 if curl("/healthz")[0] == 200:
                     break
@@ -66,7 +71,7 @@ def test_uvicorn_curl_uses_signed_in_csrf_for_keys_and_settings(tmp_path):
                 pass
             time.sleep(0.05)
         else:
-            pytest.fail("Admin did not become ready")
+            pytest.fail(f"Admin did not become ready: {log_path.read_text()}")
         claim_token = Inputs(curl("/admin/claim")[1]).values["csrf"]
         assert (
             curl(

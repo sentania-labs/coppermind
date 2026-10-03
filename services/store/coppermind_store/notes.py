@@ -66,6 +66,7 @@ from coppermind.store_protocol import (
     NoteId,
     NoteQuery,
     NotesFilesystemUnavailable,
+    NoteSourceInfo,
     NoteState,
     NoteSummary,
     NoteUnparseable,
@@ -74,6 +75,7 @@ from coppermind.store_protocol import (
     PatchFrontmatter,
     PathCollision,
     PreconditionRequired,
+    ProblemInfo,
     RebuildMetadataResult,
     RenameNote,
     ReplaceNote,
@@ -81,6 +83,9 @@ from coppermind.store_protocol import (
     SourceArtifactDocument,
     SourceId,
     SourceManifest,
+    SourceQuery,
+    SourceSummary,
+    StatusResponse,
     StoreError,
     TagCount,
     ValidationFailed,
@@ -243,6 +248,26 @@ class LocalStore:
         from coppermind_store.sources import get_source_artifact
 
         return await get_source_artifact(self, source_id, revision, name)
+
+    async def list_sources(self, query: SourceQuery) -> Page[SourceSummary]:
+        from coppermind_store.sources import list_sources
+
+        return await list_sources(self, query)
+
+    async def get_note_sources(self, note_id: NoteId) -> list[NoteSourceInfo]:
+        from coppermind_store.sources import get_note_sources
+
+        return await get_note_sources(self, note_id)
+
+    async def get_problems(self) -> list[ProblemInfo]:
+        from coppermind_store.sources import get_problems
+
+        return await get_problems(self)
+
+    async def get_status(self) -> StatusResponse:
+        from coppermind_store.sources import get_status
+
+        return await get_status(self)
 
     async def create_note(self, request: CreateNote) -> NoteDocument:
         settings = self.control.settings()

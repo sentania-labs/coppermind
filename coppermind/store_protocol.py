@@ -554,6 +554,44 @@ class Page[T](BaseModel):
     next_cursor: str | None = None
 
 
+class SourceSummary(BaseModel):
+    id: SourceId
+    provider: str
+    external_source_id: str
+    source_type: str
+    origin: str
+    current_revision: int
+    created_at: datetime
+
+
+class SourceQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cursor: str | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+    provider: str | None = Field(default=None, min_length=1)
+    from_date: date_type | None = Field(default=None, alias="from")
+    to_date: date_type | None = Field(default=None, alias="to")
+
+
+class NoteSourceInfo(BaseModel):
+    id: SourceId
+    projection_path: str | None = None
+
+
+class StatusCounters(BaseModel):
+    notes_awaiting_review: int
+    notes_by_state: dict[str, int]
+    sources: int
+    rejected_ingests: int
+    name_collisions: int
+    unparseable_files: int
+
+
+class StatusResponse(BaseModel):
+    counters: StatusCounters
+
+
 class TagCount(BaseModel):
     """How many notes the mirror records carrying one tag."""
 
@@ -603,6 +641,13 @@ class Store(Protocol):
         self, source_id: SourceId, revision: int, name: str
     ) -> SourceArtifactDocument: ...
 
+    async def list_sources(self, query: SourceQuery) -> Page[SourceSummary]: ...
+
+    async def get_note_sources(self, note_id: NoteId) -> list[NoteSourceInfo]: ...
+
+    async def get_status(self) -> StatusResponse: ...
+    async def get_problems(self) -> list[ProblemInfo]: ...
+
     async def get_api_keys(self) -> ApiKeySet: ...
 
     async def move_note(
@@ -634,3 +679,18 @@ def etag_from_if_match(header: str | None) -> ETag:
     if not value:
         raise PreconditionRequired()
     return value
+
+
+class ProblemInfo(BaseModel):
+    """One problem for the Admin dashboard, computed and never written into a note.
+
+    `kind` is `ingest` (a refused ingest), `collision` (several files carry one
+    note identity) or `unparsed` (a file the reconciler could not read).
+    `note_id` and `source_id` name what the problem is about when it exists.
+    """
+
+    kind: str
+    reference: str
+    reason: str
+    note_id: str | None = None
+    source_id: str | None = None
