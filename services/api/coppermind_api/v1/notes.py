@@ -21,12 +21,15 @@ from fastapi.responses import JSONResponse
 from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import (
     CreateNote,
+    FolderTree,
+    MoveNote,
     NoteDocument,
     NoteQuery,
     NoteSourceInfo,
     NoteSummary,
     Page,
     PatchFrontmatter,
+    RenameNote,
     ReplaceNote,
     StoreError,
     etag_from_if_match,
@@ -146,3 +149,54 @@ async def patch_frontmatter(
     return JSONResponse(
         content=note.model_dump(mode="json"), headers={"ETag": f'"{note.content_hash}"'}
     )
+
+
+@router.post("/{note_id}/move", response_model=NoteDocument)
+async def move_note(
+    note_id: str,
+    payload: MoveNote,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:move")),
+    if_match: Annotated[str | None, Header()] = None,
+) -> Response:
+    """Move a note to another folder. The identifier never changes."""
+    try:
+        note = await client.move_note(
+            note_id, payload, etag_from_if_match(if_match) if if_match else None
+        )
+    except StoreError as error:
+        return failure(error)
+    return JSONResponse(
+        content=note.model_dump(mode="json"), headers={"ETag": f'"{note.content_hash}"'}
+    )
+
+
+@router.post("/{note_id}/rename", response_model=NoteDocument)
+async def rename_note(
+    note_id: str,
+    payload: RenameNote,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:write")),
+    if_match: Annotated[str | None, Header()] = None,
+) -> Response:
+    """Rename a note's title. The identifier is not changed.
+
+    ``If-Match`` is required because renaming changes the file content and
+    the caller must state which version they are editing.
+    """
+    try:
+        note = await client.rename_note(note_id, payload, etag_from_if_match(if_match))
+    except StoreError as error:
+        return failure(error)
+    return JSONResponse(
+        content=note.model_dump(mode="json"), headers={"ETag": f'"{note.content_hash}"'}
+    )
+
+
+@router.get("/folders", response_model=FolderTree)
+async def list_folders(
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:read")),
+) -> FolderTree:
+    """Return the folder tree with note counts."""
+    return await client.list_folders()

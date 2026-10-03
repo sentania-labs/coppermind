@@ -22,6 +22,7 @@ from coppermind.store_protocol import (
     IngestRequest,
     NotFound,
     PayloadTooLarge,
+    ReplaceNote,
     SourceQuery,
     ValidationFailed,
 )
@@ -233,7 +234,7 @@ async def test_a_notes_sources_carry_their_projection_paths(store: LocalStore):
         await store.get_note_sources(new_id())
 
 
-async def test_recorded_rejections_survive_only_as_rows(store: LocalStore):
+async def test_recorded_rejections_rebuild_from_disk_without_duplicates(store: LocalStore):
     _set(store, "limits", "ingest_max_bytes", 512)
     oversize = _ingest("rec-big")
     oversize.source.artifacts[0].content = "x" * 1024
@@ -245,3 +246,68 @@ async def test_recorded_rejections_survive_only_as_rows(store: LocalStore):
 
     assert [(row.kind, row.reference) for row in rows] == [("ingest", "plaud:rec-big")]
     assert rows[0].created_at is not None
+
+    before = _snapshot(store.notes_root)
+    async with store.session_factory() as session, session.begin():
+        await session.execute(sa.delete(RecordedRejection))
+    assert (await store.get_status()).counters.rejected_ingests == 0
+
+    # Both an ordinary scan and the explicit rebuild use the durable records.
+    await reconcile_once(store)
+    await store.rebuild_metadata()
+    assert (await store.get_status()).counters.rejected_ingests == 1
+    assert [(p.kind, p.reference, p.reason) for p in await store.get_problems()] == [
+        ("ingest", "plaud:rec-big", "payload_too_large")
+    ]
+    assert _snapshot(store.notes_root) == before
+
+
+async def test_note_sources_follow_replace_and_reconciled_device_edits(store: LocalStore):
+    from coppermind import frontmatter as fm
+
+    first = await store.ingest(_ingest("first"))
+    second = await store.ingest(_ingest("second"))
+    note = await store.get_note(first.note.id)
+    key = store.control.schema().role("sources_key")
+    replaced = await store.replace_note(
+        note.id,
+        ReplaceNote(
+            frontmatter={**note.frontmatter, key: [second.source.id]},
+            body=note.body,
+        ),
+        note.content_hash,
+    )
+    assert [source.id for source in await store.get_note_sources(note.id)] == [second.source.id]
+
+    path = store.notes_root / replaced.path
+    path.write_text(fm.patch(path.read_text(), {key: [first.source.id]}))
+    before = path.read_bytes()
+    await reconcile_once(store, full=True)
+    assert [source.id for source in await store.get_note_sources(note.id)] == [first.source.id]
+    assert path.read_bytes() == before
+
+    path.write_text(fm.patch(path.read_text(), {key: []}))
+    await reconcile_once(store, full=True)
+    assert await store.get_note_sources(note.id) == []
+
+
+async def test_note_sources_use_the_configured_frontmatter_role(store: LocalStore):
+    from coppermind import frontmatter as fm
+
+    result = await store.ingest(_ingest("renamed-role"))
+    current = store.control.store.read("schema")
+    body = dict(current.body)
+    body.pop("revision", None)
+    body["roles"]["sources_key"] = "citations"
+    for definition in body["keys"]:
+        if definition["name"] == "sources":
+            definition["name"] = "citations"
+    store.control.store.write("schema", body, if_revision=current.revision)
+    path = store.notes_root / result.note.path
+    path.write_text(
+        fm.patch(path.read_text(), {"citations": [result.source.id]}, unset=["sources"])
+    )
+    await reconcile_once(store, full=True)
+    assert [source.id for source in await store.get_note_sources(result.note.id)] == [
+        result.source.id
+    ]

@@ -23,8 +23,10 @@ The story behind these decisions is [architecture.md](architecture.md).
   "<human text>", ...extra fields the specific error needs}`.
 - Listing endpoints page with an opaque cursor: `?cursor=<opaque>&limit=<1 to
   200, default 50>`, returning `{"items": [...], "next_cursor": "..." or
-  null}`. The cursor is built from permanent note identities, so paging is
-  stable across a rename that happens between two pages.
+  null}`. Note cursors use permanent identities, so paging is stable across renames.
+  Source cursors use the first-ingested timestamp and source identity. Invalid
+  source cursors, including timestamps without a UTC offset, return 422
+  `validation_error`.
 
 ### Error codes
 
@@ -53,10 +55,10 @@ The story behind these decisions is [architecture.md](architecture.md).
 | `PUT /v1/notes/{id}` | `notes:write` | Replace a note's frontmatter and body. Requires `If-Match` | 200, new `ETag` | 404; 409 `version_conflict`; 428 without `If-Match` |
 | `PATCH /v1/notes/{id}/frontmatter` | `notes:write` | Change named frontmatter fields only, via `{set:{...}, unset:[...]}`. Setting `reviewed: true` is how "mark reviewed" works | 200 | 404; 409; 422 for a value outside the shipped vocabulary |
 | `GET /v1/notes` | `notes:read` | List and filter by `folder, reviewed, type, context, account, from, to, tag, state` | 200, page of summaries | 503 `metadata_unavailable` if PostgreSQL is down, never a silently empty page |
-| `POST /v1/notes/{id}/move` | `notes:move` | Move to another folder; `If-Match` optional | 200, `{path}` | 404; 409 `path_collision`; 422 |
+| `POST /v1/notes/{id}/move` | `notes:move` | Move to another folder, keeping the filename; `If-Match` optional. A folder that differs from an existing one only by case takes its spelling, and the current folder is a no-op | 200, `{path}` | 404; 409 `path_collision`; 422 |
 | `POST /v1/notes/{id}/rename` | `notes:write` | Rename the note's title; `If-Match` required. Links to it are not rewritten, and that gap is deliberate, not a bug | 200, `{path}` | 404; 409 |
 | `DELETE /v1/notes/{id}` | `notes:delete` | Move the note to the trash folder; `If-Match` required | 200, `{trash_path}` | 404; 409 |
-| `GET /v1/notes/{id}/sources` | `notes:read`, `sources:read` | List the sources a note cites, each as `{id, projection_path}` with the projection page its manifest records | 200, a list | 404 for an unknown note; 503 `metadata_unavailable` |
+| `GET /v1/notes/{id}/sources` | `notes:read`, `sources:read` | List the sources a note cites, each as `{id, projection_path}` with the projection page its manifest records; citations come from the current mirrored frontmatter | 200, a list | 404 for an unknown note; 503 `metadata_unavailable` |
 | `GET /v1/folders` | `notes:read` | The folder tree with note counts | 200 | |
 
 ## Sources (read-only by design)
@@ -73,6 +75,12 @@ than routed anywhere.
 | `GET /v1/sources/{id}/revisions/{n}/artifacts/{name}` | `sources:read` | Stream one artifact, with its recorded MIME type | 200 | 404 |
 | `GET /v1/sources/{id}/projection` | `sources:read` | The generated Markdown page for the latest revision | 200 `text/markdown` | 404 |
 | `PUT`, `PATCH`, `DELETE` on any `/v1/sources/**` path | | Always refused; source integrity is a design invariant, not a permission you can be granted | | 405 `method_not_allowed` |
+
+Refused ingests are persisted as individual records under
+`/data/state/rejections/` before their database mirror is updated. Reconciliation
+restores missing rejection rows without duplicating them. Recording is best
+effort when the state filesystem itself is unavailable; the original refusal
+is still returned. Dashboard reads never write into notes.
 
 ## Search, attachments, and status
 

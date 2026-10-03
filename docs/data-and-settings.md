@@ -77,6 +77,17 @@ It is regenerated whenever the revision changes, is excluded from Git
 history (it is derivative, not a person's own writing), and is still synced
 to devices, which is the entire point of it existing.
 
+## Recorded ingest rejections
+
+Each refused ingest recorded by the store has an immutable
+`/data/state/rejections/<record_id>.json` file. Schema version 1 holds
+`record_id` (ULID), `kind: ingest`, `reference` (provider and external ID),
+`reason` (error code), and `created_at` (timestamp with a UTC offset).
+It contains no submitted artifact or note content. Reconciliation restores
+the `recorded_rejections` mirror by record ID, retaining separate attempts
+without duplicating them on later scans. Name collisions are computed anew
+from observed note files on each scan.
+
 ## Settings (`/data/state/settings.yaml`)
 
 Every key below has a working default and a place in Admin to change it.

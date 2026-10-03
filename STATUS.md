@@ -94,7 +94,9 @@ vertical path proved end to end, then widened.
   failing the schema), every note identity two files carry, and every
   unparseable file, each linked to a read-only page for the note or source.
   Collisions are recomputed on every reconciliation pass; refused ingests are
-  recorded as rows. Nothing is ever written into a note for any of them.
+  persisted under `/data/state/rejections/` and mirrored as rows, restored
+  by reconciliation after database loss. Nothing is ever written into a note
+  for any of them.
 - `GET /v1/notes` requires `notes:read` and lists summaries for notes whose
   identifiers and paths are known to the metadata mirror. Filters cover folder,
   reviewed state, type, context, account, inclusive date bounds, tag and file

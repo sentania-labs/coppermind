@@ -48,6 +48,7 @@ from coppermind.settings import ProductSettings
 from coppermind.store_protocol import MetadataUnavailable, NotesFilesystemUnavailable
 from coppermind_store.fs import content_hash, resolve
 from coppermind_store.notes import _jsonable, _mirror_columns, _title_of
+from coppermind_store.rejections import reconcile_rejections
 
 if TYPE_CHECKING:
     from coppermind.schema import FrontmatterSchema
@@ -344,6 +345,7 @@ async def reconcile_once(
     `unidentified` carries what earlier passes learned about files holding no
     identity this store knows, and is replaced with what this pass learned.
     """
+    await reconcile_rejections(store.control.store.state_dir, store.session_factory)
     remembered = {} if unidentified is None else unidentified
     scan_started = datetime.now(tz=UTC)
     by_id = await _mirror_index(store)

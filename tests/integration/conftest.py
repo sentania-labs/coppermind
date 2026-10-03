@@ -68,7 +68,7 @@ async def session_factory(wiring: Wiring) -> AsyncIterator[async_sessionmaker[As
     # temporary directory, so leftover rows would point at files that are gone.
     async with engine.begin() as connection:
         await connection.execute(
-            sa.text("TRUNCATE TABLE notes, sources, recorded_rejections CASCADE")
+            sa.text("TRUNCATE TABLE notes, sources, recorded_rejections, outbox_events CASCADE")
         )
     try:
         yield factory

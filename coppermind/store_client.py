@@ -19,10 +19,12 @@ from coppermind.store_protocol import (
     ArtifactNotFound,
     CreateNote,
     ETag,
+    FolderTree,
     IncompleteRevision,
     IngestRequest,
     IngestResult,
     MetadataUnavailable,
+    MoveNote,
     NoteDocument,
     NoteId,
     NoteQuery,
@@ -38,6 +40,8 @@ from coppermind.store_protocol import (
     PreconditionRequired,
     ProblemInfo,
     ProjectionNotPlaced,
+    RebuildMetadataResult,
+    RenameNote,
     ReplaceNote,
     SourceArtifactDocument,
     SourceClaimMissing,
@@ -181,6 +185,37 @@ class HttpStoreClient:
     async def get_status(self) -> StatusResponse:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/status")
         return StatusResponse.model_validate(response.json())
+
+    async def move_note(
+        self, note_id: NoteId, request: MoveNote, if_match: ETag | None
+    ) -> NoteDocument:
+        headers = {"If-Match": f'"{if_match}"'} if if_match else None
+        response = await self._send(
+            "POST",
+            f"{INTERNAL_PREFIX}/notes/{_segment(note_id)}/move",
+            json=request.model_dump(),
+            headers=headers,
+        )
+        return NoteDocument.model_validate(response.json())
+
+    async def rename_note(
+        self, note_id: NoteId, request: RenameNote, if_match: ETag
+    ) -> NoteDocument:
+        response = await self._send(
+            "POST",
+            f"{INTERNAL_PREFIX}/notes/{_segment(note_id)}/rename",
+            json=request.model_dump(),
+            headers={"If-Match": f'"{if_match}"'},
+        )
+        return NoteDocument.model_validate(response.json())
+
+    async def list_folders(self) -> FolderTree:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/folders")
+        return FolderTree.model_validate(response.json())
+
+    async def rebuild_metadata(self) -> RebuildMetadataResult:
+        response = await self._send("POST", f"{INTERNAL_PREFIX}/jobs/rebuild_metadata")
+        return RebuildMetadataResult.model_validate(response.json())
 
     async def is_ready(self) -> bool:
         """True when the store reports itself ready. Never raises."""

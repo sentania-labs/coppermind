@@ -426,6 +426,57 @@ class PatchFrontmatter(BaseModel):
     unset: list[str] = Field(default_factory=list)
 
 
+class MoveNote(BaseModel):
+    """Move a note to another folder inside the notes filesystem."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_folder: str = Field(..., min_length=1)
+
+
+class RenameNote(BaseModel):
+    """Rename a note's title. Links to it are not rewritten by design."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, description="The note's new H1 and filename basis.")
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def normalize_title(cls, value: Any) -> Any:
+        """Refuse a line break or NUL, then collapse whitespace like CreateNote.
+
+        The title becomes the H1 line, so a line break would inject body lines,
+        and PostgreSQL refuses a NUL only after the file has already changed.
+        """
+        if not isinstance(value, str):
+            return value
+        if any(char in value for char in "\r\n\0"):
+            raise ValueError("must be a single line without NUL characters")
+        return " ".join(value.split())
+
+
+class FolderItem(BaseModel):
+    """One folder in the tree with a note count and children."""
+
+    name: str
+    path: str
+    note_count: int
+    children: list[FolderItem] = Field(default_factory=list)
+
+
+class FolderTree(BaseModel):
+    """The full folder tree with note counts."""
+
+    children: list[FolderItem]
+
+
+class RebuildMetadataResult(BaseModel):
+    """The observations made by a metadata rebuild pass."""
+
+    counts: dict[str, int]
+
+
 class NoteDocument(BaseModel):
     """A note as the rest of the system sees it."""
 
@@ -575,6 +626,18 @@ class Store(Protocol):
     async def get_problems(self) -> list[ProblemInfo]: ...
 
     async def get_api_keys(self) -> ApiKeySet: ...
+
+    async def move_note(
+        self, note_id: NoteId, request: MoveNote, if_match: ETag | None
+    ) -> NoteDocument: ...
+
+    async def rename_note(
+        self, note_id: NoteId, request: RenameNote, if_match: ETag
+    ) -> NoteDocument: ...
+
+    async def list_folders(self) -> FolderTree: ...
+
+    async def rebuild_metadata(self) -> RebuildMetadataResult: ...
 
 
 def etag_from_if_match(header: str | None) -> ETag:

@@ -16,8 +16,10 @@ from coppermind.api_keys import ApiKeySet
 from coppermind.errors import to_http
 from coppermind.store_protocol import (
     CreateNote,
+    FolderTree,
     IngestRequest,
     IngestResult,
+    MoveNote,
     NoteDocument,
     NoteQuery,
     NoteSourceInfo,
@@ -25,6 +27,8 @@ from coppermind.store_protocol import (
     Page,
     PatchFrontmatter,
     ProblemInfo,
+    RebuildMetadataResult,
+    RenameNote,
     ReplaceNote,
     SourceArtifactDocument,
     SourceManifest,
@@ -196,5 +200,51 @@ async def get_status(request: Request) -> StatusResponse | JSONResponse:
 async def get_problems(request: Request) -> list[ProblemInfo] | JSONResponse:
     try:
         return await _store(request).get_problems()
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.post("/notes/{note_id}/move", response_model=NoteDocument)
+async def move_note(
+    note_id: str,
+    payload: MoveNote,
+    request: Request,
+    if_match: Annotated[str | None, Header()] = None,
+) -> Response:
+    try:
+        if_match_val = etag_from_if_match(if_match) if if_match else None
+        note = await _store(request).move_note(note_id, payload, if_match_val)
+    except StoreError as error:
+        return _failure(error)
+    return JSONResponse(
+        content=note.model_dump(mode="json"), headers={"ETag": f'"{note.content_hash}"'}
+    )
+
+
+@router.post("/notes/{note_id}/rename", response_model=NoteDocument)
+async def rename_note(
+    note_id: str,
+    payload: RenameNote,
+    request: Request,
+    if_match: Annotated[str | None, Header()] = None,
+) -> Response:
+    try:
+        note = await _store(request).rename_note(note_id, payload, etag_from_if_match(if_match))
+    except StoreError as error:
+        return _failure(error)
+    return JSONResponse(
+        content=note.model_dump(mode="json"), headers={"ETag": f'"{note.content_hash}"'}
+    )
+
+
+@router.get("/folders", response_model=FolderTree)
+async def list_folders(request: Request) -> FolderTree:
+    return await _store(request).list_folders()
+
+
+@router.post("/jobs/rebuild_metadata", response_model=RebuildMetadataResult)
+async def rebuild_metadata(request: Request) -> RebuildMetadataResult | JSONResponse:
+    try:
+        return await _store(request).rebuild_metadata()
     except StoreError as error:
         return _failure(error)

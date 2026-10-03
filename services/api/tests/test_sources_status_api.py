@@ -391,3 +391,18 @@ def test_the_source_listing_refuses_every_mutation(api, method: str):
 
     assert response.status_code == 405
     assert response.json()["error"] == "method_not_allowed"
+
+
+def test_invalid_source_cursor_uses_the_documented_validation_envelope(api):
+    from coppermind.store_protocol import ValidationFailed
+
+    client, fake = api
+    fake.error = ValidationFailed(["cursor: invalid or expired"])
+    response = client.get(
+        "/v1/sources",
+        params={"cursor": "opaque-invalid-timestamp"},
+        headers=_as(fake, "sources"),
+    )
+    assert response.status_code == 422
+    assert response.json()["error"] == "validation_error"
+    assert "message" in response.json()

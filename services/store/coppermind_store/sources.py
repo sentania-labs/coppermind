@@ -1034,23 +1034,14 @@ def _json_bytes(document: dict[str, Any]) -> bytes:
 
 
 async def _record_rejection(store: LocalStore, request: IngestRequest, reason: str) -> None:
-    """Remember a refused ingest for the Admin problems dashboard.
+    """Persist the refusal first, then best-effort mirror it for Admin."""
+    from coppermind_store.rejections import mirror_rejection, write_rejection
 
-    Best effort: the refusal the caller gets is the answer that matters, so a
-    database that cannot record it never turns a 413 or a 422 into a 503.
-    Nothing is written into a note.
-    """
     reference = f"{request.source.provider}:{request.source.external_source_id}"
     try:
+        record = write_rejection(store.control.store.state_dir, reference, reason)
         async with transaction(store.session_factory) as session:
-            session.add(
-                RecordedRejection(
-                    kind="ingest",
-                    reference=reference,
-                    reason=reason,
-                    created_at=datetime.now(tz=UTC),
-                )
-            )
+            await mirror_rejection(session, record)
     except (SQLAlchemyError, OSError):
         logger.warning("could not record the refused ingest %s (%s)", reference, reason)
 
@@ -1073,7 +1064,10 @@ def _decode_source_cursor(cursor: str) -> tuple[datetime, str]:
             or not isinstance(payload.get("at"), str)
         ):
             raise ValueError
-        return datetime.fromisoformat(payload["at"]), payload["id"]
+        at = datetime.fromisoformat(payload["at"])
+        if at.utcoffset() is None:
+            raise ValueError
+        return at, payload["id"]
     except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
         raise ValidationFailed(["cursor: invalid or expired"]) from exc
 
@@ -1127,16 +1121,20 @@ async def list_sources(store: LocalStore, query: SourceQuery) -> Page[SourceSumm
 
 async def get_note_sources(store: LocalStore, note_id: str) -> list[NoteSourceInfo]:
     """The sources a note cites, each with the projection page its manifest names."""
-    statement = (
-        sa.select(NoteSource.source_id)
-        .where(NoteSource.note_id == note_id)
-        .order_by(NoteSource.created_at, NoteSource.source_id)
-    )
+    sources_key = store.control.schema().role("sources_key")
     try:
         async with store.session_factory() as session:
-            if await session.get(Note, note_id) is None:
+            note = await session.get(Note, note_id)
+            if note is None:
                 raise NotFound(note_id)
-            source_ids = list((await session.scalars(statement)).all())
+            # Frontmatter is mirrored by every note write and reconciliation.
+            # The ingest-time NoteSource rows are not the current citations.
+            citations = note.frontmatter.get(sources_key, [])
+            source_ids = (
+                sorted({value for value in citations if isinstance(value, str)})
+                if isinstance(citations, list)
+                else []
+            )
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
     results = []
