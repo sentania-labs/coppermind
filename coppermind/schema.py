@@ -39,7 +39,9 @@ class KeyDefinition(BaseModel):
     required: bool = False
     default: Any = None
     vocabulary: list[str] = Field(default_factory=list)
+    vocabulary_meanings: dict[str, str] = Field(default_factory=dict)
     description: str = ""
+    guidance: str = ""
     # Name of another key that must be present when this key has a value in
     # `required_when_values`. This is how "account is required for a customer
     # note" is expressed as data instead of code.
@@ -53,6 +55,9 @@ class FrontmatterSchema(BaseModel):
     schema_version: int = 1
     keys: list[KeyDefinition]
     roles: dict[str, str]
+    tags: dict[str, str] = Field(default_factory=dict)
+    tag_aliases: dict[str, str] = Field(default_factory=dict)
+    tag_mode: Literal["open", "closed"] = "open"
 
     @model_validator(mode="after")
     def validate_roles(self) -> Self:
@@ -141,7 +146,28 @@ class FrontmatterSchema(BaseModel):
             problems.extend(
                 (definition.name, problem) for problem in _check_value(definition, value)
             )
+            if (
+                definition.name == self.roles.get("tags_key")
+                and self.tag_mode == "closed"
+                and isinstance(value, list)
+            ):
+                for tag in value:
+                    if tag not in self.tags:
+                        problems.append(
+                            (definition.name, f"{definition.name}: tag {tag!r} is not allowed")
+                        )
         return problems
+
+    def normalize_tags(self, tags: list[str]) -> list[str]:
+        """Normalize tags according to tag_aliases, returning a deduplicated sorted list."""
+        seen = set()
+        normalized = []
+        for tag in tags:
+            tag = self.tag_aliases.get(tag, tag)
+            if tag not in seen:
+                seen.add(tag)
+                normalized.append(tag)
+        return sorted(normalized)
 
 
 def _requires(definition: KeyDefinition, frontmatter: dict[str, Any]) -> bool:

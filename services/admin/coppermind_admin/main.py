@@ -227,6 +227,9 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
     app.state.sessions = sessions or SignedSessions(credentials)
     app.state.control = state
     app.include_router(sync.router(settings))
+    from coppermind_admin.pages import fields
+
+    app.include_router(fields.router)
 
     @app.middleware("http")
     async def protect_forms(request: Request, call_next: RequestResponseEndpoint) -> Response:

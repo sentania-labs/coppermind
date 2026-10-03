@@ -74,6 +74,7 @@ from coppermind.store_protocol import (
     SourceId,
     SourceManifest,
     StoreError,
+    TagCount,
     ValidationFailed,
     VersionConflict,
 )
@@ -309,6 +310,19 @@ class LocalStore:
         page = matched[: query.limit]
         next_cursor = _encode_note_cursor(page[-1].id) if len(matched) > query.limit else None
         return Page[NoteSummary](items=page, next_cursor=next_cursor)
+
+    async def list_tags(self) -> list[TagCount]:
+        try:
+            async with self.session_factory() as session:
+                rows = await session.execute(
+                    sa.text(
+                        "SELECT tag, COUNT(*) as note_count FROM notes, unnest(tags) AS tag "
+                        "WHERE state != 'missing' GROUP BY tag ORDER BY tag"
+                    )
+                )
+                return [TagCount(tag=row.tag, count=row.note_count) for row in rows]
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
 
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag
@@ -938,7 +952,7 @@ def _adoption_changes(
     available[id_key] = note_id
     available.setdefault(schema.role("schema_version_key"), 1)
     available.setdefault(schema.role("date_key"), _today(settings))
-    changes = {id_key: note_id} if frontmatter.get(id_key) is None else {}
+    changes: dict[str, Any] = {id_key: note_id} if frontmatter.get(id_key) is None else {}
     effective = {**frontmatter, **changes}
     while True:
         added = False
@@ -951,6 +965,11 @@ def _adoption_changes(
             effective[name] = available[name]
             added = True
         if not added:
+            tags_key = schema.role("tags_key")
+            if tags_key in frontmatter and isinstance(frontmatter[tags_key], list):
+                normalized = schema.normalize_tags(frontmatter[tags_key])
+                if normalized != frontmatter[tags_key]:
+                    changes[tags_key] = normalized
             return changes
 
 
@@ -995,10 +1014,16 @@ def _with_kinds(values: dict[str, Any], schema: FrontmatterSchema) -> dict[str, 
     whole document or single key, adds quotes to it.
     """
     kinds = {definition.name: definition.kind for definition in schema.keys}
-    return {
+    result = {
         key: (_as_date(value) or value) if kinds.get(key) == "date" else value
         for key, value in values.items()
     }
+    tags_key = schema.role("tags_key")
+    tags_val = result.get(tags_key)
+    if isinstance(tags_val, list):
+        tags: list[str] = [str(t) for t in tags_val]
+        result[tags_key] = schema.normalize_tags(tags)
+    return result
 
 
 def _ordered(values: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any]:

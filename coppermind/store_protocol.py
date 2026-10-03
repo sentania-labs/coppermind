@@ -502,6 +502,11 @@ class Page[T](BaseModel):
     next_cursor: str | None = None
 
 
+class TagCount(BaseModel):
+    tag: str
+    count: int
+
+
 class Store(Protocol):
     """What the API, the curator and the indexer are allowed to ask for."""
 
@@ -510,6 +515,8 @@ class Store(Protocol):
     async def get_note(self, note_id: NoteId) -> NoteDocument: ...
 
     async def list_notes(self, query: NoteQuery) -> Page[NoteSummary]: ...
+
+    async def list_tags(self) -> list[TagCount]: ...
 
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag

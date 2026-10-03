@@ -72,6 +72,15 @@ async def list_notes(
         return _failure(error)
 
 
+@router.get("/tags")
+async def list_tags(request: Request) -> Response:
+    try:
+        tags = await _store(request).list_tags()
+        return JSONResponse(content={"tags": [tag.model_dump(mode="json") for tag in tags]})
+    except StoreError as error:
+        return _failure(error)
+
+
 @router.post(
     "/ingest",
     status_code=201,
