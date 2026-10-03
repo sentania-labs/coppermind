@@ -329,3 +329,19 @@ def test_fill_missing_refuses_a_blank_property_behind_unreadable_delimiters():
         fm.fill_missing(note, {"date": "2026-09-15"})
 
     assert raised.value.category == "unsupported_line_endings"
+
+
+def test_replacing_a_value_in_place_keeps_every_other_byte():
+    text = (
+        "---\r\nid: x # mine\r\ntags:\r\n    - a\r\n    - a\r\nreviewed: false\r\n---\r\nbody\r\n"
+    )
+    assert fm.replace_value_in_place(text, "tags", ["a"]) == (
+        "---\r\nid: x # mine\r\ntags:\r\n    - a\r\nreviewed: false\r\n---\r\nbody\r\n"
+    )
+
+
+def test_replacing_a_value_in_place_refuses_what_it_cannot_do_exactly():
+    assert fm.replace_value_in_place("# no block\n", "tags", ["a"]) is None
+    assert fm.replace_value_in_place("---\nid: x\n---\n", "tags", ["a"]) is None
+    assert fm.replace_value_in_place("---\ntags: [a] # why\n---\n", "tags", ["b"]) is None
+    assert fm.replace_value_in_place("---\n{tags: [a], id: x}\n---\n", "tags", ["b"]) is None

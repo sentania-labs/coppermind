@@ -15,6 +15,7 @@ from coppermind.api_keys import ApiKeySet
 from coppermind.schema import FrontmatterSchema, default_schema
 from coppermind.settings import ProductSettings, default_settings, read_settings
 from coppermind.statefiles import StateStore
+from coppermind.store_protocol import SchemaDocument
 
 
 class ControlState:
@@ -31,9 +32,16 @@ class ControlState:
         return read_settings(self.store)
 
     def schema(self) -> FrontmatterSchema:
-        body = dict(self.store.read("schema").body)
+        return self.schema_document().frontmatter_schema
+
+    def schema_document(self) -> SchemaDocument:
+        """The schema and the revision of the file it came from, in one read."""
+        state = self.store.read("schema")
+        body = dict(state.body)
         body.pop("revision", None)
-        return FrontmatterSchema.model_validate(body)
+        return SchemaDocument(
+            revision=state.revision, frontmatter_schema=FrontmatterSchema.model_validate(body)
+        )
 
     def api_keys(self) -> ApiKeySet:
         return ApiKeySet.model_validate(self.store.read("keys").body)

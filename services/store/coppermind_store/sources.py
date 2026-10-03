@@ -218,7 +218,7 @@ async def _ingest_new(
         frontmatter={**request.note.frontmatter, schema.role("sources_key"): [source_id]},
     )
     frontmatter = _build_frontmatter(note_request, schema, settings, note_id)
-    problems = schema.validate_frontmatter(frontmatter)
+    problems = schema.validate_frontmatter(frontmatter) + schema.tag_problems(frontmatter)
     if problems:
         raise ValidationFailed(problems)
 

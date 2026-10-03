@@ -43,6 +43,17 @@ tags: []
 | Duplicate ID | The path the mirror last recorded keeps the ID; the other file gets a fresh one written back after it settles |
 | ID assignment for a device-created file | The reconciler writes the ID, and any other frontmatter the schema requires, once the file has gone 30 seconds (configurable) without an mtime change, using a compare-and-swap on the content hash so a still-in-progress edit is never interrupted |
 
+**Field guidance and tags** live in the same `schema.yaml`. Each key may
+carry `vocabulary_meanings` (a one-line meaning per allowed value) and a
+`guidance` paragraph for whoever fills it in; neither changes validation.
+Three top-level entries make tags data: `tags` (each listed tag and its
+meaning), `tag_aliases` (an alias and the canonical tag it is replaced by on
+every write), and `tag_mode`, `open` by default (any tag accepted and counted)
+or `closed` (a write that adds an unlisted tag is refused). Admin's Fields and
+tags page edits all of it under the file's revision and shows every tag in use
+with its note count from the mirror. Merging or renaming a tag across existing
+notes is a later job, not part of this page.
+
 **Key roles**, not literal names, are what code asks for: `id_key`,
 `date_key`, `type_key`, `context_key`, `account_key`, `reviewed_key`,
 `sources_key`, `tags_key`. Renaming a frontmatter key (`account` to

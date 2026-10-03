@@ -23,6 +23,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from coppermind.api_keys import ApiKeySet
+from coppermind.schema import FrontmatterSchema
 
 # `"sha256:<hex of the file bytes>"`. A move does not change it; a change to
 # the bytes, including a frontmatter write back, does.
@@ -553,6 +554,24 @@ class Page[T](BaseModel):
     next_cursor: str | None = None
 
 
+class TagCount(BaseModel):
+    """How many notes the mirror records carrying one tag."""
+
+    tag: str
+    count: int
+
+
+class SchemaDocument(BaseModel):
+    """The frontmatter schema the store enforces, and the revision of its file.
+
+    Read from `/data/state/schema.yaml` by the store, which owns that file, so a
+    caller without the state volume (the API) sees the rules writes are held to.
+    """
+
+    revision: int
+    frontmatter_schema: FrontmatterSchema
+
+
 class Store(Protocol):
     """What the API, the curator and the indexer are allowed to ask for."""
 
@@ -561,6 +580,10 @@ class Store(Protocol):
     async def get_note(self, note_id: NoteId) -> NoteDocument: ...
 
     async def list_notes(self, query: NoteQuery) -> Page[NoteSummary]: ...
+
+    async def list_tags(self) -> list[TagCount]: ...
+
+    async def get_schema(self) -> SchemaDocument: ...
 
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag
