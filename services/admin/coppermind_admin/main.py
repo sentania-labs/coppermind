@@ -348,7 +348,8 @@ required></label><button>Log in</button></form>""",
                 f"""<h1>Coppermind Admin</h1><p>You are signed in.</p>
 {counters}
 <p><a href="/admin/keys">API Keys</a> | <a href="/admin/settings">Settings</a> |
-<a href="/admin/fields">Fields and tags</a> | <a href="/admin/sync">Obsidian Sync</a> | <a href="/admin/problems">Problems</a></p>
+<a href="/admin/fields">Fields and tags</a> | <a href="/admin/sync">Obsidian Sync</a> |
+<a href="/admin/problems">Problems</a></p>
 <form method="post" action="/v1/admin/logout"><button>Log out</button></form>""",
             )
         )
