@@ -28,6 +28,7 @@ from coppermind.store_protocol import (
     RebuildMetadataResult,
     RenameNote,
     ReplaceNote,
+    SchemaDocument,
     SourceArtifactDocument,
     SourceManifest,
     StoreError,
@@ -72,6 +73,23 @@ async def list_notes(
 ) -> Page[NoteSummary] | JSONResponse:
     try:
         return await _store(request).list_notes(query)
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.get("/tags")
+async def list_tags(request: Request) -> Response:
+    try:
+        tags = await _store(request).list_tags()
+    except StoreError as error:
+        return _failure(error)
+    return JSONResponse(content={"tags": [tag.model_dump(mode="json") for tag in tags]})
+
+
+@router.get("/schema", response_model=SchemaDocument)
+async def get_schema(request: Request) -> SchemaDocument | JSONResponse:
+    try:
+        return await _store(request).get_schema()
     except StoreError as error:
         return _failure(error)
 

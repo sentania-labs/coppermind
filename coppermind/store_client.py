@@ -40,6 +40,7 @@ from coppermind.store_protocol import (
     RebuildMetadataResult,
     RenameNote,
     ReplaceNote,
+    SchemaDocument,
     SourceArtifactDocument,
     SourceClaimMissing,
     SourceId,
@@ -48,6 +49,7 @@ from coppermind.store_protocol import (
     SourcesFilesystemUnavailable,
     StoreError,
     StoreUnavailable,
+    TagCount,
     ValidationFailed,
     VersionConflict,
 )
@@ -101,6 +103,14 @@ class HttpStoreClient:
             params=query.model_dump(mode="json", by_alias=True, exclude_none=True),
         )
         return Page[NoteSummary].model_validate(response.json())
+
+    async def list_tags(self) -> list[TagCount]:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/tags")
+        return [TagCount.model_validate(item) for item in response.json()["tags"]]
+
+    async def get_schema(self) -> SchemaDocument:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/schema")
+        return SchemaDocument.model_validate(response.json())
 
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag
