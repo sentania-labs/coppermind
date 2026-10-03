@@ -286,8 +286,9 @@ def test_a_bad_rename_title_is_422_over_the_wire_before_the_file_changes(
     path = store.notes_root / "Review/Keep.md"
     original = path.read_bytes()
 
-    with TestClient(create_app(wiring)) as client:
-        client.app.state.store = store
+    app = create_app(wiring)
+    app.state.store = store
+    with TestClient(app) as client:
         response = client.post(
             f"/internal/v1/notes/{note_id}/rename",
             headers={
