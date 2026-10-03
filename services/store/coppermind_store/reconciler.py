@@ -41,13 +41,14 @@ import sqlalchemy as sa
 from sqlalchemy.exc import SQLAlchemyError
 
 from coppermind import frontmatter as fm
-from coppermind.db.models import Note
+from coppermind.db.models import Note, RecordedRejection
 from coppermind.db.session import transaction
 from coppermind.logging import get_logger
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import MetadataUnavailable, NotesFilesystemUnavailable
 from coppermind_store.fs import content_hash, resolve
 from coppermind_store.notes import _jsonable, _mirror_columns, _title_of
+from coppermind_store.rejections import reconcile_rejections
 
 if TYPE_CHECKING:
     from coppermind.schema import FrontmatterSchema
@@ -344,6 +345,7 @@ async def reconcile_once(
     `unidentified` carries what earlier passes learned about files holding no
     identity this store knows, and is replaced with what this pass learned.
     """
+    await reconcile_rejections(store.control.store.state_dir, store.session_factory)
     remembered = {} if unidentified is None else unidentified
     scan_started = datetime.now(tz=UTC)
     by_id = await _mirror_index(store)
@@ -371,7 +373,8 @@ async def reconcile_once(
     )
     remembered.clear()
     remembered.update(scan.unidentified)
-    observations, duplicates = _choose_observations(scan, by_id)
+    collisions_list: list[tuple[str, str, str]] = []
+    observations, duplicates = _choose_observations(scan, by_id, collisions_list)
     adopted = 0
     rejected = scan.unidentified_unparsed
     unwritable = 0
@@ -448,6 +451,22 @@ async def reconcile_once(
     now = datetime.now(tz=UTC)
     try:
         async with transaction(store.session_factory) as session:
+            # Collisions are recomputed on every pass, so the recorded set is
+            # always the one this scan saw; nothing is written into a note.
+            await session.execute(
+                sa.delete(RecordedRejection).where(RecordedRejection.kind == "collision")
+            )
+
+            for note_id, p, kind in collisions_list:
+                session.add(
+                    RecordedRejection(
+                        kind=kind,
+                        reference=note_id,
+                        reason=f"{p} carries this note identity",
+                        created_at=now,
+                    )
+                )
+
             for chunk in _chunks(pending, _MIRROR_BATCH):
                 rows = (await session.scalars(sa.select(Note).where(Note.id.in_(chunk)))).all()
                 for row in rows:
@@ -827,7 +846,7 @@ def _identity_from_broken(text: str | None, schema: FrontmatterSchema) -> str | 
 
 
 def _choose_observations(
-    scan: ScanResult, by_id: dict[str, MirrorEntry]
+    scan: ScanResult, by_id: dict[str, MirrorEntry], collisions: list[tuple[str, str, str]]
 ) -> tuple[dict[str, Observation], int]:
     """Pick the one file that speaks for each identity this scan saw.
 
@@ -845,6 +864,12 @@ def _choose_observations(
             # file produced no observation of its own, so its recorded path is
             # named here to report both sides of the collision.
             duplicates += 1
+            collisions.extend(
+                [
+                    (note_id, p, "collision")
+                    for p in [by_id[note_id].path, *(item.path for item in candidates)]
+                ]
+            )
             _unresolved(note_id, [by_id[note_id].path, *(item.path for item in candidates)])
             continue
         # A file that named this identity itself outranks one that only
@@ -859,6 +884,7 @@ def _choose_observations(
             chosen[note_id] = ranked[0]
         else:
             duplicates += 1
+            collisions.extend([(note_id, p, "collision") for p in [item.path for item in ranked]])
             _unresolved(note_id, [item.path for item in ranked])
     return chosen, duplicates
 

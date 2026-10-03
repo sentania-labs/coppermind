@@ -12,6 +12,7 @@ from __future__ import annotations
 from urllib.parse import quote
 
 import httpx
+from pydantic import TypeAdapter
 
 from coppermind.api_keys import ApiKeySet
 from coppermind.store_protocol import (
@@ -28,6 +29,7 @@ from coppermind.store_protocol import (
     NoteId,
     NoteQuery,
     NotesFilesystemUnavailable,
+    NoteSourceInfo,
     NoteSummary,
     NoteUnparseable,
     NotFound,
@@ -36,6 +38,7 @@ from coppermind.store_protocol import (
     PathCollision,
     PayloadTooLarge,
     PreconditionRequired,
+    ProblemInfo,
     ProjectionNotPlaced,
     RebuildMetadataResult,
     RenameNote,
@@ -46,7 +49,10 @@ from coppermind.store_protocol import (
     SourceId,
     SourceManifest,
     SourceNotFound,
+    SourceQuery,
     SourcesFilesystemUnavailable,
+    SourceSummary,
+    StatusResponse,
     StoreError,
     StoreUnavailable,
     TagCount,
@@ -55,6 +61,8 @@ from coppermind.store_protocol import (
 )
 
 INTERNAL_PREFIX = "/internal/v1"
+_NOTE_SOURCES = TypeAdapter(list[NoteSourceInfo])
+_PROBLEMS = TypeAdapter(list[ProblemInfo])
 
 
 def _segment(value: str) -> str:
@@ -167,6 +175,26 @@ class HttpStoreClient:
     async def get_api_keys(self) -> ApiKeySet:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/api-keys")
         return ApiKeySet.model_validate(response.json())
+
+    async def list_sources(self, query: SourceQuery) -> Page[SourceSummary]:
+        response = await self._send(
+            "GET",
+            f"{INTERNAL_PREFIX}/sources",
+            params=query.model_dump(mode="json", by_alias=True, exclude_none=True),
+        )
+        return Page[SourceSummary].model_validate(response.json())
+
+    async def get_note_sources(self, note_id: NoteId) -> list[NoteSourceInfo]:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/notes/{_segment(note_id)}/sources")
+        return _NOTE_SOURCES.validate_python(response.json())
+
+    async def get_problems(self) -> list[ProblemInfo]:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/problems")
+        return _PROBLEMS.validate_python(response.json())
+
+    async def get_status(self) -> StatusResponse:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/status")
+        return StatusResponse.model_validate(response.json())
 
     async def move_note(
         self, note_id: NoteId, request: MoveNote, if_match: ETag | None

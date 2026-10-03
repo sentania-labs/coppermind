@@ -22,15 +22,20 @@ from coppermind.store_protocol import (
     MoveNote,
     NoteDocument,
     NoteQuery,
+    NoteSourceInfo,
     NoteSummary,
     Page,
     PatchFrontmatter,
+    ProblemInfo,
     RebuildMetadataResult,
     RenameNote,
     ReplaceNote,
     SchemaDocument,
     SourceArtifactDocument,
     SourceManifest,
+    SourceQuery,
+    SourceSummary,
+    StatusResponse,
     StoreError,
     etag_from_if_match,
 )
@@ -181,6 +186,40 @@ async def patch_frontmatter(
     return JSONResponse(
         content=note.model_dump(mode="json"), headers={"ETag": f'"{note.content_hash}"'}
     )
+
+
+@router.get("/sources", response_model=Page[SourceSummary])
+async def list_sources(
+    request: Request, query: Annotated[SourceQuery, Query()]
+) -> Page[SourceSummary] | JSONResponse:
+    try:
+        return await _store(request).list_sources(query)
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.get("/notes/{note_id}/sources", response_model=list[NoteSourceInfo])
+async def get_note_sources(note_id: str, request: Request) -> list[NoteSourceInfo] | JSONResponse:
+    try:
+        return await _store(request).get_note_sources(note_id)
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.get("/status", response_model=StatusResponse)
+async def get_status(request: Request) -> StatusResponse | JSONResponse:
+    try:
+        return await _store(request).get_status()
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.get("/problems", response_model=list[ProblemInfo])
+async def get_problems(request: Request) -> list[ProblemInfo] | JSONResponse:
+    try:
+        return await _store(request).get_problems()
+    except StoreError as error:
+        return _failure(error)
 
 
 @router.post("/notes/{note_id}/move", response_model=NoteDocument)

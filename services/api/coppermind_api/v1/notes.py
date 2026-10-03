@@ -25,6 +25,7 @@ from coppermind.store_protocol import (
     MoveNote,
     NoteDocument,
     NoteQuery,
+    NoteSourceInfo,
     NoteSummary,
     Page,
     PatchFrontmatter,
@@ -84,6 +85,19 @@ async def get_note(
     return JSONResponse(
         content=note.model_dump(mode="json"), headers={"ETag": f'"{note.content_hash}"'}
     )
+
+
+@router.get("/{note_id}/sources", response_model=list[NoteSourceInfo])
+async def get_note_sources(
+    note_id: str,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:read", "sources:read")),
+) -> list[NoteSourceInfo] | JSONResponse:
+    """The sources a note cites, each with the path of its projection page."""
+    try:
+        return await client.get_note_sources(note_id)
+    except StoreError as error:
+        return failure(error)
 
 
 @router.put("/{note_id}", response_model=NoteDocument)

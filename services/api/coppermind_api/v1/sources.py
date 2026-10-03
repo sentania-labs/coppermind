@@ -2,16 +2,37 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, Response
 
 from coppermind.store_client import HttpStoreClient
-from coppermind.store_protocol import SourceManifest, StoreError
+from coppermind.store_protocol import (
+    Page,
+    SourceManifest,
+    SourceQuery,
+    SourceSummary,
+    StoreError,
+)
 from coppermind_api.auth import Principal
 from coppermind_api.deps import require_scopes, store
 from coppermind_api.errors import failure
 
 router = APIRouter(prefix="/v1/sources", tags=["sources"])
+
+
+@router.get("", response_model=Page[SourceSummary])
+async def list_sources(
+    query: Annotated[SourceQuery, Query()],
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("sources:read")),
+) -> Page[SourceSummary] | JSONResponse:
+    """List mirrored sources, newest first, filtered by `provider`, `from` and `to`."""
+    try:
+        return await client.list_sources(query)
+    except StoreError as error:
+        return failure(error)
 
 
 @router.get("/{source_id}", response_model=SourceManifest)

@@ -18,7 +18,8 @@ vertical path proved end to end, then widened.
   returns to the Claim page rather than reporting a bad password. Password
   login creates an expiring HMAC-signed cookie with the shipped 12-hour
   default and no database session state. The protected overview links to API
-  Keys, Settings and Obsidian Sync; its counters belong to later increments.
+  Keys, Settings, Obsidian Sync and Problems, and shows the store's counters
+  (see `GET /v1/status` below), or a plain notice when the store cannot answer.
   Logout clears the cookie from that browser and the protected
   page redirects to Login again; because the session is the signed cookie and
   not a row, an issued token stays valid until its expiry no matter where Log
@@ -79,6 +80,23 @@ vertical path proved end to end, then widened.
   note.
 - `GET /v1/notes/{id}` returns the note as a document, carrying
   `ETag: "sha256:<hash of the file bytes>"`.
+- `GET /v1/sources` (`sources:read`) lists mirrored sources newest first,
+  filtered by `provider` and by `from` and `to` on the date a source was first
+  ingested, paged by an opaque cursor with the same limits as note listing.
+  `GET /v1/notes/{id}/sources` (`notes:read` and `sources:read`) lists the
+  sources a note cites with the projection path each manifest records, and
+  answers 404 for an unknown note. `GET /v1/status` (any key) answers the
+  counters: notes awaiting review (directly in the configured
+  `notes.review_folder` with `reviewed: false`), notes by state, sources,
+  rejected ingests, name collisions and unparseable files. Only the counters
+  are live; version, capabilities and helper ages are not yet in it.
+- Admin's Problems page lists every refused ingest (over the size limit or
+  failing the schema), every note identity two files carry, and every
+  unparseable file, each linked to a read-only page for the note or source.
+  Collisions are recomputed on every reconciliation pass; refused ingests are
+  persisted under `/data/state/rejections/` and mirrored as rows, restored
+  by reconciliation after database loss. Nothing is ever written into a note
+  for any of them.
 - `GET /v1/notes` requires `notes:read` and lists summaries for notes whose
   identifiers and paths are known to the metadata mirror. Filters cover folder,
   reviewed state, type, context, account, inclusive date bounds, tag and file

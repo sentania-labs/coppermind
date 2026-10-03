@@ -5,6 +5,8 @@ from __future__ import annotations
 import html
 import re
 import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from datetime import timedelta
 from pathlib import Path
@@ -19,6 +21,7 @@ from coppermind.health import Check, Health, Readiness
 from coppermind.logging import configure_logging, get_logger
 from coppermind.settings import ProductSettings, Wiring, read_settings
 from coppermind.statefiles import StateStore
+from coppermind.store_client import HttpStoreClient
 from coppermind_admin import __version__
 from coppermind_admin.auth import (
     AdminCredentials,
@@ -30,7 +33,7 @@ from coppermind_admin.auth import (
     InvalidClaimCode,
     SignedSessions,
 )
-from coppermind_admin.pages import fields, sync
+from coppermind_admin.pages import fields, problems, sync
 
 SERVICE = "coppermind-admin"
 COOKIE = "coppermind_admin_session"
@@ -227,11 +230,21 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
     def product_settings() -> ProductSettings:
         return read_settings(state)
 
-    app = FastAPI(title="Coppermind Admin", version=version)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            client = getattr(app.state, "store", None)
+            if isinstance(client, HttpStoreClient):
+                await client.aclose()
+
+    app = FastAPI(title="Coppermind Admin", version=version, lifespan=lifespan)
     app.state.sessions = sessions or SignedSessions(credentials)
     app.state.control = state
     app.state.tag_counts = fields.store_tag_counter(settings)
     app.include_router(sync.router(settings))
+    app.include_router(problems.router(settings))
 
     @app.middleware("http")
     async def protect_forms(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -327,13 +340,16 @@ required></label><button>Log in</button></form>""",
         )
 
     @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
-    async def overview() -> HTMLResponse:
+    async def overview(request: Request) -> HTMLResponse:
+        counters = await problems.overview_counters(request, settings)
         return HTMLResponse(
             page(
                 "Overview",
-                """<h1>Coppermind Admin</h1><p>You are signed in.</p>
+                f"""<h1>Coppermind Admin</h1><p>You are signed in.</p>
+{counters}
 <p><a href="/admin/keys">API Keys</a> | <a href="/admin/settings">Settings</a> |
-<a href="/admin/fields">Fields and tags</a> | <a href="/admin/sync">Obsidian Sync</a></p>
+<a href="/admin/fields">Fields and tags</a> | <a href="/admin/sync">Obsidian Sync</a> |
+<a href="/admin/problems">Problems</a></p>
 <form method="post" action="/v1/admin/logout"><button>Log out</button></form>""",
             )
         )

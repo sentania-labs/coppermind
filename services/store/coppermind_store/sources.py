@@ -15,15 +15,18 @@ rather than deleting.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import json
+import logging
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coppermind import frontmatter as fm
@@ -33,7 +36,14 @@ from coppermind.atomicio import (
     stage_bytes,
     sync_directory,
 )
-from coppermind.db.models import Note, NoteSource, Source, SourceArtifact, SourceRevision
+from coppermind.db.models import (
+    Note,
+    NoteSource,
+    RecordedRejection,
+    Source,
+    SourceArtifact,
+    SourceRevision,
+)
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
 from coppermind.naming import sanitize_folder, unique_stem
@@ -48,15 +58,24 @@ from coppermind.store_protocol import (
     IngestArtifact,
     IngestRequest,
     IngestResult,
+    MetadataUnavailable,
     NotesFilesystemUnavailable,
+    NoteSourceInfo,
+    NotFound,
+    Page,
     PathCollision,
     PayloadTooLarge,
+    ProblemInfo,
     ProjectionNotPlaced,
     SourceArtifactDocument,
     SourceClaimMissing,
     SourceManifest,
     SourceNotFound,
+    SourceQuery,
     SourcesFilesystemUnavailable,
+    SourceSummary,
+    StatusCounters,
+    StatusResponse,
     StoreError,
     ValidationFailed,
     artifact_text,
@@ -80,6 +99,8 @@ from coppermind_store.projections import (
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
+
+logger = logging.getLogger(__name__)
 
 
 async def get_source(store: LocalStore, source_id: str) -> SourceManifest:
@@ -137,7 +158,9 @@ async def ingest(
 ) -> IngestResult:
     settings = store.control.settings()
     schema = store.control.schema()
+
     if max(_payload_size(request), payload_size_bytes or 0) > settings.limits.ingest_max_bytes:
+        await _record_rejection(store, request, "payload_too_large")
         raise PayloadTooLarge(settings.limits.ingest_max_bytes)
 
     artifacts = [(artifact, artifact.bytes()) for artifact in request.source.artifacts]
@@ -220,6 +243,7 @@ async def _ingest_new(
     frontmatter = _build_frontmatter(note_request, schema, settings, note_id)
     problems = schema.validate_frontmatter(frontmatter) + schema.tag_problems(frontmatter)
     if problems:
+        await _record_rejection(store, request, "validation_error")
         raise ValidationFailed(problems)
 
     folder = sanitize_folder(settings.notes.review_folder)
@@ -1006,3 +1030,227 @@ def _revision_document(
 
 def _json_bytes(document: dict[str, Any]) -> bytes:
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+async def _record_rejection(store: LocalStore, request: IngestRequest, reason: str) -> None:
+    """Persist the refusal first, then best-effort mirror it for Admin."""
+    from coppermind_store.rejections import mirror_rejection, write_rejection
+
+    reference = f"{request.source.provider}:{request.source.external_source_id}"
+    try:
+        record = write_rejection(store.control.store.state_dir, reference, reason)
+        async with transaction(store.session_factory) as session:
+            await mirror_rejection(session, record)
+    except (SQLAlchemyError, OSError):
+        logger.warning("could not record the refused ingest %s (%s)", reference, reason)
+
+
+def _encode_source_cursor(created_at: datetime, source_id: str) -> str:
+    payload = json.dumps(
+        {"v": 1, "at": created_at.isoformat(), "id": source_id}, separators=(",", ":")
+    )
+    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+
+def _decode_source_cursor(cursor: str) -> tuple[datetime, str]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
+        if (
+            not isinstance(payload, dict)
+            or payload.get("v") != 1
+            or not isinstance(payload.get("id"), str)
+            or not isinstance(payload.get("at"), str)
+        ):
+            raise ValueError
+        at = datetime.fromisoformat(payload["at"])
+        if at.utcoffset() is None:
+            raise ValueError
+        return at, payload["id"]
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        raise ValidationFailed(["cursor: invalid or expired"]) from exc
+
+
+async def list_sources(store: LocalStore, query: SourceQuery) -> Page[SourceSummary]:
+    """Page the mirrored sources, newest first, by creation time then identity.
+
+    Both halves of the cursor are fixed when a source is first ingested, so a
+    revision landing between two pages cannot move a source across them.
+    """
+    statement = sa.select(Source).order_by(Source.created_at.desc(), Source.id.desc())
+    if query.provider is not None:
+        statement = statement.where(Source.provider == query.provider)
+    if query.from_date is not None:
+        statement = statement.where(sa.cast(Source.created_at, sa.Date) >= query.from_date)
+    if query.to_date is not None:
+        statement = statement.where(sa.cast(Source.created_at, sa.Date) <= query.to_date)
+    if query.cursor:
+        at, after = _decode_source_cursor(query.cursor)
+        statement = statement.where(
+            sa.or_(
+                Source.created_at < at,
+                sa.and_(Source.created_at == at, Source.id < after),
+            )
+        )
+    statement = statement.limit(query.limit + 1)
+    try:
+        async with store.session_factory() as session:
+            rows = list((await session.scalars(statement)).all())
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
+    items = [
+        SourceSummary(
+            id=row.id,
+            provider=row.provider,
+            external_source_id=row.external_source_id,
+            source_type=row.source_type,
+            origin=row.origin,
+            current_revision=row.current_revision,
+            created_at=row.created_at,
+        )
+        for row in rows[: query.limit]
+    ]
+    next_cursor = (
+        _encode_source_cursor(rows[query.limit - 1].created_at, rows[query.limit - 1].id)
+        if len(rows) > query.limit
+        else None
+    )
+    return Page[SourceSummary](items=items, next_cursor=next_cursor)
+
+
+async def get_note_sources(store: LocalStore, note_id: str) -> list[NoteSourceInfo]:
+    """The sources a note cites, each with the projection page its manifest names."""
+    sources_key = store.control.schema().role("sources_key")
+    try:
+        async with store.session_factory() as session:
+            note = await session.get(Note, note_id)
+            if note is None:
+                raise NotFound(note_id)
+            # Frontmatter is mirrored by every note write and reconciliation.
+            # The ingest-time NoteSource rows are not the current citations.
+            citations = note.frontmatter.get(sources_key, [])
+            source_ids = (
+                sorted({value for value in citations if isinstance(value, str)})
+                if isinstance(citations, list)
+                else []
+            )
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
+    results = []
+    for source_id in source_ids:
+        manifest = await get_source(store, source_id)
+        results.append(NoteSourceInfo(id=source_id, projection_path=manifest.projection_path))
+    return results
+
+
+def _review_prefix(store: LocalStore) -> str:
+    folder = sanitize_folder(store.control.settings().notes.review_folder)
+    return f"{folder}/" if folder else ""
+
+
+async def get_status(store: LocalStore) -> StatusResponse:
+    """Counters computed from the mirror and the recorded rejections."""
+    prefix = _review_prefix(store)
+    awaiting = (
+        sa.select(sa.func.count())
+        .select_from(Note)
+        .where(Note.reviewed.is_(False), Note.state != "missing")
+    )
+    if prefix:
+        # Directly in the configured review folder, never a nested one.
+        awaiting = awaiting.where(
+            sa.func.starts_with(Note.path, prefix),
+            sa.func.strpos(sa.func.substr(Note.path, len(prefix) + 1), "/") == 0,
+        )
+    else:
+        awaiting = awaiting.where(sa.func.strpos(Note.path, "/") == 0)
+    try:
+        async with store.session_factory() as session:
+            notes_awaiting_review = await session.scalar(awaiting) or 0
+            by_state = (
+                await session.execute(sa.select(Note.state, sa.func.count()).group_by(Note.state))
+            ).all()
+            sources = await session.scalar(sa.select(sa.func.count()).select_from(Source)) or 0
+            rejected_ingests = (
+                await session.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(RecordedRejection)
+                    .where(RecordedRejection.kind == "ingest")
+                )
+                or 0
+            )
+            name_collisions = (
+                await session.scalar(
+                    sa.select(sa.func.count(sa.distinct(RecordedRejection.reference))).where(
+                        RecordedRejection.kind == "collision"
+                    )
+                )
+                or 0
+            )
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
+    notes_by_state = {state: count for state, count in by_state}
+    return StatusResponse(
+        counters=StatusCounters(
+            notes_awaiting_review=notes_awaiting_review,
+            notes_by_state=notes_by_state,
+            sources=sources,
+            rejected_ingests=rejected_ingests,
+            name_collisions=name_collisions,
+            unparseable_files=notes_by_state.get("unparsed", 0),
+        )
+    )
+
+
+async def get_problems(store: LocalStore) -> list[ProblemInfo]:
+    """Every problem the dashboard lists, computed, never written into a note."""
+    try:
+        async with store.session_factory() as session:
+            rejections = list(
+                (
+                    await session.scalars(
+                        sa.select(RecordedRejection).order_by(
+                            RecordedRejection.created_at.desc(), RecordedRejection.id.desc()
+                        )
+                    )
+                ).all()
+            )
+            unparsed = list(
+                (
+                    await session.scalars(
+                        sa.select(Note).where(Note.state == "unparsed").order_by(Note.path)
+                    )
+                ).all()
+            )
+            refused = {row.reference for row in rejections if row.kind == "ingest"}
+            known = {
+                f"{provider}:{external}": source_id
+                for source_id, provider, external in (
+                    await session.execute(
+                        sa.select(Source.id, Source.provider, Source.external_source_id)
+                    )
+                ).all()
+                if f"{provider}:{external}" in refused
+            }
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
+    problems = [
+        ProblemInfo(
+            kind=row.kind,
+            reference=row.reference,
+            reason=row.reason,
+            note_id=row.reference if row.kind == "collision" else None,
+            source_id=known.get(row.reference) if row.kind == "ingest" else None,
+        )
+        for row in rejections
+    ]
+    problems.extend(
+        ProblemInfo(
+            kind="unparsed",
+            reference=row.path,
+            reason=row.state_reason or "unparsed",
+            note_id=row.id,
+        )
+        for row in unparsed
+    )
+    return problems
