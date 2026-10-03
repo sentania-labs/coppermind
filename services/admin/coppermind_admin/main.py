@@ -33,7 +33,7 @@ from coppermind_admin.auth import (
     InvalidClaimCode,
     SignedSessions,
 )
-from coppermind_admin.pages import problems, sync
+from coppermind_admin.pages import fields, problems, sync
 
 SERVICE = "coppermind-admin"
 COOKIE = "coppermind_admin_session"
@@ -69,7 +69,7 @@ LOGIN_NOTICES = {
 }
 
 
-def page(title: str, body: str) -> str:
+def page(title: str, body: str, *, wide: bool = False) -> str:
     body = re.sub(
         r"(<form\b[^>]*>)",
         lambda match: match[0] + f'<input type="hidden" name="csrf" value="{csrf_token.get()}">',
@@ -77,7 +77,7 @@ def page(title: str, body: str) -> str:
     )
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>{html.escape(title)} | Coppermind</title><style>
+<title>{html.escape(title)} | Coppermind</title><style>{WIDE if wide else ""}
 :root {{
   color-scheme:light; font-family:system-ui,sans-serif;
   background:#f4f1e8; color:#19231d
@@ -89,7 +89,7 @@ main {{
 }}
 h1 {{ margin-top:0; font-family:Georgia,serif; font-size:2rem }} p {{ line-height:1.5 }}
 label {{ display:block; font-weight:650; margin-top:1rem }}
-input {{
+input, textarea, select {{
   box-sizing:border-box; width:100%; margin-top:.4rem; padding:.75rem;
   border:1px solid #8a918b; border-radius:.4rem; font:inherit
 }}
@@ -103,6 +103,10 @@ button {{
 pre {{ white-space:pre-wrap; overflow-wrap:anywhere; font-size:.85rem }}
 .muted {{ color:#59655d }}
 </style></head><body><main>{body}</main></body></html>"""
+
+
+# A page with many controls, such as Fields and tags, takes more of the screen.
+WIDE = "main { width:min(56rem,calc(100% - 2rem)) !important }\n"
 
 
 def notice(notices: dict[str, str], error: str | None) -> str:
@@ -238,6 +242,7 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
     app = FastAPI(title="Coppermind Admin", version=version, lifespan=lifespan)
     app.state.sessions = sessions or SignedSessions(credentials)
     app.state.control = state
+    app.state.tag_counts = fields.store_tag_counter(settings)
     app.include_router(sync.router(settings))
     app.include_router(problems.router(settings))
 
@@ -343,7 +348,7 @@ required></label><button>Log in</button></form>""",
                 f"""<h1>Coppermind Admin</h1><p>You are signed in.</p>
 {counters}
 <p><a href="/admin/keys">API Keys</a> | <a href="/admin/settings">Settings</a> |
-<a href="/admin/sync">Obsidian Sync</a> | <a href="/admin/problems">Problems</a></p>
+<a href="/admin/fields">Fields and tags</a> | <a href="/admin/sync">Obsidian Sync</a> | <a href="/admin/problems">Problems</a></p>
 <form method="post" action="/v1/admin/logout"><button>Log out</button></form>""",
             )
         )
@@ -429,6 +434,7 @@ required></label><button>Log in</button></form>""",
 
     app.include_router(keys.router)
     app.include_router(settings_page.router)
+    app.include_router(fields.router)
     return app
 
 

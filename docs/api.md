@@ -61,6 +61,24 @@ The story behind these decisions is [architecture.md](architecture.md).
 | `GET /v1/notes/{id}/sources` | `notes:read`, `sources:read` | List the sources a note cites, each as `{id, projection_path}` with the projection page its manifest records; citations come from the current mirrored frontmatter | 200, a list | 404 for an unknown note; 503 `metadata_unavailable` |
 | `GET /v1/folders` | `notes:read` | The folder tree with note counts | 200 | |
 
+## Schema
+
+| Method and path | Scope | What it does | Success | Failure |
+|---|---|---|---|---|
+| `GET /v1/schema` | `notes:read` | The rules every write is held to, as the store reads them from `/data/state/schema.yaml`: `revision`, `schema_version`, `fields[]` (each with `name`, `kind`, `required`, `required_when {key, values}` or null, `default`, `description`, `guidance`, and `allowed_values[] {value, meaning}`, empty when any value of the kind is accepted), the `roles` map, and `tags {mode, listed[] {tag, meaning, aliases[]}, aliases {alias: tag}}`. Agents and the enricher read field and tag guidance here | 200 | 503 `store_unavailable`; 500 when the schema file cannot be read, never a bundled default in its place |
+
+Tags follow these rules on every store write: create, ingest, replace,
+frontmatter patch, and the reconciler's adoption of a device-created note.
+An alias is replaced by its canonical tag and a repeated tag is dropped,
+keeping the order the caller or person gave; a list with neither is written
+as sent. With `mode: open` (the default) any tag is accepted. With
+`mode: closed` a write that adds a tag which is neither listed nor an alias of
+a listed tag answers 422 `validation_error`; a tag the note already carries is
+never refused, and adoption never refuses a device-created note over its tags.
+Adoption rewrites only the tag lines of the file, leaving every other byte and
+line ending as it was, and leaves a tag list with a comment inside it as the
+person wrote it.
+
 ## Sources (read-only by design)
 
 Sources are immutable once ingested; nothing here ever changes one after the
@@ -109,6 +127,7 @@ requiring hand-populated configuration.
 | Obsidian Sync | `GET /v1/admin/sync`, `POST /v1/admin/sync/connect`, `POST /v1/admin/sync/token`, `POST /v1/admin/sync/pause`, `/resume`, `/disconnect` | Connect with email, password, optional MFA, and a vault name or a pasted token; reveal a token once, with a hint for sealing it into GitOps; pause and resume around bulk operations |
 | Settings | `GET/PUT /v1/admin/settings {if_revision, body}` | Every key in the settings table below, grouped by section |
 | Frontmatter schema | `GET/PUT /v1/admin/schema`, `POST /v1/admin/schema/rename-key {from, to}` | Keys, kinds, and vocabularies; renaming a key runs the migration job that rewrites every note through the store |
+| Fields and tags (`/admin/fields`) | `POST /v1/admin/fields {revision, ...}` | Add, edit and retire keys (kind, required and required when, allowed values each with a one-line meaning, default, guidance); every tag in use with its note count from the mirror, a meaning and aliases per listed tag, and open or closed tags. Saves with the same revision check Settings uses; the role map is carried over untouched, and nothing here rewrites a note |
 | Filing rules | `GET/PUT /v1/admin/rules`, `POST /v1/admin/rules/preview {note_id}` | The ordered rules a note is filed by, with a dry run ("what would this note file as") before committing to a change |
 | Jobs | `GET /v1/admin/jobs`, `POST /v1/admin/jobs {kind}`, `GET /v1/admin/jobs/{id}` | Run reconcile, a full rehash, rebuild metadata from disk, reindex, or rebuild projections, and see the history of each |
 | Sources | `GET /v1/admin/sources`, `GET /v1/admin/notes/problems` | Browse sources; see notes the reconciler could not parse or file |
@@ -130,6 +149,9 @@ The calls it exposes, grouped by what they touch:
 - **Sources:** ingest (idempotent), get one, list, open one artifact,
   list the sources a note cites.
 - **Attachments:** store one, open one.
+- **Schema and tags:** read the frontmatter schema the store enforces, with
+  its file revision (`GET /internal/v1/schema`), and count notes per tag in
+  the mirror, a note counting once per tag (`GET /internal/v1/tags`).
 - **Control state:** get and put a named state file (`settings`, `schema`,
   `rules`, `keys`, `admin`), each guarded by the revision the caller last
   read.

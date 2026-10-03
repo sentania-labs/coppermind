@@ -79,6 +79,7 @@ from coppermind.store_protocol import (
     RebuildMetadataResult,
     RenameNote,
     ReplaceNote,
+    SchemaDocument,
     SourceArtifactDocument,
     SourceId,
     SourceManifest,
@@ -86,6 +87,7 @@ from coppermind.store_protocol import (
     SourceSummary,
     StatusResponse,
     StoreError,
+    TagCount,
     ValidationFailed,
     VersionConflict,
 )
@@ -273,7 +275,7 @@ class LocalStore:
 
         note_id = new_id()
         frontmatter = _build_frontmatter(request, schema, settings, note_id)
-        problems = schema.validate_frontmatter(frontmatter)
+        problems = schema.validate_frontmatter(frontmatter) + schema.tag_problems(frontmatter)
         if problems:
             raise ValidationFailed(problems)
         sources = frontmatter.get(schema.role("sources_key"), [])
@@ -440,6 +442,34 @@ class LocalStore:
         next_cursor = _encode_note_cursor(page[-1].id) if len(matched) > query.limit else None
         return Page[NoteSummary](items=page, next_cursor=next_cursor)
 
+    async def list_tags(self) -> list[TagCount]:
+        """Every tag the mirror records on a note still present, with its note count.
+
+        A count is of notes, not of occurrences: a note whose file lists one tag
+        twice counts once. A missing note keeps its last known tags in its row,
+        so it is left out rather than counted as if it were still there.
+        """
+        tag = sa.func.unnest(Note.tags).label("tag")
+        tagged = sa.select(Note.id, tag).where(Note.state != "missing").subquery()
+        statement = (
+            sa.select(tagged.c.tag, sa.func.count(sa.distinct(tagged.c.id)).label("notes"))
+            .group_by(tagged.c.tag)
+            .order_by(tagged.c.tag)
+        )
+        try:
+            async with self.session_factory() as session:
+                rows = (await session.execute(statement)).all()
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
+        return [TagCount(tag=row.tag, count=row.notes) for row in rows]
+
+    async def get_schema(self) -> SchemaDocument:
+        """The schema this store validates writes against, read from its file."""
+        try:
+            return self.control.schema_document()
+        except (OSError, ValueError) as exc:
+            raise StoreError(f"the frontmatter schema could not be read: {exc}") from exc
+
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag
     ) -> NoteDocument:
@@ -469,6 +499,9 @@ class LocalStore:
         relative, path = await self._locate(note_id)
         async with self._lock_for(note_id):
             _, current, _ = _bytes_at(note_id, relative, path, schema, if_match)
+            problems = schema.tag_problems(sent, current)
+            if problems:
+                raise ValidationFailed(problems)
             frontmatter = _keeping_types(sent, current)
             data = fm.compose(frontmatter, body).encode("utf-8")
             sources = frontmatter.get(schema.role("sources_key"), [])
@@ -549,6 +582,7 @@ class LocalStore:
             if frontmatter.get(id_key) != current_frontmatter.get(id_key):
                 raise ValidationFailed([f"{id_key}: the identifier of a note cannot be changed"])
             problems = schema.validate_frontmatter(frontmatter)
+            problems += schema.tag_problems(frontmatter, current_frontmatter)
             if problems:
                 raise ValidationFailed(problems)
 
@@ -934,8 +968,12 @@ class LocalStore:
         per candidate would hold the event loop for a whole sweep.
 
         The identity is always written because the notes filesystem is its
-        durable home. Other keys receive defaults only when the schema requires
-        them of this note and it does not already carry a value; an optional
+        durable home. A tag list carrying an alias or a repeat has only its own
+        lines rewritten to the canonical tags; tags are never a reason to refuse
+        adoption, closed or not, because the person already wrote them.
+
+        Other keys receive defaults only when the schema requires them of this
+        note and it does not already carry a value; an optional
         key a person did not write stays unwritten, and existing values and
         body content are never replaced.
 
@@ -977,7 +1015,7 @@ class LocalStore:
 
         changes = _adoption_changes(frontmatter, schema, settings, note_id)
         try:
-            adopted_text = fm.fill_missing(text, changes)
+            adopted_text = _with_canonical_tags(fm.fill_missing(text, changes), schema)
             adopted_frontmatter, adopted_body = fm.parse(adopted_text)
         except fm.FrontmatterError as exc:
             return "invalid", exc.category
@@ -1404,6 +1442,24 @@ def _adoption_changes(
             return changes
 
 
+def _with_canonical_tags(text: str, schema: FrontmatterSchema) -> str:
+    """The note text with its tag list normalized in place, or unchanged.
+
+    Only the tag lines change, so adoption stays append only for every other
+    byte, line endings included. When the list cannot be rewritten without
+    touching anything else (a comment inside it, say) it is left as the person
+    wrote it.
+    """
+    tags_key = schema.role("tags_key")
+    tags = fm.parse(text)[0].get(tags_key)
+    if not isinstance(tags, list):
+        return text
+    normalized = schema.normalize_tags(list(tags))
+    if normalized == list(tags):
+        return text
+    return fm.replace_value_in_place(text, tags_key, normalized) or text
+
+
 def _replacement_frontmatter(
     request: ReplaceNote, schema: FrontmatterSchema, note_id: str
 ) -> dict[str, Any]:
@@ -1442,11 +1498,18 @@ def _with_kinds(values: dict[str, Any], schema: FrontmatterSchema) -> dict[str, 
 
     A date key is written as a YAML date, not a quoted string, so the file
     reads the way a person would write it in Obsidian and no write path,
-    whole document or single key, adds quotes to it.
+    whole document or single key, adds quotes to it. A tag list has each alias
+    replaced by its canonical tag; create, ingest, replace and patch all come
+    through here, which is what makes aliases hold on every API write.
     """
     kinds = {definition.name: definition.kind for definition in schema.keys}
+    tags_key = schema.role("tags_key")
     return {
-        key: (_as_date(value) or value) if kinds.get(key) == "date" else value
+        key: (_as_date(value) or value)
+        if kinds.get(key) == "date"
+        else schema.normalize_tags(value)
+        if key == tags_key and isinstance(value, list)
+        else value
         for key, value in values.items()
     }
 
