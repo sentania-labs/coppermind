@@ -53,7 +53,7 @@ The story behind these decisions is [architecture.md](architecture.md).
 | `PUT /v1/notes/{id}` | `notes:write` | Replace a note's frontmatter and body. Requires `If-Match` | 200, new `ETag` | 404; 409 `version_conflict`; 428 without `If-Match` |
 | `PATCH /v1/notes/{id}/frontmatter` | `notes:write` | Change named frontmatter fields only, via `{set:{...}, unset:[...]}`. Setting `reviewed: true` is how "mark reviewed" works | 200 | 404; 409; 422 for a value outside the shipped vocabulary |
 | `GET /v1/notes` | `notes:read` | List and filter by `folder, reviewed, type, context, account, from, to, tag, state` | 200, page of summaries | 503 `metadata_unavailable` if PostgreSQL is down, never a silently empty page |
-| `POST /v1/notes/{id}/move` | `notes:move` | Move to another folder; `If-Match` optional | 200, `{path}` | 404; 409 `path_collision`; 422 |
+| `POST /v1/notes/{id}/move` | `notes:move` | Move to another folder, keeping the filename; `If-Match` optional. A folder that differs from an existing one only by case takes its spelling, and the current folder is a no-op | 200, `{path}` | 404; 409 `path_collision`; 422 |
 | `POST /v1/notes/{id}/rename` | `notes:write` | Rename the note's title; `If-Match` required. Links to it are not rewritten, and that gap is deliberate, not a bug | 200, `{path}` | 404; 409 |
 | `DELETE /v1/notes/{id}` | `notes:delete` | Move the note to the trash folder; `If-Match` required | 200, `{trash_path}` | 404; 409 |
 | `GET /v1/notes/{id}/sources` | `notes:read`, `sources:read` | List the sources a note cites | 200 | 404 |

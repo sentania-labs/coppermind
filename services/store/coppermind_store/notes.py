@@ -31,6 +31,7 @@ import asyncio
 import base64
 import binascii
 import json
+import os
 import re
 from datetime import UTC, date, datetime
 from math import isfinite
@@ -44,8 +45,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coppermind import frontmatter as fm
 from coppermind.api_keys import ApiKeySet
-from coppermind.atomicio import commit_staged, create_exclusive_bytes, stage_bytes
-from coppermind.db.models import Note
+from coppermind.atomicio import commit_staged, create_exclusive_bytes, stage_bytes, sync_directory
+from coppermind.db.models import Note, OutboxEvent
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
 from coppermind.logging import get_logger
@@ -55,9 +56,12 @@ from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
     CreateNote,
     ETag,
+    FolderItem,
+    FolderTree,
     IngestRequest,
     IngestResult,
     MetadataUnavailable,
+    MoveNote,
     NoteDocument,
     NoteId,
     NoteQuery,
@@ -69,6 +73,9 @@ from coppermind.store_protocol import (
     Page,
     PatchFrontmatter,
     PathCollision,
+    PreconditionRequired,
+    RebuildMetadataResult,
+    RenameNote,
     ReplaceNote,
     SourceArtifactDocument,
     SourceId,
@@ -92,6 +99,104 @@ AdoptionOutcome = Literal["adopted", "changed", "invalid", "collision"]
 # file the store has decided not to adopt. The cause is content free by
 # construction: a parser category or a schema key name, never note bytes.
 AdoptionResult = tuple[AdoptionOutcome, str]
+
+
+def _move_file(source: Path, target: Path, *, retire: Path | None = None) -> None:
+    """Link `source` at `target` durably, refusing an occupied target.
+
+    The link is the reservation: it fails with FileExistsError when anything
+    already holds the target, before any existing name changes. Then the old
+    name goes: `source` itself, or `retire` when `source` is staged new bytes
+    for the note at `retire`. If anything fails after the link while the old
+    name is still there, the new link is removed again, because two live
+    names for one identity are a state the reconciler deliberately leaves
+    alone. Once the old name is gone the new one is the only copy and stays.
+    """
+    original = retire if retire is not None else source
+    target.parent.mkdir(parents=True, exist_ok=True)
+    os.link(source, target)
+    try:
+        sync_directory(target.parent)
+        original.unlink()
+        if retire is not None:
+            source.unlink(missing_ok=True)
+        sync_directory(original.parent)
+    except BaseException:
+        if os.path.lexists(original):
+            target.unlink(missing_ok=True)
+        raise
+
+
+def _rename_file(
+    note_id: NoteId,
+    relative: str,
+    path: Path,
+    new_path: Path,
+    new_relative: str,
+    data: bytes,
+    schema: FrontmatterSchema,
+    if_match: ETag,
+) -> None:
+    """Write `data` under a new name and retire the old one, at `if_match`.
+
+    The renamed bytes are staged beside the destination and linked into
+    place, so the file at the old name is never rewritten: a refused or
+    failed rename leaves it byte identical.
+    """
+    try:
+        staged = stage_bytes(new_path, data)
+    except OSError as exc:
+        raise NotesFilesystemUnavailable(str(exc)) from exc
+    try:
+        _bytes_at(note_id, relative, path, schema, if_match)
+        _move_file(staged, new_path, retire=path)
+    except FileExistsError as exc:
+        raise PathCollision(new_relative) from exc
+    except OSError as exc:
+        raise NotesFilesystemUnavailable(str(exc)) from exc
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def _existing_folder(notes_root: Path, folder: str) -> str:
+    """`folder` spelled the way the notes filesystem already spells it.
+
+    Windows and macOS compare names case insensitively, so a "work" beside an
+    existing "Work" would collide on every such device. Each segment that
+    matches an existing folder that way takes that folder's spelling.
+    """
+    current = notes_root
+    resolved: list[str] = []
+    for part in folder.split("/"):
+        name = part
+        try:
+            if current.is_dir() and not (current / part).is_dir():
+                for entry in sorted(current.iterdir()):
+                    if entry.is_dir() and entry.name.casefold() == part.casefold():
+                        name = entry.name
+                        break
+        except OSError as exc:
+            raise NotesFilesystemUnavailable(str(exc)) from exc
+        resolved.append(name)
+        current = current / name
+    return "/".join(resolved)
+
+
+def _renamed_bytes(current: bytes, title: str) -> tuple[bytes, str]:
+    """Change the first H1 while preserving the original frontmatter bytes."""
+    text = current.decode("utf-8")
+    _, body = fm.split(text)
+    prefix = text[: len(text) - len(body)]
+    lines = body.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if line.startswith("# "):
+            ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            lines[index] = f"# {title}{ending}"
+            break
+    else:
+        lines.insert(0, f"# {title}\n\n")
+    new_body = "".join(lines)
+    return (prefix + new_body).encode("utf-8"), new_body
 
 
 class LocalStore:
@@ -464,6 +569,326 @@ class LocalStore:
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
 
+    async def move_note(
+        self, note_id: NoteId, request: MoveNote, if_match: ETag | None
+    ) -> NoteDocument:
+        """Move a note to another folder. The identifier and filename never change.
+
+        The target folder must be inside the notes filesystem root and must not
+        start with ``_Sources``; it takes the spelling of an existing folder
+        that differs only by case. A stale ``If-Match`` on a move is refused as
+        a version conflict; an absent header is accepted because the store
+        contract marks it optional. Moving a note to the folder it is already
+        in changes nothing.
+
+        The filename is kept as it is, so a " (2)" suffix or a hand-chosen name
+        survives and Obsidian links by filename keep resolving; only a rename
+        changes it. The mirror row and the outbox event are issued first, the
+        file is linked into place and the old name removed, and the commit
+        comes last, so the note keeps its id and a reconciler pass sees the
+        same note at the new path, not a delete plus a create.
+        """
+        schema = self.control.schema()
+        settings = self.control.settings()
+
+        # Validate the path before sanitizing it. Sanitization must not turn an
+        # escaping request into an accepted in-root path.
+        raw_folder = request.target_folder.replace("\\", "/")
+        raw_parts = raw_folder.split("/")
+        if raw_folder.startswith("/") or any(part in {".", ".."} for part in raw_parts):
+            raise ValidationFailed(["target_folder: must be a relative folder path"])
+
+        target_folder = sanitize_folder(request.target_folder)
+        if not target_folder:
+            raise ValidationFailed(["target_folder: must be a non-empty folder name"])
+        sources_folder = sanitize_folder(settings.notes.sources_folder)
+        if (
+            target_folder.casefold() == sources_folder.casefold()
+            or target_folder.casefold().startswith(sources_folder.casefold() + "/")
+        ):
+            raise ValidationFailed(
+                [
+                    f"target_folder: cannot move notes into {settings.notes.sources_folder}",
+                ]
+            )
+        target_folder = _existing_folder(self.notes_root, target_folder)
+        try:
+            folder_path = resolve(self.notes_root, target_folder)
+        except ValueError as exc:
+            raise ValidationFailed(["target_folder: must be a relative folder path"]) from exc
+
+        relative, path = await self._locate(note_id)
+        async with self._lock_for(note_id):
+            current_data, frontmatter, current_mtime = _bytes_at(
+                note_id, relative, path, schema, if_match
+            )
+            new_relative = f"{target_folder}/{path.name}"
+            new_target = folder_path / path.name
+
+            if new_target == path:
+                _, body = fm.parse(current_data.decode("utf-8"))
+                return _document(
+                    note_id,
+                    relative,
+                    _title_of(body, path),
+                    frontmatter,
+                    body,
+                    current_data,
+                    datetime.fromtimestamp(current_mtime, tz=UTC),
+                    schema,
+                )
+
+            if path.stem.casefold() in {name.casefold() for name in existing_stems(folder_path)}:
+                raise PathCollision(new_relative)
+
+            now = datetime.now(tz=UTC)
+            try:
+                async with transaction(self.session_factory) as session:
+                    occupied = (
+                        (
+                            await session.execute(
+                                sa.select(Note.id)
+                                .where(Note.path == new_relative, Note.state != "missing")
+                                .limit(1)
+                            )
+                        )
+                        .scalars()
+                        .first()
+                    )
+                    if occupied is not None:
+                        raise PathCollision(new_relative)
+
+                    current_data, frontmatter, current_mtime = _bytes_at(
+                        note_id, relative, path, schema, if_match
+                    )
+                    _, body = fm.parse(current_data.decode("utf-8"))
+                    title = _title_of(body, new_target)
+
+                    # The same identity and its outbox event, in one transaction.
+                    await session.execute(
+                        sa.update(Note)
+                        .where(Note.id == note_id)
+                        .values(
+                            path=new_relative,
+                            title=title,
+                            content_hash=content_hash(current_data),
+                            size_bytes=len(current_data),
+                            frontmatter=_jsonable(frontmatter),
+                            **_mirror_columns(frontmatter, schema),
+                            mtime=datetime.fromtimestamp(current_mtime, tz=UTC),
+                            state="ok",
+                            state_reason=None,
+                            updated_at=now,
+                        )
+                    )
+                    session.add(
+                        OutboxEvent(
+                            event_type="note.moved",
+                            note_id=note_id,
+                            payload={"from_path": relative, "path": new_relative},
+                            created_at=now,
+                        )
+                    )
+                    await session.flush()
+                    try:
+                        _move_file(path, new_target)
+                    except FileExistsError as exc:
+                        raise PathCollision(new_relative) from exc
+                    except OSError as exc:
+                        raise NotesFilesystemUnavailable(str(exc)) from exc
+            except BaseException as exc:
+                typed = _metadata_failure(exc)
+                if typed is None:
+                    raise
+                raise typed from exc
+
+        return _document(note_id, new_relative, title, frontmatter, body, current_data, now, schema)
+
+    async def rename_note(
+        self, note_id: NoteId, request: RenameNote, if_match: ETag
+    ) -> NoteDocument:
+        """Rename a note's filename and first H1 heading.
+
+        The identifier never changes. Links to this note are not rewritten,
+        and that gap is deliberate, not a bug. ``If-Match`` is required
+        (not optional): renaming is a full document change so the caller must
+        state which version it is editing.
+
+        The original frontmatter bytes are preserved unchanged. When the
+        filename changes, the renamed bytes are linked in at the new name
+        before the old one is removed, so a refused rename leaves the file at
+        the old name byte identical.
+        """
+        if if_match is None:
+            raise PreconditionRequired()
+
+        schema = self.control.schema()
+        settings = self.control.settings()
+        new_title = request.title
+
+        relative, path = await self._locate(note_id)
+        async with self._lock_for(note_id):
+            current_data, frontmatter, _ = _bytes_at(note_id, relative, path, schema, if_match)
+
+            problems = schema.validate_frontmatter(frontmatter)
+            if problems:
+                raise ValidationFailed(problems)
+
+            data, new_body = _renamed_bytes(current_data, new_title)
+
+            new_stem = _stem_for(new_title, frontmatter, schema, settings)
+            new_path = path.with_name(f"{new_stem}{NOTE_SUFFIX}")
+            new_relative = new_path.relative_to(self.notes_root).as_posix()
+            if new_path != path and new_stem.casefold() in {
+                name.casefold() for name in existing_stems(path.parent) if name != path.stem
+            }:
+                raise PathCollision(new_relative)
+
+            now = datetime.now(tz=UTC)
+            digest = content_hash(data)
+            try:
+                async with transaction(self.session_factory) as session:
+                    if new_path != path:
+                        occupied = (
+                            (
+                                await session.execute(
+                                    sa.select(Note.id)
+                                    .where(Note.path == new_relative, Note.state != "missing")
+                                    .limit(1)
+                                )
+                            )
+                            .scalars()
+                            .first()
+                        )
+                        if occupied is not None:
+                            raise PathCollision(new_relative)
+                    await session.execute(
+                        sa.update(Note)
+                        .where(Note.id == note_id)
+                        .values(
+                            title=new_title,
+                            path=new_relative,
+                            content_hash=digest,
+                            size_bytes=len(data),
+                            mtime=now,
+                            frontmatter=_jsonable(frontmatter),
+                            **_mirror_columns(frontmatter, schema),
+                            state="ok",
+                            state_reason=None,
+                            updated_at=now,
+                        )
+                    )
+                    session.add(
+                        OutboxEvent(
+                            event_type="note.renamed",
+                            note_id=note_id,
+                            payload={"from_path": relative, "path": new_relative},
+                            created_at=now,
+                        )
+                    )
+                    await session.flush()
+                    if new_path == path:
+                        _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
+                    else:
+                        _rename_file(
+                            note_id, relative, path, new_path, new_relative, data, schema, if_match
+                        )
+            except BaseException as exc:
+                typed = _metadata_failure(exc)
+                if typed is None:
+                    raise
+                raise typed from exc
+
+        return _document(note_id, new_relative, new_title, frontmatter, new_body, data, now, schema)
+
+    async def list_folders(self) -> FolderTree:
+        """Walk the notes filesystem and build a tree with note counts.
+
+        The tree is built from what is on disk, not from the mirror, so it
+        reflects the actual file structure including folders the mirror has not
+        yet seen.
+        """
+        notes_root = self.notes_root
+        seen_folders: dict[str, dict] = {}
+
+        if not notes_root.is_dir():
+            return FolderTree(children=[])
+
+        for note_path in notes_root.rglob(f"*{NOTE_SUFFIX}"):
+            if not note_path.is_file():
+                continue
+            relative = note_path.relative_to(notes_root)
+            parts = relative.parts[:-1]  # folder parts only
+            parent_key = ""
+            folder_note_count: dict[str, int] = {}
+
+            # Count this note under every ancestor folder
+            for i in range(len(parts)):
+                folder_key = "/".join(parts[: i + 1]) if i > 0 else parts[0]
+                folder_note_count[folder_key] = folder_note_count.get(folder_key, 0) + 1
+
+            # Build folder tree structure
+            for i in range(len(parts)):
+                folder_key = "/".join(parts[: i + 1]) if i > 0 else parts[0]
+                parent_key_for_child = "/".join(parts[: i + 1]) if i > 0 else ""
+
+                if folder_key not in seen_folders:
+                    seen_folders[folder_key] = {
+                        "name": parts[i],
+                        "path": folder_key,
+                        "children": {},
+                    }
+
+                # Add to parent's children
+                if parent_key_for_child:
+                    if parent_key_for_child in seen_folders:
+                        seen_folders[parent_key_for_child]["children"][parts[i]] = folder_key
+                else:
+                    # Top-level folder
+                    pass
+
+            # Store count
+            if parts:
+                for folder_key in folder_note_count:
+                    if folder_key in seen_folders:
+                        seen_folders[folder_key]["note_count"] = (
+                            seen_folders[folder_key].get("note_count", 0)
+                            + folder_note_count[folder_key]
+                        )
+
+        # Build the tree from seen_folders
+        top_level: dict[str, str] = {}
+        for key, _info in seen_folders.items():
+            parts = tuple(key.split("/"))
+            if len(parts) == 1:
+                top_level[parts[0]] = key
+            elif len(parts) > 1:
+                parent_key = "/".join(parts[:-1])
+                if parent_key in seen_folders:
+                    parent_children = seen_folders[parent_key].setdefault("_children", {})
+                    parent_children[parts[-1]] = key
+
+        # Recursively build FolderItem tree
+        def build_tree(key: str) -> FolderItem:
+            info = seen_folders.get(key, {})
+            name = info.get("name", key.split("/")[-1])
+            path = info.get("path", key)
+            count = info.get("note_count", 0)
+            children_keys = info.get("_children", {})
+            children = [build_tree(child_key) for child_key in sorted(children_keys.values())]
+            return FolderItem(name=name, path=path, note_count=count, children=children)
+
+        top_keys = sorted(top_level.values())
+        children = [build_tree(k) for k in top_keys]
+
+        return FolderTree(children=children)
+
+    async def rebuild_metadata(self) -> RebuildMetadataResult:
+        """Re-read every note file and rebuild its mirrored metadata."""
+        from coppermind_store.reconciler import reconcile_once
+
+        return RebuildMetadataResult(counts=await reconcile_once(self, full=True))
+
     async def adopt_note(
         self,
         relative: str,
@@ -807,7 +1232,7 @@ def _replace_if_unchanged(
 
 
 def _bytes_at(
-    note_id: NoteId, relative: str, path: Path, schema: FrontmatterSchema, if_match: ETag
+    note_id: NoteId, relative: str, path: Path, schema: FrontmatterSchema, if_match: ETag | None
 ) -> tuple[bytes, dict[str, Any], float]:
     """The bytes, frontmatter and mtime of a note at `if_match`.
 
@@ -820,7 +1245,7 @@ def _bytes_at(
     current, mtime = _read(note_id, path)
     frontmatter, _ = _parse(note_id, relative, current, schema)
     current_hash = content_hash(current)
-    if current_hash != if_match:
+    if if_match is not None and current_hash != if_match:
         raise VersionConflict(current_hash)
     return current, frontmatter, mtime
 
@@ -1108,6 +1533,30 @@ def _title_of(body: str, path: Path) -> str:
         if line.startswith("# "):
             return _storable(line[2:].strip())
     return _storable(path.stem)
+
+
+def _document(
+    note_id: NoteId,
+    relative: str,
+    title: str,
+    frontmatter: dict[str, Any],
+    body: str,
+    data: bytes,
+    updated_at: datetime,
+    schema: FrontmatterSchema,
+) -> NoteDocument:
+    sources = frontmatter.get(schema.role("sources_key"), [])
+    return NoteDocument(
+        id=note_id,
+        path=relative,
+        title=title,
+        frontmatter=_jsonable(frontmatter),
+        body=body,
+        content_hash=content_hash(data),
+        size_bytes=len(data),
+        updated_at=updated_at,
+        sources=[str(source) for source in sources] if isinstance(sources, list) else [],
+    )
 
 
 def _today(settings: ProductSettings) -> date:
