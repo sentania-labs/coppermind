@@ -30,6 +30,7 @@ import re
 from typing import Any
 
 from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.error import YAMLError
 from ruamel.yaml.util import load_yaml_guess_indent
 
@@ -338,3 +339,60 @@ def fill_missing(text: str, changes: dict[str, Any]) -> str:
     if opening_length >= 0 and any(key in _parse_block(block) for key in changes):
         return _patched(block, body, changes, [])
     return _appended(text, changes, *found)
+
+
+# A YAML comment: a `#` that opens the line or follows whitespace.
+_COMMENT = re.compile(r"(?:^|\s)#")
+
+
+def replace_value_in_place(text: str, key: str, value: Any) -> str | None:
+    """Rewrite one top level key's value and leave every other byte alone.
+
+    Adoption normalizes tags in a file a person owns, so it may change the tag
+    lines and nothing else: the rest of the block, its comments and its line
+    endings stay byte exact, which a targeted `patch` cannot promise. The key's
+    lines run from the key to the next key, less any blank or comment lines
+    just before that next key, and are replaced with a dump of the new value at
+    the block's own indentation, in flow style when the old value was, ending
+    in the line ending the key's line used.
+
+    Returns None, writing nothing, whenever that cannot be done safely: the
+    file has no block or no such key, the key is not at the left margin, a
+    comment sits inside the value, or reading the result back shows anything
+    but that one value changed. The caller then leaves the value as it was.
+    """
+    block, _, opening_length, closing_offset = _readable_block(text)
+    if opening_length < 0 or not block.strip():
+        return None
+    yaml = _yaml()
+    loaded, indent, sequence_offset = _load_guessing_indent(block, yaml)
+    mapping = _mapping(loaded)
+    if key not in mapping or not isinstance(mapping, CommentedMap):
+        return None
+    line, column = mapping.lc.key(key)
+    if column != 0:
+        return None
+    lines = block.splitlines(keepends=True)
+    following = [mapping.lc.key(other)[0] for other in mapping if mapping.lc.key(other)[0] > line]
+    span = lines[line : min(following) if following else len(lines)]
+    while len(span) > 1 and (not span[-1].strip() or span[-1].lstrip().startswith("#")):
+        span.pop()
+    if any(_COMMENT.search(part) for part in span):
+        return None
+
+    current = mapping[key]
+    if isinstance(current, CommentedSeq) and current.fa.flow_style() and isinstance(value, list):
+        value = CommentedSeq(value)
+        value.fa.set_flow_style()
+    _indent_like(yaml, indent, sequence_offset)
+    ending = "\r\n" if span[0].endswith("\r\n") else "\n"
+    fragment = _dump({key: value}, yaml).replace("\n", ending)
+    replaced_block = "".join(lines[:line]) + fragment + "".join(lines[line + len(span) :])
+
+    try:
+        reread = _parse_block(replaced_block)
+    except FrontmatterError:
+        return None
+    if list(reread) != list(mapping) or dict(reread) != {**dict(mapping), key: value}:
+        return None
+    return text[:opening_length] + replaced_block + text[opening_length + closing_offset :]
