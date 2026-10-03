@@ -67,6 +67,18 @@ class Note(Base):
     )
 
 
+class OutboxEvent(Base):
+    """A transactional notification derived from mirrored filesystem state."""
+
+    __tablename__ = "outbox_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    note_id: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class Source(Base):
     """An immutable source identity mirrored from its manifest."""
 
