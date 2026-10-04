@@ -303,7 +303,7 @@ def test_fill_missing_fills_a_property_left_blank_instead_of_writing_it_twice():
 
 
 def test_fill_missing_reassembles_only_the_block_when_a_property_is_blank():
-    """The one adoption shape that is not append only, per AGENTS.md.
+    """The one adoption shape that is not append only.
 
     Filling a key the file already names cannot splice, so the block is rebuilt
     and its line endings are not preserved. The body's own endings are.

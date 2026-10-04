@@ -199,7 +199,7 @@ unchanged here would misstate what the code actually does.
   for the targeted frontmatter-patch endpoint, but a full `PUT` of a note
   reassembles the properties block from what was sent: a hand-arranged key
   order or a comment placed between keys does not survive it. This is a
-  deliberate, accepted exception (see `AGENTS.md`'s sharp-edges notes), not
+  deliberate, accepted exception, not
   an oversight, but it is a real narrowing of the original promise.
 - **Obsidian Sync currently refuses every real connection on purpose.** The
   plan described a one-time Admin login flow (email, password, optional MFA)
