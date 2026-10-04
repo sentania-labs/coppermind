@@ -79,8 +79,9 @@ change falls under (software, live infrastructure, or knowledge).
   deployer's and comes from `COPPERMIND_` environment variables; product
   settings are the operator's and live in `/data/state/settings.yaml`.
 - **One writer.** Exactly one process writes the notes filesystem: the store.
-  The API, the curator and the indexer ask it. If you find yourself opening a
-  note file for writing anywhere else, the design has drifted.
+  The API, the curator and the indexer ask it over the contract in
+  `coppermind/store_protocol.py`. If you find yourself opening a note file
+  for writing anywhere else, the design has drifted.
 - **Filesystem first, database second.** The files are the truth. Every
   PostgreSQL row is a mirror that one job can rebuild from `/data`. A change
   that makes the database the only copy of something is a change to reject.
