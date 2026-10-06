@@ -2,6 +2,7 @@
 # CI never hand-copies a command; if a gate changes, it changes here.
 SHELL := /bin/bash
 .PHONY: setup lint typecheck test test-integration check \
+        check-local \
         image image-store image-api image-admin image-git image-obsidian-sync up down logs smoke failure sync-smoke \
         scan scan-deps scan-secrets scan-fs scan-image \
         compose-check prose-check db-up db-down clean
@@ -22,6 +23,11 @@ typecheck:
 # Unit tests. No database, no containers, no network.
 test:
 	uv run pytest -q
+
+# Obsidian Sync is a Node service; workers and minimal CI runners lack Node.
+# keep this behind `make test-node` so check-local (which has no Docker or Node)
+# can still pass everywhere.
+test-node:
 	npm --prefix services/obsidian-sync test
 
 # PostgreSQL backed tests. `make db-up` starts a throwaway server on 5433 so
@@ -43,7 +49,11 @@ db-down:
 	-docker rm -f coppermind-test-db >/dev/null 2>&1
 
 # Everything a pull request must pass before an image is built.
-check: lint typecheck test compose-check prose-check
+check: check-local compose-check test-node
+
+# Everything in check that needs no Docker or Node. Workers and minimal CI
+# runners use this target so one policy covers both.
+check-local: setup lint typecheck test prose-check scan-deps scan-secrets
 
 # `docker compose config` parses and validates the quickstart and the sync
 # simulation, which catches a broken quickstart before anyone tries to run it.
