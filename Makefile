@@ -165,7 +165,7 @@ endif
 GITLEAKS_VERSION ?= v8.30.1
 GITLEAKS_BIN_DIR ?= $(HOME)/.cache/gitleaks
 GITLEAKS_BIN ?= $(GITLEAKS_BIN_DIR)/gitleaks
-GITLEAKS_SHA256 ?= 88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509
+GITLEAKS_SHA256 ?= 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
 
 # When gitleaks is on PATH use it directly; otherwise point at the cached
 # binary that scan-secrets will download.  The download lives inside the
@@ -192,10 +192,10 @@ scan-secrets:
 	  : ; \
 	else \
 	  mkdir -p "$(GITLEAKS_BIN_DIR)" && \
-	  curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/$(GITLEAKS_VERSION)/gitleaks_$(GITLEAKS_VERSION:v%=%)_linux_amd64.tar.gz" -o "$(GITLEAKS_BIN_DIR)/gitleaks.tar.gz" && \
+	  curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/$(GITLEAKS_VERSION)/gitleaks_$(GITLEAKS_VERSION:v%=%)_linux_x64.tar.gz" -o "$(GITLEAKS_BIN_DIR)/gitleaks.tar.gz" && \
+	  echo "$(GITLEAKS_SHA256)  $(GITLEAKS_BIN_DIR)/gitleaks.tar.gz" | sha256sum -c - && \
 	  tar -xzf "$(GITLEAKS_BIN_DIR)/gitleaks.tar.gz" -C "$(GITLEAKS_BIN_DIR)" gitleaks && \
-	  chmod +x "$(GITLEAKS_BIN)" && \
-	  sha256sum "$(GITLEAKS_BIN)" | cut -d' ' -f1 | xargs -I{} test "{}" = "$(GITLEAKS_SHA256)"; \
+	  chmod +x "$(GITLEAKS_BIN)"; \
 	fi
 	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
 	$(GITLEAKS) detect --source . --no-banner --redact >"$$log" 2>&1; rc=$$?; cat "$$log"; \
