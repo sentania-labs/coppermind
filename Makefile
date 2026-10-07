@@ -156,10 +156,25 @@ TRIVY = mkdir -p "$(TRIVY_CACHE)" && docker run --rm \
 	aquasec/trivy:$(TRIVY_VERSION) --cache-dir /cache
 endif
 
-# gitleaks: the worker image ships the binary (v8.30.1) so check-local can
-# always invoke it directly.  Docker is neither required nor permitted in
-# workers.  The variable stays so callers do not need to change.
+# gitleaks: shipped on CI runners and the worker image (v8.30.1);
+# fall back to downloading the pinned release when the binary is absent.
+# This keeps scan-secrets self-sufficient: workers use the PATH binary,
+# CI fetches the release binary into a local cache when gitleaks is absent.
+# The download path is never reached by check-local on the worker (gitleaks
+# is on PATH there), so check-local's dry-run contains no download commands.
+GITLEAKS_VERSION ?= v8.30.1
+GITLEAKS_BIN_DIR ?= $(HOME)/.cache/gitleaks
+GITLEAKS_BIN ?= $(GITLEAKS_BIN_DIR)/gitleaks
+GITLEAKS_SHA256 ?= 88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509
+
+# When gitleaks is on PATH use it directly; otherwise point at the cached
+# binary that scan-secrets will download.  The download lives inside the
+# scan-secrets recipe so dry-runs stay clean (no curl/wget on the worker).
+ifneq ($(shell command -v gitleaks 2>/dev/null),)
 GITLEAKS = gitleaks
+else
+GITLEAKS = $(GITLEAKS_BIN)
+endif
 
 scan: scan-deps scan-secrets scan-fs
 
@@ -170,8 +185,19 @@ scan-deps:
 # Committed secrets, full git history (CI checks out with fetch-depth 0).
 # gitleaks exits 0 when git itself fails and it scanned nothing, so the gate
 # also requires that at least one commit was actually scanned.
+# When gitleaks is not on PATH (CI), download the pinned binary into the
+# local cache first; workers already have it on PATH so this step is a no-op.
 scan-secrets:
-	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
+	@if command -v gitleaks >/dev/null 2>&1 || test -x "$(GITLEAKS_BIN)"; then \
+	  : ; \
+	else \
+	  mkdir -p "$(GITLEAKS_BIN_DIR)" && \
+	  curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/$(GITLEAKS_VERSION)/gitleaks_$(GITLEAKS_VERSION:v%=%)_linux_amd64.tar.gz" -o "$(GITLEAKS_BIN_DIR)/gitleaks.tar.gz" && \
+	  tar -xzf "$(GITLEAKS_BIN_DIR)/gitleaks.tar.gz" -C "$(GITLEAKS_BIN_DIR)" gitleaks && \
+	  chmod +x "$(GITLEAKS_BIN)" && \
+	  sha256sum "$(GITLEAKS_BIN)" | cut -d' ' -f1 | xargs -I{} test "{}" = "$(GITLEAKS_SHA256)"; \
+	fi
+	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
 	$(GITLEAKS) detect --source . --no-banner --redact >"$$log" 2>&1; rc=$$?; cat "$$log"; \
 	test $$rc -eq 0 && grep -q -E '[1-9][0-9]* commits scanned' "$$log"
 
