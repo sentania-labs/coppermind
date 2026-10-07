@@ -138,15 +138,13 @@ clean: down db-down
 # containers, run as the calling user. Both read the same committed config, so
 # a developer sees what CI sees.
 TRIVY_VERSION ?= 0.74.0
-GITLEAKS_VERSION ?= v8.30.1
 TRIVY_CACHE ?= $(HOME)/.cache/trivy
 DOCKER_SOCK ?= /var/run/docker.sock
 DOCKER_SOCK_GID := $(shell stat -c %g $(DOCKER_SOCK) 2>/dev/null || echo 0)
-# In a git worktree .git is a file pointing outside the checkout; mount the
-# common dir read-only so gitleaks can read history from inside the container.
-GIT_COMMON := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-GIT_COMMON_MOUNT := $(if $(filter $(CURDIR)/%,$(GIT_COMMON)),,$(if $(GIT_COMMON),-v "$(GIT_COMMON):$(GIT_COMMON):ro",))
 
+# Trivy: ship the binary on CI runners and developers; fall back to the
+# pinned container only when the binary is absent.  scan-fs and scan-image
+# are never called from check-local, so the docker fallback is acceptable.
 ifneq ($(shell command -v trivy 2>/dev/null),)
 TRIVY = trivy --cache-dir "$(TRIVY_CACHE)"
 else
@@ -158,12 +156,10 @@ TRIVY = mkdir -p "$(TRIVY_CACHE)" && docker run --rm \
 	aquasec/trivy:$(TRIVY_VERSION) --cache-dir /cache
 endif
 
-ifneq ($(shell command -v gitleaks 2>/dev/null),)
+# gitleaks: the worker image ships the binary (v8.30.1) so check-local can
+# always invoke it directly.  Docker is neither required nor permitted in
+# workers.  The variable stays so callers do not need to change.
 GITLEAKS = gitleaks
-else
-GITLEAKS = docker run --rm --user $(shell id -u):$(shell id -g) \
-	-v "$(CURDIR):/repo" $(GIT_COMMON_MOUNT) -w /repo ghcr.io/gitleaks/gitleaks:$(GITLEAKS_VERSION)
-endif
 
 scan: scan-deps scan-secrets scan-fs
 
