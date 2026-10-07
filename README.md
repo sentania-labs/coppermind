@@ -319,7 +319,8 @@ into and the scope it skips.
 
 ```bash
 make setup            # uv workspace: shared package plus the services
-make check            # lint, types, unit tests, compose validity, house rules
+make check            # lint, types, unit tests, compose validity, house rules, node tests
+make check-local      # same checks minus Docker and Node; the target workers and minimal CI runners use
 make db-up test-integration db-down   # the PostgreSQL backed tests
 make scan             # dependency, secret and repository scans, as CI runs them
 make image            # build the images locally
