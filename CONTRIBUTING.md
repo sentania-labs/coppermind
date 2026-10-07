@@ -4,14 +4,15 @@ Thanks for helping. This page is the whole process; there is no separate wiki.
 
 ## Run it locally
 
-Prerequisites: [uv](https://docs.astral.sh/uv/), Docker with Compose at the
-version the [quickstart](README.md#quickstart) names, Python 3.12 (uv will
-fetch it if you do not have it), and Node 22 with npm, which `make check`
+Prerequisites: [uv](https://docs.astral.sh/uv/) (for all Python checks), Docker with Compose at the
+version the [quickstart](README.md#quickstart) names (for `compose-check` and `make check`), Python 3.12 (uv will
+fetch it if you do not have it), and Node 22 with npm, which `make test-node`
 needs for the Obsidian Sync helper's tests.
 
 ```bash
 make setup                             # sync the uv workspace
-make check                             # what CI's `checks` job runs
+make check                             # what CI's `checks` job runs (lint, types, tests, compose, house rules, plus the Node test)
+make check-local                       # same checks minus Docker and Node; the target workers and minimal CI runners use
 make db-up test-integration db-down    # the PostgreSQL backed tests
 make scan                              # dependency, secret and repository scans
 make up                                # the stack, on 127.0.0.1 ports 8080 and 8082

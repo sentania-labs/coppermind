@@ -2,6 +2,7 @@
 # CI never hand-copies a command; if a gate changes, it changes here.
 SHELL := /bin/bash
 .PHONY: setup lint typecheck test test-integration check \
+        check-local \
         image image-store image-api image-admin image-git image-obsidian-sync up down logs smoke failure sync-smoke \
         scan scan-deps scan-secrets scan-fs scan-image \
         compose-check prose-check db-up db-down clean
@@ -22,6 +23,11 @@ typecheck:
 # Unit tests. No database, no containers, no network.
 test:
 	uv run pytest -q
+
+# Obsidian Sync is a Node service; workers and minimal CI runners lack Node.
+# keep this behind `make test-node` so check-local (which has no Docker or Node)
+# can still pass everywhere.
+test-node:
 	npm --prefix services/obsidian-sync test
 
 # PostgreSQL backed tests. `make db-up` starts a throwaway server on 5433 so
@@ -43,7 +49,11 @@ db-down:
 	-docker rm -f coppermind-test-db >/dev/null 2>&1
 
 # Everything a pull request must pass before an image is built.
-check: lint typecheck test compose-check prose-check
+check: check-local compose-check test-node
+
+# Everything in check that needs no Docker or Node. Workers and minimal CI
+# runners use this target so one policy covers both.
+check-local: setup lint typecheck test prose-check scan-deps scan-secrets
 
 # `docker compose config` parses and validates the quickstart and the sync
 # simulation, which catches a broken quickstart before anyone tries to run it.
@@ -128,15 +138,13 @@ clean: down db-down
 # containers, run as the calling user. Both read the same committed config, so
 # a developer sees what CI sees.
 TRIVY_VERSION ?= 0.74.0
-GITLEAKS_VERSION ?= v8.30.1
 TRIVY_CACHE ?= $(HOME)/.cache/trivy
 DOCKER_SOCK ?= /var/run/docker.sock
 DOCKER_SOCK_GID := $(shell stat -c %g $(DOCKER_SOCK) 2>/dev/null || echo 0)
-# In a git worktree .git is a file pointing outside the checkout; mount the
-# common dir read-only so gitleaks can read history from inside the container.
-GIT_COMMON := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-GIT_COMMON_MOUNT := $(if $(filter $(CURDIR)/%,$(GIT_COMMON)),,$(if $(GIT_COMMON),-v "$(GIT_COMMON):$(GIT_COMMON):ro",))
 
+# Trivy: ship the binary on CI runners and developers; fall back to the
+# pinned container only when the binary is absent.  scan-fs and scan-image
+# are never called from check-local, so the docker fallback is acceptable.
 ifneq ($(shell command -v trivy 2>/dev/null),)
 TRIVY = trivy --cache-dir "$(TRIVY_CACHE)"
 else
@@ -148,11 +156,24 @@ TRIVY = mkdir -p "$(TRIVY_CACHE)" && docker run --rm \
 	aquasec/trivy:$(TRIVY_VERSION) --cache-dir /cache
 endif
 
+# gitleaks: shipped on CI runners and the worker image (v8.30.1);
+# fall back to downloading the pinned release when the binary is absent.
+# This keeps scan-secrets self-sufficient: workers use the PATH binary,
+# CI fetches the release binary into a local cache when gitleaks is absent.
+# The download path is never reached by check-local on the worker (gitleaks
+# is on PATH there), so check-local's dry-run contains no download commands.
+GITLEAKS_VERSION ?= v8.30.1
+GITLEAKS_BIN_DIR ?= $(HOME)/.cache/gitleaks
+GITLEAKS_BIN ?= $(GITLEAKS_BIN_DIR)/gitleaks
+GITLEAKS_SHA256 ?= 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+# When gitleaks is on PATH use it directly; otherwise point at the cached
+# binary that scan-secrets will download.  The download lives inside the
+# scan-secrets recipe so dry-runs stay clean (no curl/wget on the worker).
 ifneq ($(shell command -v gitleaks 2>/dev/null),)
 GITLEAKS = gitleaks
 else
-GITLEAKS = docker run --rm --user $(shell id -u):$(shell id -g) \
-	-v "$(CURDIR):/repo" $(GIT_COMMON_MOUNT) -w /repo ghcr.io/gitleaks/gitleaks:$(GITLEAKS_VERSION)
+GITLEAKS = $(GITLEAKS_BIN)
 endif
 
 scan: scan-deps scan-secrets scan-fs
@@ -164,8 +185,19 @@ scan-deps:
 # Committed secrets, full git history (CI checks out with fetch-depth 0).
 # gitleaks exits 0 when git itself fails and it scanned nothing, so the gate
 # also requires that at least one commit was actually scanned.
+# When gitleaks is not on PATH (CI), download the pinned binary into the
+# local cache first; workers already have it on PATH so this step is a no-op.
 scan-secrets:
-	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
+	@if command -v gitleaks >/dev/null 2>&1 || test -x "$(GITLEAKS_BIN)"; then \
+	  : ; \
+	else \
+	  mkdir -p "$(GITLEAKS_BIN_DIR)" && \
+	  curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/$(GITLEAKS_VERSION)/gitleaks_$(GITLEAKS_VERSION:v%=%)_linux_x64.tar.gz" -o "$(GITLEAKS_BIN_DIR)/gitleaks.tar.gz" && \
+	  echo "$(GITLEAKS_SHA256)  $(GITLEAKS_BIN_DIR)/gitleaks.tar.gz" | sha256sum -c - && \
+	  tar -xzf "$(GITLEAKS_BIN_DIR)/gitleaks.tar.gz" -C "$(GITLEAKS_BIN_DIR)" gitleaks && \
+	  chmod +x "$(GITLEAKS_BIN)"; \
+	fi
+	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
 	$(GITLEAKS) detect --source . --no-banner --redact >"$$log" 2>&1; rc=$$?; cat "$$log"; \
 	test $$rc -eq 0 && grep -q -E '[1-9][0-9]* commits scanned' "$$log"
 
