@@ -33,7 +33,7 @@ from coppermind_admin.auth import (
     InvalidClaimCode,
     SignedSessions,
 )
-from coppermind_admin.pages import fields, problems, sync
+from coppermind_admin.pages import fields, problems, search_index, sync
 
 SERVICE = "coppermind-admin"
 COOKIE = "coppermind_admin_session"
@@ -245,6 +245,7 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
     app.state.tag_counts = fields.store_tag_counter(settings)
     app.include_router(sync.router(settings))
     app.include_router(problems.router(settings))
+    app.include_router(search_index.router(settings))
 
     @app.middleware("http")
     async def protect_forms(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -349,7 +350,7 @@ required></label><button>Log in</button></form>""",
 {counters}
 <p><a href="/admin/keys">API Keys</a> | <a href="/admin/settings">Settings</a> |
 <a href="/admin/fields">Fields and tags</a> | <a href="/admin/sync">Obsidian Sync</a> |
-<a href="/admin/problems">Problems</a></p>
+<a href="/admin/problems">Problems</a> | <a href="/admin/search-index">Search index</a></p>
 <form method="post" action="/v1/admin/logout"><button>Log out</button></form>""",
             )
         )

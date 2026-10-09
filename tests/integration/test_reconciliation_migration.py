@@ -12,6 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coppermind.db.models import Note
+from coppermind.settings import Wiring
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -34,7 +35,7 @@ def _alembic(database_url: str, password_file: Path, command: str, revision: str
 async def test_downgrade_discards_rebuildable_duplicate_paths_before_restoring_uniqueness(
     migrated_database: str,
     session_factory: async_sessionmaker[AsyncSession],
-    tmp_path: Path,
+    wiring: Wiring,
 ):
     now = datetime.now(tz=UTC)
     shared = "Review/Reused.md"
@@ -66,8 +67,8 @@ async def test_downgrade_discards_rebuildable_duplicate_paths_before_restoring_u
             ]
         )
 
-    password = tmp_path / "postgres-password"
-    password.write_text("coppermind\n", encoding="utf-8")
+    password = wiring.db_password_file
+    assert password is not None
     try:
         _alembic(migrated_database, password, "downgrade", "0002")
         async with session_factory() as session:

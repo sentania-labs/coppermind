@@ -29,27 +29,35 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_URL = "postgresql://coppermind@127.0.0.1:5433/coppermind_test"
 
 
+def _split_url() -> tuple[str, str]:
+    """The test server's URL without a password, and the password to use.
+
+    The services refuse a URL carrying a password, because credentials are
+    files. A test server handed over as one URL with its password in it, which
+    is how a CI service container or a worker's database usually arrives, is
+    split here: the password goes into the file the fixtures write, and the URL
+    without it is what the code under test sees.
+    """
+    url = make_url(os.environ.get("COPPERMIND_TEST_DATABASE_URL", DEFAULT_URL))
+    password = url.password if url.password is not None else "coppermind"
+    return url._replace(password=None).render_as_string(hide_password=False), str(password)
+
+
 def _base_url() -> str:
-    url = make_url(os.environ.get("COPPERMIND_TEST_DATABASE_URL", DEFAULT_URL))
-    return url._replace(password=None).render_as_string(hide_password=False)
+    return _split_url()[0]
 
 
-def _write_test_password(path: Path) -> None:
-    """Accept a harness URL while keeping production wiring file-based."""
-    url = make_url(os.environ.get("COPPERMIND_TEST_DATABASE_URL", DEFAULT_URL))
-    if url.password is not None:
-        path.touch(mode=0o600)
-        path.write_text(url.password, encoding="utf-8")
-    else:
-        path.write_text("coppermind\n", encoding="utf-8")
+def _password_file(directory: Path) -> Path:
+    path = directory / "postgres-password"
+    path.write_text(_split_url()[1] + "\n", encoding="utf-8")
+    return path
 
 
 @pytest.fixture(scope="session", autouse=True)
 def migrated_database(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     """Bring the test database to the current migration head, once."""
     url = _base_url()
-    password = tmp_path_factory.mktemp("database") / "postgres-password"
-    _write_test_password(password)
+    password = _password_file(tmp_path_factory.mktemp("database"))
     environment = {
         **os.environ,
         "COPPERMIND_DATABASE_URL": url,
@@ -67,8 +75,7 @@ def migrated_database(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]
 
 @pytest.fixture
 def wiring(tmp_path: Path) -> Wiring:
-    password = tmp_path / "postgres-password"
-    _write_test_password(password)
+    password = _password_file(tmp_path)
     return Wiring(data_dir=tmp_path / "data", database_url=_base_url(), db_password_file=password)
 
 
@@ -80,7 +87,16 @@ async def session_factory(wiring: Wiring) -> AsyncIterator[async_sessionmaker[As
     # temporary directory, so leftover rows would point at files that are gone.
     async with engine.begin() as connection:
         await connection.execute(
-            sa.text("TRUNCATE TABLE notes, sources, recorded_rejections, outbox_events CASCADE")
+            sa.text(
+                "TRUNCATE TABLE notes, sources, recorded_rejections, outbox_events, "
+                "search_documents CASCADE"
+            )
+        )
+        await connection.execute(
+            sa.text(
+                "UPDATE search_index_state SET last_changed_at = NULL, "
+                "rebuild_started_at = NULL, rebuild_completed_at = NULL, rebuild_error = NULL"
+            )
         )
     try:
         yield factory

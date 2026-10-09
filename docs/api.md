@@ -26,7 +26,10 @@ The story behind these decisions is [architecture.md](architecture.md).
   null}`. Note cursors use permanent identities, so paging is stable across renames.
   Source cursors use the first-ingested timestamp and source identity. Invalid
   source cursors, including timestamps without a UTC offset, return 422
-  `validation_error`.
+  `validation_error`. Search cursors resume after the last hit by rank and
+  then by kind and identifier, and are tied to the `q` they paged: sending one
+  with a different `q` answers 422 `validation_error`. An edit that changes a
+  note's rank between pages can move it across the page boundary.
 
 ### Error codes
 
@@ -104,7 +107,7 @@ is still returned. Dashboard reads never write into notes.
 
 | Method and path | Scope | What it does | Success | Failure |
 |---|---|---|---|---|
-| `GET /v1/search` | `search:read` | Full-text search with `q` (websearch syntax), `reviewed_only`, `include_unreviewed`, and the same filters as listing | 200, page including `rank` and a `snippet`; every item carries `reviewed` | 503 `metadata_unavailable` |
+| `GET /v1/search` | `notes:read` | Full-text search over note bodies and titles and over the generated source pages under the sources folder. `q` (1 to 500 characters) is read the way a search box is: words, `"quoted phrases"`, `or`, and `-word` to exclude. English stemming applies, so `runs` also finds `running`, and an excluded word is excluded in every form: `budget -runs` finds no note that says `running`. Takes every listing filter (`folder, reviewed, type, context, account, from, to, tag, state`) with listing's meaning, and pages the same way, by `cursor` and `limit` | 200, page of `{id, kind, title, path, folder, excerpt, rank, state}`, best match first. `kind` is `note`, or `source` for a generated source page, whose `id` is then the source identifier. `excerpt` is a short passage with every matched word between `**` markers. `rank` orders one answer and means nothing across answers | 422 `validation_error` for an empty `q`, a bad filter, or a cursor from a different `q`; 503 `metadata_unavailable`, never an empty page |
 | `POST /v1/attachments` | `notes:write` | Upload a file (multipart); name comes from the filename | 201, `{path, embed: "![[name.png]]", size_bytes}` | 413 over the plan's file-size limit; 409 |
 | `GET /v1/attachments/{name}` | `notes:read` | Download an attachment | 200 | 404 |
 | `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, rejected_ingests, name_collisions, unparseable_files}`, computed from the metadata mirror and recorded rejections; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false` | 200 | 503 `metadata_unavailable` or `store_unavailable` |
@@ -129,6 +132,7 @@ requiring hand-populated configuration.
 | Frontmatter schema | `GET/PUT /v1/admin/schema`, `POST /v1/admin/schema/rename-key {from, to}` | Keys, kinds, and vocabularies; renaming a key runs the migration job that rewrites every note through the store |
 | Fields and tags (`/admin/fields`) | `POST /v1/admin/fields {revision, ...}` | Add, edit and retire keys (kind, required and required when, allowed values each with a one-line meaning, default, guidance); every tag in use with its note count from the mirror, a meaning and aliases per listed tag, and open or closed tags. Saves with the same revision check Settings uses; the role map is carried over untouched, and nothing here rewrites a note |
 | Filing rules | `GET/PUT /v1/admin/rules`, `POST /v1/admin/rules/preview {note_id}` | The ordered rules a note is filed by, with a dry run ("what would this note file as") before committing to a change |
+| Search index (`/admin/search-index`) | `POST /v1/admin/search-index/rebuild` | The number of notes and source pages indexed, when the index last changed and when it was last rebuilt, in the operator's timezone, and a Rebuild index button. A rebuild runs in the store's background, throws every entry away, except the last indexed text of a note that is currently unparsed, and reads the notes filesystem again; search keeps answering from the old entries until the new ones commit |
 | Jobs | `GET /v1/admin/jobs`, `POST /v1/admin/jobs {kind}`, `GET /v1/admin/jobs/{id}` | Run reconcile, a full rehash, rebuild metadata from disk, reindex, or rebuild projections, and see the history of each |
 | Sources | `GET /v1/admin/sources`, `GET /v1/admin/notes/problems` | Browse sources; see notes the reconciler could not parse or file |
 
@@ -155,6 +159,11 @@ The calls it exposes, grouped by what they touch:
 - **Control state:** get and put a named state file (`settings`, `schema`,
   `rules`, `keys`, `admin`), each guarded by the revision the caller last
   read.
+- **Search:** full-text search with listing's filters (`GET
+  /internal/v1/search`), the index's counts and times (`GET
+  /internal/v1/search/index`), and starting a rebuild of the index from the
+  notes filesystem (`POST /internal/v1/jobs/rebuild_search_index`, 202 with
+  `started: false` when one is already running).
 - **Jobs and status:** start a job by kind, check a job's progress, read
   overall store status, list the problems Admin shows.
 
@@ -184,8 +193,9 @@ retry that could create a duplicate.
   Admin so the pair can be reconciled by a person.
 - **Unparseable files are never rewritten.** Malformed frontmatter, a file
   that is not valid Markdown, or content that will not decode gets recorded
-  as `unparsed` with a reason, and its body is still indexed if it can be
-  decoded at all.
+  as `unparsed` with a reason. Search keeps finding it by the text it was
+  last indexed with, at the path it is now found at, and reports it with
+  `state: "unparsed"` until the file parses again.
 - **A move never breaks a link; a rename can.** Obsidian resolves
   `[[wikilinks]]` by filename, so the curator only ever moves a note
   between folders and never renames one. The rename endpoint exists for a
