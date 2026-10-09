@@ -1,6 +1,6 @@
 # STATUS
 
-What works against `main` today. Updated 2026-10-01. Every claim here was
+What works against `main` today. Updated 2026-10-09. Every claim here was
 checked against a running compose stack on that date, not against CI alone.
 
 This is the first slice of the build. The shape is deliberately narrow: one
@@ -537,6 +537,21 @@ vertical path proved end to end, then widened.
   lifecycle through Admin. Neither Node tests nor Compose ran in this worker,
   which has no Node, npm or Docker; those runtime checks belong to branch CI.
   No real account was used, and phone delivery remains an operator proof.
+- **v0.2.0 shipped (2026-10-03).** Move and rename API (#34), sources and status
+  views with durable problem records (#36), and the Fields and tags Admin page
+  (#37). The Fields page manages frontmatter field kinds, requiredness, allowed
+  values, tag vocabularies, tag aliases, and open/closed tag mode.
+  `GET /v1/notes/{id}/sources` lists the sources a note cites. Admin's Problems
+  page lists every refused ingest, every note identity collision, and every
+  unparseable file from durable records under `/data/state/problems/`.
+  Overview counters in Admin count notes by state, sources, and rejections.
+- **Sync cap, 2026-10-09.** The operator's account is Sync Plus (10 GB total,
+  200 MB per file). The A3 attachment copy reads the cap from the
+  `sync.max_file_bytes` and `sync.max_total_bytes` settings, defaulting to 200
+  MB and 10 GB (not the 5 MiB / 1 GiB Standard limits). The count of 49
+  oversized files from the addendum no longer applies.
+- **Vocabulary gate, 2026-10-02.** Closed. Tags grow organically; the Fields
+  page is the tool. No mapping pass is planned.
 
 ## Not built yet
 
@@ -587,7 +602,9 @@ in the tree, so do not read the absence as a decision to leave it out.
   (`/admin/settings`) and Obsidian Sync (`/admin/sync`) now exist:
   signed-in operators can create and revoke keys, edit every product setting
   with revision checks, and guide the sync client through email, password,
-  optional MFA and a vault name.
+  optional MFA and a vault name. Problems (`/admin/problems`), Fields and tags
+  (`/admin/fields`) are also available: operators can view durable problem
+  records, manage frontmatter field kinds and tag vocabularies.
   `python3 -m coppermind_store.keys` remains a recovery path when Admin is
   unavailable. Rendered-page tests and a local uvicorn/curl run exercise the
   pages; compose smoke covers them but requires Docker to execute.
