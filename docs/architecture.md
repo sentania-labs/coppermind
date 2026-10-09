@@ -66,10 +66,15 @@ blast radius if it goes down.
 | `obsidian-sync` | Supervises the client that will carry the notes filesystem to a phone and a laptop through Obsidian's own Sync service. | No devices see new notes; nothing on the server side is affected. |
 | PostgreSQL | Holds only mirrors and derived data: note metadata, search index, job history, key hashes. Every row here can be rebuilt from `/data` by one job. | Every note operation through the API stops, including a by-ID read, because resolving a note's path goes through this mirror; listing and search stop too. A file edited directly on the notes filesystem, bypassing the API, is untouched and stays editable. Nothing is lost; everything catches up once PostgreSQL returns. |
 
-Two more are designed but not built yet, and have no image or code in the
-tree: `curator` (files a reviewed note into the right folder by rule) and
-`indexer` (keeps the search index current). Their absence is expected at this
-point in the build; see [roadmap.md](roadmap.md) for when they land.
+The `indexer` (keeps the search index current) runs inside the store
+process rather than as a service of its own: it writes PostgreSQL full-text
+entries in the same transactions as the mirror rows they describe, catches up
+after each reconciliation pass, and rebuilds the whole index from the notes
+filesystem on request, so it needs no image, no port and no volume of its own.
+One more is designed but not built yet, and has no image or code in the tree:
+`curator` (files a reviewed note into the right folder by rule). Its absence
+is expected at this point in the build; see [roadmap.md](roadmap.md) for when
+it lands.
 
 ## How data moves
 
@@ -92,9 +97,9 @@ a phone / laptop  <--Obsidian Sync-->  the same notes files  <--commits-- git
                                         and picks up anything changed on a device
 ```
 
-Once curator and indexer exist, a note marked reviewed on a device gets
-picked up the same way and filed into the right folder, then indexed for
-search. Nothing in this design depends on that pickup happening instantly:
+A note changed on a device is indexed for search in the same pass that
+mirrors it. Once the curator exists, a note marked reviewed on a device gets
+picked up the same way and filed into the right folder. Nothing in this design depends on that pickup happening instantly:
 every consumer also re-checks its own work on a schedule, so a missed
 notification is a delay, never data loss.
 
@@ -140,8 +145,8 @@ A merge to `main` lands the work. A pushed, annotated version tag
 publish, the signing, and a GitHub release, every image stamped with the
 same version. The plan named six images (api, store, git, obsidian-sync,
 curator, indexer) plus admin as a seventh once the captain's amendment made
-it its own service; curator and indexer have no code yet, so today's release
-publishes five: `store`, `api`, `admin`, `git`, and `obsidian-sync`.
+it its own service; the curator has no code yet and the indexer runs inside
+the store image, so today's release publishes five: `store`, `api`, `admin`, `git`, and `obsidian-sync`.
 Bootstrap and the migration step reuse the store image rather than shipping
 their own. There is no separate version-bump pull request. The full
 mechanics and the one manual step the first release needs are in

@@ -41,9 +41,13 @@ from coppermind.store_protocol import (
     ProblemInfo,
     ProjectionNotPlaced,
     RebuildMetadataResult,
+    RebuildSearchIndexResult,
     RenameNote,
     ReplaceNote,
     SchemaDocument,
+    SearchHit,
+    SearchIndexStatus,
+    SearchQuery,
     SourceArtifactDocument,
     SourceClaimMissing,
     SourceId,
@@ -226,6 +230,22 @@ class HttpStoreClient:
     async def rebuild_metadata(self) -> RebuildMetadataResult:
         response = await self._send("POST", f"{INTERNAL_PREFIX}/jobs/rebuild_metadata")
         return RebuildMetadataResult.model_validate(response.json())
+
+    async def search(self, query: SearchQuery) -> Page[SearchHit]:
+        response = await self._send(
+            "GET",
+            f"{INTERNAL_PREFIX}/search",
+            params=query.model_dump(mode="json", by_alias=True, exclude_none=True),
+        )
+        return Page[SearchHit].model_validate(response.json())
+
+    async def get_search_index_status(self) -> SearchIndexStatus:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/search/index")
+        return SearchIndexStatus.model_validate(response.json())
+
+    async def rebuild_search_index(self) -> RebuildSearchIndexResult:
+        response = await self._send("POST", f"{INTERNAL_PREFIX}/jobs/rebuild_search_index")
+        return RebuildSearchIndexResult.model_validate(response.json())
 
     async def is_ready(self) -> bool:
         """True when the store reports itself ready. Never raises."""

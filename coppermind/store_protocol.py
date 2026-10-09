@@ -554,6 +554,73 @@ class Page[T](BaseModel):
     next_cursor: str | None = None
 
 
+class SearchQuery(NoteQuery):
+    """A full-text question, with the same filters and paging as listing.
+
+    `q` is read the way a search box is: words, "quoted phrases", `or` and a
+    leading `-` to exclude a word. Every listing filter narrows the result the
+    same way it narrows a listing. A filter on a frontmatter field (`reviewed`,
+    `type`, `context`, `account`, the dates and `tag`) matches notes only,
+    because a source projection carries none of those fields.
+    """
+
+    q: str = Field(min_length=1, max_length=500)
+
+    @field_validator("q")
+    @classmethod
+    def has_words(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must contain a word to search for")
+        return value
+
+
+SearchKind = Literal["note", "source"]
+"""A note a person owns, or a generated page projecting a source."""
+
+
+class SearchHit(BaseModel):
+    """One matching note or source projection, best match first.
+
+    `kind` says which: for a `source` the `id` is the source identifier, and
+    the page at `path` is the generated projection under the sources folder.
+    `excerpt` is a short passage with every matched word between `**` markers.
+    `rank` orders the results; it compares hits within one answer and means
+    nothing on its own.
+    """
+
+    id: str
+    kind: SearchKind
+    title: str
+    path: str
+    folder: str
+    excerpt: str
+    rank: float
+    state: NoteState
+
+
+class SearchIndexStatus(BaseModel):
+    """What Admin shows about the index.
+
+    `last_updated_at` is the last time any entry was added, changed or removed,
+    or a rebuild finished, and is None for an index nothing has written yet.
+    """
+
+    notes: int
+    sources: int
+    last_updated_at: datetime | None = None
+    rebuild_running: bool = False
+    rebuild_started_at: datetime | None = None
+    rebuild_completed_at: datetime | None = None
+    rebuild_error: str | None = None
+
+
+class RebuildSearchIndexResult(BaseModel):
+    """Whether this request started a rebuild, and the index as it stands."""
+
+    started: bool
+    status: SearchIndexStatus
+
+
 class SourceSummary(BaseModel):
     id: SourceId
     provider: str
@@ -661,6 +728,12 @@ class Store(Protocol):
     async def list_folders(self) -> FolderTree: ...
 
     async def rebuild_metadata(self) -> RebuildMetadataResult: ...
+
+    async def search(self, query: SearchQuery) -> Page[SearchHit]: ...
+
+    async def get_search_index_status(self) -> SearchIndexStatus: ...
+
+    async def rebuild_search_index(self) -> RebuildSearchIndexResult: ...
 
 
 def etag_from_if_match(header: str | None) -> ETag:
