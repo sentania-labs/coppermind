@@ -91,6 +91,7 @@ async def test_a_fresh_store_counts_nothing(store: LocalStore):
         "rejected_ingests": 0,
         "name_collisions": 0,
         "unparseable_files": 0,
+        "excluded_count": 0,
     }
 
 

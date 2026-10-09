@@ -653,6 +653,7 @@ class StatusCounters(BaseModel):
     rejected_ingests: int
     name_collisions: int
     unparseable_files: int
+    excluded_count: int = 0
 
 
 class StatusResponse(BaseModel):
