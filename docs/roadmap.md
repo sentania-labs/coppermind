@@ -1,6 +1,6 @@
 # Coppermind roadmap
 
-Current as of 2026-10-01. This is a living status board, not an archive: it
+Current as of 2026-10-09. This is a living status board, not an archive: it
 says what is merged into `main`, what is next in the order the approved plan
 laid out, and what is deliberately not being built yet and why. The design
 behind all of it, including what has already diverged from the original
@@ -43,46 +43,26 @@ two (#26, #27) on 2026-10-01, after v0.1.0 was tagged at #24 on 2026-09-30:
 | 2026-09-30 | #24 | Admin API Keys and Settings pages, graphical key management and setting edits with revision checks (v0.1.0 tagged on this commit) |
 | 2026-10-01 | #26 | CONTRIBUTING: package visibility follows the repository, documenting that the first tag made the five GHCR packages public and that nothing in CI changes that afterward |
 | 2026-10-01 | #27 | Fix Admin's CSRF session binding and Git setting bounds (PR #20 follow-up), with regression tests pinning the session-binding fix |
+| 2026-10-03 | #34 | Move and rename API: `POST /v1/notes/{id}/move` and `POST /v1/notes/{id}/rename` with identity preservation, plus `GET /v1/folders` |
+| 2026-10-03 | #36 | Sources and status views: `GET /v1/notes/{id}/sources`, overview counters in Admin, durable problem records under `/data/state/problems/` |
+| 2026-10-03 | #37 | Fields and tags Admin page with tag aliases on every write and `GET /v1/schema` via the store |
 
 Everything above runs from a plain `docker compose up -d` with nothing
 hand-configured first, and is proven by the same automated checks that run
-in CI.
+in CI. This includes the v0.2.0 items (wave 1: Docs, A0, move and rename;
+wave 2: Fields and tags #30, sources and status A4).
 
 ## Next, in order
 
-Milestone 2 is split into three waves as set out in issue 28. Each wave is
-self-contained and delivers a usable step in the core workflow.
-
-### Wave 1: docs, small fixes, move and rename
-
-1. **Documentation pass.** README, STATUS, and the addendum are current and
-   accurate against a running stack.
-2. **A0 small fixes.** Remaining paper-cuts surfaced by the first live review:
-   a wikilink from the opening note to its `_Sources` page, and the `folder`
-   parameter on `POST /v1/notes`.
-3. **Move and rename.** `POST /v1/notes/{id}/move` and `POST
-   /v1/notes/{id}/rename`, keeping a note's identity across both, plus the
-   `GET /v1/folders` folder tree endpoint. Filed notes stay mirrored and
-   projections are not clobbered.
-
-### Wave 2: Fields, tags, indexer, search, status dashboard
-
-4. **Fields and tags page** (#30). Admin page for managing frontmatter field
-   kinds and vocabularies, renaming keys with the migration job, and the
-   tags vocabulary.
-5. **Indexer and search.** Full-text search over note bodies through PostgreSQL;
-   `GET /v1/search` endpoint.
-6. **Sources, status, and problems dashboard** (A4). `GET /v1/notes/{id}/sources`
-   to list the sources a note cites; overview counters in Admin; a problems
-   view at `GET /v1/admin/notes/problems` for notes the reconciler could not
-   parse or file.
+v0.2.0 shipped wave 1 (docs, A0 small fixes, move and rename) and wave 2
+(Fields and tags #30, sources and status A4). v0.3.0 finishes milestone 2.
 
 ### Wave 3: curator and filing rules, failure matrix
 
-7. **Curator and filing rules.** The curator files a reviewed note into the
+1. **Curator and filing rules.** The curator files a reviewed note into the
    right folder by rule, with the Admin pages for rules (create, preview,
    commit), frontmatter schema, and the jobs page.
-8. **Failure matrix.** A structured view of all reconciliation failures in
+2. **Failure matrix.** A structured view of all reconciliation failures in
    Admin, never written into a note (operator decisions, issue 28), so the
    person sees the problem report on screen rather than in their notes.
 
@@ -134,7 +114,7 @@ exhaustive; the full one is in [architecture.md](architecture.md)'s
 | Deferred | Why | Revisit when |
 |---|---|---|
 | A8: Vectors and pgvector | Hybrid search is a follow-on to full-text; a second stateful system would break the one-volume restore and add a consistency problem for a few thousand notes that does not need it yet | A concrete search need plain text search cannot serve |
-| A9: Import that is not the adopt reconciler, plus the on-demand rebuild job | Coppermind's remote vault (the Obsidian Sync target) starts empty on purpose; pointing the reconciler at years of existing notes would rewrite and push all of them at once | After the notes filesystem has proven itself in real use, as a deliberate one-time Admin action, and whenever a mirror needs rebuilding from disk |
+| A9: Rebuild-everything job plus adoption control (issue 40) | Coppermind's remote vault (the Obsidian Sync target) starts empty on purpose; an import endpoint is unnecessary since `POST /v1/notes` with folder already serves a client-side import; a bulk import would rewrite and push all notes at once | After the notes filesystem has proven itself in real use, as a deliberate one-time Admin action, and whenever a mirror needs rebuilding from disk |
 | Redis for event delivery | The PostgreSQL outbox already gives correctness through reconciliation; Redis only helps an external consumer, and there is not one yet | Something outside this system needs to consume Coppermind's events |
 | Rewriting links when a note is renamed | Filing (a move) never breaks a link; only a rename can, and that gap is documented rather than patched around | The first real broken-link report |
 | Kubernetes and the Helm chart | Milestone 1 and 2 are still being proven on Compose; standing up the chart before the core path works would be building on an unproven foundation | Milestone 3 starts |
@@ -146,12 +126,23 @@ exhaustive; the full one is in [architecture.md](architecture.md)'s
 The first real workflow was checked against v0.1.0 on a live instance on
 2026-10-01. [roadmap-addendum-2026-10-01.md](roadmap-addendum-2026-10-01.md)
 records what that review found, the operator's decisions from it, and the
-reasoning behind the plan above. The asks it raised are tracked as
+reasoning behind the plan. The asks it raised are tracked as
 [#28](https://github.com/sentania-labs/coppermind/issues/28), with the
-fields and tags guidance split out as [#30](https://github.com/sentania-labs/coppermind/issues/30)
+fields and tags split out as [#30](https://github.com/sentania-labs/coppermind/issues/30)
 and dossiers as [#31](https://github.com/sentania-labs/coppermind/issues/31).
 "Next, in order" and the milestones above already fold that triage in, so
-this document and the addendum should no longer disagree on order.
+this document and the addendum no longer disagree on order.
+
+### Corrections from the vault side (2026-10-09)
+
+Two items from the addendum have been resolved:
+
+- **Sync cap.** The operator's account is Sync Plus (10 GB total, 200 MB per
+  file). The A3 attachment copy reads the cap from a setting, defaulting to
+  200 MB rather than the prior smaller per-file limit. The 49-oversized-files
+  figure is removed. The operator's account is Plus, not Standard.
+- **Vocabulary-mapping gate.** Closed by the 2026-10-02 decision. Tags grow
+  organically; the Fields page is the tool. No mapping pass is planned.
 
 ## What this does not cover
 
