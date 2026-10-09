@@ -31,7 +31,6 @@ STATE_FILES: dict[str, str] = {
     "rules": "yaml",
     "keys": "json",
     "admin": "json",
-    "reconciler_excluded": "json",
     "reconciler_exclusions": "json",
 }
 

@@ -127,8 +127,9 @@ vertical path proved end to end, then widened.
   Any other key the schema marks optional is left out even when it ships a
   default, because the minimum necessary bytes go into a file a person owns.
   Pointing the
-  store at a notes filesystem that already holds notes rewrites every one of
-  them once. That happens gradually: a fixed 50 adoptions per pass, counted in
+  store at a notes filesystem that already holds notes rewrites each eligible
+  note once; excluded files stay byte-for-byte unchanged. That happens gradually:
+  a fixed 50 adoptions per pass, counted in
   files actually taken on rather than files tried, so an existing tree arrives
   over successive scans rather than as one burst through Obsidian Sync, and the
   remainder is simply picked up next pass. Adoption checks the observed hash
@@ -190,16 +191,28 @@ vertical path proved end to end, then widened.
   ingest wrote that and generated output is not a note a person made. Those
   files are still read, so a known note moved into one of those folders is
   followed there rather than reported gone; they are only never given an
-  identity. The `reconcile.excluded_folders` setting (default: `Templates` and
-  `_Templates`) lists user-configured folders the reconciler reads but never
-  adopts. The `reconcile.excluded_patterns` setting (default:
-  `*.excalidraw.md`, `*.canvas`, `*.kanban.md`) lists glob patterns matched
-  against file names. Files whose frontmatter carries an `excalidraw: true` or
-  `kanban-plugin: true` marker are also excluded from adoption. An already
-  filed note inside one of these places is followed just like in the sources
-  folder: the reconciler updates its mirror row but does not give it a new
-  identity. Admin's overview page shows how many files were skipped by
-  exclusion each pass.
+  identity. Adoption exclusions are now built and remove the adoption
+  prerequisite for migration. Admin Settings exposes `reconcile.excluded_folders`
+  and `reconcile.excluded_patterns` as plain inputs using JSON arrays and the
+  existing revision check. Default folders are `Templates/` and `_Templates/`
+  relative to the notes root, including their descendants. Trailing slashes
+  are optional. Default patterns are `*.excalidraw.md`, `*.canvas` and
+  `*.kanban.md`. Patterns are case-sensitive shell globs: those with `/` match
+  the relative path, others the filename; `*` can span path separators.
+  Files with a top-level `excalidraw-plugin` or `kanban-plugin` frontmatter
+  key are always excluded, regardless of the marker's value. Body text is not
+  a marker. A known identity is still followed in any excluded place, including
+  a file with a plugin marker, so filing a note there never makes it missing.
+  Canvas files are counted but never adopted, even if their pattern is removed;
+  only Markdown files are adoption candidates. Settings changes take effect on
+  the next pass without restart, including removal of a rule for an unchanged
+  file. Excluded files are reread each pass to keep this true.
+  Admin Problems shows the skipped count and each path with its first matching
+  rule (folder, then pattern, then plugin marker); the overview also shows the
+  count. One atomic state snapshot records the last completed pass, survives a
+  restart, and is rebuilt by reconciliation. Verification for this change uses
+  rendered Admin tests and PostgreSQL reconciliation tests; Compose was not
+  available in the worker.
 - `POST /v1/ingest` takes a source and the note to open for it, and creates
   both or neither. A deterministic `.external-id-<sha256>.json` file claims
   each `provider` plus `external_source_id` before the bundle is written. The

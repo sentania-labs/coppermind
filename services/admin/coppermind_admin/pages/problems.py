@@ -124,7 +124,9 @@ def router(wiring: Wiring) -> APIRouter:
             "Problems",
             '<h1>Problems</h1><p><a href="/admin">Overview</a></p>'
             "<p>Computed from the metadata mirror and recorded rejections. "
-            "Nothing is written into a note.</p>" + _problem_rows(problems),
+            "Nothing is written into a note.</p>"
+            f"<p>Files skipped by exclusion: {sum(p.kind == 'excluded' for p in problems)}</p>"
+            + _problem_rows(problems),
         )
 
     @routes.get("/admin/notes/{note_id}", response_class=HTMLResponse, include_in_schema=False)

@@ -78,5 +78,6 @@ testpaths = [
     "services/store/tests",
     "services/git/tests",
     "tests/ci",
+    "tests/test_adoption_exclusions.py",
 ]
 addopts = "--import-mode=importlib"

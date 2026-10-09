@@ -326,6 +326,7 @@ def test_status_returns_every_counter(api):
             "rejected_ingests": 0,
             "name_collisions": 0,
             "unparseable_files": 0,
+            "excluded_count": 0,
         }
     }
 

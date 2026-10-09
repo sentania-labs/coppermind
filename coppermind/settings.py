@@ -127,10 +127,28 @@ class ReconcileSettings(BaseModel):
         ],
         description=(
             "Glob patterns for files the reconciler never adopts. "
-            "Matches are against the file name. Files matching these patterns "
-            "are still followed if they carry a known identity."
+            "Patterns with / match the relative path; others match the file name. "
+            "Files matching these patterns "
+            "are still followed if they carry a known identity. "
+            "Frontmatter keys excalidraw-plugin and kanban-plugin always exclude adoption."
         ),
     )
+
+    @field_validator("excluded_folders")
+    @classmethod
+    def validate_excluded_folders(cls, values: list[str]) -> list[str]:
+        for value in values:
+            parts = value.rstrip("/").split("/")
+            if any(part in {"", ".", ".."} for part in parts) or "\\" in value:
+                raise ValueError("excluded folders must be relative paths within the notes root")
+        return values
+
+    @field_validator("excluded_patterns")
+    @classmethod
+    def validate_excluded_patterns(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() for value in values):
+            raise ValueError("excluded patterns must not be blank")
+        return values
 
 
 class GitSettings(BaseModel):
