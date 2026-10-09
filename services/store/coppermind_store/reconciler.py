@@ -39,6 +39,7 @@ from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from coppermind import frontmatter as fm
 from coppermind.db.models import Note, RecordedRejection
@@ -46,6 +47,7 @@ from coppermind.db.session import transaction
 from coppermind.logging import get_logger
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import MetadataUnavailable, NotesFilesystemUnavailable
+from coppermind_store import indexer
 from coppermind_store.fs import content_hash, resolve
 from coppermind_store.notes import _jsonable, _mirror_columns, _title_of
 from coppermind_store.rejections import reconcile_rejections
@@ -180,6 +182,7 @@ class Observation:
     mtime: datetime | None = None
     title: str | None = None
     frontmatter: dict[str, Any] | None = None
+    body: str | None = None
     path_derived: bool = False
 
 
@@ -291,6 +294,7 @@ async def run_reconciler(store: LocalStore, status: ReconcilerStatus | None = No
             log.exception("reconciliation failed", error_type=type(exc).__name__)
         else:
             status.completed()
+            await _index_after_pass(store)
             if full and counts["deferred"] == 0:
                 # Only a rehash that ran counts for the day. A deferred one
                 # stays due, because the full pass is the only thing that sees
@@ -302,6 +306,21 @@ async def run_reconciler(store: LocalStore, status: ReconcilerStatus | None = No
                 full=full,
                 **counts,
             )
+
+
+async def _index_after_pass(store: LocalStore) -> None:
+    """Catch the search index up with the mirror this pass left behind.
+
+    The index is derived, so a fault here is logged and retried next pass; it
+    never counts against reconciliation, which is what readiness watches.
+    """
+    try:
+        counts = await indexer.after_pass(store)
+    except Exception as exc:  # noqa: BLE001 - the index must not stop the reconciler
+        log.warning("search index catch-up deferred", reason=type(exc).__name__)
+        return
+    if any(counts.values()):
+        log.info("search index caught up", **counts)
 
 
 def _rehash_due(now: datetime, at: str, last: date | None) -> bool:
@@ -486,6 +505,7 @@ async def reconcile_once(
                     )
                     if result.scalar_one_or_none() is None:
                         continue
+                    await _follow_in_index(session, row.id, observed, now)
                     if observed is None:
                         counts["missing"] += 1
                     elif observed.state in {"unparsed", "unreadable"}:
@@ -497,6 +517,33 @@ async def reconcile_once(
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
     return counts
+
+
+async def _follow_in_index(
+    session: AsyncSession, note_id: str, observed: Observation | None, now: datetime
+) -> None:
+    """Make the search index say what the mirror row now says, in its transaction.
+
+    A note observed gone leaves the index. One read whole is indexed from the
+    bytes this pass read. One that could not be parsed or opened keeps the
+    text it was last indexed with, at the path it is now found at, so a broken
+    edit on a device does not make a note unfindable.
+    """
+    if observed is None:
+        await indexer.drop_note(session, note_id, now)
+    elif observed.state == "ok" and observed.body is not None:
+        assert observed.content_hash is not None
+        await indexer.index_note(
+            session,
+            note_id=note_id,
+            path=observed.path,
+            title=observed.title or Path(observed.path).stem,
+            body=observed.body,
+            version=observed.content_hash,
+            now=now,
+        )
+    else:
+        await indexer.follow_note_path(session, note_id, observed.path)
 
 
 async def _mirror_index(store: LocalStore) -> dict[str, MirrorEntry]:
@@ -821,6 +868,7 @@ def _observe(
         mtime=mtime,
         title=_title_of(body, safe_path),
         frontmatter=_jsonable(frontmatter),
+        body=body,
     )
 
 
