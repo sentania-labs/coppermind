@@ -78,7 +78,12 @@ def _problem_rows(problems: list[ProblemInfo]) -> str:
 
 def counters_html(status: StatusResponse) -> str:
     counters = status.counters
-    problems = counters.rejected_ingests + counters.name_collisions + counters.unparseable_files
+    problems = (
+        counters.rejected_ingests
+        + counters.name_collisions
+        + counters.unparseable_files
+        + counters.excluded_count
+    )
     states = ", ".join(
         f"{escape(state)}: {count}" for state, count in sorted(counters.notes_by_state.items())
     )
@@ -90,6 +95,7 @@ def counters_html(status: StatusResponse) -> str:
 <li>Rejected ingests: {counters.rejected_ingests}</li>
 <li>Name collisions: {counters.name_collisions}</li>
 <li>Unparseable files: {counters.unparseable_files}</li>
+<li>Excluded (skipped by exclusion rules): {counters.excluded_count}</li>
 </ul>
 <p><a href="/admin/problems">Problems ({problems})</a></p>"""
 
@@ -123,7 +129,9 @@ def router(wiring: Wiring) -> APIRouter:
             "Problems",
             '<h1>Problems</h1><p><a href="/admin">Overview</a></p>'
             "<p>Computed from the metadata mirror and recorded rejections. "
-            "Nothing is written into a note.</p>" + _problem_rows(problems),
+            "Nothing is written into a note.</p>"
+            f"<p>Files skipped by exclusion: {sum(p.kind == 'excluded' for p in problems)}</p>"
+            + _problem_rows(problems),
         )
 
     @routes.get("/admin/notes/{note_id}", response_class=HTMLResponse, include_in_schema=False)

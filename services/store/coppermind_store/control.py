@@ -45,3 +45,27 @@ class ControlState:
 
     def api_keys(self) -> ApiKeySet:
         return ApiKeySet.model_validate(self.store.read("keys").body)
+
+    def write_reconciler_exclusions(self, exclusions: dict[str, str]) -> None:
+        """Publish one atomic snapshot, so count and rules describe the same pass."""
+        try:
+            revision = self.store.read("reconciler_exclusions").revision
+        except FileNotFoundError:
+            revision = None
+        self.store.write("reconciler_exclusions", {"files": exclusions}, if_revision=revision)
+
+    def read_reconciler_exclusions(self) -> dict[str, str]:
+        """The last completed scan's exclusions; empty before the first scan."""
+        try:
+            body = self.store.read("reconciler_exclusions").body
+        except FileNotFoundError:
+            return {}
+        files = body.get("files", {})
+        if not isinstance(files, dict) or any(
+            not isinstance(path, str) or not isinstance(rule, str) for path, rule in files.items()
+        ):
+            raise ValueError("invalid reconciler exclusion snapshot")
+        return files
+
+    def read_reconciler_excluded_count(self) -> int:
+        return len(self.read_reconciler_exclusions())

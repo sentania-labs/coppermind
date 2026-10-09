@@ -14,7 +14,9 @@ and a sha256 of the whole notes filesystem every minute. A file carrying no
 identity this store knows, which is every file in an existing tree Coppermind
 was pointed at, is read once and then stat-trusted the same way, for up to
 `_UNIDENTIFIED_LIMIT` such paths; past that bound the remaining unknown files
-are read and parsed on every pass. The scheduled daily rehash is the pass that
+are read and parsed on every pass. Excluded files are always reread so a rule
+change can take effect next pass and their identities can still be followed.
+The scheduled daily rehash is the pass that
 reads everything, which is what catches a change a device made without moving
 the file's mtime or size.
 
@@ -27,10 +29,11 @@ prevent.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import re
 import stat as stat_module
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -151,6 +154,7 @@ class ScanResult:
     unidentified: UnidentifiedStats
     adoption_candidates: list[AdoptionCandidate]
     unidentified_unparsed: int
+    exclusions: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -389,6 +393,8 @@ async def reconcile_once(
         quiet=quiet,
         unidentified=dict(remembered),
         unadoptable=_unadoptable_folders(settings),
+        excluded_folders=settings.reconcile.excluded_folders,
+        excluded_patterns=settings.reconcile.excluded_patterns,
     )
     remembered.clear()
     remembered.update(scan.unidentified)
@@ -466,6 +472,7 @@ async def reconcile_once(
         "missing": 0,
         "unparsed": 0,
         "deferred": scan.deferred,
+        "excluded": len(scan.exclusions),
     }
     now = datetime.now(tz=UTC)
     try:
@@ -516,6 +523,7 @@ async def reconcile_once(
                         counts["changed"] += 1
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
+    store.control.write_reconciler_exclusions(scan.exclusions)
     return counts
 
 
@@ -611,6 +619,8 @@ def _scan(
     quiet: QuietWindow | None,
     unidentified: UnidentifiedStats,
     unadoptable: frozenset[tuple[str, ...]],
+    excluded_folders: list[str],
+    excluded_patterns: list[str],
 ) -> ScanResult:
     """Walk the notes filesystem and report what it found."""
     try:
@@ -628,13 +638,18 @@ def _scan(
     adoption_candidates: list[AdoptionCandidate] = []
     unidentified_unparsed = 0
     deferred = 0
+    exclusions: dict[str, str] = {}
     try:
-        for path in root.rglob("*.md"):
+        for path in root.rglob("*"):
             relative_path = path.relative_to(root)
             if any(part in _IGNORED_DIRECTORIES for part in relative_path.parts):
                 continue
             relative = relative_path.as_posix()
             entry = by_path.get(relative)
+            path_rule = _path_exclusion(relative_path, excluded_folders, excluded_patterns)
+            markdown = path.suffix == ".md"
+            if not markdown and path.suffix != ".canvas" and not path_rule and entry is None:
+                continue
             try:
                 safe_path = resolve(root, relative)
                 stat_result = safe_path.stat()
@@ -656,6 +671,8 @@ def _scan(
                 # than as the ELOOP it wraps.
                 _record(observed, seen, _unreadable(entry, relative))
                 continue
+            if stat_module.S_ISDIR(stat_result.st_mode) and not markdown and entry is None:
+                continue
             mtime = datetime.fromtimestamp(stat_result.st_mtime, tz=UTC)
             settling = quiet is not None and quiet.holds(mtime)
             stat_seen = (stat_result.st_size, mtime)
@@ -663,7 +680,12 @@ def _scan(
                 seen.add(entry.note_id)
                 held.add(entry.note_id)
                 continue
-            if not full and entry is None and unidentified.get(relative) == stat_seen:
+            if (
+                not full
+                and entry is None
+                and not path_rule
+                and unidentified.get(relative) == stat_seen
+            ):
                 # Read once already, and it named no note this store knows.
                 # Nothing but a change to the file itself can make it one. The
                 # stat is taken before the file type is judged, so a directory
@@ -718,14 +740,23 @@ def _scan(
                         )
                 continue
             result = _observe(safe_path, relative, data, mtime, schema, by_id, entry)
+            # Identity observation always wins over an adoption exclusion, even
+            # for a broken note whose known identity can still be recovered.
+            rule = path_rule or _frontmatter_exclusion(data)
+            if not isinstance(result, Observation) and rule:
+                exclusions[relative] = rule
+                if settling:
+                    deferred += 1
+                # Do not stat-cache exclusions: removing a rule must permit
+                # adoption on the next pass, and each pass reports the full set.
+                continue
+            if not markdown and not isinstance(result, Observation):
+                continue
             if isinstance(result, AdoptionCandidate):
                 if settling:
                     deferred += 1
                 elif any(relative_path.parts[: len(folder)] == folder for folder in unadoptable):
-                    # A folder the store owns is not a place a person writes a
-                    # note, so nothing below one is given an identity. The file
-                    # is still read, because a known note moved into one must
-                    # be followed there rather than reported gone.
+                    # Read store-owned folders too, to follow known identities.
                     _remember(still_unidentified, relative, stat_seen)
                 else:
                     adoption_candidates.append(result)
@@ -752,7 +783,21 @@ def _scan(
         unidentified=still_unidentified,
         adoption_candidates=adoption_candidates,
         unidentified_unparsed=unidentified_unparsed,
+        exclusions=exclusions,
     )
+
+
+def _path_exclusion(path: Path, folders: list[str], patterns: list[str]) -> str | None:
+    """Return the first matching rule, with folders relative to the notes root."""
+    for folder in folders:
+        parts = tuple(folder.rstrip("/").split("/"))
+        if path.parts[: len(parts)] == parts:
+            return f"folder: {folder.rstrip('/')}/"
+    for pattern in patterns:
+        target = path.as_posix() if "/" in pattern else path.name
+        if fnmatch.fnmatchcase(target, pattern):
+            return f"pattern: {pattern}"
+    return None
 
 
 def _unadoptable_folders(settings: ProductSettings) -> frozenset[tuple[str, ...]]:
@@ -774,6 +819,18 @@ def _unadoptable_folders(settings: ProductSettings) -> frozenset[tuple[str, ...]
         for parts in (tuple(part for part in name.split("/") if part) for name in named)
         if parts
     )
+
+
+def _frontmatter_exclusion(data: bytes) -> str | None:
+    """Plugin marker keys identify plugin files regardless of their value."""
+    try:
+        frontmatter, _ = fm.parse(data.decode("utf-8"))
+    except (UnicodeDecodeError, fm.FrontmatterError):
+        return None
+    for marker in ("excalidraw-plugin", "kanban-plugin"):
+        if marker in frontmatter:
+            return f"frontmatter: {marker}"
+    return None
 
 
 def _remember(stats: UnidentifiedStats, relative: str, stat_seen: tuple[int, datetime]) -> None:

@@ -1090,6 +1090,7 @@ async def test_a_file_no_longer_utf8_is_unparsed_at_its_path_not_missing(store: 
         "missing": 0,
         "unparsed": 1,
         "deferred": 0,
+        "excluded": 0,
     }
     assert row.state == "unparsed"
     assert row.path == note.path
@@ -1209,6 +1210,7 @@ async def test_two_live_copies_leave_the_row_alone_instead_of_reporting_it_gone(
         "missing": 0,
         "unparsed": 0,
         "deferred": 0,
+        "excluded": 0,
     }
     assert row.state == "ok"
     assert row.path == note.path
@@ -1295,6 +1297,7 @@ async def test_an_interval_scan_trusts_a_stat_and_the_daily_rehash_does_not(stor
         "missing": 0,
         "unparsed": 0,
         "deferred": 0,
+        "excluded": 0,
     }
     assert (await _row(store, note.id)).title == "Runbook"
 
@@ -1309,6 +1312,7 @@ async def test_an_interval_scan_trusts_a_stat_and_the_daily_rehash_does_not(stor
         "missing": 0,
         "unparsed": 0,
         "deferred": 0,
+        "excluded": 0,
     }
     assert (await _row(store, note.id)).title == "Runbouk"
 
@@ -1334,6 +1338,7 @@ async def test_a_file_still_inside_the_quiet_period_waits_rather_than_going_miss
         "missing": 0,
         "unparsed": 0,
         "deferred": 1,
+        "excluded": 0,
     }
     assert settling.state == "ok"
     assert settling.title == "Runbook"
@@ -1349,6 +1354,7 @@ async def test_a_file_still_inside_the_quiet_period_waits_rather_than_going_miss
         "missing": 0,
         "unparsed": 0,
         "deferred": 0,
+        "excluded": 0,
     }
     assert (await _row(store, note.id)).title == "Current Runbook"
 
