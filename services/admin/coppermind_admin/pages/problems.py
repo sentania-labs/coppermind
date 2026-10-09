@@ -78,7 +78,12 @@ def _problem_rows(problems: list[ProblemInfo]) -> str:
 
 def counters_html(status: StatusResponse) -> str:
     counters = status.counters
-    problems = counters.rejected_ingests + counters.name_collisions + counters.unparseable_files
+    problems = (
+        counters.rejected_ingests
+        + counters.name_collisions
+        + counters.unparseable_files
+        + counters.excluded_count
+    )
     states = ", ".join(
         f"{escape(state)}: {count}" for state, count in sorted(counters.notes_by_state.items())
     )
