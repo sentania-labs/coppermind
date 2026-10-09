@@ -122,8 +122,8 @@ Nothing here needs to be set before the system runs.
 | git | `identity_name` | `Coppermind` |
 | git | `identity_email` | `coppermind@localhost` |
 | git | `gc_auto` | true |
-| sync | `plan` | `standard` |
-| sync | `max_file_bytes`, `max_total_bytes` | Derived from plan: 5 MiB and 1 GiB on Standard, 200 MiB and 10 GiB on Plus; either can be set explicitly |
+| sync | `plan` | `standard` (operator uses Plus; see roadmap.md) |
+| sync | `max_file_bytes`, `max_total_bytes` | Null uses the plan. Plus: 200 MiB and 10 GiB (binary; approximately 200 MB and 10 GB). Set explicitly to override. |
 | sync | `device_name` | `coppermind-server` |
 | sync | `mode` | `bidirectional` |
 | sync | `conflict_strategy` | `merge` |

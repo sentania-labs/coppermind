@@ -176,9 +176,15 @@ of unreviewed notes in the configured review folder for a daily view until
 
 Open, and gating the import rather than anything sooner: the mapping of the
 existing frontmatter vocabulary onto the shipped keys (about thirty keys onto
-six plus additions), the sync plan (Standard caps at 5 MiB per file and 1 GiB
-in total; the existing corpus holds about 1,200 attachments at 1.2 GB, 49 of
-them over the per-file cap), and the drop folder's name.
+six plus additions), the drop folder's name.
+
+Resolved (2026-10-02): vocabulary mapping is not needed. Tags grow organically
+through the Fields page.
+
+Resolved (2026-10-09): the sync plan. The operator's account is Sync Plus
+(10 GB total, 200 MB per file). The attachment cap reads from a setting with
+200 MB as the default, not the 5 MiB Standard limit. The 49-oversized-files
+figure no longer applies.
 
 ## Gaps noted, not asks
 
