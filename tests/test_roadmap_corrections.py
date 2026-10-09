@@ -28,9 +28,7 @@ class TestRoadmapSyncPlus:
     def test_roadmap_names_200_mb_default(self):
         """The roadmap states the 200 MB default for Sync Plus."""
         text = _read("docs/roadmap.md")
-        assert "200 MB" in text, (
-            "roadmap.md must name the 200 MB default for Sync Plus"
-        )
+        assert "200 MB" in text, "roadmap.md must name the 200 MB default for Sync Plus"
 
     def test_roadmap_no_5_mib_cap_figure(self):
         """The 5 MiB cap figure is removed from the roadmap."""
@@ -43,23 +41,18 @@ class TestRoadmapSyncPlus:
     def test_roadmap_sync_plus_account(self):
         """The roadmap names Sync Plus as the operator's account."""
         text = _read("docs/roadmap.md")
-        assert "Sync Plus" in text, (
-            "roadmap.md must name Sync Plus as the operator's account"
-        )
+        assert "Sync Plus" in text, "roadmap.md must name Sync Plus as the operator's account"
 
     def test_roadmap_10_gb_total(self):
         """The roadmap states 10 GB total for Sync Plus."""
         text = _read("docs/roadmap.md")
-        assert "10 GB" in text, (
-            "roadmap.md must name 10 GB total for Sync Plus"
-        )
+        assert "10 GB" in text, "roadmap.md must name 10 GB total for Sync Plus"
 
     def test_roadmap_a3_cap_from_setting(self):
         """The roadmap states A3 attachment copy reads the cap from a setting."""
         text = _read("docs/roadmap.md")
         assert "setting" in text.lower() and "cap" in text.lower(), (
-            "roadmap.md must state that the A3 attachment cap is read from a "
-            "setting"
+            "roadmap.md must state that the A3 attachment cap is read from a setting"
         )
 
 
@@ -70,8 +63,7 @@ class TestRoadmapA9:
         """A9 is described as rebuild-everything job plus adoption control."""
         text = _read("docs/roadmap.md")
         assert "rebuild-everything" in text.lower(), (
-            "roadmap.md must describe A9 as a rebuild-everything job plus "
-            "adoption control"
+            "roadmap.md must describe A9 as a rebuild-everything job plus adoption control"
         )
 
     def test_roadmap_a9_no_bulk_import_endpoint(self):
@@ -96,19 +88,14 @@ class TestRoadmapVocabularyGate:
     def test_roadmap_vocabulary_closed(self):
         """The roadmap notes the vocabulary-mapping gate is closed."""
         text = _read("docs/roadmap.md")
-        assert (
-            "vocabulary-mapping" in text.lower()
-            or "vocabulary gate" in text.lower()
-        ), (
+        assert "vocabulary-mapping" in text.lower() or "vocabulary gate" in text.lower(), (
             "roadmap.md must reference the closed vocabulary-mapping gate"
         )
 
     def test_roadmap_tags_organically(self):
         """The roadmap states tags grow organically."""
         text = _read("docs/roadmap.md")
-        assert "organically" in text, (
-            "roadmap.md must state that tags grow organically"
-        )
+        assert "organically" in text, "roadmap.md must state that tags grow organically"
 
     def test_roadmap_fields_page(self):
         """The roadmap names the Fields page as the tool."""
@@ -124,9 +111,7 @@ class TestRoadmapMergedTable:
     def test_roadmap_mentions_v0_2_0(self):
         """The roadmap names v0.2.0 as shipped."""
         text = _read("docs/roadmap.md")
-        assert "v0.2.0" in text, (
-            "roadmap.md must name v0.2.0 as shipped"
-        )
+        assert "v0.2.0" in text, "roadmap.md must name v0.2.0 as shipped"
 
     def test_roadmap_fields_tags_in_merged(self):
         """Fields and tags (#30) is in the merged table."""
@@ -138,9 +123,7 @@ class TestRoadmapMergedTable:
     def test_roadmap_sources_status_in_merged(self):
         """Sources and status (A4 / #36) is in the merged table."""
         text = _read("docs/roadmap.md")
-        assert "#36" in text, (
-            "roadmap.md must reference #36 (sources and status) in merged"
-        )
+        assert "#36" in text, "roadmap.md must reference #36 (sources and status) in merged"
 
 
 class TestRoadmapNextOrder:
@@ -149,18 +132,14 @@ class TestRoadmapNextOrder:
     def test_roadmap_names_v0_3_0(self):
         """The roadmap names v0.3.0 as finishing milestone 2."""
         text = _read("docs/roadmap.md")
-        assert "v0.3.0" in text, (
-            "roadmap.md must name v0.3.0 as finishing milestone 2"
-        )
+        assert "v0.3.0" in text, "roadmap.md must name v0.3.0 as finishing milestone 2"
 
     def test_roadmap_curator_still_pending(self):
         """The curator is still listed in Next, not in Merged."""
         text = _read("docs/roadmap.md")
         # Curator should not appear in the Merged table rows
         # (it is in "Next, in order" / Wave 3)
-        assert "curator" in text.lower(), (
-            "roadmap.md must still list the curator in Next, in order"
-        )
+        assert "curator" in text.lower(), "roadmap.md must still list the curator in Next, in order"
 
 
 class TestRoadmapAddendum:
@@ -169,16 +148,12 @@ class TestRoadmapAddendum:
     def test_addendum_sync_resolved(self):
         """The addendum notes the sync plan is resolved."""
         text = _read("docs/roadmap-addendum-2026-10-01.md")
-        assert "Resolved" in text, (
-            "roadmap-addendum must note the sync plan as resolved"
-        )
+        assert "Resolved" in text, "roadmap-addendum must note the sync plan as resolved"
 
     def test_addendum_vocabulary_resolved(self):
         """The addendum notes vocabulary mapping is resolved."""
         text = _read("docs/roadmap-addendum-2026-10-01.md")
-        assert "Resolved" in text, (
-            "roadmap-addendum must note vocabulary mapping as resolved"
-        )
+        assert "Resolved" in text, "roadmap-addendum must note vocabulary mapping as resolved"
 
 
 class TestStatusUpdates:
@@ -187,33 +162,23 @@ class TestStatusUpdates:
     def test_status_updated_date(self):
         """STATUS.md is dated 2026-10-09."""
         text = _read("STATUS.md")
-        assert "2026-10-09" in text, (
-            "STATUS.md must be dated 2026-10-09"
-        )
+        assert "2026-10-09" in text, "STATUS.md must be dated 2026-10-09"
 
     def test_status_sync_plus(self):
         """STATUS.md states Sync Plus with 200 MB default."""
         text = _read("STATUS.md")
-        assert "Sync Plus" in text, (
-            "STATUS.md must name Sync Plus"
-        )
-        assert "200 MB" in text, (
-            "STATUS.md must name 200 MB as the default"
-        )
+        assert "Sync Plus" in text, "STATUS.md must name Sync Plus"
+        assert "200 MB" in text, "STATUS.md must name 200 MB as the default"
 
     def test_status_v0_2_0_shipped(self):
         """STATUS.md notes v0.2.0 shipped."""
         text = _read("STATUS.md")
-        assert "v0.2.0" in text, (
-            "STATUS.md must note v0.2.0 as shipped"
-        )
+        assert "v0.2.0" in text, "STATUS.md must note v0.2.0 as shipped"
 
     def test_status_fields_page_mentioned(self):
         """STATUS.md references the Fields page."""
         text = _read("STATUS.md")
-        assert "Fields" in text, (
-            "STATUS.md must reference the Fields page"
-        )
+        assert "Fields" in text, "STATUS.md must reference the Fields page"
 
     def test_status_49_oversized_removed(self):
         """STATUS.md does not reference 49 oversized files."""
@@ -237,6 +202,5 @@ class TestProseCheck:
         ):
             content = _read(path)
             assert emdash not in content, (
-                f"em-dash found in {path}; use a comma, colon, "
-                "parentheses or a period"
+                f"em-dash found in {path}; use a comma, colon, parentheses or a period"
             )
