@@ -77,9 +77,13 @@ from coppermind.store_protocol import (
     PreconditionRequired,
     ProblemInfo,
     RebuildMetadataResult,
+    RebuildSearchIndexResult,
     RenameNote,
     ReplaceNote,
     SchemaDocument,
+    SearchHit,
+    SearchIndexStatus,
+    SearchQuery,
     SourceArtifactDocument,
     SourceId,
     SourceManifest,
@@ -93,6 +97,7 @@ from coppermind.store_protocol import (
 )
 from coppermind_store.control import ControlState
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, is_note_file, resolve
+from coppermind_store.indexer import index_note
 
 log = get_logger("coppermind-store")
 
@@ -225,6 +230,8 @@ class LocalStore:
         # a sufficient guard for the compare-and-swap.
         self._locks: dict[str, asyncio.Lock] = {}
         self._source_locks: dict[str, asyncio.Lock] = {}
+        # The one search index rebuild this process may be running.
+        self._search_rebuild: asyncio.Task[None] | None = None
 
     async def get_api_keys(self) -> ApiKeySet:
         """Read API key hashes from filesystem-first control state."""
@@ -235,7 +242,29 @@ class LocalStore:
     ) -> IngestResult:
         from coppermind_store.sources import ingest
 
-        return await ingest(self, request, payload_size_bytes=payload_size_bytes)
+        result = await ingest(self, request, payload_size_bytes=payload_size_bytes)
+        await self._index_after_ingest(result)
+        return result
+
+    async def _index_after_ingest(self, result: IngestResult) -> None:
+        """Index the projection and the opening note an ingest wrote.
+
+        The files and the mirror are already committed, so an index that
+        cannot follow at once must not turn a stored ingest into a failure;
+        the catch-up after the next reconciliation pass indexes both.
+        """
+        from coppermind_store import indexer
+
+        try:
+            if result.projection_path:
+                await indexer.index_projection(
+                    self, result.source.id, result.source.revision, result.projection_path
+                )
+            await indexer.catch_up(self)
+        except Exception as exc:  # noqa: BLE001 - the ingest itself succeeded
+            indexer.log.warning(
+                "search index did not follow an ingest", error_type=type(exc).__name__
+            )
 
     async def get_source(self, source_id: SourceId) -> SourceManifest:
         from coppermind_store.sources import get_source
@@ -370,6 +399,15 @@ class LocalStore:
                         first_seen_at=now,
                         updated_at=now,
                     )
+                )
+                await index_note(
+                    session,
+                    note_id=note_id,
+                    path=relative,
+                    title=request.title,
+                    body=_body_with_heading(request.title, request.body),
+                    version=digest,
+                    now=now,
                 )
         except BaseException as exc:
             typed = _metadata_failure(exc)
@@ -524,6 +562,15 @@ class LocalStore:
                             updated_at=now,
                         )
                     )
+                    await index_note(
+                        session,
+                        note_id=note_id,
+                        path=relative,
+                        title=_title_of(body, path),
+                        body=body,
+                        version=digest,
+                        now=now,
+                    )
                     _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
             except BaseException as exc:
                 typed = _metadata_failure(exc)
@@ -607,6 +654,15 @@ class LocalStore:
                             state_reason=None,
                             updated_at=now,
                         )
+                    )
+                    await index_note(
+                        session,
+                        note_id=note_id,
+                        path=relative,
+                        title=_title_of(body, path),
+                        body=body,
+                        version=digest,
+                        now=now,
                     )
                     if writes_file:
                         _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
@@ -740,6 +796,15 @@ class LocalStore:
                             updated_at=now,
                         )
                     )
+                    await index_note(
+                        session,
+                        note_id=note_id,
+                        path=new_relative,
+                        title=title,
+                        body=body,
+                        version=content_hash(current_data),
+                        now=now,
+                    )
                     session.add(
                         OutboxEvent(
                             event_type="note.moved",
@@ -836,6 +901,15 @@ class LocalStore:
                             state_reason=None,
                             updated_at=now,
                         )
+                    )
+                    await index_note(
+                        session,
+                        note_id=note_id,
+                        path=new_relative,
+                        title=new_title,
+                        body=new_body,
+                        version=digest,
+                        now=now,
                     )
                     session.add(
                         OutboxEvent(
@@ -947,6 +1021,46 @@ class LocalStore:
         from coppermind_store.reconciler import reconcile_once
 
         return RebuildMetadataResult(counts=await reconcile_once(self, full=True))
+
+    async def search(self, query: SearchQuery) -> Page[SearchHit]:
+        """Full-text search over note bodies, titles and source projections."""
+        from coppermind_store.search import search
+
+        return await search(self, query)
+
+    async def get_search_index_status(self) -> SearchIndexStatus:
+        from coppermind_store.indexer import status
+
+        return await status(self)
+
+    async def rebuild_search_index(self) -> RebuildSearchIndexResult:
+        """Start rebuilding the index from the notes filesystem, if not running."""
+        from coppermind_store.indexer import start_rebuild
+
+        return await start_rebuild(self)
+
+    def search_rebuild_running(self) -> bool:
+        return self._search_rebuild is not None and not self._search_rebuild.done()
+
+    def start_search_rebuild(self) -> bool:
+        """Run the rebuild in the background. False when one is already running."""
+        if self.search_rebuild_running():
+            return False
+        self._search_rebuild = asyncio.create_task(
+            self._run_search_rebuild(), name="coppermind-search-rebuild"
+        )
+        return True
+
+    async def _run_search_rebuild(self) -> None:
+        from coppermind_store import indexer
+
+        try:
+            counts = await indexer.rebuild(self)
+        except Exception as exc:  # noqa: BLE001 - a background job reports, never crashes
+            indexer.log.warning("search index rebuild failed", error_type=type(exc).__name__)
+            await indexer.record_rebuild_failure(self, type(exc).__name__)
+        else:
+            indexer.log.info("search index rebuilt", **counts)
 
     async def adopt_note(
         self,
@@ -1090,6 +1204,15 @@ class LocalStore:
                         first_seen_at=now,
                         updated_at=now,
                     )
+                )
+                await index_note(
+                    session,
+                    note_id=note_id,
+                    path=relative,
+                    title=_title_of(adopted_body, path),
+                    body=adopted_body,
+                    version=content_hash(data),
+                    now=now,
                 )
         except BaseException as exc:
             typed = _metadata_failure(exc)

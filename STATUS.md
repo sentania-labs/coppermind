@@ -437,6 +437,62 @@ vertical path proved end to end, then widened.
   `ghcr.io/sentania-labs/coppermind`, and they were created public because the
   repository is public, with no manual package-settings step (see
   [CONTRIBUTING.md](CONTRIBUTING.md)).
+- **Search, added 2026-10-09 (tested against PostgreSQL 16, not yet seen on a
+  compose stack).** `GET /v1/search?q=` (`notes:read`) answers full-text matches
+  over note bodies and titles, best match first, each as `id`, `kind`, `title`,
+  `path`, `folder`, a short `excerpt` with every matched word between `**`
+  markers, `rank` and `state`. `q` is read the way a search box is (words,
+  quoted phrases, `or`, `-word`) by PostgreSQL's English configuration, which
+  stems, and by `simple`, which keeps every word as written so a name such as
+  Will, which English drops as a stop word, still matches. A title match ranks
+  above a body match. Every listing filter (`folder`, `reviewed`, `type`,
+  `context`, `account`, `from`, `to`, `tag`, `state`) narrows a search with
+  listing's meaning, empty text filters are refused the same way, and paging is
+  listing's: an opaque cursor, 50 by default, 1 through 200. The cursor resumes
+  after the last hit by rank, then kind and identifier, and is tied to its `q`,
+  so one sent with a different `q` answers 422. An edit that changes a note's
+  rank between two page requests can move it across the page boundary. Generated
+  pages under the sources folder are searchable too and answer with
+  `kind: "source"` and the source identifier as `id`; a frontmatter filter
+  matches notes only, because a projection has no frontmatter fields of a note.
+  An excluded `-word` is refused under both the English and the `simple`
+  reading, so `budget -runs` finds no note that says `running`.
+  With PostgreSQL down the answer is 503 `metadata_unavailable`, never an empty
+  page.
+  The index is a `search_documents` table in the same database, a stored
+  tsvector column with a GIN index, created by migration 0006. It is derived,
+  never authoritative. The store writes a note's entry in the same transaction
+  as the mirror row for every create, replace, frontmatter patch, move, rename
+  and adoption, and the reconciler does the same for an edit, move or rename
+  made on a device; a note observed deleted leaves the index, and one whose file
+  stops parsing stays findable by its last indexed text with `state: unparsed`.
+  An ingest indexes its projection and opening note once it has committed. After
+  every reconciliation pass a catch-up step indexes up to 200 notes and 200
+  source pages the mirror describes and the index does not, which also covers a
+  crash between a file write and its commit. The first pass after the upgrade
+  finds the index never built and builds it from the notes filesystem. A
+  projection deleted by hand stays in the index until the next rebuild, because
+  nothing mirrors projections. Bodies are indexed up to their first 250,000
+  characters.
+  Admin's Search index page (`/admin/search-index`, linked from the overview)
+  shows the notes and source pages indexed, when the index last changed and
+  when it was last rebuilt, in the operator's timezone (America/Chicago by
+  default), and a Rebuild index button. The rebuild runs in the store's
+  background, one at a time: it deletes every entry except the last indexed
+  text of a note the mirror holds as unparsed, which stays findable, and reads
+  every note file and generated source page again, using the mirror only to know which
+  identities are live notes, then catches up anything a write changed while it
+  read. A rebuild that fails says so on the page. The shipped `indexer`
+  settings (`enabled`, `language`, `reconcile_interval_s`) are not read yet: the
+  index is always on, always English plus `simple`, and catches up on the
+  reconciliation interval.
+  Proved by `tests/test_search.py` (query building, every filter alone and
+  combined, paging, cursors, the public route's scope and parameters),
+  `services/admin/tests/test_search_index_page.py`, and
+  `tests/integration/test_search_index.py` against a real PostgreSQL 16 server
+  (indexing through every API write, device edits, moves, deletes and
+  adoption, sources, filters, paging, catch-up and rebuild). No compose stack
+  ran in this worker, which has no Docker.
 - **Obsidian Sync update, 2026-09-30 (unit-tested Admin, runtime proof pending).**
   `/admin/sync` provides guided create-or-join setup, plan and device controls,
   status, pause, resume and disconnect. Python tests drove these forms against
@@ -470,14 +526,12 @@ vertical path proved end to end, then widened.
 Everything below is planned and has a place in the design. None of it exists
 in the tree, so do not read the absence as a decision to leave it out.
 
-- **The curator, the indexer, and search.** Neither the curator (files a
-  reviewed note into the right folder by rule) nor the indexer (keeps the
-  search index current) has any code or image in the tree yet
-  (`docs/architecture.md`'s "moving parts" table says the same). A note
-  marked `reviewed: true` is not filed anywhere by the system; it stays
-  wherever it already is. `GET /v1/search` does not exist, so there is no
-  full-text search over note bodies; listing still filters on frontmatter
-  only.
+- **The curator.** The curator (files a reviewed note into the right folder
+  by rule) has no code or image in the tree yet (`docs/architecture.md`'s
+  "moving parts" section says the same). A note marked `reviewed: true` is not
+  filed anywhere by the system; it stays wherever it already is. The indexer
+  and `GET /v1/search` are built and are under Working above; vector search
+  (A8) is deferred.
 - **Remaining source capabilities.** Storing a correction to a field that
   describes a source (`captured_at`, `metadata`, `source_type`, `origin` or an
   artifact `mime_type`) when the artifacts are unchanged is not built; today
@@ -510,7 +564,9 @@ in the tree, so do not read the absence as a decision to leave it out.
 - **History through the API.** Nothing reads Git history or restores a note
   from it yet; `docker compose exec git git -C /data/notes log` is the way in.
 - **Remaining Admin pages.** Schema, filing rules, jobs, source problems and
-  real overview counters are not built. API Keys (`/admin/keys`), Settings
+  real overview counters are not built. The one job with a button is the
+  search index rebuild, on its own Search index page; a general jobs page with
+  history does not exist. API Keys (`/admin/keys`), Settings
   (`/admin/settings`) and Obsidian Sync (`/admin/sync`) now exist:
   signed-in operators can create and revoke keys, edit every product setting
   with revision checks, and guide the sync client through email, password,

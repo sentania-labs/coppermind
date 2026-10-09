@@ -28,9 +28,13 @@ from coppermind.store_protocol import (
     PatchFrontmatter,
     ProblemInfo,
     RebuildMetadataResult,
+    RebuildSearchIndexResult,
     RenameNote,
     ReplaceNote,
     SchemaDocument,
+    SearchHit,
+    SearchIndexStatus,
+    SearchQuery,
     SourceArtifactDocument,
     SourceManifest,
     SourceQuery,
@@ -266,3 +270,31 @@ async def rebuild_metadata(request: Request) -> RebuildMetadataResult | JSONResp
         return await _store(request).rebuild_metadata()
     except StoreError as error:
         return _failure(error)
+
+
+@router.get("/search", response_model=Page[SearchHit])
+async def search(
+    request: Request, query: Annotated[SearchQuery, Query()]
+) -> Page[SearchHit] | JSONResponse:
+    try:
+        return await _store(request).search(query)
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.get("/search/index", response_model=SearchIndexStatus)
+async def get_search_index_status(request: Request) -> SearchIndexStatus | JSONResponse:
+    try:
+        return await _store(request).get_search_index_status()
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.post("/jobs/rebuild_search_index", status_code=202, response_model=RebuildSearchIndexResult)
+async def rebuild_search_index(request: Request) -> Response:
+    """Start rebuilding the index from the notes filesystem; it runs in the background."""
+    try:
+        result = await _store(request).rebuild_search_index()
+    except StoreError as error:
+        return _failure(error)
+    return JSONResponse(status_code=202, content=result.model_dump(mode="json"))

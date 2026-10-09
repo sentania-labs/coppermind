@@ -9,6 +9,8 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
+    Computed,
     Date,
     DateTime,
     ForeignKey,
@@ -18,7 +20,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -158,3 +160,58 @@ class RecordedRejection(Base):
     reference: Mapped[str] = mapped_column(Text, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# English stems the words of a note, and 'simple' keeps every word as written,
+# so a name English would stem or drop as a stop word still matches. The
+# migration that creates the column carries the same expression.
+SEARCH_VECTOR = (
+    "setweight(to_tsvector('english'::regconfig, coalesce(title, '')), 'A') || "
+    "setweight(to_tsvector('simple'::regconfig, coalesce(title, '')), 'A') || "
+    "setweight(to_tsvector('english'::regconfig, coalesce(body, '')), 'B') || "
+    "setweight(to_tsvector('simple'::regconfig, coalesce(body, '')), 'C')"
+)
+
+
+class SearchDocument(Base):
+    """The full-text index entry for one note or one source projection.
+
+    Derived, never authoritative: the indexer rebuilds every row from the notes
+    filesystem. `kind` is `note` (keyed by the note identifier) or `source`
+    (a generated page under the sources folder, keyed by the source
+    identifier). `version` is what the row was indexed from, the note's content
+    hash or the source revision, so a pass can tell a stale row from a current
+    one without reading the file.
+    """
+
+    __tablename__ = "search_documents"
+
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    ref_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[str] = mapped_column(Text, nullable=False)
+    indexed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    search_vector: Mapped[Any] = mapped_column(
+        TSVECTOR, Computed(SEARCH_VECTOR, persisted=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('note', 'source')", name="ck_search_documents_kind"),
+        Index("ix_search_documents_vector", "search_vector", postgresql_using="gin"),
+    )
+
+
+class SearchIndexState(Base):
+    """The one row describing the index as a whole, for Admin and readiness."""
+
+    __tablename__ = "search_index_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rebuild_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rebuild_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rebuild_error: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (CheckConstraint("id = 1", name="ck_search_index_state_single_row"),)

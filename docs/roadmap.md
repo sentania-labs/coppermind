@@ -70,8 +70,14 @@ self-contained and delivers a usable step in the core workflow.
 4. **Fields and tags page** (#30). Admin page for managing frontmatter field
    kinds and vocabularies, renaming keys with the migration job, and the
    tags vocabulary.
-5. **Indexer and search.** Full-text search over note bodies through PostgreSQL;
-   `GET /v1/search` endpoint.
+5. **Indexer and search.** Built (A2). Full-text search over note bodies,
+   titles and generated source pages through PostgreSQL's own text search,
+   in the same database: `GET /v1/search` with listing's filters and paging,
+   an index the store keeps current from every API write and reconciliation
+   pass, a rebuild job that recreates it from the notes filesystem, and an
+   Admin Search index page with a Rebuild index button. No new service or
+   image; vectors stay deferred (A8). What it does and does not do is in
+   [STATUS.md](../STATUS.md).
 6. **Sources, status, and problems dashboard** (A4). `GET /v1/notes/{id}/sources`
    to list the sources a note cites; overview counters in Admin; a problems
    view at `GET /v1/admin/notes/problems` for notes the reconciler could not
@@ -133,7 +139,7 @@ exhaustive; the full one is in [architecture.md](architecture.md)'s
 
 | Deferred | Why | Revisit when |
 |---|---|---|
-| A8: Vectors and pgvector | Hybrid search is a follow-on to full-text; a second stateful system would break the one-volume restore and add a consistency problem for a few thousand notes that does not need it yet | A concrete search need plain text search cannot serve |
+| A8: Vectors and pgvector | Full-text search is built (wave 2 item 5); hybrid search is a follow-on to it; a second stateful system would break the one-volume restore and add a consistency problem for a few thousand notes that does not need it yet | A concrete search need plain text search cannot serve |
 | A9: Import that is not the adopt reconciler, plus the on-demand rebuild job | Coppermind's remote vault (the Obsidian Sync target) starts empty on purpose; pointing the reconciler at years of existing notes would rewrite and push all of them at once | After the notes filesystem has proven itself in real use, as a deliberate one-time Admin action, and whenever a mirror needs rebuilding from disk |
 | Redis for event delivery | The PostgreSQL outbox already gives correctness through reconciliation; Redis only helps an external consumer, and there is not one yet | Something outside this system needs to consume Coppermind's events |
 | Rewriting links when a note is renamed | Filing (a move) never breaks a link; only a rename can, and that gap is documented rather than patched around | The first real broken-link report |
