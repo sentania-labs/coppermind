@@ -9,12 +9,13 @@ the file, which is small, and always reflect what Admin last wrote.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from coppermind.api_keys import ApiKeySet
 from coppermind.schema import FrontmatterSchema, default_schema
 from coppermind.settings import ProductSettings, default_settings, read_settings
-from coppermind.statefiles import StateStore
+from coppermind.statefiles import RevisionConflict, StateStore
 from coppermind.store_protocol import SchemaDocument
 
 
@@ -45,3 +46,39 @@ class ControlState:
 
     def api_keys(self) -> ApiKeySet:
         return ApiKeySet.model_validate(self.store.read("keys").body)
+
+    def write_reconciler_excluded_count(self, count: int) -> None:
+        """Persist the excluded count from the latest reconciliation pass."""
+        try:
+            state = self.store.read("reconciler_excluded")
+            self.store.write("reconciler_excluded", {"excluded": count}, if_revision=state.revision)
+        except (OSError, ValueError, RevisionConflict):
+            self.store.write("reconciler_excluded", {"excluded": count}, if_revision=None)
+
+    def read_reconciler_excluded_count(self) -> int:
+        """Read the excluded count from the latest reconciliation pass."""
+        try:
+            state = self.store.read("reconciler_excluded")
+            return state.body.get("excluded", 0)
+        except (OSError, ValueError):
+            return 0
+
+    def write_reconciler_exclusions(self, exclusions: dict[str, str]) -> None:
+        """Persist per-file exclusion details from the latest reconciliation pass."""
+        try:
+            state = self.store.read("reconciler_exclusions")
+            self.store.write("reconciler_exclusions", dict(exclusions), if_revision=state.revision)
+        except Exception:
+            with contextlib.suppress(Exception):
+                self.store.write("reconciler_exclusions", dict(exclusions), if_revision=None)
+
+    def read_reconciler_exclusions(self) -> dict[str, str]:
+        """Read exclusion details from the latest reconciliation pass."""
+        try:
+            state = self.store.read("reconciler_exclusions")
+            body = dict(state.body)
+            body.pop("schema_version", None)
+            body.pop("revision", None)
+            return body
+        except Exception:
+            return {}

@@ -90,6 +90,7 @@ def counters_html(status: StatusResponse) -> str:
 <li>Rejected ingests: {counters.rejected_ingests}</li>
 <li>Name collisions: {counters.name_collisions}</li>
 <li>Unparseable files: {counters.unparseable_files}</li>
+<li>Excluded (skipped by exclusion rules): {counters.excluded_count}</li>
 </ul>
 <p><a href="/admin/problems">Problems ({problems})</a></p>"""
 

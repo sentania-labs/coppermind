@@ -1190,6 +1190,11 @@ async def get_status(store: LocalStore) -> StatusResponse:
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
     notes_by_state = {state: count for state, count in by_state}
+    excluded_count = 0
+    try:
+        excluded_count = store.control.read_reconciler_excluded_count()
+    except Exception:  # noqa: BLE001 - status should still work
+        pass
     return StatusResponse(
         counters=StatusCounters(
             notes_awaiting_review=notes_awaiting_review,
@@ -1198,6 +1203,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
             rejected_ingests=rejected_ingests,
             name_collisions=name_collisions,
             unparseable_files=notes_by_state.get("unparsed", 0),
+            excluded_count=excluded_count,
         )
     )
 
@@ -1252,5 +1258,20 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
             note_id=row.id,
         )
         for row in unparsed
+    )
+    # Add exclusion problems from the latest reconciliation pass.
+    try:
+        exclusions = store.control.read_reconciler_exclusions()
+    except Exception:  # noqa: BLE001 - problems must still work
+        exclusions = {}
+    problems.extend(
+        ProblemInfo(
+            kind="excluded",
+            reference=path,
+            reason=reason,
+            note_id=None,
+            source_id=None,
+        )
+        for path, reason in sorted(exclusions.items())
     )
     return problems

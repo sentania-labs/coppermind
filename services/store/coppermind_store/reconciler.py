@@ -27,10 +27,11 @@ prevent.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import re
 import stat as stat_module
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -149,6 +150,7 @@ class ScanResult:
     unidentified: UnidentifiedStats
     adoption_candidates: list[AdoptionCandidate]
     unidentified_unparsed: int
+    excluded_count: int = field(default=0)
 
 
 @dataclass(frozen=True)
@@ -370,9 +372,13 @@ async def reconcile_once(
         quiet=quiet,
         unidentified=dict(remembered),
         unadoptable=_unadoptable_folders(settings),
+        excluded_folders=settings.reconcile.excluded_folders,
+        excluded_patterns=settings.reconcile.excluded_patterns,
     )
     remembered.clear()
     remembered.update(scan.unidentified)
+    # Collect exclusion details from the scan for persistence.
+    exclusion_details = _flush_exclusions()
     collisions_list: list[tuple[str, str, str]] = []
     observations, duplicates = _choose_observations(scan, by_id, collisions_list)
     adopted = 0
@@ -447,6 +453,7 @@ async def reconcile_once(
         "missing": 0,
         "unparsed": 0,
         "deferred": scan.deferred,
+        "excluded": scan.excluded_count,
     }
     now = datetime.now(tz=UTC)
     try:
@@ -496,6 +503,16 @@ async def reconcile_once(
                         counts["changed"] += 1
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
+    # Persist the exclusion count so the status page can read it.
+    try:  # noqa: SIM105
+        store.control.write_reconciler_excluded_count(counts["excluded"])
+    except Exception:  # noqa: BLE001 - status must still work
+        pass
+    # Persist the exclusion details so the problems page can read them.
+    try:  # noqa: SIM105
+        store.control.write_reconciler_exclusions(exclusion_details)
+    except Exception:  # noqa: BLE001 - status must still work
+        pass
     return counts
 
 
@@ -564,6 +581,8 @@ def _scan(
     quiet: QuietWindow | None,
     unidentified: UnidentifiedStats,
     unadoptable: frozenset[tuple[str, ...]],
+    excluded_folders: list[str],
+    excluded_patterns: list[str],
 ) -> ScanResult:
     """Walk the notes filesystem and report what it found."""
     try:
@@ -581,6 +600,7 @@ def _scan(
     adoption_candidates: list[AdoptionCandidate] = []
     unidentified_unparsed = 0
     deferred = 0
+    excluded_count = 0
     try:
         for path in root.rglob("*.md"):
             relative_path = path.relative_to(root)
@@ -680,6 +700,24 @@ def _scan(
                     # is still read, because a known note moved into one must
                     # be followed there rather than reported gone.
                     _remember(still_unidentified, relative, stat_seen)
+                elif any(
+                    relative_path.parts[: len(folder_tuple)] == folder_tuple
+                    for folder_tuple in _excluded_folders_tuple(excluded_folders)
+                ):
+                    excluded_count += 1
+                    exclusion_reason = f"in excluded folder ({excluded_folders})"
+                    _remember(still_unidentified, relative, stat_seen)
+                    _remember_exclusion(relative, exclusion_reason)
+                elif _matches_pattern(safe_path.name, excluded_patterns):
+                    excluded_count += 1
+                    exclusion_reason = f"matches excluded pattern ({excluded_patterns})"
+                    _remember(still_unidentified, relative, stat_seen)
+                    _remember_exclusion(relative, exclusion_reason)
+                elif _frontmatter_excluded(data, schema):
+                    excluded_count += 1
+                    exclusion_reason = "frontmatter plugin marker"
+                    _remember(still_unidentified, relative, stat_seen)
+                    _remember_exclusion(relative, exclusion_reason)
                 else:
                     adoption_candidates.append(result)
             elif result is None:
@@ -705,7 +743,13 @@ def _scan(
         unidentified=still_unidentified,
         adoption_candidates=adoption_candidates,
         unidentified_unparsed=unidentified_unparsed,
+        excluded_count=excluded_count,
     )
+
+
+def _excluded_folders_tuple(folders: list[str]) -> frozenset[tuple[str, ...]]:
+    """Convert a list of folder path strings to a frozenset of tuples."""
+    return frozenset(tuple(folder.split("/")) for folder in folders if folder)
 
 
 def _unadoptable_folders(settings: ProductSettings) -> frozenset[tuple[str, ...]]:
@@ -729,10 +773,64 @@ def _unadoptable_folders(settings: ProductSettings) -> frozenset[tuple[str, ...]
     )
 
 
+def _matches_pattern(filename: str, patterns: list[str]) -> bool:
+    """Whether `filename` matches any of the glob `patterns`."""
+    return any(fnmatch.fnmatch(filename, pat) for pat in patterns)
+
+
+def _frontmatter_excluded(data: bytes, schema: FrontmatterSchema) -> bool:
+    """Whether the frontmatter carries a plugin marker that excludes adoption.
+
+    The Excalidraw plugin writes ``excalidraw: true`` and the Kanban plugin
+    writes ``kanban-plugin: true`` (or ``kanban-plugin: framework``). These
+    markers mean the file is generated output, not a note a person authored.
+    """
+    try:
+        text = data.decode("utf-8")
+        if not text.startswith("---"):
+            return False
+        # Find the frontmatter block (lines between the two `---` delimiters).
+        lines = text.splitlines()
+        closing = next((i for i, line in enumerate(lines[1:], 1) if line == "---"), None)
+        if closing is None:
+            return False
+        block = "\n".join(lines[1:closing])
+        # Check for the two plugin markers. They appear as YAML boolean or string
+        # values; we accept both exact `true` and the framework form for Kanban.
+        for key in ("excalidraw", "kanban-plugin"):
+            pattern = re.compile(rf"(?m)^{re.escape(key)}:\s*(true|['\"]true['\"]|framework)\s*$")
+            if pattern.search(block):
+                return True
+    except Exception:  # noqa: BLE001 - corrupted data is not an exclusion rule
+        pass
+    return False
+
+
 def _remember(stats: UnidentifiedStats, relative: str, stat_seen: tuple[int, datetime]) -> None:
     """Keep this path's stat, up to the bound one process holds."""
     if len(stats) < _UNIDENTIFIED_LIMIT:
         stats[relative] = stat_seen
+
+
+# In-memory map of excluded files from the current scan, keyed by relative path.
+# Populated by _scan, used by reconcile_once to persist exclusion details.
+_current_exclusions: dict[str, str] = {}
+
+
+def _remember_exclusion(relative: str, reason: str) -> None:
+    """Remember one exclusion for this scan pass.
+
+    The reconciler populates this during the walk so reconcile_once can
+    persist the details after the walk completes.
+    """
+    _current_exclusions[relative] = reason
+
+
+def _flush_exclusions() -> dict[str, str]:
+    """Return and clear the exclusion map. Called after the scan."""
+    result = dict(_current_exclusions)
+    _current_exclusions.clear()
+    return result
 
 
 def _unchanged(entry: MirrorEntry, size_bytes: int, mtime: datetime) -> bool:

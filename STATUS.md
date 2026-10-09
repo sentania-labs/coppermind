@@ -190,12 +190,16 @@ vertical path proved end to end, then widened.
   ingest wrote that and generated output is not a note a person made. Those
   files are still read, so a known note moved into one of those folders is
   followed there rather than reported gone; they are only never given an
-  identity. Everything else under the notes root that parses is adopted, and
-  that is wider than it sounds: a template, an Excalidraw drawing, a Kanban
-  board and anything else a plugin keeps as an ordinary Markdown file are all
-  rewritten and mirrored as notes. Narrowing that, with a control for it, is
-  follow-up work and is not built. Until it is, do not run a migration against
-  the captain's real notes filesystem.
+  identity. The `reconcile.excluded_folders` setting (default: `Templates` and
+  `_Templates`) lists user-configured folders the reconciler reads but never
+  adopts. The `reconcile.excluded_patterns` setting (default:
+  `*.excalidraw.md`, `*.canvas`, `*.kanban.md`) lists glob patterns matched
+  against file names. Files whose frontmatter carries an `excalidraw: true` or
+  `kanban-plugin: true` marker are also excluded from adoption. An already
+  filed note inside one of these places is followed just like in the sources
+  folder: the reconciler updates its mirror row but does not give it a new
+  identity. Admin's overview page shows how many files were skipped by
+  exclusion each pass.
 - `POST /v1/ingest` takes a source and the note to open for it, and creates
   both or neither. A deterministic `.external-id-<sha256>.json` file claims
   each `provider` plus `external_source_id` before the bundle is written. The

@@ -111,6 +111,26 @@ class ReconcileSettings(BaseModel):
         pattern=r"^([01]\d|2[0-3]):[0-5]\d$",
         description="Local time for the daily full rehash, in HH:MM format.",
     )
+    excluded_folders: list[str] = Field(
+        default_factory=lambda: ["Templates", "_Templates"],
+        description=(
+            "Folders the reconciler reads but never adopts. "
+            "A file in one of these folders is still followed if it carries "
+            "a known identity, but is never given a new identity."
+        ),
+    )
+    excluded_patterns: list[str] = Field(
+        default_factory=lambda: [
+            "*.excalidraw.md",
+            "*.canvas",
+            "*.kanban.md",
+        ],
+        description=(
+            "Glob patterns for files the reconciler never adopts. "
+            "Matches are against the file name. Files matching these patterns "
+            "are still followed if they carry a known identity."
+        ),
+    )
 
 
 class GitSettings(BaseModel):
