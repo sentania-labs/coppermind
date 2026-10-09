@@ -26,6 +26,7 @@ from coppermind_store.search import (
     build_search,
     decode_cursor,
     encode_cursor,
+    excluded_terms,
     filter_conditions,
     folder_of,
     page_of,
@@ -82,6 +83,31 @@ def test_the_question_is_a_bound_value_never_spliced_into_sql():
 
     assert "DROP TABLE" not in sql
     assert hostile in params.values()
+
+
+@pytest.mark.parametrize(
+    ("q", "excluded"),
+    [
+        ("budget -runs", ["runs"]),
+        ('budget -"weekly review" -draft', ['"weekly review"', "draft"]),
+        ("e-mail budget", []),
+        ("budget - runs", []),
+        ("cats or -dogs", []),
+        ("-dogs or cats", []),
+        ("-dogs", ["dogs"]),
+    ],
+)
+def test_the_words_a_question_excludes_are_found(q: str, excluded: list[str]):
+    assert excluded_terms(q) == excluded
+
+
+def test_an_exclusion_is_refused_under_both_readings():
+    sql, params = _sql(_query(q="budget -runs"))
+
+    # The whole question, then the excluded word alone in each configuration.
+    assert sql.count("websearch_to_tsquery") >= 4
+    assert "NOT (search_documents.search_vector @@" in sql
+    assert "runs" in params.values()
 
 
 @pytest.mark.parametrize("q", ["", "   ", "x" * 501])

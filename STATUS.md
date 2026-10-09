@@ -455,6 +455,8 @@ vertical path proved end to end, then widened.
   pages under the sources folder are searchable too and answer with
   `kind: "source"` and the source identifier as `id`; a frontmatter filter
   matches notes only, because a projection has no frontmatter fields of a note.
+  An excluded `-word` is refused under both the English and the `simple`
+  reading, so `budget -runs` finds no note that says `running`.
   With PostgreSQL down the answer is 503 `metadata_unavailable`, never an empty
   page.
   The index is a `search_documents` table in the same database, a stored
@@ -476,8 +478,9 @@ vertical path proved end to end, then widened.
   shows the notes and source pages indexed, when the index last changed and
   when it was last rebuilt, in the operator's timezone (America/Chicago by
   default), and a Rebuild index button. The rebuild runs in the store's
-  background, one at a time: it deletes every entry and reads every note file
-  and generated source page again, using the mirror only to know which
+  background, one at a time: it deletes every entry except the last indexed
+  text of a note the mirror holds as unparsed, which stays findable, and reads
+  every note file and generated source page again, using the mirror only to know which
   identities are live notes, then catches up anything a write changed while it
   read. A rebuild that fails says so on the page. The shipped `indexer`
   settings (`enabled`, `language`, `reconcile_interval_s`) are not read yet: the

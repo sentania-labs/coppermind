@@ -448,7 +448,11 @@ def _walk(
 
 
 async def rebuild(store: LocalStore) -> dict[str, int]:
-    """Throw the index away and read it back from the notes filesystem."""
+    """Throw the index away and read it back from the notes filesystem.
+
+    The one thing kept is the entry of a note the mirror holds as unparsed:
+    its file cannot be read again, so its last indexed text is all there is.
+    """
     started = datetime.now(tz=UTC)
     try:
         async with transaction(store.session_factory) as session:
@@ -479,7 +483,17 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
     now = datetime.now(tz=UTC)
     try:
         async with transaction(store.session_factory) as session:
-            await session.execute(sa.delete(SearchDocument))
+            # A note the mirror holds as unparsed stays findable by the text
+            # it was last indexed with, which the walk could not read again.
+            walked = [entry.ref_id for entry in entries if entry.kind == "note"]
+            unparsed = sa.select(Note.id).where(Note.state == "unparsed", Note.id.not_in(walked))
+            await session.execute(
+                sa.delete(SearchDocument).where(
+                    sa.not_(
+                        sa.and_(SearchDocument.kind == "note", SearchDocument.ref_id.in_(unparsed))
+                    )
+                )
+            )
             for start in range(0, len(entries), _REBUILD_BATCH):
                 batch = entries[start : start + _REBUILD_BATCH]
                 # A store write that commits while this runs has indexed newer

@@ -201,6 +201,17 @@ async def test_a_note_created_on_a_device_is_indexed_when_adopted(store: LocalSt
     assert (hit.kind, hit.path, hit.title) == ("note", "Inbox/Phone note.md", "Phone note")
 
 
+async def test_an_excluded_word_is_excluded_in_every_form(store: LocalStore):
+    running = await store.create_note(note("Track", "The budget for running shoes.\n"))
+    plain = await store.create_note(note("Ledger", "The budget for office chairs.\n"))
+
+    assert sorted(await ids(store, "budget")) == sorted([running.id, plain.id])
+    # English reads 'runs' as 'running', so excluding it excludes both.
+    assert await ids(store, "budget -runs") == [plain.id]
+    assert await ids(store, "budget -running") == [plain.id]
+    assert await ids(store, 'budget -"running shoes"') == [plain.id]
+
+
 async def test_a_broken_edit_keeps_the_last_text_findable_as_unparsed(store: LocalStore):
     created = await store.create_note(note("Fragile", "About the tapir.\n"))
     path = store.notes_root / created.path
@@ -361,3 +372,15 @@ async def test_the_first_pass_after_the_upgrade_builds_the_index(store: LocalSto
     assert counts == {"notes": 1, "sources": 0}
     assert await ids(store, "kestrel") == [created.id]
     assert not await indexer.never_built(store)
+
+
+async def test_a_rebuild_keeps_an_unparsed_note_findable(store: LocalStore):
+    created = await store.create_note(note("Fragile", "About the pangolin.\n"))
+    path = store.notes_root / created.path
+    path.write_text("---\nid: [unclosed\n---\nbroken\n", encoding="utf-8")
+    await reconcile_once(store)
+
+    await indexer.rebuild(store)
+
+    (hit,) = await search(store, "pangolin")
+    assert (hit.id, hit.state) == (created.id, "unparsed")

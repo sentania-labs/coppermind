@@ -2,7 +2,10 @@
 
 The question is parsed twice, by PostgreSQL's English configuration (stems,
 drops stop words) and by 'simple' (every word as written, which is what a
-name needs), and a document matches either. Rank orders the answer; the
+name needs), and a document matches either. A `-word` or `-"phrase"` the
+question excludes is then refused under both readings, so neither reading
+lets back in what the other shuts out: `budget -runs` finds no note that
+says `running`. Rank orders the answer; the
 opaque cursor resumes after the last hit by rank and then by kind and
 identifier, which never change, so no hit is skipped or repeated between
 pages while the index stands still.
@@ -20,6 +23,7 @@ import binascii
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -104,11 +108,48 @@ def decode_cursor(value: str, q: str) -> SearchCursor:
     return SearchCursor(query_digest=digest, rank=float(rank), kind=kind, ref_id=ref_id)
 
 
+# A word or a quoted phrase, with the `-` that excludes it, as
+# websearch_to_tsquery reads them: a phrase runs to its closing quote, or to
+# the end of the question when there is none.
+_TERM = re.compile(r'(-*)("[^"]*"?|[^\s"]+)')
+
+
+def excluded_terms(q: str) -> list[str]:
+    """The words and phrases the question excludes from every hit.
+
+    A `-` excludes only at the start of a term; inside a word it is a hyphen.
+    An exclusion beside `or` is one side of an alternative, not a condition
+    on every hit, so it stays where the parser puts it.
+    """
+    terms = [(match.group(1), match.group(2)) for match in _TERM.finditer(q)]
+    excluded: list[str] = []
+    for index, (dashes, term) in enumerate(terms):
+        if not dashes or not term.strip('"').strip():
+            continue
+        neighbours = terms[index - 1 : index] + terms[index + 1 : index + 2]
+        if any(not other_dashes and other.lower() == "or" for other_dashes, other in neighbours):
+            continue
+        excluded.append(term)
+    return excluded
+
+
 def ts_query(q: str) -> sa.ColumnElement[Any]:
     """The question under both configurations, either of which may match."""
     english = sa.func.websearch_to_tsquery(sa.cast("english", REGCONFIG), q)
     simple = sa.func.websearch_to_tsquery(sa.cast("simple", REGCONFIG), q)
     return english.op("||")(simple)
+
+
+def match_conditions(q: str) -> list[sa.ColumnElement[bool]]:
+    """What a hit must satisfy: the question, and none of its exclusions.
+
+    Each exclusion is asked under both configurations, so a document holding
+    the excluded word as written or any inflection of it is no hit.
+    """
+    conditions: list[sa.ColumnElement[bool]] = [SearchDocument.search_vector.op("@@")(ts_query(q))]
+    for term in excluded_terms(q):
+        conditions.append(sa.not_(SearchDocument.search_vector.op("@@")(ts_query(term))))
+    return conditions
 
 
 def note_state() -> sa.ColumnElement[str]:
@@ -160,7 +201,7 @@ def build_search(query: SearchQuery, after: SearchCursor | None = None) -> sa.Se
         )
         .select_from(SearchDocument)
         .outerjoin(Note, sa.and_(SearchDocument.kind == "note", Note.id == SearchDocument.ref_id))
-        .where(SearchDocument.search_vector.op("@@")(tsquery))
+        .where(*match_conditions(query.q))
         # A note entry the mirror no longer holds as present is never a hit,
         # whatever a catch-up step has not yet removed.
         .where(sa.or_(SearchDocument.kind == "source", Note.id.is_not(None)))
