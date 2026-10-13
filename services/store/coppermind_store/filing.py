@@ -14,7 +14,7 @@ from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes, sync
 from coppermind.db.models import Note, NoteSource, SearchDocument
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id
-from coppermind.store_protocol import MoveNote, ReplaceNote
+from coppermind.store_protocol import MoveNote, ReplaceNote, StoreError
 from coppermind_store.fs import resolve
 
 if TYPE_CHECKING:
@@ -31,6 +31,31 @@ def _copy(path: Path, data: bytes) -> None:
     except FileExistsError:
         if path.is_symlink() or path.read_bytes() != data:
             raise ValueError("filing destination is occupied") from None
+
+
+class SourceRevisionNeedsReview(ValueError):
+    """The current archive revision was not part of this note's approval."""
+
+
+def record_review(store: LocalStore, note_id: str, frontmatter: dict) -> None:
+    """Persist the revisions approved by an explicit review, independently of filing."""
+    from coppermind_store.sources import _manifest_document
+
+    schema = store.control.schema()
+    reviewed = frontmatter.get(schema.role("reviewed_key")) is True
+    revisions = {}
+    if reviewed:
+        for source_id in sorted(set(frontmatter.get(schema.role("sources_key"), []))):
+            try:
+                manifest = _manifest_document(store.sources_root / source_id / "manifest.json")
+                revisions[source_id] = manifest["current_revision"]
+            except (OSError, ValueError, StoreError):
+                # Missing evidence cannot become approved merely by appearing later.
+                revisions[source_id] = None
+    _save(
+        store.control.store.state_dir / "reviews" / f"{note_id}.json",
+        {"reviewed": reviewed, "sources": revisions},
+    )
 
 
 async def file_note(store: LocalStore, note_id: str) -> bool:
@@ -50,19 +75,60 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     datetime.strptime(folder, "%Y-%m")
     journal = store.control.store.state_dir / "filing" / f"{note_id}.json"
     plan = json.loads(journal.read_bytes()) if journal.exists() else None
+    manifests = {}
+    for source_id in sorted(set(note.sources)):
+        if not is_valid_id(source_id):
+            raise ValueError("invalid source identity")
+        manifests[source_id] = _manifest_document(store.sources_root / source_id / "manifest.json")
+    review_path = store.control.store.state_dir / "reviews" / f"{note_id}.json"
+    if review_path.exists():
+        review = json.loads(review_path.read_bytes())
+    else:
+        # Existing receipts already identify the approved revision. Never upgrade
+        # their approval from a newer manifest during restore or a date edit.
+        approved = (
+            {item["id"]: item["revision"] for item in plan.get("sources", [])}
+            if plan
+            else {key: value["current_revision"] for key, value in manifests.items()}
+        )
+        review = {"reviewed": True, "sources": approved}
+        _save(review_path, review)
+    same_filing = (
+        plan
+        and plan.get("complete")
+        and plan.get("month") == folder
+        and note.path.startswith(folder + "/")
+        and set(note.sources) == {item["id"] for item in plan["sources"]}
+    )
+    if not review.get("reviewed") or any(
+        review["sources"].get(source_id) != manifest["current_revision"]
+        for source_id, manifest in manifests.items()
+    ):
+        if same_filing and review.get("reviewed"):
+            # A pending source revision does not revoke the human note's review.
+            # Its source association still authorizes only the earlier revision.
+            await _publish(store, note)
+        raise SourceRevisionNeedsReview("mark the note reviewed again to approve current sources")
     if (
         plan
         and plan.get("complete")
         and plan.get("month") == folder
         and note.path.startswith(folder + "/")
         and set(note.sources) == {item["id"] for item in plan["sources"]}
+        and all(
+            item["revision"] == manifests[item["id"]]["current_revision"]
+            and item["to"] == manifests[item["id"]]["projection_path"]
+            for item in plan["sources"]
+        )
     ):
         await _publish(store, note)
+        if plan.pop("error", None) is not None:
+            _save(journal, plan)
         return False
     # Rebuild a stale plan from current durable manifests. Files already copied
     # remain preserved; the new plan can resume from their recorded paths.
     sources = []
-    for source_id in note.sources:
+    for source_id in sorted(set(note.sources)):
         if not is_valid_id(source_id):
             raise ValueError("invalid source identity")
         manifest = _manifest_document(store.sources_root / source_id / "manifest.json")
@@ -77,7 +143,8 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
                 "id": source_id,
                 "from": old_path,
                 "link_from": link_from,
-                "to": f"{settings.notes.sources_folder}/{folder}/{source_id}.md",
+                "to": manifest.get("filed_projection_path")
+                or f"{settings.notes.sources_folder}/{folder}/{source_id}.md",
                 "revision": manifest["current_revision"],
             }
         )
@@ -127,7 +194,11 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
                 name = artifact["name"]
                 if Path(name).name != name or "\\" in name:
                     raise ValueError("invalid artifact filename")
-                attachment = f"{settings.notes.attachments_folder}/{folder}/{source_id}-{name}"
+                source_month = Path(item["to"]).parent.name
+                attachment = (
+                    f"{settings.notes.attachments_folder}/{source_month}/"
+                    f"{source_id}-r{item['revision']:04d}-{name}"
+                )
                 data = resolve(
                     store.sources_root / source_id / f"r{item['revision']:04d}", name
                 ).read_bytes()
@@ -147,6 +218,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
             else:
                 _copy(target, data)
             manifest["projection_path"] = item["to"]
+            manifest["filed_projection_path"] = item["to"]
             _save(manifest_path, manifest)
             if old != target and old.exists():
                 if old.read_bytes() != original_projection:
@@ -182,6 +254,8 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
 
 
 async def _publish(store, note):
+    review_path = store.control.store.state_dir / "reviews" / f"{note.id}.json"
+    approved = json.loads(review_path.read_bytes())["sources"]
     async with transaction(store.session_factory) as session:
         updated = await session.execute(
             sa.update(Note)
@@ -203,9 +277,14 @@ async def _publish(store, note):
         await session.execute(sa.delete(NoteSource).where(NoteSource.note_id == note.id))
         from datetime import UTC
 
-        for source_id in note.sources:
+        for source_id in sorted(set(note.sources)):
             session.add(
-                NoteSource(note_id=note.id, source_id=source_id, created_at=datetime.now(tz=UTC))
+                NoteSource(
+                    note_id=note.id,
+                    source_id=source_id,
+                    approved_revision=approved.get(source_id),
+                    created_at=datetime.now(tz=UTC),
+                )
             )
 
 
@@ -230,8 +309,11 @@ async def _file_reviewed(store: LocalStore) -> dict[str, int]:
             counts["filed"] += int(await file_note(store, note_id))
         except Exception as exc:
             counts["filing_failed"] += 1
-            async with transaction(store.session_factory) as session:
-                await session.execute(sa.update(Note).where(Note.id == note_id).values(filed=False))
+            if not isinstance(exc, SourceRevisionNeedsReview):
+                async with transaction(store.session_factory) as session:
+                    await session.execute(
+                        sa.update(Note).where(Note.id == note_id).values(filed=False)
+                    )
             path = store.control.store.state_dir / "filing" / f"{note_id}.json"
             try:
                 state = json.loads(path.read_bytes()) if path.exists() else {"note_id": note_id}

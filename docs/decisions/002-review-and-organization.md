@@ -63,4 +63,11 @@ reconciliation pass files existing reviewed notes and rebuilds eligible search
 entries. Search can temporarily be empty during that pass. Existing saved
 field vocabularies are retained; monthly filing applies to reviewed notes
 regardless of their previous folder. Restore must retain the complete `/data`
-tree, including source archives and durable filing receipts under `state/filing`.
+tree, including source archives, filing receipts under `state/filing`, and pinned
+review approvals under `state/reviews`.
+
+Shared sources retain the month of their first filing so a later citation never
+breaks an earlier note's link. Notes continue to follow their own dates. Source
+revision approval is explicit and durable; date corrections and ordinary edits
+do not approve new source material. Revised browsable attachments get separate
+revision-specific filenames, preserving earlier copies.

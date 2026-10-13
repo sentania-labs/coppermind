@@ -148,6 +148,7 @@ class NoteSource(Base):
     source_id: Mapped[str] = mapped_column(
         Text, ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True
     )
+    approved_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

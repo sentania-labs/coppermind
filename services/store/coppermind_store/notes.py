@@ -573,6 +573,12 @@ class LocalStore:
                         now=now,
                     )
                     _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
+                    if current.get(schema.role("reviewed_key")) != frontmatter.get(
+                        schema.role("reviewed_key")
+                    ):
+                        from coppermind_store.filing import record_review
+
+                        record_review(self, note_id, frontmatter)
             except BaseException as exc:
                 typed = _metadata_failure(exc)
                 if typed is None:
@@ -667,6 +673,13 @@ class LocalStore:
                     )
                     if writes_file:
                         _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
+                    if (
+                        schema.role("reviewed_key") in request.set
+                        or schema.role("reviewed_key") in request.unset
+                    ):
+                        from coppermind_store.filing import record_review
+
+                        record_review(self, note_id, frontmatter)
             except BaseException as exc:
                 typed = _metadata_failure(exc)
                 if typed is None:

@@ -94,6 +94,6 @@ async def recover_sources(store: LocalStore) -> dict[str, int]:
                 await session.flush()
                 restored += 1
             await session.execute(sa.delete(NoteSource).where(NoteSource.note_id == note_id))
-            for source_id in cited:
+            for source_id in sorted(set(cited)):
                 session.add(NoteSource(note_id=note_id, source_id=source_id, created_at=now))
     return {"recovered_sources": len(manifests), "recovered_notes": restored}

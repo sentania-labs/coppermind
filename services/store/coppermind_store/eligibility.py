@@ -25,8 +25,13 @@ def eligible(kind, ref_id):
     sources = sa.exists(
         sa.select(Note.id)
         .join(NoteSource, NoteSource.note_id == Note.id)
-        .where(NoteSource.source_id == ref_id, reviewed_note())
-    ).correlate_except(Note, NoteSource)
+        .join(Source, Source.id == NoteSource.source_id)
+        .where(
+            NoteSource.source_id == ref_id,
+            NoteSource.approved_revision == Source.current_revision,
+            reviewed_note(),
+        )
+    ).correlate_except(Note, NoteSource, Source)
     return sa.or_(sa.and_(kind == "note", notes), sa.and_(kind == "source", sources))
 
 

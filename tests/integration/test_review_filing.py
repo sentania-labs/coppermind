@@ -160,6 +160,10 @@ async def test_added_source_requires_filing_before_publication(store):
     path.write_text(fm.compose(frontmatter, body))
     await reconcile_once(store)
     assert not (await store.search(SearchQuery(q="lease discussion"))).items
+    updated = await store.get_note(note.id)
+    await store.patch_frontmatter(
+        updated.id, PatchFrontmatter(set={"reviewed": True}), updated.content_hash
+    )
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
     await indexer.catch_up(store)
     assert len((await store.search(SearchQuery(q="kerfuffle"))).items) == 2
@@ -168,7 +172,7 @@ async def test_added_source_requires_filing_before_publication(store):
     )
 
 
-async def test_date_correction_updates_source_search_path(store):
+async def test_date_correction_preserves_canonical_source_path(store):
     result = await store.ingest(ingest_request())
     await approve(store, result.note.id)
     await indexer.catch_up(store)
@@ -180,5 +184,169 @@ async def test_date_correction_updates_source_search_path(store):
     await indexer.catch_up(store)
     hits = (await store.search(SearchQuery(q="kerfuffle"))).items
     assert len(hits) == 1
-    assert hits[0].path.startswith("_Sources/2026-10/")
+    assert hits[0].path.startswith("_Sources/2026-09/")
+    assert (await store.get_note(note.id)).path.startswith("2026-10/")
     assert hits[0].path.removesuffix(".md") in (await store.get_note(note.id)).body
+
+
+async def test_completed_publication_retry_clears_error(store, monkeypatch):
+    result = await store.ingest(ingest_request())
+    publish = filing._publish
+
+    async def fail(*args):
+        raise ValueError("simulated content-hash race")
+
+    monkeypatch.setattr(filing, "_publish", fail)
+    assert (await approve(store, result.note.id))["filing_failed"] == 1
+    monkeypatch.setattr(filing, "_publish", publish)
+    assert (await filing.file_reviewed(store))["filing_failed"] == 0
+    assert not any(p.kind == "filing" for p in await store.get_problems())
+
+
+async def test_duplicate_citations_file_and_recover_once(store):
+    from coppermind import frontmatter as fm
+
+    result = await store.ingest(ingest_request())
+    note = await store.get_note(result.note.id)
+    path = store.notes_root / note.path
+    metadata, body = fm.parse(path.read_text())
+    metadata["sources"].append(result.source.id)
+    path.write_text(fm.compose(metadata, body))
+    await reconcile_once(store)
+    assert (await approve(store, note.id))["filing_failed"] == 0
+    async with store.session_factory() as session:
+        await session.execute(sa.text("TRUNCATE notes, sources, search_documents CASCADE"))
+        await session.commit()
+    await store.rebuild_metadata()
+    async with store.session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(NoteSource)) == 1
+
+
+async def test_shared_source_retains_first_filed_path(store):
+    from coppermind import frontmatter as fm
+
+    first = await store.ingest(ingest_request("first-shared"))
+    second = await store.ingest(ingest_request("second-shared"))
+    await approve(store, first.note.id)
+    original = (await store.get_source(first.source.id)).projection_path
+    note = await store.get_note(second.note.id)
+    path = store.notes_root / note.path
+    metadata, body = fm.parse(path.read_text())
+    metadata["date"] = "2026-10-01"
+    metadata["sources"].append(first.source.id)
+    path.write_text(fm.compose(metadata, body + f"\n[[{original.removesuffix('.md')}]]\n"))
+    await reconcile_once(store)
+    assert (await approve(store, second.note.id))["filing_failed"] == 0
+    assert (await store.get_source(first.source.id)).projection_path == original
+    assert (store.notes_root / original).is_file()
+    for note_id in (first.note.id, second.note.id):
+        assert original.removesuffix(".md") in (await store.get_note(note_id)).body
+
+
+async def test_source_revision_requires_explicit_rereview(store):
+    request = ingest_request("revision-review")
+    result = await store.ingest(request)
+    await approve(store, result.note.id)
+    request.source.artifacts[0].content = "New unreviewed aardvark material."
+    await store.ingest(request)
+    note = await store.get_note(result.note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"date": "2026-10-01"}), note.content_hash
+    )
+    await filing.file_reviewed(store)
+    await indexer.catch_up(store)
+    assert not (await store.search(SearchQuery(q="aardvark"))).items
+    note = await store.get_note(note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": False}), note.content_hash
+    )
+    assert (await approve(store, note.id))["filing_failed"] == 0
+    await indexer.catch_up(store)
+    assert (await store.search(SearchQuery(q="aardvark"))).items
+
+
+async def test_device_rereview_approves_revised_pdf_without_overwriting_old_copy(store):
+    request = ingest_request("device-rereview")
+    request.source.artifacts.append(
+        IngestArtifact(name="slides.pdf", mime_type="application/pdf", content="version one")
+    )
+    result = await store.ingest(request)
+    await approve(store, result.note.id)
+    original_pdf = next((store.notes_root / "_Attachments").rglob("*.pdf"))
+    request.source.artifacts[0].content = "Revised aardvark transcript"
+    request.source.artifacts[1].content = "version two"
+    await store.ingest(request)
+    note = await store.get_note(result.note.id)
+    path = store.notes_root / note.path
+    path.write_text(path.read_text().replace("reviewed: true", "reviewed: false"))
+    await reconcile_once(store)
+    path.write_text(path.read_text().replace("reviewed: false", "reviewed: true"))
+    await reconcile_once(store)
+    assert (await filing.file_reviewed(store))["filing_failed"] == 0
+    await indexer.catch_up(store)
+    assert (await store.search(SearchQuery(q="aardvark"))).items
+    assert original_pdf.read_bytes() == b"version one"
+    assert {p.read_bytes() for p in (store.notes_root / "_Attachments").rglob("*.pdf")} == {
+        b"version one",
+        b"version two",
+    }
+
+
+async def test_approval_does_not_cover_a_revision_arriving_before_filing(store):
+    request = ingest_request("approval-race")
+    result = await store.ingest(request)
+    note = await store.get_note(result.note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
+    )
+    request.source.artifacts[0].content = "Late aardvark transcript"
+    await store.ingest(request)
+    assert (await filing.file_reviewed(store))["filing_failed"] == 1
+    await indexer.catch_up(store)
+    assert not (await store.search(SearchQuery(q="aardvark"))).items
+    # An explicit mark-reviewed API action can approve material even if the flag is already true.
+    assert (await approve(store, note.id))["filing_failed"] == 0
+    await indexer.catch_up(store)
+    assert (await store.search(SearchQuery(q="aardvark"))).items
+
+
+async def test_recovery_does_not_approve_pending_source_revision(store):
+    request = ingest_request("restore-review")
+    result = await store.ingest(request)
+    await approve(store, result.note.id)
+    request.source.artifacts[0].content = "Unreviewed aardvark revision"
+    await store.ingest(request)
+    async with store.session_factory() as session:
+        await session.execute(sa.text("TRUNCATE notes, sources, search_documents CASCADE"))
+        await session.commit()
+    await store.rebuild_metadata()
+    assert not (await store.search(SearchQuery(q="aardvark"))).items
+    assert (await approve(store, result.note.id))["filing_failed"] == 0
+    await indexer.catch_up(store)
+    assert (await store.search(SearchQuery(q="aardvark"))).items
+
+
+async def test_revoking_review_cannot_fall_back_to_another_notes_older_approval(store):
+    from coppermind import frontmatter as fm
+
+    request = ingest_request("shared-revisions")
+    first = await store.ingest(request)
+    second = await store.ingest(ingest_request("second-reviewer"))
+    await approve(store, first.note.id)
+    note = await store.get_note(second.note.id)
+    path = store.notes_root / note.path
+    metadata, body = fm.parse(path.read_text())
+    metadata["sources"].append(first.source.id)
+    path.write_text(fm.compose(metadata, body))
+    await reconcile_once(store)
+    await approve(store, second.note.id)
+    request.source.artifacts[0].content = "Aardvark revision two"
+    await store.ingest(request)
+    await approve(store, second.note.id)
+    await indexer.catch_up(store)
+    assert (await store.search(SearchQuery(q="aardvark"))).items
+    note = await store.get_note(second.note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": False}), note.content_hash
+    )
+    assert not (await store.search(SearchQuery(q="aardvark"))).items

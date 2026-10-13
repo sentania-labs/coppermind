@@ -515,6 +515,14 @@ async def reconcile_once(
                     )
                     if result.scalar_one_or_none() is None:
                         continue
+                    if (
+                        "reviewed" in values
+                        and observed is not None
+                        and observed.frontmatter is not None
+                    ):
+                        from coppermind_store.filing import record_review
+
+                        record_review(store, row.id, observed.frontmatter)
                     await _follow_in_index(session, row.id, observed, now)
                     if observed is None:
                         counts["missing"] += 1

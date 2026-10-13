@@ -141,3 +141,12 @@ def test_release_waits_for_every_image_and_the_running_stack():
     publish = workflow["jobs"]["publish"]
     assert set(publish["needs"]) == {"image", "smoke", "integration", "release-tag"}
     assert publish["runs-on"] == "ubuntu-latest"
+
+
+def test_dependency_review_runs_the_local_audit_without_a_licensed_api():
+    job = jobs(WORKFLOWS[0])["dependency-review"]
+    assert not job.get("continue-on-error")
+    steps = job["steps"]
+    assert any(step.get("run") == "make scan-deps" for step in steps)
+    assert not any("dependency-review-action" in step.get("uses", "") for step in steps)
+    assert not any(step.get("continue-on-error") for step in steps)

@@ -107,11 +107,16 @@ form_value() {
     python3 -c 'import sys
 from html.parser import HTMLParser
 class Inputs(HTMLParser):
+    values = set()
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "input" and attrs.get("name") == sys.argv[1]:
-            print(attrs.get("value", ""))
-Inputs().feed(sys.stdin.read())' "$1"
+            self.values.add(attrs.get("value", ""))
+parser = Inputs()
+parser.feed(sys.stdin.read())
+if len(parser.values) != 1:
+    raise SystemExit("Expected one distinct form token")
+print(parser.values.pop())' "$1"
 }
 claim_code="$(compose exec -T admin sh -c 'cat /data/state/internal/claim-code 2>/dev/null || true')"
 if [ -n "$claim_code" ]; then

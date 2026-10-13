@@ -105,11 +105,20 @@ Ingest always creates an unreviewed draft, even if automation supplies
 frontmatter API. The next reconciliation pass files the note and source page
 under their respective month folders, copies non-text, non-audio attachments
 under `_Attachments/YYYY-MM/`, and permits indexing only after successful filing.
+A source keeps the month chosen when it was first filed, including when another
+note cites it or a note's date is later corrected. All citing notes retain the
+same source link. Revision-specific attachment filenames preserve earlier copies.
 Audio stays in the immutable archive. Filing errors appear in Admin Problems
 and retry automatically. Human edits of a filed note retain review and update search.
 
 A changed payload under the same external ID creates an archive revision and
 preserves the existing note. It does not silently publish the new source text.
+To approve a revision, review the current source page and explicitly PATCH the
+note's reviewed field to true again. In Obsidian, change reviewed to false,
+allow it to sync and reconcile, then change it to true. Ordinary body, date,
+and association edits never approve a newer source revision. New associations
+on an already reviewed note also require that deliberate review action.
+Approval records pin the exact source revisions; restore cannot advance them.
 Use a distinct submission ID for new material that needs its own reviewable note.
 
 ## Proposed next contract: staged bundles
