@@ -19,8 +19,8 @@ from these files and from the notes themselves.
 schema_version: 1
 id: 01K4Q8Z3N7V2X9M1B5C6D8E0F2
 date: 2026-09-08
-type: meeting
-context: customer
+type: work
+context: external
 account: Acme
 reviewed: false
 sources:
@@ -34,9 +34,9 @@ tags: []
 | Rule | Value |
 |---|---|
 | Required keys | `schema_version` (int), `id` (ULID), `date` (ISO date), `type`, `context`, `reviewed` (bool), `sources` (list of ULID) |
-| Optional keys | `account` (required when `context: customer`), `tags` (list), `title` (only when it differs from the heading), `external_refs` (a passthrough map), `unresolved` (set by the curator on an ambiguous filing), `managed` (projections only) |
-| Shipped `type` vocabulary | `meeting`, `journal`, `reference`, `note` |
-| Shipped `context` vocabulary | `customer`, `internal`, `external`, `personal` |
+| Optional keys | `account` (required when `context: external`), `tags` (list), `title` (only when it differs from the heading), `external_refs` (a passthrough map), `unresolved` (set by the curator on an ambiguous filing), `managed` (projections only) |
+| Shipped `type` vocabulary | `work`, `personal`, `reference`, `journal` (default: `reference`) |
+| Shipped `context` vocabulary | `internal`, `external`, `personal` |
 | Filenames | Dated types: `YYYY-MM-DD Title.md`. Undated: `Title.md`. Journal: `Journal/YYYY/YYYY-MM-DD.md`. Names are Unicode-normalized, Windows-reserved characters and device names are stripped, capped at 120 characters, and a case-insensitive collision gets a numbered suffix |
 | Identity (`ETag`) | `"sha256:<hex of the file's bytes>"`. A move does not change it; a frontmatter write-back does |
 | Unparseable file | Left byte-for-byte untouched, recorded as `state: unparsed` with a reason, indexed by body if it can be decoded at all |
@@ -112,7 +112,7 @@ Nothing here needs to be set before the system runs.
 | notes | `sources_folder` | `_Sources` |
 | notes | `attachments_folder` | `_Attachments` |
 | notes | `journal_folder` | `Journal` |
-| notes | `dated_types` | `[meeting, journal]` |
+| notes | `dated_types` | `[work, journal]` |
 | reconcile | `scan_interval_s` | 60 |
 | reconcile | `quiet_period_s` | 30 |
 | reconcile | `full_rehash_daily_at` | `03:30` |
@@ -156,7 +156,6 @@ fallback for anything that matches nothing: leave it in place and mark it
 
 | When | Files to |
 |---|---|
-| `context: customer` | `Work/Customers/{account}/` |
 | `context: internal` | `Work/Internal/` |
 | `context: external` | `Work/External/` |
 | `context: personal` | `Personal/` |

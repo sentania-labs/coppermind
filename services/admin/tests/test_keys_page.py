@@ -22,12 +22,33 @@ class Inputs(HTMLParser):
     def __init__(self, text):
         super().__init__()
         self.values = {}
+        self.select = None
+        self.textarea = None
         self.feed(text)
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "input" and "name" in attrs and attrs.get("type") != "checkbox":
             self.values[attrs["name"]] = attrs.get("value", "")
+        elif tag == "select":
+            self.select = attrs.get("name")
+        elif tag == "option" and self.select:
+            if self.select not in self.values or "selected" in attrs:
+                self.values[self.select] = attrs.get("value", "")
+        elif tag == "textarea":
+            self.textarea = attrs.get("name")
+            if self.textarea:
+                self.values[self.textarea] = ""
+
+    def handle_data(self, data):
+        if self.textarea:
+            self.values[self.textarea] += data
+
+    def handle_endtag(self, tag):
+        if tag == "select":
+            self.select = None
+        elif tag == "textarea":
+            self.textarea = None
 
 
 def create(client, **overrides):

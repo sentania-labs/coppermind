@@ -319,6 +319,9 @@ async def _index_after_pass(store: LocalStore) -> None:
     never counts against reconciliation, which is what readiness watches.
     """
     try:
+        from coppermind_store.filing import file_reviewed
+
+        await file_reviewed(store)
         counts = await indexer.after_pass(store)
     except Exception as exc:  # noqa: BLE001 - the index must not stop the reconciler
         log.warning("search index catch-up deferred", reason=type(exc).__name__)
@@ -512,6 +515,14 @@ async def reconcile_once(
                     )
                     if result.scalar_one_or_none() is None:
                         continue
+                    if (
+                        "reviewed" in values
+                        and observed is not None
+                        and observed.frontmatter is not None
+                    ):
+                        from coppermind_store.filing import record_review
+
+                        record_review(store, row.id, observed.frontmatter)
                     await _follow_in_index(session, row.id, observed, now)
                     if observed is None:
                         counts["missing"] += 1

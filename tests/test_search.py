@@ -133,7 +133,7 @@ def test_without_filters_only_the_base_conditions_apply():
 FILTERS: dict[str, tuple[Any, str]] = {
     "folder": ("Work/Clients", "starts_with(search_documents.path"),
     "reviewed": (True, "notes.reviewed IS true"),
-    "type": ("meeting", "notes.type ="),
+    "type": ("work", "notes.type ="),
     "context": ("work", "notes.context ="),
     "account": ("Acme", "notes.account ="),
     "from": ("2026-09-01", "notes.date >="),
@@ -393,7 +393,7 @@ def test_search_passes_every_filter_and_the_page_through(api):
         "q": "budget",
         "folder": "Work",
         "reviewed": "false",
-        "type": "meeting",
+        "type": "work",
         "context": "work",
         "account": "Acme",
         "from": "2026-09-01",
@@ -422,7 +422,7 @@ def test_search_passes_every_filter_and_the_page_through(api):
     }
     (query,) = fake.queries
     assert query.q == "budget"
-    assert (query.folder, query.reviewed, query.type) == ("Work", False, "meeting")
+    assert (query.folder, query.reviewed, query.type) == ("Work", False, "work")
     assert (query.context, query.account) == ("work", "Acme")
     assert (query.tag, query.state) == ("budget", "ok")
     assert (query.from_date, query.to_date) == (date(2026, 9, 1), date(2026, 9, 30))

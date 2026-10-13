@@ -173,7 +173,7 @@ def test_a_notes_root_reached_through_a_link_still_names_a_page_under_it(tmp_pat
 
     relative = place(linked)
 
-    assert relative == "_Sources/Plaud/2026-09-08 Acme Architecture Sync.md"
+    assert relative == "_Sources/_Pending/2026-09/2026-09-08 Acme Architecture Sync.md"
     assert write(linked, relative) is True
     assert (real / relative).is_file()
 
@@ -185,12 +185,14 @@ def test_a_directory_standing_at_the_preferred_name_is_a_taken_name(tmp_path: Pa
     at it. Counting only files hands back the occupied name every time, so no
     retry ever places the page.
     """
-    occupied = tmp_path / "_Sources" / "Plaud" / "2026-09-08 Acme Architecture Sync.md"
+    occupied = (
+        tmp_path / "_Sources" / "_Pending" / "2026-09" / "2026-09-08 Acme Architecture Sync.md"
+    )
     occupied.mkdir(parents=True)
 
     relative = place(tmp_path)
 
-    assert relative == "_Sources/Plaud/2026-09-08 Acme Architecture Sync (2).md"
+    assert relative == "_Sources/_Pending/2026-09/2026-09-08 Acme Architecture Sync (2).md"
     assert write(tmp_path, relative) is True
     assert (tmp_path / relative).is_file()
     assert occupied.is_dir() and not list(occupied.iterdir())

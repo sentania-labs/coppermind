@@ -44,7 +44,7 @@ async def test_move_sanitizes_each_folder_component(tmp_path: Path) -> None:
     from services.store.tests.test_move_rename_dated_and_failures import _store as mirrored
 
     store, mirror = mirrored(tmp_path)
-    created = await store.create_note(CreateNote(title="Note", frontmatter={"type": "note"}))
+    created = await store.create_note(CreateNote(title="Note", frontmatter={"type": "reference"}))
 
     moved = await store.move_note(created.id, MoveNote(target_folder="Work?/Customer*"), None)
 
@@ -142,7 +142,7 @@ async def test_rename_keeps_requested_title_in_response_and_heading(
     path = store.notes_root / "Old.md"
     prefix = (
         f"---\r\nid: {note_id}\r\n# Keep me\r\ndate: 2026-09-08\r\n"
-        "schema_version: 1\r\ntype: note\r\ncontext: internal\r\nreviewed: false\r\n"
+        "schema_version: 1\r\ntype: reference\r\ncontext: internal\r\nreviewed: false\r\n"
         'sources: []\r\ntags: []\r\ncustom: "quoted"\r\n---\r\n'
     ).encode()
     original = prefix + b"# Old\r\n\r\nBody\r\n"

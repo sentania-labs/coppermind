@@ -238,7 +238,11 @@ async def _ingest_new(
     note_request = CreateNote(
         title=request.note.title,
         body=request.note.body,
-        frontmatter={**request.note.frontmatter, schema.role("sources_key"): [source_id]},
+        frontmatter={
+            **request.note.frontmatter,
+            schema.role("sources_key"): [source_id],
+            schema.role("reviewed_key"): False,
+        },
     )
     frontmatter = _build_frontmatter(note_request, schema, settings, note_id)
     problems = schema.validate_frontmatter(frontmatter) + schema.tag_problems(frontmatter)
@@ -373,6 +377,7 @@ async def _ingest_new(
                 identity,
                 artifact_metadata,
                 projection_path,
+                note_id,
             ),
         )
         try:
@@ -450,7 +455,9 @@ async def _ingest_existing(
             current_artifacts,
         )
 
-    note_id, note_path, note_snapshot = await _linked_note(store, session, source_id, schema)
+    note_id, note_path, note_snapshot = await _linked_note(
+        store, session, source_id, schema, manifest.get("note_id")
+    )
     await _ensure_mirror(session, manifest, note_id, note_path, note_snapshot, schema)
 
     if replaying:
@@ -683,22 +690,32 @@ def _read_json(path: Path, label: str) -> dict[str, Any]:
 
 
 async def _linked_note(
-    store: LocalStore, session: AsyncSession, source_id: str, schema: FrontmatterSchema
+    store: LocalStore,
+    session: AsyncSession,
+    source_id: str,
+    schema: FrontmatterSchema,
+    original_note_id: str | None = None,
 ) -> tuple[str, str, tuple[bytes, dict[str, Any], str, datetime] | None]:
-    row = (
-        await session.execute(
-            sa.select(Note.id, Note.path)
-            .join(NoteSource, NoteSource.note_id == Note.id)
-            .where(NoteSource.source_id == source_id)
-        )
-    ).one_or_none()
-    if row is not None:
-        return row.id, row.path, None
-    return await asyncio.to_thread(_scan_for_linked_note, store.notes_root, source_id, schema)
+    if original_note_id is not None and not is_valid_id(original_note_id):
+        raise StoreError("invalid original ingest note identity")
+    query = (
+        sa.select(Note.id, Note.path)
+        .join(NoteSource, NoteSource.note_id == Note.id)
+        .where(NoteSource.source_id == source_id)
+    )
+    if original_note_id is not None:
+        query = query.where(Note.id == original_note_id)
+    rows = (await session.execute(query)).all()
+    if len(rows) == 1:
+        return rows[0].id, rows[0].path, None
+    # Legacy manifests have no original note identity. Never guess between citations.
+    return await asyncio.to_thread(
+        _scan_for_linked_note, store.notes_root, source_id, schema, original_note_id
+    )
 
 
 def _scan_for_linked_note(
-    notes_root: Path, source_id: str, schema: FrontmatterSchema
+    notes_root: Path, source_id: str, schema: FrontmatterSchema, original_note_id: str | None = None
 ) -> tuple[str, str, tuple[bytes, dict[str, Any], str, datetime]]:
     """Find the note citing a source by reading the notes filesystem.
 
@@ -722,7 +739,12 @@ def _scan_for_linked_note(
             continue
         sources = parsed.get(schema.role("sources_key"), [])
         note_id = parsed.get(schema.role("id_key"))
-        if source_id in sources and is_valid_id(note_id):
+        if (
+            isinstance(sources, list)
+            and source_id in sources
+            and is_valid_id(note_id)
+            and (original_note_id is None or note_id == original_note_id)
+        ):
             note_id = str(note_id)
             relative = path.relative_to(notes_root).as_posix()
             matches.append(
@@ -742,14 +764,7 @@ def _scan_for_linked_note(
     return matches[0]
 
 
-async def _ensure_mirror(
-    session: AsyncSession,
-    manifest: dict[str, Any],
-    note_id: str,
-    note_path: str,
-    note_snapshot: tuple[bytes, dict[str, Any], str, datetime] | None,
-    schema: FrontmatterSchema,
-) -> None:
+async def _ensure_source_mirror(session: AsyncSession, manifest: dict[str, Any]) -> None:
     source_id = manifest.get("source_id")
     revisions = manifest.get("revisions")
     if not is_valid_id(source_id) or not isinstance(revisions, list) or not revisions:
@@ -808,8 +823,23 @@ async def _ensure_mirror(
                 )
             )
             await session.flush()
-            session.add_all(_artifact_rows(source_id, revision, item.get("artifacts", [])))
+        for artifact in _artifact_rows(source_id, revision, item.get("artifacts", [])):
+            if await session.get(SourceArtifact, (source_id, revision, artifact.name)) is None:
+                session.add(artifact)
     await session.flush()
+
+
+async def _ensure_mirror(
+    session: AsyncSession,
+    manifest: dict[str, Any],
+    note_id: str,
+    note_path: str,
+    note_snapshot: tuple[bytes, dict[str, Any], str, datetime] | None,
+    schema: FrontmatterSchema,
+) -> None:
+    await _ensure_source_mirror(session, manifest)
+    source_id = str(manifest["source_id"])
+    created_at = _manifest_time(manifest["revisions"][0]["ingested_at"], "ingested_at")
 
     if await session.get(Note, note_id) is None:
         if note_snapshot is None:
@@ -995,6 +1025,7 @@ def _manifest(
     identity: str,
     artifacts: list[dict[str, Any]],
     projection_path: str,
+    note_id: str,
 ) -> bytes:
     document = {
         "schema_version": 1,
@@ -1003,6 +1034,7 @@ def _manifest(
         "external_source_id": request.source.external_source_id,
         "source_type": request.source.source_type,
         "origin": request.source.origin,
+        "note_id": note_id,
         "current_revision": 1,
         "revisions": [_revision_document(request, 1, ingested_at, identity, artifacts)],
         "projection_path": projection_path,
@@ -1200,6 +1232,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
             name_collisions=name_collisions,
             unparseable_files=notes_by_state.get("unparsed", 0),
             excluded_count=excluded_count,
+            filing_failures=sum(p.kind == "filing" for p in await get_problems(store)),
         )
     )
 
@@ -1246,6 +1279,33 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         )
         for row in rejections
     ]
+    for path in sorted((store.control.store.state_dir / "filing").glob("*.json")):
+        try:
+            filing = json.loads(path.read_bytes())
+            if filing.get("error"):
+                problems.append(
+                    ProblemInfo(
+                        kind="filing",
+                        reference=path.stem,
+                        reason=(
+                            "Source material changed. Review it, then mark the note unreviewed "
+                            "and reviewed again."
+                            if filing["error"] == "SourceRevisionNeedsReview"
+                            else "Monthly filing is pending; it will retry automatically: "
+                            + filing["error"]
+                        ),
+                        note_id=path.stem,
+                    )
+                )
+        except (OSError, ValueError):
+            problems.append(
+                ProblemInfo(
+                    kind="filing",
+                    reference=path.stem,
+                    reason="Filing receipt is unreadable",
+                    note_id=path.stem,
+                )
+            )
     problems.extend(
         ProblemInfo(
             kind="unparsed",

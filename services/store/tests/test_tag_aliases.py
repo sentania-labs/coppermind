@@ -149,7 +149,7 @@ def test_closed_tags_do_not_change_what_validation_reports():
         "schema_version": 1,
         "id": NOTE_ID,
         "date": "2026-09-08",
-        "type": "note",
+        "type": "reference",
         "context": "internal",
         "reviewed": False,
         "sources": [],

@@ -22,7 +22,7 @@ from coppermind.logging import configure_logging, get_logger
 from coppermind.settings import ProductSettings, Wiring, read_settings
 from coppermind.statefiles import StateStore
 from coppermind.store_client import HttpStoreClient
-from coppermind_admin import __version__
+from coppermind_admin import __version__, layout
 from coppermind_admin.auth import (
     AdminCredentials,
     AdminRecordUnreadable,
@@ -52,6 +52,7 @@ log = get_logger(SERVICE)
 MAX_FORM_BYTES = 65536
 CSRF_COOKIE = "coppermind_admin_csrf"
 csrf_token: ContextVar[str] = ContextVar("csrf_token", default="")
+admin_path: ContextVar[str] = ContextVar("admin_path", default="")
 
 # What each rejection tells the operator. The page named in the redirect is
 # the one that reads the notice, so a refused password is never reported as a
@@ -70,43 +71,12 @@ LOGIN_NOTICES = {
 
 
 def page(title: str, body: str, *, wide: bool = False) -> str:
-    body = re.sub(
+    document = layout.render(title, body, admin_path.get())
+    return re.sub(
         r"(<form\b[^>]*>)",
         lambda match: match[0] + f'<input type="hidden" name="csrf" value="{csrf_token.get()}">',
-        body,
+        document,
     )
-    return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>{html.escape(title)} | Coppermind</title><style>{WIDE if wide else ""}
-:root {{
-  color-scheme:light; font-family:system-ui,sans-serif;
-  background:#f4f1e8; color:#19231d
-}}
-body {{ margin:0; min-height:100vh; display:grid; place-items:center }}
-main {{
-  width:min(28rem,calc(100% - 2rem)); background:#fff; padding:2rem;
-  border:1px solid #d3cdbd; border-radius:1rem; box-shadow:0 1rem 3rem #283a2a18
-}}
-h1 {{ margin-top:0; font-family:Georgia,serif; font-size:2rem }} p {{ line-height:1.5 }}
-label {{ display:block; font-weight:650; margin-top:1rem }}
-input, textarea, select {{
-  box-sizing:border-box; width:100%; margin-top:.4rem; padding:.75rem;
-  border:1px solid #8a918b; border-radius:.4rem; font:inherit
-}}
-input[type="checkbox"] {{ width:auto; margin-right:.5rem }}
-fieldset {{ margin-top:1.5rem; border:1px solid #d3cdbd; border-radius:.4rem }}
-button {{
-  margin-top:1.25rem; border:0; border-radius:.4rem; padding:.75rem 1rem;
-  background:#245c3b; color:#fff; font:inherit; font-weight:700; cursor:pointer
-}}
-.error {{ padding:.75rem; background:#fde8e4; border-left:.25rem solid #a93624 }}
-pre {{ white-space:pre-wrap; overflow-wrap:anywhere; font-size:.85rem }}
-.muted {{ color:#59655d }}
-</style></head><body><main>{body}</main></body></html>"""
-
-
-# A page with many controls, such as Fields and tags, takes more of the screen.
-WIDE = "main { width:min(56rem,calc(100% - 2rem)) !important }\n"
 
 
 def notice(notices: dict[str, str], error: str | None) -> str:
@@ -308,7 +278,11 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
             except AdminRecordUnreadable as exc:
                 return unreadable_state_file(credentials.path, str(exc), ADMIN_RECORD_REMEDY)
             if signed_in:
-                return await call_next(request)
+                context = admin_path.set(path)
+                try:
+                    return await call_next(request)
+                finally:
+                    admin_path.reset(context)
         if token:
             ended = error_response("login", "session_expired")
             ended.delete_cookie(COOKIE, path="/")
@@ -347,11 +321,11 @@ required></label><button>Log in</button></form>""",
             page(
                 "Overview",
                 f"""<h1>Coppermind Admin</h1><p>You are signed in.</p>
+<p class="muted">Review the current state, inspect problems, and manage your notes filesystem.</p>
 {counters}
-<p><a href="/admin/keys">API Keys</a> | <a href="/admin/settings">Settings</a> |
-<a href="/admin/fields">Fields and tags</a> | <a href="/admin/sync">Obsidian Sync</a> |
-<a href="/admin/problems">Problems</a> | <a href="/admin/search-index">Search index</a></p>
-<form method="post" action="/v1/admin/logout"><button>Log out</button></form>""",
+<h2>Operate and recover</h2>
+<p><a href="/admin/search-index">Inspect or rebuild the search index</a>. A search rebuild
+is not a complete restore of source records and note associations.</p>""",
             )
         )
 

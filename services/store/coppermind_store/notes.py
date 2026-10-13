@@ -230,6 +230,7 @@ class LocalStore:
         # a sufficient guard for the compare-and-swap.
         self._locks: dict[str, asyncio.Lock] = {}
         self._source_locks: dict[str, asyncio.Lock] = {}
+        self._filing_lock = asyncio.Lock()
         # The one search index rebuild this process may be running.
         self._search_rebuild: asyncio.Task[None] | None = None
 
@@ -572,6 +573,12 @@ class LocalStore:
                         now=now,
                     )
                     _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
+                    if current.get(schema.role("reviewed_key")) != frontmatter.get(
+                        schema.role("reviewed_key")
+                    ):
+                        from coppermind_store.filing import record_review
+
+                        record_review(self, note_id, frontmatter)
             except BaseException as exc:
                 typed = _metadata_failure(exc)
                 if typed is None:
@@ -666,6 +673,13 @@ class LocalStore:
                     )
                     if writes_file:
                         _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
+                    if (
+                        schema.role("reviewed_key") in request.set
+                        or schema.role("reviewed_key") in request.unset
+                    ):
+                        from coppermind_store.filing import record_review
+
+                        record_review(self, note_id, frontmatter)
             except BaseException as exc:
                 typed = _metadata_failure(exc)
                 if typed is None:
@@ -1018,9 +1032,16 @@ class LocalStore:
 
     async def rebuild_metadata(self) -> RebuildMetadataResult:
         """Re-read every note file and rebuild its mirrored metadata."""
+        from coppermind_store import indexer
+        from coppermind_store.filing import file_reviewed
         from coppermind_store.reconciler import reconcile_once
+        from coppermind_store.recovery import recover_sources
 
-        return RebuildMetadataResult(counts=await reconcile_once(self, full=True))
+        counts = await recover_sources(self)
+        counts.update(await reconcile_once(self, full=True))
+        counts.update(await file_reviewed(self))
+        await indexer.rebuild(self)
+        return RebuildMetadataResult(counts=counts)
 
     async def search(self, query: SearchQuery) -> Page[SearchHit]:
         """Full-text search over note bodies, titles and source projections."""
@@ -1704,13 +1725,18 @@ def _check_folder_safe(folder: str, settings: ProductSettings) -> None:
 def _mirror_columns(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any]:
     """The columns of the mirror row that project individual frontmatter keys."""
     tags = frontmatter.get(schema.role("tags_key"), [])
+    sources = frontmatter.get(schema.role("sources_key"), [])
     return {
+        "source_ids": sorted({s for s in sources if isinstance(s, str)})
+        if isinstance(sources, list)
+        else [],
         "schema_version": _as_int(frontmatter.get(schema.role("schema_version_key"), 1)),
         "type": _text(frontmatter.get(schema.role("type_key"))),
         "context": _text(frontmatter.get(schema.role("context_key"))),
         "account": _text(frontmatter.get(schema.role("account_key"))),
         "date": _as_date(frontmatter.get(schema.role("date_key"))),
-        "reviewed": bool(frontmatter.get(schema.role("reviewed_key"), False)),
+        "reviewed": frontmatter.get(schema.role("reviewed_key")) is True,
+        **({"filed": False} if frontmatter.get(schema.role("reviewed_key")) is not True else {}),
         "tags": [_storable(str(tag)) for tag in tags] if isinstance(tags, list) else [],
     }
 

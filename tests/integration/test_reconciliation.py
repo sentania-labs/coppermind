@@ -191,9 +191,11 @@ async def test_adoption_rechecks_requirements_activated_by_applied_defaults(
     roles = schema_body["roles"]
     for definition in schema_body["keys"]:
         if definition["name"] == roles["context_key"]:
-            definition["default"] = "customer"
+            definition["default"] = "external"
         if definition["name"] == roles["account_key"]:
             definition["default"] = "Default account"
+            definition["required_when"] = roles["context_key"]
+            definition["required_when_values"] = ["external"]
     store.control.store.write("schema", schema_body, if_revision=schema_record.revision)
     unknown = store.notes_root / "Review" / "Default customer.md"
     unknown.parent.mkdir(parents=True, exist_ok=True)
@@ -203,7 +205,7 @@ async def test_adoption_rechecks_requirements_activated_by_applied_defaults(
     frontmatter, _ = fm.parse(unknown.read_text(encoding="utf-8"))
 
     assert counts["adopted"] == 1
-    assert frontmatter[roles["context_key"]] == "customer"
+    assert frontmatter[roles["context_key"]] == "external"
     assert frontmatter[roles["account_key"]] == "Default account"
     assert store.control.schema().validate_frontmatter(frontmatter) == []
 
@@ -330,7 +332,8 @@ async def test_a_file_ingest_generated_is_refused_rather_than_re_adopted(store: 
     generated.parent.mkdir(parents=True, exist_ok=True)
     original = (
         b"---\nschema_version: 1\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\ndate: 2026-09-15\n"
-        b"type: note\ncontext: internal\nreviewed: false\nsources: [01K4Q8Z3N7V2X9M1B5C6D8E0G7]\n"
+        b"type: reference\ncontext: internal\nreviewed: false\n"
+        b"sources: [01K4Q8Z3N7V2X9M1B5C6D8E0G7]\n"
         b"---\n# Opened for a source\n"
     )
     generated.write_bytes(original)
@@ -628,7 +631,7 @@ async def test_a_file_that_disappears_from_the_unchanged_branch_is_only_changed(
     complete.parent.mkdir(parents=True, exist_ok=True)
     complete.write_bytes(
         b"---\nschema_version: 1\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\ndate: 2026-09-15\n"
-        b"type: note\ncontext: internal\nreviewed: false\nsources: []\n---\n# Restored\n"
+        b"type: reference\ncontext: internal\nreviewed: false\nsources: []\n---\n# Restored\n"
     )
     real_read = notes_module._read
     reads: list[str] = []
@@ -880,7 +883,7 @@ async def test_a_real_source_projection_is_never_adopted_as_a_note(store: LocalS
                         }
                     ],
                 },
-                "note": {"title": "Adoption guard", "frontmatter": {"type": "meeting"}},
+                "note": {"title": "Adoption guard", "frontmatter": {"type": "work"}},
             }
         )
     )

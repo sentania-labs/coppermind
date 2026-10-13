@@ -37,8 +37,8 @@ from coppermind.store_protocol import (
 
 MEETING = {
     "date": "2026-09-08",
-    "type": "meeting",
-    "context": "customer",
+    "type": "work",
+    "context": "external",
     "account": "Acme",
     "tags": ["architecture"],
 }
@@ -111,8 +111,10 @@ async def test_two_notes_with_the_same_title_both_survive(store: LocalStore):
 
 async def test_a_schema_violation_writes_nothing_at_all(store: LocalStore, session_factory):
     with pytest.raises(ValidationFailed) as raised:
-        await store.create_note(CreateNote(title="No account", frontmatter={"context": "customer"}))
-    assert any("account" in problem for problem in raised.value.errors)
+        await store.create_note(
+            CreateNote(title="Invalid context", frontmatter={"context": "unknown"})
+        )
+    assert any("context" in problem for problem in raised.value.errors)
     assert list((store.notes_root).rglob("*.md")) == []
     async with session_factory() as session:
         counted = await session.execute(sa.select(sa.func.count()).select_from(Note))
@@ -518,9 +520,9 @@ async def test_a_replace_keeps_the_identifier_and_checks_the_schema(store: Local
         )
     assert changed_id.value.errors == ["id: the identifier of a note cannot be changed"]
 
-    with pytest.raises(ValidationFailed) as missing_account:
-        await store.replace_note(created.id, edited(created, account=None), created.content_hash)
-    assert any("account" in problem for problem in missing_account.value.errors)
+    with pytest.raises(ValidationFailed) as missing_context:
+        await store.replace_note(created.id, edited(created, context=None), created.content_hash)
+    assert any("context" in problem for problem in missing_context.value.errors)
     assert path.read_bytes() == before
 
 
@@ -622,12 +624,12 @@ async def test_a_frontmatter_patch_changes_one_line_and_keeps_the_body_bytes(
         b"# keep this explanation beside the permanent identifier\n"
         + f"id: {created.id}\n".encode()
         + b"reviewed: false\n"
-        b"context: customer\n"
+        b"context: external\n"
         b"account: Acme\n"
         b"date: 2026-09-08\n"
         b"schema_version: 1\n"
         b"sources: []\n"
-        b"type: meeting\n"
+        b"type: work\n"
         b"---\n" + body
     )
     path.write_bytes(before)
@@ -680,7 +682,7 @@ async def test_an_invalid_frontmatter_patch_names_the_field_and_changes_nothing(
         )
 
     assert raised.value.errors == [
-        "type: 'incident' is not one of meeting, journal, reference, note"
+        "type: 'incident' is not one of work, personal, reference, journal"
     ]
     assert path.read_bytes() == before
 

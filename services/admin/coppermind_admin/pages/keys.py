@@ -1,12 +1,15 @@
 """API key creation, audit listing and confirmed revocation."""
 
 from html import escape
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, Response
 
 from coppermind.api_keys import API_SCOPES, add_key, load_keys, revoke_key
+from coppermind.settings import read_settings
 from coppermind.statefiles import RevisionConflict, StateStore
+from coppermind_admin.pages.search_index import local_time
 
 router = APIRouter()
 
@@ -15,13 +18,17 @@ def render(store: StateStore, message: str = "", status: int = 200) -> HTMLRespo
     from coppermind_admin import main
 
     keys = load_keys(store)
+    try:
+        zone = ZoneInfo(read_settings(store).general.timezone)
+    except (OSError, ValueError):
+        zone = ZoneInfo("America/Chicago")
     body = '<h1>API Keys</h1><p><a href="/admin">Overview</a></p>' + message
     body += "<p>Changes reach the API within five minutes.</p>"
     for key in keys.keys:
         body += f"""<section><h2>{escape(key.name)}</h2>
 <p>ID: {key.key_id}</p><p>Scopes: {escape(", ".join(key.scopes)) or "None"}</p>
-<p>Created: {key.created_at.isoformat()}</p>
-<p>Revoked: {key.revoked_at.isoformat() if key.revoked_at else "No"}</p>"""
+<p>Created: {escape(local_time(key.created_at, zone))}</p>
+<p>Revoked: {escape(local_time(key.revoked_at, zone)) if key.revoked_at else "No"}</p>"""
         if key.revoked_at is None:
             body += f"""<form method="post" action="/v1/admin/keys/{key.key_id}/confirm">
 <input type="hidden" name="revision" value="{keys.revision}">

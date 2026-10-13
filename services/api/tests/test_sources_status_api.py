@@ -327,6 +327,7 @@ def test_status_returns_every_counter(api):
             "name_collisions": 0,
             "unparseable_files": 0,
             "excluded_count": 0,
+            "filing_failures": 0,
         }
     }
 

@@ -22,7 +22,7 @@ def test_the_identifier_is_assigned_by_the_store_not_the_caller():
 
 def test_missing_keys_take_their_shipped_defaults():
     frontmatter = build()
-    assert frontmatter["type"] == "note"
+    assert frontmatter["type"] == "reference"
     assert frontmatter["context"] == "internal"
     assert frontmatter["reviewed"] is False
     assert frontmatter["sources"] == []
@@ -35,7 +35,7 @@ def test_the_date_defaults_to_today_and_is_written_as_a_yaml_date():
 
 
 def test_keys_are_written_in_schema_order_with_a_persons_own_keys_after_them():
-    frontmatter = build(frontmatter={"aliases": ["theirs"], "type": "meeting"})
+    frontmatter = build(frontmatter={"aliases": ["theirs"], "type": "work"})
     names = list(frontmatter)
     assert names[:4] == ["schema_version", "id", "date", "type"]
     assert names[-1] == "aliases"
@@ -51,7 +51,7 @@ def test_null_known_keys_are_omitted_and_null_unknown_keys_are_preserved():
 
 def test_a_dated_type_gets_a_date_prefixed_filename():
     schema, settings = default_schema(), default_settings()
-    frontmatter = build(frontmatter={"type": "meeting", "date": "2026-09-08"})
+    frontmatter = build(frontmatter={"type": "work", "date": "2026-09-08"})
     assert _stem_for("Acme Architecture Sync", frontmatter, schema, settings) == (
         "2026-09-08 Acme Architecture Sync"
     )

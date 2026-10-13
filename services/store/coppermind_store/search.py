@@ -41,6 +41,7 @@ from coppermind.store_protocol import (
     SearchQuery,
     ValidationFailed,
 )
+from coppermind_store.eligibility import current_source, eligible
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
@@ -202,6 +203,13 @@ def build_search(query: SearchQuery, after: SearchCursor | None = None) -> sa.Se
         .select_from(SearchDocument)
         .outerjoin(Note, sa.and_(SearchDocument.kind == "note", Note.id == SearchDocument.ref_id))
         .where(*match_conditions(query.q))
+        .where(eligible(SearchDocument.kind, SearchDocument.ref_id))
+        .where(
+            sa.or_(
+                SearchDocument.kind == "note",
+                current_source(SearchDocument.ref_id, SearchDocument.version),
+            )
+        )
         # A note entry the mirror no longer holds as present is never a hit,
         # whatever a catch-up step has not yet removed.
         .where(sa.or_(SearchDocument.kind == "source", Note.id.is_not(None)))

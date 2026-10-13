@@ -41,7 +41,7 @@ def _ingest(external_id: str, provider: str = "plaud") -> IngestRequest:
             },
             "note": {
                 "title": f"Call {external_id}",
-                "frontmatter": {"date": "2026-09-08", "type": "meeting"},
+                "frontmatter": {"date": "2026-09-08", "type": "work"},
             },
         }
     )
@@ -92,11 +92,12 @@ async def test_a_fresh_store_counts_nothing(store: LocalStore):
         "name_collisions": 0,
         "unparseable_files": 0,
         "excluded_count": 0,
+        "filing_failures": 0,
     }
 
 
 async def test_counters_change_when_a_note_or_a_source_is_added(store: LocalStore):
-    await store.create_note(CreateNote(title="Kickoff", frontmatter={"type": "meeting"}))
+    await store.create_note(CreateNote(title="Kickoff", frontmatter={"type": "work"}))
     after_note = (await store.get_status()).counters
     assert after_note.notes_awaiting_review == 1
     assert after_note.notes_by_state == {"ok": 1}
@@ -111,7 +112,7 @@ async def test_counters_change_when_a_note_or_a_source_is_added(store: LocalStor
 
 async def test_awaiting_review_counts_the_configured_folder_not_a_literal(store: LocalStore):
     _set(store, "notes", "review_folder", "Inbox")
-    created = await store.create_note(CreateNote(title="Kickoff", frontmatter={"type": "meeting"}))
+    created = await store.create_note(CreateNote(title="Kickoff", frontmatter={"type": "work"}))
     assert created.path.startswith("Inbox/")
     await _add_row(store, "Review/Old habit.md", reviewed=False)
     await _add_row(store, "Inbox/Already read.md", reviewed=True)
@@ -155,7 +156,7 @@ async def test_unparseable_files_and_collisions_are_counted_and_listed(store: Lo
     copied = store.notes_root / "Meetings" / "2026-09-20.md"
     copied.parent.mkdir(parents=True, exist_ok=True)
     copied.write_bytes((store.notes_root / note.path).read_bytes())
-    broken = await store.create_note(CreateNote(title="Broken", frontmatter={"type": "meeting"}))
+    broken = await store.create_note(CreateNote(title="Broken", frontmatter={"type": "work"}))
     broken_path = store.notes_root / broken.path
     broken_path.write_bytes(broken_path.read_bytes().replace(b"tags: []", b"tags: ["))
     before = _snapshot(store.notes_root)
@@ -223,7 +224,7 @@ async def test_sources_page_newest_first_and_filter_by_provider_and_date(store: 
 
 async def test_a_notes_sources_carry_their_projection_paths(store: LocalStore):
     result = await store.ingest(_ingest("rec-1"))
-    plain = await store.create_note(CreateNote(title="Plain", frontmatter={"type": "meeting"}))
+    plain = await store.create_note(CreateNote(title="Plain", frontmatter={"type": "work"}))
 
     cited = await store.get_note_sources(result.note.id)
 

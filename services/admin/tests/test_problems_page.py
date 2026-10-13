@@ -212,3 +212,32 @@ def test_the_json_endpoints_match_the_pages(signed_in):
     assert problems.status_code == 200
     assert [item["kind"] for item in problems.json()] == ["unparsed", "ingest"]
     assert status.json()["counters"]["notes_awaiting_review"] == 5
+
+
+def test_exclusions_do_not_inflate_problem_counter_and_are_separated(signed_in):
+    from coppermind_admin.pages.problems import counters_html
+
+    assert "Problems (0)" in counters_html(
+        StatusResponse(
+            counters=StatusCounters(
+                notes_awaiting_review=0,
+                notes_by_state={},
+                sources=0,
+                rejected_ingests=0,
+                name_collisions=0,
+                unparseable_files=0,
+                excluded_count=8,
+            )
+        )
+    )
+    client, _ = signed_in
+    store = ReadOnlyStore()
+    store.problems.append(
+        ProblemInfo(kind="excluded", reference="Templates/example.md", reason="excluded folder")
+    )
+    client.app.state.store = store
+    response = client.get("/admin/problems")
+    assert response.status_code == 200
+    failures, exclusions = response.text.split("<h2>Intentional exclusions</h2>")
+    assert "Templates/example.md" not in failures
+    assert "Templates/example.md" in exclusions

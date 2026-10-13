@@ -53,6 +53,10 @@ class Note(Base):
     account: Mapped[str | None] = mapped_column(Text)
     date: Mapped[date_type | None] = mapped_column(Date)
     reviewed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Derived from the durable filing receipt, never from a workflow payload.
+    filed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    source_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    filed_source_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     tags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     # ok, unparsed or missing. A file Coppermind cannot parse is recorded, never
     # rewritten, so a person's own file is never damaged by the system.
@@ -144,6 +148,7 @@ class NoteSource(Base):
     source_id: Mapped[str] = mapped_column(
         Text, ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True
     )
+    approved_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

@@ -108,24 +108,19 @@ jobs:
       - run: make setup
       - run: make scan
 
-  # Deliberately redundant with make scan-deps, which checks every known
-  # advisory on every push and pull request. This pull-request-only job checks
-  # only newly introduced HIGH+ advisories, so it is strictly weaker and
-  # changes no outcome. It stays for consistency across the organization's
-  # repositories, not because it catches anything extra. Reviewed and
-  # confirmed on 2026-09-09.
-  #
-  # Findings appear in the job log rather than as a pull request comment: the
-  # workflow deliberately does not grant `pull-requests: write`, and the job
-  # fails the build on a high severity advisory either way.
+  # Keep this named PR gate runnable on private repositories without licensed
+  # dependency-review API access. It uses the same full dependency audit as
+  # local checks and fails on every known advisory, not only new HIGH findings.
   dependency-review:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          fail-on-severity: high
+          python-version: "3.12"
+      - run: make setup
+      - run: make scan-deps
 
   # One build per service, as an OCI tarball carrying provenance and an SBOM.
   # The tarball is the artifact the smoke job runs, so what is smoke tested is

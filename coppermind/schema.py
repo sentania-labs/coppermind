@@ -351,8 +351,8 @@ def default_schema() -> FrontmatterSchema:
                 name="type",
                 kind="enum",
                 required=True,
-                default="note",
-                vocabulary=["meeting", "journal", "reference", "note"],
+                default="reference",
+                vocabulary=["work", "personal", "reference", "journal"],
                 description="What the note is.",
             ),
             KeyDefinition(
@@ -360,7 +360,7 @@ def default_schema() -> FrontmatterSchema:
                 kind="enum",
                 required=True,
                 default="internal",
-                vocabulary=["customer", "internal", "external", "personal"],
+                vocabulary=["internal", "external", "personal"],
                 description="Where the note files.",
             ),
             KeyDefinition(
@@ -368,8 +368,8 @@ def default_schema() -> FrontmatterSchema:
                 kind="string",
                 required=False,
                 required_when="context",
-                required_when_values=["customer"],
-                description="Customer name. Required when context is customer.",
+                required_when_values=["external"],
+                description="Customer name. Required when context is external.",
             ),
             KeyDefinition(
                 name="reviewed",

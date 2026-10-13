@@ -55,7 +55,7 @@ class SchemaStore(FakeStore):
 def edited_schema() -> SchemaDocument:
     schema = default_schema()
     context = next(definition for definition in schema.keys if definition.name == "context")
-    context.vocabulary_meanings = {"customer": "Work for a paying customer."}
+    context.vocabulary_meanings = {"external": "Work for a paying customer."}
     context.guidance = "Pick where the note files."
     schema.tags = {"architecture": "System design decisions.", "runbook": ""}
     schema.tag_aliases = {"arch": "architecture", "design": "architecture"}
@@ -86,12 +86,11 @@ def test_a_read_key_gets_fields_allowed_values_tags_aliases_and_guidance(schema_
     assert fields["context"]["required"] is True
     assert fields["context"]["guidance"] == "Pick where the note files."
     assert fields["context"]["allowed_values"] == [
-        {"value": "customer", "meaning": "Work for a paying customer."},
         {"value": "internal", "meaning": ""},
-        {"value": "external", "meaning": ""},
+        {"value": "external", "meaning": "Work for a paying customer."},
         {"value": "personal", "meaning": ""},
     ]
-    assert fields["account"]["required_when"] == {"key": "context", "values": ["customer"]}
+    assert fields["account"]["required_when"] == {"key": "context", "values": ["external"]}
     assert fields["date"]["required_when"] is None
     assert fields["tags"]["allowed_values"] == []
     assert body["roles"]["tags_key"] == "tags"

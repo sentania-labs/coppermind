@@ -73,8 +73,8 @@ def sample(external_id: str = "rec_8f3a2c19") -> IngestRequest:
                 "body": "## Key points\n- Target architecture agreed\n",
                 "frontmatter": {
                     "date": "2026-09-08",
-                    "type": "meeting",
-                    "context": "customer",
+                    "type": "work",
+                    "context": "external",
                     "account": "Acme",
                     "tags": ["architecture", "vcf"],
                 },
@@ -90,7 +90,9 @@ async def test_ingest_writes_an_immutable_bundle_linked_to_one_review_note(
     assert result.source.revision == 1
     assert result.source.created is True
     assert result.note.created is True
-    assert result.projection_path == ("_Sources/Plaud/2026-09-08 Acme Architecture Sync.md")
+    assert result.projection_path == (
+        "_Sources/_Pending/2026-09/2026-09-08 Acme Architecture Sync.md"
+    )
 
     source_root = store.sources_root / result.source.id
     manifest = json.loads((source_root / "manifest.json").read_text(encoding="utf-8"))
@@ -506,7 +508,9 @@ async def test_the_note_and_its_projection_take_their_date_from_one_rule(store: 
     ingested = await store.ingest(sample())
 
     assert ingested.note.path == "Review/2026-09-08 Acme Architecture Sync.md"
-    assert ingested.projection_path == "_Sources/Plaud/2026-09-08 Acme Architecture Sync.md"
+    assert (
+        ingested.projection_path == "_Sources/_Pending/2026-09/2026-09-08 Acme Architecture Sync.md"
+    )
 
 
 async def test_a_taken_projection_path_on_a_first_ingest_is_answered_as_a_collision(
@@ -1242,7 +1246,7 @@ async def test_ingest_refuses_a_path_a_live_row_still_holds(store: LocalStore, s
     note = await store.create_note(
         CreateNote(
             title="Acme Architecture Sync",
-            frontmatter={"date": "2026-09-08", "type": "meeting", "context": "internal"},
+            frontmatter={"date": "2026-09-08", "type": "work", "context": "internal"},
         )
     )
     (store.notes_root / note.path).unlink()

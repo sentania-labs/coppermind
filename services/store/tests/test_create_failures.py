@@ -139,9 +139,7 @@ async def test_concurrent_create_retries_on_file_exists(
     wiring.notes_dir.mkdir(parents=True, exist_ok=True)
     store = LocalStore(wiring.notes_dir, control, cast(Any, object()), wiring.sources_dir)
 
-    created = await store.create_note(
-        CreateNote(title="Weekly sync", frontmatter={"type": "meeting"})
-    )
+    created = await store.create_note(CreateNote(title="Weekly sync", frontmatter={"type": "work"}))
 
     # meeting is a dated type, so the stem gets a date prefix. The original
     # file (2026-.. Weekly sync.md) is on disk, so the retry should pick
@@ -185,7 +183,7 @@ async def test_concurrent_create_exhausts_retries_then_409(
     store = LocalStore(wiring.notes_dir, control, cast(Any, object()), wiring.sources_dir)
 
     with pytest.raises(PathCollision):
-        await store.create_note(CreateNote(title="Weekly sync", frontmatter={"type": "meeting"}))
+        await store.create_note(CreateNote(title="Weekly sync", frontmatter={"type": "work"}))
 
     # The fake does not clean up like the real one does. After 5 retries
     # each with a file written and then an exception, the directory still
@@ -223,9 +221,7 @@ async def test_concurrent_create_retries_correctly_after_two_losses(
     wiring.notes_dir.mkdir(parents=True, exist_ok=True)
     store = LocalStore(wiring.notes_dir, control, cast(Any, object()), wiring.sources_dir)
 
-    created = await store.create_note(
-        CreateNote(title="Weekly sync", frontmatter={"type": "meeting"})
-    )
+    created = await store.create_note(CreateNote(title="Weekly sync", frontmatter={"type": "work"}))
 
     # meeting is a dated type: original stem is "<date> Weekly sync".
     # After two losses the directory listing sees the original + two collisions,
