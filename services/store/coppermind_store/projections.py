@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from coppermind import frontmatter as fm
 from coppermind.atomicio import commit_staged, create_exclusive_bytes, stage_bytes
-from coppermind.naming import note_stem, sanitize_stem, unique_stem
+from coppermind.naming import note_stem, unique_stem
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
@@ -152,8 +152,7 @@ def _new_path(
     note_date: date,
 ) -> str:
     folder = settings.notes.sources_folder
-    provider_folder = sanitize_stem(provider.title())
-    parent_relative = f"{folder}/{provider_folder}"
+    parent_relative = f"{folder}/_Pending/{note_date:%Y-%m}"
     parent = resolve(notes_root, parent_relative)
     stem = unique_stem(note_stem(title, note_date=note_date, dated=True), _taken_stems(parent))
     return f"{parent_relative}/{stem}{NOTE_SUFFIX}"

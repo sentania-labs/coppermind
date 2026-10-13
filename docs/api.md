@@ -82,6 +82,10 @@ Adoption rewrites only the tag lines of the file, leaving every other byte and
 line ending as it was, and leaves a tag list with a comment inside it as the
 person wrote it.
 
+For workflow callers, see [n8n intake](n8n-intake.md) for the current JSON
+contract and the separately labeled staged-upload proposal. Review and filing
+requirements are recorded in [decision 002](decisions/002-review-and-organization.md).
+
 ## Sources (read-only by design)
 
 Sources are immutable once ingested; nothing here ever changes one after the
@@ -107,10 +111,10 @@ is still returned. Dashboard reads never write into notes.
 
 | Method and path | Scope | What it does | Success | Failure |
 |---|---|---|---|---|
-| `GET /v1/search` | `notes:read` | Full-text search over note bodies and titles and over the generated source pages under the sources folder. `q` (1 to 500 characters) is read the way a search box is: words, `"quoted phrases"`, `or`, and `-word` to exclude. English stemming applies, so `runs` also finds `running`, and an excluded word is excluded in every form: `budget -runs` finds no note that says `running`. Takes every listing filter (`folder, reviewed, type, context, account, from, to, tag, state`) with listing's meaning, and pages the same way, by `cursor` and `limit` | 200, page of `{id, kind, title, path, folder, excerpt, rank, state}`, best match first. `kind` is `note`, or `source` for a generated source page, whose `id` is then the source identifier. `excerpt` is a short passage with every matched word between `**` markers. `rank` orders one answer and means nothing across answers | 422 `validation_error` for an empty `q`, a bad filter, or a cursor from a different `q`; 503 `metadata_unavailable`, never an empty page |
+| `GET /v1/search` | `notes:read` | Full-text search over reviewed, successfully filed note bodies and titles and their approved generated source pages under the sources folder. `q` (1 to 500 characters) is read the way a search box is: words, `"quoted phrases"`, `or`, and `-word` to exclude. English stemming applies, so `runs` also finds `running`, and an excluded word is excluded in every form: `budget -runs` finds no note that says `running`. Takes every listing filter (`folder, reviewed, type, context, account, from, to, tag, state`) with listing's meaning, and pages the same way, by `cursor` and `limit` | 200, page of `{id, kind, title, path, folder, excerpt, rank, state}`, best match first. `kind` is `note`, or `source` for a generated source page, whose `id` is then the source identifier. `excerpt` is a short passage with every matched word between `**` markers. `rank` orders one answer and means nothing across answers | 422 `validation_error` for an empty `q`, a bad filter, or a cursor from a different `q`; 503 `metadata_unavailable`, never an empty page |
 | `POST /v1/attachments` | `notes:write` | Upload a file (multipart); name comes from the filename | 201, `{path, embed: "![[name.png]]", size_bytes}` | 413 over the plan's file-size limit; 409 |
 | `GET /v1/attachments/{name}` | `notes:read` | Download an attachment | 200 | 404 |
-| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, rejected_ingests, name_collisions, unparseable_files}`, computed from the metadata mirror and recorded rejections; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false` | 200 | 503 `metadata_unavailable` or `store_unavailable` |
+| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, rejected_ingests, name_collisions, unparseable_files, excluded_count, filing_failures}`, computed from the metadata mirror and recorded rejections; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false` | 200 | 503 `metadata_unavailable` or `store_unavailable` |
 | `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /openapi.json` | none | Process liveness, real readiness (checks PostgreSQL and the notes filesystem), Prometheus metrics, the generated API contract | 200 | 503 on `/readyz` when a real dependency is down |
 
 ## Admin: pages and their endpoints

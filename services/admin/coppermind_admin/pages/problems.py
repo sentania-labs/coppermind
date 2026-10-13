@@ -82,19 +82,27 @@ def counters_html(status: StatusResponse) -> str:
         counters.rejected_ingests
         + counters.name_collisions
         + counters.unparseable_files
-        + counters.excluded_count
+        + counters.filing_failures
     )
     states = ", ".join(
         f"{escape(state)}: {count}" for state, count in sorted(counters.notes_by_state.items())
     )
     return f"""<h2>Store Status</h2>
+<div class="metrics">
+<div class="metric" aria-label="Notes awaiting review: {counters.notes_awaiting_review}">
+Notes awaiting review<strong>{counters.notes_awaiting_review}</strong>
+<span class="muted">Review in Obsidian.</span></div>
+<div class="metric" aria-label="Sources: {counters.sources}">
+Preserved sources<strong>{counters.sources}</strong></div>
+<div class="metric">Problems<strong>{problems}</strong>
+<a href="/admin/problems">Problems ({problems})</a></div></div>
 <ul>
-<li>Notes awaiting review: {counters.notes_awaiting_review}</li>
 <li>Notes by state: {states or "none"}</li>
 <li>Sources: {counters.sources}</li>
 <li>Rejected ingests: {counters.rejected_ingests}</li>
 <li>Name collisions: {counters.name_collisions}</li>
 <li>Unparseable files: {counters.unparseable_files}</li>
+<li>Pending filing failures: {counters.filing_failures}</li>
 <li>Excluded (skipped by exclusion rules): {counters.excluded_count}</li>
 </ul>
 <p><a href="/admin/problems">Problems ({problems})</a></p>"""
@@ -131,7 +139,11 @@ def router(wiring: Wiring) -> APIRouter:
             "<p>Computed from the metadata mirror and recorded rejections. "
             "Nothing is written into a note.</p>"
             f"<p>Files skipped by exclusion: {sum(p.kind == 'excluded' for p in problems)}</p>"
-            + _problem_rows(problems),
+            + _problem_rows([item for item in problems if item.kind != "excluded"])
+            + "<h2>Intentional exclusions</h2><p>These files were left untouched. "
+            "An exclusion is not a failure. "
+            '<a href="/admin/settings?section=reconcile">Manage exclusion rules</a>.</p>'
+            + _problem_rows([item for item in problems if item.kind == "excluded"]),
         )
 
     @routes.get("/admin/notes/{note_id}", response_class=HTMLResponse, include_in_schema=False)

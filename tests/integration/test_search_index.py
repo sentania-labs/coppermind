@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
-from coppermind_store import indexer
+from coppermind_store import filing, indexer
 from coppermind_store.notes import LocalStore
 from coppermind_store.reconciler import reconcile_once
 
+from coppermind import frontmatter as fm
 from coppermind.db.models import SearchDocument, SearchIndexState
 from coppermind.store_protocol import (
     CreateNote,
@@ -31,8 +32,22 @@ def note(title: str, body: str, **frontmatter: object) -> CreateNote:
     return CreateNote(
         title=title,
         body=body,
-        frontmatter={"date": "2026-09-08", "type": "note", "context": "internal", **frontmatter},
+        folder="2026-09",
+        frontmatter={
+            "date": "2026-09-08",
+            "type": "reference",
+            "context": "internal",
+            "reviewed": True,
+            **frontmatter,
+        },
     )
+
+
+async def create(store: LocalStore, request: CreateNote):
+    created = await store.create_note(request)
+    await filing.file_reviewed(store)
+    await indexer.catch_up(store)
+    return created
 
 
 async def search(store: LocalStore, q: str, **filters: object) -> list[SearchHit]:
@@ -62,7 +77,7 @@ def ingest_request(external_id: str = "rec-1") -> IngestRequest:
             "note": {
                 "title": "Warehouse call",
                 "body": "Opening note for the lease discussion.\n",
-                "frontmatter": {"date": "2026-09-08", "type": "meeting", "context": "internal"},
+                "frontmatter": {"date": "2026-09-08", "type": "work", "context": "internal"},
             },
         }
     )
@@ -72,8 +87,8 @@ def ingest_request(external_id: str = "rec-1") -> IngestRequest:
 
 
 async def test_a_created_note_is_found_with_an_excerpt_and_its_place(store: LocalStore):
-    created = await store.create_note(
-        note("Budget planning", "We agreed the marmalade budget for next quarter.\n")
+    created = await create(
+        store, note("Budget planning", "We agreed the marmalade budget for next quarter.\n")
     )
 
     (hit,) = await search(store, "marmalade")
@@ -82,7 +97,7 @@ async def test_a_created_note_is_found_with_an_excerpt_and_its_place(store: Loca
     assert hit.kind == "note"
     assert hit.title == "Budget planning"
     assert hit.path == created.path
-    assert hit.folder == "Review"
+    assert hit.folder == "2026-09"
     assert hit.state == "ok"
     assert hit.rank > 0
     assert "**marmalade**" in hit.excerpt
@@ -90,8 +105,8 @@ async def test_a_created_note_is_found_with_an_excerpt_and_its_place(store: Loca
 
 
 async def test_english_stems_and_simple_keeps_names(store: LocalStore):
-    running = await store.create_note(note("Training", "She was running the drills daily.\n"))
-    named = await store.create_note(note("Call with Will", "Will said the plan stands.\n"))
+    running = await create(store, note("Training", "She was running the drills daily.\n"))
+    named = await create(store, note("Call with Will", "Will said the plan stands.\n"))
 
     # English reads 'runs' and 'running' as one word.
     assert await ids(store, "runs") == [running.id]
@@ -100,14 +115,14 @@ async def test_english_stems_and_simple_keeps_names(store: LocalStore):
 
 
 async def test_a_title_match_outranks_a_body_match(store: LocalStore):
-    body_only = await store.create_note(note("Weekly notes", "Some talk of the zeppelin.\n"))
-    in_title = await store.create_note(note("Zeppelin plan", "Details follow.\n"))
+    body_only = await create(store, note("Weekly notes", "Some talk of the zeppelin.\n"))
+    in_title = await create(store, note("Zeppelin plan", "Details follow.\n"))
 
     assert await ids(store, "zeppelin") == [in_title.id, body_only.id]
 
 
 async def test_a_replaced_body_replaces_what_is_found(store: LocalStore):
-    created = await store.create_note(note("Supplier", "Original quokka text.\n"))
+    created = await create(store, note("Supplier", "Original quokka text.\n"))
 
     replaced = await store.replace_note(
         created.id,
@@ -120,23 +135,25 @@ async def test_a_replaced_body_replaces_what_is_found(store: LocalStore):
 
 
 async def test_a_patch_moves_a_note_between_filters(store: LocalStore):
-    created = await store.create_note(note("Review me", "The pangolin report.\n"))
+    created = await create(store, note("Review me", "The pangolin report.\n", reviewed=False))
 
     assert await ids(store, "pangolin", reviewed=True) == []
     await store.patch_frontmatter(
         created.id, PatchFrontmatter(set={"reviewed": True}), created.content_hash
     )
 
+    await filing.file_reviewed(store)
+    await indexer.catch_up(store)
     assert await ids(store, "pangolin", reviewed=True) == [created.id]
     assert await ids(store, "pangolin", reviewed=False) == []
 
 
 async def test_a_move_and_a_rename_are_followed(store: LocalStore):
-    created = await store.create_note(note("Old name", "A note about the axolotl.\n"))
+    created = await create(store, note("Old name", "A note about the axolotl.\n"))
 
-    moved = await store.move_note(created.id, MoveNote(target_folder="Work/Clients"), None)
-    (hit,) = await search(store, "axolotl", folder="Work")
-    assert (hit.path, hit.folder) == (moved.path, "Work/Clients")
+    moved = await store.move_note(created.id, MoveNote(target_folder="2026-09/Clients"), None)
+    (hit,) = await search(store, "axolotl", folder="2026-09")
+    assert (hit.path, hit.folder) == (moved.path, "2026-09/Clients")
     assert await ids(store, "axolotl", folder="Review") == []
 
     renamed = await store.rename_note(created.id, RenameNote(title="New name"), moved.content_hash)
@@ -146,7 +163,7 @@ async def test_a_move_and_a_rename_are_followed(store: LocalStore):
 
 
 async def test_a_refused_write_leaves_the_index_as_it_was(store: LocalStore):
-    created = await store.create_note(note("Kept", "The original narwhal.\n"))
+    created = await create(store, note("Kept", "The original narwhal.\n"))
 
     with pytest.raises(ValidationFailed):
         await store.replace_note(
@@ -163,7 +180,7 @@ async def test_a_refused_write_leaves_the_index_as_it_was(store: LocalStore):
 
 
 async def test_device_edits_moves_and_deletes_are_followed(store: LocalStore):
-    created = await store.create_note(note("Device", "The first capybara.\n"))
+    created = await create(store, note("Device", "The first capybara.\n"))
     path = store.notes_root / created.path
 
     path.write_bytes(path.read_bytes().replace(b"capybara", b"chinchilla"))
@@ -171,12 +188,12 @@ async def test_device_edits_moves_and_deletes_are_followed(store: LocalStore):
     assert await ids(store, "capybara") == []
     assert await ids(store, "chinchilla") == [created.id]
 
-    moved = store.notes_root / "Archive" / "Device renamed.md"
-    moved.parent.mkdir()
+    moved = store.notes_root / "2026-09" / "Archive" / "Device renamed.md"
+    moved.parent.mkdir(parents=True)
     path.rename(moved)
     await reconcile_once(store)
     (hit,) = await search(store, "chinchilla")
-    assert (hit.path, hit.folder) == ("Archive/Device renamed.md", "Archive")
+    assert (hit.path, hit.folder) == ("2026-09/Archive/Device renamed.md", "2026-09/Archive")
 
     moved.unlink()
     await reconcile_once(store)
@@ -197,13 +214,25 @@ async def test_a_note_created_on_a_device_is_indexed_when_adopted(store: LocalSt
     counts = await reconcile_once(store)
 
     assert counts["adopted"] == 1
+    assert await search(store, "okapi") == []
+    parsed, _ = fm.parse((store.notes_root / "Inbox/Phone note.md").read_text())
+    document = await store.get_note(parsed["id"])
+    await store.patch_frontmatter(
+        document.id, PatchFrontmatter(set={"reviewed": True}), document.content_hash
+    )
+    await filing.file_reviewed(store)
+    await indexer.catch_up(store)
     (hit,) = await search(store, "okapi")
-    assert (hit.kind, hit.path, hit.title) == ("note", "Inbox/Phone note.md", "Phone note")
+    assert (hit.kind, hit.path, hit.title) == (
+        "note",
+        (await store.get_note(document.id)).path,
+        "Phone note",
+    )
 
 
 async def test_an_excluded_word_is_excluded_in_every_form(store: LocalStore):
-    running = await store.create_note(note("Track", "The budget for running shoes.\n"))
-    plain = await store.create_note(note("Ledger", "The budget for office chairs.\n"))
+    running = await create(store, note("Track", "The budget for running shoes.\n"))
+    plain = await create(store, note("Ledger", "The budget for office chairs.\n"))
 
     assert sorted(await ids(store, "budget")) == sorted([running.id, plain.id])
     # English reads 'runs' as 'running', so excluding it excludes both.
@@ -213,7 +242,7 @@ async def test_an_excluded_word_is_excluded_in_every_form(store: LocalStore):
 
 
 async def test_a_broken_edit_keeps_the_last_text_findable_as_unparsed(store: LocalStore):
-    created = await store.create_note(note("Fragile", "About the tapir.\n"))
+    created = await create(store, note("Fragile", "About the tapir.\n"))
     path = store.notes_root / created.path
     path.write_text("---\nid: [unclosed\n---\nbroken\n", encoding="utf-8")
 
@@ -230,16 +259,22 @@ async def test_a_broken_edit_keeps_the_last_text_findable_as_unparsed(store: Loc
 
 async def test_a_source_projection_is_found_as_a_source(store: LocalStore):
     result = await store.ingest(ingest_request())
+    draft = await store.get_note(result.note.id)
+    await store.patch_frontmatter(
+        draft.id, PatchFrontmatter(set={"reviewed": True}), draft.content_hash
+    )
+    await filing.file_reviewed(store)
+    await indexer.catch_up(store)
 
     hits = await search(store, "kerfuffle")
 
     assert [(hit.kind, hit.id) for hit in hits] == [("source", result.source.id)]
-    assert hits[0].path == result.projection_path
+    assert hits[0].path == (await store.get_source(result.source.id)).projection_path
     assert hits[0].folder.startswith("_Sources")
     # The opening note the ingest wrote is a note, found by its own words.
     assert await ids(store, "lease discussion") == [result.note.id]
     # A frontmatter filter matches notes only; folder and state apply to both.
-    assert await ids(store, "kerfuffle", type="meeting") == []
+    assert await ids(store, "kerfuffle", type="work") == []
     assert await ids(store, "kerfuffle", folder="_Sources") == [result.source.id]
     assert await ids(store, "kerfuffle", state="ok") == [result.source.id]
 
@@ -248,24 +283,22 @@ async def test_a_source_projection_is_found_as_a_source(store: LocalStore):
 
 
 async def test_filters_combine_with_the_question(store: LocalStore):
-    wanted = await store.create_note(
-        note("Acme kickoff", "Kickoff for the gazebo.\n", type="meeting", account="Acme")
+    wanted = await create(
+        store, note("Acme kickoff", "Kickoff for the gazebo.\n", type="work", account="Acme")
     )
-    await store.create_note(note("Other kickoff", "Another gazebo.\n", type="meeting"))
-    await store.create_note(note("Acme memo", "The gazebo memo.\n", account="Acme"))
+    await create(store, note("Other kickoff", "Another gazebo.\n", type="work"))
+    await create(store, note("Acme memo", "The gazebo memo.\n", account="Acme"))
 
     assert len(await ids(store, "gazebo")) == 3
-    assert await ids(store, "gazebo", type="meeting", account="Acme") == [wanted.id]
-    assert await ids(store, "gazebo", type="meeting", account="Acme", folder="Work") == []
+    assert await ids(store, "gazebo", type="work", account="Acme") == [wanted.id]
+    assert await ids(store, "gazebo", type="work", account="Acme", folder="Work") == []
     assert await ids(store, "gazebo", **{"from": "2026-09-08", "to": "2026-09-08"}) != []
     assert await ids(store, "gazebo", **{"from": "2026-09-09"}) == []
 
 
 async def test_pages_walk_every_hit_once_in_rank_order(store: LocalStore):
     for index in range(7):
-        await store.create_note(
-            note(f"Entry {index}", "lemur " * (index + 1) + "and other words.\n")
-        )
+        await create(store, note(f"Entry {index}", "lemur " * (index + 1) + "and other words.\n"))
 
     seen: list[SearchHit] = []
     cursor = None
@@ -298,7 +331,7 @@ def page_cursor(seen: list[SearchHit]) -> str:
 
 
 async def test_catch_up_indexes_what_the_mirror_knows_and_the_index_lost(store: LocalStore):
-    created = await store.create_note(note("Lost", "The missing ibis.\n"))
+    created = await create(store, note("Lost", "The missing ibis.\n"))
     async with store.session_factory() as session, session.begin():
         await session.execute(sa.delete(SearchDocument))
 
@@ -310,9 +343,15 @@ async def test_catch_up_indexes_what_the_mirror_knows_and_the_index_lost(store: 
 
 
 async def test_a_rebuild_recreates_the_index_from_the_files(store: LocalStore):
-    first = await store.create_note(note("First", "The heron note.\n"))
-    second = await store.create_note(note("Second", "The egret note.\n"))
+    first = await create(store, note("First", "The heron note.\n"))
+    second = await create(store, note("Second", "The egret note.\n"))
     result = await store.ingest(ingest_request("rec-rebuild"))
+    draft = await store.get_note(result.note.id)
+    await store.patch_frontmatter(
+        draft.id, PatchFrontmatter(set={"reviewed": True}), draft.content_hash
+    )
+    await filing.file_reviewed(store)
+    await indexer.catch_up(store)
     # Break the index every way it can be broken: an entry for a note that
     # does not exist, one whose text is wrong, and one that is gone.
     async with store.session_factory() as session, session.begin():
@@ -345,7 +384,7 @@ async def test_a_rebuild_recreates_the_index_from_the_files(store: LocalStore):
 
 
 async def test_the_rebuild_job_runs_in_the_background_once(store: LocalStore):
-    await store.create_note(note("Background", "The bittern note.\n"))
+    await create(store, note("Background", "The bittern note.\n"))
 
     started = await store.rebuild_search_index()
     again = await store.rebuild_search_index()
@@ -361,7 +400,7 @@ async def test_the_rebuild_job_runs_in_the_background_once(store: LocalStore):
 
 
 async def test_the_first_pass_after_the_upgrade_builds_the_index(store: LocalStore):
-    created = await store.create_note(note("Before", "The kestrel note.\n"))
+    created = await create(store, note("Before", "The kestrel note.\n"))
     async with store.session_factory() as session, session.begin():
         await session.execute(sa.delete(SearchDocument))
         state = await session.get(SearchIndexState, 1)
@@ -375,7 +414,7 @@ async def test_the_first_pass_after_the_upgrade_builds_the_index(store: LocalSto
 
 
 async def test_a_rebuild_keeps_an_unparsed_note_findable(store: LocalStore):
-    created = await store.create_note(note("Fragile", "About the pangolin.\n"))
+    created = await create(store, note("Fragile", "About the pangolin.\n"))
     path = store.notes_root / created.path
     path.write_text("---\nid: [unclosed\n---\nbroken\n", encoding="utf-8")
     await reconcile_once(store)

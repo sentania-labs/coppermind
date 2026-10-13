@@ -319,6 +319,9 @@ async def _index_after_pass(store: LocalStore) -> None:
     never counts against reconciliation, which is what readiness watches.
     """
     try:
+        from coppermind_store.filing import file_reviewed
+
+        await file_reviewed(store)
         counts = await indexer.after_pass(store)
     except Exception as exc:  # noqa: BLE001 - the index must not stop the reconciler
         log.warning("search index catch-up deferred", reason=type(exc).__name__)

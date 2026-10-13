@@ -66,7 +66,7 @@ class NotesSettings(BaseModel):
     )
     journal_folder: str = Field(default="Journal", description="Folder for journal notes.")
     dated_types: list[str] = Field(
-        default_factory=lambda: ["meeting", "journal"],
+        default_factory=lambda: ["work", "journal"],
         description="Note types whose filenames start with a date.",
     )
 

@@ -116,10 +116,10 @@ def test_the_page_renders_every_field_and_the_tags_in_use(page):
         assert values[f"key-{row}-description"] == definition.description
         assert f"key-{row}-guidance" in values
     context = index_of(values, "key", "context")
-    assert values[f"key-{context}-values"] == "customer\ninternal\nexternal\npersonal"
+    assert values[f"key-{context}-values"] == "internal\nexternal\npersonal"
     account = index_of(values, "key", "account")
     assert values[f"key-{account}-required_when"] == "context"
-    assert values[f"key-{account}-required_when_values"] == "customer"
+    assert values[f"key-{account}-required_when_values"] == "external"
     assert "Role: context_key." in response.text
     assert values["tag_mode"] == "open"
     work = index_of(values, "tag", "work")

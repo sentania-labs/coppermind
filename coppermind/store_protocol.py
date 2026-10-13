@@ -654,6 +654,7 @@ class StatusCounters(BaseModel):
     name_collisions: int
     unparseable_files: int
     excluded_count: int = 0
+    filing_failures: int = 0
 
 
 class StatusResponse(BaseModel):

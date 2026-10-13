@@ -1,19 +1,9 @@
-"""The full-text index: kept current from the metadata mirror, rebuilt from files.
+"""Derived search text, published only after review and monthly filing.
 
-Every row of `search_documents` is derived. A note's entry is written in the
-same transaction as the mirror row a store write or a reconciliation pass
-records, so the index changes when the mirror does and a rolled back write
-leaves no entry behind. Generated source projections are indexed after the
-ingest that wrote them, and a catch-up step after every reconciliation pass
-indexes anything the mirror knows that the index does not yet describe: a
-note an ingest opened, a write that crashed after its file landed, or the
-whole notes filesystem the first time the index exists.
-
-The rebuild job throws every entry away and reads the notes filesystem again,
-which is the recovery story: lose the table and one job puts it back. It reads
-files, not the mirror's copy of anything, and asks the mirror only which
-identities are live notes, because a file carrying an identity the mirror has
-not adopted yet is not a note until reconciliation says it is.
+Human edits update published notes in the mirror transaction. Catch-up and
+rebuild apply the same publication gate. Source text additionally requires a
+reviewed projection for the current archive revision. Originals remain outside
+the search filesystem.
 """
 
 from __future__ import annotations
@@ -41,6 +31,7 @@ from coppermind.store_protocol import (
     SearchIndexStatus,
     StoreError,
 )
+from coppermind_store.eligibility import current_source, eligible, reviewed_note
 from coppermind_store.fs import content_hash, resolve
 
 if TYPE_CHECKING:
@@ -152,7 +143,15 @@ async def _upsert(
         "version": version,
         "indexed_at": now,
     }
-    statement = insert(SearchDocument).values(**values)
+    allowed = eligible(sa.literal(kind), sa.literal(ref_id))
+    await session.execute(
+        sa.delete(SearchDocument).where(
+            SearchDocument.kind == kind, SearchDocument.ref_id == ref_id, ~allowed
+        )
+    )
+    statement = insert(SearchDocument).from_select(
+        list(values), sa.select(*(sa.literal(value) for value in values.values())).where(allowed)
+    )
     await session.execute(
         statement.on_conflict_do_update(
             index_elements=[SearchDocument.kind, SearchDocument.ref_id],
@@ -245,7 +244,8 @@ def _read_projection(root: Path, relative: str, source_id: str, revision: int) -
     except (OSError, ValueError, UnicodeDecodeError, fm.FrontmatterError):
         return None
     if (
-        frontmatter.get("managed") is not True
+        frontmatter.get("reviewed") is not True
+        or frontmatter.get("managed") is not True
         or frontmatter.get("source_id") != source_id
         or frontmatter.get("source_revision") != revision
     ):
@@ -294,12 +294,23 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
     counts = {"indexed": 0, "removed": 0, "unreadable": 0}
     id_key = store.control.schema().role("id_key")
     now = datetime.now(tz=UTC)
-    live = sa.select(Note.id).where(Note.id == SearchDocument.ref_id, Note.state != "missing")
+    live = sa.select(Note.id).where(Note.id == SearchDocument.ref_id, reviewed_note())
     try:
         async with transaction(store.session_factory) as session:
             removed = await session.execute(
                 sa.delete(SearchDocument)
-                .where(SearchDocument.kind == "note", ~sa.exists(live))
+                .where(
+                    sa.or_(
+                        sa.and_(SearchDocument.kind == "note", ~sa.exists(live)),
+                        sa.and_(
+                            SearchDocument.kind == "source",
+                            sa.or_(
+                                ~eligible(SearchDocument.kind, SearchDocument.ref_id),
+                                ~current_source(SearchDocument.ref_id, SearchDocument.version),
+                            ),
+                        ),
+                    )
+                )
                 .returning(SearchDocument.ref_id)
             )
             counts["removed"] = len(removed.all())
@@ -324,6 +335,7 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                     )
                     .where(
                         Note.state == "ok",
+                        reviewed_note(),
                         sa.or_(
                             SearchDocument.ref_id.is_(None),
                             SearchDocument.version != Note.content_hash,
@@ -395,7 +407,11 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
 
 
 def _walk(
-    root: Path, live_notes: dict[str, str], sources_folder: tuple[str, ...], id_key: str
+    root: Path,
+    live_notes: dict[str, str],
+    sources_folder: tuple[str, ...],
+    id_key: str,
+    reviewed_key: str = "reviewed",
 ) -> Iterator[Entry]:
     """Every indexable file under the notes filesystem root.
 
@@ -421,7 +437,11 @@ def _walk(
         carried = frontmatter.get(id_key)
         source_id = frontmatter.get("source_id")
         revision = frontmatter.get("source_revision")
-        if isinstance(carried, str) and carried in live_notes:
+        if (
+            isinstance(carried, str)
+            and carried in live_notes
+            and frontmatter.get(reviewed_key) is True
+        ):
             if carried in notes and notes[carried].path == live_notes[carried]:
                 continue
             notes[carried] = Entry(
@@ -431,6 +451,7 @@ def _walk(
             sources_folder
             and relative_path.parts[: len(sources_folder)] == sources_folder
             and frontmatter.get("managed") is True
+            and frontmatter.get("reviewed") is True
             and isinstance(source_id, str)
             and isinstance(revision, int)
             and source_id not in sources
@@ -465,9 +486,7 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
             live_notes = {
                 row.id: row.path
                 for row in (
-                    await session.execute(
-                        sa.select(Note.id, Note.path).where(Note.state != "missing")
-                    )
+                    await session.execute(sa.select(Note.id, Note.path).where(reviewed_note()))
                 ).all()
             }
     except (SQLAlchemyError, OSError) as exc:
@@ -478,7 +497,15 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
     )
     id_key = store.control.schema().role("id_key")
     entries = await asyncio.to_thread(
-        lambda: list(_walk(store.notes_root, live_notes, sources_folder, id_key))
+        lambda: list(
+            _walk(
+                store.notes_root,
+                live_notes,
+                sources_folder,
+                id_key,
+                store.control.schema().role("reviewed_key"),
+            )
+        )
     )
     now = datetime.now(tz=UTC)
     try:
@@ -486,7 +513,9 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
             # A note the mirror holds as unparsed stays findable by the text
             # it was last indexed with, which the walk could not read again.
             walked = [entry.ref_id for entry in entries if entry.kind == "note"]
-            unparsed = sa.select(Note.id).where(Note.state == "unparsed", Note.id.not_in(walked))
+            unparsed = sa.select(Note.id).where(
+                Note.state == "unparsed", reviewed_note(), Note.id.not_in(walked)
+            )
             await session.execute(
                 sa.delete(SearchDocument).where(
                     sa.not_(
@@ -498,10 +527,8 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
                 batch = entries[start : start + _REBUILD_BATCH]
                 # A store write that commits while this runs has indexed newer
                 # bytes than the walk read, so its entry is kept, not replaced.
-                await session.execute(
-                    insert(SearchDocument).on_conflict_do_nothing(),
-                    [_row(entry, now) for entry in batch],
-                )
+                for entry in batch:
+                    await _write(session, entry, now)
             await session.execute(
                 sa.update(SearchIndexState)
                 .where(SearchIndexState.id == 1)
@@ -509,14 +536,11 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
             )
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
-    counts = {
-        "notes": sum(1 for entry in entries if entry.kind == "note"),
-        "sources": sum(1 for entry in entries if entry.kind == "source"),
-    }
     # A store write that committed while the walk was reading may have been
     # replaced by the older bytes the walk saw; the mirror knows better.
     await catch_up(store)
-    return counts
+    current = await status(store)
+    return {"notes": current.notes, "sources": current.sources}
 
 
 def _row(entry: Entry, now: datetime) -> dict[str, Any]:

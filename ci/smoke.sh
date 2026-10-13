@@ -220,20 +220,28 @@ done
 ok "the Admin-created key authenticated an API read and was not revealed again"
 
 step "save a product setting through its rendered form and read it back"
-settings_form="$(admin_page -f "$ADMIN/admin/settings" | python3 -c 'import sys
+settings_form="$(admin_page -f "$ADMIN/admin/settings?section=git" | python3 -c 'import sys
 from html.parser import HTMLParser
 from urllib.parse import urlencode
 class Inputs(HTMLParser):
     values = {}
+    select_name = None
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "input" and "name" in attrs:
             self.values[attrs["name"]] = attrs.get("value", "")
+        elif tag == "select":
+            self.select_name = attrs.get("name")
+        elif tag == "option" and "selected" in attrs and self.select_name:
+            self.values[self.select_name] = attrs.get("value", "")
+    def handle_endtag(self, tag):
+        if tag == "select":
+            self.select_name = None
 parser = Inputs()
 parser.feed(sys.stdin.read())
 parser.values["git.debounce_s"] = "17"
 print(urlencode(parser.values))')"
-admin_page -f -X POST "$ADMIN/v1/admin/settings" --data "$settings_form" \
+admin_page -f -X POST "$ADMIN/v1/admin/settings?section=git" --data "$settings_form" \
     | grep -F 'Saved revision' >/dev/null || fail "Settings save did not report its new revision"
 [ "$(admin_page -f "$ADMIN/admin/settings" | form_value git.debounce_s)" = "17" ] \
     || fail "the Settings page did not read back git.debounce_s"
@@ -333,7 +341,7 @@ compose exec -T store test -f "/data/sources/$source_id/manifest.json" \
     || fail "the source manifest is missing"
 compose exec -T store test -f "/data/sources/$source_id/r0001/transcript.txt" \
     || fail "the transcript artifact is missing"
-expected_projection="_Sources/Plaud/2026-09-08 Acme Architecture Sync.md"
+expected_projection="_Sources/_Pending/2026-09/2026-09-08 Acme Architecture Sync.md"
 [ "$projection_path" = "$expected_projection" ] \
     || fail "the projection landed at $projection_path, expected $expected_projection"
 projection="$(compose exec -T store cat "/data/notes/$projection_path")"
@@ -384,6 +392,10 @@ step "edit the Review note, revise the source, and prove the note stays his"
 compose exec -T store python3 -c \
     'import sys; p = sys.argv[1]; t = open(p).read(); t = t.replace("reviewed: false", "reviewed: true", 1); open(p, "w").write(t.replace("Target architecture agreed", "Captain corrected the note", 1))' \
     "/data/notes/$ingest_note_path"
+ingest_month_path="2026-09/${ingest_note_path##*/}"
+wait_for_note_path "$ingest_note_id" "$ingest_month_path"
+ingest_note_path="$ingest_month_path"
+projection_path="_Sources/2026-09/$source_id.md"
 reviewed_note="$(compose exec -T store cat "/data/notes/$ingest_note_path")"
 reviewed_hash="$(hash_on_volume "$ingest_note_path")"
 compose exec -T store sh -c 'echo "Person edit" >> "$1"' sh "/data/notes/$projection_path"
@@ -451,7 +463,7 @@ created="$(mktemp)"
 code="$(curl -sS -o "$created" -w '%{http_code}' -X POST "$API/v1/notes" \
     "${AUTH[@]}" \
     -H 'Content-Type: application/json' \
-    -d '{"title":"Acme Architecture Sync","body":"## Key points\n- Target architecture agreed\n","frontmatter":{"date":"2026-09-08","type":"meeting","context":"customer","account":"Acme","tags":["architecture","vcf"]}}')"
+    -d '{"title":"Acme Followup","body":"## Key points\n- Target architecture agreed\n","frontmatter":{"date":"2026-09-08","type":"work","context":"external","account":"Acme","tags":["architecture","vcf"]}}')"
 [ "$code" = "201" ] || { cat "$created"; fail "create returned $code, expected 201"; }
 cat "$created"; echo
 note_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$created")"
@@ -463,26 +475,26 @@ step "create two more notes for listing and paging"
 runbook_created="$(mktemp)"
 code="$(curl -sS -o "$runbook_created" -w '%{http_code}' -X POST "$API/v1/notes" \
     "${AUTH[@]}" -H 'Content-Type: application/json' \
-    -d '{"title":"Database Runbook","frontmatter":{"date":"2026-09-10","type":"note","context":"internal","tags":["runbook"]}}')"
+    -d '{"title":"Database Runbook","frontmatter":{"date":"2026-09-10","type":"reference","context":"internal","tags":["runbook"]}}')"
 [ "$code" = "201" ] || { cat "$runbook_created"; fail "runbook create returned $code, expected 201"; }
 runbook_note_id="$(field "$runbook_created" id)"
 runbook_note_path="$(field "$runbook_created" path)"
 reference_created="$(mktemp)"
 code="$(curl -sS -o "$reference_created" -w '%{http_code}' -X POST "$API/v1/notes" \
     "${AUTH[@]}" -H 'Content-Type: application/json' \
-    -d '{"title":"Vendor Reference","frontmatter":{"date":"2026-09-20","type":"reference","context":"external","tags":["vendor"]}}')"
+    -d '{"title":"Vendor Reference","frontmatter":{"date":"2026-09-20","type":"reference","context":"external","account":"Vendor","tags":["vendor"]}}')"
 [ "$code" = "201" ] || { cat "$reference_created"; fail "reference create returned $code, expected 201"; }
 reference_note_id="$(field "$reference_created" id)"
-ok "four notes now exercise listing, filters and two-item pages"
+ok "five notes now exercise listing, filters and three-item pages"
 
 step "read the file on the volume, not through the API"
 on_disk="$(compose exec -T editor cat "/data/notes/$note_path")"
 printf '%s\n' "$on_disk"
-for key in "id: $note_id" "schema_version: 1" "date: 2026-09-08" "type: meeting" \
-           "context: customer" "account: Acme" "reviewed: false" "sources: []"; do
+for key in "id: $note_id" "schema_version: 1" "date: 2026-09-08" "type: work" \
+           "context: external" "account: Acme" "reviewed: false" "sources: []"; do
     printf '%s\n' "$on_disk" | grep -Fqx -- "$key" || fail "frontmatter is missing '$key'"
 done
-printf '%s\n' "$on_disk" | grep -Fqx -- "# Acme Architecture Sync" || fail "the H1 is missing"
+printf '%s\n' "$on_disk" | grep -Fqx -- "# Acme Followup" || fail "the H1 is missing"
 ok "the file carries its identifier and the shipped frontmatter keys"
 
 step "read the note back through the API"
@@ -500,6 +512,9 @@ step "edit the file on the volume behind the store's back, as a device would"
 compose exec -T editor python3 -c \
     'import sys; p = sys.argv[1]; t = open(p).read(); open(p, "w").write(t.replace("reviewed: false", "reviewed: true", 1))' \
     "/data/notes/$note_path"
+month_path="2026-09/${note_path##*/}"
+wait_for_note_path "$note_id" "$month_path"
+note_path="$month_path"
 device_edit="$(compose exec -T editor cat "/data/notes/$note_path")"
 [ "$device_edit" != "$on_disk" ] || fail "the edit on the volume did not change the file"
 device_hash="$(hash_on_volume "$note_path")"
@@ -574,26 +589,26 @@ assert len(items) == 1 and items[0]["id"] == sys.argv[2]' "$filtered" "$referenc
     || fail "the filtered listing did not return only the vendor reference"
 ok "filters see the reviewed device edit and select the expected subset"
 
-step "page through four notes two at a time"
+step "page through five notes three at a time"
 first_page="$(mktemp)"
 code="$(curl -sS -o "$first_page" -w '%{http_code}' "${AUTH[@]}" \
-    "$API/v1/notes?limit=2&folder=Review")"
+    "$API/v1/notes?limit=3")"
 [ "$code" = "200" ] || { cat "$first_page"; fail "first page returned $code, expected 200"; }
 cursor="$(field "$first_page" next_cursor)"
 [ -n "$cursor" ] && [ "$cursor" != "None" ] || fail "the first page did not carry a cursor"
 second_page="$(mktemp)"
 code="$(curl -sS -G -o "$second_page" -w '%{http_code}' "${AUTH[@]}" \
-    --data-urlencode 'limit=2' --data-urlencode "cursor=$cursor" \
-    --data-urlencode 'folder=Review' "$API/v1/notes")"
+    --data-urlencode 'limit=3' --data-urlencode "cursor=$cursor" \
+    "$API/v1/notes")"
 [ "$code" = "200" ] || { cat "$second_page"; fail "second page returned $code, expected 200"; }
 python3 -c 'import json,sys
 items = json.load(open(sys.argv[1]))["items"] + json.load(open(sys.argv[2]))["items"]
 actual = [item["id"] for item in items]
 expected = set(sys.argv[3:])
-assert len(actual) == 4 and len(actual) == len(set(actual)) and set(actual) == expected
+assert len(actual) == 5 and len(actual) == len(set(actual)) and set(actual) == expected
 assert json.load(open(sys.argv[2]))["next_cursor"] is None' \
-    "$first_page" "$second_page" "$ingest_note_id" "$note_id" "$runbook_note_id" "$reference_note_id"
-ok "two pages returned all four notes exactly once"
+    "$first_page" "$second_page" "$ingest_note_id" "$note_id" "$runbook_note_id" "$reference_note_id" "$phone_id"
+ok "two pages returned all five notes exactly once"
 
 step "move and rename a note on the volume, then find it by the same id"
 reconciled_path="Work/Operations Runbook.md"

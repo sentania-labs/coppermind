@@ -45,8 +45,8 @@ async def test_filters_use_the_current_files_for_every_known_note(store: LocalSt
         store,
         "Acme Architecture",
         note_date="2026-09-01",
-        note_type="meeting",
-        context="customer",
+        note_type="work",
+        context="external",
         account="Acme",
         tags=["architecture", "vcf"],
     )
@@ -54,7 +54,7 @@ async def test_filters_use_the_current_files_for_every_known_note(store: LocalSt
         store,
         "Database Runbook",
         note_date="2026-09-10",
-        note_type="note",
+        note_type="reference",
         context="internal",
         reviewed=True,
         tags=["runbook"],
@@ -62,6 +62,7 @@ async def test_filters_use_the_current_files_for_every_known_note(store: LocalSt
     reference = await _create(
         store,
         "Vendor Reference",
+        account="Vendor",
         note_date="2026-09-20",
         note_type="reference",
         context="external",
@@ -83,14 +84,14 @@ async def test_filters_use_the_current_files_for_every_known_note(store: LocalSt
 
     assert await ids(folder="Review") == {acme.id, runbook.id, reference.id}
     assert await ids(reviewed=True) == {acme.id, runbook.id}
-    assert await ids(type="meeting") == {acme.id}
-    assert await ids(context="external") == {reference.id}
+    assert await ids(type="work") == {acme.id}
+    assert await ids(context="external") == {acme.id, reference.id}
     assert await ids(account="Acme") == {acme.id}
     assert await ids(**{"from": date(2026, 9, 5), "to": date(2026, 9, 15)}) == {runbook.id}
     assert await ids(tag="architecture") == {acme.id, reference.id}
     assert await ids(state="ok") == {acme.id, runbook.id, reference.id}
 
-    current = (await store.list_notes(NoteQuery(type="meeting"))).items[0]
+    current = (await store.list_notes(NoteQuery(type="work"))).items[0]
     assert current.title == "Current Acme Architecture"
     assert current.content_hash != acme.content_hash
 
@@ -100,14 +101,14 @@ async def test_state_filters_observe_missing_and_unparseable_known_paths(store: 
         store,
         "Removed Note",
         note_date="2026-09-01",
-        note_type="note",
+        note_type="reference",
         context="internal",
     )
     broken = await _create(
         store,
         "Broken Note",
         note_date="2026-09-02",
-        note_type="note",
+        note_type="reference",
         context="internal",
     )
     (store.notes_root / missing.path).unlink()
@@ -134,14 +135,14 @@ async def test_a_note_removed_on_a_device_lists_as_missing_beside_a_present_one(
         store,
         "Removed Note",
         note_date="2026-09-01",
-        note_type="note",
+        note_type="reference",
         context="internal",
     )
     present = await _create(
         store,
         "Surviving Note",
         note_date="2026-09-02",
-        note_type="note",
+        note_type="reference",
         context="internal",
     )
     (store.notes_root / removed.path).unlink()
@@ -160,7 +161,7 @@ async def test_the_folder_filter_takes_the_folder_exactly_as_written(store: Loca
         store,
         "Filed Note",
         note_date="2026-09-01",
-        note_type="note",
+        note_type="reference",
         context="internal",
     )
     assert note.path.startswith("Review/")
@@ -180,7 +181,7 @@ async def test_cursor_pages_four_notes_two_at_a_time_without_gaps(store: LocalSt
             store,
             title,
             note_date=f"2026-09-0{number}",
-            note_type="note",
+            note_type="reference",
             context="internal",
         )
         for number, title in enumerate(("Alpha", "Bravo", "Charlie", "Delta"), start=1)
@@ -205,7 +206,7 @@ async def test_a_page_reads_the_reconciled_mirror_not_note_files(store: LocalSto
             store,
             title,
             note_date=f"2026-09-0{number}",
-            note_type="note",
+            note_type="reference",
             context="internal",
         )
 
@@ -227,7 +228,7 @@ async def test_rename_between_pages_does_not_change_where_the_cursor_resumes(
             store,
             title,
             note_date=f"2026-09-0{number}",
-            note_type="note",
+            note_type="reference",
             context="internal",
         )
         for number, title in enumerate(("Alpha", "Bravo", "Charlie", "Delta"), start=1)

@@ -400,7 +400,10 @@ def render_key(index: int, row: dict[str, Any], roles: dict[str, list[str]]) -> 
             row["retire"],
             "Retire this key (notes keep their values; the schema stops checking it)",
         )
-    return f"""<fieldset><legend>{escape(heading)}</legend>{identity}
+    expanded = " open" if row["new"] else ""
+    return f"""<details class="field-definition"{expanded}>
+<summary>{escape(heading)} <span class="muted">({escape(row["kind"])})</span></summary>
+<fieldset><legend>Edit {escape(heading)}</legend>{identity}
 {select(f"{prefix}-kind", "Kind", KINDS, row["kind"])}
 {checkbox(f"{prefix}-required", row["required"], "Required on every note")}
 {
@@ -445,7 +448,7 @@ def render_key(index: int, row: dict[str, Any], roles: dict[str, list[str]]) -> 
             "A paragraph for whoever fills this key in: a person, an agent or the enricher.",
         )
     }
-{retire}</fieldset>"""
+{retire}</fieldset></details>"""
 
 
 def render_tag(

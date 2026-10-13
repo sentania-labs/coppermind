@@ -238,7 +238,11 @@ async def _ingest_new(
     note_request = CreateNote(
         title=request.note.title,
         body=request.note.body,
-        frontmatter={**request.note.frontmatter, schema.role("sources_key"): [source_id]},
+        frontmatter={
+            **request.note.frontmatter,
+            schema.role("sources_key"): [source_id],
+            schema.role("reviewed_key"): False,
+        },
     )
     frontmatter = _build_frontmatter(note_request, schema, settings, note_id)
     problems = schema.validate_frontmatter(frontmatter) + schema.tag_problems(frontmatter)
@@ -742,14 +746,7 @@ def _scan_for_linked_note(
     return matches[0]
 
 
-async def _ensure_mirror(
-    session: AsyncSession,
-    manifest: dict[str, Any],
-    note_id: str,
-    note_path: str,
-    note_snapshot: tuple[bytes, dict[str, Any], str, datetime] | None,
-    schema: FrontmatterSchema,
-) -> None:
+async def _ensure_source_mirror(session: AsyncSession, manifest: dict[str, Any]) -> None:
     source_id = manifest.get("source_id")
     revisions = manifest.get("revisions")
     if not is_valid_id(source_id) or not isinstance(revisions, list) or not revisions:
@@ -808,8 +805,23 @@ async def _ensure_mirror(
                 )
             )
             await session.flush()
-            session.add_all(_artifact_rows(source_id, revision, item.get("artifacts", [])))
+        for artifact in _artifact_rows(source_id, revision, item.get("artifacts", [])):
+            if await session.get(SourceArtifact, (source_id, revision, artifact.name)) is None:
+                session.add(artifact)
     await session.flush()
+
+
+async def _ensure_mirror(
+    session: AsyncSession,
+    manifest: dict[str, Any],
+    note_id: str,
+    note_path: str,
+    note_snapshot: tuple[bytes, dict[str, Any], str, datetime] | None,
+    schema: FrontmatterSchema,
+) -> None:
+    await _ensure_source_mirror(session, manifest)
+    source_id = str(manifest["source_id"])
+    created_at = _manifest_time(manifest["revisions"][0]["ingested_at"], "ingested_at")
 
     if await session.get(Note, note_id) is None:
         if note_snapshot is None:
@@ -1200,6 +1212,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
             name_collisions=name_collisions,
             unparseable_files=notes_by_state.get("unparsed", 0),
             excluded_count=excluded_count,
+            filing_failures=sum(p.kind == "filing" for p in await get_problems(store)),
         )
     )
 
@@ -1246,6 +1259,28 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         )
         for row in rejections
     ]
+    for path in sorted((store.control.store.state_dir / "filing").glob("*.json")):
+        try:
+            filing = json.loads(path.read_bytes())
+            if filing.get("error"):
+                problems.append(
+                    ProblemInfo(
+                        kind="filing",
+                        reference=path.stem,
+                        reason="Monthly filing is pending; it will retry automatically: "
+                        + filing["error"],
+                        note_id=path.stem,
+                    )
+                )
+        except (OSError, ValueError):
+            problems.append(
+                ProblemInfo(
+                    kind="filing",
+                    reference=path.stem,
+                    reason="Filing receipt is unreadable",
+                    note_id=path.stem,
+                )
+            )
     problems.extend(
         ProblemInfo(
             kind="unparsed",

@@ -1,0 +1,184 @@
+"""Review gates publication; monthly filing and restore preserve evidence."""
+
+import base64
+
+import sqlalchemy as sa
+from coppermind_store import filing, indexer
+from coppermind_store.reconciler import reconcile_once
+
+from coppermind.db.models import Note, NoteSource, SearchDocument, Source
+from coppermind.store_protocol import IngestArtifact, MoveNote, PatchFrontmatter, SearchQuery
+from tests.integration.test_search_index import ingest_request
+
+
+async def approve(store, note_id):
+    note = await store.get_note(note_id)
+    await store.patch_frontmatter(
+        note_id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
+    )
+    return await filing.file_reviewed(store)
+
+
+async def test_review_files_monthly_then_publishes_and_human_edit_stays_reviewed(store):
+    request = ingest_request()
+    request.note.frontmatter["reviewed"] = True
+    result = await store.ingest(request)
+    assert result.projection_path.startswith("_Sources/_Pending/2026-09/")
+    assert (await store.get_note(result.note.id)).frontmatter["reviewed"] is False
+    await indexer.rebuild(store)
+    assert not (await store.search(SearchQuery(q="kerfuffle"))).items
+    async with store.session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(SearchDocument)) == 0
+    assert await approve(store, result.note.id) == {"filed": 1, "filing_failed": 0}
+    await indexer.catch_up(store)
+    note = await store.get_note(result.note.id)
+    source = await store.get_source(result.source.id)
+    assert note.path.startswith("2026-09/")
+    assert source.projection_path.startswith("_Sources/2026-09/")
+    assert source.projection_path.removesuffix(".md") in note.body
+    assert not (store.notes_root / result.projection_path).exists()
+    assert (await store.search(SearchQuery(q="kerfuffle"))).items[0].id == result.source.id
+    path = store.notes_root / note.path
+    path.write_text(path.read_text() + "\nA human adds platypus.\n")
+    await reconcile_once(store)
+    assert (await store.get_note(note.id)).frontmatter["reviewed"] is True
+    assert (await store.search(SearchQuery(q="platypus"))).items[0].id == note.id
+    await store.patch_frontmatter(
+        note.id,
+        PatchFrontmatter(set={"reviewed": False}),
+        (await store.get_note(note.id)).content_hash,
+    )
+    await indexer.catch_up(store)
+    assert not (await store.search(SearchQuery(q="platypus"))).items
+    assert not (await store.search(SearchQuery(q="kerfuffle"))).items
+
+
+async def test_failed_filing_retries_without_indexing_or_losing_originals(store, monkeypatch):
+    result = await store.ingest(ingest_request())
+    original = (store.sources_root / result.source.id / "r0001/transcript.txt").read_bytes()
+    copy = filing._copy
+
+    def fail(*args):
+        raise OSError("simulated volume failure")
+
+    monkeypatch.setattr(filing, "_copy", fail)
+    assert await approve(store, result.note.id) == {"filed": 0, "filing_failed": 1}
+    assert (await store.get_note(result.note.id)).path.startswith("Review/")
+    assert any(p.kind == "filing" for p in await store.get_problems())
+    await indexer.rebuild(store)
+    assert not (await store.search(SearchQuery(q="lease"))).items
+    moved = await store.move_note(result.note.id, MoveNote(target_folder="2026-09"), None)
+    assert not (await store.search(SearchQuery(q="lease"))).items
+    await store.patch_frontmatter(
+        moved.id, PatchFrontmatter(set={"date": "2026-10-02"}), moved.content_hash
+    )
+    monkeypatch.setattr(filing, "_copy", copy)
+    assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+    assert not any(p.kind == "filing" for p in await store.get_problems())
+    assert (await store.get_note(result.note.id)).path.startswith("2026-10/")
+    assert (await store.get_source(result.source.id)).projection_path.startswith(
+        "_Sources/2026-10/"
+    )
+    assert (store.sources_root / result.source.id / "r0001/transcript.txt").read_bytes() == original
+    assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 0}
+
+
+async def test_pdf_is_browsable_audio_stays_archived_and_database_loss_recovers(store):
+    request = ingest_request()
+    for name, mime in [("slides.pdf", "application/pdf"), ("recording.wav", "audio/wav")]:
+        request.source.artifacts.append(
+            IngestArtifact(
+                name=name,
+                mime_type=mime,
+                content_base64=base64.b64encode(b"synthetic bytes").decode(),
+            )
+        )
+    result = await store.ingest(request)
+    await approve(store, result.note.id)
+    paths = list((store.notes_root / "_Attachments").rglob("*"))
+    assert any(p.suffix == ".pdf" for p in paths)
+    assert not any(p.suffix == ".wav" for p in paths)
+    snapshot = {
+        p.relative_to(store.sources_root): p.read_bytes()
+        for p in store.sources_root.rglob("*")
+        if p.is_file()
+    }
+    async with store.session_factory() as session:
+        await session.execute(sa.text("TRUNCATE notes, sources, search_documents CASCADE"))
+        await session.commit()
+    recovered = await store.rebuild_metadata()
+    assert recovered.counts["recovered_sources"] == 1
+    async with store.session_factory() as session:
+        for model in (Note, Source, NoteSource):
+            assert await session.scalar(sa.select(sa.func.count()).select_from(model)) == 1
+    assert (await store.search(SearchQuery(q="kerfuffle"))).items
+    assert snapshot == {
+        p.relative_to(store.sources_root): p.read_bytes()
+        for p in store.sources_root.rglob("*")
+        if p.is_file()
+    }
+    replay = await store.ingest(request)
+    assert replay.note.id == result.note.id
+    assert not replay.note.created
+
+
+async def test_source_revision_is_not_silently_published(store):
+    request = ingest_request()
+    result = await store.ingest(request)
+    await approve(store, result.note.id)
+    await indexer.catch_up(store)
+    request.source.artifacts[0].content = "New unreviewed aardvark material."
+    await store.ingest(request)
+    await indexer.rebuild(store)
+    assert not (await store.search(SearchQuery(q="aardvark"))).items
+    assert (await store.get_note(result.note.id)).frontmatter["reviewed"] is True
+
+
+async def test_restore_skips_malformed_source_list(store):
+    from coppermind_store.recovery import recover_sources
+
+    from coppermind.ids import new_id
+
+    result = await store.ingest(ingest_request())
+    (store.notes_root / "bad.md").write_text(
+        f"---\nid: {new_id()}\nsources: [{{}}]\n---\nMalformed citations\n"
+    )
+    assert (await recover_sources(store))["recovered_sources"] == 1
+    assert (await store.get_note(result.note.id)).id == result.note.id
+
+
+async def test_added_source_requires_filing_before_publication(store):
+    from coppermind import frontmatter as fm
+
+    first = await store.ingest(ingest_request("first"))
+    second = await store.ingest(ingest_request("second"))
+    await approve(store, first.note.id)
+    note = await store.get_note(first.note.id)
+    path = store.notes_root / note.path
+    frontmatter, body = fm.parse(path.read_text())
+    frontmatter["sources"].append(second.source.id)
+    path.write_text(fm.compose(frontmatter, body))
+    await reconcile_once(store)
+    assert not (await store.search(SearchQuery(q="lease discussion"))).items
+    assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+    await indexer.catch_up(store)
+    assert len((await store.search(SearchQuery(q="kerfuffle"))).items) == 2
+    assert (await store.get_source(second.source.id)).projection_path.startswith(
+        "_Sources/2026-09/"
+    )
+
+
+async def test_date_correction_updates_source_search_path(store):
+    result = await store.ingest(ingest_request())
+    await approve(store, result.note.id)
+    await indexer.catch_up(store)
+    note = await store.get_note(result.note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"date": "2026-10-01"}), note.content_hash
+    )
+    assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+    await indexer.catch_up(store)
+    hits = (await store.search(SearchQuery(q="kerfuffle"))).items
+    assert len(hits) == 1
+    assert hits[0].path.startswith("_Sources/2026-10/")
+    assert hits[0].path.removesuffix(".md") in (await store.get_note(note.id)).body

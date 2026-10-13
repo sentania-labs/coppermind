@@ -249,10 +249,7 @@ async def test_ingest_opening_note_contains_wikilink_to_projection(tmp_path: Pat
 
 
 async def test_ingest_wikilink_disambiguates_same_stem_across_providers(tmp_path: Path):
-    """Two sources with the same title under different providers get the same
-    projection stem but different provider folders; the wikilink must carry
-    the full path so it resolves to the right one rather than being ambiguous
-    between them."""
+    """Sources share a monthly pending folder and get distinct link targets."""
     other_request = IngestRequest.model_validate(
         {
             "source": {
@@ -272,7 +269,7 @@ async def test_ingest_wikilink_disambiguates_same_stem_across_providers(tmp_path
 
         plaud_stem = Path(plaud_result.projection_path).stem
         other_stem = Path(other_result.projection_path).stem
-        assert plaud_stem == other_stem
+        assert plaud_stem != other_stem
 
         plaud_target = plaud_result.projection_path.removesuffix(".md")
         other_target = other_result.projection_path.removesuffix(".md")

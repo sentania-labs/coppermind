@@ -140,7 +140,7 @@ def meeting(title: str) -> CreateNote:
         body="Agenda\n",
         frontmatter={
             "date": "2026-10-02",
-            "type": "meeting",
+            "type": "work",
             "context": "internal",
             "reviewed": False,
             "sources": [],
@@ -150,7 +150,7 @@ def meeting(title: str) -> CreateNote:
 
 
 def plain(title: str) -> CreateNote:
-    return CreateNote(title=title, body="Body\n", frontmatter={"type": "note"})
+    return CreateNote(title=title, body="Body\n", frontmatter={"type": "reference"})
 
 
 def note_files(root: Path) -> list[Path]:
@@ -165,7 +165,7 @@ def hand_written(store: LocalStore, mirror: Mirror, relative: str, heading: str)
     path = store.notes_root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        f"---\nid: {note_id}\ndate: 2026-10-02\nschema_version: 1\ntype: note\n"
+        f"---\nid: {note_id}\ndate: 2026-10-02\nschema_version: 1\ntype: reference\n"
         "context: internal\nreviewed: false\nsources: []\ntags: []\n---\n"
         f"# {heading}\n\nBody\n",
         encoding="utf-8",
@@ -206,7 +206,7 @@ async def test_a_hand_written_date_with_a_time_never_puts_a_colon_in_the_filenam
     note_id = hand_written(store, mirror, "Review/Standup.md", "Standup")
     path = store.notes_root / "Review/Standup.md"
     text = path.read_text(encoding="utf-8").replace("date: 2026-10-02\n", f"date: {written}\n")
-    path.write_text(text.replace("type: note", "type: meeting"), encoding="utf-8")
+    path.write_text(text.replace("type: reference", "type: work"), encoding="utf-8")
     original = path.read_bytes()
 
     moved = await store.move_note(note_id, MoveNote(target_folder="Work"), None)

@@ -107,8 +107,8 @@ curl -sS -X POST http://127.0.0.1:8080/v1/notes \
   -d '{
         "title": "Acme Architecture Sync",
         "body": "## Key points\n- Target architecture agreed\n",
-        "frontmatter": {"date": "2026-09-08", "type": "meeting",
-                        "context": "customer", "account": "Acme"}
+        "frontmatter": {"date": "2026-09-08", "type": "work",
+                        "context": "external", "account": "Acme"}
       }'
 ```
 
@@ -155,8 +155,8 @@ curl -sS -X PUT http://127.0.0.1:8080/v1/notes/<id> \
   -H 'Content-Type: application/json' \
   -H 'If-Match: "sha256:<the ETag the read returned>"' \
   -d '{
-        "frontmatter": {"schema_version": 1, "date": "2026-09-08", "type": "meeting",
-                        "context": "customer", "account": "Acme", "reviewed": true,
+        "frontmatter": {"schema_version": 1, "date": "2026-09-08", "type": "work",
+                        "context": "external", "account": "Acme", "reviewed": true,
                         "sources": [], "tags": []},
         "body": "# Acme Architecture Sync\n\n## Key points\n- Target architecture agreed\n- Corrected on review\n"
       }'
@@ -182,13 +182,21 @@ a phone and it reads with Coppermind stopped:
 ```bash
 docker compose exec store ls -R "/data/sources/<source_id>"
 docker compose exec store cat \
-  "/data/notes/_Sources/Plaud/2026-09-08 Acme Architecture Sync.md"
+  "/data/notes/_Sources/_Pending/2026-09/2026-09-08 Acme Architecture Sync.md"
 ```
 
 That page is generated, not yours: a new source revision rewrites it in place,
 so edit the Review note instead. The folder it lands in is the
 `notes.sources_folder` setting, and Git excludes it, so transcripts stay out
 of the notes history.
+
+Ingest creates an unreviewed draft. Mark it reviewed in Obsidian or through the
+frontmatter API. Reconciliation then files the note under `YYYY-MM/` and its
+source page under `_Sources/YYYY-MM/`; search includes them only after filing
+succeeds. PDFs and other non-text, non-audio attachments are copied into
+`_Attachments/YYYY-MM/`. Immutable originals stay under `/data/sources`, and
+audio remains archive-only. See [the n8n contract](docs/n8n-intake.md) for retry
+rules and the current upload-size limit.
 
 Read a source through the API as well, with a key holding `sources:read`. The
 manifest comes back as JSON, an artifact that decodes as text comes back as

@@ -17,7 +17,7 @@ def request(title: str) -> CreateNote:
         body="Body\n",
         frontmatter={
             "date": "2026-09-08",
-            "type": "note",
+            "type": "reference",
             "context": "internal",
             "reviewed": False,
             "sources": [],
@@ -185,7 +185,7 @@ def meeting(title: str) -> CreateNote:
         body="Agenda\n",
         frontmatter={
             "date": "2026-10-02",
-            "type": "meeting",
+            "type": "work",
             "context": "internal",
             "reviewed": False,
             "sources": [],
