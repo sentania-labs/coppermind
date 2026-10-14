@@ -20,6 +20,7 @@ from coppermind.store_protocol import (
     CreateNote,
     ETag,
     FolderTree,
+    HistoryStatus,
     IncompleteRevision,
     IngestRequest,
     IngestResult,
@@ -28,6 +29,7 @@ from coppermind.store_protocol import (
     NoteDocument,
     NoteId,
     NoteQuery,
+    NoteRecovery,
     NotesFilesystemUnavailable,
     NoteSourceInfo,
     NoteSummary,
@@ -44,6 +46,7 @@ from coppermind.store_protocol import (
     RebuildSearchIndexResult,
     RenameNote,
     ReplaceNote,
+    RestoreNote,
     SchemaDocument,
     SearchHit,
     SearchIndexStatus,
@@ -175,6 +178,22 @@ class HttpStoreClient:
             f"{_segment(name)}",
         )
         return SourceArtifactDocument.model_validate(response.json())
+
+    async def get_note_history_status(self) -> HistoryStatus:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/note-history")
+        return HistoryStatus.model_validate(response.json())
+
+    async def preview_note_restore(self, note_id: str) -> NoteRecovery:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/notes/{_segment(note_id)}/recovery")
+        return NoteRecovery.model_validate(response.json())
+
+    async def restore_note(self, note_id: str, request: RestoreNote) -> NoteRecovery:
+        response = await self._send(
+            "POST",
+            f"{INTERNAL_PREFIX}/notes/{_segment(note_id)}/restore",
+            json=request.model_dump(),
+        )
+        return NoteRecovery.model_validate(response.json())
 
     async def get_api_keys(self) -> ApiKeySet:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/api-keys")

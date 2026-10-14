@@ -135,3 +135,23 @@ existing vault, any transport into Coppermind, semantic search, and a
 history-and-restore interface all remain deliberately deferred (see
 [roadmap.md](roadmap.md)); route anything found while running this plan
 through the normal build process, not around it.
+
+
+## Note deletion and recovery acceptance
+
+Use a dedicated acceptance vault. First let a synthetic note reach a Git
+snapshot, then delete it in Obsidian. Observe `missing` until Git commits the
+removal, then `deleted`, with the saved contents visible in Admin Note recovery.
+Verify the note is absent from search and active review counts. Restore from
+the preview, confirm the original ID and bytes, and open it on the phone after
+sync. Its search eligibility must still obey review and monthly filing.
+
+Repeat with a move and a delayed same-ID return: neither creates a new note.
+Try an occupied restore path: the existing file must remain unchanged. Stop
+the Git helper and confirm the Admin warning and pending missing records.
+Rebuild PostgreSQL from the same files and confirm recovery survives, including
+source references and previously recorded approvals. Preserve `.git` and
+`state/note-recovery` in the later full backup/isolated restore drill.
+
+Local integration tests cover the filesystem, Git and PostgreSQL transitions;
+they do not substitute for the phone round trip or an off-device restore.

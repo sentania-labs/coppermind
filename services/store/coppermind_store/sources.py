@@ -267,7 +267,9 @@ async def _ingest_new(
     occupied = (
         (
             await session.execute(
-                sa.select(Note.id).where(Note.path == relative, Note.state != "missing").limit(1)
+                sa.select(Note.id)
+                .where(Note.path == relative, Note.state.not_in(("missing", "deleted")))
+                .limit(1)
             )
         )
         .scalars()
@@ -1186,7 +1188,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
     awaiting = (
         sa.select(sa.func.count())
         .select_from(Note)
-        .where(Note.reviewed.is_(False), Note.state != "missing")
+        .where(Note.reviewed.is_(False), Note.state.not_in(("missing", "deleted")))
     )
     if prefix:
         # Directly in the configured review folder, never a nested one.

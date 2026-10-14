@@ -213,7 +213,7 @@ def build_search(query: SearchQuery, after: SearchCursor | None = None) -> sa.Se
         # A note entry the mirror no longer holds as present is never a hit,
         # whatever a catch-up step has not yet removed.
         .where(sa.or_(SearchDocument.kind == "source", Note.id.is_not(None)))
-        .where(state != "missing")
+        .where(state.not_in(("missing", "deleted")))
         .where(*filter_conditions(query))
     )
     if after is not None:

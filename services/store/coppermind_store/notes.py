@@ -58,6 +58,7 @@ from coppermind.store_protocol import (
     ETag,
     FolderItem,
     FolderTree,
+    HistoryStatus,
     IngestRequest,
     IngestResult,
     MetadataUnavailable,
@@ -65,6 +66,7 @@ from coppermind.store_protocol import (
     NoteDocument,
     NoteId,
     NoteQuery,
+    NoteRecovery,
     NotesFilesystemUnavailable,
     NoteSourceInfo,
     NoteState,
@@ -80,6 +82,7 @@ from coppermind.store_protocol import (
     RebuildSearchIndexResult,
     RenameNote,
     ReplaceNote,
+    RestoreNote,
     SchemaDocument,
     SearchHit,
     SearchIndexStatus,
@@ -231,8 +234,45 @@ class LocalStore:
         self._locks: dict[str, asyncio.Lock] = {}
         self._source_locks: dict[str, asyncio.Lock] = {}
         self._filing_lock = asyncio.Lock()
+        self._reconcile_lock = asyncio.Lock()
+        from coppermind_store.note_history import GitHistory
+
+        self.note_history = GitHistory(notes_root)
         # The one search index rebuild this process may be running.
         self._search_rebuild: asyncio.Task[None] | None = None
+
+    async def get_note_history_status(self) -> HistoryStatus:
+        async with self._reconcile_lock:
+            await asyncio.to_thread(
+                self.note_history.refresh,
+                self.control.schema().role("id_key"),
+                self.control.settings().git.enabled,
+            )
+            from coppermind_store.note_history import helper_status
+
+            return helper_status(self, self.note_history.status)
+
+    async def preview_note_restore(self, note_id: str) -> NoteRecovery:
+        from coppermind_store.note_history import preview
+
+        try:
+            return await preview(self, note_id)
+        except BaseException as exc:
+            typed = _metadata_failure(exc)
+            if typed is None:
+                raise
+            raise typed from exc
+
+    async def restore_note(self, note_id: str, request: RestoreNote) -> NoteRecovery:
+        from coppermind_store.note_history import restore
+
+        try:
+            return await restore(self, note_id, request)
+        except BaseException as exc:
+            typed = _metadata_failure(exc)
+            if typed is None:
+                raise
+            raise typed from exc
 
     async def get_api_keys(self) -> ApiKeySet:
         """Read API key hashes from filesystem-first control state."""
@@ -358,7 +398,9 @@ class LocalStore:
                         (
                             await session.execute(
                                 sa.select(Note.id)
-                                .where(Note.path == relative, Note.state != "missing")
+                                .where(
+                                    Note.path == relative, Note.state.not_in(("missing", "deleted"))
+                                )
                                 .limit(1)
                             )
                         )
@@ -489,7 +531,7 @@ class LocalStore:
         so it is left out rather than counted as if it were still there.
         """
         tag = sa.func.unnest(Note.tags).label("tag")
-        tagged = sa.select(Note.id, tag).where(Note.state != "missing").subquery()
+        tagged = sa.select(Note.id, tag).where(Note.state.not_in(("missing", "deleted"))).subquery()
         statement = (
             sa.select(tagged.c.tag, sa.func.count(sa.distinct(tagged.c.id)).label("notes"))
             .group_by(tagged.c.tag)
@@ -777,7 +819,10 @@ class LocalStore:
                         (
                             await session.execute(
                                 sa.select(Note.id)
-                                .where(Note.path == new_relative, Note.state != "missing")
+                                .where(
+                                    Note.path == new_relative,
+                                    Note.state.not_in(("missing", "deleted")),
+                                )
                                 .limit(1)
                             )
                         )
@@ -891,7 +936,10 @@ class LocalStore:
                             (
                                 await session.execute(
                                     sa.select(Note.id)
-                                    .where(Note.path == new_relative, Note.state != "missing")
+                                    .where(
+                                        Note.path == new_relative,
+                                        Note.state.not_in(("missing", "deleted")),
+                                    )
                                     .limit(1)
                                 )
                             )
@@ -1173,7 +1221,7 @@ class LocalStore:
                     return "collision", "the id it carries is already a note"
                 occupied = await session.scalar(
                     sa.select(Note.id)
-                    .where(Note.path == relative, Note.state != "missing")
+                    .where(Note.path == relative, Note.state.not_in(("missing", "deleted")))
                     .limit(1)
                 )
                 if occupied is not None:
@@ -1273,7 +1321,7 @@ class LocalStore:
                 ).one_or_none()
         except (SQLAlchemyError, OSError) as exc:
             raise MetadataUnavailable(str(exc)) from exc
-        if located is None or located.state == "missing":
+        if located is None or located.state in {"missing", "deleted"}:
             raise NotFound(note_id)
         relative = located.path
         try:

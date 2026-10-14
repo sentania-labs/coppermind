@@ -87,6 +87,7 @@ LINKS = (
     ("/admin/keys", "API Keys"),
     ("/admin/sync", "Obsidian Sync"),
     ("/admin/search-index", "Search index"),
+    ("/admin/note-history", "Note recovery"),
 )
 
 
@@ -106,7 +107,7 @@ def render(title: str, body: str, path: str) -> str:
         )
         content = f"""<a class="skip" href="#content">Skip to content</a>
 <div class="shell"><aside class="sidebar">
-<a class="brand" href="/admin">Coppermind<small>Your notes. Their evidence.</small></a>
+<a class="brand" href="/admin">Coppermind</a>
 <nav aria-label="Admin">{links}</nav>
 <form method="post" action="/v1/admin/logout"><button>Log out</button></form>
 </aside><div class="workspace"><div class="breadcrumb">Coppermind / {escape(title)}</div>

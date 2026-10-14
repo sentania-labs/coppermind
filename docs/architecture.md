@@ -182,9 +182,9 @@ has a prepared place in the design for when it is actually needed:
   device. Import becomes a deliberate, later Admin action.
 - **Vector or hybrid search**, on top of the plain text search that ships
   first.
-- **Note history and restore through the API.** Git already has the history;
-  reading it through an endpoint is later work, not a missing capability
-  today (`git log` inside the container reaches it now).
+- **General note history browsing.** Arbitrary historical revisions still
+  require Git access. Deleted-note preview and restore are a narrower
+  capability, described in STATUS.md, with recovery evidence outside Git.
 - **Rewriting links when a note is renamed.** Filing (a move) never breaks a
   link; renaming a note's title can, and that gap is documented rather than
   silently fixed.

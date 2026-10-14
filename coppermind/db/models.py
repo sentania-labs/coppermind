@@ -58,7 +58,7 @@ class Note(Base):
     source_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     filed_source_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     tags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
-    # ok, unparsed or missing. A file Coppermind cannot parse is recorded, never
+    # ok, unparsed, missing or deleted. Unparseable files are recorded, never
     # rewritten, so a person's own file is never damaged by the system.
     state: Mapped[str] = mapped_column(Text, nullable=False, default="ok")
     state_reason: Mapped[str | None] = mapped_column(Text)

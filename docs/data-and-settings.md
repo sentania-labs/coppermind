@@ -194,3 +194,28 @@ they are the concrete evidence that the shapes above behave as described:
 survives a rename and a move), `T-ID-3` (`rebuild_metadata` recovers the
 same identifiers from disk alone), `T-SRC-1` (a source cannot be mutated
 through any route).
+
+
+## Deleted-note recovery receipts
+
+`/data/state/note-recovery/<note-id>-<removal-commit>.json` is immutable,
+versioned recovery evidence with `schema_version`, `note_id`, `path`,
+`content_hash`, `removal_commit`, Git `blob`, base64 `content`, and
+`recorded_at`. The content hash is verified before recovery. Receipts are
+mode 0600 and contain private note contents, so they belong in the protected
+backup set, never operational logs or exported diagnostics. Restore
+confirmations live under its `restores/` subdirectory. Later observations of
+returned identities live under `observed/`, so a rebuild cannot confuse an
+old deletion with a later return. None of these files is synced.
+
+Rebuild seeds identities from receipts before scanning files. Observed file
+contents always win when an identity returns. `deleted` is reversible absence
+with Git recovery evidence, not an instruction to erase files or sources.
+Historical source approvals remain in their existing review/filing receipts.
+
+A complete backup must preserve `/data/notes` including `.git`, `/data/sources`,
+all `/data/state` including recovery and approval receipts, and the separately
+mounted credentials and sync state described in the acceptance plan. Copying
+Markdown alone is insufficient. Git snapshots on the same volume are not an
+off-device backup. Full backup tooling and its isolated restore drill remain
+separate work.
