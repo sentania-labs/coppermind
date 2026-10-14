@@ -479,7 +479,7 @@ async def reconcile_once(
     absent = set() if scan.deferred else {note_id for note_id in by_id if note_id not in scan.seen}
     if absent:
         await asyncio.to_thread(
-            store.note_history.refresh, schema.role("id_key"), settings.git.enabled
+            store.note_history.refresh, schema.role("id_key"), settings.git.enabled, absent
         )
     pending = sorted(set(observations) | absent)
 

@@ -683,8 +683,10 @@ cannot remove this independent recovery copy. No source bundle is removed.
 Git history alone cannot prove intent. Here `deleted` means absent with a
 recoverable committed removal. If the last observed edit never reached Git,
 the note stays missing rather than pretending that an older version is exact.
-Git lookups are batched and cached per HEAD and schema identity key, not one
-history process per missing note. Traversal errors fail the scan instead of
+Git lookups use bounded object batches and cache only requested absent
+identities per HEAD and schema identity key, not one history process per note.
+Automatic recovery refuses Markdown blobs above 32 MiB rather than exhaust
+the store; these remain available for manual recovery from Git. Traversal errors fail the scan instead of
 silently turning inaccessible subtrees into deletions.
 
 Local verification covers actual Git, PostgreSQL, reconstruction, return,

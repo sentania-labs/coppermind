@@ -98,6 +98,24 @@ raise SystemExit(0 if any(item["id"] == sys.argv[2] for item in items) else 1)' 
     fail "note $note_id did not appear under filter $filter after one scan"
 }
 
+wait_for_note_absence() {
+    local note_id="$1" response code
+    response="$(mktemp)"
+    for _ in $(seq 1 180); do
+        code="$(curl -sS -o "$response" -w '%{http_code}' "${AUTH[@]}" "$API/v1/notes?limit=200")"
+        if [ "$code" = "200" ] && python3 -c 'import json,sys
+items = json.load(open(sys.argv[1]))["items"]
+raise SystemExit(0 if any(item["id"] == sys.argv[2] and item["state"] in ("missing", "deleted")
+                         for item in items) else 1)' "$response" "$note_id"; then
+            rm -f "$response"
+            return 0
+        fi
+        sleep 1
+    done
+    rm -f "$response"
+    fail "note $note_id was not reconciled as absent"
+}
+
 wait_for_adopted_path() {
     local path="$1" tries="${2:-180}" note_id code
     for _ in $(seq 1 "$tries"); do
@@ -617,12 +635,12 @@ compose exec -T editor mv "/data/notes/$runbook_note_path" "/data/notes/$reconci
 wait_for_note_path "$runbook_note_id" "$reconciled_path"
 ok "the scheduled scan followed the identity while the API kept answering"
 
-step "delete that note on the volume and wait for an honest missing listing"
+step "delete that note on the volume and wait for an honest absence listing"
 compose exec -T editor rm "/data/notes/$reconciled_path"
-wait_for_note_filter "$runbook_note_id" "state=missing"
+wait_for_note_absence "$runbook_note_id"
 [ "$(status_of "${AUTH[@]}" "$API/v1/notes/$runbook_note_id")" = "404" ] \
     || fail "the deleted note still read as present"
-ok "the deleted note reads as gone and lists as missing while the API keeps answering"
+ok "the deleted note reads as gone and lists as missing or deleted while the API keeps answering"
 
 review_count() { compose exec -T store sh -c 'ls -1 /data/notes/Review | wc -l' | tr -d "[:space:]"; }
 before_outage="$(review_count)"

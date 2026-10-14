@@ -14,6 +14,7 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -71,11 +72,17 @@ class Receipt(BaseModel):
         return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
 
 
+# Keep each subprocess output bounded, including unrelated archived files.
+_BLOB_BATCH_BYTES = 8 * 1024 * 1024
+_MAX_RECOVERY_BLOB_BYTES = 32 * 1024 * 1024
+
+
 class GitHistory:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.head: str | None = None
         self.key: str | None = None
+        self.wanted: set[str] = set()
         self.removed: dict[str, list[tuple[str, str, str, bytes]]] = {}
         self.status = HistoryStatus(available=False, reason="Git evidence not checked yet")
 
@@ -119,11 +126,36 @@ class GitHistory:
             raise HistoryUnavailable("Git history could not be read; check the Git helper")
         return result.stdout
 
-    def blobs(self, names: list[str]) -> dict[str, bytes]:
-        if not names:
-            return {}
+    def blobs(self, names: list[str]) -> Iterator[tuple[str, bytes]]:
+        """Size-check bounded batches, never materialize a vault's blob history."""
+        for start in range(0, len(names), 128):
+            chunk = names[start : start + 128]
+            sizes = self.git(
+                "cat-file", "--batch-check", data=("\n".join(chunk) + "\n").encode()
+            ).splitlines()
+            batch: list[str] = []
+            total = 0
+            for header in sizes:
+                fields = header.split()
+                if len(fields) != 3 or fields[1] != b"blob":
+                    raise HistoryUnavailable("Git recovery object unavailable")
+                name, size = fields[0].decode(), int(fields[2])
+                if batch and total + size > _BLOB_BATCH_BYTES:
+                    yield from self._blob_batch(batch)
+                    batch, total = [], 0
+                if size > _MAX_RECOVERY_BLOB_BYTES:
+                    # Unknown identity means incomplete evidence, never a
+                    # license to fall back to an older version of that note.
+                    raise HistoryUnavailable(
+                        "A note exceeds the 32 MiB recovery limit; inspect Git manually"
+                    )
+                batch.append(name)
+                total += size
+            if batch:
+                yield from self._blob_batch(batch)
+
+    def _blob_batch(self, names: list[str]) -> Iterator[tuple[str, bytes]]:
         raw = self.git("cat-file", "--batch", data=("\n".join(names) + "\n").encode())
-        found = {}
         offset = 0
         for name in names:
             end = raw.index(b"\n", offset)
@@ -132,18 +164,22 @@ class GitHistory:
                 raise HistoryUnavailable("Git recovery object unavailable")
             size = int(header[2])
             offset = end + 1
-            found[name] = raw[offset : offset + size]
+            yield name, raw[offset : offset + size]
             offset += size + 1
-        return found
 
-    def refresh(self, key: str, enabled: bool) -> None:
+    def refresh(self, key: str, enabled: bool, wanted: set[str] | None = None) -> None:
+        head = None
         try:
             if not enabled:
                 raise HistoryUnavailable("Git history is disabled; absent notes remain missing")
             head = self.git("rev-parse", "--verify", "HEAD").decode().strip()
-            if head != self.head or key != self.key:
-                self._load(head, key)
-                self.head, self.key = head, key
+            if wanted is not None and (
+                head != self.head or key != self.key or not wanted.issubset(self.wanted)
+            ):
+                self._load(head, key, wanted)
+                self.head, self.key, self.wanted = head, key, set(wanted)
+            if wanted is None and not self.status.available and self.status.head == head:
+                return
             self.status = HistoryStatus(
                 available=True,
                 head=head,
@@ -152,11 +188,11 @@ class GitHistory:
         except (HistoryUnavailable, ValueError, UnicodeError) as exc:
             self.removed = {}
             self.head = None
-            self.status = HistoryStatus(available=False, reason=str(exc))
+            self.status = HistoryStatus(available=False, head=head, reason=str(exc))
 
-    def _load(self, head: str, key: str) -> None:
-        # One history walk and two bulk object reads per new HEAD, independent
-        # of how many notes disappeared. NUL framing preserves unusual paths.
+    def _load(self, head: str, key: str, wanted: set[str]) -> None:
+        # One history walk per HEAD/requested identity set, followed by bounded
+        # object batches. NUL framing preserves unusual paths.
         fields = self.git(
             "log",
             "--first-parent",
@@ -174,13 +210,12 @@ class GitHistory:
         for field in it:
             field = field.lstrip(b"\n")
             if field.startswith(b":"):
-                mode, _, blob, _, _ = field.split()
+                mode, _, raw_blob, _, _ = field.split()
                 path = next(it).decode("utf-8", "surrogateescape")
                 if mode in {b":100644", b":100755"} and path.endswith(".md"):
-                    removals.append((commit, blob.decode(), path))
+                    removals.append((commit, raw_blob.decode(), path))
             elif re.fullmatch(rb"[0-9a-f]{40,64}", field):
                 commit = field.decode()
-        deleted_blobs = self.blobs(sorted({blob for _, blob, _ in removals}))
         entries = self.git("ls-tree", "-r", "-z", head).split(b"\0")
         live_blobs = []
         for entry in entries:
@@ -193,15 +228,31 @@ class GitHistory:
                     and tree_path.endswith(b".md")
                 ):
                     live_blobs.append(tree_blob.decode())
-        live_ids = {
-            self.identity(data, key) for data in self.blobs(sorted(set(live_blobs))).values()
-        }
+        live_ids = set()
+        for _, data in self.blobs(sorted(set(live_blobs))):
+            identity = self.identity(data, key)
+            if identity in wanted:
+                live_ids.add(identity)
+        outstanding = wanted - live_ids
         removed: dict[str, list[tuple[str, str, str, bytes]]] = {}
-        for commit, blob_name, path in removals:
-            data = deleted_blobs[blob_name]
-            note_id = self.identity(data, key)
-            if note_id and note_id not in live_ids:
-                removed.setdefault(note_id, []).append((commit, blob_name, path, data))
+        by_blob: dict[str, list[tuple[str, str]]] = {}
+        for commit, blob, path in removals:
+            by_blob.setdefault(blob, []).append((commit, path))
+        if outstanding:
+            # Insertion order follows newest deletions first. Stop when each
+            # requested identity has its newest removal; retain no unrelated bodies.
+            for blob, data in self.blobs(list(by_blob)):
+                note_id = self.identity(data, key)
+                if note_id not in outstanding:
+                    continue
+                assert note_id is not None
+                latest = by_blob[blob][0][0]
+                removed[note_id] = [
+                    (commit, blob, path, data) for commit, path in by_blob[blob] if commit == latest
+                ]
+                outstanding.remove(note_id)
+                if not outstanding:
+                    break
         self.removed = removed
 
     @staticmethod
@@ -304,6 +355,7 @@ async def recover_rows(store: LocalStore) -> None:
                 store.note_history.refresh,
                 schema.role("id_key"),
                 store.control.settings().git.enabled,
+                unknown,
             )
         for note_id in unknown:
             receipt = saved[note_id]
