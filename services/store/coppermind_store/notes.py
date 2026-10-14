@@ -238,6 +238,9 @@ class LocalStore:
         from coppermind_store.note_history import GitHistory
 
         self.note_history = GitHistory(notes_root)
+        from coppermind_store.context_service import ContextService
+
+        self.context = ContextService(self)
         # The one search index rebuild this process may be running.
         self._search_rebuild: asyncio.Task[None] | None = None
 
@@ -917,7 +920,12 @@ class LocalStore:
             if problems:
                 raise ValidationFailed(problems)
 
-            data, new_body = _renamed_bytes(current_data, new_title)
+            if request.preserve_body:
+                data = current_data
+                _, new_body = fm.parse(current_data.decode("utf-8"))
+            else:
+                data, new_body = _renamed_bytes(current_data, new_title)
+            mirror_title = _title_of(new_body, path) if request.preserve_body else new_title
 
             new_stem = _stem_for(new_title, frontmatter, schema, settings)
             new_path = path.with_name(f"{new_stem}{NOTE_SUFFIX}")
@@ -952,7 +960,7 @@ class LocalStore:
                         sa.update(Note)
                         .where(Note.id == note_id)
                         .values(
-                            title=new_title,
+                            title=mirror_title,
                             path=new_relative,
                             content_hash=digest,
                             size_bytes=len(data),
@@ -968,7 +976,7 @@ class LocalStore:
                         session,
                         note_id=note_id,
                         path=new_relative,
-                        title=new_title,
+                        title=mirror_title,
                         body=new_body,
                         version=digest,
                         now=now,
@@ -994,7 +1002,9 @@ class LocalStore:
                     raise
                 raise typed from exc
 
-        return _document(note_id, new_relative, new_title, frontmatter, new_body, data, now, schema)
+        return _document(
+            note_id, new_relative, mirror_title, frontmatter, new_body, data, now, schema
+        )
 
     async def list_folders(self) -> FolderTree:
         """Walk the notes filesystem and build a tree with note counts.

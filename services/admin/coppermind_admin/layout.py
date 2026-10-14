@@ -23,6 +23,7 @@ nav a[aria-current=page] {background:#245c3b;color:white}
 .workspace {padding:2rem;max-width:100rem;width:100%;margin:0 auto}
 .breadcrumb {font-size:.8rem;color:#59655d;margin-bottom:1.5rem}
 main {background:white;border:1px solid #d3cdbd;border-radius:.8rem;padding:2rem}
+.context-content {min-width:0;overflow-wrap:anywhere}
 .public {display:grid;place-items:center;padding:1rem;min-height:100vh}
 .public main {width:min(30rem,100%);box-shadow:0 1rem 3rem #283a2a18}
 h1,h2,h3 {font-family:Georgia,serif;font-weight:500;overflow-wrap:anywhere}
@@ -88,6 +89,7 @@ LINKS = (
     ("/admin/sync", "Obsidian Sync"),
     ("/admin/search-index", "Search index"),
     ("/admin/note-history", "Note recovery"),
+    ("/admin/context", "Calendar and enrichment"),
 )
 
 

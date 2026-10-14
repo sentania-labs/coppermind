@@ -11,6 +11,8 @@ license = { text = "MIT" }
 dependencies = [
     "coppermind",
     "fastapi>=0.115",
+    "icalendar>=6.3,<8",
+    "recurring-ical-events>=3.8,<4",
     "uvicorn[standard]>=0.30",
 ]
 

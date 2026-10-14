@@ -26,6 +26,7 @@ from coppermind.settings import Wiring
 from coppermind.store_client import HttpStoreClient
 from coppermind_api import __version__
 from coppermind_api.auth import ApiKeyAuthenticator, AuthenticationUnavailable
+from coppermind_api.v1.calendars import router as calendars_router
 from coppermind_api.v1.folders import router as folders_router
 from coppermind_api.v1.ingest import router as ingest_router
 from coppermind_api.v1.notes import router as notes_router
@@ -149,6 +150,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
     app.include_router(folders_router, prefix="/v1", tags=["folders"])
     app.include_router(ingest_router)
     app.include_router(notes_router)
+    app.include_router(calendars_router)
     app.include_router(status_router)
     app.include_router(search_router)
 

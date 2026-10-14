@@ -9,6 +9,7 @@ network.
 
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import quote
 
 import httpx
@@ -99,6 +100,14 @@ class HttpStoreClient:
             timeout=timeout,
             transport=transport,
         )
+
+    async def context_action(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        response = await self._send(
+            "POST",
+            f"{INTERNAL_PREFIX}/context/{_segment(action)}",
+            json=payload,
+        )
+        return response.json()
 
     async def aclose(self) -> None:
         await self._client.aclose()

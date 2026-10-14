@@ -401,6 +401,11 @@ async def reconcile_once(
         if quiet_period_s > 0
         else None
     )
+    from coppermind.context_config import read_context_config
+
+    context_folders = [
+        source.folder for source in read_context_config(store.control.store.state_dir).sources
+    ]
     scan = await asyncio.to_thread(
         _scan,
         store.notes_root,
@@ -411,7 +416,7 @@ async def reconcile_once(
         quiet=quiet,
         unidentified=dict(remembered),
         unadoptable=_unadoptable_folders(settings),
-        excluded_folders=settings.reconcile.excluded_folders,
+        excluded_folders=[*settings.reconcile.excluded_folders, *context_folders],
         excluded_patterns=settings.reconcile.excluded_patterns,
     )
     remembered.clear()
