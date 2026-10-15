@@ -175,3 +175,47 @@ async def test_explicit_rebuild_survives_restart(store: LocalStore):
     await restarted.refresh()
     assert restarted.receipt()["state"] == "succeeded"
     assert (await restarted.snapshot())["active_generation"] != original
+
+
+@pytest.mark.parametrize("outcome", ["ready", "success", "failure"])
+async def test_request_during_refresh_is_preserved(store: LocalStore, monkeypatch, outcome):
+    import asyncio
+
+    from coppermind_store.field_index import FieldIndex
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    await create(store, "Concurrent rebuild")
+    await store.field_index.refresh()
+    entered, release = asyncio.Event(), asyncio.Event()
+    scalar = AsyncSession.scalar
+
+    async def paused_scalar(session, statement, *args, **kwargs):
+        result = await scalar(session, statement, *args, **kwargs)
+        entered.set()
+        await release.wait()
+        if outcome == "failure":
+            raise RuntimeError("simulated database failure")
+        return result
+
+    if outcome != "ready":
+        store.field_index.request_rebuild()
+    with monkeypatch.context() as patch:
+        patch.setattr(AsyncSession, "scalar", paused_scalar)
+        task = asyncio.create_task(store.field_index.refresh())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        try:
+            assert store.field_index.lock.locked()
+            assert store.field_index.request_rebuild()["rebuild_requested"]
+        finally:
+            release.set()
+            await task
+    assert store.field_index.receipt()["rebuild_requested"]
+    if outcome == "failure":
+        assert store.field_index.receipt()["state"] == "failed"
+    before = (await store.field_index.snapshot())["active_generation"]
+    # Persistence, not an in-memory flag, carries the new request to the next pass.
+    restarted = FieldIndex(store)
+    await restarted.refresh()
+    assert restarted.receipt()["state"] == "succeeded"
+    assert not restarted.receipt()["rebuild_requested"]
+    assert (await restarted.snapshot())["active_generation"] != before

@@ -82,15 +82,22 @@ class FieldIndex:
         self.store = store
         self.path = store.control.store.state_dir / "field-index-job.json"
         self.lock = asyncio.Lock()
-        self.force = False
+        self.request_path = self.path.with_name("field-index-request")
 
     def target_id(self) -> str:
         return filter_digest(definitions(self.store))
 
     def receipt(self) -> dict[str, Any]:
         if not self.path.exists():
-            return {"state": "queued", "job_id": self.target_id(), "processed": 0}
-        return json.loads(self.path.read_bytes())
+            return {
+                "state": "queued",
+                "job_id": self.target_id(),
+                "processed": 0,
+                "rebuild_requested": bool(self.pending_request()),
+            }
+        return dict(
+            json.loads(self.path.read_bytes()), rebuild_requested=bool(self.pending_request())
+        )
 
     def write(self, receipt: dict[str, Any]) -> None:
         atomic_write_text(self.path, json.dumps(receipt), mode=0o600)
@@ -147,9 +154,21 @@ class FieldIndex:
                 "current_schema_revision": self.store.control.schema_document().revision,
             }
 
+    def pending_request(self) -> str | None:
+        try:
+            return self.request_path.read_text().strip() or None
+        except FileNotFoundError:
+            return None
+
+    def acknowledge_request(self, request: str | None) -> None:
+        # No await between comparison and acknowledgment. A newer request belongs
+        # to the next pass, even if this pass failed or merely checked readiness.
+        if request is not None and self.pending_request() == request:
+            atomic_write_text(self.request_path, "", mode=0o600)
+
     def request_rebuild(self) -> dict[str, Any]:
+        atomic_write_text(self.request_path, new_id(), mode=0o600)
         if not self.lock.locked():
-            self.force = True
             self.write({"state": "queued", "job_id": self.target_id(), "processed": 0})
         return self.receipt()
 
@@ -158,12 +177,12 @@ class FieldIndex:
             keys = definitions(self.store)
             target = filter_digest(keys)
             previous = self.receipt()
+            request = self.pending_request()
             forced = (
                 force
-                or self.force
+                or request is not None
                 or (self.path.exists() and previous.get("state") in {"queued", "running"})
             )
-            self.force = False
             if (
                 not forced
                 and previous.get("job_id") == target
@@ -231,6 +250,7 @@ class FieldIndex:
                         generation.active = True
                 record.update(state="succeeded", completed_at=datetime.now(UTC).isoformat())
                 self.write(record)
+                self.acknowledge_request(request)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -242,6 +262,7 @@ class FieldIndex:
                     ),
                 )
                 self.write(record)
+                self.acknowledge_request(request)
 
     async def run(self) -> None:
         while True:

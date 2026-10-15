@@ -89,7 +89,8 @@ Until it finishes, queries involving that field return 503
 `field_index_not_ready` with a `job_id`, never misleading empty results.
 Unchanged ready fields remain queryable. Admin's **Field index** page shows
 per-field readiness, progress, failed rebuilds, and paginated paths with invalid
-values. Rebuild retries a failed job or reconstructs this derived index. The
+values. Rebuild retries a failed job or reconstructs this derived index. Requests made
+while a refresh is running are persisted for the next pass and survive restart. The
 worker checks for schema changes every ten seconds. A rebuild uses a database
 write barrier of up to 30 seconds plus a two-second lock acquisition timeout;
 metadata writes can wait, while readers retain the previous committed index.

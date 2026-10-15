@@ -11,7 +11,7 @@ class FieldStore:
     async def field_index_action(self, action, offset=0):
         self.calls.append((action, offset))
         return dict(
-            job=dict(state="succeeded", processed=4),
+            job=dict(state="succeeded", processed=4, rebuild_requested=True),
             fields=[dict(name="people", kind="list", ready=True)],
             invalid_count=1,
             invalid=[dict(path="<unsafe>.md", field="people", invalid_reason="expected list")],
@@ -25,6 +25,7 @@ def test_status_and_csrf(signed_in):
     client.app.state.store = store
     page = client.get("/admin/field-index")
     assert page.status_code == 200
+    assert "A rebuild request is awaiting completion." in page.text
     assert "Ready" in page.text and "Invalid stored values (1)" in page.text
     assert "&lt;unsafe&gt;.md" in page.text
     assert client.post("/v1/admin/field-index/rebuild").status_code == 403

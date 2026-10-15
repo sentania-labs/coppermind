@@ -59,12 +59,17 @@ def router(wiring: Wiring) -> APIRouter:
         finished = job.get("completed_at")
         when = local_time(datetime.fromisoformat(finished), _zone(request)) if finished else "never"
         error = '<p class="error">' + escape(job["error"]) + "</p>" if job.get("error") else ""
+        pending = (
+            "<p>A rebuild request is awaiting completion.</p>"
+            if job.get("rebuild_requested")
+            else ""
+        )
         next_offset = snapshot["next_offset"]
         more = f'<a href="?offset={next_offset}">More invalid values</a>' if next_offset else ""
         return page(f"""<p>Filter notes and search by declared frontmatter fields.
 New or changed fields become available after their existing values are indexed.</p>
 <p>Rebuild: {escape(job["state"])}. Notes processed: {job["processed"]}.
-Last completed: {escape(when)}.</p>{error}
+Last completed: {escape(when)}.</p>{error}{pending}
 <p>A rebuild reads the metadata mirror without changing note files. It may pause
 metadata writes for up to 30 seconds. Existing ready filters remain available.</p>
 <form method="post" action="/v1/admin/field-index/rebuild">
