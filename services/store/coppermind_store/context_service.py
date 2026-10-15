@@ -94,8 +94,15 @@ class ContextService:
             raise ValueError("connection does not exist")
         return connection
 
+    def storage_identity(self, identity: str) -> str:
+        return self.config().connection_aliases.get(identity, identity)
+
+    def connection_evidence(self, connection: ModelConnection) -> dict[str, Any]:
+        # Conversion changes the reference, not the provider configuration or evidence.
+        return dict(connection.model_dump(), id=self.storage_identity(connection.id))
+
     def key(self, identity: str) -> str:
-        return str(self.read("credentials", {}).get(identity, ""))
+        return str(self.read("credentials", {}).get(self.storage_identity(identity), ""))
 
     def schema_hash(self) -> str:
         return fingerprint(self.store.control.schema().model_dump(mode="json"))
@@ -105,8 +112,15 @@ class ContextService:
         assignment = config.assignments["enrichment"]
         values = assignment.model_dump(exclude={"paused", "enabled", "automatic_after"})
         connection = next(
-            (item.model_dump() for item in config.connections if item.id == assignment.connection),
+            (
+                self.connection_evidence(item)
+                for item in config.connections
+                if item.id == assignment.connection
+            ),
             None,
+        )
+        values["connection"] = config.connection_aliases.get(
+            assignment.connection, assignment.connection
         )
         return fingerprint({"assignment": values, "connection": connection})
 
@@ -142,6 +156,16 @@ class ContextService:
                 "jobs": len(jobs),
             },
             "config": config.model_dump(),
+            "enrichment_fields": [
+                {"name": key.name, "kind": key.kind, "description": key.description}
+                for key in self.store.control.schema().keys
+                if key.name
+                not in {
+                    self.store.control.schema().role(role)
+                    for role in ("id_key", "reviewed_key", "sources_key")
+                }
+                and key.name != "schema_version"
+            ],
             "calendar": {
                 "events": len(events),
                 "contacts": len(contacts),
@@ -161,7 +185,10 @@ class ContextService:
             "watch_status": self.watch_status,
             "worker_error": self.worker_error,
             "eligibility_errors": self.eligibility_errors,
-            "discovery": self.read("discovery", {}),
+            "discovery": {
+                c.id: self.read("discovery", {}).get(self.storage_identity(c.id), [])
+                for c in config.connections
+            },
             "tests": self.read("model_tests", {}),
         }
 
@@ -200,11 +227,18 @@ class ContextService:
         self.write("config", validated.model_dump())
 
     async def save_connection(self, payload: dict[str, Any]) -> dict[str, Any]:
-        connection = ModelConnection.model_validate(payload["connection"])
+        fields = dict(payload["connection"])
+        identity = fields.get("id")
+        fields["id"] = identity or ("conn_" + new_id().lower())
+        connection = ModelConnection.model_validate(fields)
         async with self.lock:
             config = self.config()
             self.check_revision(config, payload)
             old = next((item for item in config.connections if item.id == connection.id), None)
+            if not identity:
+                config.automatic_connection_ids.append(connection.id)
+            if identity and old is None:
+                raise ValueError("connection does not exist; reload before saving")
             if old and old.provider != connection.provider:
                 raise ValueError("create a new connection to change provider")
             credentials = self.read("credentials", {})
@@ -212,8 +246,11 @@ class ContextService:
             if supplied is not None:
                 if not isinstance(supplied, str) or len(supplied) > 4096:
                     raise ValueError("invalid API key")
-                credentials[connection.id] = supplied
+                credentials[config.connection_aliases.get(connection.id, connection.id)] = supplied
                 self.write("credentials", credentials)
+            discovery = self.read("discovery", {})
+            discovery.pop(config.connection_aliases.get(connection.id, connection.id), None)
+            self.write("discovery", discovery)
             connection.credential_version = (old.credential_version if old else 0) + 1
             for assignment in config.assignments.values():
                 if assignment.connection == connection.id:
@@ -224,20 +261,62 @@ class ContextService:
             self.save_config(config)
         return {"saved": connection.id}
 
+    async def convert_connection(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self.lock:
+            config = self.config()
+            self.check_revision(config, payload)
+            connection = next(
+                (c for c in config.connections if c.id == payload["connection"]), None
+            )
+            if connection is None:
+                raise ValueError("connection does not exist; reload before converting")
+            old = connection.id
+            if old in config.automatic_connection_ids:
+                return {"saved": old}
+            identity = "conn_" + new_id().lower()
+            config.connection_aliases[identity] = config.connection_aliases.pop(old, old)
+            config.automatic_connection_ids.append(identity)
+            connection.id = identity
+            for assignment in config.assignments.values():
+                if assignment.connection == old:
+                    assignment.connection = identity
+            # One atomic config replacement switches every reference. Credentials,
+            # discovery and historical fingerprints keep their original storage keys.
+            self.save_config(config)
+            return {"saved": identity}
+
     async def discover(self, payload: dict[str, Any]) -> dict[str, Any]:
         connection = self.connection(payload["connection"])
         models = await self.provider.models(connection, self.key(connection.id))
         async with self.lock:
+            current = next(
+                (
+                    c
+                    for c in self.config().connections
+                    if self.storage_identity(c.id) == self.storage_identity(connection.id)
+                ),
+                None,
+            )
+            if current is None or self.connection_evidence(current) != self.connection_evidence(
+                connection
+            ):
+                raise ValueError("connection changed during discovery; refresh models again")
             discovery = self.read("discovery", {})
-            discovery[connection.id] = models
+            discovery[self.storage_identity(connection.id)] = models
             self.write("discovery", discovery)
         return {"models": models}
+
+    def require_discovered(self, identity: str, model: str) -> None:
+        self.connection(identity)
+        if model not in self.read("discovery", {}).get(self.storage_identity(identity), []):
+            raise ValueError("refresh models and choose one discovered for this connection")
 
     async def test_model(self, payload: dict[str, Any]) -> dict[str, Any]:
         connection = self.connection(payload["connection"])
         assignment = FeatureAssignment(
             connection=connection.id, model=payload["model"], timeout_s=20
         )
+        self.require_discovered(connection.id, assignment.model)
         output, _ = await self.provider.suggest(
             connection,
             self.key(connection.id),
@@ -247,7 +326,9 @@ class ContextService:
         )
         if output != {"ok": True}:
             raise ValueError("model did not pass the structured-response test")
-        token = fingerprint({"connection": connection.model_dump(), "model": assignment.model})
+        token = fingerprint(
+            {"connection": self.connection_evidence(connection), "model": assignment.model}
+        )
         async with self.lock:
             tests = self.read("model_tests", {})
             tests[token] = now()
@@ -259,10 +340,12 @@ class ContextService:
         async with self.lock:
             config = self.config()
             self.check_revision(config, payload)
+            if assignment.connection and assignment.model:
+                self.require_discovered(assignment.connection, assignment.model)
             if assignment.enabled:
                 connection = self.connection(assignment.connection)
                 token = fingerprint(
-                    {"connection": connection.model_dump(), "model": assignment.model}
+                    {"connection": self.connection_evidence(connection), "model": assignment.model}
                 )
                 if token not in self.read("model_tests", {}):
                     raise ValueError("test this connection and model before enabling enrichment")
@@ -575,6 +658,7 @@ class ContextService:
             evidence = await self.evidence(job)
             assignment = self.config().assignments["enrichment"]
             connection = self.connection(assignment.connection)
+            self.require_discovered(connection.id, assignment.model)
             output, usage = await self.provider.suggest(
                 connection,
                 self.key(connection.id),

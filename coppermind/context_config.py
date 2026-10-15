@@ -102,6 +102,9 @@ class ContextConfig(ContextModel):
     revision: int = 0
     sources: list[CalendarSource] = Field(default_factory=list)
     connections: list[ModelConnection] = Field(default_factory=list)
+    # Generated connection ID -> original storage identity for migrated connections.
+    connection_aliases: dict[str, str] = Field(default_factory=dict)
+    automatic_connection_ids: list[str] = Field(default_factory=list)
     assignments: dict[str, FeatureAssignment] = Field(
         default_factory=lambda: {"enrichment": FeatureAssignment()}
     )

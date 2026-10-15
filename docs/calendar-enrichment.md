@@ -55,7 +55,17 @@ and database reconstruction. Broader people/company dossiers are not included.
 
 ## Model connections and feature assignment
 
-Create a named connection under **Connections and model**:
+Under **Connections and model**, expand **Add connection**. Coppermind generates
+its stable internal ID; only the display name is entered. Existing connections
+are collapsible cards with their provider, settings, discovery and test controls.
+For connections created with a manual ID, **Convert to automatic ID** changes
+references in one atomic configuration write. Credentials, discovered models,
+capability tests, enabled assignments and pending suggestion fingerprints remain
+valid. Compatibility mappings retain the original storage identity privately;
+do not remove them from backups. No provider calls or note edits occur during
+conversion. A stale form is rejected and must be reloaded.
+
+Supported connections:
 
 - Anthropic uses its fixed official endpoint and an API key.
 - OpenAI uses its fixed official endpoint and an API key.
@@ -63,7 +73,8 @@ Create a named connection under **Connections and model**:
   Include the API prefix, usually `/v1`, in that URL.
 
 Refresh the model list, select a model, and test it using synthetic content.
-A manually entered model ID supports servers without discovery. A compatible
+Only models returned by discovery for that connection can be selected or tested.
+Servers without working model discovery cannot be used. A compatible
 server must support Chat Completions, JSON-object response format, and bounded
 output. Discovery alone is not a capability check. Redirects are refused,
 HTTPS verification is enabled, and remote error bodies are never shown.
@@ -74,7 +85,9 @@ Editing a connection disables its assignment until it is tested and enabled
 again. Blank API key input preserves the existing key; a separate checkbox
 clears the key for an unauthenticated local server.
 
-Select allowed metadata fields from the existing schema. Optional field
+Select allowed metadata using schema-backed checkboxes. Linkage dropdowns show
+only eligible list or string fields. The model dropdown follows the selected
+connection. Advanced numeric limits are collapsed with defaults and explanations. Optional field
 mappings are separate: attendee and invitee lists contain email addresses,
 contact references contain contact IDs, and the event reference is a string
 ID. Mappings must name existing fields of the appropriate kind. System fields,

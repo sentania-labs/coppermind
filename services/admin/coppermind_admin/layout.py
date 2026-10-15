@@ -24,6 +24,10 @@ nav a[aria-current=page] {background:#245c3b;color:white}
 .breadcrumb {font-size:.8rem;color:#59655d;margin-bottom:1.5rem}
 main {background:white;border:1px solid #d3cdbd;border-radius:.8rem;padding:2rem}
 .context-content {min-width:0;overflow-wrap:anywhere}
+.connection-card {border:1px solid #d3cdbd;border-radius:.5rem;padding:1rem;margin:1rem 0}
+.connection-card summary {cursor:pointer;font-weight:650;color:#245c3b}
+.connection-card summary small {font-weight:400;color:#59655d;margin-left:.75rem}
+.field-help {font-size:.9rem;color:#59655d;margin-top:.4rem}
 .public {display:grid;place-items:center;padding:1rem;min-height:100vh}
 .public main {width:min(30rem,100%);box-shadow:0 1rem 3rem #283a2a18}
 h1,h2,h3 {font-family:Georgia,serif;font-weight:500;overflow-wrap:anywhere}
