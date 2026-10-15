@@ -84,7 +84,12 @@ No production schema keys are created automatically.
 Enablement records the existing note population. Those notes require a
 separate explicit backlog selection, up to 50 at a time. New valid unreviewed
 notes become eligible automatically. Calls run serially, with configurable
-input/output limits, timeout, and one to three attempts. Pause stops new calls;
+input/output limits, timeout, and one to three attempts. Each job records its
+attempt limit before processing. Interrupted requests consume an attempt, even
+when their outcome is unknown; restarting the worker never resets the budget.
+Unexpected provider-response errors also consume the recorded attempt. An explicit
+retry is required after exhaustion and may repeat a previously billed request.
+Pause stops new calls;
 an already-running call can finish. Disablement does not affect calendar intake
 or ordinary note work. Usage is shown only when the provider supplies numeric
 usage fields; currency budgets and billing estimates are not provided.
@@ -103,6 +108,10 @@ Review current values, proposed values, reasons, and source evidence in Admin.
 Approve, edit, or reject a proposal. Filename approval explicitly acknowledges
 that existing filename links may need manual repair; it preserves the original
 heading and every body byte. Frontmatter edits also preserve the body.
+
+Approving contact, attendee or invitee suggestions adds identities to the mapped
+list, preserving human-authored entries, their order, and earlier approvals.
+Repeated approved identities are not appended again.
 
 Apply selected suggestions individually. Each completed choice remains in the
 audit history. Changing the note date makes remaining suggestions stale and

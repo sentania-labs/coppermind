@@ -431,3 +431,124 @@ async def test_mistaken_contact_association_can_be_removed_with_audit(store):
     assert receipt["state"] == "succeeded"
     assert receipt["confirmation"] == "Remove mistaken association"
     assert (await store.get_note(note.id)).body == note.body
+
+
+@pytest.mark.parametrize("kind", ["contact", "attendee", "invitee"])
+async def test_association_approvals_preserve_human_and_prior_values(store, kind):
+    from coppermind_store.enrichment_models import Suggestions
+
+    context = await configure(store)
+    state = store.control.store.read("schema")
+    body = dict(state.body)
+    body["keys"] = [*body["keys"], {"name": "people", "kind": "list"}]
+    store.control.store.write("schema", body, if_revision=state.revision)
+    assignment = context.config().assignments["enrichment"].model_dump()
+    mapping = {
+        "contact": "contacts_field",
+        "attendee": "attendees_field",
+        "invitee": "invitees_field",
+    }
+    assignment[mapping[kind]] = "people"
+    await context.save_assignment({"revision": context.config().revision, "assignment": assignment})
+    imported = await context.upload(
+        {
+            "calendar_id": "work",
+            "filename": "updated.ics",
+            "content_base64": base64.b64encode(
+                ics(event(sequence=1) + "\r\nATTENDEE;CN=Jordan:mailto:Jordan@example.com")
+            ).decode(),
+        }
+    )
+    await context.retry_import({"id": imported["id"]})
+    note = await store.create_note(
+        CreateNote(
+            title="Planning",
+            body="Casey and Jordan attended.",
+            frontmatter={"date": "2026-10-14", "people": ["human@example.test"]},
+        )
+    )
+    job = context.load_job(await context.queue_note(note.id))
+    job.evidence = await context.evidence(job)
+    candidate = job.evidence["events"][0]
+    people = candidate["people"]
+    assert len(people) == 2
+    job.result = Suggestions.model_validate(
+        {
+            "suggestions": [
+                {
+                    "kind": kind,
+                    "reason": "Explicitly confirmed",
+                    "quote": "Casey and Jordan attended.",
+                    "event_ids": [candidate["event_id"]],
+                    "contact_ids": [person["contact_id"]],
+                }
+                for person in people
+            ]
+        }
+    )
+    job.state = "suggested"
+    context.save_job(job)
+    for index in range(2):
+        await context.approve(
+            {"id": job.id, "index": index, "confirmation": "Apply selected suggestion"}
+        )
+    final = await store.get_note(note.id)
+    expected = [
+        p["contact_id"] if kind == "contact" else p["address"].partition(":")[2] for p in people
+    ]
+    assert final.frontmatter["people"] == ["human@example.test", *expected]
+    assert final.body == note.body
+    assert final.frontmatter["reviewed"] is False
+    ledger_key = {"contact": "contacts", "attendee": "attendees", "invitee": "invitees"}[kind]
+    assert set(context.read("associations", {})[note.id][ledger_key]) == {
+        p["contact_id"] for p in people
+    }
+
+
+async def test_running_job_at_limit_never_resends_after_restart(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job = context.load_job(await context.queue_note(note.id))
+    job.state, job.attempts = "running", 2
+    context.save_job(job)
+    calls = []
+
+    async def fail_if_called(*args):
+        calls.append(args)
+        raise RuntimeError("must not send")
+
+    for _ in range(3):
+        restarted = ContextService(store)
+        restarted.provider.suggest = fail_if_called
+        await restarted.tick()
+    final = context.load_job(job.id)
+    assert final.state == "failed"
+    assert final.attempts == 2
+    assert calls == []
+    assert "interruption" in final.error
+
+
+async def test_unexpected_provider_error_consumes_bounded_attempts(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+    calls = []
+
+    async def malformed_response(*args):
+        calls.append(1)
+        raise KeyError("sensitive provider payload")
+
+    context.provider.suggest = malformed_response
+    for _ in range(4):
+        await context.tick()
+    final = context.load_job(job_id)
+    assert final.state == "failed"
+    assert final.attempts == 2
+    assert len(calls) == 2
+    assert "sensitive" not in final.error
+    await context.run_job(final)
+    assert len(calls) == 2

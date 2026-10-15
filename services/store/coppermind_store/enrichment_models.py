@@ -37,6 +37,7 @@ class EnrichmentJob(ContextModel):
         "queued", "running", "suggested", "failed", "stale", "rejected", "applying", "applied"
     ] = "queued"
     attempts: int = 0
+    attempt_limit: int | None = Field(default=None, ge=1, le=3)
     error: str = ""
     created_at: str
     result: Suggestions | None = None

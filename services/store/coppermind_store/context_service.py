@@ -411,6 +411,7 @@ class ContextService:
                         source_versions=dict(source_versions),
                         path=note.path,
                         created_at=now(),
+                        attempt_limit=assignment.attempts,
                     )
                 )
             return job_id
@@ -560,6 +561,13 @@ class ContextService:
         assignment = self.config().assignments["enrichment"]
         if not assignment.enabled or assignment.paused:
             return
+        if job.attempt_limit is None:
+            job.attempt_limit = assignment.attempts
+        if job.attempts >= job.attempt_limit:
+            job.state = "failed"
+            job.error = "Attempt limit reached; an interrupted request may already have been billed"
+            self.save_job(job)
+            return
         try:
             job.state = "running"
             job.attempts += 1
@@ -591,6 +599,9 @@ class ContextService:
                     "Suggestion could not be validated. Check the note, schema and provider; retry."
                 )
             )
+        except Exception:
+            job.state = "failed"
+            job.error = "Provider processing failed unexpectedly; the recorded attempt was consumed"
         self.save_job(job)
 
     async def retry_job(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -715,6 +726,12 @@ class ContextService:
                         changes[field] = sorted(
                             {person["address"].partition(":")[2] for person in people}
                         )
+                    existing = note.frontmatter.get(field, [])
+                    if not isinstance(existing, list):
+                        raise ValueError("mapped association field must contain a list")
+                    changes[field] = list(existing) + [
+                        value for value in dict.fromkeys(changes[field]) if value not in existing
+                    ]
             if suggestion.kind == "filename" and payload.get("accept_link_risk") is not True:
                 raise ValueError("confirm filename links may need manual correction")
             relative, path = await self.store._locate(note.id)
@@ -957,10 +974,19 @@ class ContextService:
                         note.path + ": not eligible; check metadata and associated sources"
                     )
         for job in self.jobs():
-            if job.state == "running":
-                job.state = "queued"
+            if job.attempt_limit is None:
+                job.attempt_limit = assignment.attempts
                 self.save_job(job)
-            if job.state == "failed" and job.attempts < assignment.attempts:
+            if job.state == "running":
+                if job.attempts >= job.attempt_limit:
+                    job.state = "failed"
+                    job.error = (
+                        "Attempt limit reached after interruption; request outcome is unknown"
+                    )
+                else:
+                    job.state = "queued"
+                self.save_job(job)
+            if job.state == "failed" and job.attempts < job.attempt_limit:
                 job.state = "queued"
             if job.state == "queued":
                 await self.run_job(job)
