@@ -441,6 +441,7 @@ class RenameNote(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=1, description="The note's new H1 and filename basis.")
+    preserve_body: bool = Field(default=False, description="Rename only the file; keep body bytes.")
 
     @field_validator("title", mode="before")
     @classmethod

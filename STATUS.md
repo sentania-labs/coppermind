@@ -701,3 +701,14 @@ Rollback requires a version that understands `deleted` and the recovery
 receipts. Older versions can misreport archived rows and do not expose restore.
 Preserve control state and Git history before rollout; do not downgrade the
 running store against this mirror as a recovery shortcut.
+
+## Calendar and enrichment working branch
+
+The calendar/enrichment batch adds durable ICS/ZIP intake through a configured
+Obsidian drop folder or authenticated upload, calendar revisions and contacts,
+optional provider connections with model discovery, and human-approved
+metadata/filename suggestions. Enrichment preserves note bodies and keeps
+review separate. Existing notes require an explicit backlog selection.
+See [calendar and enrichment](docs/calendar-enrichment.md) for configuration,
+limits, recovery, and deployment acceptance. This section describes unreleased
+branch work, not production availability.
