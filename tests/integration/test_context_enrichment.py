@@ -26,11 +26,10 @@ async def configure(store):
             },
         }
     )
-    await context.save_connection(
+    saved_connection = await context.save_connection(
         {
             "revision": 1,
             "connection": {
-                "id": "local",
                 "name": "Local",
                 "provider": "compatible",
                 "base_url": "http://local.example/v1",
@@ -39,6 +38,8 @@ async def configure(store):
     )
 
     def serve(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "test-model"}]})
         request_body = json.loads(request.content)
         content = '{"ok":true}'
         if "synthetic_connection_test" not in request_body["messages"][-1]["content"]:
@@ -61,12 +62,13 @@ async def configure(store):
         )
 
     context.provider = ModelProvider(httpx.MockTransport(serve))
-    await context.test_model({"connection": "local", "model": "test-model"})
+    await context.discover({"connection": saved_connection["saved"]})
+    await context.test_model({"connection": saved_connection["saved"], "model": "test-model"})
     await context.save_assignment(
         {
             "revision": 2,
             "assignment": FeatureAssignment(
-                connection="local",
+                connection=saved_connection["saved"],
                 model="test-model",
                 enabled=True,
                 fields=["account"],

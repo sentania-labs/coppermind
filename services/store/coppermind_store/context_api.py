@@ -16,6 +16,7 @@ from coppermind_store.context_service import ContextService
 ACTIONS = {
     "save-source": "save_source",
     "save-connection": "save_connection",
+    "convert-connection": "convert_connection",
     "discover": "discover",
     "test-model": "test_model",
     "save-assignment": "save_assignment",

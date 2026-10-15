@@ -39,7 +39,9 @@ def _hidden(name: str, value: str) -> str:
 
 def _check(name: str, label: str, checked: bool = False) -> str:
     selected = " checked" if checked else ""
-    return f'<label><input type="checkbox" name="{name}"{selected}> {e(label)}</label>'
+    return (
+        f'<label><input type="checkbox" name="{e(name, quote=True)}"{selected}> {e(label)}</label>'
+    )
 
 
 def _select(name: str, label: str, choices: list[tuple[str, str]], selected: str = "") -> str:
@@ -246,10 +248,19 @@ def router(wiring: Wiring) -> APIRouter:
                 *config["connections"],
                 {"id": "", "name": "", "provider": "compatible", "base_url": ""},
             ]:
-                body += (
-                    "<fieldset><legend>" + e(connection["name"] or "New connection") + "</legend>"
+                provider = {
+                    "anthropic": "Anthropic",
+                    "openai": "OpenAI",
+                    "compatible": "OpenAI-compatible",
+                }[connection["provider"]]
+                label = (
+                    e(connection["name"]) + " <small>" + provider + "</small>"
+                    if connection["id"]
+                    else "Add connection"
                 )
-                fields = _input("id", "Connection ID", connection["id"])
+                body += '<details class="connection-card"><summary>' + label + "</summary>"
+                body += "<p>Choose a name you recognize. Coppermind manages its internal ID.</p>"
+                fields = _hidden("id", connection["id"])
                 fields += _input("name", "Name", connection["name"])
                 fields += _select(
                     "provider",
@@ -272,6 +283,17 @@ def router(wiring: Wiring) -> APIRouter:
                 )
                 body += _form("save-connection", fields, "Save connection", revision=revision)
                 if connection["id"]:
+                    if connection["id"] not in config.get("automatic_connection_ids", []):
+                        body += (
+                            "<p>This connection uses a manually chosen ID. "
+                            "Conversion preserves its settings and history.</p>"
+                        )
+                        body += _form(
+                            "convert-connection",
+                            _hidden("connection", connection["id"]),
+                            "Convert to automatic ID",
+                            revision=revision,
+                        )
                     body += _form(
                         "discover",
                         _hidden("connection", connection["id"]),
@@ -282,59 +304,148 @@ def router(wiring: Wiring) -> APIRouter:
                     fields += _select(
                         "model", "Discovered model", [(item, item) for item in model_ids]
                     )
-                    fields += _input(
-                        "manual_model", "Manual model ID (if discovery is unavailable)"
-                    )
-                    body += _form("test-model", fields, "Test model with synthetic content")
-                body += "</fieldset>"
+                    if not model_ids:
+                        body += (
+                            "<p>No models discovered. Refresh the list before choosing a model.</p>"
+                        )
+                    if model_ids:
+                        body += _form("test-model", fields, "Test model with synthetic content")
+                body += "</details>"
             assignment = config["assignments"]["enrichment"]
-            fields = _select(
-                "connection",
-                "Enrichment connection",
-                [(c["id"], c["name"]) for c in config["connections"]],
-                assignment["connection"],
+            fields = "<fieldset><legend>1. Choose a model</legend>"
+            options = '<option value="">Choose a connection</option>'
+            for item in config["connections"]:
+                models = data["discovery"].get(item["id"], [])
+                selected = " selected" if item["id"] == assignment["connection"] else ""
+                options += (
+                    f'<option value="{e(item["id"], quote=True)}"{selected} '
+                    f'data-models="{e(json.dumps(models), quote=True)}">'
+                    + e(item["name"])
+                    + "</option>"
+                )
+            fields += (
+                '<label>Connection<select name="connection" id="enrichment-connection">'
+                + options
+                + "</select></label>"
             )
-            model_ids = sorted(
-                {item for values in data["discovery"].values() for item in values}
-                | {assignment["model"]}
-            )
+            model_ids = data["discovery"].get(assignment["connection"], [])
+            choices = [(item, item) for item in model_ids]
+            if assignment["model"] and assignment["model"] not in model_ids:
+                fields += (
+                    '<p class="notice">The saved model is not in discovery. Refresh or choose '
+                    "another.</p>"
+                )
             fields += _select(
-                "model",
-                "Enrichment model",
-                [(item, item) for item in model_ids],
-                assignment["model"],
+                "model", "Model", [("", "Choose a discovered model"), *choices], assignment["model"]
             )
-            fields += _input("manual_model", "Manual model ID")
-            fields += _input(
-                "fields", "Allowed schema fields (comma-separated)", ", ".join(assignment["fields"])
+            fields += (
+                "<p>Expand the connection above to refresh models and test your choice "
+                "before enabling.</p></fieldset>"
             )
-            for key, label in [
-                ("attendees_field", "Confirmed attendee field"),
-                ("invitees_field", "Invitee field"),
-                ("event_field", "Calendar event field"),
-                ("contacts_field", "Contact reference field"),
+            schema_fields = data.get("enrichment_fields", [])
+            fields += (
+                "<fieldset><legend>2. Suggested metadata</legend><p>Select fields the model "
+                "may suggest changing. You approve each change.</p>"
+            )
+            for item in schema_fields:
+                fields += _check(
+                    "field_" + item["name"],
+                    item["name"] + " (" + item["kind"] + ")",
+                    item["name"] in assignment["fields"],
+                )
+            fields += (
+                '<p><a href="/admin/fields">Manage fields and tags</a> to define additional '
+                "fields.</p></fieldset>"
+            )
+            fields += "<fieldset><legend>3. Calendar and contact links (optional)</legend>"
+            for key, label, kind, help_text in [
+                (
+                    "attendees_field",
+                    "Confirmed attendees",
+                    "list",
+                    "Email addresses supported by note or transcript evidence.",
+                ),
+                (
+                    "invitees_field",
+                    "Calendar invitees",
+                    "list",
+                    "Invited email addresses. An invitation does not prove attendance.",
+                ),
+                (
+                    "event_field",
+                    "Calendar event reference",
+                    "string",
+                    "The identifier of the matched calendar event.",
+                ),
+                (
+                    "contacts_field",
+                    "Contact references",
+                    "list",
+                    "Identifiers linking the note to known contact records.",
+                ),
             ]:
-                fields += _input(key, label + " (optional, must exist in Fields)", assignment[key])
-            for key, label in [
-                ("timeout_s", "Request timeout (seconds)"),
-                ("max_input_chars", "Maximum input characters"),
-                ("max_output_tokens", "Maximum output tokens"),
-                ("attempts", "Maximum attempts"),
+                choices = [
+                    (item["name"], item["name"]) for item in schema_fields if item["kind"] == kind
+                ]
+                if assignment[key] and assignment[key] not in {value for value, _ in choices}:
+                    choices.append(
+                        (assignment[key], assignment[key] + " (no longer eligible; choose another)")
+                    )
+                fields += _select(
+                    key, label, [("", "Do not write this linkage"), *choices], assignment[key]
+                )
+                fields += '<p class="field-help">' + help_text + "</p>"
+            fields += (
+                '</fieldset><details class="connection-card"><summary>Advanced limits</summary>'
+            )
+            for key, label, help_text in [
+                (
+                    "timeout_s",
+                    "Response timeout (seconds)",
+                    "Default 45. How long to wait for each model call.",
+                ),
+                (
+                    "max_input_chars",
+                    "Maximum context size (characters)",
+                    "Default 60,000. Oversized context fails before sending; no silent truncation.",
+                ),
+                (
+                    "max_output_tokens",
+                    "Maximum response length (tokens)",
+                    "Default 2,048. Limits how much the model can return.",
+                ),
+                (
+                    "attempts",
+                    "Total attempts per job",
+                    "Default 2, including the first call. Retrying may incur another charge.",
+                ),
             ]:
                 fields += _input(key, label, str(assignment[key]), kind="number")
+                fields += '<p class="field-help">' + help_text + "</p>"
+            fields += "</details><fieldset><legend>4. Automatic processing</legend>"
             fields += _check(
                 "enabled", "Enable enrichment for new unreviewed notes", assignment["enabled"]
             )
             fields += _check("paused", "Pause model calls", assignment["paused"])
+            fields += "</fieldset>"
             body += (
-                '<h2>Enrichment assignment</h2><p class="notice">When enabled, '
+                '<h2>Enrichment setup</h2><p class="notice">When enabled, '
                 "selected note text, associated transcripts and nearby calendar/contact records "
                 "are sent to this provider. Existing notes require an explicit backlog selection. "
                 "Calls run one at a time. Keys stay outside the vault and Git.</p>"
+                '<p><a href="/admin/context?tab=review">Select existing notes for enrichment</a>. '
+                "Suggestions require your approval; note bodies stay unchanged.</p>"
             )
-            body += _form(
-                "save-assignment", fields, "Save enrichment assignment", revision=revision
-            )
+            body += _form("save-assignment", fields, "Save enrichment settings", revision=revision)
+            body += """<script>
+const picker = document.getElementById('enrichment-connection');
+picker.addEventListener('change', () => {
+  const form = picker.closest('form');
+  const models = JSON.parse(picker.selectedOptions[0].dataset.models || '[]');
+  form.elements.model.replaceChildren(new Option('Choose a discovered model', ''));
+  for (const model of models) form.elements.model.add(new Option(model, model));
+});
+</script>"""
         else:
             body = (
                 "<p>Suggestions never edit a note automatically. Applying changes "
@@ -533,7 +644,7 @@ def router(wiring: Wiring) -> APIRouter:
                 if form.get("api_key") or "clear_key" in form:
                     payload["api_key"] = "" if "clear_key" in form else form["api_key"]
             elif action == "test-model":
-                payload["model"] = form.get("manual_model") or form.get("model", "")
+                payload["model"] = form.get("model", "")
             elif action == "save-assignment":
                 assignment = FeatureAssignment().model_dump()
                 for key in (
@@ -544,9 +655,9 @@ def router(wiring: Wiring) -> APIRouter:
                     "contacts_field",
                 ):
                     assignment[key] = form.get(key, "")
-                assignment["model"] = form.get("manual_model") or form.get("model", "")
+                assignment["model"] = form.get("model", "")
                 assignment["fields"] = [
-                    value.strip() for value in form.get("fields", "").split(",") if value.strip()
+                    key.removeprefix("field_") for key in form if key.startswith("field_")
                 ]
                 for key in ("timeout_s", "max_input_chars", "max_output_tokens", "attempts"):
                     assignment[key] = int(form[key])
@@ -579,6 +690,7 @@ def router(wiring: Wiring) -> APIRouter:
             allowed = {
                 "save-source",
                 "save-connection",
+                "convert-connection",
                 "discover",
                 "test-model",
                 "save-assignment",
@@ -599,7 +711,14 @@ def router(wiring: Wiring) -> APIRouter:
             return error(exc)
         tab = (
             "models"
-            if action in {"save-connection", "discover", "test-model", "save-assignment"}
+            if action
+            in {
+                "save-connection",
+                "convert-connection",
+                "discover",
+                "test-model",
+                "save-assignment",
+            }
             else "review"
             if action in {"enqueue", "retry-job", "reject", "approve", "resume-approval"}
             else "calendar"
