@@ -25,12 +25,14 @@ from coppermind.store_protocol import (
     MoveNote,
     NoteDocument,
     NoteQuery,
+    NoteRecovery,
     NoteSourceInfo,
     NoteSummary,
     Page,
     PatchFrontmatter,
     RenameNote,
     ReplaceNote,
+    RestoreNote,
     StoreError,
     etag_from_if_match,
 )
@@ -200,3 +202,28 @@ async def list_folders(
 ) -> FolderTree:
     """Return the folder tree with note counts."""
     return await client.list_folders()
+
+
+@router.get("/{note_id}/recovery", response_model=NoteRecovery)
+async def preview_note_restore(
+    note_id: str,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:read")),
+) -> NoteRecovery | JSONResponse:
+    try:
+        return await client.preview_note_restore(note_id)
+    except StoreError as error:
+        return failure(error)
+
+
+@router.post("/{note_id}/restore", response_model=NoteRecovery)
+async def restore_note(
+    note_id: str,
+    payload: RestoreNote,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:read", "notes:write")),
+) -> NoteRecovery | JSONResponse:
+    try:
+        return await client.restore_note(note_id, payload)
+    except StoreError as error:
+        return failure(error)

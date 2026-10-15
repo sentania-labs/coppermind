@@ -12,7 +12,7 @@ def reviewed_note():
         Note.reviewed.is_(True),
         Note.filed.is_(True),
         Note.source_ids == Note.filed_source_ids,
-        Note.state != "missing",
+        Note.state.not_in(("missing", "deleted")),
         Note.path.op("~")(MONTH_PATH),
         sa.func.starts_with(Note.path, sa.func.to_char(Note.date, "YYYY-MM") + "/"),
     )

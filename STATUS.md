@@ -593,8 +593,8 @@ in the tree, so do not read the absence as a decision to leave it out.
   files rather than mirroring one wrongly. The correction belongs in `split`
   and changes every reader of it, `parse`, `patch` and the whole document
   replace, which is why it is its own piece of work.
-- **History through the API.** Nothing reads Git history or restores a note
-  from it yet; `docker compose exec git git -C /data/notes log` is the way in.
+- **General history browsing.** Arbitrary revisions still require Git access.
+  Deleted-note recovery is available through Admin and the API as described below.
 - **Remaining Admin pages.** Schema, filing rules, jobs, source problems and
   real overview counters are not built. The one job with a button is the
   search index rebuild, on its own Search index page; a general jobs page with
@@ -645,3 +645,59 @@ in the tree, so do not read the absence as a decision to leave it out.
 - The store reads `settings.yaml` and `schema.yaml` on every call rather than
   caching them. Correct, and cheap at this size; it becomes a cache with an
   invalidation event when `settings.changed` exists.
+
+
+## Note deletion and recovery (working branch, not yet released)
+
+A complete reconciliation scan first follows IDs across paths. An absent note
+stays `missing` until Git contains a committed removal with the same identity,
+path, and exact last-observed contents, and that ID is absent from the current
+Git tree. It then becomes `deleted`. There is no extra grace period. An absent
+or disabled Git repository cannot establish a new deletion. Already retained
+deletion evidence survives a Git outage. Either absent state leaves active
+search, review counts, filing, and path ownership; the listing API can filter
+both explicitly. A returning identity recovers automatically at its observed
+path, subject to the existing publication rules.
+
+Admin's Note recovery page lists missing/deleted notes and reports Git helper
+health, pending files, and last commit in local time. Deleted notes have an
+escaped content preview and an explicit restore confirmation. Restore creates
+the original path exclusively, preserves the ID and bytes, and refuses an
+occupied destination or a returned identity. It warns that the restored file
+will sync to devices. The misleading sidebar tagline has been removed.
+
+`GET /v1/notes/{id}/recovery` requires `notes:read` and returns the saved text,
+path, removal commit, and preview token. `POST /v1/notes/{id}/restore` requires
+`notes:read` and `notes:write`, with that token and the exact confirmation
+`Restore <note ID>`. A stale preview is refused. Confirmation is retained
+before creating the file. After an interrupted request, reconcile and inspect
+the note before retrying; an already returned note is never overwritten.
+
+Immutable, mode-0600 receipts under `/data/state/note-recovery/` retain the
+Git blob identity, removal commit, exact recovery bytes, path, and note ID.
+They are loaded before filesystem reconciliation after mirror loss, so a
+returning file retains its old identity and source associations. They remain
+outside the notes repository and sync tree. Ordinary Git garbage collection
+cannot remove this independent recovery copy. No source bundle is removed.
+
+Git history alone cannot prove intent. Here `deleted` means absent with a
+recoverable committed removal. If the last observed edit never reached Git,
+the note stays missing rather than pretending that an older version is exact.
+Git lookups use bounded object batches and cache only requested absent
+identities per HEAD and schema identity key, not one history process per note.
+Automatic recovery refuses Markdown blobs above 32 MiB rather than exhaust
+the store; these remain available for manual recovery from Git. Traversal errors fail the scan instead of
+silently turning inaccessible subtrees into deletions.
+
+Local verification covers actual Git, PostgreSQL, reconstruction, return,
+preview/restore, collisions, and Admin authentication/CSRF. A containerized
+Chrome walkthrough confirmed the preview, original-byte restore, and return
+to eligible search; a 390-pixel viewport had no horizontal overflow. Production phone
+acceptance and the isolated full backup restore drill remain deployment gates;
+this branch does not claim they have happened.
+
+
+Rollback requires a version that understands `deleted` and the recovery
+receipts. Older versions can misreport archived rows and do not expose restore.
+Preserve control state and Git history before rollout; do not downgrade the
+running store against this mirror as a recovery shortcut.

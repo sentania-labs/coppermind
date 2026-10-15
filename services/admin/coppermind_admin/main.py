@@ -33,7 +33,7 @@ from coppermind_admin.auth import (
     InvalidClaimCode,
     SignedSessions,
 )
-from coppermind_admin.pages import fields, problems, search_index, sync
+from coppermind_admin.pages import fields, note_history, problems, search_index, sync
 
 SERVICE = "coppermind-admin"
 COOKIE = "coppermind_admin_session"
@@ -216,6 +216,7 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
     app.include_router(sync.router(settings))
     app.include_router(problems.router(settings))
     app.include_router(search_index.router(settings))
+    app.include_router(note_history.router(settings))
 
     @app.middleware("http")
     async def protect_forms(request: Request, call_next: RequestResponseEndpoint) -> Response:

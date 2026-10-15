@@ -492,7 +492,7 @@ class NoteDocument(BaseModel):
     sources: list[str] = Field(default_factory=list)
 
 
-NoteState = Literal["ok", "unparsed", "missing"]
+NoteState = Literal["ok", "unparsed", "missing", "deleted"]
 """What the latest filesystem scan observed for a known identity."""
 
 
@@ -531,7 +531,8 @@ class NoteSummary(BaseModel):
     `updated_at`, leaving only the schema fields stale, while a file it could
     not open at all refreshes `path` alone and leaves `content_hash` naming the
     last bytes anyone read. `missing` means the scan did not find the file, and
-    every field is the last known one.
+    every field is the last known one. `deleted` adds verified Git removal
+    evidence and a retained recovery copy; a returning identity recovers automatically.
     """
 
     id: NoteId
@@ -717,6 +718,12 @@ class Store(Protocol):
     async def get_status(self) -> StatusResponse: ...
     async def get_problems(self) -> list[ProblemInfo]: ...
 
+    async def get_note_history_status(self) -> HistoryStatus: ...
+
+    async def preview_note_restore(self, note_id: str) -> NoteRecovery: ...
+
+    async def restore_note(self, note_id: str, request: RestoreNote) -> NoteRecovery: ...
+
     async def get_api_keys(self) -> ApiKeySet: ...
 
     async def move_note(
@@ -769,3 +776,28 @@ class ProblemInfo(BaseModel):
     reason: str
     note_id: str | None = None
     source_id: str | None = None
+
+
+class HistoryStatus(BaseModel):
+    helper_status: str = "unknown"
+    last_commit_at: datetime | None = None
+    dirty_files: int = 0
+    available: bool
+    reason: str
+    head: str | None = None
+
+
+class NoteRecovery(BaseModel):
+    note_id: str
+    path: str
+    content: str
+    content_hash: str
+    removal_commit: str
+    token: str
+    recorded_at: datetime
+
+
+class RestoreNote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str = Field(pattern=r"^[0-9a-f]{64}$")
+    confirmation: str = Field(max_length=100)

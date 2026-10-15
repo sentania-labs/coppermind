@@ -12,6 +12,21 @@ The merged list below was read directly from `git log` on `main`, not copied
 from a plan, so it reflects what actually landed rather than what was
 scheduled.
 
+## Current recovery batch (working branch)
+
+Reversible Git-backed note deletion, automatic identity recovery, Admin/API
+restore previews, exclusive restore, durable recovery copies, and Git health
+visibility are being delivered together. No grace-period setting, source
+purge, delete-to-trash action, or general history browser is included.
+The Admin sidebar tagline is removed in the same batch.
+
+Next acceptance remains a deployed phone delete/return/restore round trip,
+followed by a full backup restored into a separate installation before corpus
+import. Intake expansion, schema-key renaming, general job controls, custom
+field filters, and packaging remain separate batches. The monthly filing
+implementation is in `coppermind_store/filing.py`; the old configurable filing
+rules remain a historical plan, not the current monthly organization model.
+
 ## Merged
 
 The initial repository skeleton (PR #1, 2026-09-09) is the first row below;

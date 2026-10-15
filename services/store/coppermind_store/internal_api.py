@@ -17,11 +17,13 @@ from coppermind.errors import to_http
 from coppermind.store_protocol import (
     CreateNote,
     FolderTree,
+    HistoryStatus,
     IngestRequest,
     IngestResult,
     MoveNote,
     NoteDocument,
     NoteQuery,
+    NoteRecovery,
     NoteSourceInfo,
     NoteSummary,
     Page,
@@ -31,6 +33,7 @@ from coppermind.store_protocol import (
     RebuildSearchIndexResult,
     RenameNote,
     ReplaceNote,
+    RestoreNote,
     SchemaDocument,
     SearchHit,
     SearchIndexStatus,
@@ -298,3 +301,26 @@ async def rebuild_search_index(request: Request) -> Response:
     except StoreError as error:
         return _failure(error)
     return JSONResponse(status_code=202, content=result.model_dump(mode="json"))
+
+
+@router.get("/note-history", response_model=HistoryStatus)
+async def note_history_status(request: Request) -> HistoryStatus:
+    return await _store(request).get_note_history_status()
+
+
+@router.get("/notes/{note_id}/recovery", response_model=NoteRecovery)
+async def preview_note_restore(note_id: str, request: Request) -> NoteRecovery | JSONResponse:
+    try:
+        return await _store(request).preview_note_restore(note_id)
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.post("/notes/{note_id}/restore", response_model=NoteRecovery)
+async def restore_note(
+    note_id: str, payload: RestoreNote, request: Request
+) -> NoteRecovery | JSONResponse:
+    try:
+        return await _store(request).restore_note(note_id, payload)
+    except StoreError as error:
+        return _failure(error)

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import os
 import re
 import stat as stat_module
 from collections.abc import Iterator
@@ -110,6 +111,7 @@ _UNIDENTIFIED_LIMIT = 10_000
 _ADOPTIONS_PER_PASS = 50
 
 MISSING_REASON = "not observed during reconciliation"
+DELETED_REASON = "removal recorded in Git; recovery copy retained"
 UNPARSED_REASON = "frontmatter could not be parsed"
 UNREADABLE_REASON = "file could not be read"
 
@@ -361,6 +363,7 @@ async def reconcile_once(
     full: bool = False,
     quiet_period_s: int = 0,
     unidentified: UnidentifiedStats | None = None,
+    locked: bool = False,
 ) -> dict[str, int]:
     """Make known mirror rows describe files carrying the same identity.
 
@@ -371,6 +374,18 @@ async def reconcile_once(
     `unidentified` carries what earlier passes learned about files holding no
     identity this store knows, and is replaced with what this pass learned.
     """
+    if not locked:
+        async with store._reconcile_lock:
+            return await reconcile_once(
+                store,
+                full=full,
+                quiet_period_s=quiet_period_s,
+                unidentified=unidentified,
+                locked=True,
+            )
+    from coppermind_store import note_history
+
+    await note_history.recover_rows(store)
     await reconcile_rejections(store.control.store.state_dir, store.session_factory)
     remembered = {} if unidentified is None else unidentified
     scan_started = datetime.now(tz=UTC)
@@ -462,6 +477,10 @@ async def reconcile_once(
     # cannot make any known note look absent, and must not stop one being
     # reported gone or hold the daily rehash due for as long as the fault lasts.
     absent = set() if scan.deferred else {note_id for note_id in by_id if note_id not in scan.seen}
+    if absent:
+        await asyncio.to_thread(
+            store.note_history.refresh, schema.role("id_key"), settings.git.enabled, absent
+        )
     pending = sorted(set(observations) | absent)
 
     counts = {
@@ -473,6 +492,7 @@ async def reconcile_once(
         "changed": 0,
         "moved": 0,
         "missing": 0,
+        "deleted": 0,
         "unparsed": 0,
         "deferred": scan.deferred,
         "excluded": len(scan.exclusions),
@@ -501,6 +521,44 @@ async def reconcile_once(
                 for row in rows:
                     observed = observations.get(row.id)
                     values = _values_for(row, observed, schema)
+                    receipt = None
+                    if observed is None:
+                        receipt = store.note_history.evidence(row.id, row.path, row.content_hash)
+                        if receipt is not None:
+                            values = {
+                                "state": "deleted",
+                                "state_reason": DELETED_REASON,
+                            }
+                            retained = note_history.directory(store) / (
+                                f"{row.id}-{receipt.removal_commit}.json"
+                            )
+                            if row.state == "deleted" and retained.is_file():
+                                values = {}
+                        elif row.state == "deleted":
+                            candidates = store.note_history.removed.get(row.id, [])
+                            if candidates:
+                                # A return and a newer deletion can both occur
+                                # between scans. Never offer the older contents.
+                                _, _, latest_path, data = candidates[0]
+                                receipt = store.note_history.evidence(
+                                    row.id, latest_path, content_hash(data)
+                                )
+                                frontmatter, body = fm.parse(data.decode())
+                                values = {
+                                    "path": latest_path,
+                                    "content_hash": content_hash(data),
+                                    "size_bytes": len(data),
+                                    "title": _title_of(body, Path(latest_path)),
+                                    "frontmatter": _jsonable(frontmatter),
+                                    **_mirror_columns(frontmatter, schema),
+                                    "state": "deleted",
+                                    "state_reason": DELETED_REASON,
+                                }
+                            elif not store.note_history.status.available:
+                                # A Git outage cannot erase retained evidence.
+                                values = {}
+                            # Readable Git with no current removal leaves the
+                            # note missing, awaiting the next committed snapshot.
                     if not values:
                         continue
                     # The update writes through to this row, so what it used to
@@ -515,6 +573,10 @@ async def reconcile_once(
                     )
                     if result.scalar_one_or_none() is None:
                         continue
+                    if receipt is not None:
+                        await asyncio.to_thread(note_history.save, store, receipt)
+                    elif observed is not None:
+                        await asyncio.to_thread(note_history.remember_return, store, row, values)
                     if (
                         "reviewed" in values
                         and observed is not None
@@ -525,7 +587,7 @@ async def reconcile_once(
                         record_review(store, row.id, observed.frontmatter)
                     await _follow_in_index(session, row.id, observed, now)
                     if observed is None:
-                        counts["missing"] += 1
+                        counts["deleted" if receipt is not None else "missing"] += 1
                     elif observed.state in {"unparsed", "unreadable"}:
                         counts["unparsed"] += 1
                     elif previous_path != observed.path:
@@ -605,7 +667,7 @@ def _by_path(by_id: dict[str, MirrorEntry]) -> dict[str, MirrorEntry]:
     occupied: dict[str, MirrorEntry] = {}
     shared: set[str] = set()
     for entry in by_id.values():
-        if entry.state == "missing":
+        if entry.state in {"missing", "deleted"}:
             continue
         if entry.path in occupied:
             shared.add(entry.path)
@@ -651,7 +713,7 @@ def _scan(
     deferred = 0
     exclusions: dict[str, str] = {}
     try:
-        for path in root.rglob("*"):
+        for path in _walk(root):
             relative_path = path.relative_to(root)
             if any(part in _IGNORED_DIRECTORIES for part in relative_path.parts):
                 continue
@@ -676,11 +738,15 @@ def _scan(
                 # A symlink out of the notes filesystem. Something is at the
                 # path; the store just refuses to follow it.
                 _record(observed, seen, _unreadable(entry, relative))
+                if entry is None:
+                    deferred += 1
                 continue
             except (OSError, RuntimeError):
                 # A symlink loop reaches here as pathlib's RuntimeError rather
                 # than as the ELOOP it wraps.
                 _record(observed, seen, _unreadable(entry, relative))
+                if entry is None:
+                    deferred += 1
                 continue
             if stat_module.S_ISDIR(stat_result.st_mode) and not markdown and entry is None:
                 continue
@@ -709,8 +775,8 @@ def _scan(
                 observation = _unreadable(entry, relative)
                 _record(observed, seen, observation)
                 if observation is None:
+                    deferred += 1
                     unidentified_unparsed += 1
-                    _remember(still_unidentified, relative, stat_seen)
                     log.warning(
                         "device-created note left unchanged",
                         path=relative,
@@ -739,11 +805,9 @@ def _scan(
                 observation = _unreadable(entry, relative)
                 _record(observed, seen, observation)
                 if observation is None:
-                    if settling:
-                        deferred += 1
-                    else:
+                    deferred += 1
+                    if not settling:
                         unidentified_unparsed += 1
-                        _remember(still_unidentified, relative, stat_seen)
                         log.warning(
                             "device-created note left unchanged",
                             path=relative,
@@ -1052,3 +1116,15 @@ def _values_for(
             "state_reason": None,
         }
     return {key: value for key, value in values.items() if getattr(row, key) != value}
+
+
+def _walk(root: Path) -> Iterator[Path]:
+    """Never interpret a silently skipped subtree as absence."""
+
+    def failed(error: OSError) -> None:
+        raise error
+
+    for parent, directories, files in os.walk(root, onerror=failed, followlinks=False):
+        directories[:] = [name for name in directories if name not in _IGNORED_DIRECTORIES]
+        for name in directories + files:
+            yield Path(parent) / name
