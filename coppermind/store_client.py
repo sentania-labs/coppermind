@@ -20,6 +20,8 @@ from coppermind.store_protocol import (
     ArtifactNotFound,
     CreateNote,
     ETag,
+    FieldIndexNotReady,
+    FilterCursorConflict,
     FolderTree,
     HistoryStatus,
     IncompleteRevision,
@@ -106,6 +108,12 @@ class HttpStoreClient:
             "POST",
             f"{INTERNAL_PREFIX}/context/{_segment(action)}",
             json=payload,
+        )
+        return response.json()
+
+    async def field_index_action(self, action: str, offset: int = 0) -> dict[str, Any]:
+        response = await self._send(
+            "POST", f"{INTERNAL_PREFIX}/field-index/{_segment(action)}", params={"offset": offset}
         )
         return response.json()
 
@@ -308,6 +316,10 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         return SourceNotFound(payload.get("source_id", ""))
     if response.status_code == 404:
         return NotFound(payload.get("note_id", message))
+    if code == "field_index_not_ready":
+        return FieldIndexNotReady(payload.get("job_id", ""))
+    if code == "filter_cursor_conflict":
+        return FilterCursorConflict()
     if code == "path_collision":
         return PathCollision(payload.get("existing_path", message))
     if code == "source_claim_missing":

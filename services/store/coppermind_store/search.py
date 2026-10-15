@@ -33,6 +33,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from coppermind.db.models import Note, SearchDocument
 from coppermind.store_protocol import (
+    FilterCursorConflict,
     MetadataUnavailable,
     NoteState,
     Page,
@@ -64,6 +65,7 @@ class SearchCursor:
     rank: float
     kind: str
     ref_id: str
+    filtered: bool = False
 
 
 def query_digest(q: str) -> str:
@@ -74,7 +76,7 @@ def query_digest(q: str) -> str:
 def encode_cursor(cursor: SearchCursor) -> str:
     payload = json.dumps(
         {
-            "v": _CURSOR_VERSION,
+            "v": 2 if cursor.filtered else _CURSOR_VERSION,
             "q": cursor.query_digest,
             "r": cursor.rank,
             "k": cursor.kind,
@@ -90,7 +92,7 @@ def decode_cursor(value: str, q: str) -> SearchCursor:
     try:
         padded = value + "=" * (-len(value) % 4)
         payload = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
-        if not isinstance(payload, dict) or payload.get("v") != _CURSOR_VERSION:
+        if not isinstance(payload, dict) or payload.get("v") not in (_CURSOR_VERSION, 2):
             raise ValueError
         digest, rank, kind, ref_id = (payload.get(key) for key in ("q", "r", "k", "id"))
         if (
@@ -105,6 +107,8 @@ def decode_cursor(value: str, q: str) -> SearchCursor:
     except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
         raise ValidationFailed(["cursor: invalid or expired"]) from exc
     if digest != query_digest(q):
+        if payload["v"] == 2:
+            raise FilterCursorConflict()
         raise ValidationFailed(["cursor: it pages a different q"])
     return SearchCursor(query_digest=digest, rank=float(rank), kind=kind, ref_id=ref_id)
 
@@ -182,7 +186,9 @@ def filter_conditions(query: SearchQuery) -> list[sa.ColumnElement[bool]]:
     return conditions
 
 
-def build_search(query: SearchQuery, after: SearchCursor | None = None) -> sa.Select[Any]:
+def build_search(
+    query: SearchQuery, after: SearchCursor | None = None, extra: list[Any] | None = None
+) -> sa.Select[Any]:
     """One page of hits plus one, so the caller knows whether another follows.
 
     The excerpt is computed in the outer query, over the page only, because
@@ -215,6 +221,7 @@ def build_search(query: SearchQuery, after: SearchCursor | None = None) -> sa.Se
         .where(sa.or_(SearchDocument.kind == "source", Note.id.is_not(None)))
         .where(state.not_in(("missing", "deleted")))
         .where(*filter_conditions(query))
+        .where(*(extra or []))
     )
     if after is not None:
         matches = matches.where(
@@ -256,7 +263,7 @@ def tidy_excerpt(text: str | None) -> str:
     return " ".join((text or "").split())
 
 
-def page_of(rows: list[Any], query: SearchQuery) -> Page[SearchHit]:
+def page_of(rows: list[Any], query: SearchQuery, context: str | None = None) -> Page[SearchHit]:
     """Turn `limit + 1` rows into a page and the cursor for the next one."""
     hits = [
         SearchHit(
@@ -276,21 +283,42 @@ def page_of(rows: list[Any], query: SearchQuery) -> Page[SearchHit]:
         last = hits[-1]
         next_cursor = encode_cursor(
             SearchCursor(
-                query_digest=query_digest(query.q),
+                query_digest=query_digest(context if context is not None else query.q),
                 rank=last.rank,
                 kind=last.kind,
                 ref_id=last.id,
+                filtered=context is not None,
             )
         )
     return Page[SearchHit](items=hits, next_cursor=next_cursor)
 
 
 async def search(store: LocalStore, query: SearchQuery) -> Page[SearchHit]:
-    after = decode_cursor(query.cursor, query.q) if query.cursor else None
-    statement = build_search(query, after)
+    from coppermind_store.field_index import conditions, query_context
+
+    revision = store.control.schema_document().revision
+    context = query_context(query, revision) if query.filter else None
     try:
-        async with store.session_factory() as session:
+        after = (
+            decode_cursor(query.cursor, context if context is not None else query.q)
+            if query.cursor
+            else None
+        )
+    except ValidationFailed as exc:
+        if query.filter and "different q" in str(exc):
+            raise FilterCursorConflict() from exc
+        raise
+    try:
+        async with store.session_factory() as session, session.begin():
+            if query.filter:
+                await session.execute(
+                    sa.text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                )
+            predicates = await conditions(store, query, session)
+            statement = build_search(query, after, predicates)
             rows = list((await session.execute(statement)).all())
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
-    return page_of(rows, query)
+    if query.filter and store.control.schema_document().revision != revision:
+        raise FilterCursorConflict()
+    return page_of(rows, query, context)

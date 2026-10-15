@@ -56,6 +56,7 @@ from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
     CreateNote,
     ETag,
+    FilterCursorConflict,
     FolderItem,
     FolderTree,
     HistoryStatus,
@@ -241,6 +242,9 @@ class LocalStore:
         from coppermind_store.context_service import ContextService
 
         self.context = ContextService(self)
+        from coppermind_store.field_index import FieldIndex
+
+        self.field_index = FieldIndex(self)
         # The one search index rebuild this process may be running.
         self._search_rebuild: asyncio.Task[None] | None = None
 
@@ -502,28 +506,42 @@ class LocalStore:
 
         Rows arrive in keyset-resumed batches rather than as the whole mirror.
         """
-        after = _decode_note_cursor(query.cursor) if query.cursor else None
+        from coppermind_store.field_index import conditions, query_context
+
+        revision = self.control.schema_document().revision
+        context = query_context(query, revision) if query.filter else None
+        after = _decode_note_cursor(query.cursor, context) if query.cursor else None
         wanted = query.limit + 1
         batch_size = max(wanted, _SCAN_BATCH)
         matched: list[NoteSummary] = []
-        while len(matched) < wanted:
-            statement = sa.select(Note).order_by(Note.id).limit(batch_size)
-            if after is not None:
-                statement = statement.where(Note.id > after)
-            try:
-                async with self.session_factory() as session:
+        try:
+            async with self.session_factory() as session, session.begin():
+                if query.filter:
+                    await session.execute(
+                        sa.text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                    )
+                predicates = await conditions(self, query, session)
+                while len(matched) < wanted:
+                    statement = (
+                        sa.select(Note).where(*predicates).order_by(Note.id).limit(batch_size)
+                    )
+                    if after is not None:
+                        statement = statement.where(Note.id > after)
                     rows = list((await session.scalars(statement)).all())
-            except (SQLAlchemyError, OSError) as exc:
-                raise MetadataUnavailable(str(exc)) from exc
-            if not rows:
-                break
-            after = rows[-1].id
-            matched.extend(_scan_rows(rows, query, wanted - len(matched)))
-            if len(rows) < batch_size:
-                break
-
+                    if not rows:
+                        break
+                    after = rows[-1].id
+                    matched.extend(_scan_rows(rows, query, wanted - len(matched)))
+                    if len(rows) < batch_size:
+                        break
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
+        if query.filter and self.control.schema_document().revision != revision:
+            raise FilterCursorConflict()
         page = matched[: query.limit]
-        next_cursor = _encode_note_cursor(page[-1].id) if len(matched) > query.limit else None
+        next_cursor = (
+            _encode_note_cursor(page[-1].id, context) if len(matched) > query.limit else None
+        )
         return Page[NoteSummary](items=page, next_cursor=next_cursor)
 
     async def list_tags(self) -> list[TagCount]:
@@ -1444,21 +1462,25 @@ def _matches_query(summary: NoteSummary, query: NoteQuery) -> bool:
     )
 
 
-def _encode_note_cursor(note_id: str) -> str:
-    payload = json.dumps({"v": 2, "id": note_id}, separators=(",", ":"))
+def _encode_note_cursor(note_id: str, context: str | None = None) -> str:
+    payload = json.dumps(
+        {"v": 3 if context else 2, "id": note_id, "context": context}, separators=(",", ":")
+    )
     return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
 
 
-def _decode_note_cursor(cursor: str) -> str:
+def _decode_note_cursor(cursor: str, context: str | None = None) -> str:
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         payload = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
         if (
             not isinstance(payload, dict)
-            or payload.get("v") != 2
+            or payload.get("v") not in (2, 3)
             or not isinstance(payload.get("id"), str)
         ):
             raise ValueError
+        if payload.get("context") != context:
+            raise FilterCursorConflict()
         return payload["id"]
     except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
         raise ValidationFailed(["cursor: invalid or expired"]) from exc

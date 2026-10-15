@@ -52,6 +52,17 @@ class StoreError(Exception):
     """Base class for the typed errors the contract defines."""
 
 
+class FieldIndexNotReady(StoreError):
+    def __init__(self, job_id: str) -> None:
+        super().__init__("declared-field index is not ready; inspect or retry its rebuild in Admin")
+        self.job_id = job_id
+
+
+class FilterCursorConflict(StoreError):
+    def __init__(self) -> None:
+        super().__init__("filters or schema changed; restart pagination")
+
+
 class NotFound(StoreError):
     def __init__(self, note_id: str) -> None:
         super().__init__(f"no note with id {note_id}")
@@ -507,6 +518,17 @@ class NoteQuery(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    filter: str | None = Field(default=None, min_length=2, max_length=8192)
+
+    @field_validator("filter")
+    @classmethod
+    def valid_filter_json(cls, value: str | None) -> str | None:
+        if value is not None:
+            from coppermind.field_filters import parse_filter
+
+            parse_filter(value)
+        return value
 
     cursor: str | None = None
     limit: int = Field(default=50, ge=1, le=200)

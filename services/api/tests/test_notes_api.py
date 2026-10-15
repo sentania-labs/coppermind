@@ -791,3 +791,22 @@ def test_a_frontmatter_patch_preserves_typed_store_failures(client, error, statu
     assert response.json()["error"] == code
     if code == "validation_error":
         assert response.json()["errors"][0].startswith("type:")
+
+
+def test_declared_filter_forwarding_and_typed_errors(client):
+    from coppermind.store_protocol import FieldIndexNotReady, FilterCursorConflict
+
+    browser, fake = client
+    value = '{"all":[{"field":"attendees","op":"contains","value":"Alice & Bob"}]}'
+    assert browser.get("/v1/notes", params={"filter": value}).status_code == 200
+    assert fake.listed.filter == value
+    fake.error = FieldIndexNotReady("job-1")
+    response = browser.get("/v1/notes", params={"filter": value})
+    assert response.status_code == 503
+    assert response.json()["error"] == "field_index_not_ready"
+    assert response.json()["job_id"] == "job-1"
+    fake.error = FilterCursorConflict()
+    response = browser.get("/v1/notes", params={"filter": value})
+    assert response.status_code == 409
+    assert response.json()["error"] == "filter_cursor_conflict"
+    assert browser.get("/v1/notes", params={"filter": "{}"}).status_code == 422

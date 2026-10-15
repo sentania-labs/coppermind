@@ -20,6 +20,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy import (
+    text as sa_text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -220,3 +223,44 @@ class SearchIndexState(Base):
     rebuild_error: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (CheckConstraint("id = 1", name="ck_search_index_state_single_row"),)
+
+
+class FieldIndexGeneration(Base):
+    """A complete, atomically published declared-field index generation."""
+
+    __tablename__ = "field_index_generations"
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    schema_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    definitions: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (
+        Index(
+            "ix_field_generation_active", "active", unique=True, postgresql_where=sa_text("active")
+        ),
+    )
+
+
+class NoteFieldValue(Base):
+    __tablename__ = "note_field_values"
+    generation: Mapped[str] = mapped_column(
+        Text, ForeignKey("field_index_generations.id", ondelete="CASCADE"), primary_key=True
+    )
+    note_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("notes.id", ondelete="CASCADE"), primary_key=True
+    )
+    field: Mapped[str] = mapped_column(Text, primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    value: Mapped[Any | None] = mapped_column(JSONB)
+    date_value: Mapped[date_type | None] = mapped_column(Date)
+    invalid_reason: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (
+        Index("ix_note_fields_lookup", "generation", "field", "note_id"),
+        Index("ix_note_fields_date", "generation", "field", "date_value"),
+        Index(
+            "ix_note_fields_value",
+            "value",
+            postgresql_using="gin",
+            postgresql_ops={"value": "jsonb_path_ops"},
+        ),
+    )

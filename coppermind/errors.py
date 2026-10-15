@@ -16,6 +16,8 @@ from typing import Any, Literal
 
 from coppermind.store_protocol import (
     ArtifactNotFound,
+    FieldIndexNotReady,
+    FilterCursorConflict,
     IncompleteRevision,
     MetadataUnavailable,
     NotesFilesystemUnavailable,
@@ -79,6 +81,10 @@ def code_for_status(status_code: int) -> str:
 def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dict[str, Any]]:
     """Map a typed store error onto its status code and error envelope."""
     cause = {"detail": str(error)} if surface == "internal" else {}
+    if isinstance(error, FieldIndexNotReady):
+        return 503, envelope("field_index_not_ready", str(error), job_id=error.job_id)
+    if isinstance(error, FilterCursorConflict):
+        return 409, envelope("filter_cursor_conflict", str(error))
     if isinstance(error, NotFound):
         return 404, envelope("not_found", str(error), note_id=error.note_id)
     if isinstance(error, SourceNotFound):
