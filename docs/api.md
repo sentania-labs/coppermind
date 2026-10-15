@@ -64,6 +64,53 @@ The story behind these decisions is [architecture.md](architecture.md).
 | `GET /v1/notes/{id}/sources` | `notes:read`, `sources:read` | List the sources a note cites, each as `{id, projection_path}` with the projection page its manifest records; citations come from the current mirrored frontmatter | 200, a list | 404 for an unknown note; 503 `metadata_unavailable` |
 | `GET /v1/folders` | `notes:read` | The folder tree with note counts | 200 | |
 
+## Declared frontmatter filters
+
+`GET /v1/notes` and `GET /v1/search` accept an optional URL-encoded JSON
+`filter` parameter. For example, send this JSON as the parameter value:
+
+```json
+{"all":[{"field":"attendees","op":"contains","value":"Alice"},{"field":"date","op":"gte","value":"2026-10-01"}]}
+```
+
+The field names must exist in the current schema. All clauses and all legacy
+filters are combined with AND. At most 20 clauses and 8 KiB of URL-encoded JSON
+are accepted. Strings and enums use case-sensitive `eq`; booleans and integers
+use typed `eq` without coercion. Dates use canonical `YYYY-MM-DD` with `eq`,
+`gte`, or `lte` (inclusive). Lists use `contains` for exact element membership,
+not substring matching. Multiple clauses on a list require every requested
+member. List elements may be JSON values because the schema does not restrict
+their element type. Top-level null, unknown fields, invalid operators or types,
+and reversed date ranges return 422. Missing, null, and invalid stored values
+never match. No note body or frontmatter is rewritten by filtering or backfill.
+
+Declaring or changing a field automatically schedules a typed-index rebuild.
+Until it finishes, queries involving that field return 503
+`field_index_not_ready` with a `job_id`, never misleading empty results.
+Unchanged ready fields remain queryable. Admin's **Field index** page shows
+per-field readiness, progress, failed rebuilds, and paginated paths with invalid
+values. Rebuild retries a failed job or reconstructs this derived index. The
+worker checks for schema changes every ten seconds. A rebuild uses a database
+write barrier of up to 30 seconds plus a two-second lock acquisition timeout;
+metadata writes can wait, while readers retain the previous committed index.
+A timeout rolls back the rebuild and requires an Admin retry. This is a bounded
+full-generation rebuild, not a general job scheduler or an unlimited import job.
+
+Filtered cursors bind the normalized clause order, all other filters, and the
+schema revision. Changing these returns 409 `filter_cursor_conflict`: restart
+from the first page. Page size may change. Listing retains immutable-ID ordering
+through renames; pages reflect live data rather than a frozen export. Existing
+listing state rules remain unchanged, including explicitly queried missing or
+deleted notes. Search retains its reviewed/filed gate; a custom filter matches
+notes only, never generated source pages.
+
+The internal Admin calls are `POST /internal/v1/field-index/status?offset=0`
+and `POST /internal/v1/field-index/rebuild` (202). They require the internal
+token. `/admin/field-index` and its rebuild form require an Admin session and
+CSRF token. Index rows are maintained in the same transaction as mirror writes;
+metadata reconstruction repopulates them. Migration 0009 adds only derived
+tables and a trigger. Its downgrade removes those objects without changing notes.
+
 ## Schema
 
 | Method and path | Scope | What it does | Success | Failure |

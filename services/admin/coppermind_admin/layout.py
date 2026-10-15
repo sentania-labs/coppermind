@@ -89,6 +89,7 @@ LINKS = (
     ("/admin/sync", "Obsidian Sync"),
     ("/admin/search-index", "Search index"),
     ("/admin/note-history", "Note recovery"),
+    ("/admin/field-index", "Field index"),
     ("/admin/context", "Calendar and enrichment"),
 )
 

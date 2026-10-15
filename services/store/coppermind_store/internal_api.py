@@ -324,3 +324,20 @@ async def restore_note(
         return await _store(request).restore_note(note_id, payload)
     except StoreError as error:
         return _failure(error)
+
+
+@router.post("/field-index/status")
+async def field_index_status(request: Request, offset: Annotated[int, Query(ge=0)] = 0) -> Response:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from coppermind.store_protocol import MetadataUnavailable
+
+    try:
+        return JSONResponse(await _store(request).field_index.snapshot(offset))
+    except (SQLAlchemyError, OSError):
+        return _failure(MetadataUnavailable())
+
+
+@router.post("/field-index/rebuild", status_code=202)
+async def field_index_rebuild(request: Request) -> Response:
+    return JSONResponse(_store(request).field_index.request_rebuild(), status_code=202)

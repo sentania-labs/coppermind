@@ -62,6 +62,9 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             name="coppermind-reconciler",
         )
         context_task = asyncio.create_task(app.state.store.context.run(), name="coppermind-context")
+        field_index_task = asyncio.create_task(
+            app.state.store.field_index.run(), name="coppermind-field-index"
+        )
         app.state.engine = engine
         log.info(
             "store started",
@@ -71,6 +74,9 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         try:
             yield
         finally:
+            field_index_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await field_index_task
             context_task.cancel()
             with suppress(asyncio.CancelledError):
                 await context_task
