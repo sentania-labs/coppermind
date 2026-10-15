@@ -137,6 +137,7 @@ class ContextService:
 
     async def snapshot(self, offset: int = 0) -> dict[str, Any]:
         config = self.config()
+        schema = self.store.control.schema()
         catalog = await asyncio.to_thread(self.archive.catalog)
         jobs = sorted(self.jobs(), key=lambda job: job.created_at, reverse=True)
         if offset < 0:
@@ -158,13 +159,12 @@ class ContextService:
             "config": config.model_dump(),
             "enrichment_fields": [
                 {"name": key.name, "kind": key.kind, "description": key.description}
-                for key in self.store.control.schema().keys
+                for key in schema.keys
                 if key.name
                 not in {
-                    self.store.control.schema().role(role)
-                    for role in ("id_key", "reviewed_key", "sources_key")
+                    schema.role(role)
+                    for role in ("id_key", "reviewed_key", "sources_key", "schema_version_key")
                 }
-                and key.name != "schema_version"
             ],
             "calendar": {
                 "events": len(events),
@@ -354,7 +354,7 @@ class ContextService:
                 schema.role("id_key"),
                 schema.role("reviewed_key"),
                 schema.role("sources_key"),
-                "schema_version",
+                schema.role("schema_version_key"),
             }
             allowed = {item.name: item.kind for item in schema.keys}
             names = assignment.fields + [

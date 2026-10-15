@@ -94,3 +94,28 @@ async def test_unknown_conversion_returns_validation_error(store):
         )
     assert response.status_code == 422
     assert response.json()["error"] == "validation_error"
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["fields", "attendees_field", "invitees_field", "event_field", "contacts_field"],
+)
+async def test_renamed_schema_version_is_not_an_enrichment_target(store, target):
+    schema = store.control.schema()
+    original = schema.role("schema_version_key")
+    for definition in schema.keys:
+        if definition.name == original:
+            definition.name = "format_version"
+    schema.roles["schema_version_key"] = "format_version"
+    state = store.control.store.read("schema")
+    store.control.store.write("schema", schema.model_dump(mode="json"), if_revision=state.revision)
+
+    snapshot = await store.context.snapshot()
+    names = {field["name"] for field in snapshot["enrichment_fields"]}
+    assert "format_version" not in names
+    assert names  # Ordinary metadata remains selectable.
+    assignment = FeatureAssignment().model_dump()
+    assignment[target] = ["format_version"] if target == "fields" else "format_version"
+    with pytest.raises(ValueError, match="cannot be system fields"):
+        await store.context.save_assignment({"revision": 0, "assignment": assignment})
+    assert store.context.config().revision == 0
