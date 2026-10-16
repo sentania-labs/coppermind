@@ -292,6 +292,8 @@ class NoteLifecycle:
                 previous
                 and previous["note_hash"] == note.content_hash
                 and previous.get("state") == "confirmed"
+                and previous.get("attendees") == record["attendees"]
+                and previous.get("properties") == record["properties"]
             ):
                 if previous.get("path") != note.path:
                     previous["path"] = note.path

@@ -65,6 +65,16 @@ class Dropbox:
 
     async def process(self) -> None:
         records = self.records()
+        # Compact receipts written by older versions, including completed imports.
+        archived = {r.id for r in self.context.archive.receipts()}
+        compacted = False
+        for item in records["items"].values():
+            for part in item["parts"]:
+                if part.get("import_id") in archived and "data" in part:
+                    del part["data"]
+                    compacted = True
+        if compacted:
+            self.save(records)
         for item in records["items"].values():
             if item["state"] != "pending":
                 continue
@@ -126,10 +136,15 @@ class Dropbox:
                 continue
             # All entries must be identified before submitting any of this archive.
             for part in item["parts"]:
-                receipt = self.context.archive.submit(
-                    part["calendar_id"], "calendar.ics", base64.b64decode(part["data"])
-                )
-                part["import_id"] = receipt.id
+                if not part.get("import_id"):
+                    receipt = self.context.archive.submit(
+                        part["calendar_id"], "calendar.ics", base64.b64decode(part["data"])
+                    )
+                    part["import_id"] = receipt.id
+                    del part["data"]
+                    # Persist each durable handoff so interrupted ZIP dispatch resumes
+                    # without needing embedded bytes for already archived entries.
+                    self.save(records)
             item["state"] = "importing"
             receipts = {r.id: r for r in self.context.archive.receipts()}
             if all(receipts[p["import_id"]].state == "succeeded" for p in item["parts"]):

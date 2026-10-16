@@ -272,3 +272,78 @@ async def test_dropbox_binds_existing_calendar_before_import_and_remembers_uid(s
     assert (
         store.context.dropbox.records()["items"][updated["id"]]["parts"][0]["calendar_id"] == "work"
     )
+
+
+async def test_finalized_attendees_follow_changed_and_cleared_mapping(store):
+    await enable(store)
+    note = await store.create_note(
+        CreateNote(
+            title="Mapping change",
+            frontmatter={
+                "attendees": ["old@example.com"],
+                "invitees": ["new@example.com"],
+            },
+        )
+    )
+    await store.context.complete_review(
+        {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "confirmation": "Complete review",
+        }
+    )
+    reviewed = await store.get_note(note.id)
+    config = store.context.config()
+    for mapped_field, expected in [("invitees", {"new@example.com"}), ("", set())]:
+        config.assignments["enrichment"].attendees_field = mapped_field
+        store.context.write("config", config.model_dump())
+        await store.context.lifecycle.finalize(reviewed)
+        assert {p["address"] for p in store.context.read("dossiers", {}).values()} == expected
+        assert (await store.get_note(note.id)).content_hash == reviewed.content_hash
+
+
+async def test_dropbox_archived_parts_are_compact_and_resume_after_interruption(store, monkeypatch):
+    import io
+    import zipfile
+
+    from coppermind_store.dropbox import Dropbox
+
+    from services.store.tests.test_dropbox import calendar
+
+    zipped = io.BytesIO()
+    with zipfile.ZipFile(zipped, "w") as archive:
+        archive.writestr("work.ics", calendar("work"))
+        archive.writestr("family.ics", calendar("family"))
+    item = store.context.dropbox.submit("both.zip", zipped.getvalue())
+    original_submit = store.context.archive.submit
+    calls = 0
+
+    def interrupt(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("interrupted between archived parts")
+        return original_submit(*args)
+
+    monkeypatch.setattr(store.context.archive, "submit", interrupt)
+    with pytest.raises(OSError):
+        await store.context.dropbox.process()
+    parts = store.context.dropbox.records()["items"][item["id"]]["parts"]
+    assert "data" not in parts[0]
+    assert "data" in parts[1]
+    monkeypatch.setattr(store.context.archive, "submit", original_submit)
+    restarted = Dropbox(store.context)
+    await restarted.process()
+    for receipt in store.context.archive.receipts():
+        assert store.context.archive.process(receipt.id).state == "succeeded"
+    await restarted.process()
+    records = restarted.records()
+    assert records["items"][item["id"]]["state"] == "succeeded"
+    assert all("data" not in p for p in records["items"][item["id"]]["parts"])
+    assert len(store.context.archive.catalog().events) == 2
+    assert (store.context.root / "dropbox-originals" / item["id"]).read_bytes() == zipped.getvalue()
+    # Completed receipts from the previous version are compacted too.
+    records["items"][item["id"]]["parts"][0]["data"] = "redundant old bytes"
+    restarted.save(records)
+    await restarted.process()
+    assert "data" not in restarted.records()["items"][item["id"]]["parts"][0]

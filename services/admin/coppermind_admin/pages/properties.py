@@ -7,7 +7,7 @@ from html import escape as e
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from coppermind.schema import FrontmatterSchema, KeyDefinition
+from coppermind.schema import KEY_NAME_PATTERN, FrontmatterSchema, KeyDefinition
 from coppermind.statefiles import RevisionConflict
 from coppermind_admin.pages.context import _check, _hidden, _input, _select
 from coppermind_admin.pages.fields import read_schema
@@ -140,6 +140,11 @@ async def save_property(request: Request) -> Response:
                 "view and save again."
             )
         name = form["name"].strip()
+        if not KEY_NAME_PATTERN.fullmatch(name):
+            raise ValueError(
+                "Use a property name beginning with a letter or underscore, "
+                "followed by letters, numbers, underscores or hyphens"
+            )
         existing = next((k for k in schema.keys if k.name == name), None)
         managed = {
             schema.role(r) for r in ("id_key", "schema_version_key", "reviewed_key", "sources_key")
@@ -162,6 +167,9 @@ async def save_property(request: Request) -> Response:
         if not existing:
             schema.keys.append(key)
         schema = FrontmatterSchema.model_validate(schema.model_dump())
+        problems = schema.edit_problems()
+        if problems:
+            raise ValueError("; ".join(problems))
         request.app.state.control.write(
             "schema", schema.model_dump(mode="json"), if_revision=state.revision
         )

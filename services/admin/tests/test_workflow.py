@@ -53,3 +53,31 @@ def test_workflow_setup_and_plugin_download_require_authentication(signed_in):
     token = form_token(client, "/admin/workflow")
     client.post("/v1/admin/logout", data={"csrf": token})
     assert client.get("/admin/workflow/plugin.zip", follow_redirects=False).status_code == 303
+
+
+def test_property_editor_rejects_invalid_names_and_choice_rules(signed_in):
+    client, _ = signed_in
+    token = form_token(client, "/admin/properties/new")
+    before = client.app.state.control.read("schema")
+    for name, kind, choices in [
+        ("", "string", ""),
+        ("bad name", "string", ""),
+        ("1invalid", "string", ""),
+        ("priority", "enum", ""),
+        ("attendees", "list", "unexpected choice"),
+    ]:
+        response = client.post(
+            "/v1/admin/property",
+            data={
+                "csrf": token,
+                "revision": str(before.revision),
+                "name": name,
+                "kind": kind,
+                "choices": choices,
+            },
+        )
+        assert response.status_code == 422
+        after = client.app.state.control.read("schema")
+        assert after.revision == before.revision
+        assert after.body == before.body
+        assert 'name="name"' in response.text
