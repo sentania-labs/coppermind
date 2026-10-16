@@ -24,6 +24,13 @@ nav a[aria-current=page] {background:#245c3b;color:white}
 .breadcrumb {font-size:.8rem;color:#59655d;margin-bottom:1.5rem}
 main {background:white;border:1px solid #d3cdbd;border-radius:.8rem;padding:2rem}
 .context-content {min-width:0;overflow-wrap:anywhere}
+.property-list {border:1px solid #d3cdbd;border-radius:.5rem;overflow:hidden}
+.property-row {display:grid;grid-template-columns:1fr .6fr 2fr auto;gap:1rem;padding:1rem;
+  border-bottom:1px solid #e8e3d9;text-decoration:none;align-items:center}
+.property-row small {color:#59655d}
+.review-grid {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:1.5rem}
+@media(max-width:700px){.property-row{grid-template-columns:1fr 1fr}
+.review-grid{grid-template-columns:1fr}}
 .connection-card {border:1px solid #d3cdbd;border-radius:.5rem;padding:1rem;margin:1rem 0}
 .connection-card summary {cursor:pointer;font-weight:650;color:#245c3b}
 .connection-card summary small {font-weight:400;color:#59655d;margin-left:.75rem}
@@ -87,14 +94,15 @@ summary {cursor:pointer;font-weight:650;line-height:1.5}
 LINKS = (
     ("/admin", "Overview"),
     ("/admin/problems", "Problems"),
-    ("/admin/fields", "Fields and tags"),
+    ("/admin/properties", "Note properties"),
     ("/admin/settings", "Settings"),
     ("/admin/keys", "API Keys"),
     ("/admin/sync", "Obsidian Sync"),
     ("/admin/search-index", "Search index"),
     ("/admin/note-history", "Note recovery"),
     ("/admin/field-index", "Field index"),
-    ("/admin/context", "Calendar and enrichment"),
+    ("/admin/workflow", "Note workflow"),
+    ("/admin/context", "Connections & calendar records"),
 )
 
 

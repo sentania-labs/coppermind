@@ -1,10 +1,11 @@
 # Calendar intake and enrichment
 
-This branch adds calendar intake and optional enrichment. It is not deployed.
-Existing note sync and review work without a model connection. Enrichment never
-writes the note body or changes its reviewed flag.
+Calendar intake and optional enrichment operate independently of note sync.
+Enrichment never writes the note body. Explicit review completion can accept
+selected proposals and mark the note reviewed. See [Note workflow](note-workflow.md)
+for the shared Dropbox, Obsidian companion and lifecycle setup.
 
-## Start in Admin
+## Legacy per-calendar intake
 
 Open **Calendar and enrichment** and add a calendar source. Give it a stable
 lowercase ID, a name, a vault drop folder such as `_Calendar/Work`, and its

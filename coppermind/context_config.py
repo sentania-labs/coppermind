@@ -100,6 +100,14 @@ class FeatureAssignment(ContextModel):
 
 class ContextConfig(ContextModel):
     revision: int = 0
+    dropbox_folder: str = "Dropbox"
+    lifecycle_enabled: bool = False
+
+    @field_validator("dropbox_folder")
+    @classmethod
+    def safe_dropbox(cls, value: str) -> str:
+        return CalendarSource.folder_path(value)
+
     sources: list[CalendarSource] = Field(default_factory=list)
     connections: list[ModelConnection] = Field(default_factory=list)
     # Generated connection ID -> original storage identity for migrated connections.

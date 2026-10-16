@@ -39,8 +39,10 @@ from coppermind_admin.pages import (
     fields,
     note_history,
     problems,
+    properties,
     search_index,
     sync,
+    workflow,
 )
 
 SERVICE = "coppermind-admin"
@@ -227,6 +229,8 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
     app.include_router(field_index.router(settings))
     app.include_router(note_history.router(settings))
     app.include_router(context.router(settings))
+    app.include_router(workflow.router(settings))
+    app.include_router(properties.router)
 
     @app.middleware("http")
     async def protect_forms(request: Request, call_next: RequestResponseEndpoint) -> Response:

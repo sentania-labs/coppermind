@@ -130,6 +130,40 @@ def _lookup(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return output
 
 
+def _identify(payload: dict[str, Any]) -> list[dict[str, str]]:
+    from coppermind_store.calendar_import import _entries
+
+    data = base64.b64decode(payload["data"], validate=True)
+    output = []
+    for filename, content in _entries(payload["filename"], data):
+        calendars = Calendar.from_ical(content, multiple=True)
+        for calendar in calendars:
+            encoded = calendar.to_ical()
+            # Validate all content before any entry is dispatched.
+            parse_export("validation", "calendar.ics", encoded)
+            uid = calendar.get("UID", "")
+            if isinstance(uid, list):
+                raise CalendarImportError("calendar has multiple source identifiers")
+            timezone = str(calendar.get("X-WR-TIMEZONE", ""))
+            if timezone:
+                try:
+                    ZoneInfo(timezone)
+                except (ValueError, KeyError):
+                    timezone = ""
+            output.append(
+                {
+                    "uid": str(uid),
+                    "name": str(calendar.get("NAME", calendar.get("X-WR-CALNAME", ""))),
+                    "timezone": timezone,
+                    "entry": filename,
+                    "data": base64.b64encode(encoded).decode(),
+                }
+            )
+    if not output:
+        raise CalendarImportError("export contains no calendars")
+    return output
+
+
 def main() -> None:
     resource.setrlimit(resource.RLIMIT_AS, (512 * 1024**2, 512 * 1024**2))
     resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
@@ -142,6 +176,8 @@ def main() -> None:
                 base64.b64decode(payload["data"], validate=True),
             )
             result = [event.model_dump() for event in events]
+        elif payload["action"] == "identify":
+            result = _identify(payload)
         else:
             result = _lookup(payload)
         encoded = json.dumps({"result": result})

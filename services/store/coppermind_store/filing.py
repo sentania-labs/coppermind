@@ -70,6 +70,8 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     note = await store.get_note(note_id)
     if note.frontmatter.get(schema.role("reviewed_key")) is not True:
         return False
+    if store.context.config().lifecycle_enabled:
+        await store.context.lifecycle.finalize(note)
     folder = str(note.frontmatter[schema.role("date_key")])[:7]
     # The schema has already validated the date; reject anything that is not a month.
     datetime.strptime(folder, "%Y-%m")

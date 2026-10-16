@@ -546,6 +546,10 @@ def refusal(problems: list[str]) -> str:
 
 @router.get("/admin/fields", include_in_schema=False)
 async def fields_page(request: Request) -> Response:
+    if request.query_params.get("advanced") != "1":
+        from coppermind_admin.pages.properties import properties
+
+        return await properties(request)
     try:
         state, schema = read_schema(request.app.state.control)
     except (OSError, ValueError) as exc:

@@ -14,6 +14,13 @@ from coppermind_store.auth import require_internal_token
 from coppermind_store.context_service import ContextService
 
 ACTIONS = {
+    "configure-property": "configure_property",
+    "resolve-calendar": "resolve_calendar",
+    "setup-lifecycle": "setup_lifecycle",
+    "lifecycle": "lifecycle_detail",
+    "complete-review": "complete_review",
+    "upload-drop": "upload_drop",
+    "identify-drop": "identify_drop",
     "save-source": "save_source",
     "save-connection": "save_connection",
     "convert-connection": "convert_connection",

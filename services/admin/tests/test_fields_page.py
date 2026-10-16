@@ -55,7 +55,7 @@ class Form(HTMLParser):
 
 
 def form(client) -> dict[str, str]:
-    return Form(client.get("/admin/fields").text).values
+    return Form(client.get("/admin/fields?advanced=1").text).values
 
 
 def index_of(values: dict[str, str], kind: str, name: str) -> int:
@@ -105,7 +105,7 @@ def page(signed_in):
 
 def test_the_page_renders_every_field_and_the_tags_in_use(page):
     client, store = page
-    response = client.get("/admin/fields")
+    response = client.get("/admin/fields?advanced=1")
     assert response.status_code == 200
     assert "Revision: 1" in response.text
     values = Form(response.text).values
@@ -127,7 +127,7 @@ def test_the_page_renders_every_field_and_the_tags_in_use(page):
     assert f"tag-{work}-listed" not in values
     assert "Notes: 3." in response.text
     assert "Notes: 2." in response.text
-    assert 'href="/admin/fields"' in client.get("/admin").text
+    assert 'href="/admin/properties"' in client.get("/admin").text
 
 
 def test_the_page_still_edits_when_the_store_cannot_count(page):
@@ -137,7 +137,7 @@ def test_the_page_still_edits_when_the_store_cannot_count(page):
         raise StoreUnavailable("connection refused")
 
     client.app.state.tag_counts = unavailable
-    response = client.get("/admin/fields")
+    response = client.get("/admin/fields?advanced=1")
     assert response.status_code == 200
     assert "Note counts are unavailable" in response.text
     assert "connection refused" not in response.text

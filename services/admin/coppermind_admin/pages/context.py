@@ -631,7 +631,9 @@ picker.addEventListener('change', () => {
         try:
             payload: dict[str, Any] = {key: value for key, value in form.items() if key != "csrf"}
             payload["revision"] = int(form.get("revision", "0"))
-            if action == "save-source":
+            if action in {"setup-lifecycle", "identify-drop", "configure-property"}:
+                pass
+            elif action == "save-source":
                 payload["source"] = {
                     key: form.get(key, "") for key in ("id", "name", "folder", "timezone")
                 }
@@ -688,6 +690,9 @@ picker.addEventListener('change', () => {
                     "Remove mistaken association" if "confirm_remove" in form else ""
                 )
             allowed = {
+                "setup-lifecycle",
+                "configure-property",
+                "identify-drop",
                 "save-source",
                 "save-connection",
                 "convert-connection",
@@ -709,6 +714,10 @@ picker.addEventListener('change', () => {
             await client(request).context_action(action, payload)
         except (StoreError, ValueError, KeyError) as exc:
             return error(exc)
+        if action == "configure-property":
+            return RedirectResponse("/admin/workflow?tab=enrichment&saved=1", status_code=303)
+        if action in {"setup-lifecycle", "identify-drop"}:
+            return RedirectResponse("/admin/workflow?tab=intake&saved=1", status_code=303)
         tab = (
             "models"
             if action

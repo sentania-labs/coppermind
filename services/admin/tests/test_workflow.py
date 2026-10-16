@@ -1,0 +1,55 @@
+"""The normal property and workflow paths work without editing raw schema fields."""
+
+import io
+import zipfile
+
+from services.admin.tests.browser import admin_browser as admin_browser
+from services.admin.tests.test_admin import form_token
+from services.admin.tests.test_context_page import ContextStore
+
+
+def test_property_creation_is_independent_and_conflicts_keep_user_input(signed_in):
+    client, wiring = signed_in
+    page = client.get("/admin/fields")
+    assert "Note properties" in page.text
+    assert "key-0-kind" not in page.text
+    token = form_token(client, "/admin/properties/new?preset=attendees")
+    form = {
+        "csrf": token,
+        "revision": "1",
+        "name": "attendees",
+        "kind": "list",
+        "description": "Confirmed people",
+        "choices": "",
+    }
+    saved = client.post("/v1/admin/property", data=form)
+    assert saved.status_code == 200
+    assert "attendees" in saved.text
+    conflict = client.post("/v1/admin/property", data=dict(form, name="invitees"))
+    assert conflict.status_code == 422
+    assert "another session" in conflict.text
+    assert 'value="invitees"' in conflict.text
+    schema = client.app.state.control.read("schema")
+    assert not any(k["name"] == "invitees" for k in schema.body["keys"])
+
+
+def test_workflow_setup_and_plugin_download_require_authentication(signed_in):
+    client, _ = signed_in
+    fake = ContextStore()
+    client.app.state.store = fake
+    for tab in ("setup", "enrichment", "intake", "review", "dossiers"):
+        response = client.get("/admin/workflow?tab=" + tab)
+        assert response.status_code == 200
+    review = client.get("/admin/workflow?tab=review")
+    assert "Finish enrichment setup" in review.text
+    assert "Enrich selected notes" not in review.text
+    assert client.post("/v1/admin/context/setup-lifecycle", data={}).status_code == 403
+    download = client.get("/admin/workflow/plugin.zip")
+    assert download.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+        assert set(archive.namelist()) == {
+            "coppermind-review/" + name for name in ("main.js", "manifest.json", "styles.css")
+        }
+    token = form_token(client, "/admin/workflow")
+    client.post("/v1/admin/logout", data={"csrf": token})
+    assert client.get("/admin/workflow/plugin.zip", follow_redirects=False).status_code == 303

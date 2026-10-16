@@ -11,7 +11,7 @@ import stat
 import time
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from coppermind.atomicio import atomic_write_text
 from coppermind.context_config import (
@@ -61,6 +61,11 @@ class ContextService:
         self.store = store
         self.root = store.control.store.state_dir / "context"
         self.archive = CalendarArchive(store.control.store.state_dir)
+        from coppermind_store.dropbox import Dropbox
+        from coppermind_store.note_lifecycle import NoteLifecycle
+
+        self.lifecycle = NoteLifecycle(self)
+        self.dropbox = Dropbox(self)
         self.provider = ModelProvider()
         self.lock = asyncio.Lock()
         self.seen: dict[str, tuple[tuple[int, int], float]] = {}
@@ -135,6 +140,153 @@ class ContextService:
             }
         )
 
+    async def calendar_candidates(self, note: Any) -> list[dict[str, Any]]:
+        explicit_date = note.frontmatter.get(self.store.control.schema().role("date_key"))
+        if not explicit_date:
+            return []
+        day = date.fromisoformat(str(explicit_date)[:10])
+        catalog = self.archive.catalog()
+        sources = {s.id: s.timezone for s in self.config().sources}
+        sources.update(
+            {s["id"]: s["timezone"] for s in self.dropbox.records()["calendars"].values()}
+        )
+        matches = []
+        for identity, timezone in sources.items():
+            events = [e for e in catalog.events.values() if e.calendar_id == identity]
+            if events:
+                matches.extend(await asyncio.to_thread(occurrences, events, day, timezone))
+        return matches
+
+    async def note_evidence_hash(self, note: Any) -> str:
+        if not self.config().lifecycle_enabled:
+            return self.evidence_hash()
+        matches = await self.calendar_candidates(note)
+        catalog = self.archive.catalog()
+        event_ids = {m["event_id"] for m in matches}
+        contacts = {p["contact_id"] for m in matches for p in m["people"]}
+        return fingerprint(
+            {
+                "matches": sorted(matches, key=lambda m: (m["event_id"], m["occurrence"])),
+                "events": sorted((i, catalog.events[i].semantic_hash) for i in event_ids),
+                "corrections": {
+                    k: v for k, v in self.read("contact_corrections", {}).items() if k in contacts
+                },
+            }
+        )
+
+    async def resolve_calendar(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.lifecycle.resolve_calendar(payload)
+
+    async def lifecycle_detail(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.lifecycle.detail(payload)
+
+    async def complete_review(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.lifecycle.complete(payload)
+
+    async def identify_drop(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.dropbox.identify(payload)
+
+    async def upload_drop(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self.lock:
+            return self.dropbox.submit(
+                payload["filename"], base64.b64decode(payload["content_base64"], validate=True)
+            )
+
+    async def configure_property(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from coppermind.schema import KeyDefinition
+
+        presets = {
+            "attendees": ("attendees_field", "list"),
+            "invitees": ("invitees_field", "list"),
+            "calendar_event": ("event_field", "string"),
+            "contacts": ("contacts_field", "list"),
+        }
+        name = str(payload.get("property", ""))
+        if name not in presets:
+            raise ValueError("choose a supported property preset")
+        mapping, kind = presets[name]
+        async with self.lock:
+            config = self.config()
+            self.check_revision(config, payload)
+            schema = self.store.control.schema()
+            if name in {
+                schema.role(r)
+                for r in ("id_key", "sources_key", "reviewed_key", "schema_version_key")
+            }:
+                raise ValueError("this name is used for a system property")
+            existing = next((k for k in schema.keys if k.name == name), None)
+            if existing and existing.kind != kind:
+                raise ValueError(
+                    "this property exists with a different type; inspect Note properties"
+                )
+            if not existing:
+                state = self.store.control.store.read("schema")
+                schema.keys.append(
+                    KeyDefinition.model_validate(
+                        {
+                            "name": name,
+                            "kind": kind,
+                            "description": "Enrichment " + name.replace("_", " "),
+                        }
+                    )
+                )
+                self.store.control.store.write(
+                    "schema", schema.model_dump(mode="json"), if_revision=state.revision
+                )
+            config.assignments["enrichment"].__setattr__(mapping, name)
+            self.save_config(config)
+            return {"configured": name}
+
+    async def setup_lifecycle(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from coppermind.schema import KeyDefinition, KeyKind
+
+        async with self.lock:
+            config = self.config()
+            self.check_revision(config, payload)
+            schema = self.store.control.schema()
+            definitions = {k.name: k for k in schema.keys}
+            managed = {
+                schema.role(r)
+                for r in ("id_key", "sources_key", "reviewed_key", "schema_version_key")
+            }
+            for name, kind, description in [
+                ("attendees", "list", "Email addresses confirmed by the reviewed note"),
+                ("invitees", "list", "Email addresses invited to the meeting"),
+                ("calendar_event", "string", "Confirmed calendar event reference"),
+                ("time", "string", "Local meeting start time, HH:MM"),
+                ("timezone", "string", "Meeting timezone, for example America/Chicago"),
+                ("time_unknown", "bool", "Meeting time was unknown at review"),
+            ]:
+                if name in managed:
+                    raise ValueError(f"{name} is already a managed system property")
+                if name in definitions:
+                    if definitions[name].kind != kind:
+                        raise ValueError(
+                            f"{name} already exists with a different type; resolve before setup"
+                        )
+                else:
+                    schema.keys.append(
+                        KeyDefinition(name=name, kind=cast(KeyKind, kind), description=description)
+                    )
+            type_definition = definitions[schema.role("type_key")]
+            if type_definition.kind == "enum":
+                type_definition.vocabulary = list(
+                    dict.fromkeys([*type_definition.vocabulary, "meeting", "note", "brainstorm"])
+                )
+            state = self.store.control.store.read("schema")
+            self.store.control.store.write(
+                "schema", schema.model_dump(mode="json"), if_revision=state.revision
+            )
+            config.lifecycle_enabled = True
+            config.dropbox_folder = payload.get("folder", config.dropbox_folder)
+            config = ContextConfig.model_validate(config.model_dump())
+            assignment = config.assignments["enrichment"]
+            assignment.attendees_field = assignment.attendees_field or "attendees"
+            assignment.invitees_field = assignment.invitees_field or "invitees"
+            assignment.event_field = assignment.event_field or "calendar_event"
+            self.save_config(config)
+            return {"enabled": True}
+
     async def snapshot(self, offset: int = 0) -> dict[str, Any]:
         config = self.config()
         schema = self.store.control.schema()
@@ -157,6 +309,9 @@ class ContextService:
                 "jobs": len(jobs),
             },
             "config": config.model_dump(),
+            "dropbox": self.dropbox.snapshot(),
+            "dossiers": self.read("dossiers", {}),
+            "calendar_followups": self.read("calendar-followups", {}),
             "enrichment_fields": [
                 {"name": key.name, "kind": key.kind, "description": key.description}
                 for key in schema.keys
@@ -452,7 +607,7 @@ class ContextService:
                 raise ValueError("note is not schema-valid")
             if note.frontmatter.get(schema.role("reviewed_key")) is True:
                 raise ValueError("reviewed notes are not eligible")
-            config_hash, evidence_hash = self.config_hash(), self.evidence_hash()
+            config_hash, evidence_hash = self.config_hash(), await self.note_evidence_hash(note)
             source_versions = [
                 (item.id, (await self.store.get_source(item.id)).current_revision)
                 for item in await self.store.get_note_sources(identity)
@@ -509,7 +664,7 @@ class ContextService:
             or note.path != job.path
             or note.frontmatter.get(schema.role("reviewed_key")) is True
             or self.config_hash() != job.config_hash
-            or self.evidence_hash() != job.evidence_hash
+            or await self.note_evidence_hash(note) != job.evidence_hash
             or self.schema_hash() != job.schema_hash
         ):
             raise ValueError("stale: note, evidence, schema or configuration changed")
@@ -518,11 +673,13 @@ class ContextService:
         if explicit_date:
             day = date.fromisoformat(str(explicit_date)[:10])
             catalog = self.archive.catalog()
-            for source in config.sources:
-                events = [item for item in catalog.events.values() if item.calendar_id == source.id]
-                candidates.extend(
-                    await asyncio.to_thread(occurrences, events, day, source.timezone)
-                )
+            sources = [(source.id, source.timezone) for source in config.sources]
+            sources += [
+                (s["id"], s["timezone"]) for s in self.dropbox.records()["calendars"].values()
+            ]
+            for source_id, timezone in sources:
+                events = [item for item in catalog.events.values() if item.calendar_id == source_id]
+                candidates.extend(await asyncio.to_thread(occurrences, events, day, timezone))
         fields = [item.model_dump() for item in schema.keys if item.name in assignment.fields]
         # The authored note often already contains the imported summary. Read sources only
         # when explicitly associated; never search across unreviewed notes for context.
@@ -641,6 +798,8 @@ class ContextService:
                     raise ValueError("suggested field value fails the note schema")
 
     async def run_job(self, job: EnrichmentJob) -> None:
+        if self.config().lifecycle_enabled:
+            await self.lifecycle.check_calendars()
         assignment = self.config().assignments["enrichment"]
         if not assignment.enabled or assignment.paused:
             return
@@ -667,6 +826,12 @@ class ContextService:
                 evidence,
             )
             result = Suggestions.model_validate(output)
+            if job.purpose == "calendar":
+                result.suggestions = [
+                    s
+                    for s in result.suggestions
+                    if s.kind in {"event", "contact", "attendee", "invitee"}
+                ]
             self.validate_result(result, evidence)
             # A note or calendar can change during a slow model request.
             if fingerprint(await self.evidence(job)) != fingerprint(evidence):
@@ -1031,9 +1196,14 @@ class ContextService:
 
     async def tick(self) -> None:
         await self.watch()
+        await self.dropbox.scan()
+        async with self.lock:
+            await self.dropbox.process()
         pending = [item for item in self.archive.receipts() if item.state == "pending"]
         if pending:
             await asyncio.to_thread(self.archive.process, pending[0].id)
+        if self.config().lifecycle_enabled:
+            await self.lifecycle.check_calendars()
         assignment = self.config().assignments["enrichment"]
         if not assignment.enabled or assignment.paused:
             return
@@ -1046,17 +1216,28 @@ class ContextService:
             )
         )
         self.auto_cursor = page.next_cursor
+        prior_jobs = self.jobs()
+        baseline = set(self.read("automatic_baseline", {"ids": [n.id for n in page.items]})["ids"])
         for note in page.items:
-            # A time boundary is recorded on first enable. Existing notes require the
-            # explicit backlog selection, including notes updated later by device edits.
-            if note.id not in self.read("automatic_baseline", {"ids": [note.id]})["ids"]:
-                try:
+            try:
+                previous = sorted(
+                    (j for j in prior_jobs if j.note_id == note.id), key=lambda j: j.created_at
+                )
+                if self.config().lifecycle_enabled and previous:
+                    current = await self.store.get_note(note.id)
+                    if previous[-1].evidence_hash != await self.note_evidence_hash(current):
+                        identity = await self.queue_note(note.id)
+                        changed = self.load_job(identity)
+                        changed.purpose = "calendar" if previous[-1].result else "initial"
+                        self.save_job(changed)
+                    continue
+                if note.id not in baseline:
                     await self.queue_note(note.id)
                     self.eligibility_errors.pop(note.id, None)
-                except (ValueError, StoreError):
-                    self.eligibility_errors[note.id] = (
-                        note.path + ": not eligible; check metadata and associated sources"
-                    )
+            except (ValueError, StoreError):
+                self.eligibility_errors[note.id] = (
+                    note.path + ": not eligible; check metadata and associated sources"
+                )
         for job in self.jobs():
             if job.attempt_limit is None:
                 job.attempt_limit = assignment.attempts
