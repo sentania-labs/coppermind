@@ -1,0 +1,3 @@
+.coppermind-card { border:1px solid var(--background-modifier-border);border-radius:8px;padding:12px;margin:12px 0; }
+.coppermind-notice { color:var(--text-muted);border-left:3px solid var(--interactive-accent);padding-left:12px; }
+.workspace-leaf-content[data-type="coppermind-review"] button { margin:6px 8px 6px 0;white-space:normal;height:auto;padding:8px 12px; }

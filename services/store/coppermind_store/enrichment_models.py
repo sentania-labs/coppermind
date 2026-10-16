@@ -27,6 +27,7 @@ class Suggestions(ContextModel):
 class EnrichmentJob(ContextModel):
     id: str
     note_id: str
+    purpose: Literal["initial", "calendar"] = "initial"
     note_hash: str
     evidence_hash: str
     config_hash: str

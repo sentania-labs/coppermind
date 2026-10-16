@@ -7,7 +7,7 @@ from services.admin.tests.test_settings_page import section_form
 
 def test_navigation_and_saved_section(signed_in):
     client, _ = signed_in
-    for name in ("keys", "fields", "settings"):
+    for name in ("keys", "properties", "settings"):
         response = client.get(f"/admin/{name}")
         assert response.status_code == 200
         assert f'<a href="/admin/{name}" aria-current="page">' in response.text

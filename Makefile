@@ -29,6 +29,7 @@ test:
 # can still pass everywhere.
 test-node:
 	npm --prefix services/obsidian-sync test
+	node --test services/admin/tests/obsidian-review.test.cjs
 
 # PostgreSQL backed tests. `make db-up` starts a throwaway server on 5433 so
 # this never touches a running stack's database.
