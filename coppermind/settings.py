@@ -192,27 +192,55 @@ class SyncSettings(BaseModel):
     device_name: str = Field(
         default="coppermind-server", description="Device name shown by Obsidian Sync."
     )
-    mode: str = Field(default="bidirectional", description="Sync direction mode.")
-    conflict_strategy: str = Field(
+    mode: Literal["bidirectional", "pull-only", "mirror-remote"] = Field(
+        default="bidirectional", description="Sync direction mode."
+    )
+    conflict_strategy: Literal["merge", "conflict"] = Field(
         default="merge", description="How sync resolves conflicting edits."
     )
     excluded_folders: list[str] = Field(
         default_factory=lambda: ["_Trash"],
         description="Folders excluded from syncing, as a JSON array.",
     )
-    file_types: list[str] = Field(
-        default_factory=lambda: ["image", "audio", "video", "pdf"],
+    file_types: list[Literal["image", "audio", "video", "pdf", "unsupported"]] = Field(
+        default=["image", "audio", "video", "pdf", "unsupported"],
+        min_length=1,
         description="Attachment types to sync, as a JSON array.",
     )
-    sync_configs: list[str] = Field(
+    sync_configs: list[
+        Literal[
+            "app",
+            "appearance",
+            "appearance-data",
+            "hotkey",
+            "core-plugin",
+            "core-plugin-data",
+            "community-plugin",
+            "community-plugin-data",
+        ]
+    ] = Field(
         default_factory=list, description="Configuration categories to sync, as a JSON array."
     )
+
+    @field_validator("excluded_folders")
+    @classmethod
+    def validate_excluded_folders(cls, value: list[str]) -> list[str]:
+        for folder in value:
+            if (
+                not folder
+                or folder.startswith("/")
+                or "\\" in folder
+                or any(part in {"", ".", ".."} for part in folder.split("/"))
+                or any(c in folder for c in ",\r\n\0")
+            ):
+                raise ValueError("Excluded folders must be relative vault paths without commas")
+        return list(dict.fromkeys(value))
 
     @field_validator("device_name")
     @classmethod
     def validate_device_name(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("sync.device_name must not be blank")
+        if not value.strip() or any(c in value for c in "\r\n\0"):
+            raise ValueError("sync.device_name must be a nonempty single line")
         return value
 
     @property

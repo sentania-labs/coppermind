@@ -59,6 +59,13 @@ def sync_client(tmp_path, monkeypatch):
                     vault_name=body["vault_name"],
                     device_name=body["device_name"],
                 )
+            elif self.path == "/configure":
+                status.update(
+                    configured=True,
+                    config_matches=True,
+                    config_live=True,
+                    client_status={"fileTypes": ["unsupported"], "excludedFolders": []},
+                )
             elif self.path == "/pause":
                 status["state"] = "paused"
             elif self.path == "/resume":
@@ -187,3 +194,94 @@ def test_helper_device_default_matches_shared_settings():
     root = Path(__file__).resolve().parents[3]
     source = (root / "services/obsidian-sync/settings.mjs").read_text()
     assert f'DEFAULT_DEVICE_NAME = "{default_settings().sync.device_name}"' in source
+
+
+def preferences(client, state, **changes):
+    return {
+        "revision": str(state.read("settings").revision),
+        "device_name": "coppermind-server",
+        "mode": "bidirectional",
+        "conflict_strategy": "merge",
+        "plan": "plus",
+        "excluded_folders": "_Trash",
+        "max_file_bytes": "",
+        "max_total_bytes": "",
+        "preset": "all-files",
+        "csrf": form_token(client, "/admin"),
+    } | changes
+
+
+def test_apply_all_files_live_display_and_stale_revision(sync_client):
+    client, state, calls, _ = sync_client
+    sign_in(client)
+    form = preferences(client, state)
+    response = client.post("/admin/sync/configure", data=form)
+    assert "saved and verified" in response.text
+    assert "Saved settings match" in response.text
+    assert "unsupported" in response.text
+    assert "unsupported" in read_settings(state).sync.file_types
+    assert read_settings(state).sync.max_file_bytes is None
+    assert calls[-1] == ("/configure", {})
+    count = len(calls)
+    response = client.post("/admin/sync/configure", data=form | {"device_name": "stale"})
+    assert "Settings changed in another tab" in response.text
+    assert len(calls) == count
+    assert read_settings(state).sync.device_name == "coppermind-server"
+
+
+def test_empty_selections_and_failed_apply_remain_pending(sync_client):
+    client, state, _, fail = sync_client
+    sign_in(client)
+    fail.append(True)
+    response = client.post(
+        "/admin/sync/configure",
+        data=preferences(client, state, preset="save", excluded_folders="", file_pdf="yes"),
+    )
+    assert "Application is pending" in response.text
+    assert "saved and verified" not in response.text
+    saved = read_settings(state).sync
+    assert saved.file_types == ["pdf"]
+    assert saved.excluded_folders == saved.sync_configs == []
+    assert_clean(response)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"mode": "invalid"},
+        {"preset": "save"},
+        {"mode": "mirror-remote"},
+        {"excluded_folders": "../notes"},
+        {"excluded_folders": "one,two"},
+        {"max_file_bytes": "-1"},
+        {"device_name": "bad\nname"},
+    ],
+)
+def test_invalid_preferences_do_not_write_or_apply(sync_client, changes):
+    client, state, calls, _ = sync_client
+    sign_in(client)
+    revision = state.read("settings").revision
+    response = client.post("/admin/sync/configure", data=preferences(client, state, **changes))
+    assert "Invalid sync preferences" in response.text
+    assert state.read("settings").revision == revision
+    assert calls == []
+
+
+def test_live_values_are_escaped_and_unavailable_is_explicit():
+    from coppermind_admin.pages.sync import configuration_form
+
+    from coppermind.settings import ProductSettings
+
+    page = configuration_form(
+        ProductSettings(),
+        1,
+        {
+            "configured": True,
+            "config_live": True,
+            "client_status": {"excludedFolders": ["<script>bad</script>"]},
+        },
+    )
+    assert "<script>" not in page
+    assert "&lt;script&gt;" in page
+    page = configuration_form(ProductSettings(), 1, {"configured": True})
+    assert "Live configuration unavailable" in page

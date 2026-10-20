@@ -5,7 +5,7 @@ from html import escape
 from typing import Any, Literal, get_args, get_origin
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
@@ -198,6 +198,8 @@ def failure(error: Exception, status: int = 500) -> HTMLResponse:
 
 @router.get("/admin/settings", include_in_schema=False)
 async def settings_page(request: Request) -> Response:
+    if request.query_params.get("section") == "sync":
+        return RedirectResponse("/admin/sync", status_code=303)
     try:
         return render(
             request.app.state.control, section=request.query_params.get("section", "general")
@@ -226,6 +228,8 @@ async def save(request: Request) -> Response:
     body = await main.submitted(request)
     store = request.app.state.control
     section = request.query_params.get("section")
+    if section == "sync":
+        return RedirectResponse("/admin/sync?result=legacy", status_code=303)
     try:
         if section is not None and (section not in SECTIONS or section in UNAVAILABLE):
             raise ValueError("This settings section is not editable.")
@@ -246,6 +250,9 @@ async def save(request: Request) -> Response:
                 target = target.setdefault(part, {})
             target[parts[-1]] = value
         settings = ProductSettings.model_validate(data)
+        current_sync = store.read("settings").body.get("sync", {})
+        if settings.sync.mode == "mirror-remote" and current_sync.get("mode") != "mirror-remote":
+            raise ValueError("Switch to Mirror remote from Obsidian Sync with confirmation.")
         try:
             revision = int(body.get("revision", ""))
         except ValueError as exc:

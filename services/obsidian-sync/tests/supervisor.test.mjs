@@ -42,7 +42,17 @@ if (args[0] === ${JSON.stringify(failure)}) {
   process.stderr.write(${JSON.stringify(secrets.join(" ").slice(0, 10))});
   setTimeout(() => { process.stderr.write(${JSON.stringify(secrets.join(" ").slice(10))}); process.exit(2); }, 10);
 } else if (args[0] === 'sync-list-remote') console.log(JSON.stringify({vaults:${JSON.stringify(remoteNames.map((name) => ({ id: 'remote-1', name })))},shared:[]}));
-else if (args[0] === 'sync-status' || args[0] === 'sync-setup') console.log(JSON.stringify({vaultId:'remote-1',vaultName:'Phone notes',syncMode:'bidirectional',conflictStrategy:'merge',deviceName:'Kitchen server'}));
+else if (args[0] === 'sync-config') {
+  const config = {deviceName:args[args.indexOf('--device-name')+1],syncMode:args[args.indexOf('--mode')+1],conflictStrategy:args[args.indexOf('--conflict-strategy')+1],configDir:'.obsidian'};
+  for (const [key, flag] of [['fileTypes','--file-types'],['configs','--configs'],['excludedFolders','--excluded-folders']]) config[key]=args[args.indexOf(flag)+1].split(',').filter(Boolean);
+  fs.writeFileSync(${JSON.stringify(path.join(data, 'client.json'))},JSON.stringify(config));
+  console.log('{}');
+}
+else if (args[0] === 'sync-status') {
+  try { console.log(fs.readFileSync(${JSON.stringify(path.join(data, 'client.json'))},'utf8')); }
+  catch { console.log(JSON.stringify({vaultId:'remote-1',vaultName:'Phone notes',syncMode:'bidirectional',conflictStrategy:'merge',deviceName:'Kitchen server'})); }
+}
+else if (args[0] === 'sync-setup') console.log('{}');
 else if (args[0] === 'login') console.log(${JSON.stringify(secrets.join(' '))});
 else if (args[0] === 'sync') { console.log(${JSON.stringify(secrets.join(' '))}); console.error(${JSON.stringify(secrets.join(' '))}); setInterval(() => {}, 1000); }
 `, { mode: 0o755 });
@@ -71,7 +81,12 @@ else if (args[0] === 'sync') { console.log(${JSON.stringify(secrets.join(' '))})
       headers: { ...(authenticated ? { authorization: "Bearer test-control-token" } : {}), "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    return [response.status, await response.json()];
+    const result = await response.json();
+    if (response.status === 409 && result.error === "control_busy") {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return request(route, body, authenticated);
+    }
+    return [response.status, result];
   };
   const calls = async () => { try { return (await readFile(callsFile, "utf8")).trim().split("\n").map(JSON.parse); } catch { return []; } };
   const clean = async () => {
@@ -129,7 +144,7 @@ test("real boot resumes without credentials; paused boot stays paused", async (c
     const h = await harness(context, { persisted });
     if (persisted === true) {
       const calls = await waitFor(async () => { const c = await h.calls(); return c.some((a) => a[0] === "sync") && c; }, "boot did not sync");
-      assert.ok(calls.every((a) => ["sync", "sync-status"].includes(a[0])));
+      assert.ok(calls.every((a) => ["sync", "sync-status", "sync-config"].includes(a[0])));
     } else assert.equal((await h.readStatus()).paused, persisted === "paused");
     const exited = new Promise((resolve) => h.supervisor.once("exit", resolve));
     h.supervisor.kill("SIGTERM");
@@ -186,4 +201,46 @@ test("absent and ambiguous remote names never reach setup", async (context) => {
     assert.ok(!(await h.calls()).some((args) => args[0] === "sync-setup"));
     await h.clean();
   }
+});
+
+
+test("saved settings apply on boot and changes preserve pause, including empty selections", async (context) => {
+  const h = await harness(context, { persisted: "paused" });
+  await waitFor(async () => (await h.readStatus()).config_matches, "boot did not configure");
+  let state = (await h.request("/status"))[1];
+  assert.ok(state.client_status.fileTypes.includes("unsupported"));
+  assert.deepEqual(state.client_status.excludedFolders, ["_Trash"]);
+  assert.equal(state.paused, true);
+  await writeFile(path.join(h.data, "state", "settings.yaml"), JSON.stringify({sync:{
+    device_name:"New name",mode:"pull-only",conflict_strategy:"conflict",file_types:["pdf"],sync_configs:[],excluded_folders:[]
+  }}));
+  const [code, applied] = await h.request("/configure", {});
+  assert.equal(code, 200);
+  assert.equal(applied.paused, true);
+  assert.equal(applied.syncing, false);
+  assert.equal(applied.client_status.deviceName, "New name");
+  assert.equal(applied.client_status.syncMode, "pull-only");
+  assert.deepEqual(applied.client_status.fileTypes, ["pdf"]);
+  assert.deepEqual(applied.client_status.excludedFolders, []);
+  assert.ok(!(await h.calls()).some((a) => a[0] === "sync"));
+});
+
+test("failed apply does not start sync or claim success", async (context) => {
+  const h = await harness(context, {persisted:true, failure:"sync-config"});
+  await waitFor(async () => (await h.readStatus()).config_error, "missing config failure");
+  const [code, state] = await h.request("/configure", {});
+  assert.equal(code, 502);
+  assert.equal(state.config_matches, false);
+  assert.equal(state.syncing, false);
+  assert.ok(!(await h.calls()).some((a) => a[0] === "sync"));
+  await h.clean();
+});
+
+test("failed live read never returns cached configuration as live", async (context) => {
+  const h = await harness(context, {persisted:true, failure:"sync-status"});
+  await waitFor(async () => (await h.readStatus()).config_error, "missing status failure");
+  const state = (await h.request("/status"))[1];
+  assert.equal(state.config_live, false);
+  assert.equal(state.client_status, null);
+  assert.equal(state.config_matches, false);
 });

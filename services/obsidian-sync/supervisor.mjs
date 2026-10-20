@@ -5,7 +5,7 @@ import http from "node:http";
 import path from "node:path";
 import process from "node:process";
 
-import { deviceName } from "./settings.mjs";
+import { deviceName, syncSettings, clientMatches } from "./settings.mjs";
 
 const DATA_DIR = process.env.COPPERMIND_DATA_DIR || "/data";
 const STATE_DIR = path.join(DATA_DIR, "state", "sync");
@@ -45,6 +45,9 @@ const status = {
   device_name: null,
   last_sync_at: null,
   client_status: null,
+  config_live: false,
+  config_matches: false,
+  config_error: null,
   vault_name: null,
   // Only ever set from what the running client reports about itself.
   sync_mode: null,
@@ -243,7 +246,8 @@ async function command(args, secrets = [], json = false, accepted = [0]) {
 }
 
 async function refreshClientStatus(secrets = []) {
-  if (FAKE || !connection) return;
+  if (!connection) return;
+  if (FAKE) return;
   try {
     let report = await command(["sync-status", "--path", path.join(DATA_DIR, "notes"), "--json"], secrets, true);
     let serialized = JSON.stringify(report);
@@ -256,10 +260,56 @@ async function refreshClientStatus(secrets = []) {
     for (const key of ["vaultId", "vaultName", "vaultPath", "syncMode", "conflictStrategy", "deviceName", "configDir", "fileTypes", "configs", "excludedFolders"]) {
       if (key in report) safe[key] = report[key];
     }
-    await publishStatus({ client_status: safe, sync_mode: safe.syncMode ?? null,
+    await publishStatus({ client_status: safe, config_live: true, sync_mode: safe.syncMode ?? null,
       conflict_strategy: safe.conflictStrategy ?? null });
   } catch {
-    await publishStatus({ last_error: "Obsidian sync status unavailable" });
+    await publishStatus({ client_status: null, config_live: false, config_matches: false,
+      config_error: "Live sync configuration unavailable" });
+  }
+}
+
+async function reconcileConfig() {
+  if (!connection) return;
+  try {
+    const desired = await syncSettings(path.join(DATA_DIR, "state", "settings.yaml"));
+    await refreshClientStatus();
+    if (status.config_live && clientMatches(desired, status.client_status)) {
+      await publishStatus({ config_matches: true, config_error: null });
+      if (!status.paused) await startSync();
+      return;
+    }
+    // Stop before changing client configuration. A failed apply leaves sync
+    // stopped until a verified retry, preserving the operator's paused choice.
+    clearTimeout(restartTimer);
+    const wasPaused = status.paused;
+    status.paused = true;
+    await stopChild();
+    status.paused = wasPaused;
+    await publishStatus({ state: "configuring", syncing: false, config_matches: false });
+    if (!FAKE) {
+      await command(["sync-config", "--path", path.join(DATA_DIR, "notes"),
+        "--device-name", desired.device_name, "--mode", desired.mode,
+        "--conflict-strategy", desired.conflict_strategy,
+        "--file-types", desired.file_types.join(","), "--configs", desired.sync_configs.join(","),
+        "--excluded-folders", desired.excluded_folders.join(","), "--json"], [], true);
+      await refreshClientStatus();
+    } else {
+      await publishStatus({ config_live: true, client_status: {
+        deviceName: desired.device_name, syncMode: desired.mode, conflictStrategy: desired.conflict_strategy,
+        fileTypes: desired.file_types, configs: desired.sync_configs, excludedFolders: desired.excluded_folders,
+        configDir: ".obsidian",
+      } });
+    }
+    if (!status.config_live || !clientMatches(desired, status.client_status)) {
+      throw new Error("Configuration did not match after apply");
+    }
+    connection.device_name = desired.device_name;
+    await saveConnection();
+    await publishStatus({ config_matches: true, config_error: null, device_name: desired.device_name,
+      state: status.paused ? "paused" : "starting" });
+    if (!status.paused) await startSync();
+  } catch {
+    await publishStatus({ config_matches: false, config_error: "Sync settings could not be applied and verified. Retrying automatically." });
   }
 }
 
@@ -305,8 +355,7 @@ async function connect(body) {
     connection = next;
     restartAttempts = 0;
     await publishStatus({ configured: true, paused: false, vault_name: vaultName, device_name: device });
-    await startSync();
-    await refreshClientStatus(secrets);
+    await reconcileConfig();
     return [200, publicStatus()];
   } catch (error) {
     const detail = error.message.startsWith("Remote vault name") || error.message.startsWith("Obsidian ")
@@ -333,7 +382,8 @@ async function disconnect() {
   connection = null;
   await publishStatus({ state: "not_connected", configured: false, paused: false,
     syncing: false, sync_pid: null, vault_name: null, device_name: null,
-    client_status: null, sync_mode: null, conflict_strategy: null, last_sync_at: null, last_error: null });
+    client_status: null, config_live: false, config_matches: false, config_error: null,
+    sync_mode: null, conflict_strategy: null, last_sync_at: null, last_error: null });
   return [200, publicStatus()];
 }
 
@@ -354,8 +404,8 @@ async function resume() {
   status.paused = false;
   restartAttempts = 0;
   await saveConnection();
-  await startSync();
-  return [200, publicStatus()];
+  await reconcileConfig();
+  return [status.config_matches ? 200 : 502, publicStatus()];
 }
 
 function publicStatus() {
@@ -388,7 +438,7 @@ function send(response, code, body) {
   response.end(`${JSON.stringify(body)}\n`);
 }
 
-let controlBusy = false;
+let controlBusy = true;
 const server = http.createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/livez") {
@@ -399,16 +449,26 @@ const server = http.createServer(async (request, response) => {
       send(response, 401, { error: "unauthorized" });
       return;
     }
-    if (request.method === "GET" && request.url === "/status") {
-      send(response, 200, publicStatus());
-      return;
-    }
+
     if (controlBusy) { send(response, 409, { error: "control_busy" }); return; }
     controlBusy = true;
     try {
+      if (request.method === "GET" && request.url === "/status") {
+        await refreshClientStatus();
+        if (connection) {
+          const desired = await syncSettings(path.join(DATA_DIR, "state", "settings.yaml"));
+          await publishStatus({ config_matches: status.config_live && clientMatches(desired, status.client_status) });
+        }
+        send(response, 200, publicStatus());
+        return;
+      }
       const body = await readBody(request);
       let result;
       if (request.method === "POST" && request.url === "/connect") result = await connect(body);
+      else if (request.method === "POST" && request.url === "/configure") {
+        await reconcileConfig();
+        result = [!connection || status.config_matches ? 200 : 502, publicStatus()];
+      }
       else if (request.method === "POST" && request.url === "/pause") result = await pause();
       else if (request.method === "POST" && request.url === "/resume") result = await resume();
       else if (request.method === "POST" && request.url === "/disconnect") result = await disconnect();
@@ -442,8 +502,13 @@ server.listen(PORT, "0.0.0.0", async () => {
   const address = server.address();
   await publishStatus({ control_port: address.port });
   log("INFO", "control endpoint started", { port: address.port, simulated: status.simulated });
-  if (connection && !status.paused) await startSync().catch(() => {});
-  await refreshClientStatus();
+  try { await reconcileConfig(); } finally { controlBusy = false; }
+  const timer = setInterval(async () => {
+    if (controlBusy || stopping) return;
+    controlBusy = true;
+    try { await reconcileConfig(); } finally { controlBusy = false; }
+  }, 15_000);
+  timer.unref();
 });
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
