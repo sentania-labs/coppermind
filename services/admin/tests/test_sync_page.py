@@ -285,3 +285,32 @@ def test_live_values_are_escaped_and_unavailable_is_explicit():
     assert "&lt;script&gt;" in page
     page = configuration_form(ProductSettings(), 1, {"configured": True})
     assert "Live configuration unavailable" in page
+
+
+def test_busy_helper_retains_connected_controls_without_claiming_live_config(
+    sync_client, monkeypatch
+):
+    import io
+
+    client, _, _, _ = sync_client
+    sign_in(client)
+    status = {
+        "configured": True,
+        "state": "syncing",
+        "vault_name": "Existing vault",
+        "control_busy": True,
+        "config_live": False,
+        "config_matches": False,
+        "client_status": {"fileTypes": ["unsupported"]},
+    }
+    monkeypatch.setattr(
+        "coppermind_admin.pages.sync.urlopen",
+        lambda *args, **kwargs: io.BytesIO(json.dumps(status).encode()),
+    )
+    response = client.get("/admin/sync")
+    assert response.status_code == 200
+    assert "Existing vault" in response.text
+    assert "Sync control is busy" in response.text
+    assert 'action="/admin/sync/connect"' not in response.text
+    assert 'action="/admin/sync/pause"' in response.text
+    assert "Saved settings match" not in response.text

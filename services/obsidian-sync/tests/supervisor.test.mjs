@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -37,6 +37,13 @@ async function harness(context, { fake = false, persisted = false, failure = "",
   await writeFile(path.join(bin, "ob"), `#!${process.execPath}
 const fs = require('node:fs');
 const args = process.argv.slice(2);
+if (args[0] === 'sync-status') {
+  const block = ${JSON.stringify(path.join(data, 'block-status'))};
+  if (fs.existsSync(block)) {
+    fs.writeFileSync(${JSON.stringify(path.join(data, 'status-blocked'))}, 'yes');
+    while (fs.existsSync(block)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  }
+}
 fs.appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(args) + '\\n');
 if (args[0] === ${JSON.stringify(failure)}) {
   process.stderr.write(${JSON.stringify(secrets.join(" ").slice(0, 10))});
@@ -75,14 +82,14 @@ else if (args[0] === 'sync') { console.log(${JSON.stringify(secrets.join(' '))})
   const statusFile = path.join(stateDir, "status.json");
   const readStatus = async () => JSON.parse(await readFile(statusFile, "utf8"));
   const boot = await waitFor(async () => { const s = await readStatus(); return s.control_port && s; }, "no control port");
-  const request = async (route, body, authenticated = true) => {
+  const request = async (route, body, authenticated = true, retryBusy = true) => {
     const response = await fetch(`http://127.0.0.1:${boot.control_port}${route}`, {
       method: body === undefined ? "GET" : "POST",
       headers: { ...(authenticated ? { authorization: "Bearer test-control-token" } : {}), "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const result = await response.json();
-    if (response.status === 409 && result.error === "control_busy") {
+    if (retryBusy && (result.control_busy || (response.status === 409 && result.error === "control_busy"))) {
       await new Promise((resolve) => setTimeout(resolve, 40));
       return request(route, body, authenticated);
     }
@@ -243,4 +250,43 @@ test("failed live read never returns cached configuration as live", async (conte
   assert.equal(state.config_live, false);
   assert.equal(state.client_status, null);
   assert.equal(state.config_matches, false);
+});
+
+
+for (const failure of ["sync-status", "sync-config"]) test(`initial ${failure} failure is not reported as connected successfully`, async (context) => {
+  const h = await harness(context, { failure });
+  const [code, state] = await h.request("/connect", form);
+  assert.equal(code, 502);
+  assert.equal(state.configured, true);
+  assert.equal(state.config_matches, false);
+  assert.equal(state.syncing, false);
+  assert.ok(state.config_error);
+  assert.ok(!(await h.calls()).some(args => args[0] === "sync"));
+  await h.clean();
+});
+
+test("status stays available during a blocked configuration command", async (context) => {
+  const h = await harness(context);
+  assert.equal((await h.request("/connect", form))[0], 200);
+  const block = path.join(h.data, "block-status");
+  await writeFile(block, "yes");
+  const configuring = h.request("/configure", {});
+  try {
+    await waitFor(() => readFile(path.join(h.data, "status-blocked")), "client did not block");
+    const [code, state] = await h.request("/status", undefined, true, false);
+    assert.equal(code, 200);
+    assert.equal(state.configured, true);
+    assert.equal(state.vault_name, form.vault_name);
+    assert.equal(state.config_live, false);
+    assert.equal(state.config_matches, false);
+    assert.equal(state.control_busy, true);
+    assert.equal((await h.request("/pause", {}, true, false))[0], 409);
+  } finally {
+    await rm(block, { force: true });
+    await configuring;
+  }
+  const [code, state] = await h.request("/status");
+  assert.equal(code, 200);
+  assert.equal(state.config_live, true);
+  assert.equal(state.config_matches, true);
 });

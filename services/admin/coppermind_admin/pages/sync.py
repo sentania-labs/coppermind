@@ -43,6 +43,11 @@ def configuration_form(product: ProductSettings, revision: int, status: dict) ->
         body += '<p class="notice">Simulated client: this does not prove Obsidian delivery.</p>'
     if not status.get("configured"):
         body += "<p>Connect a vault to inspect its live configuration.</p>"
+    elif status.get("control_busy"):
+        body += (
+            '<p class="notice">Sync control is busy. Connection information is cached; '
+            "reload shortly for verified live settings.</p>"
+        )
     elif not live:
         body += (
             '<p class="error">Live configuration unavailable. Saved settings are shown below.</p>'

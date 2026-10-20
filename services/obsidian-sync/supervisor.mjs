@@ -356,7 +356,7 @@ async function connect(body) {
     restartAttempts = 0;
     await publishStatus({ configured: true, paused: false, vault_name: vaultName, device_name: device });
     await reconcileConfig();
-    return [200, publicStatus()];
+    return [status.config_matches ? 200 : 502, publicStatus()];
   } catch (error) {
     const detail = error.message.startsWith("Remote vault name") || error.message.startsWith("Obsidian ")
       ? error.message : "Sync setup failed. Check settings and retry.";
@@ -450,7 +450,15 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (controlBusy) { send(response, 409, { error: "control_busy" }); return; }
+    if (controlBusy) {
+      if (request.method === "GET" && request.url === "/status") {
+        // Keep connection information available without presenting cached
+        // client values as freshly verified while a control owns the client.
+        send(response, 200, { ...publicStatus(), control_busy: true,
+          config_live: false, config_matches: false });
+      } else send(response, 409, { error: "control_busy" });
+      return;
+    }
     controlBusy = true;
     try {
       if (request.method === "GET" && request.url === "/status") {
