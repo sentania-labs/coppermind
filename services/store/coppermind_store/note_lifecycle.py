@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 def validate_review(note: NoteDocument, schema: Any) -> None:
     date.fromisoformat(str(note.frontmatter.get(schema.role("date_key"), "")))
-    if note.frontmatter.get(schema.role("type_key")) != "meeting":
+    if note.frontmatter.get(schema.role("type_key")) != "work":
         return
     values = note.frontmatter
     if values.get("time_unknown") is True:

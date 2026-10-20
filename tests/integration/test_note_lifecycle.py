@@ -16,7 +16,7 @@ async def test_review_requires_meeting_time_and_records_final_human_metadata(sto
         CreateNote(
             title="Planning",
             body="Human prose.",
-            frontmatter={"type": "meeting", "date": "2026-10-16"},
+            frontmatter={"type": "work", "date": "2026-10-16"},
         )
     )
     with pytest.raises(ValueError, match="meeting time"):
@@ -48,9 +48,10 @@ async def test_review_requires_meeting_time_and_records_final_human_metadata(sto
     assert next(iter(dossiers.values()))["notes"][0]["properties"]["tags"] == ["human-choice"]
 
 
-async def test_journal_needs_no_time_and_stale_completion_does_not_overwrite(store):
+@pytest.mark.parametrize("kind", ["personal", "reference", "journal"])
+async def test_nonwork_needs_no_time_and_stale_completion_does_not_overwrite(store, kind):
     await enable(store)
-    note = await store.create_note(CreateNote(title="Journal", frontmatter={"type": "journal"}))
+    note = await store.create_note(CreateNote(title="Other note", frontmatter={"type": kind}))
     old = note.content_hash
     note = await store.patch_frontmatter(
         note.id, PatchFrontmatter(set={"tags": ["changed"]}), if_match=old
@@ -67,7 +68,7 @@ async def test_journal_needs_no_time_and_stale_completion_does_not_overwrite(sto
 
 async def test_direct_review_with_missing_meeting_time_blocks_filing(store):
     await enable(store)
-    note = await store.create_note(CreateNote(title="Meeting", frontmatter={"type": "meeting"}))
+    note = await store.create_note(CreateNote(title="Meeting", frontmatter={"type": "work"}))
     await store.patch_frontmatter(
         note.id, PatchFrontmatter(set={"reviewed": True}), if_match=note.content_hash
     )
@@ -347,3 +348,14 @@ async def test_dropbox_archived_parts_are_compact_and_resume_after_interruption(
     restarted.save(records)
     await restarted.process()
     assert "data" not in restarted.records()["items"][item["id"]]["parts"][0]
+
+
+async def test_workflow_setup_preserves_type_choices(store):
+    before = store.control.schema()
+    key = before.role("type_key")
+    choices = next(k.vocabulary for k in before.keys if k.name == key)
+    assert choices == ["work", "personal", "reference", "journal"]
+    await enable(store)
+    await store.context.setup_lifecycle({"revision": store.context.config().revision})
+    after = store.control.schema()
+    assert next(k.vocabulary for k in after.keys if k.name == key) == choices

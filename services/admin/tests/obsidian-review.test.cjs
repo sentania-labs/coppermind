@@ -15,6 +15,7 @@ class El {
 class Setting {
   constructor(el){this.el=el;}
   setName(){return this;} setDesc(){return this;}
+  addText(fn){const control={inputEl:{},setValue(){return control;},onChange(){return control;}};fn(control);return this;}
   addToggle(fn){const control={setDisabled(){return control;},onChange(){return control;},setValue(){return control;}};fn(control);return this;}
   addButton(fn){const button=this.el.createEl('button');const control={setButtonText(v){button.text=v;return control;},onClick(fn){button.onclick=fn;return control;}};fn(control);return this;}
 }
@@ -58,4 +59,9 @@ test('reviewed flag does not hide interrupted completion recovery',async()=>{
   assert.ok(retry);
   await retry.onclick();
   assert.equal(f.requests.filter(r=>r.method==='POST').length,1);
+});
+
+for(const type of ['work','personal','reference','journal'])test(type+' review shows meeting time only for work',async()=>{
+  const f=await fixture(undefined,{note:{frontmatter:{type,reviewed:false}}});
+  assert.equal(f.view.contentEl.all().some(e=>e.text==='Meeting time'),type==='work');
 });
