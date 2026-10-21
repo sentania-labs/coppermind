@@ -128,7 +128,7 @@ Nothing here needs to be set before the system runs.
 | sync | `mode` | `bidirectional` |
 | sync | `conflict_strategy` | `merge` |
 | sync | `excluded_folders` | `[_Trash]` |
-| sync | `file_types` | `[image, audio, video, pdf]` |
+| sync | `file_types` | `[image, audio, video, pdf, unsupported]` |
 | sync | `sync_configs` | `[]` |
 | curator | `enabled` | true |
 | curator | `sweep_interval_s` | 300 |
@@ -219,3 +219,18 @@ mounted credentials and sync state described in the acceptance plan. Copying
 Markdown alone is insufficient. Git snapshots on the same volume are not an
 off-device backup. Full backup tooling and its isolated restore drill remain
 separate work.
+
+Obsidian Sync preferences are edited under **Admin > Obsidian Sync**. The helper
+applies saved preferences at startup and checks them every 15 seconds. Save and
+apply requests an immediate attempt. The live table reads the client configuration;
+it does not infer successful application from saved values. Failed application stays
+visible and retries automatically. A paused client stays paused during configuration.
+
+All attachment categories are enabled for new installations, including `unsupported`
+for ICS and ZIP. Existing selections are preserved; use **Sync all file types** to
+update an existing vault. The uploading device must also enable those file types.
+Settings synchronization remains off by default. Obsidian's Show all files preference
+is a device display setting, not a server sync control.
+
+The plan and byte limits are local reference values, not client configuration or a
+subscription change. The calendar intake limit remains independent of Sync limits.

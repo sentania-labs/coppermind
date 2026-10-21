@@ -27,7 +27,13 @@ test:
 # Obsidian Sync is a Node service; workers and minimal CI runners lack Node.
 # keep this behind `make test-node` so check-local (which has no Docker or Node)
 # can still pass everywhere.
+test-sync-client:
+	docker run --rm --network none \
+		-v "$(CURDIR)/services/obsidian-sync/tests:/app/tests:ro" \
+		--entrypoint node coppermind/obsidian-sync:local --test /app/tests/client-contract.mjs
+
 test-node:
+	npm --prefix services/obsidian-sync ci --ignore-scripts
 	npm --prefix services/obsidian-sync test
 	node --test services/admin/tests/obsidian-review.test.cjs
 

@@ -1,5 +1,5 @@
 # The Obsidian Sync helper is independently built and versioned. It contains
-# Node, the official client and its dependency-free supervisor.
+# Node, the official client and its supervisor.
 FROM node:22-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
 
 ARG BUILD_VERSION=dev
@@ -29,6 +29,8 @@ RUN npm install -g obsidian-headless@0.0.14 \
     && ob logout --help \
     && npm cache clean --force
 WORKDIR /app
+COPY services/obsidian-sync/package.json services/obsidian-sync/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY services/obsidian-sync/supervisor.mjs services/obsidian-sync/health.mjs services/obsidian-sync/control.mjs services/obsidian-sync/settings.mjs ./
 COPY services/obsidian-sync/fake ./fake
 

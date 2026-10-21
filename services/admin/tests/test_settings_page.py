@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from coppermind.settings import ProductSettings, read_settings
 from coppermind.statefiles import StateStore
 from services.admin.tests.browser import admin_browser as admin_browser
+from services.admin.tests.test_admin import form_token
 from services.admin.tests.test_keys_page import Inputs
 
 
@@ -171,12 +172,9 @@ def test_lists_accept_lines_and_optional_limits_accept_blank(signed_in):
         "Templates",
         "Scratch",
     ]
-    form = section_form(client, "sync")
-    response = client.post(
-        "/v1/admin/settings?section=sync", data=form | {"sync.max_file_bytes": ""}
-    )
-    assert response.status_code == 200
-    assert read_settings(StateStore(wiring.state_dir)).sync.max_file_bytes is None
+    response = client.get("/admin/settings?section=sync", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/sync"
 
 
 def test_unavailable_section_cannot_be_saved(signed_in):
@@ -218,3 +216,17 @@ def test_section_pattern_starting_with_bracket_is_a_glob(signed_in):
         ).status_code
         == 200
     )
+
+
+def test_legacy_sync_form_cannot_enable_mirror(signed_in):
+    client, wiring = signed_in
+    state = StateStore(wiring.state_dir)
+    before = state.read("settings")
+    response = client.post(
+        "/v1/admin/settings?section=sync",
+        data={"sync.mode": "mirror-remote", "csrf": form_token(client, "/admin")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/sync?result=legacy"
+    assert state.read("settings").revision == before.revision
