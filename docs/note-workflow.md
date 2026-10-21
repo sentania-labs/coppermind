@@ -1,8 +1,8 @@
 # Note workflow and shared Dropbox
 
-Enable **Admin > Note workflow** to add meeting types and optional attendees,
+Enable **Admin > Note workflow** to add optional attendees,
 invitees, calendar reference, time, timezone and time-unknown properties. Existing
-notes and schema roles are preserved. Conflicting property types stop setup.
+notes, type choices and schema roles are preserved. Conflicting property types stop setup.
 The common Dropbox defaults to `Dropbox` in the vault. Legacy per-calendar
 folders retain priority and are not processed a second time by the common router.
 
@@ -29,7 +29,7 @@ that do not share local secret storage.
 
 Open a note and run **Coppermind Review: Review current note**. The panel checks
 that the exact local bytes match the server before permitting completion. Wait
-for Obsidian Sync after editing. Meeting notes require a date, local `time` and
+for Obsidian Sync after editing. Work notes (`type: work`) require a date, local `time` and
 `timezone`, or `time_unknown: true` with no time value. Other note types need only
 a date. Midnight is an actual time, never a sentinel for unknown.
 

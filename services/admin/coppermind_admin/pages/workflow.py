@@ -58,7 +58,7 @@ def router(wiring: Wiring) -> APIRouter:
                 if not config.get("lifecycle_enabled"):
                     body += (
                         "<h2>Set up the workflow</h2><p>Add optional attendees, invitees, cal"
-                        "endar reference and meeting-time properties. Existing notes and prop"
+                        "endar reference and work meeting-time properties. Existing notes and prop"
                         "erty values stay unchanged.</p>"
                     )
                     body += _form(
@@ -69,7 +69,7 @@ def router(wiring: Wiring) -> APIRouter:
                     )
                 else:
                     body += (
-                        '<p class="success">Note workflow enabled. Meetings need a time or an'
+                        '<p class="success">Note workflow enabled. Work notes need a time or an'
                         " explicit Time unknown choice before filing.</p>"
                     )
                 body += (
@@ -367,7 +367,7 @@ def router(wiring: Wiring) -> APIRouter:
                 [(v, v.title()) for v in definition.vocabulary] or [(kind, kind)],
                 kind,
             )
-            if kind == "meeting":
+            if kind == "work":
                 properties += _input(
                     "time",
                     "Meeting start time",
@@ -439,7 +439,7 @@ def router(wiring: Wiring) -> APIRouter:
                     )
                 )
                 body += (
-                    '<p class="muted">For meeting notes, enter time and timezone, or time'
+                    '<p class="muted">For work notes, enter time and timezone, or time'
                     "_unknown: true, in Obsidian before finishing.</p>"
                 )
                 body += _form(
@@ -498,10 +498,10 @@ def router(wiring: Wiring) -> APIRouter:
                     schema.role("type_key"): form["note_type"],
                 }
                 unset = []
-                if form["note_type"] == "meeting" and "time_unknown" in form:
+                if form["note_type"] == "work" and "time_unknown" in form:
                     changes["time_unknown"] = True
                     unset = ["time", "timezone"]
-                elif form["note_type"] == "meeting" and "time" in form:
+                elif form["note_type"] == "work" and "time" in form:
                     changes.update(time=form["time"], timezone=form["timezone"], time_unknown=False)
                 await client(request).patch_frontmatter(
                     identity, PatchFrontmatter(set=changes, unset=unset), if_match=form["if_match"]

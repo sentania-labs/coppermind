@@ -268,11 +268,6 @@ class ContextService:
                     schema.keys.append(
                         KeyDefinition(name=name, kind=cast(KeyKind, kind), description=description)
                     )
-            type_definition = definitions[schema.role("type_key")]
-            if type_definition.kind == "enum":
-                type_definition.vocabulary = list(
-                    dict.fromkeys([*type_definition.vocabulary, "meeting", "note", "brainstorm"])
-                )
             state = self.store.control.store.read("schema")
             self.store.control.store.write(
                 "schema", schema.model_dump(mode="json"), if_revision=state.revision

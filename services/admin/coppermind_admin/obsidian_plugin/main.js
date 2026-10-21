@@ -31,7 +31,7 @@ class ReviewView extends ItemView {
       const synced=await hash(local)===data.note.content_hash;
       if(!synced) el.createEl('p',{text:'Your latest edits have not reached Coppermind. Wait for sync, then refresh.',cls:'coppermind-notice'});
       const reload=el.createEl('button',{text:'Refresh from Coppermind'});reload.onclick=()=>this.refresh();
-      if(data.note.frontmatter[data.roles.type_key]==='meeting'){
+      if(data.note.frontmatter[data.roles.type_key]==='work'){
         const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Meeting time'});
         let meetingTime=String(fm.time||''), zone=String(fm.timezone||'America/Chicago'), unknown=fm.time_unknown===true;
         new Setting(box).setName('Start time').addText(t=>{t.inputEl.type='time';t.setValue(meetingTime).onChange(v=>meetingTime=v);});

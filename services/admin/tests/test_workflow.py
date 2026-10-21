@@ -81,3 +81,60 @@ def test_property_editor_rejects_invalid_names_and_choice_rules(signed_in):
         assert after.revision == before.revision
         assert after.body == before.body
         assert 'name="name"' in response.text
+
+
+class ReviewStore:
+    def __init__(self, kind):
+        self.kind = kind
+        self.patches = []
+
+    async def context_action(self, action, payload):
+        return {
+            "note": {
+                "title": "Work review",
+                "body": "Synthetic note.",
+                "content_hash": "hash",
+                "frontmatter": {"type": self.kind, "date": "2026-10-20", "reviewed": False},
+            },
+            "roles": {"date_key": "date", "type_key": "type", "reviewed_key": "reviewed"},
+            "stale": False,
+            "job_id": None,
+            "suggestions": [],
+        }
+
+    async def patch_frontmatter(self, identity, changes, *, if_match):
+        self.patches.append((identity, changes, if_match))
+
+
+def test_work_review_time_controls_and_save(signed_in):
+    client, _ = signed_in
+    store = ReviewStore("work")
+    client.app.state.store = store
+    response = client.get("/admin/review/example")
+    assert response.status_code == 200
+    assert 'name="time"' in response.text
+    assert 'name="timezone"' in response.text
+    csrf = form_token(client, "/admin/review/example")
+    values = {
+        "csrf": csrf,
+        "note_id": "example",
+        "if_match": "hash",
+        "date": "2026-10-20",
+        "note_type": "work",
+        "time": "09:30",
+        "timezone": "America/Chicago",
+    }
+    response = client.post(
+        "/v1/admin/workflow/save-properties", data=values, follow_redirects=False
+    )
+    assert response.status_code == 303
+    assert store.patches[-1][1].set["time"] == "09:30"
+    assert store.patches[-1][1].set["timezone"] == "America/Chicago"
+    client.post("/v1/admin/workflow/save-properties", data=values | {"time_unknown": "on"})
+    assert store.patches[-1][1].set["time_unknown"] is True
+    assert store.patches[-1][1].unset == ["time", "timezone"]
+    for kind in ("personal", "reference", "journal"):
+        store.kind = kind
+        response = client.get("/admin/review/example")
+        assert response.status_code == 200
+        assert 'name="time"' not in response.text
