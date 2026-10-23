@@ -3,9 +3,15 @@
 import base64
 import io
 import zipfile
+from typing import Any, cast
 
 import pytest
 from coppermind_store.calendar_worker import isolated_calendar
+from coppermind_store.control import ControlState
+from coppermind_store.notes import LocalStore
+
+from coppermind.settings import Wiring
+from services.store.tests.test_calendar_import import large_ics, zip_bytes
 
 
 def calendar(uid="", event="event-1", name="Family"):
@@ -39,3 +45,63 @@ def test_zip_keeps_physical_calendars_separate_and_refuses_mixed_content():
         z.writestr("slides.pdf", b"not a calendar")
     with pytest.raises(ValueError, match="only ICS"):
         identify(archive.getvalue(), "export.zip")
+
+
+def local_store(tmp_path):
+    wiring = Wiring(data_dir=tmp_path / "data")
+    control = ControlState(wiring.state_dir)
+    control.ensure_defaults()
+    wiring.notes_dir.mkdir(parents=True, exist_ok=True)
+    return LocalStore(wiring.notes_dir, control, cast(Any, object()), wiring.sources_dir)
+
+
+async def test_zip_with_an_ics_over_10_mib_imports_when_identity_is_available(tmp_path):
+    store = local_store(tmp_path)
+    source = zip_bytes({"calendar.ics": large_ics("large")})
+    item = store.context.dropbox.submit("export.zip", source)
+    await store.context.dropbox.process()
+    record = store.context.dropbox.records()["items"][item["id"]]
+    # One process pass identifies the part and hands it to the archive, which is why the
+    # receipt is pending while the item sits at `importing`.
+    assert record["state"] == "importing"
+    assert record["parts"][0]["uid"] == "large"
+    for receipt in store.context.archive.receipts():
+        assert store.context.archive.process(receipt.id).event_count == 12000
+    await store.context.dropbox.process()
+    assert store.context.dropbox.records()["items"][item["id"]]["state"] == "succeeded"
+    assert len(store.context.archive.catalog().events) == 12000
+
+
+async def test_zip_with_an_ics_over_10_mib_imports_after_an_explicit_identity_choice(tmp_path):
+    store = local_store(tmp_path)
+    # No calendar source is configured, so an unnamed calendar needs an explicit choice.
+    unnamed = large_ics().replace(b"UID:large\r\n", b"")
+    item = store.context.dropbox.submit("export.zip", zip_bytes({"calendar.ics": unnamed}))
+    await store.context.dropbox.process()
+    record = store.context.dropbox.records()["items"][item["id"]]
+    assert record["state"] == "needs_identity"
+    assert record["parts"][0]["calendar_id"] == ""
+    await store.context.identify_drop({"id": item["id"], "part": 0, "name": "Large"})
+    await store.context.dropbox.process()
+    for receipt in store.context.archive.receipts():
+        assert store.context.archive.process(receipt.id).state == "succeeded"
+    await store.context.dropbox.process()
+    assert store.context.dropbox.records()["items"][item["id"]]["state"] == "succeeded"
+    assert len(store.context.archive.catalog().events) == 12000
+
+
+async def test_original_upload_over_10_mib_is_rejected_at_intake(tmp_path):
+    store = local_store(tmp_path)
+    with pytest.raises(ValueError, match="10 MiB"):
+        store.context.dropbox.submit("calendar.ics", large_ics())
+    assert store.context.dropbox.records()["items"] == {}
+
+
+async def test_zip_expanding_past_40_mib_fails_the_receipt(tmp_path):
+    store = local_store(tmp_path)
+    source = zip_bytes({f"{n}.ics": large_ics(str(n)) for n in range(4)})
+    item = store.context.dropbox.submit("export.zip", source)
+    await store.context.dropbox.process()
+    record = store.context.dropbox.records()["items"][item["id"]]
+    assert record["state"] == "failed"
+    assert "40 MiB" in record["error"]

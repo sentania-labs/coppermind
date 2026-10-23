@@ -14,7 +14,13 @@ from zoneinfo import ZoneInfo
 import recurring_ical_events
 from icalendar import Calendar
 
-from coppermind_store.calendar_import import CalendarEvent, CalendarImportError, parse_export
+from coppermind_store.calendar_import import (
+    MAX_EXPANDED,
+    MAX_UPLOAD,
+    CalendarEvent,
+    CalendarImportError,
+    parse_export,
+)
 
 
 def isolated_calendar(payload: dict[str, Any]) -> Any:
@@ -36,12 +42,15 @@ def isolated_calendar(payload: dict[str, Any]) -> Any:
     return body["result"]
 
 
-def parse_bounded(calendar_id: str, filename: str, data: bytes) -> list[CalendarEvent]:
+def parse_bounded(
+    calendar_id: str, filename: str, data: bytes, limit: int = MAX_UPLOAD
+) -> list[CalendarEvent]:
     result = isolated_calendar(
         {
             "action": "parse",
             "calendar_id": calendar_id,
             "filename": filename,
+            "limit": limit,
             "data": base64.b64encode(data).decode(),
         }
     )
@@ -139,8 +148,10 @@ def _identify(payload: dict[str, Any]) -> list[dict[str, str]]:
         calendars = Calendar.from_ical(content, multiple=True)
         for calendar in calendars:
             encoded = calendar.to_ical()
-            # Validate all content before any entry is dispatched.
-            parse_export("validation", "calendar.ics", encoded)
+            # Validate all content before any entry is dispatched. An extracted entry is
+            # bounded by the expanded-archive ceiling, not the upload ceiling the original
+            # already satisfied, so the same bytes are not re-measured against 10 MiB.
+            parse_export("validation", "calendar.ics", encoded, MAX_EXPANDED)
             uid = calendar.get("UID", "")
             if isinstance(uid, list):
                 raise CalendarImportError("calendar has multiple source identifiers")
@@ -174,6 +185,7 @@ def main() -> None:
                 payload["calendar_id"],
                 payload["filename"],
                 base64.b64decode(payload["data"], validate=True),
+                int(payload.get("limit", MAX_UPLOAD)),
             )
             result = [event.model_dump() for event in events]
         elif payload["action"] == "identify":

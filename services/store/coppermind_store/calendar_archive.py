@@ -37,6 +37,10 @@ class ImportReceipt(BaseModel):
     event_count: int = 0
     error: str = ""
     received_at: str
+    # The ceiling this archived buffer was measured against: MAX_UPLOAD for an original
+    # drop, MAX_EXPANDED for a calendar extracted from a ZIP. Recorded so a retried
+    # receipt reuses the ceiling its bytes were accepted under.
+    limit: int = MAX_UPLOAD
 
 
 class ContactEvidence(BaseModel):
@@ -108,11 +112,13 @@ class CalendarArchive:
             mode=0o600,
         )
 
-    def submit(self, calendar_id: str, filename: str, data: bytes) -> ImportReceipt:
+    def submit(
+        self, calendar_id: str, filename: str, data: bytes, limit: int = MAX_UPLOAD
+    ) -> ImportReceipt:
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", calendar_id):
             raise CalendarImportError("calendar identity must be a short lowercase slug")
-        if len(data) > MAX_UPLOAD:
-            raise CalendarImportError("calendar upload exceeds 10 MiB")
+        if len(data) > limit:
+            raise CalendarImportError(f"calendar upload exceeds {limit // (1024 * 1024)} MiB")
         # The filename is display metadata, never a local filesystem destination.
         if not filename or len(filename) > 255 or any(ord(c) < 32 for c in filename):
             raise CalendarImportError("invalid upload filename")
@@ -131,6 +137,7 @@ class CalendarArchive:
                 filename=filename,
                 content_hash=digest,
                 received_at=datetime.now(UTC).isoformat(),
+                limit=limit,
             )
             original = receipt_path.parent / "original"
             if original.exists() and hashlib.sha256(original.read_bytes()).hexdigest() != digest:
@@ -156,7 +163,9 @@ class CalendarArchive:
             if hashlib.sha256(original).hexdigest() != receipt.content_hash:
                 raise CalendarImportError("archived original failed its integrity check")
             try:
-                events = parse_bounded(receipt.calendar_id, receipt.filename, original)
+                events = parse_bounded(
+                    receipt.calendar_id, receipt.filename, original, receipt.limit
+                )
                 merged = merge_events(catalog.events, events)
             except CalendarImportError as exc:
                 receipt.state = "failed"

@@ -88,9 +88,12 @@ class CalendarEvent(BaseModel):
         ).hexdigest()
 
 
-def _entries(filename: str, data: bytes) -> list[tuple[str, bytes]]:
-    if len(data) > MAX_UPLOAD:
-        raise CalendarImportError("calendar upload exceeds 10 MiB")
+def _entries(filename: str, data: bytes, limit: int = MAX_UPLOAD) -> list[tuple[str, bytes]]:
+    # ``limit`` is the ceiling for this buffer only. Extracted archive entries arrive with
+    # MAX_EXPANDED, already summed by the loop below, not the 10 MiB upload ceiling that
+    # the original buffer passed at the intake boundary.
+    if len(data) > limit:
+        raise CalendarImportError(f"calendar upload exceeds {limit // (1024 * 1024)} MiB")
     suffix = PurePosixPath(filename).suffix.lower()
     if suffix == ".ics":
         return [(filename, data)]
@@ -162,13 +165,15 @@ def _person(value: Any, role: str) -> CalendarPerson:
     )
 
 
-def parse_export(calendar_id: str, filename: str, data: bytes) -> list[CalendarEvent]:
+def parse_export(
+    calendar_id: str, filename: str, data: bytes, limit: int = MAX_UPLOAD
+) -> list[CalendarEvent]:
     """Validate all entries before returning any event to the caller."""
     if not calendar_id.strip() or "\0" in calendar_id:
         raise CalendarImportError("calendar source identity is required")
     events: dict[str, CalendarEvent] = {}
     event_count = 0
-    for entry, content in _entries(filename, data):
+    for entry, content in _entries(filename, data, limit):
         try:
             calendars = Calendar.from_ical(content, multiple=True)
         except (ValueError, TypeError, UnicodeError) as exc:

@@ -5,10 +5,27 @@ import zipfile
 
 import pytest
 from coppermind_store.calendar_import import (
+    MAX_EXPANDED,
+    MAX_UPLOAD,
     CalendarImportError,
     merge_events,
     parse_export,
 )
+
+
+def large_ics(uid: str = "large") -> bytes:
+    """A synthetic single calendar between 10 and 40 MiB, built in-process, no fixture file."""
+    head = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nMETHOD:PUBLISH\r\n" + (
+        f"UID:{uid}\r\n" if uid else ""
+    )
+    body = "\r\n".join(
+        f"BEGIN:VEVENT\r\nUID:meeting-{i}\r\nSEQUENCE:0\r\nSUMMARY:Planning\r\n"
+        "DTSTART;TZID=America/Chicago:20261014T090000\r\n"
+        "DTEND;TZID=America/Chicago:20261014T100000\r\n"
+        "DESCRIPTION:" + "x" * 750 + "\r\nEND:VEVENT"
+        for i in range(12000)
+    )
+    return (head + body + "\r\nEND:VCALENDAR\r\n").encode()
 
 
 def ics(*events: str, method: str = "PUBLISH") -> bytes:
@@ -97,6 +114,50 @@ def test_zip_multiple_calendars_and_recurrence_exceptions_are_retained():
 def test_zip_rejects_unsafe_or_unsupported_entries(name):
     with pytest.raises(CalendarImportError):
         parse_export("work", "bad.zip", zip_bytes({name: ics(event())}))
+
+
+def test_expanded_ics_over_10_mib_passes_the_expanded_ceiling():
+    source = large_ics()
+    assert MAX_UPLOAD < len(source) < MAX_EXPANDED
+    records = parse_export("work", "calendar.ics", source, MAX_EXPANDED)
+    assert len(records) == 12000
+    assert records[0].source_entry == "calendar.ics"
+
+
+def test_zip_over_10_mib_expanding_under_40_mib_passes():
+    source = zip_bytes({"calendar.ics": large_ics()})
+    assert len(source) < MAX_UPLOAD
+    assert len(parse_export("work", "export.zip", source, MAX_EXPANDED)) == 12000
+
+
+def test_original_upload_over_10_mib_is_rejected():
+    source = large_ics()
+    with pytest.raises(CalendarImportError, match="exceeds 10 MiB"):
+        parse_export("work", "calendar.ics", source)
+
+
+def test_zip_expanding_past_40_mib_is_rejected():
+    # Four entries of ~11.9 MiB each: the archive is small, the expansion is ~47 MiB.
+    source = zip_bytes({f"{n}.ics": large_ics(str(n)) for n in range(4)})
+    with pytest.raises(CalendarImportError, match="40 MiB"):
+        parse_export("work", "export.zip", source, MAX_EXPANDED)
+
+
+def test_archive_entry_and_event_count_protections_still_trigger():
+    many = zip_bytes({f"{n}.ics": ics(event(f"e-{n}")) for n in range(101)})
+    with pytest.raises(CalendarImportError, match="100 entries"):
+        parse_export("work", "many.zip", many)
+    oversized = (
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nMETHOD:PUBLISH\r\n"
+        + "\r\n".join(
+            f"BEGIN:VEVENT\r\nUID:e-{n}\r\nDTSTART:20261014T090000Z\r\nEND:VEVENT"
+            for n in range(50001)
+        )
+        + "\r\nEND:VCALENDAR\r\n"
+    ).encode()
+    assert len(oversized) < MAX_UPLOAD
+    with pytest.raises(CalendarImportError, match="50000 event records"):
+        parse_export("work", "many.ics", oversized)
 
 
 def test_entire_export_rejected_when_one_event_is_invalid():
