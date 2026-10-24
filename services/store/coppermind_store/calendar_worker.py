@@ -29,7 +29,7 @@ def isolated_calendar(payload: dict[str, Any]) -> Any:
             [sys.executable, "-m", "coppermind_store.calendar_worker"],
             input=json.dumps(payload).encode(),
             capture_output=True,
-            timeout=15,
+            timeout=45,
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
@@ -176,8 +176,11 @@ def _identify(payload: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def main() -> None:
-    resource.setrlimit(resource.RLIMIT_AS, (512 * 1024**2, 512 * 1024**2))
-    resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
+    # Sized against the advertised ceilings: 40 MiB expanded is 3 archive entries of the
+    # reference 10.62 MiB calendar, which measures 22s of CPU and 248 MiB peak RSS here, so
+    # the budgets carry the whole advertised range with room for interpreter startup.
+    resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024**2, 1024 * 1024**2))
+    resource.setrlimit(resource.RLIMIT_CPU, (30, 30))
     try:
         payload = json.load(sys.stdin)
         if payload["action"] == "parse":
