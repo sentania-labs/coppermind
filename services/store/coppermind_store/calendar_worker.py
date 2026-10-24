@@ -14,7 +14,12 @@ from zoneinfo import ZoneInfo
 import recurring_ical_events
 from icalendar import Calendar
 
-from coppermind_store.calendar_import import CalendarEvent, CalendarImportError, parse_export
+from coppermind_store.calendar_import import (
+    MAX_UPLOAD,
+    CalendarEvent,
+    CalendarImportError,
+    parse_export,
+)
 
 
 def isolated_calendar(payload: dict[str, Any]) -> Any:
@@ -23,7 +28,7 @@ def isolated_calendar(payload: dict[str, Any]) -> Any:
             [sys.executable, "-m", "coppermind_store.calendar_worker"],
             input=json.dumps(payload).encode(),
             capture_output=True,
-            timeout=15,
+            timeout=45,
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
@@ -36,16 +41,25 @@ def isolated_calendar(payload: dict[str, Any]) -> Any:
     return body["result"]
 
 
-def parse_bounded(calendar_id: str, filename: str, data: bytes) -> list[CalendarEvent]:
+def parse_bounded(
+    calendar_id: str, filename: str, data: bytes, limit: int = MAX_UPLOAD
+) -> list[CalendarEvent]:
     result = isolated_calendar(
         {
             "action": "parse",
             "calendar_id": calendar_id,
             "filename": filename,
+            "limit": limit,
             "data": base64.b64encode(data).decode(),
         }
     )
-    return [CalendarEvent.model_validate(item) for item in result]
+    timezones = result["timezones"]
+    return [
+        CalendarEvent.model_validate(
+            item | {"timezone_components": [timezones[i] for i in item["timezone_components"]]}
+        )
+        for item in result["events"]
+    ]
 
 
 def occurrences(events: list[CalendarEvent], day: date, timezone: str) -> list[dict[str, Any]]:
@@ -131,16 +145,27 @@ def _lookup(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _identify(payload: dict[str, Any]) -> list[dict[str, str]]:
-    from coppermind_store.calendar_import import _entries
+    from coppermind_store.calendar_import import (
+        MAX_SERIALIZED,
+        _calendars,
+        _entries,
+        _parse_calendar,
+    )
 
     data = base64.b64decode(payload["data"], validate=True)
     output = []
+    # One parse per calendar serves both validation and the identity fields, so the whole
+    # advertised range fits the CPU budget. Each calendar is validated on its own, as it is
+    # parsed on its own after handoff, and is serialized before validation marks cancelled
+    # events, so the handoff bytes are the calendar as exported.
     for filename, content in _entries(payload["filename"], data):
-        calendars = Calendar.from_ical(content, multiple=True)
-        for calendar in calendars:
+        for calendar in _calendars(content):
             encoded = calendar.to_ical()
-            # Validate all content before any entry is dispatched.
-            parse_export("validation", "calendar.ics", encoded)
+            _parse_calendar("validation", filename, calendar, {}, 0)
+            # The handoff bytes are the re-serialized calendar, which is a little larger
+            # than the archive entry, so they are measured against MAX_SERIALIZED.
+            if len(encoded) > MAX_SERIALIZED:
+                raise CalendarImportError("serialized calendar exceeds 44 MiB")
             uid = calendar.get("UID", "")
             if isinstance(uid, list):
                 raise CalendarImportError("calendar has multiple source identifiers")
@@ -165,24 +190,40 @@ def _identify(payload: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def main() -> None:
-    resource.setrlimit(resource.RLIMIT_AS, (512 * 1024**2, 512 * 1024**2))
-    resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
+    # Sized against the advertised ceilings and measured on this machine for a single
+    # calendar at the top of the 40 MiB expanded range: about 28s of CPU and 1.2 GiB peak
+    # RSS, so the budgets carry the whole range with room for interpreter startup.
+    resource.setrlimit(resource.RLIMIT_AS, (2048 * 1024**2, 2048 * 1024**2))
+    resource.setrlimit(resource.RLIMIT_CPU, (45, 45))
     try:
         payload = json.load(sys.stdin)
+        result: Any
         if payload["action"] == "parse":
             events = parse_export(
                 payload["calendar_id"],
                 payload["filename"],
                 base64.b64decode(payload["data"], validate=True),
+                int(payload.get("limit", MAX_UPLOAD)),
             )
-            result = [event.model_dump() for event in events]
+            # Every event of a calendar carries all of its timezone definitions, so each
+            # distinct definition is sent once and events refer to it by index. Otherwise
+            # the output grows with events times timezones inside the 40 MiB range.
+            table: dict[str, int] = {}
+            records = []
+            for event in events:
+                record = event.model_dump()
+                record["timezone_components"] = [
+                    table.setdefault(text, len(table)) for text in event.timezone_components
+                ]
+                records.append(record)
+            result = {"timezones": list(table), "events": records}
         elif payload["action"] == "identify":
             result = _identify(payload)
         else:
             result = _lookup(payload)
         encoded = json.dumps({"result": result})
-        if len(encoded) > 64 * 1024**2:
-            raise CalendarImportError("parsed export exceeds the 64 MiB record limit")
+        if len(encoded) > 96 * 1024**2:
+            raise CalendarImportError("parsed export exceeds the 96 MiB record limit")
         print(encoded)
     except Exception as exc:
         # Parser errors can contain calendar content. Only our fixed messages are safe.

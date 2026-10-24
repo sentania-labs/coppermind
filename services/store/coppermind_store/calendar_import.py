@@ -19,6 +19,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 MAX_UPLOAD = 10 * 1024 * 1024
 MAX_EXPANDED = 40 * 1024 * 1024
+# A re-serialized calendar is larger than the archive entry it came from: ``to_ical``
+# re-folds long properties, adding a continuation pair per 75 columns (measured 2.3% on a
+# 38 MiB single calendar). The bytes handed to the archive are that output, so they are
+# measured against this ceiling instead of ``MAX_EXPANDED``, which bounds the expansion.
+MAX_SERIALIZED = 44 * 1024 * 1024
 MAX_ENTRIES = 100
 MAX_EVENTS = 50_000
 
@@ -88,9 +93,12 @@ class CalendarEvent(BaseModel):
         ).hexdigest()
 
 
-def _entries(filename: str, data: bytes) -> list[tuple[str, bytes]]:
-    if len(data) > MAX_UPLOAD:
-        raise CalendarImportError("calendar upload exceeds 10 MiB")
+def _entries(filename: str, data: bytes, limit: int = MAX_UPLOAD) -> list[tuple[str, bytes]]:
+    # ``limit`` is the ceiling for this buffer only. Extracted archive entries arrive with
+    # MAX_EXPANDED, already summed by the loop below, not the 10 MiB upload ceiling that
+    # the original buffer passed at the intake boundary.
+    if len(data) > limit:
+        raise CalendarImportError(f"calendar upload exceeds {limit // (1024 * 1024)} MiB")
     suffix = PurePosixPath(filename).suffix.lower()
     if suffix == ".ics":
         return [(filename, data)]
@@ -162,84 +170,100 @@ def _person(value: Any, role: str) -> CalendarPerson:
     )
 
 
-def parse_export(calendar_id: str, filename: str, data: bytes) -> list[CalendarEvent]:
+def _calendars(content: bytes) -> list[Calendar]:
+    try:
+        calendars = Calendar.from_ical(content, multiple=True)
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise CalendarImportError("invalid ICS document") from exc
+    if not calendars:
+        raise CalendarImportError("ICS contains no calendar")
+    return calendars
+
+
+def _parse_calendar(
+    calendar_id: str,
+    entry: str,
+    calendar: Calendar,
+    events: dict[str, CalendarEvent],
+    seen: int,
+) -> int:
+    """Validate one parsed calendar into ``events`` and return the records it walked."""
+    if calendar.name != "VCALENDAR" or str(calendar.get("VERSION")) != "2.0":
+        raise CalendarImportError("expected a version 2.0 calendar")
+    if any(getattr(item, "errors", ()) for item in calendar.walk()):
+        raise CalendarImportError("ICS contains malformed properties")
+    if any(item.name not in {"VEVENT", "VTIMEZONE"} for item in calendar.subcomponents):
+        raise CalendarImportError("only events and timezone definitions are supported")
+    timezones = [item.to_ical().decode() for item in calendar.walk("VTIMEZONE")]
+    count = 0
+    for component in calendar.walk("VEVENT"):
+        count += 1
+        if seen + count > MAX_EVENTS:
+            raise CalendarImportError("export exceeds 50000 event records")
+        uid = str(component.get("UID", ""))
+        if not uid or "\0" in uid:
+            raise CalendarImportError("event is missing a valid UID")
+        cancelled = (
+            str(component.get("STATUS", "")).upper() == "CANCELLED"
+            or str(calendar.get("METHOD", "")).upper() == "CANCEL"
+        )
+        if cancelled:
+            component["STATUS"] = "CANCELLED"
+        modified = _time(component, "LAST-MODIFIED")
+        if modified:
+            stamp = datetime.fromisoformat(modified)
+            if stamp.tzinfo is None:
+                raise CalendarImportError("LAST-MODIFIED requires a timezone")
+        people = []
+        organizer = component.get("ORGANIZER")
+        if organizer is not None:
+            if isinstance(organizer, list):
+                raise CalendarImportError("event has multiple organizers")
+            people.append(_person(organizer, "organizer"))
+        attendees = component.get("ATTENDEE", [])
+        if not isinstance(attendees, list):
+            attendees = [attendees]
+        people.extend(_person(value, "invitee") for value in attendees)
+        try:
+            sequence = int(component.get("SEQUENCE", 0))
+        except (ValueError, TypeError) as exc:
+            raise CalendarImportError("event has invalid SEQUENCE") from exc
+        if sequence < 0:
+            raise CalendarImportError("event has negative SEQUENCE")
+        event = CalendarEvent(
+            calendar_id=calendar_id,
+            uid=uid,
+            recurrence_id=_time(component, "RECURRENCE-ID"),
+            sequence=sequence,
+            modified=modified,
+            title=str(component.get("SUMMARY", "")),
+            start=_time(component, "DTSTART", required=not cancelled),
+            end=_time(component, "DTEND"),
+            cancelled=cancelled,
+            people=people,
+            component=component.to_ical().decode(),
+            timezone_components=timezones,
+            source_entry=entry,
+        )
+        previous = events.get(event.identity)
+        if previous is None or event.revision > previous.revision:
+            events[event.identity] = event
+        elif event.revision == previous.revision and event.semantic_hash != previous.semantic_hash:
+            raise CalendarImportError("conflicting event versions within export")
+    return count
+
+
+def parse_export(
+    calendar_id: str, filename: str, data: bytes, limit: int = MAX_UPLOAD
+) -> list[CalendarEvent]:
     """Validate all entries before returning any event to the caller."""
     if not calendar_id.strip() or "\0" in calendar_id:
         raise CalendarImportError("calendar source identity is required")
     events: dict[str, CalendarEvent] = {}
-    event_count = 0
-    for entry, content in _entries(filename, data):
-        try:
-            calendars = Calendar.from_ical(content, multiple=True)
-        except (ValueError, TypeError, UnicodeError) as exc:
-            raise CalendarImportError("invalid ICS document") from exc
-        if not calendars:
-            raise CalendarImportError("ICS contains no calendar")
-        for calendar in calendars:
-            if calendar.name != "VCALENDAR" or str(calendar.get("VERSION")) != "2.0":
-                raise CalendarImportError("expected a version 2.0 calendar")
-            if any(getattr(item, "errors", ()) for item in calendar.walk()):
-                raise CalendarImportError("ICS contains malformed properties")
-            if any(item.name not in {"VEVENT", "VTIMEZONE"} for item in calendar.subcomponents):
-                raise CalendarImportError("only events and timezone definitions are supported")
-            timezones = [item.to_ical().decode() for item in calendar.walk("VTIMEZONE")]
-            for component in calendar.walk("VEVENT"):
-                event_count += 1
-                if event_count > MAX_EVENTS:
-                    raise CalendarImportError("export exceeds 50000 event records")
-                uid = str(component.get("UID", ""))
-                if not uid or "\0" in uid:
-                    raise CalendarImportError("event is missing a valid UID")
-                cancelled = (
-                    str(component.get("STATUS", "")).upper() == "CANCELLED"
-                    or str(calendar.get("METHOD", "")).upper() == "CANCEL"
-                )
-                if cancelled:
-                    component["STATUS"] = "CANCELLED"
-                modified = _time(component, "LAST-MODIFIED")
-                if modified:
-                    stamp = datetime.fromisoformat(modified)
-                    if stamp.tzinfo is None:
-                        raise CalendarImportError("LAST-MODIFIED requires a timezone")
-                people = []
-                organizer = component.get("ORGANIZER")
-                if organizer is not None:
-                    if isinstance(organizer, list):
-                        raise CalendarImportError("event has multiple organizers")
-                    people.append(_person(organizer, "organizer"))
-                attendees = component.get("ATTENDEE", [])
-                if not isinstance(attendees, list):
-                    attendees = [attendees]
-                people.extend(_person(value, "invitee") for value in attendees)
-                try:
-                    sequence = int(component.get("SEQUENCE", 0))
-                except (ValueError, TypeError) as exc:
-                    raise CalendarImportError("event has invalid SEQUENCE") from exc
-                if sequence < 0:
-                    raise CalendarImportError("event has negative SEQUENCE")
-                event = CalendarEvent(
-                    calendar_id=calendar_id,
-                    uid=uid,
-                    recurrence_id=_time(component, "RECURRENCE-ID"),
-                    sequence=sequence,
-                    modified=modified,
-                    title=str(component.get("SUMMARY", "")),
-                    start=_time(component, "DTSTART", required=not cancelled),
-                    end=_time(component, "DTEND"),
-                    cancelled=cancelled,
-                    people=people,
-                    component=component.to_ical().decode(),
-                    timezone_components=timezones,
-                    source_entry=entry,
-                )
-                previous = events.get(event.identity)
-                if previous is None or event.revision > previous.revision:
-                    events[event.identity] = event
-                elif (
-                    event.revision == previous.revision
-                    and event.semantic_hash != previous.semantic_hash
-                ):
-                    raise CalendarImportError("conflicting event versions within export")
+    seen = 0
+    for entry, content in _entries(filename, data, limit):
+        for calendar in _calendars(content):
+            seen += _parse_calendar(calendar_id, entry, calendar, events, seen)
     return list(events.values())
 
 
