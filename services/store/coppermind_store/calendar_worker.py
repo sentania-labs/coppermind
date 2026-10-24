@@ -15,7 +15,6 @@ import recurring_ical_events
 from icalendar import Calendar
 
 from coppermind_store.calendar_import import (
-    MAX_EXPANDED,
     MAX_UPLOAD,
     CalendarEvent,
     CalendarImportError,
@@ -140,18 +139,28 @@ def _lookup(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _identify(payload: dict[str, Any]) -> list[dict[str, str]]:
-    from coppermind_store.calendar_import import _entries
+    from coppermind_store.calendar_import import (
+        MAX_SERIALIZED,
+        _calendars,
+        _entries,
+        _parse_calendar,
+    )
 
     data = base64.b64decode(payload["data"], validate=True)
     output = []
+    # One parse per calendar serves both validation and the identity fields, so the whole
+    # advertised range fits the CPU budget. The 50000-event ceiling counts records across
+    # every entry of the export, matching ``parse_export``.
+    validated: dict[str, Any] = {}
+    seen = 0
     for filename, content in _entries(payload["filename"], data):
-        calendars = Calendar.from_ical(content, multiple=True)
-        for calendar in calendars:
+        for calendar in _calendars(content):
+            seen += _parse_calendar("validation", filename, calendar, validated, seen)
             encoded = calendar.to_ical()
-            # Validate all content before any entry is dispatched. An extracted entry is
-            # bounded by the expanded-archive ceiling, not the upload ceiling the original
-            # already satisfied, so the same bytes are not re-measured against 10 MiB.
-            parse_export("validation", "calendar.ics", encoded, MAX_EXPANDED)
+            # The handoff bytes are the re-serialized calendar, which is a little larger
+            # than the archive entry, so they are measured against MAX_SERIALIZED.
+            if len(encoded) > MAX_SERIALIZED:
+                raise CalendarImportError("serialized calendar exceeds 44 MiB")
             uid = calendar.get("UID", "")
             if isinstance(uid, list):
                 raise CalendarImportError("calendar has multiple source identifiers")
@@ -176,11 +185,11 @@ def _identify(payload: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def main() -> None:
-    # Sized against the advertised ceilings: 40 MiB expanded is 3 archive entries of the
-    # reference 10.62 MiB calendar, which measures 22s of CPU and 248 MiB peak RSS here, so
-    # the budgets carry the whole advertised range with room for interpreter startup.
-    resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024**2, 1024 * 1024**2))
-    resource.setrlimit(resource.RLIMIT_CPU, (30, 30))
+    # Sized against the advertised ceilings and measured on this machine for a single
+    # calendar at the top of the 40 MiB expanded range: about 28s of CPU and 1.2 GiB peak
+    # RSS, so the budgets carry the whole range with room for interpreter startup.
+    resource.setrlimit(resource.RLIMIT_AS, (2048 * 1024**2, 2048 * 1024**2))
+    resource.setrlimit(resource.RLIMIT_CPU, (45, 45))
     try:
         payload = json.load(sys.stdin)
         if payload["action"] == "parse":
@@ -196,8 +205,8 @@ def main() -> None:
         else:
             result = _lookup(payload)
         encoded = json.dumps({"result": result})
-        if len(encoded) > 64 * 1024**2:
-            raise CalendarImportError("parsed export exceeds the 64 MiB record limit")
+        if len(encoded) > 96 * 1024**2:
+            raise CalendarImportError("parsed export exceeds the 96 MiB record limit")
         print(encoded)
     except Exception as exc:
         # Parser errors can contain calendar content. Only our fixed messages are safe.

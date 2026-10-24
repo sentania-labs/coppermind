@@ -6,14 +6,16 @@ import zipfile
 import pytest
 from coppermind_store.calendar_import import (
     MAX_EXPANDED,
+    MAX_SERIALIZED,
     MAX_UPLOAD,
     CalendarImportError,
     merge_events,
     parse_export,
 )
+from icalendar import Calendar
 
 
-def large_ics(uid: str = "large") -> bytes:
+def large_ics(uid: str = "large", n: int = 12000) -> bytes:
     """A synthetic single calendar between 10 and 40 MiB, built in-process, no fixture file."""
     head = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nMETHOD:PUBLISH\r\n" + (
         f"UID:{uid}\r\n" if uid else ""
@@ -23,7 +25,7 @@ def large_ics(uid: str = "large") -> bytes:
         "DTSTART;TZID=America/Chicago:20261014T090000\r\n"
         "DTEND;TZID=America/Chicago:20261014T100000\r\n"
         "DESCRIPTION:" + "x" * 750 + "\r\nEND:VEVENT"
-        for i in range(12000)
+        for i in range(n)
     )
     return (head + body + "\r\nEND:VCALENDAR\r\n").encode()
 
@@ -128,6 +130,17 @@ def test_zip_over_10_mib_expanding_under_40_mib_passes():
     source = zip_bytes({"calendar.ics": large_ics()})
     assert len(source) < MAX_UPLOAD
     assert len(parse_export("work", "export.zip", source, MAX_EXPANDED)) == 12000
+
+
+def test_top_of_range_single_calendar_fits_the_serialized_ceiling():
+    # 50000 records is the last size the event ceiling allows and the top of the 40 MiB
+    # expansion. `to_ical` re-folds long properties, so the handoff bytes are measured
+    # against MAX_SERIALIZED rather than the expansion they came from.
+    source = large_ics(n=45000)
+    assert MAX_UPLOAD < len(source) < MAX_EXPANDED
+    records = parse_export("work", "calendar.ics", source, MAX_SERIALIZED)
+    assert len(records) == 45000
+    assert len(Calendar.from_ical(source).to_ical()) <= MAX_SERIALIZED
 
 
 def test_original_upload_over_10_mib_is_rejected():
