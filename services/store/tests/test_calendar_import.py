@@ -208,3 +208,20 @@ def test_recurrence_lookup_handles_dst_exception_and_cancellation():
         "America/Chicago",
     )
     assert result == []
+
+
+def test_parse_output_sends_each_timezone_definition_once():
+    from coppermind_store.calendar_worker import parse_bounded
+
+    zones = "".join(
+        f"BEGIN:VTIMEZONE\r\nTZID:Zone/{i}\r\nBEGIN:STANDARD\r\nDTSTART:19701101T020000\r\n"
+        f"TZOFFSETFROM:-0{i}00\r\nTZOFFSETTO:-0{i}00\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n"
+        for i in range(1, 4)
+    )
+    source = ics(event("one"), event("two")).replace(
+        b"BEGIN:VEVENT", zones.encode() + b"BEGIN:VEVENT", 1
+    )
+    expected = parse_export("work", "calendar.ics", source)
+    records = parse_bounded("work", "calendar.ics", source)
+    assert [r.model_dump() for r in records] == [e.model_dump() for e in expected]
+    assert len(records[0].timezone_components) == 3

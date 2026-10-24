@@ -53,7 +53,13 @@ def parse_bounded(
             "data": base64.b64encode(data).decode(),
         }
     )
-    return [CalendarEvent.model_validate(item) for item in result]
+    timezones = result["timezones"]
+    return [
+        CalendarEvent.model_validate(
+            item | {"timezone_components": [timezones[i] for i in item["timezone_components"]]}
+        )
+        for item in result["events"]
+    ]
 
 
 def occurrences(events: list[CalendarEvent], day: date, timezone: str) -> list[dict[str, Any]]:
@@ -149,14 +155,13 @@ def _identify(payload: dict[str, Any]) -> list[dict[str, str]]:
     data = base64.b64decode(payload["data"], validate=True)
     output = []
     # One parse per calendar serves both validation and the identity fields, so the whole
-    # advertised range fits the CPU budget. The 50000-event ceiling counts records across
-    # every entry of the export, matching ``parse_export``.
-    validated: dict[str, Any] = {}
-    seen = 0
+    # advertised range fits the CPU budget. Each calendar is validated on its own, as it is
+    # parsed on its own after handoff, and is serialized before validation marks cancelled
+    # events, so the handoff bytes are the calendar as exported.
     for filename, content in _entries(payload["filename"], data):
         for calendar in _calendars(content):
-            seen += _parse_calendar("validation", filename, calendar, validated, seen)
             encoded = calendar.to_ical()
+            _parse_calendar("validation", filename, calendar, {}, 0)
             # The handoff bytes are the re-serialized calendar, which is a little larger
             # than the archive entry, so they are measured against MAX_SERIALIZED.
             if len(encoded) > MAX_SERIALIZED:
@@ -192,6 +197,7 @@ def main() -> None:
     resource.setrlimit(resource.RLIMIT_CPU, (45, 45))
     try:
         payload = json.load(sys.stdin)
+        result: Any
         if payload["action"] == "parse":
             events = parse_export(
                 payload["calendar_id"],
@@ -199,7 +205,18 @@ def main() -> None:
                 base64.b64decode(payload["data"], validate=True),
                 int(payload.get("limit", MAX_UPLOAD)),
             )
-            result = [event.model_dump() for event in events]
+            # Every event of a calendar carries all of its timezone definitions, so each
+            # distinct definition is sent once and events refer to it by index. Otherwise
+            # the output grows with events times timezones inside the 40 MiB range.
+            table: dict[str, int] = {}
+            records = []
+            for event in events:
+                record = event.model_dump()
+                record["timezone_components"] = [
+                    table.setdefault(text, len(table)) for text in event.timezone_components
+                ]
+                records.append(record)
+            result = {"timezones": list(table), "events": records}
         elif payload["action"] == "identify":
             result = _identify(payload)
         else:

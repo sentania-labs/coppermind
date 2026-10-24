@@ -47,6 +47,24 @@ def test_zip_keeps_physical_calendars_separate_and_refuses_mixed_content():
         identify(archive.getvalue(), "export.zip")
 
 
+def test_calendars_in_one_zip_are_validated_separately():
+    # The same meeting in two calendars of one export differs only in its timezone context,
+    # which is not a conflict: each calendar is imported under its own identity.
+    zone = (
+        "BEGIN:VTIMEZONE\r\nTZID:Zone/One\r\nBEGIN:STANDARD\r\nDTSTART:19701101T020000\r\n"
+        "TZOFFSETFROM:-0100\r\nTZOFFSETTO:-0100\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n"
+    )
+    first = calendar("work").replace(b"BEGIN:VEVENT", zone.encode() + b"BEGIN:VEVENT")
+    source = zip_bytes({"work.ics": first, "family.ics": calendar("family")})
+    assert {p["uid"] for p in identify(source, "export.zip")} == {"work", "family"}
+
+
+def test_identify_hands_off_the_calendar_as_exported():
+    cancelled = calendar("work").replace(b"VERSION:2.0", b"VERSION:2.0\r\nMETHOD:CANCEL")
+    handoff = base64.b64decode(identify(cancelled)[0]["data"])
+    assert b"STATUS:CANCELLED" not in handoff
+
+
 def local_store(tmp_path):
     wiring = Wiring(data_dir=tmp_path / "data")
     control = ControlState(wiring.state_dir)
