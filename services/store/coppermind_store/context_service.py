@@ -1104,8 +1104,10 @@ class ContextService:
             "body": note.body,
         }
         remaining = len(job.result.suggestions) - len(job.decisions) if job.result else 0
-        date_key = self.store.control.schema().role("date_key")
-        changed_date = date_key in approval["changes"] or "time" in approval["changes"]
+        schema = self.store.control.schema()
+        changed_date = note_date(approval["before_frontmatter"], schema) != note_date(
+            note.frontmatter, schema
+        )
         job.state = (
             "stale" if remaining and changed_date else "suggested" if remaining else "applied"
         )

@@ -554,3 +554,43 @@ async def test_unexpected_provider_error_consumes_bounded_attempts(store):
     assert "sensitive" not in final.error
     await context.run_job(final)
     assert len(calls) == 2
+
+
+async def test_event_approval_filling_time_keeps_remaining_suggestions(store):
+    from coppermind_store.enrichment_models import Suggestions
+
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].event_field = "account"
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    assert "time" not in note.frontmatter
+    job = context.load_job(await context.queue_note(note.id))
+    job.evidence = await context.evidence(job)
+    candidate = job.evidence["events"][0]
+    job.result = Suggestions.model_validate(
+        {
+            "suggestions": [
+                {
+                    "kind": "event",
+                    "reason": "Calendar event",
+                    "event_ids": [candidate["event_id"]],
+                },
+                {
+                    "kind": "filename",
+                    "value": "Better name",
+                    "quote": "Casey attended",
+                    "reason": "Subject",
+                },
+            ]
+        }
+    )
+    job.state = "suggested"
+    context.save_job(job)
+    await context.approve({"id": job.id, "index": 0, "confirmation": "Apply selected suggestion"})
+    updated = await store.get_note(note.id)
+    assert str(updated.frontmatter["time"]).startswith("2026-10-14T")
+    assert context.load_job(job.id).state == "suggested"
+    assert context.load_job(job.id).error == ""
