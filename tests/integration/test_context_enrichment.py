@@ -594,3 +594,54 @@ async def test_event_approval_filling_time_keeps_remaining_suggestions(store):
     assert str(updated.frontmatter["time"]).startswith("2026-10-14T")
     assert context.load_job(job.id).state == "suggested"
     assert context.load_job(job.id).error == ""
+
+
+async def test_all_day_event_approval_does_not_shift_the_note_date(store):
+    from coppermind_store.enrichment_models import Suggestions
+
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].event_field = "account"
+    context.save_config(config)
+    all_day = (
+        "UID:holiday-1\r\nSEQUENCE:0\r\nSUMMARY:Offsite\r\n"
+        "DTSTART;VALUE=DATE:20261014\r\nDTEND;VALUE=DATE:20261015"
+    )
+    imported = await context.upload(
+        {
+            "calendar_id": "work",
+            "filename": "all-day.ics",
+            "content_base64": base64.b64encode(ics(all_day)).decode(),
+        }
+    )
+    await context.retry_import({"id": imported["id"]})
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job = context.load_job(await context.queue_note(note.id))
+    job.evidence = await context.evidence(job)
+    candidate = next(item for item in job.evidence["events"] if item["start"] == "2026-10-14")
+    job.result = Suggestions.model_validate(
+        {
+            "suggestions": [
+                {
+                    "kind": "event",
+                    "reason": "Calendar event",
+                    "event_ids": [candidate["event_id"]],
+                },
+                {
+                    "kind": "filename",
+                    "value": "Better name",
+                    "quote": "Casey attended",
+                    "reason": "Subject",
+                },
+            ]
+        }
+    )
+    job.state = "suggested"
+    context.save_job(job)
+    await context.approve({"id": job.id, "index": 0, "confirmation": "Apply selected suggestion"})
+    updated = await store.get_note(note.id)
+    assert "time" not in updated.frontmatter
+    assert str(updated.frontmatter["date"]) == "2026-10-14"
+    assert context.load_job(job.id).state == "suggested"

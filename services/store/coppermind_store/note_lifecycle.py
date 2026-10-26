@@ -63,9 +63,6 @@ class NoteLifecycle:
         self.calendar_generation = ""
 
     def _default_timezone(self) -> str:
-        config = self.context.config()
-        if config.timezone and config.timezone != "America/Chicago":
-            return config.timezone
         return self.context.store.control.settings().general.timezone
 
     async def detail(self, payload: dict[str, Any]) -> dict[str, Any]:

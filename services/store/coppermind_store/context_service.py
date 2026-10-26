@@ -280,8 +280,6 @@ class ContextService:
             )
             config.lifecycle_enabled = True
             config.dropbox_folder = payload.get("folder", config.dropbox_folder)
-            if "timezone" in payload:
-                config.timezone = payload["timezone"]
             config = ContextConfig.model_validate(config.model_dump())
             assignment = config.assignments["enrichment"]
             assignment.attendees_field = assignment.attendees_field or "attendees"
@@ -976,10 +974,13 @@ class ContextService:
                     )
                     if matched and matched.get("start"):
                         zone = self.store.control.settings().general.timezone
-                        start_dt = datetime.fromisoformat(str(matched["start"])).astimezone(
-                            ZoneInfo(zone)
-                        )
-                        changes["time"] = format_note_time(start_dt)
+                        start_dt = datetime.fromisoformat(str(matched["start"]))
+                        if start_dt.tzinfo is not None:
+                            local = start_dt.astimezone(ZoneInfo(zone))
+                            if local.date() == note_date(
+                                note.frontmatter, self.store.control.schema()
+                            ):
+                                changes["time"] = format_note_time(local)
             elif suggestion.kind in {"contact", "attendee", "invitee"}:
                 field = (
                     assignment.attendees_field
