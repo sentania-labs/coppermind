@@ -51,7 +51,12 @@ from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
 from coppermind.logging import get_logger
 from coppermind.naming import note_stem, sanitize_folder, unique_stem
-from coppermind.schema import FrontmatterSchema
+from coppermind.schema import (
+    FrontmatterSchema,
+    format_note_time,
+    normalize_note_time,
+    note_date,
+)
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
     CreateNote,
@@ -1610,20 +1615,50 @@ def _recover_id_from_raw(
     return None
 
 
+def _default_note_time(
+    frontmatter: dict[str, Any],
+    schema: FrontmatterSchema,
+    settings: ProductSettings,
+    captured_at: datetime | None = None,
+) -> str:
+    raw_tz = frontmatter.get("timezone")
+    tz_name = str(raw_tz).strip() if isinstance(raw_tz, str) and raw_tz.strip() else ""
+    try:
+        zone = ZoneInfo(tz_name or settings.general.timezone)
+    except (ValueError, KeyError):
+        zone = ZoneInfo(settings.general.timezone)
+    instant = captured_at.astimezone(zone) if captured_at is not None else datetime.now(tz=zone)
+    explicit_date = _as_date(frontmatter.get(schema.role("date_key")))
+    if explicit_date is not None:
+        return format_note_time(
+            datetime.combine(explicit_date, instant.time().replace(microsecond=0))
+        )
+    return format_note_time(instant)
+
+
 def _build_frontmatter(
     request: CreateNote,
     schema: FrontmatterSchema,
     settings: ProductSettings,
     note_id: str,
+    *,
+    captured_at: datetime | None = None,
+    from_ingest: bool = False,
 ) -> dict[str, Any]:
     """Merge the caller's frontmatter over the schema defaults, in key order."""
     values: dict[str, Any] = schema.defaults()
+    date_key = schema.role("date_key")
+    if (
+        from_ingest or (not request.frontmatter.get(date_key) and not values.get(date_key))
+    ) and not request.frontmatter.get("time"):
+        values["time"] = _default_note_time(request.frontmatter, schema, settings, captured_at)
     values.update(request.frontmatter)
+    if from_ingest and values.get("time"):
+        values["time"] = normalize_note_time(
+            values["time"], fallback_date=_as_date(values.get(date_key)) or _today(settings)
+        )
     values[schema.role("id_key")] = note_id
     values.setdefault(schema.role("schema_version_key"), 1)
-    date_key = schema.role("date_key")
-    if not values.get(date_key):
-        values[date_key] = _today(settings).isoformat()
     return _ordered(values, schema)
 
 
@@ -1647,10 +1682,17 @@ def _adoption_changes(
     """
     available = schema.defaults()
     id_key = schema.role("id_key")
+    date_key = schema.role("date_key")
     available[id_key] = note_id
     available.setdefault(schema.role("schema_version_key"), 1)
-    available.setdefault(schema.role("date_key"), _today(settings))
-    changes = {id_key: note_id} if frontmatter.get(id_key) is None else {}
+    available.setdefault(date_key, _today(settings))
+    changes: dict[str, Any] = {id_key: note_id} if frontmatter.get(id_key) is None else {}
+    if date_key in frontmatter and frontmatter.get(date_key) is None:
+        changes[date_key] = available[date_key]
+    elif frontmatter.get("time") is None and (
+        "time" in frontmatter or frontmatter.get(date_key) is None
+    ):
+        changes["time"] = _default_note_time(frontmatter, schema, settings)
     effective = {**frontmatter, **changes}
     while True:
         added = False
@@ -1814,7 +1856,7 @@ def _mirror_columns(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> d
         "type": _text(frontmatter.get(schema.role("type_key"))),
         "context": _text(frontmatter.get(schema.role("context_key"))),
         "account": _text(frontmatter.get(schema.role("account_key"))),
-        "date": _as_date(frontmatter.get(schema.role("date_key"))),
+        "date": note_date(frontmatter, schema),
         "reviewed": frontmatter.get(schema.role("reviewed_key")) is True,
         **({"filed": False} if frontmatter.get(schema.role("reviewed_key")) is not True else {}),
         "tags": [_storable(str(tag)) for tag in tags] if isinstance(tags, list) else [],
@@ -1829,8 +1871,7 @@ def _stem_for(
 ) -> str:
     note_type = _text(frontmatter.get(schema.role("type_key")))
     dated = note_type in settings.notes.dated_types
-    note_date = _as_date(frontmatter.get(schema.role("date_key")))
-    return note_stem(title, note_date=note_date, dated=dated)
+    return note_stem(title, note_date=note_date(frontmatter, schema), dated=dated)
 
 
 def _body_with_heading(title: str, body: str) -> str:

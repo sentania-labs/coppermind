@@ -101,12 +101,18 @@ class FeatureAssignment(ContextModel):
 class ContextConfig(ContextModel):
     revision: int = 0
     dropbox_folder: str = "Dropbox"
+    timezone: str = "America/Chicago"
     lifecycle_enabled: bool = False
 
     @field_validator("dropbox_folder")
     @classmethod
     def safe_dropbox(cls, value: str) -> str:
         return CalendarSource.folder_path(value)
+
+    @field_validator("timezone")
+    @classmethod
+    def valid_timezone(cls, value: str) -> str:
+        return CalendarSource.known_timezone(value)
 
     sources: list[CalendarSource] = Field(default_factory=list)
     connections: list[ModelConnection] = Field(default_factory=list)

@@ -18,7 +18,6 @@ from these files and from the notes themselves.
 ---
 schema_version: 1
 id: 01K4Q8Z3N7V2X9M1B5C6D8E0F2
-date: 2026-09-08
 type: work
 context: external
 account: Acme
@@ -26,6 +25,7 @@ reviewed: false
 sources:
   - 01K4Q8Z2A0P1Q2R3S4T5U6V7W8
 tags: []
+time: 2026-09-08T14:02:11
 ---
 # Acme Architecture Sync
 ...
@@ -33,8 +33,8 @@ tags: []
 
 | Rule | Value |
 |---|---|
-| Required keys | `schema_version` (int), `id` (ULID), `date` (ISO date), `type`, `context`, `reviewed` (bool), `sources` (list of ULID) |
-| Optional keys | `account` (required when `context: external`), `tags` (list), `title` (only when it differs from the heading), `external_refs` (a passthrough map), `unresolved` (set by the curator on an ambiguous filing), `managed` (projections only) |
+| Required keys | `schema_version` (int), `id` (ULID), `type`, `context`, `reviewed` (bool), `sources` (list of ULID) |
+| Optional keys | `time` (local ISO datetime `YYYY-MM-DDTHH:MM:SS` with no UTC offset, written on new notes as the canonical date and start time; legacy `HH:MM` with `date` is also accepted; UTC offsets are rejected at review validation), `date` (optional `YYYY-MM-DD`; derived from `time` when omitted; when both are present and disagree, `time` wins and Problems records a `date_mismatch` entry), `timezone` (optional IANA timezone; defaults to `general.timezone`, `America/Chicago`), `time_unknown` (bool; ignores time-of-day and uses only the date from `time` or `date`), `account` (required when `context: external`), `tags` (list), `title` (only when it differs from the heading), `external_refs` (a passthrough map), `unresolved` (set by the curator on an ambiguous filing), `managed` (projections only) |
 | Shipped `type` vocabulary | `work`, `personal`, `reference`, `journal` (default: `reference`) |
 | Shipped `context` vocabulary | `internal`, `external`, `personal` |
 | Filenames | Dated types: `YYYY-MM-DD Title.md`. Undated: `Title.md`. Journal: `Journal/YYYY/YYYY-MM-DD.md`. Names are Unicode-normalized, Windows-reserved characters and device names are stripped, capped at 120 characters, and a case-insensitive collision gets a numbered suffix |

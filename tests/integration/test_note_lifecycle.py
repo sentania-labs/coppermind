@@ -70,7 +70,9 @@ async def test_direct_review_with_missing_meeting_time_blocks_filing(store):
     await enable(store)
     note = await store.create_note(CreateNote(title="Meeting", frontmatter={"type": "work"}))
     await store.patch_frontmatter(
-        note.id, PatchFrontmatter(set={"reviewed": True}), if_match=note.content_hash
+        note.id,
+        PatchFrontmatter(set={"reviewed": True, "date": "2026-10-16"}, unset=["time"]),
+        if_match=note.content_hash,
     )
     with pytest.raises(ValueError, match="meeting time"):
         await file_note(store, note.id)
@@ -359,3 +361,283 @@ async def test_workflow_setup_preserves_type_choices(store):
     await store.context.setup_lifecycle({"revision": store.context.config().revision})
     after = store.control.schema()
     assert next(k.vocabulary for k in after.keys if k.name == key) == choices
+
+
+async def test_target_frontmatter_and_stuck_work_note_file_into_month_folder(store, monkeypatch):
+    import time
+
+    from coppermind_store import filing, note_lifecycle
+    from coppermind_store.reconciler import reconcile_once
+
+    from coppermind.ids import new_id
+
+    await enable(store)
+    review_dir = store.notes_root / "Review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    target_path = review_dir / "Target work note.md"
+    target_path.write_text(
+        "---\n"
+        "type: work\n"
+        "context: external\n"
+        "reviewed: true\n"
+        "sources: []\n"
+        "account: Example Co\n"
+        "tags: [upgrade, vcf]\n"
+        "time: 2026-10-20T12:00:00\n"
+        "---\n"
+        "# Target work note\n\n"
+        "Reviewed in Obsidian with canonical datetime time.\n",
+        encoding="utf-8",
+    )
+
+    stuck_id = new_id()
+    attendees = [f"person{i}@example.com" for i in range(1, 11)]
+    attendees_yaml = "\n".join(f"  - {email}" for email in attendees)
+    stuck_path = review_dir / "Customer upgrade call.md"
+    stuck_path.write_text(
+        "---\n"
+        f"id: {stuck_id}\n"
+        "schema_version: 1\n"
+        "type: work\n"
+        "context: external\n"
+        "reviewed: true\n"
+        "sources: []\n"
+        "account: Example Co\n"
+        "attendees:\n"
+        f"{attendees_yaml}\n"
+        "tags: [upgrade, vcf]\n"
+        "time: 2026-10-20T12:00:00\n"
+        "---\n"
+        "# Customer upgrade call\n\n"
+        "Notes from the customer upgrade call.\n",
+        encoding="utf-8",
+    )
+
+    from coppermind.store_protocol import NoteQuery
+
+    await reconcile_once(store)
+    notes = (await store.list_notes(NoteQuery())).items
+    assert len(notes) == 2
+    for item in notes:
+        await store.get_note(item.id)
+        with pytest.raises(ValueError, match="remain stable"):
+            await file_note(store, item.id)
+
+    stable_after = time.monotonic() + 31
+    monkeypatch.setattr(note_lifecycle.clock, "monotonic", lambda: stable_after)
+    assert await filing.file_reviewed(store) == {"filed": 2, "filing_failed": 0}
+    assert await store.get_problems() == []
+
+    filed_stuck = await store.get_note(stuck_id)
+    assert filed_stuck.path.startswith("2026-10/")
+    assert "date" not in filed_stuck.frontmatter
+    assert "timezone" not in filed_stuck.frontmatter
+    raw_stuck = (store.notes_root / filed_stuck.path).read_text(encoding="utf-8")
+    assert "time: 2026-10-20T12:00:00\n" in raw_stuck
+
+    dossiers = store.context.read("dossiers", {})
+    assert {entry["address"] for entry in dossiers.values()} == set(attendees)
+    for entry in dossiers.values():
+        assert entry["notes"][0]["date"] == "2026-10-20"
+
+
+async def test_ingest_writes_obsidian_datetime_time_and_files_without_edits(store):
+    from coppermind_store import filing
+
+    from coppermind.store_protocol import IngestRequest
+
+    await enable(store)
+    request = IngestRequest.model_validate(
+        {
+            "source": {
+                "provider": "plaud",
+                "external_source_id": "rec-ingest-time-57",
+                "source_type": "transcript",
+                "captured_at": "2026-10-20T17:00:00Z",
+                "artifacts": [
+                    {
+                        "name": "transcript.txt",
+                        "mime_type": "text/plain",
+                        "content": "Synthetic transcript for ingest time check.",
+                    }
+                ],
+            },
+            "note": {
+                "title": "Ingested work call",
+                "body": "Summary of the call.\n",
+                "frontmatter": {"type": "work", "context": "internal"},
+            },
+        }
+    )
+    result = await store.ingest(request)
+    note = await store.get_note(result.note.id)
+    assert note.frontmatter["time"] == "2026-10-20T12:00:00"
+    assert "date" not in note.frontmatter
+    assert "timezone" not in note.frontmatter
+    raw = (store.notes_root / note.path).read_text(encoding="utf-8")
+    assert "time: 2026-10-20T12:00:00\n" in raw
+
+    completed = await store.context.complete_review(
+        {"note_id": note.id, "if_match": note.content_hash, "confirmation": "Complete review"}
+    )
+    assert completed["state"] == "complete"
+    assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+    filed = await store.get_note(note.id)
+    assert filed.path.startswith("2026-10/")
+
+
+async def test_legacy_date_and_hh_mm_time_keep_filing_and_explicit_timezone_rules(store):
+    await enable(store)
+    legacy = await store.create_note(
+        CreateNote(
+            title="Legacy work note",
+            frontmatter={"type": "work", "date": "2026-10-20", "time": "09:30"},
+        )
+    )
+    await store.context.complete_review(
+        {"note_id": legacy.id, "if_match": legacy.content_hash, "confirmation": "Complete review"}
+    )
+    assert await file_note(store, legacy.id) is True
+    assert (await store.get_note(legacy.id)).path.startswith("2026-10/")
+
+    explicit_tz = await store.create_note(
+        CreateNote(
+            title="Eastern work note",
+            frontmatter={
+                "type": "work",
+                "time": "2026-10-20T12:00:00",
+                "timezone": "America/New_York",
+            },
+        )
+    )
+    await store.context.complete_review(
+        {
+            "note_id": explicit_tz.id,
+            "if_match": explicit_tz.content_hash,
+            "confirmation": "Complete review",
+        }
+    )
+    assert await file_note(store, explicit_tz.id) is True
+    assert (await store.get_note(explicit_tz.id)).path.startswith("2026-10/")
+
+    invalid_tz = await store.create_note(
+        CreateNote(
+            title="Bad timezone note",
+            frontmatter={
+                "type": "work",
+                "time": "2026-10-20T12:00:00",
+                "timezone": "Not/AZone",
+            },
+        )
+    )
+    with pytest.raises(ValueError, match="timezone"):
+        await store.context.complete_review(
+            {
+                "note_id": invalid_tz.id,
+                "if_match": invalid_tz.content_hash,
+                "confirmation": "Complete review",
+            }
+        )
+
+    unknown_with_time = await store.create_note(
+        CreateNote(
+            title="Time unknown with datetime",
+            frontmatter={
+                "type": "work",
+                "time": "2026-10-20T12:00:00",
+                "time_unknown": True,
+            },
+        )
+    )
+    await store.context.complete_review(
+        {
+            "note_id": unknown_with_time.id,
+            "if_match": unknown_with_time.content_hash,
+            "confirmation": "Complete review",
+        }
+    )
+    assert await file_note(store, unknown_with_time.id) is True
+    assert (await store.get_note(unknown_with_time.id)).path.startswith("2026-10/")
+
+
+async def test_time_with_utc_offset_is_rejected_with_clear_problems_message(store):
+    from coppermind_store import filing
+
+    await enable(store)
+    note = await store.create_note(
+        CreateNote(
+            title="Offset time note",
+            frontmatter={"type": "work", "time": "2026-10-20T12:00:00-05:00"},
+        )
+    )
+    with pytest.raises(ValueError, match="UTC offset"):
+        await store.context.complete_review(
+            {"note_id": note.id, "if_match": note.content_hash, "confirmation": "Complete review"}
+        )
+
+    note = await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": True}), if_match=note.content_hash
+    )
+    assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 1}
+    problems = await store.get_problems()
+    assert any(
+        p.kind == "filing" and p.note_id == note.id and "UTC offset" in p.reason for p in problems
+    )
+
+
+async def test_disagreeing_date_and_time_uses_time_and_flags_date_mismatch_problem(store):
+    from coppermind_store import filing, indexer
+
+    from coppermind.store_protocol import NoteQuery, SearchQuery
+
+    await enable(store)
+    note = await store.create_note(
+        CreateNote(
+            title="Mismatch note",
+            body="Unique mismatchpalabra content.\n",
+            frontmatter={
+                "type": "work",
+                "date": "2026-09-15",
+                "time": "2026-10-20T12:00:00",
+                "attendees": ["alex@example.com"],
+            },
+        )
+    )
+    await store.context.complete_review(
+        {"note_id": note.id, "if_match": note.content_hash, "confirmation": "Complete review"}
+    )
+    assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+    await indexer.catch_up(store)
+
+    filed = await store.get_note(note.id)
+    assert filed.path.startswith("2026-10/")
+    assert filed.path.endswith("2026-10-20 Mismatch note.md")
+
+    by_range = await store.list_notes(
+        NoteQuery.model_validate({"from": "2026-10-20", "to": "2026-10-20"})
+    )
+    assert [item.id for item in by_range.items] == [note.id]
+    await store.field_index.refresh()
+    by_field = await store.list_notes(
+        NoteQuery(filter='{"all": [{"field": "date", "op": "eq", "value": "2026-10-20"}]}')
+    )
+    assert [item.id for item in by_field.items] == [note.id]
+    old_field = await store.list_notes(
+        NoteQuery(filter='{"all": [{"field": "date", "op": "eq", "value": "2026-09-15"}]}')
+    )
+    assert old_field.items == []
+    hits = await store.search(
+        SearchQuery.model_validate(
+            {"q": "mismatchpalabra", "from": "2026-10-20", "to": "2026-10-20"}
+        )
+    )
+    assert [hit.id for hit in hits.items] == [note.id]
+
+    dossiers = store.context.read("dossiers", {})
+    assert next(iter(dossiers.values()))["notes"][0]["date"] == "2026-10-20"
+
+    problems = await store.get_problems()
+    mismatch = [p for p in problems if p.kind == "date_mismatch" and p.note_id == note.id]
+    assert len(mismatch) == 1
+    assert "2026-09-15" in mismatch[0].reason
+    assert "2026-10-20" in mismatch[0].reason

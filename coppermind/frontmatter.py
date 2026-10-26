@@ -27,11 +27,13 @@ from __future__ import annotations
 
 import io
 import re
+from datetime import datetime
 from typing import Any
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.error import YAMLError
+from ruamel.yaml.timestamp import TimeStamp
 from ruamel.yaml.util import load_yaml_guess_indent
 
 DELIMITER = "---"
@@ -63,6 +65,41 @@ class FrontmatterError(ValueError):
 
 _WORD_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
 _ITEM_WITH_NO_VALUE = re.compile(r"^([ \t]*-)[ \t]*$", re.MULTILINE)
+_LOCAL_DATETIME = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$")
+
+
+def _yaml_scalar(key: str, value: Any) -> Any:
+    """Write Obsidian Date & time values (`time`) as unquoted `YYYY-MM-DDTHH:MM:SS`."""
+    if key != "time" or isinstance(value, TimeStamp):
+        return value
+    if isinstance(value, datetime) and value.tzinfo is None:
+        ts = TimeStamp(value.year, value.month, value.day, value.hour, value.minute, value.second)
+        ts._yaml["t"] = True
+        return ts
+    if isinstance(value, str):
+        match = _LOCAL_DATETIME.match(value.strip())
+        if match:
+            try:
+                ts = TimeStamp(
+                    int(match.group(1)),
+                    int(match.group(2)),
+                    int(match.group(3)),
+                    int(match.group(4)),
+                    int(match.group(5)),
+                    int(match.group(6) or 0),
+                )
+            except ValueError:
+                return value
+            ts._yaml["t"] = True
+            return ts
+    return value
+
+
+def _yaml_mapping(frontmatter: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(frontmatter, CommentedMap):
+        return frontmatter
+    return {key: _yaml_scalar(key, value) for key, value in frontmatter.items()}
+
 
 # The line endings `split` reads a delimiter line by. It ends the block on a
 # line feed, so a delimiter closed by a bare carriage return costs the body.
@@ -206,7 +243,7 @@ def _dump(frontmatter: dict[str, Any], yaml: YAML) -> str:
     if not frontmatter:
         return ""
     stream = io.StringIO()
-    yaml.dump(frontmatter, stream)
+    yaml.dump(_yaml_mapping(frontmatter), stream)
     return stream.getvalue()
 
 
@@ -254,7 +291,7 @@ def _patched(block: str, body: str, changes: dict[str, Any], unset: list[str]) -
     for key in unset:
         frontmatter.pop(key, None)
     for key, value in changes.items():
-        frontmatter[key] = value
+        frontmatter[key] = _yaml_scalar(key, value)
     return _compose(frontmatter, body, yaml)
 
 

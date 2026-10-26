@@ -19,7 +19,8 @@ refuses a note for a tag it already carried.
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from dataclasses import dataclass
+from datetime import date, datetime, time
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
@@ -303,6 +304,8 @@ def _check_value(definition: KeyDefinition, value: Any) -> list[str]:
         return [f"{name}: expected a list"]
     if definition.kind == "date" and not _is_date(value):
         return [f"{name}: expected a date as YYYY-MM-DD"]
+    if definition.kind in {"string", "enum"} and isinstance(value, datetime):
+        value = value.isoformat()
     if definition.kind in {"string", "enum"} and not isinstance(value, str):
         return [f"{name}: expected text"]
     if definition.kind == "enum" and definition.vocabulary and value not in definition.vocabulary:
@@ -312,15 +315,162 @@ def _check_value(definition: KeyDefinition, value: Any) -> list[str]:
 
 
 def _is_date(value: Any) -> bool:
+    return parse_date_value(value) is not None
+
+
+_LEGACY_TIME_PATTERN = re.compile(r"^\d{2}:\d{2}(?::\d{2})?$")
+_LOCAL_DATETIME_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(?::\d{2})?$")
+
+
+@dataclass(frozen=True)
+class ParsedNoteTime:
+    """Parsed view of a note's `time` property.
+
+    `time` is the canonical field carrying a note's date and local start time
+    as `YYYY-MM-DDTHH:MM:SS` without a UTC offset, matching Obsidian's Date &
+    time property. Legacy `HH:MM` (or `HH:MM:SS`) values paired with a separate
+    `date` field remain accepted. Any `time` carrying a UTC offset is flagged
+    with `has_offset=True` and `valid=False` so review validation rejects it.
+    """
+
+    present: bool
+    valid: bool
+    date_value: date | None = None
+    time_value: time | None = None
+    has_offset: bool = False
+
+
+def parse_date_value(value: Any) -> date | None:
+    """Return a `date` when `value` is a valid `YYYY-MM-DD` date, else `None`."""
     if isinstance(value, date) and not isinstance(value, datetime):
-        return True
+        return value
     if isinstance(value, str):
+        text = value.strip()
+        if len(text) != 10:
+            return None
         try:
-            date.fromisoformat(value)
+            return date.fromisoformat(text)
         except ValueError:
-            return False
-        return True
-    return False
+            return None
+    return None
+
+
+def parse_note_time(value: Any) -> ParsedNoteTime:
+    """Parse a `time` frontmatter value in canonical datetime or legacy `HH:MM` form."""
+    if value is None:
+        return ParsedNoteTime(present=False, valid=False)
+    if isinstance(value, datetime):
+        tz_meta = getattr(value, "_yaml", None)
+        has_tz = value.tzinfo is not None or (
+            isinstance(tz_meta, dict) and tz_meta.get("tz") is not None
+        )
+        if has_tz:
+            return ParsedNoteTime(
+                present=True,
+                valid=False,
+                date_value=value.date(),
+                time_value=value.timetz().replace(tzinfo=None, microsecond=0),
+                has_offset=True,
+            )
+        return ParsedNoteTime(
+            present=True,
+            valid=True,
+            date_value=value.date(),
+            time_value=value.time().replace(microsecond=0),
+        )
+    if isinstance(value, date):
+        return ParsedNoteTime(present=True, valid=True, date_value=value, time_value=None)
+    if not isinstance(value, str):
+        return ParsedNoteTime(present=True, valid=False)
+    text = value.strip()
+    if not text:
+        return ParsedNoteTime(present=False, valid=False)
+    if len(text) == 10 and text[4:5] == "-" and text[7:8] == "-":
+        day = parse_date_value(text)
+        return ParsedNoteTime(present=True, valid=day is not None, date_value=day, time_value=None)
+    if len(text) > 10 and text[4:5] == "-" and text[7:8] == "-" and text[10:11] in {"T", "t", " "}:
+        try:
+            parsed_dt = datetime.fromisoformat(text)
+        except ValueError:
+            return ParsedNoteTime(present=True, valid=False)
+        if parsed_dt.tzinfo is not None or text.endswith(("Z", "z")):
+            return ParsedNoteTime(
+                present=True,
+                valid=False,
+                date_value=parsed_dt.date(),
+                time_value=parsed_dt.timetz().replace(tzinfo=None, microsecond=0),
+                has_offset=True,
+            )
+        if not _LOCAL_DATETIME_PREFIX.fullmatch(text):
+            return ParsedNoteTime(present=True, valid=False)
+        return ParsedNoteTime(
+            present=True,
+            valid=True,
+            date_value=parsed_dt.date(),
+            time_value=parsed_dt.time().replace(microsecond=0),
+        )
+    try:
+        parsed_time = time.fromisoformat(text)
+    except ValueError:
+        return ParsedNoteTime(present=True, valid=False)
+    if parsed_time.tzinfo is not None or text.endswith(("Z", "z")):
+        return ParsedNoteTime(
+            present=True,
+            valid=False,
+            time_value=parsed_time.replace(tzinfo=None, microsecond=0),
+            has_offset=True,
+        )
+    if not _LEGACY_TIME_PATTERN.fullmatch(text):
+        return ParsedNoteTime(present=True, valid=False)
+    return ParsedNoteTime(
+        present=True,
+        valid=True,
+        date_value=None,
+        time_value=parsed_time.replace(microsecond=0),
+    )
+
+
+def note_date(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> date | None:
+    """Return the note's effective date, preferring `time` over `date` when both exist."""
+    parsed = parse_note_time(frontmatter.get("time"))
+    if parsed.valid and parsed.date_value is not None:
+        return parsed.date_value
+    return parse_date_value(frontmatter.get(schema.role("date_key")))
+
+
+def note_date_mismatch(
+    frontmatter: dict[str, Any], schema: FrontmatterSchema
+) -> tuple[date, date] | None:
+    """Return `(date_field, time_date)` when both are valid and disagree."""
+    parsed = parse_note_time(frontmatter.get("time"))
+    explicit = parse_date_value(frontmatter.get(schema.role("date_key")))
+    if (
+        parsed.valid
+        and parsed.date_value is not None
+        and explicit is not None
+        and explicit != parsed.date_value
+    ):
+        return explicit, parsed.date_value
+    return None
+
+
+def format_note_time(value: datetime) -> str:
+    """Format a datetime as canonical local `YYYY-MM-DDTHH:MM:SS` with no offset."""
+    return value.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def normalize_note_time(value: Any, *, fallback_date: date | None = None) -> str:
+    """Return canonical `YYYY-MM-DDTHH:MM:SS` when `value` is a valid local time/datetime."""
+    parsed = parse_note_time(value)
+    if not parsed.valid:
+        return str(value).strip() if value is not None else ""
+    day = parsed.date_value or fallback_date
+    clock = parsed.time_value or time(0, 0, 0)
+    if day is not None and (parsed.date_value is not None or parsed.time_value is not None):
+        return datetime.combine(day, clock).strftime("%Y-%m-%dT%H:%M:%S")
+    if parsed.time_value is not None:
+        return parsed.time_value.strftime("%H:%M:%S")
+    return str(value).strip()
 
 
 def default_schema() -> FrontmatterSchema:
@@ -344,8 +494,8 @@ def default_schema() -> FrontmatterSchema:
             KeyDefinition(
                 name="date",
                 kind="date",
-                required=True,
-                description="The day the note is about.",
+                required=False,
+                description="Optional note date (YYYY-MM-DD); derived from time when omitted.",
             ),
             KeyDefinition(
                 name="type",

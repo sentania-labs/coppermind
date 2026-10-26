@@ -70,7 +70,9 @@ async def test_failed_filing_retries_without_indexing_or_losing_originals(store,
     moved = await store.move_note(result.note.id, MoveNote(target_folder="2026-09"), None)
     assert not (await store.search(SearchQuery(q="lease"))).items
     await store.patch_frontmatter(
-        moved.id, PatchFrontmatter(set={"date": "2026-10-02"}), moved.content_hash
+        moved.id,
+        PatchFrontmatter(set={"time": "2026-10-02T12:00:00"}, unset=["date"]),
+        moved.content_hash,
     )
     monkeypatch.setattr(filing, "_copy", copy)
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
@@ -178,7 +180,9 @@ async def test_date_correction_preserves_canonical_source_path(store):
     await indexer.catch_up(store)
     note = await store.get_note(result.note.id)
     await store.patch_frontmatter(
-        note.id, PatchFrontmatter(set={"date": "2026-10-01"}), note.content_hash
+        note.id,
+        PatchFrontmatter(set={"time": "2026-10-01T12:00:00"}, unset=["date"]),
+        note.content_hash,
     )
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
     await indexer.catch_up(store)
@@ -251,7 +255,9 @@ async def test_source_revision_requires_explicit_rereview(store):
     await store.ingest(request)
     note = await store.get_note(result.note.id)
     await store.patch_frontmatter(
-        note.id, PatchFrontmatter(set={"date": "2026-10-01"}), note.content_hash
+        note.id,
+        PatchFrontmatter(set={"time": "2026-10-01T12:00:00"}, unset=["date"]),
+        note.content_hash,
     )
     await filing.file_reviewed(store)
     await indexer.catch_up(store)

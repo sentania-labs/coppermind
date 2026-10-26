@@ -351,15 +351,24 @@ def router(wiring: Wiring) -> APIRouter:
                 + e(json.dumps(note["frontmatter"], indent=2))
                 + "</pre></details></article><section><h3>Suggested changes</h3>"
             )
+            from coppermind.schema import normalize_note_time, note_date
             from coppermind_admin.pages.fields import read_schema
 
             _, schema = read_schema(request.app.state.control)
-            date_key, type_key = data["roles"]["date_key"], data["roles"]["type_key"]
+            type_key = data["roles"]["type_key"]
             kind = str(note["frontmatter"].get(type_key, ""))
             definition = next(k for k in schema.keys if k.name == type_key)
+            fallback_day = note_date(note["frontmatter"], schema)
+            current_time = normalize_note_time(
+                note["frontmatter"].get("time"), fallback_date=fallback_day
+            )
+            if not current_time and fallback_day is not None:
+                current_time = f"{fallback_day.isoformat()}T00:00:00"
             properties = _hidden("note_id", identity) + _hidden("if_match", note["content_hash"])
             properties += _input(
-                "date", "Date", str(note["frontmatter"].get(date_key, "")), kind="date"
+                "time",
+                "Date and start time (YYYY-MM-DDTHH:MM:SS)",
+                current_time,
             )
             properties += _select(
                 "note_type",
@@ -368,17 +377,6 @@ def router(wiring: Wiring) -> APIRouter:
                 kind,
             )
             if kind == "work":
-                properties += _input(
-                    "time",
-                    "Meeting start time",
-                    str(note["frontmatter"].get("time", "")),
-                    kind="time",
-                )
-                properties += _input(
-                    "timezone",
-                    "Timezone",
-                    str(note["frontmatter"].get("timezone", "America/Chicago")),
-                )
                 properties += _check(
                     "time_unknown", "Time unknown", note["frontmatter"].get("time_unknown") is True
                 )
@@ -439,8 +437,8 @@ def router(wiring: Wiring) -> APIRouter:
                     )
                 )
                 body += (
-                    '<p class="muted">For work notes, enter time and timezone, or time'
-                    "_unknown: true, in Obsidian before finishing.</p>"
+                    '<p class="muted">For work notes, enter time (YYYY-MM-DDTHH:MM:SS) or'
+                    " time_unknown: true in Obsidian before finishing.</p>"
                 )
                 body += _form(
                     "enqueue",
@@ -490,19 +488,24 @@ def router(wiring: Wiring) -> APIRouter:
         try:
             identity = form["note_id"]
             if action == "save-properties":
+                from coppermind.schema import normalize_note_time, parse_date_value
                 from coppermind_admin.pages.fields import read_schema
 
                 _, schema = read_schema(request.app.state.control)
-                changes = {
-                    schema.role("date_key"): form["date"],
+                fallback_day = parse_date_value(form.get("date"))
+                time_value = normalize_note_time(form.get("time"), fallback_date=fallback_day)
+                if not time_value and fallback_day is not None:
+                    time_value = f"{fallback_day.isoformat()}T00:00:00"
+                changes: dict[str, object] = {
                     schema.role("type_key"): form["note_type"],
                 }
-                unset = []
+                if time_value:
+                    changes["time"] = time_value
+                unset: list[str] = []
                 if form["note_type"] == "work" and "time_unknown" in form:
                     changes["time_unknown"] = True
-                    unset = ["time", "timezone"]
                 elif form["note_type"] == "work" and "time" in form:
-                    changes.update(time=form["time"], timezone=form["timezone"], time_unknown=False)
+                    changes["time_unknown"] = False
                 await client(request).patch_frontmatter(
                     identity, PatchFrontmatter(set=changes, unset=unset), if_match=form["if_match"]
                 )

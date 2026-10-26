@@ -51,7 +51,7 @@ not infer a calendar match or merge their contents.
     "title": "Intake test",
     "body": "Discussed the intake test.",
     "frontmatter": {
-      "date": "2026-10-13",
+      "time": "2026-10-13T09:30:00",
       "reviewed": false
     }
   }
