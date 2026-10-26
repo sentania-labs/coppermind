@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from coppermind.atomicio import atomic_write_bytes
 from coppermind.ids import new_id
-from coppermind_store.calendar_import import MAX_UPLOAD
+from coppermind_store.calendar_import import MAX_SERIALIZED, MAX_UPLOAD
 from coppermind_store.calendar_worker import isolated_calendar
 
 if TYPE_CHECKING:
@@ -137,8 +137,15 @@ class Dropbox:
             # All entries must be identified before submitting any of this archive.
             for part in item["parts"]:
                 if not part.get("import_id"):
+                    # An extracted part is not a new external upload. Its bytes already
+                    # passed the 10 MiB ceiling as part of the original, so it is measured
+                    # against the ceiling for re-serialized calendars, which absorbs the
+                    # line re-folding `to_ical` adds on top of the 40 MiB expansion.
                     receipt = self.context.archive.submit(
-                        part["calendar_id"], "calendar.ics", base64.b64decode(part["data"])
+                        part["calendar_id"],
+                        "calendar.ics",
+                        base64.b64decode(part["data"]),
+                        MAX_SERIALIZED,
                     )
                     part["import_id"] = receipt.id
                     del part["data"]
