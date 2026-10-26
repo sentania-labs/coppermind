@@ -560,6 +560,7 @@ async def test_event_approval_filling_time_keeps_remaining_suggestions(store):
     from coppermind_store.enrichment_models import Suggestions
 
     context = await configure(store)
+    await context.setup_lifecycle({"revision": context.config().revision})
     config = context.config()
     config.assignments["enrichment"].event_field = "account"
     context.save_config(config)
@@ -600,6 +601,7 @@ async def test_all_day_event_approval_does_not_shift_the_note_date(store):
     from coppermind_store.enrichment_models import Suggestions
 
     context = await configure(store)
+    await context.setup_lifecycle({"revision": context.config().revision})
     config = context.config()
     config.assignments["enrichment"].event_field = "account"
     context.save_config(config)
