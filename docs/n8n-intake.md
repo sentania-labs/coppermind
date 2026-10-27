@@ -95,6 +95,12 @@ revision's copies; earlier copies stay in `_Attachments/`. Refiling never
 rewrites a link twice, and a replay with identical image bytes creates no new
 revision.
 
+Known limitations of the code detection, both rare: a fenced code block opened
+inside a list item or blockquote ends only at a matching closing fence, not
+when the list or quote ends, so an unclosed one hides the embeds after it; and
+an indented line directly after a heading, or inside a blockquote, is not
+treated as indented code, so an embed there is rewritten.
+
 Images appear in Obsidian after review. While the note sits in `Review/`, its
 embeds still carry the artifact name and show as unresolved, because
 attachments are copied to `_Attachments/YYYY-MM/` only at filing: the final
