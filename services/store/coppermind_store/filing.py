@@ -13,6 +13,7 @@ from coppermind import frontmatter as fm
 from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes, sync_directory
 from coppermind.db.models import Note, NoteSource, SearchDocument
 from coppermind.db.session import transaction
+from coppermind.embeds import rewrite_embeds
 from coppermind.ids import is_valid_id
 from coppermind.schema import date_field_problem, note_date, parse_note_time
 from coppermind.store_protocol import MoveNote, ReplaceNote, StoreError
@@ -172,6 +173,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
             )
         )
     _save(journal, plan)
+    filed_images: list[tuple[str, str, str]] = []
     for item in plan["sources"]:
         source_id = item["id"]
         manifest_path = store.sources_root / source_id / "manifest.json"
@@ -218,6 +220,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
                 ).read_bytes()
                 _copy(resolve(store.notes_root, attachment), data)
                 links.append(f"[[{attachment}]]")
+                filed_images.append((source_id, name, attachment))
             if links:
                 section = "\n\n## Filed attachments\n\n" + "\n".join(links) + "\n"
                 if section not in body:
@@ -256,6 +259,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
             body = body.replace(
                 f"[[{old_link.removesuffix('.md')}]]", f"[[{item['to'].removesuffix('.md')}]]"
             )
+    body = rewrite_embeds(body, filed_images, attachments_folder=settings.notes.attachments_folder)
     if body != note.body:
         note = await store.replace_note(
             note_id, ReplaceNote(frontmatter=note.frontmatter, body=body), note.content_hash

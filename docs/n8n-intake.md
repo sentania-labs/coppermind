@@ -66,6 +66,47 @@ including JSON and base64 overhead. This route buffers the request; it is
 not a large-recording upload interface. Do not raise the limit casually to
 accommodate hours of audio.
 
+### Image artifacts and embeds
+
+Send each image the note shows (for example Plaud recording photos) as its own
+artifact with `content_base64`, a real image MIME type (`image/jpeg`,
+`image/png`, `image/webp`, or `image/gif`), and a unique, directory-free name
+that keeps its extension. Name them `<stem>-image-NN.<ext>`, such as
+`meeting-image-01.jpg`. Images count against the same 25 MiB request ceiling,
+base64 included (about a third larger than the file), so downscale or drop
+photos rather than raising the limit; a few hundred KiB each is typical.
+
+The caller cannot know the filed path, because `source.id` and the revision
+come back only in the response. Embed each image in the note body by its
+artifact name and let filing resolve it:
+
+```markdown
+![[meeting-image-01.jpg]]
+![](meeting-image-01.jpg)
+```
+
+When the note is filed, an embed in the body of a note that cites the source,
+whose target is exactly an artifact name, is rewritten to the filed copy, for
+example `![[_Attachments/2026-09/<source_id>-r0001-meeting-image-01.jpg]]`.
+`![[name|300]]` keeps its size suffix. Links that match no artifact, text
+inside code (fenced or indented blocks and inline code spans), and all other
+prose are left as authored. When a later revision adds or changes an image,
+the next filing points the embeds at that revision's copies; earlier copies
+stay in `_Attachments/`. Refiling never rewrites a link twice, and a replay
+with identical image bytes creates no new revision.
+
+Known limitations of the code detection, both rare: a fenced code block opened
+inside a list item or blockquote ends only at a matching closing fence, not
+when the list or quote ends, so an unclosed one hides the embeds after it; and
+an indented line directly after a heading, or inside a blockquote, is not
+treated as indented code, so an embed there is rewritten.
+
+Images appear in Obsidian after review. While the note sits in `Review/`, its
+embeds still carry the artifact name and show as unresolved, because
+attachments are copied to `_Attachments/YYYY-MM/` only at filing: the final
+month is not fixed until review, and unreviewed binaries are not synced to
+devices. Do not send a path or guess the filed name.
+
 A first creation returns 201; a replay or source revision returns 200. Save
 `source.id`, `source.revision`, `note.id`, `note.path`, and `projection_path`
 from the response. A response is not evidence that a note was reviewed.
@@ -144,11 +185,13 @@ not call them until a release explicitly supports contract version 1.
 Reserve with `contract_version: 1`, `provider`, `recording_id`,
 `submission_id`, `title`, optional `note_date`, optional offset-qualified
 `captured_at`, optional `meeting_ref`, and an artifact manifest. Each manifest
-entry declares `artifact_id`, `role` (`transcript`, `summary`, or `audio`),
-`filename`, `mime_type`, `size_bytes`, and `sha256`. Version 1 requires exactly
-one transcript and one summary, plus zero or one audio file. Summary content
-is UTF-8 Markdown and becomes the opening draft. An explicitly supplied
-meeting reference is metadata only, never an instruction to merge notes.
+entry declares `artifact_id`, `role` (`transcript`, `summary`, `audio`, or
+`image`), `filename`, `mime_type`, `size_bytes`, and `sha256`. Version 1
+requires exactly one transcript and one summary, plus zero or one audio file
+and zero or more image files (named and sized as above, and embedded by
+artifact name). Summary content is UTF-8 Markdown and becomes the opening
+draft. An explicitly supplied meeting reference is metadata only, never an
+instruction to merge notes.
 
 Identity is `(provider, recording_id, submission_id)`. n8n must persist the
 submission ID and manifest before upload. An identical reservation returns

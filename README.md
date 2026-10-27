@@ -194,7 +194,8 @@ Ingest creates an unreviewed draft. Mark it reviewed in Obsidian or through the
 frontmatter API. Reconciliation then files the note under `YYYY-MM/` and its
 source page under `_Sources/YYYY-MM/`; search includes them only after filing
 succeeds. PDFs and other non-text, non-audio attachments are copied into
-`_Attachments/YYYY-MM/`. Immutable originals stay under `/data/sources`, and
+`_Attachments/YYYY-MM/`, and image embeds in the note that name an artifact are
+rewritten to those copies. Immutable originals stay under `/data/sources`, and
 audio remains archive-only. See [the n8n contract](docs/n8n-intake.md) for retry
 rules and the current upload-size limit.
 
