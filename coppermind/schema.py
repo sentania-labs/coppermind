@@ -581,22 +581,69 @@ def field_suggestion_changes(
     return {field: value}, []
 
 
-def previous_default_keys() -> dict[str, KeyDefinition]:
-    """The `account` and `date` definitions earlier releases shipped, by key name."""
+def shipped_key_upgrades() -> dict[str, tuple[list[KeyDefinition], KeyDefinition | None]]:
+    """What earlier releases wrote for a key, and what replaces it now.
+
+    A key maps to the definitions earlier releases shipped or set up and the
+    definition that takes their place, or `None` when the key is dropped. A
+    saved definition equal to one of the earlier forms is upgraded; any other
+    is the operator's and stays as it is.
+    """
+    shipped = {definition.name: definition for definition in default_schema().keys}
     return {
-        "account": KeyDefinition(
-            name="account",
-            kind="string",
-            required=False,
-            required_when="context",
-            required_when_values=["external"],
-            description="Customer name. Required when context is external.",
+        "account": (
+            [
+                KeyDefinition(
+                    name="account",
+                    kind="string",
+                    required=False,
+                    required_when="context",
+                    required_when_values=["external"],
+                    description="Customer name. Required when context is external.",
+                )
+            ],
+            shipped["account"],
         ),
-        "date": KeyDefinition(
-            name="date",
-            kind="date",
-            required=False,
-            description="Optional note date (YYYY-MM-DD); derived from time when omitted.",
+        "date": (
+            [
+                KeyDefinition(
+                    name="date",
+                    kind="date",
+                    required=False,
+                    description="Optional note date (YYYY-MM-DD); derived from time when omitted.",
+                )
+            ],
+            shipped["date"],
+        ),
+        "time": (
+            [
+                KeyDefinition(
+                    name="time", kind="string", description="Local meeting start time, HH:MM"
+                ),
+                KeyDefinition(
+                    name="time",
+                    kind="string",
+                    description="Note date and local start time, YYYY-MM-DDTHH:MM:SS",
+                ),
+            ],
+            KeyDefinition(
+                name="time",
+                kind="string",
+                description=(
+                    "Legacy start time, HH:MM or a full datetime. Read only when a note "
+                    "has no usable date; date is the one field for a note's date and start time."
+                ),
+            ),
+        ),
+        "timezone": (
+            [
+                KeyDefinition(
+                    name="timezone",
+                    kind="string",
+                    description="Meeting timezone, for example America/Chicago",
+                )
+            ],
+            None,
         ),
     }
 

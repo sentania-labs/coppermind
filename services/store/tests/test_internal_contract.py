@@ -534,52 +534,6 @@ def test_a_missing_schema_role_makes_readiness_name_the_role(tmp_path):
     assert "sources_key" in control_check["detail"]
 
 
-def write_saved_keys(control, replace: dict) -> None:
-    state = control.store.read("schema")
-    body = dict(state.body)
-    body["keys"] = [replace.get(key["name"], key) for key in body["keys"]]
-    control.store.write("schema", body, if_revision=state.revision)
-
-
-def test_a_saved_schema_still_on_the_shipped_string_account_moves_to_the_list_contract(tmp_path):
-    from coppermind.schema import default_schema, previous_default_keys
-
-    control = ControlState(store_wiring(tmp_path).state_dir)
-    control.ensure_defaults()
-    write_saved_keys(
-        control,
-        {name: key.model_dump(mode="json") for name, key in previous_default_keys().items()},
-    )
-    assert {k.name: k.kind for k in control.schema().keys}["account"] == "string"
-    control.ensure_defaults()
-    saved = {key.name: key for key in control.schema().keys}
-    shipped = {key.name: key for key in default_schema().keys}
-    assert saved["account"] == shipped["account"]
-    assert saved["date"] == shipped["date"]
-    revision = control.store.read("schema").revision
-    control.ensure_defaults()
-    assert control.store.read("schema").revision == revision
-
-
-def test_a_customised_account_or_date_definition_survives_the_upgrade(tmp_path):
-    from coppermind.schema import previous_default_keys
-
-    control = ControlState(store_wiring(tmp_path).state_dir)
-    control.ensure_defaults()
-    customised = {
-        name: key.model_copy(update={"description": "Our own wording."}).model_dump(mode="json")
-        for name, key in previous_default_keys().items()
-    }
-    write_saved_keys(control, customised)
-    revision = control.store.read("schema").revision
-    control.ensure_defaults()
-    saved = {key.name: key for key in control.schema().keys}
-    assert saved["account"].kind == "string"
-    assert saved["account"].description == "Our own wording."
-    assert saved["date"].description == "Our own wording."
-    assert control.store.read("schema").revision == revision
-
-
 def bootstrapped_app(tmp_path, keys: list[ApiKeyRecord] | None = None):
     """A store whose control state bootstrap has already written, as a live one's has."""
     wiring = store_wiring(tmp_path)

@@ -1699,8 +1699,12 @@ def _adoption_changes(
     available.setdefault(schema.role("schema_version_key"), 1)
     available.setdefault(date_key, _today(settings))
     changes: dict[str, Any] = {id_key: note_id} if frontmatter.get(id_key) is None else {}
-    if frontmatter.get(date_key) is None:
-        changes[date_key] = _default_note_time(frontmatter, schema, settings)
+    if frontmatter.get(date_key) is None and note_date(frontmatter, schema) is None:
+        changes[date_key] = (
+            _today(settings)
+            if parse_note_time(frontmatter.get("time")).present
+            else _default_note_time(frontmatter, schema, settings)
+        )
     effective = {**frontmatter, **changes}
     while True:
         added = False

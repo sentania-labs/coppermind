@@ -100,8 +100,9 @@ are the same note, and an empty list counts as no account. `date` is
 `YYYY-MM-DD` or a local date-and-time `YYYY-MM-DDTHH:MM:SS` with no UTC offset,
 in the configured timezone; ingest writes the start time into `date` and never
 writes `time` or `timezone`.
-Existing installations keep their saved schema, except that an `account` or `date`
-definition still equal to the one earlier releases shipped is upgraded at startup; a
+Existing installations keep their saved schema, except that an `account`, `date`,
+`time` or `timezone` definition still equal to the one earlier releases wrote is
+upgraded at startup (`time` stays declared as legacy and `timezone` is dropped); a
 customised definition is left alone.
 
 The currently configured frontmatter schema still applies. Keep workflow

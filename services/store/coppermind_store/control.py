@@ -13,7 +13,7 @@ from pathlib import Path
 
 from coppermind.api_keys import ApiKeySet
 from coppermind.logging import get_logger
-from coppermind.schema import FrontmatterSchema, default_schema, previous_default_keys
+from coppermind.schema import FrontmatterSchema, default_schema, shipped_key_upgrades
 from coppermind.settings import ProductSettings, default_settings, read_settings
 from coppermind.statefiles import StateStore
 from coppermind.store_protocol import SchemaDocument
@@ -33,10 +33,12 @@ class ControlState:
         self._upgrade_shipped_keys()
 
     def _upgrade_shipped_keys(self) -> None:
-        """Move a saved schema's untouched `account` and `date` to the shipped list contract.
+        """Bring a saved schema's untouched shipped keys to the current contract.
 
-        A definition is replaced only when it still equals what an earlier
-        release shipped; one an operator changed is left as it is and logged.
+        `account` and `date` take the shipped list and date-and-time wording, `time`
+        stays declared as legacy and `timezone` is dropped. A definition is
+        replaced only when it still equals what an earlier release wrote; one an
+        operator changed is left as it is and logged.
         """
         state = self.store.read("schema")
         body = {key: value for key, value in state.body.items() if key != "revision"}
@@ -44,13 +46,15 @@ class ControlState:
             saved = FrontmatterSchema.model_validate(body)
         except ValueError:
             return
-        shipped = {definition.name: definition for definition in default_schema().keys}
-        previous = previous_default_keys()
+        upgrades = shipped_key_upgrades()
         keys = []
         for definition in saved.keys:
-            if definition.name in previous and definition != shipped[definition.name]:
-                if definition == previous[definition.name]:
-                    definition = shipped[definition.name]
+            earlier, current = upgrades.get(definition.name, ([], definition))
+            if definition != current:
+                if definition in earlier:
+                    if current is None:
+                        continue
+                    definition = current
                 else:
                     log.info("saved_schema_key_customised", key=definition.name)
             keys.append(definition)
