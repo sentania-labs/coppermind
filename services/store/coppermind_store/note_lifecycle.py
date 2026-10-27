@@ -5,10 +5,15 @@ from __future__ import annotations
 import asyncio
 import time as clock
 from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo
 
 from coppermind.ids import is_valid_id
-from coppermind.schema import note_date, parse_date_value, parse_note_time
+from coppermind.schema import (
+    date_field_problem,
+    field_suggestion_changes,
+    note_date,
+    note_start_time,
+    parse_note_time,
+)
 from coppermind.store_protocol import NoteDocument, PatchFrontmatter, StoreError
 
 if TYPE_CHECKING:
@@ -18,41 +23,31 @@ if TYPE_CHECKING:
 def validate_review(
     note: NoteDocument, schema: Any, default_timezone: str = "America/Chicago"
 ) -> None:
-    """Validate a note's date, start time, and timezone for review completion and filing.
+    """Validate a note's date and start time for review completion and filing.
 
-    `time` is the canonical field carrying both the note's date and start time
-    (`YYYY-MM-DDTHH:MM:SS`, local time with no UTC offset). Legacy `HH:MM`
-    values paired with a separate `date` field remain accepted. A `time`
-    carrying a UTC offset is rejected. When `timezone` is omitted on a work
-    note, `default_timezone` (America/Chicago by default) is used; an explicit
-    `timezone` overrides the default and must name a valid IANA zone. With
-    `time_unknown: true`, the time-of-day part is ignored and only a valid
-    date from `time` or `date` is required.
+    `date` carries the day, and the local start time too when it is a
+    date-and-time (`YYYY-MM-DDTHH:MM:SS`, no UTC offset, in the configured
+    timezone). A `date` carrying a UTC offset is rejected. A work note needs a
+    start time, from `date` or from a legacy `HH:MM` `time`, unless
+    `time_unknown: true`, which needs only a valid day. A legacy `timezone` on
+    the note is ignored. `default_timezone` is kept for callers that still pass
+    it.
     """
     values = note.frontmatter
-    parsed_time = parse_note_time(values.get("time"))
-    if parsed_time.has_offset:
-        raise ValueError("time must be a local datetime without a UTC offset")
-    date_key = schema.role("date_key")
-    raw_date = values.get(date_key)
-    if raw_date is not None and str(raw_date).strip() != "" and parse_date_value(raw_date) is None:
-        raise ValueError("expected a valid date")
+    problem = date_field_problem(values, schema)
+    if problem:
+        raise ValueError(problem)
     if note_date(values, schema) is None:
-        raise ValueError("a note date is required in time or date")
+        raise ValueError("a note date is required in date")
     if values.get(schema.role("type_key")) != "work":
         return
-    if parsed_time.present and not parsed_time.valid:
-        raise ValueError("enter a valid local meeting time and timezone")
-    raw_tz = values.get("timezone")
-    tz_name = str(raw_tz).strip() if raw_tz is not None else ""
-    try:
-        ZoneInfo(tz_name or default_timezone)
-    except (ValueError, KeyError) as exc:
-        raise ValueError("enter a valid local meeting time and timezone") from exc
+    legacy = parse_note_time(values.get("time"))
+    if legacy.present and not legacy.valid:
+        raise ValueError("enter a valid local meeting time")
     if values.get("time_unknown") is True:
         return
-    if not parsed_time.valid or parsed_time.time_value is None:
-        raise ValueError("confirm the meeting time and timezone, or select Time unknown")
+    if note_start_time(values, schema) is None:
+        raise ValueError("confirm the meeting time, or select Time unknown")
 
 
 class NoteLifecycle:
@@ -183,7 +178,12 @@ class NoteLifecycle:
                     for i in selected:
                         s = job.result.suggestions[i]
                         if s.kind == "field":
-                            prospective.frontmatter[s.field] = s.value
+                            written, removed = field_suggestion_changes(
+                                prospective.frontmatter, schema, s.field, s.value
+                            )
+                            prospective.frontmatter.update(written)
+                            for key in removed:
+                                prospective.frontmatter.pop(key, None)
                     validate_review(prospective, schema, self._default_timezone())
                     if fingerprint(await self.context.evidence(job)) != fingerprint(job.evidence):
                         raise ValueError("source evidence changed; regenerate the suggestion")

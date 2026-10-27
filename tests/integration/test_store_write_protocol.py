@@ -80,7 +80,7 @@ async def test_a_created_note_is_a_file_first_and_a_row_second(store: LocalStore
     async with session_factory() as session:
         row = (await session.execute(sa.select(Note).where(Note.id == note.id))).scalar_one()
     assert row.path == note.path
-    assert row.account == "Acme"
+    assert row.account == ["Acme"]
     assert row.reviewed is False
     assert row.content_hash == note.content_hash
 

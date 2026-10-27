@@ -204,3 +204,20 @@ def test_a_broken_schema_file_is_refused_over_the_contract(tmp_path):
         assert response.json()["error"] == "internal_error"
     finally:
         test_client.__exit__(None, None, None)
+
+
+def test_a_fresh_install_serves_account_as_a_list_and_date_as_a_day_or_datetime(tmp_path):
+    test_client, _ = connected_api(tmp_path)
+    try:
+        response = test_client.get("/v1/schema", headers={"Authorization": f"Bearer {READ_KEY}"})
+        assert response.status_code == 200
+        fields = {field["name"]: field for field in response.json()["fields"]}
+        assert fields["account"]["kind"] == "list"
+        assert fields["account"]["required_when"] == {"key": "context", "values": ["external"]}
+        assert "one-item list" in fields["account"]["description"]
+        assert fields["date"]["kind"] == "date"
+        assert fields["date"]["required"] is False
+        assert "YYYY-MM-DDTHH:MM:SS" in fields["date"]["description"]
+        assert "time" not in fields and "timezone" not in fields
+    finally:
+        test_client.__exit__(None, None, None)

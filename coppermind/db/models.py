@@ -53,7 +53,7 @@ class Note(Base):
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     type: Mapped[str | None] = mapped_column(Text)
     context: Mapped[str | None] = mapped_column(Text)
-    account: Mapped[str | None] = mapped_column(Text)
+    account: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     date: Mapped[date_type | None] = mapped_column(Date)
     reviewed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Derived from the durable filing receipt, never from a workflow payload.
@@ -71,7 +71,7 @@ class Note(Base):
     __table_args__ = (
         Index("ix_notes_reviewed_path", "reviewed", "path"),
         Index("ix_notes_type", "type"),
-        Index("ix_notes_context_account", "context", "account"),
+        Index("ix_notes_account", "account", postgresql_using="gin"),
         Index("ix_notes_date", "date"),
     )
 

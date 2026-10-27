@@ -135,7 +135,7 @@ FILTERS: dict[str, tuple[Any, str]] = {
     "reviewed": (True, "notes.reviewed IS true"),
     "type": ("work", "notes.type ="),
     "context": ("work", "notes.context ="),
-    "account": ("Acme", "notes.account ="),
+    "account": ("Acme", "= any(notes.account)"),
     "from": ("2026-09-01", "notes.date >="),
     "to": ("2026-09-30", "notes.date <="),
     "tag": ("budget", "= any(notes.tags)"),

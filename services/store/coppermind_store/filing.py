@@ -14,7 +14,7 @@ from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes, sync
 from coppermind.db.models import Note, NoteSource, SearchDocument
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id
-from coppermind.schema import note_date, parse_date_value, parse_note_time
+from coppermind.schema import date_field_problem, note_date, parse_note_time
 from coppermind.store_protocol import MoveNote, ReplaceNote, StoreError
 from coppermind_store.fs import resolve
 
@@ -73,21 +73,19 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         return False
     if store.context.config().lifecycle_enabled:
         await store.context.lifecycle.finalize(note)
-    parsed_time = parse_note_time(note.frontmatter.get("time"))
-    if parsed_time.has_offset:
-        raise ValueError("time must be a local datetime without a UTC offset")
+    problem = date_field_problem(note.frontmatter, schema)
+    if problem:
+        raise ValueError(problem)
+    legacy = parse_note_time(note.frontmatter.get("time"))
     if (
         note.frontmatter.get(schema.role("type_key")) == "work"
-        and parsed_time.present
-        and not parsed_time.valid
+        and legacy.present
+        and not legacy.valid
     ):
-        raise ValueError("enter a valid local meeting time and timezone")
-    raw_date = note.frontmatter.get(schema.role("date_key"))
-    if raw_date is not None and str(raw_date).strip() != "" and parse_date_value(raw_date) is None:
-        raise ValueError("expected a valid date")
+        raise ValueError("enter a valid local meeting time")
     day = note_date(note.frontmatter, schema)
     if day is None:
-        raise ValueError("a note date is required in time or date")
+        raise ValueError("a note date is required in date")
     folder = day.strftime("%Y-%m")
     journal = store.control.store.state_dir / "filing" / f"{note_id}.json"
     plan = json.loads(journal.read_bytes()) if journal.exists() else None

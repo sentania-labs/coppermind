@@ -31,10 +31,12 @@
     "title": "Acme Architecture Sync",
     "body": "## Key points\n- Target architecture agreed\n- Follow up on storage sizing\n",
     "frontmatter": {
-      "time": "2026-09-08T14:02:11",
+      "date": "2026-09-08T14:02:11",
       "type": "work",
       "context": "external",
-      "account": "Acme",
+      "account": [
+        "Acme"
+      ],
       "tags": [
         "architecture",
         "vcf"

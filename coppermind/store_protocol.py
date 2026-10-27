@@ -566,11 +566,19 @@ class NoteSummary(BaseModel):
     date: date_type | None = None
     type: str | None = None
     context: str | None = None
-    account: str | None = None
+    account: list[str] = Field(default_factory=list)
     reviewed: bool
     tags: list[str] = Field(default_factory=list)
     content_hash: ETag
     updated_at: datetime
+
+    @field_validator("account", mode="before")
+    @classmethod
+    def account_is_a_list(cls, value: object) -> object:
+        """A plain name is a one-item list and no account is an empty one."""
+        if value is None:
+            return []
+        return [value] if isinstance(value, str) else value
 
 
 class Page[T](BaseModel):
@@ -792,7 +800,7 @@ class ProblemInfo(BaseModel):
     `kind` is `ingest` (a refused ingest), `collision` (several files carry one
     note identity), `unparsed` (a file the reconciler could not read), `filing`
     (monthly filing failed and will retry), `date_mismatch` (both `date` and
-    `time` are present and disagree, with `time` winning) or `excluded`.
+    `time` are present and disagree, with `date` winning) or `excluded`.
     `note_id` and `source_id` name what the problem is about when it exists.
     """
 

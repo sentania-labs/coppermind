@@ -840,6 +840,8 @@ async def test_adoption_adds_only_the_keys_the_schema_requires(store: LocalStore
         definition.name
         for definition in schema.keys
         if definition.name not in schema.required_keys(frontmatter)
+        # A note needs a day to file, so adoption stamps `date` though it is optional.
+        and definition.name != schema.role("date_key")
     }
     assert counts["adopted"] == 1
     assert schema.validate_frontmatter(frontmatter) == []

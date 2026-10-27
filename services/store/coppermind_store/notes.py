@@ -53,9 +53,11 @@ from coppermind.logging import get_logger
 from coppermind.naming import note_stem, sanitize_folder, unique_stem
 from coppermind.schema import (
     FrontmatterSchema,
+    account_list,
     format_note_time,
     normalize_note_time,
     note_date,
+    parse_note_time,
 )
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
@@ -1443,7 +1445,7 @@ def _mirrored_summary(row: Note, state: NoteState) -> NoteSummary:
         date=row.date,
         type=row.type,
         context=row.context,
-        account=row.account,
+        account=list(row.account),
         reviewed=row.reviewed,
         tags=list(row.tags),
         content_hash=row.content_hash,
@@ -1458,7 +1460,7 @@ def _matches_query(summary: NoteSummary, query: NoteQuery) -> bool:
             query.reviewed is None or summary.reviewed is query.reviewed,
             query.type is None or summary.type == query.type,
             query.context is None or summary.context == query.context,
-            query.account is None or summary.account == query.account,
+            query.account is None or query.account in summary.account,
             query.from_date is None or summary.date is not None and summary.date >= query.from_date,
             query.to_date is None or summary.date is not None and summary.date <= query.to_date,
             query.tag is None or query.tag in summary.tags,
@@ -1621,13 +1623,11 @@ def _default_note_time(
     settings: ProductSettings,
     captured_at: datetime | None = None,
 ) -> str:
-    raw_tz = frontmatter.get("timezone")
-    tz_name = str(raw_tz).strip() if isinstance(raw_tz, str) and raw_tz.strip() else ""
-    try:
-        zone = ZoneInfo(tz_name or settings.general.timezone)
-    except (ValueError, KeyError):
-        zone = ZoneInfo(settings.general.timezone)
-    instant = captured_at.astimezone(zone) if captured_at is not None else datetime.now(tz=zone)
+    instant = (
+        captured_at.astimezone(ZoneInfo(settings.general.timezone))
+        if captured_at is not None
+        else datetime.now(tz=ZoneInfo(settings.general.timezone))
+    )
     explicit_date = _as_date(frontmatter.get(schema.role("date_key")))
     if explicit_date is not None:
         return format_note_time(
@@ -1648,15 +1648,33 @@ def _build_frontmatter(
     """Merge the caller's frontmatter over the schema defaults, in key order."""
     values: dict[str, Any] = schema.defaults()
     date_key = schema.role("date_key")
-    if (
-        from_ingest or (not request.frontmatter.get(date_key) and not values.get(date_key))
-    ) and not request.frontmatter.get("time"):
-        values["time"] = _default_note_time(request.frontmatter, schema, settings, captured_at)
+    supplied = request.frontmatter.get(date_key)
+    given = parse_note_time(supplied)
+    legacy_time = request.frontmatter.get("time")
+    legacy = parse_note_time(legacy_time)
+    needs_default = (not supplied and not values.get(date_key) and not legacy_time) or (
+        from_ingest
+        and request.frontmatter.get("time_unknown") is not True
+        and not legacy_time
+        and (not supplied or (given.valid and given.time_value is None))
+    )
+    # The start time lives in `date`, so a note without one gets the capture
+    # moment, on its own day when it names one.
+    default_date = (
+        _default_note_time(request.frontmatter, schema, settings, captured_at)
+        if needs_default
+        else None
+    )
     values.update(request.frontmatter)
-    if from_ingest and values.get("time"):
-        values["time"] = normalize_note_time(
-            values["time"], fallback_date=_as_date(values.get(date_key)) or _today(settings)
-        )
+    if default_date is not None:
+        values[date_key] = default_date
+    elif from_ingest and given.valid and given.time_value is not None:
+        values[date_key] = normalize_note_time(supplied, fallback_date=_today(settings))
+    elif from_ingest and not supplied and legacy.valid and legacy.time_value is not None:
+        capture_day = parse_note_time(
+            _default_note_time(request.frontmatter, schema, settings, captured_at)
+        ).date_value
+        values[date_key] = normalize_note_time(legacy_time, fallback_date=capture_day)
     values[schema.role("id_key")] = note_id
     values.setdefault(schema.role("schema_version_key"), 1)
     return _ordered(values, schema)
@@ -1687,12 +1705,12 @@ def _adoption_changes(
     available.setdefault(schema.role("schema_version_key"), 1)
     available.setdefault(date_key, _today(settings))
     changes: dict[str, Any] = {id_key: note_id} if frontmatter.get(id_key) is None else {}
-    if date_key in frontmatter and frontmatter.get(date_key) is None:
-        changes[date_key] = available[date_key]
-    elif frontmatter.get("time") is None and (
-        "time" in frontmatter or frontmatter.get(date_key) is None
-    ):
-        changes["time"] = _default_note_time(frontmatter, schema, settings)
+    if frontmatter.get(date_key) is None and note_date(frontmatter, schema) is None:
+        changes[date_key] = (
+            _today(settings)
+            if parse_note_time(frontmatter.get("time")).present
+            else _default_note_time(frontmatter, schema, settings)
+        )
     effective = {**frontmatter, **changes}
     while True:
         added = False
@@ -1771,7 +1789,7 @@ def _with_kinds(values: dict[str, Any], schema: FrontmatterSchema) -> dict[str, 
     kinds = {definition.name: definition.kind for definition in schema.keys}
     tags_key = schema.role("tags_key")
     return {
-        key: (_as_date(value) or value)
+        key: _date_value(value)
         if kinds.get(key) == "date"
         else schema.normalize_tags(value)
         if key == tags_key and isinstance(value, list)
@@ -1855,7 +1873,9 @@ def _mirror_columns(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> d
         "schema_version": _as_int(frontmatter.get(schema.role("schema_version_key"), 1)),
         "type": _text(frontmatter.get(schema.role("type_key"))),
         "context": _text(frontmatter.get(schema.role("context_key"))),
-        "account": _text(frontmatter.get(schema.role("account_key"))),
+        "account": [
+            _storable(name) for name in account_list(frontmatter.get(schema.role("account_key")))
+        ],
         "date": note_date(frontmatter, schema),
         "reviewed": frontmatter.get(schema.role("reviewed_key")) is True,
         **({"filed": False} if frontmatter.get(schema.role("reviewed_key")) is not True else {}),
@@ -1926,15 +1946,20 @@ def _text(value: Any) -> str | None:
     return _storable(value) if isinstance(value, str) else None
 
 
-def _as_date(value: Any) -> date | None:
-    if isinstance(value, date) and not isinstance(value, datetime):
+def _date_value(value: Any) -> Any:
+    """A date as a day, or a date-and-time in canonical text, or the value as given."""
+    parsed = parse_note_time(value)
+    if not parsed.valid or parsed.date_value is None:
         return value
-    if isinstance(value, str):
-        try:
-            return date.fromisoformat(value)
-        except ValueError:
-            return None
-    return None
+    if parsed.time_value is None:
+        return parsed.date_value
+    return format_note_time(datetime.combine(parsed.date_value, parsed.time_value))
+
+
+def _as_date(value: Any) -> date | None:
+    """The day of a date or a local date-and-time, or its string form."""
+    parsed = parse_note_time(value)
+    return parsed.date_value if parsed.valid else None
 
 
 def _as_int(value: Any) -> int:

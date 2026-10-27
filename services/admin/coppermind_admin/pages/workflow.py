@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import zipfile
+from datetime import datetime
 from html import escape as e
 from pathlib import Path
 from urllib.parse import quote
@@ -58,7 +59,7 @@ def router(wiring: Wiring) -> APIRouter:
                 if not config.get("lifecycle_enabled"):
                     body += (
                         "<h2>Set up the workflow</h2><p>Add optional attendees, invitees, cal"
-                        "endar reference and work meeting-time properties. Existing notes and prop"
+                        "endar reference and work meeting properties. Existing notes and prop"
                         "erty values stay unchanged.</p>"
                     )
                     body += _form(
@@ -69,8 +70,8 @@ def router(wiring: Wiring) -> APIRouter:
                     )
                 else:
                     body += (
-                        '<p class="success">Note workflow enabled. Work notes need a time or an'
-                        " explicit Time unknown choice before filing.</p>"
+                        '<p class="success">Note workflow enabled. Work notes need a start'
+                        " time in date or an explicit Time unknown choice before filing.</p>"
                     )
                 body += (
                     '<h2>Review in Obsidian</h2><ol><li><a href="/admin/workflow/plugin.z'
@@ -351,7 +352,7 @@ def router(wiring: Wiring) -> APIRouter:
                 + e(json.dumps(note["frontmatter"], indent=2))
                 + "</pre></details></article><section><h3>Suggested changes</h3>"
             )
-            from coppermind.schema import normalize_note_time, note_date
+            from coppermind.schema import format_note_time, note_date, note_start_time
             from coppermind_admin.pages.fields import read_schema
 
             _, schema = read_schema(request.app.state.control)
@@ -359,15 +360,18 @@ def router(wiring: Wiring) -> APIRouter:
             kind = str(note["frontmatter"].get(type_key, ""))
             definition = next(k for k in schema.keys if k.name == type_key)
             fallback_day = note_date(note["frontmatter"], schema)
-            current_time = normalize_note_time(
-                note["frontmatter"].get("time"), fallback_date=fallback_day
+            start = note_start_time(note["frontmatter"], schema)
+            current_time = (
+                format_note_time(datetime.combine(fallback_day, start))
+                if fallback_day is not None and start is not None
+                else fallback_day.isoformat()
+                if fallback_day is not None
+                else ""
             )
-            if not current_time and fallback_day is not None:
-                current_time = f"{fallback_day.isoformat()}T00:00:00"
             properties = _hidden("note_id", identity) + _hidden("if_match", note["content_hash"])
             properties += _input(
-                "time",
-                "Date and start time (YYYY-MM-DDTHH:MM:SS)",
+                "date",
+                "Date, or date and start time (YYYY-MM-DDTHH:MM:SS)",
                 current_time,
             )
             properties += _select(
@@ -437,7 +441,7 @@ def router(wiring: Wiring) -> APIRouter:
                     )
                 )
                 body += (
-                    '<p class="muted">For work notes, enter time (YYYY-MM-DDTHH:MM:SS) or'
+                    '<p class="muted">For work notes, enter date as YYYY-MM-DDTHH:MM:SS or'
                     " time_unknown: true in Obsidian before finishing.</p>"
                 )
                 body += _form(
@@ -488,23 +492,28 @@ def router(wiring: Wiring) -> APIRouter:
         try:
             identity = form["note_id"]
             if action == "save-properties":
-                from coppermind.schema import normalize_note_time, parse_date_value
+                from coppermind.schema import normalize_note_time, parse_note_time
                 from coppermind_admin.pages.fields import read_schema
 
                 _, schema = read_schema(request.app.state.control)
-                fallback_day = parse_date_value(form.get("date"))
-                time_value = normalize_note_time(form.get("time"), fallback_date=fallback_day)
-                if not time_value and fallback_day is not None:
-                    time_value = f"{fallback_day.isoformat()}T00:00:00"
+                entered = str(form.get("date", "")).strip()
+                parsed = parse_note_time(entered)
+                if parsed.has_offset or (entered and not parsed.valid):
+                    raise ValueError(
+                        "enter date as YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS with no UTC offset"
+                    )
                 changes: dict[str, object] = {
                     schema.role("type_key"): form["note_type"],
                 }
-                if time_value:
-                    changes["time"] = time_value
                 unset: list[str] = []
+                if entered:
+                    changes[schema.role("date_key")] = (
+                        normalize_note_time(entered) if parsed.time_value is not None else entered
+                    )
+                    unset = ["time", "timezone"]
                 if form["note_type"] == "work" and "time_unknown" in form:
                     changes["time_unknown"] = True
-                elif form["note_type"] == "work" and "time" in form:
+                elif form["note_type"] == "work" and "date" in form:
                     changes["time_unknown"] = False
                 await client(request).patch_frontmatter(
                     identity, PatchFrontmatter(set=changes, unset=unset), if_match=form["if_match"]

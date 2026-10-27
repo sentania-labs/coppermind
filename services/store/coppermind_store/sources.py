@@ -1341,7 +1341,7 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     reference=row.path,
                     reason=(
                         f"date ({explicit_date}) and time ({time_date}) disagree; "
-                        f"using {time_date} from time"
+                        f"using {explicit_date} from date"
                     ),
                     note_id=row.id,
                 )

@@ -1,11 +1,18 @@
 """How a note becomes a file: frontmatter order, the filename and the body."""
 
-from datetime import date
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 
-from coppermind_store.notes import _body_with_heading, _build_frontmatter, _stem_for, _title_of
+from coppermind_store.notes import (
+    _adoption_changes,
+    _body_with_heading,
+    _build_frontmatter,
+    _stem_for,
+    _title_of,
+    _today,
+)
 
-from coppermind.schema import default_schema
+from coppermind.schema import default_schema, note_date, note_start_time
 from coppermind.settings import default_settings
 from coppermind.store_protocol import CreateNote
 
@@ -29,12 +36,12 @@ def test_missing_keys_take_their_shipped_defaults():
     assert frontmatter["schema_version"] == 1
 
 
-def test_time_defaults_to_a_local_iso_datetime_without_date_or_timezone():
+def test_date_defaults_to_a_local_iso_datetime_without_time_or_timezone():
     frontmatter = build()
-    assert "date" not in frontmatter
+    assert "time" not in frontmatter
     assert "timezone" not in frontmatter
-    assert len(frontmatter["time"]) == 19
-    assert frontmatter["time"][10] == "T"
+    assert len(frontmatter["date"]) == 19
+    assert frontmatter["date"][10] == "T"
     explicit = build(frontmatter={"date": "2026-09-08"})
     assert isinstance(explicit["date"], date)
 
@@ -42,7 +49,7 @@ def test_time_defaults_to_a_local_iso_datetime_without_date_or_timezone():
 def test_keys_are_written_in_schema_order_with_a_persons_own_keys_after_them():
     frontmatter = build(frontmatter={"aliases": ["theirs"], "type": "work"})
     names = list(frontmatter)
-    assert names[:3] == ["schema_version", "id", "type"]
+    assert names[:3] == ["schema_version", "id", "date"]
     assert names[-1] == "aliases"
 
 
@@ -56,7 +63,7 @@ def test_null_known_keys_are_omitted_and_null_unknown_keys_are_preserved():
 
 def test_a_dated_type_gets_a_date_prefixed_filename():
     schema, settings = default_schema(), default_settings()
-    frontmatter = build(frontmatter={"type": "work", "time": "2026-10-20T12:00:00"})
+    frontmatter = build(frontmatter={"type": "work", "date": "2026-10-20T12:00:00"})
     assert _stem_for("Acme Architecture Sync", frontmatter, schema, settings) == (
         "2026-10-20 Acme Architecture Sync"
     )
@@ -96,3 +103,50 @@ def test_the_title_is_read_back_from_the_h1(tmp_path):
         "Acme Architecture Sync"
     )
     assert _title_of("no heading here", tmp_path / "Fallback.md") == "Fallback"
+
+
+def test_ingest_keeps_a_supplied_legacy_time_instead_of_stamping_the_capture_moment():
+    request = CreateNote(title="Plaud", frontmatter={"date": "2026-10-13", "time": "09:30"})
+    frontmatter = _build_frontmatter(
+        request, default_schema(), default_settings(), "01ID", from_ingest=True
+    )
+    assert frontmatter["date"] == date(2026, 10, 13)
+    assert frontmatter["time"] == "09:30"
+    assert note_start_time(frontmatter, default_schema()) == time(9, 30)
+
+
+def test_ingest_folds_a_bare_legacy_time_with_no_date_into_the_capture_day():
+    request = CreateNote(title="Plaud", frontmatter={"time": "09:30"})
+    captured_at = datetime(2026, 10, 13, 20, 15, tzinfo=UTC)
+    frontmatter = _build_frontmatter(
+        request,
+        default_schema(),
+        default_settings(),
+        "01ID",
+        captured_at=captured_at,
+        from_ingest=True,
+    )
+    assert frontmatter["date"] == "2026-10-13T09:30:00"
+    assert note_date(frontmatter, default_schema()) == date(2026, 10, 13)
+    assert note_start_time(frontmatter, default_schema()) == time(9, 30)
+
+
+def test_adoption_does_not_stamp_today_over_a_legacy_time_that_carries_the_day():
+    schema, settings = default_schema(), default_settings()
+    dated = {"time": datetime(2026, 10, 14, 10, 0, 0)}
+    assert "date" not in _adoption_changes(dated, schema, settings, "01ID")
+    assert note_date(dated, schema) == date(2026, 10, 14)
+
+
+def test_adoption_gives_a_bare_legacy_time_today_as_its_day_and_keeps_the_time():
+    schema, settings = default_schema(), default_settings()
+    changes = _adoption_changes({"time": "09:30"}, schema, settings, "01ID")
+    assert changes["date"] == _today(settings)
+    assert "time" not in changes
+
+
+def test_adoption_stamps_a_note_with_neither_date_nor_time():
+    schema, settings = default_schema(), default_settings()
+    changes = _adoption_changes({}, schema, settings, "01ID")
+    assert len(changes["date"]) == 19
+    assert "time" not in changes

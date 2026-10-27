@@ -31,7 +31,6 @@ from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     PathCollision,
     RenameNote,
-    ValidationFailed,
 )
 
 TOKEN = "move-rename-test-token"
@@ -213,12 +212,12 @@ async def test_a_hand_written_date_with_a_time_never_puts_a_colon_in_the_filenam
     assert moved.path == "Work/Standup.md"
     assert (store.notes_root / moved.path).read_bytes() == original
 
-    # The schema wants a date, so a rename is refused before the file changes
-    # rather than deriving a filename from the time.
-    with pytest.raises(ValidationFailed):
-        await store.rename_note(note_id, RenameNote(title="Daily"), notes.content_hash(original))
-    assert note_files(store.notes_root) == [store.notes_root / moved.path]
-    assert (store.notes_root / moved.path).read_bytes() == original
+    # A date-and-time is a valid date, and the filename takes only its day.
+    renamed = await store.rename_note(
+        note_id, RenameNote(title="Daily"), notes.content_hash(original)
+    )
+    assert renamed.path == "Work/2026-10-02 Daily.md"
+    assert ":" not in renamed.path
 
 
 # -- 2: a refused rename leaves the source alone ----------------------------
