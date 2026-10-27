@@ -89,7 +89,8 @@ When the note is filed, an embed in the body of a note that cites the source,
 whose target is exactly an artifact name, is rewritten to the filed copy, for
 example `![[_Attachments/2026-09/<source_id>-r0001-meeting-image-01.jpg]]`.
 `![[name|300]]` keeps its size suffix. Links that match no artifact, text
-inside fenced code, and all other prose are left as authored. When a later
+inside code (fenced or indented blocks and inline code spans), and all other
+prose are left as authored. When a later
 revision adds or changes an image, the next filing points the embeds at that
 revision's copies; earlier copies stay in `_Attachments/`. Refiling never
 rewrites a link twice, and a replay with identical image bytes creates no new
