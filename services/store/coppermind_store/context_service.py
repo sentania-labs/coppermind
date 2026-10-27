@@ -250,9 +250,6 @@ class ContextService:
                 schema.role(r)
                 for r in ("id_key", "sources_key", "reviewed_key", "schema_version_key")
             }
-            date_def = definitions.get(schema.role("date_key"))
-            if date_def is not None and date_def.required:
-                date_def.required = False
             for name, kind, description in [
                 ("attendees", "list", "Email addresses confirmed by the reviewed note"),
                 ("invitees", "list", "Email addresses invited to the meeting"),

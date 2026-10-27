@@ -26,26 +26,7 @@ class ControlState:
         """Create any missing control file at revision 1 with shipped defaults."""
         self.store.state_dir.mkdir(parents=True, exist_ok=True)
         self.store.ensure("settings", default_settings().model_dump(mode="json"))
-        if not self.store.ensure("schema", default_schema().model_dump(mode="json")):
-            try:
-                doc = self.schema_document()
-                schema = doc.frontmatter_schema
-                date_key = schema.role("date_key")
-                date_def = next((k for k in schema.keys if k.name == date_key), None)
-                if (
-                    date_def is not None
-                    and date_def.required
-                    and date_def.description == "Date of the note (YYYY-MM-DD)."
-                ):
-                    date_def.required = False
-                    date_def.description = (
-                        "Optional note date (YYYY-MM-DD); derived from time when omitted."
-                    )
-                    self.store.write(
-                        "schema", schema.model_dump(mode="json"), if_revision=doc.revision
-                    )
-            except (OSError, ValueError):
-                pass
+        self.store.ensure("schema", default_schema().model_dump(mode="json"))
 
     def settings(self) -> ProductSettings:
         return read_settings(self.store)

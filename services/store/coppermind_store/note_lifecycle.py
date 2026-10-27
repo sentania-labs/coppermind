@@ -33,8 +33,6 @@ def validate_review(
     parsed_time = parse_note_time(values.get("time"))
     if parsed_time.has_offset:
         raise ValueError("time must be a local datetime without a UTC offset")
-    if parsed_time.present and not parsed_time.valid:
-        raise ValueError("enter a valid local meeting time and timezone")
     date_key = schema.role("date_key")
     raw_date = values.get(date_key)
     if raw_date is not None and str(raw_date).strip() != "" and parse_date_value(raw_date) is None:
@@ -43,6 +41,8 @@ def validate_review(
         raise ValueError("a note date is required in time or date")
     if values.get(schema.role("type_key")) != "work":
         return
+    if parsed_time.present and not parsed_time.valid:
+        raise ValueError("enter a valid local meeting time and timezone")
     raw_tz = values.get("timezone")
     tz_name = str(raw_tz).strip() if raw_tz is not None else ""
     try:

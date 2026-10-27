@@ -643,7 +643,7 @@ async def test_disagreeing_date_and_time_uses_time_and_flags_date_mismatch_probl
     assert "2026-10-20" in mismatch[0].reason
 
 
-async def test_persisted_schema_requiring_date_accepts_time_only_notes_and_migrates(store):
+async def test_persisted_schema_requiring_date_accepts_time_only_notes(store):
     from coppermind_store import filing
 
     from coppermind.store_protocol import IngestRequest
@@ -695,7 +695,7 @@ async def test_persisted_schema_requiring_date_accepts_time_only_notes_and_migra
 
     store.control.ensure_defaults()
     date_def = next(k for k in store.control.schema().keys if k.name == "date")
-    assert date_def.required is False
+    assert date_def.required is True
 
     await enable(store)
     await store.context.complete_review(
@@ -707,3 +707,32 @@ async def test_persisted_schema_requiring_date_accepts_time_only_notes_and_migra
     )
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
     assert (await store.get_note(ingested_note.id)).path.startswith("2026-10/")
+
+
+def test_validate_review_rejects_offset_on_any_type_but_malformed_time_only_on_work(store):
+    from datetime import UTC, datetime
+
+    from coppermind_store.note_lifecycle import validate_review
+
+    from coppermind.store_protocol import NoteDocument
+
+    schema = store.control.schema()
+
+    def note(**frontmatter):
+        return NoteDocument(
+            id="01JZ0000000000000000000000",
+            path="note.md",
+            title="t",
+            frontmatter=frontmatter,
+            body="",
+            content_hash="h",
+            size_bytes=0,
+            updated_at=datetime.now(UTC),
+        )
+
+    validate_review(note(type="personal", date="2026-10-20", time="TBD"), schema)
+    with pytest.raises(ValueError, match="valid local meeting time"):
+        validate_review(note(type="work", date="2026-10-20", time="TBD"), schema)
+    for kind in ("personal", "work"):
+        with pytest.raises(ValueError, match="UTC offset"):
+            validate_review(note(type=kind, time="2026-10-20T12:00:00-05:00"), schema)

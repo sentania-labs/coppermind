@@ -76,7 +76,11 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     parsed_time = parse_note_time(note.frontmatter.get("time"))
     if parsed_time.has_offset:
         raise ValueError("time must be a local datetime without a UTC offset")
-    if parsed_time.present and not parsed_time.valid:
+    if (
+        note.frontmatter.get(schema.role("type_key")) == "work"
+        and parsed_time.present
+        and not parsed_time.valid
+    ):
         raise ValueError("enter a valid local meeting time and timezone")
     raw_date = note.frontmatter.get(schema.role("date_key"))
     if raw_date is not None and str(raw_date).strip() != "" and parse_date_value(raw_date) is None:
