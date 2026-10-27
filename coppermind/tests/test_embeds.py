@@ -54,3 +54,40 @@ def test_spaces_are_encoded_only_in_markdown_form():
 def test_fenced_code_is_not_rewritten():
     body = "```\n![[x-image-01.jpg]]\n```\n![[x-image-01.jpg]]\n"
     assert rewrite(body) == f"```\n![[x-image-01.jpg]]\n```\n![[{FILED}]]\n"
+
+
+def test_inline_code_spans_are_not_rewritten():
+    body = "Use `![[x-image-01.jpg]]` or ``![](x-image-01.jpg)`` then ![[x-image-01.jpg]]"
+    assert rewrite(body) == (
+        f"Use `![[x-image-01.jpg]]` or ``![](x-image-01.jpg)`` then ![[{FILED}]]"
+    )
+
+
+def test_unclosed_backtick_does_not_hide_a_real_embed():
+    assert rewrite("a ` lone\n\n![[x-image-01.jpg]]") == f"a ` lone\n\n![[{FILED}]]"
+
+
+def test_fences_nested_in_blockquotes_and_lists_are_not_rewritten():
+    body = (
+        "> ```\n> ![[x-image-01.jpg]]\n> ```\n"
+        "- item\n  ```md\n  ![[x-image-01.jpg]]\n  ```\n"
+        "~~~\n![[x-image-01.jpg]]\n~~~\n"
+        "![[x-image-01.jpg]]\n"
+    )
+    assert rewrite(body) == body[: body.rindex("![[")] + f"![[{FILED}]]\n"
+
+
+def test_indented_code_blocks_are_not_rewritten():
+    body = "text\n\n    ![[x-image-01.jpg]]\n    ![](x-image-01.jpg)\n\n![[x-image-01.jpg]]\n"
+    assert rewrite(body) == body[: body.rindex("![[")] + f"![[{FILED}]]\n"
+
+
+def test_markdown_titles_and_angle_destinations_are_resolved():
+    assert rewrite('![photo](x-image-01.jpg "Caption")') == f'![photo]({FILED} "Caption")'
+    assert rewrite("![photo](x-image-01.jpg 'Cap')") == f"![photo]({FILED} 'Cap')"
+    assert rewrite("![p](<x-image-01.jpg>)") == f"![p](<{FILED}>)"
+    images = [("SRC1", "my photo.jpg", "_Attachments/2026-09/SRC1-r0001-my photo.jpg")]
+    assert rewrite('![p](<my photo.jpg> "T")', images) == (
+        '![p](<_Attachments/2026-09/SRC1-r0001-my photo.jpg> "T")'
+    )
+    assert rewrite('![p](other.jpg "x-image-01.jpg")') == '![p](other.jpg "x-image-01.jpg")'

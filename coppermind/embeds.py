@@ -5,34 +5,87 @@ from __future__ import annotations
 import re
 from urllib.parse import quote, unquote
 
-_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+# A fence may sit inside blockquotes and list items, so allow their markers before it.
+_PREFIX = r"[ \t]*(?:>[ \t]*)*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*"
+_FENCE = re.compile(rf"^{_PREFIX}(`{{3,}}|~{{3,}})(.*)$")
+_BACKTICKS = re.compile(r"`+")
+_INDENTED = re.compile(r"^(?: {4}|\t)")
 
 
-def _outside_fences(body: str):
-    """Yield (text, in_fence) chunks so authored code samples are never rewritten."""
-    fence: str | None = None
-    chunk: list[str] = []
-    for line in body.splitlines(keepends=True):
-        match = _FENCE.match(line)
-        closes = (
-            fence is not None
-            and match is not None
-            and match.group(1)[0] == fence[0]
-            and len(match.group(1)) >= len(fence)
-            and line.strip() == match.group(1)
+def _code_spans_split(text: str):
+    """Yield (text, is_code) pieces of one paragraph, splitting out inline code spans."""
+    start = 0
+    runs = list(_BACKTICKS.finditer(text))
+    index = 0
+    while index < len(runs):
+        opener = runs[index]
+        closer = next(
+            (later for later in runs[index + 1 :] if len(later.group()) == len(opener.group())),
+            None,
         )
-        if closes:
-            chunk.append(line)
-            yield "".join(chunk), True
-            chunk, fence = [], None
-        elif fence is None and match:
-            if chunk:
-                yield "".join(chunk), False
-            chunk, fence = [line], match.group(1)
-        else:
-            chunk.append(line)
-    if chunk:
-        yield "".join(chunk), fence is not None
+        if closer is None:
+            index += 1
+            continue
+        if opener.start() > start:
+            yield text[start : opener.start()], False
+        yield text[opener.start() : closer.end()], True
+        start = closer.end()
+        index = runs.index(closer) + 1
+    if start < len(text):
+        yield text[start:], False
+
+
+def _prose_and_code(body: str):
+    """Yield (text, is_code) so authored code is never treated as an embed.
+
+    Code is fenced blocks (also inside blockquotes and lists), indented code
+    blocks, and inline code spans. An indented line after a blank line is
+    treated as code even inside a list: that errs toward leaving text alone.
+    """
+    fence: re.Match[str] | None = None
+    prose: list[str] = []
+    previous_blank = True
+    previous_code = False
+
+    def flush():
+        text = "".join(prose)
+        prose.clear()
+        for paragraph in re.split(r"(?<=\n)(?=[ \t]*\n)", text):
+            yield from _code_spans_split(paragraph)
+
+    for line in body.splitlines(keepends=True):
+        blank = not line.strip()
+        if fence is not None:
+            yield line, True
+            match = _FENCE.match(line.rstrip("\r\n"))
+            if (
+                match
+                and match.group(1)[0] == fence.group(1)[0]
+                and len(match.group(1)) >= len(fence.group(1))
+                and not match.group(2).strip()
+            ):
+                fence = None
+            previous_blank, previous_code = False, True
+            continue
+        opening = _FENCE.match(line.rstrip("\r\n"))
+        if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
+            yield from flush()
+            fence = opening
+            yield line, True
+            previous_blank, previous_code = False, True
+            continue
+        indented = bool(_INDENTED.match(line)) and not blank
+        if indented and (previous_blank or previous_code):
+            yield from flush()
+            yield line, True
+            previous_blank, previous_code = False, True
+            continue
+        if blank and previous_code:
+            # A blank line inside an indented block belongs to it; harmless as prose.
+            pass
+        prose.append(line)
+        previous_blank, previous_code = blank, False
+    yield from flush()
 
 
 def rewrite_embeds(
@@ -67,19 +120,25 @@ def rewrite_embeds(
         return next((filed for rx, filed in earlier if rx.fullmatch(target)), None)
 
     wiki = re.compile(r"!\[\[([^\]|\n]+)((?:\|[^\]\n]*)?)\]\]")
-    markdown = re.compile(r"(!\[[^\]\n]*\]\()([^()\s<>]+)(\))")
+    markdown = re.compile(
+        r"(!\[[^\]\n]*\]\([ \t]*)(<[^<>\n]+>|[^()\s<>]+)"
+        r"((?:[ \t]+(?:\"[^\"\n]*\"|'[^'\n]*'|\([^()\n]*\)))?[ \t]*\))"
+    )
 
     def wiki_sub(match: re.Match[str]) -> str:
         filed = resolve(match.group(1))
         return match.group(0) if filed is None else f"![[{filed}{match.group(2)}]]"
 
     def markdown_sub(match: re.Match[str]) -> str:
-        filed = resolve(unquote(match.group(2)))
+        target = match.group(2)
+        angled = target.startswith("<")
+        filed = resolve(unquote(target[1:-1] if angled else target))
         if filed is None:
             return match.group(0)
-        return f"{match.group(1)}{quote(filed, safe='/')}{match.group(3)}"
+        written = f"<{filed}>" if angled else quote(filed, safe="/")
+        return f"{match.group(1)}{written}{match.group(3)}"
 
     out = []
-    for text, in_fence in _outside_fences(body):
-        out.append(text if in_fence else markdown.sub(markdown_sub, wiki.sub(wiki_sub, text)))
+    for text, is_code in _prose_and_code(body):
+        out.append(text if is_code else markdown.sub(markdown_sub, wiki.sub(wiki_sub, text)))
     return "".join(out)
