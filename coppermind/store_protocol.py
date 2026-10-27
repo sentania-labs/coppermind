@@ -800,7 +800,7 @@ class ProblemInfo(BaseModel):
     `kind` is `ingest` (a refused ingest), `collision` (several files carry one
     note identity), `unparsed` (a file the reconciler could not read), `filing`
     (monthly filing failed and will retry), `date_mismatch` (both `date` and
-    `time` are present and disagree, with `time` winning) or `excluded`.
+    `time` are present and disagree, with `date` winning) or `excluded`.
     `note_id` and `source_id` name what the problem is about when it exists.
     """
 

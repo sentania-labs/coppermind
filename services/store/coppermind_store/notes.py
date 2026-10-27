@@ -1654,6 +1654,7 @@ def _build_frontmatter(
     needs_default = (not supplied and not values.get(date_key) and not legacy_time) or (
         from_ingest
         and request.frontmatter.get("time_unknown") is not True
+        and not legacy_time
         and (not supplied or (given.valid and given.time_value is None))
     )
     # The start time lives in `date`, so a note without one gets the capture

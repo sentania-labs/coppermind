@@ -39,7 +39,7 @@ class ReviewView extends ItemView {
         new Setting(box).setName('Save meeting properties').setDesc('Writes only these properties; let sync finish before review.').addButton(b=>b.setButtonText('Save time').onClick(async()=>{
           await this.app.fileManager.processFrontMatter(file,f=>{
             f.time_unknown=unknown;
-            if(meetingTime)f[data.roles.date_key]=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(meetingTime)?meetingTime+':00':meetingTime;
+            if(meetingTime){f[data.roles.date_key]=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(meetingTime)?meetingTime+':00':meetingTime;delete f.time;delete f.timezone;}
           });new Notice('Meeting time saved. Wait for sync, then refresh.');await this.refresh();
         }));
       }

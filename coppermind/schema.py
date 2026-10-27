@@ -481,14 +481,14 @@ def note_date(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> date | 
     """Return the note's effective day.
 
     `date` carries the day, and the start time too when it is a date-and-time.
-    A legacy `time` that carries its own date (written by v0.6.0) still wins
-    when it disagrees with `date`, which is the rule #57 settled.
+    A legacy `time` that carries its own date (written by v0.6.0) is only the
+    fallback for a note whose `date` is missing or unusable.
     """
-    parsed = parse_note_time(frontmatter.get("time"))
-    if parsed.valid and parsed.date_value is not None:
-        return parsed.date_value
     explicit = parse_note_time(frontmatter.get(schema.role("date_key")))
-    return explicit.date_value if explicit.valid else None
+    if explicit.valid and explicit.date_value is not None:
+        return explicit.date_value
+    parsed = parse_note_time(frontmatter.get("time"))
+    return parsed.date_value if parsed.valid else None
 
 
 def note_date_mismatch(
@@ -553,6 +553,52 @@ def normalize_note_time(value: Any, *, fallback_date: date | None = None) -> str
     if parsed.time_value is not None:
         return parsed.time_value.strftime("%H:%M:%S")
     return str(value).strip()
+
+
+def field_suggestion_changes(
+    frontmatter: dict[str, Any], schema: FrontmatterSchema, field: str, value: Any
+) -> tuple[dict[str, Any], list[str]]:
+    """The `(set, unset)` patch that applying a suggested field value makes.
+
+    A date or legacy time suggestion writes `date` only and removes the legacy
+    `time` and `timezone`. An account suggestion is added to the note's list:
+    entries already there keep their place and none is removed.
+    """
+    date_key = schema.role("date_key")
+    if field in {date_key, "time"}:
+        parsed = parse_note_time(value)
+        written = (
+            normalize_note_time(value, fallback_date=note_date(frontmatter, schema))
+            if parsed.valid and parsed.time_value is not None
+            else value
+        )
+        return {date_key: written}, ["time", "timezone"]
+    account_key = schema.role("account_key")
+    if field == account_key:
+        names = account_list(frontmatter.get(account_key))
+        names += [name for name in account_list(value) if name not in names]
+        return {account_key: names}, []
+    return {field: value}, []
+
+
+def previous_default_keys() -> dict[str, KeyDefinition]:
+    """The `account` and `date` definitions earlier releases shipped, by key name."""
+    return {
+        "account": KeyDefinition(
+            name="account",
+            kind="string",
+            required=False,
+            required_when="context",
+            required_when_values=["external"],
+            description="Customer name. Required when context is external.",
+        ),
+        "date": KeyDefinition(
+            name="date",
+            kind="date",
+            required=False,
+            description="Optional note date (YYYY-MM-DD); derived from time when omitted.",
+        ),
+    }
 
 
 def default_schema() -> FrontmatterSchema:

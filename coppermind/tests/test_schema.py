@@ -138,8 +138,9 @@ def test_parse_note_time_and_date_derivation_and_mismatch():
     assert with_offset.has_offset is True
 
     disagree = {"date": "2026-10-19", "time": "2026-10-20T12:00:00"}
-    assert note_date(disagree, schema) == date(2026, 10, 20)
+    assert note_date(disagree, schema) == date(2026, 10, 19)
     assert note_date_mismatch(disagree, schema) == (date(2026, 10, 19), date(2026, 10, 20))
+    assert note_date({"time": "2026-10-20T12:00:00"}, schema) == date(2026, 10, 20)
 
 
 def test_default_schema_declares_account_as_a_list_and_no_time_key():
@@ -241,3 +242,40 @@ def test_date_and_datetime_give_the_same_day_and_start_time():
     assert note_start_time({"date": "2026-10-20"}, schema) is None
     assert note_start_time({"date": "2026-10-20", "time": "09:30"}, schema) == time(9, 30)
     assert note_date({"date": "2026-10-20 12:00:00"}, schema) == date(2026, 10, 20)
+
+
+def test_a_date_suggestion_writes_date_only_and_removes_the_legacy_time_and_timezone():
+    from coppermind.schema import field_suggestion_changes
+
+    schema = default_schema()
+    legacy = {"time": "2026-10-14T10:00:00", "timezone": "America/New_York"}
+    assert field_suggestion_changes(legacy, schema, "date", "2026-10-15T09:00:00") == (
+        {"date": "2026-10-15T09:00:00"},
+        ["time", "timezone"],
+    )
+    assert field_suggestion_changes({"date": "2026-10-14"}, schema, "time", "09:30") == (
+        {"date": "2026-10-14T09:30:00"},
+        ["time", "timezone"],
+    )
+
+
+def test_an_account_suggestion_joins_the_list_and_never_replaces_it():
+    from coppermind.schema import field_suggestion_changes
+
+    schema = default_schema()
+    held = {"account": ["Xcel", "United"]}
+    assert field_suggestion_changes(held, schema, "account", "Example") == (
+        {"account": ["Xcel", "United", "Example"]},
+        [],
+    )
+    assert field_suggestion_changes(held, schema, "account", ["United", "Acme"]) == (
+        {"account": ["Xcel", "United", "Acme"]},
+        [],
+    )
+    assert field_suggestion_changes({"account": "Xcel"}, schema, "account", "Acme")[0] == {
+        "account": ["Xcel", "Acme"]
+    }
+    assert field_suggestion_changes({}, schema, "account", "Example")[0] == {"account": ["Example"]}
+    assert field_suggestion_changes({"account": []}, schema, "account", ["A", "B"])[0] == {
+        "account": ["A", "B"]
+    }

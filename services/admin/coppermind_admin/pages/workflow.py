@@ -505,11 +505,12 @@ def router(wiring: Wiring) -> APIRouter:
                 changes: dict[str, object] = {
                     schema.role("type_key"): form["note_type"],
                 }
+                unset: list[str] = []
                 if entered:
                     changes[schema.role("date_key")] = (
                         normalize_note_time(entered) if parsed.time_value is not None else entered
                     )
-                unset: list[str] = []
+                    unset = ["time", "timezone"]
                 if form["note_type"] == "work" and "time_unknown" in form:
                     changes["time_unknown"] = True
                 elif form["note_type"] == "work" and "date" in form:

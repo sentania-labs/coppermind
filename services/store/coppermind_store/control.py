@@ -12,10 +12,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from coppermind.api_keys import ApiKeySet
-from coppermind.schema import FrontmatterSchema, default_schema
+from coppermind.logging import get_logger
+from coppermind.schema import FrontmatterSchema, default_schema, previous_default_keys
 from coppermind.settings import ProductSettings, default_settings, read_settings
 from coppermind.statefiles import StateStore
 from coppermind.store_protocol import SchemaDocument
+
+log = get_logger("coppermind-store")
 
 
 class ControlState:
@@ -27,6 +30,36 @@ class ControlState:
         self.store.state_dir.mkdir(parents=True, exist_ok=True)
         self.store.ensure("settings", default_settings().model_dump(mode="json"))
         self.store.ensure("schema", default_schema().model_dump(mode="json"))
+        self._upgrade_shipped_keys()
+
+    def _upgrade_shipped_keys(self) -> None:
+        """Move a saved schema's untouched `account` and `date` to the shipped list contract.
+
+        A definition is replaced only when it still equals what an earlier
+        release shipped; one an operator changed is left as it is and logged.
+        """
+        state = self.store.read("schema")
+        body = {key: value for key, value in state.body.items() if key != "revision"}
+        try:
+            saved = FrontmatterSchema.model_validate(body)
+        except ValueError:
+            return
+        shipped = {definition.name: definition for definition in default_schema().keys}
+        previous = previous_default_keys()
+        keys = []
+        for definition in saved.keys:
+            if definition.name in previous and definition != shipped[definition.name]:
+                if definition == previous[definition.name]:
+                    definition = shipped[definition.name]
+                else:
+                    log.info("saved_schema_key_customised", key=definition.name)
+            keys.append(definition)
+        if keys != saved.keys:
+            self.store.write(
+                "schema",
+                saved.model_copy(update={"keys": keys}).model_dump(mode="json"),
+                if_revision=state.revision,
+            )
 
     def settings(self) -> ProductSettings:
         return read_settings(self.store)

@@ -140,6 +140,7 @@ def test_work_review_time_controls_and_save(signed_in):
     }
     assert "time" not in store.patches[-1][1].set
     assert "timezone" not in store.patches[-1][1].set
+    assert store.patches[-1][1].unset == ["time", "timezone"]
     client.post("/v1/admin/workflow/save-properties", data=values | {"time_unknown": "on"})
     assert store.patches[-1][1].set == {
         "type": "work",

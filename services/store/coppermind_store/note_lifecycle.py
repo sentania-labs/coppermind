@@ -7,7 +7,13 @@ import time as clock
 from typing import TYPE_CHECKING, Any
 
 from coppermind.ids import is_valid_id
-from coppermind.schema import date_field_problem, note_date, note_start_time, parse_note_time
+from coppermind.schema import (
+    date_field_problem,
+    field_suggestion_changes,
+    note_date,
+    note_start_time,
+    parse_note_time,
+)
 from coppermind.store_protocol import NoteDocument, PatchFrontmatter, StoreError
 
 if TYPE_CHECKING:
@@ -172,7 +178,12 @@ class NoteLifecycle:
                     for i in selected:
                         s = job.result.suggestions[i]
                         if s.kind == "field":
-                            prospective.frontmatter[s.field] = s.value
+                            written, removed = field_suggestion_changes(
+                                prospective.frontmatter, schema, s.field, s.value
+                            )
+                            prospective.frontmatter.update(written)
+                            for key in removed:
+                                prospective.frontmatter.pop(key, None)
                     validate_review(prospective, schema, self._default_timezone())
                     if fingerprint(await self.context.evidence(job)) != fingerprint(job.evidence):
                         raise ValueError("source evidence changed; regenerate the suggestion")

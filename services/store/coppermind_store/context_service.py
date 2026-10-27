@@ -24,11 +24,10 @@ from coppermind.context_config import (
 )
 from coppermind.ids import new_id
 from coppermind.schema import (
+    field_suggestion_changes,
     format_note_time,
-    normalize_note_time,
     note_date,
     note_start_time,
-    parse_note_time,
 )
 from coppermind.store_protocol import NoteQuery, PatchFrontmatter, RenameNote, StoreError
 from coppermind_store.calendar_archive import CalendarArchive
@@ -946,21 +945,15 @@ class ContextService:
             self.validate_result(Suggestions(suggestions=[suggestion]), job.evidence)
             note = await self.store.get_note(job.note_id)
             changes: dict[str, Any] = {}
+            unset: list[str] = []
             assignment = self.config().assignments["enrichment"]
             if suggestion.kind == "field":
-                schema = self.store.control.schema()
-                if suggestion.field in {schema.role("date_key"), "time"}:
-                    # The start time lives in `date`; `time` is never written.
-                    parsed = parse_note_time(suggestion.value)
-                    changes[schema.role("date_key")] = (
-                        normalize_note_time(
-                            suggestion.value, fallback_date=note_date(note.frontmatter, schema)
-                        )
-                        if parsed.valid and parsed.time_value is not None
-                        else suggestion.value
-                    )
-                else:
-                    changes[suggestion.field] = suggestion.value
+                changes, unset = field_suggestion_changes(
+                    note.frontmatter,
+                    self.store.control.schema(),
+                    suggestion.field,
+                    suggestion.value,
+                )
             elif suggestion.kind == "event" and assignment.event_field:
                 if len(suggestion.event_ids) != 1:
                     raise ValueError("select one event for the mapped event field")
@@ -982,6 +975,7 @@ class ContextService:
                             local = start_dt.astimezone(zone)
                             if local.date() == note_date(note.frontmatter, schema):
                                 changes[schema.role("date_key")] = format_note_time(local)
+                                unset = ["time", "timezone"]
             elif suggestion.kind in {"contact", "attendee", "invitee"}:
                 field = (
                     assignment.attendees_field
@@ -1027,7 +1021,9 @@ class ContextService:
             predicted = data
             if changes:
                 predicted = fm.patch(
-                    data.decode(), _with_kinds(changes, self.store.control.schema()), unset=[]
+                    data.decode(),
+                    _with_kinds(changes, self.store.control.schema()),
+                    unset=unset,
                 ).encode()
                 frontmatter, body = fm.parse(predicted.decode())
                 if body != note.body or self.store.control.schema().validate_frontmatter(
@@ -1038,6 +1034,7 @@ class ContextService:
                 "index": index,
                 "suggestion": suggestion.model_dump(),
                 "changes": changes,
+                "unset": unset,
                 "before_hash": job.note_hash,
                 "after_hash": content_hash(predicted),
                 "after_path": target,
@@ -1071,7 +1068,7 @@ class ContextService:
             if approval["changes"]:
                 note = await self.store.patch_frontmatter(
                     note.id,
-                    PatchFrontmatter(set=approval["changes"]),
+                    PatchFrontmatter(set=approval["changes"], unset=approval.get("unset", [])),
                     note.content_hash,
                 )
             if approval["suggestion"]["kind"] == "filename":

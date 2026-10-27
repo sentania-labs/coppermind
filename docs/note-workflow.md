@@ -40,8 +40,10 @@ start time in `date`, or `time_unknown: true` with a date-only `date`. Other not
 types need only a day. Midnight is an actual time, never a sentinel for unknown.
 Legacy notes with a `date` and an `HH:MM` `time` keep validating and filing, a
 legacy `timezone` is ignored, and when a legacy `time` carries its own date and
-disagrees with `date`, `time` wins and Problems reports a `date_mismatch` entry
-naming both dates.
+disagrees with `date`, `date` wins and Problems reports a `date_mismatch` entry
+naming both dates. Saving `date` from the review form or the Obsidian plugin, or
+approving an enrichment date, removes the legacy `time` and `timezone`. An
+enrichment `account` suggestion is added to the note's list and never replaces it.
 
 `account` is a list of customer names. A plain string is read as a one-item list.
 `account` is required when `context: external` and needs at least one entry; an

@@ -585,7 +585,7 @@ async def test_time_with_utc_offset_is_rejected_with_clear_problems_message(stor
     )
 
 
-async def test_disagreeing_date_and_time_uses_time_and_flags_date_mismatch_problem(store):
+async def test_disagreeing_date_and_time_uses_date_and_flags_date_mismatch_problem(store):
     from coppermind_store import filing, indexer
 
     from coppermind.store_protocol import NoteQuery, SearchQuery
@@ -610,31 +610,31 @@ async def test_disagreeing_date_and_time_uses_time_and_flags_date_mismatch_probl
     await indexer.catch_up(store)
 
     filed = await store.get_note(note.id)
-    assert filed.path.startswith("2026-10/")
-    assert filed.path.endswith("2026-10-20 Mismatch note.md")
+    assert filed.path.startswith("2026-09/")
+    assert filed.path.endswith("2026-09-15 Mismatch note.md")
 
     by_range = await store.list_notes(
-        NoteQuery.model_validate({"from": "2026-10-20", "to": "2026-10-20"})
+        NoteQuery.model_validate({"from": "2026-09-15", "to": "2026-09-15"})
     )
     assert [item.id for item in by_range.items] == [note.id]
     await store.field_index.refresh()
     by_field = await store.list_notes(
-        NoteQuery(filter='{"all": [{"field": "date", "op": "eq", "value": "2026-10-20"}]}')
+        NoteQuery(filter='{"all": [{"field": "date", "op": "eq", "value": "2026-09-15"}]}')
     )
     assert [item.id for item in by_field.items] == [note.id]
     old_field = await store.list_notes(
-        NoteQuery(filter='{"all": [{"field": "date", "op": "eq", "value": "2026-09-15"}]}')
+        NoteQuery(filter='{"all": [{"field": "date", "op": "eq", "value": "2026-10-20"}]}')
     )
     assert old_field.items == []
     hits = await store.search(
         SearchQuery.model_validate(
-            {"q": "mismatchpalabra", "from": "2026-10-20", "to": "2026-10-20"}
+            {"q": "mismatchpalabra", "from": "2026-09-15", "to": "2026-09-15"}
         )
     )
     assert [hit.id for hit in hits.items] == [note.id]
 
     dossiers = store.context.read("dossiers", {})
-    assert next(iter(dossiers.values()))["notes"][0]["date"] == "2026-10-20"
+    assert next(iter(dossiers.values()))["notes"][0]["date"] == "2026-09-15"
 
     problems = await store.get_problems()
     mismatch = [p for p in problems if p.kind == "date_mismatch" and p.note_id == note.id]

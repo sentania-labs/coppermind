@@ -232,12 +232,103 @@ async def test_field_approval_and_interrupted_receipt_resume(store, monkeypatch)
             {"id": job.id, "index": 0, "confirmation": "Apply selected suggestion"}
         )
     changed = await store.get_note(note.id)
-    assert changed.frontmatter["account"] == "Example"
+    assert changed.frontmatter["account"] == ["Example"]
     assert changed.body == note.body
     restarted = ContextService(store)
     await restarted.resume_approval({"id": job.id})
     assert restarted.load_job(job.id).state == "applied"
     assert (await store.get_note(note.id)).content_hash == changed.content_hash
+
+
+async def test_account_suggestion_joins_a_human_entered_list(store):
+    from coppermind_store.enrichment_models import Suggestions
+
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(
+            title="Old",
+            body="Casey attended.",
+            frontmatter={"date": "2026-10-14", "account": ["Xcel", "United"]},
+        )
+    )
+    job = context.load_job(await context.queue_note(note.id))
+    job.evidence = await context.evidence(job)
+    job.result = Suggestions.model_validate(
+        {
+            "suggestions": [
+                {
+                    "kind": "field",
+                    "field": "account",
+                    "value": "Example",
+                    "reason": "User reviewed",
+                    "quote": "Casey attended.",
+                },
+                {
+                    "kind": "field",
+                    "field": "account",
+                    "value": ["United", "Acme"],
+                    "reason": "User reviewed",
+                    "quote": "Casey attended.",
+                },
+            ]
+        }
+    )
+    job.state = "suggested"
+    context.save_job(job)
+    await context.approve({"id": job.id, "index": 0, "confirmation": "Apply selected suggestion"})
+    assert (await store.get_note(note.id)).frontmatter["account"] == ["Xcel", "United", "Example"]
+    await context.approve({"id": job.id, "index": 1, "confirmation": "Apply selected suggestion"})
+    assert (await store.get_note(note.id)).frontmatter["account"] == [
+        "Xcel",
+        "United",
+        "Example",
+        "Acme",
+    ]
+
+
+async def test_date_approval_replaces_a_legacy_time_instead_of_being_overridden(store):
+    from coppermind_store.enrichment_models import Suggestions
+
+    from coppermind.schema import note_date
+
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].fields.append("date")
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(
+            title="Old",
+            body="Casey attended.",
+            frontmatter={
+                "date": "2026-10-14",
+                "time": "2026-10-14T10:00:00",
+                "timezone": "America/New_York",
+            },
+        )
+    )
+    job = context.load_job(await context.queue_note(note.id))
+    job.evidence = await context.evidence(job)
+    job.result = Suggestions.model_validate(
+        {
+            "suggestions": [
+                {
+                    "kind": "field",
+                    "field": "date",
+                    "value": "2026-10-15T09:00:00",
+                    "reason": "Date correction approved by user",
+                    "quote": "Casey attended.",
+                }
+            ]
+        }
+    )
+    job.state = "suggested"
+    context.save_job(job)
+    await context.approve({"id": job.id, "index": 0, "confirmation": "Apply selected suggestion"})
+    changed = await store.get_note(note.id)
+    assert changed.frontmatter["date"] == "2026-10-15T09:00:00"
+    assert "time" not in changed.frontmatter
+    assert "timezone" not in changed.frontmatter
+    assert str(note_date(changed.frontmatter, store.control.schema())) == "2026-10-15"
 
 
 async def test_new_notes_queue_but_paused_enrichment_sends_nothing(store):
