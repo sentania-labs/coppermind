@@ -69,8 +69,8 @@ _LOCAL_DATETIME = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2
 
 
 def _yaml_scalar(key: str, value: Any) -> Any:
-    """Write Obsidian Date & time values (`time`) as unquoted `YYYY-MM-DDTHH:MM:SS`."""
-    if key != "time" or isinstance(value, TimeStamp):
+    """Write Obsidian Date & time values (`date`, legacy `time`) unquoted, `YYYY-MM-DDTHH:MM:SS`."""
+    if key not in {"date", "time"} or isinstance(value, TimeStamp):
         return value
     if isinstance(value, datetime) and value.tzinfo is None:
         ts = TimeStamp(value.year, value.month, value.day, value.hour, value.minute, value.second)

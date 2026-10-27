@@ -592,7 +592,8 @@ async def test_event_approval_filling_time_keeps_remaining_suggestions(store):
     context.save_job(job)
     await context.approve({"id": job.id, "index": 0, "confirmation": "Apply selected suggestion"})
     updated = await store.get_note(note.id)
-    assert str(updated.frontmatter["time"]).startswith("2026-10-14T")
+    assert str(updated.frontmatter["date"]).startswith("2026-10-14T")
+    assert "time" not in updated.frontmatter
     assert context.load_job(job.id).state == "suggested"
     assert context.load_job(job.id).error == ""
 
@@ -649,7 +650,7 @@ async def test_all_day_event_approval_does_not_shift_the_note_date(store):
     assert context.load_job(job.id).state == "suggested"
 
 
-async def test_event_approval_filling_time_honors_note_explicit_timezone(store):
+async def test_event_approval_filling_time_ignores_a_legacy_note_timezone(store):
     from coppermind_store.enrichment_models import Suggestions
 
     context = await configure(store)
@@ -683,5 +684,6 @@ async def test_event_approval_filling_time_honors_note_explicit_timezone(store):
     context.save_job(job)
     await context.approve({"id": job.id, "index": 0, "confirmation": "Apply selected suggestion"})
     updated = await store.get_note(note.id)
-    assert updated.frontmatter["time"] == "2026-10-14T10:00:00"
-    assert updated.frontmatter["timezone"] == "America/New_York"
+    # The configured America/Chicago setting is the only timezone.
+    assert str(updated.frontmatter["date"]) == "2026-10-14T09:00:00"
+    assert "time" not in updated.frontmatter

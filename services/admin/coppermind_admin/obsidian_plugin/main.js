@@ -33,13 +33,13 @@ class ReviewView extends ItemView {
       const reload=el.createEl('button',{text:'Refresh from Coppermind'});reload.onclick=()=>this.refresh();
       if(data.note.frontmatter[data.roles.type_key]==='work'){
         const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Meeting time'});
-        let meetingTime=String(fm.time||data.note.frontmatter.time||''), unknown=fm.time_unknown===true;
+        let meetingTime=String(fm[data.roles.date_key]||data.note.frontmatter[data.roles.date_key]||''), unknown=fm.time_unknown===true;
         new Setting(box).setName('Date and start time').addText(t=>{t.inputEl.type='datetime-local';t.inputEl.step='1';t.setValue(meetingTime).onChange(v=>meetingTime=v);});
         new Setting(box).setName('Time unknown').addToggle(t=>t.setValue(unknown).onChange(v=>unknown=v));
         new Setting(box).setName('Save meeting properties').setDesc('Writes only these properties; let sync finish before review.').addButton(b=>b.setButtonText('Save time').onClick(async()=>{
           await this.app.fileManager.processFrontMatter(file,f=>{
             f.time_unknown=unknown;
-            if(meetingTime)f.time=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(meetingTime)?meetingTime+':00':meetingTime;
+            if(meetingTime)f[data.roles.date_key]=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(meetingTime)?meetingTime+':00':meetingTime;
           });new Notice('Meeting time saved. Wait for sync, then refresh.');await this.refresh();
         }));
       }

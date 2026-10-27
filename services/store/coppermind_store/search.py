@@ -174,7 +174,7 @@ def filter_conditions(query: SearchQuery) -> list[sa.ColumnElement[bool]]:
     if query.context is not None:
         conditions.append(Note.context == query.context)
     if query.account is not None:
-        conditions.append(Note.account == query.account)
+        conditions.append(sa.literal(query.account) == sa.func.any(Note.account))
     if query.from_date is not None:
         conditions.append(Note.date >= query.from_date)
     if query.to_date is not None:

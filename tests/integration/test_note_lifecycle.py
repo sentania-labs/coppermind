@@ -383,10 +383,10 @@ async def test_target_frontmatter_and_stuck_work_note_file_into_month_folder(sto
         "sources: []\n"
         "account: Example Co\n"
         "tags: [upgrade, vcf]\n"
-        "time: 2026-10-20T12:00:00\n"
+        "date: 2026-10-20T12:00:00\n"
         "---\n"
         "# Target work note\n\n"
-        "Reviewed in Obsidian with canonical datetime time.\n",
+        "Reviewed in Obsidian with a date-and-time date.\n",
         encoding="utf-8",
     )
 
@@ -406,7 +406,7 @@ async def test_target_frontmatter_and_stuck_work_note_file_into_month_folder(sto
         "attendees:\n"
         f"{attendees_yaml}\n"
         "tags: [upgrade, vcf]\n"
-        "time: 2026-10-20T12:00:00\n"
+        "date: 2026-10-20T12:00:00\n"
         "---\n"
         "# Customer upgrade call\n\n"
         "Notes from the customer upgrade call.\n",
@@ -430,10 +430,10 @@ async def test_target_frontmatter_and_stuck_work_note_file_into_month_folder(sto
 
     filed_stuck = await store.get_note(stuck_id)
     assert filed_stuck.path.startswith("2026-10/")
-    assert "date" not in filed_stuck.frontmatter
+    assert "time" not in filed_stuck.frontmatter
     assert "timezone" not in filed_stuck.frontmatter
     raw_stuck = (store.notes_root / filed_stuck.path).read_text(encoding="utf-8")
-    assert "time: 2026-10-20T12:00:00\n" in raw_stuck
+    assert "date: 2026-10-20T12:00:00\n" in raw_stuck
 
     dossiers = store.context.read("dossiers", {})
     assert {entry["address"] for entry in dossiers.values()} == set(attendees)
@@ -441,7 +441,7 @@ async def test_target_frontmatter_and_stuck_work_note_file_into_month_folder(sto
         assert entry["notes"][0]["date"] == "2026-10-20"
 
 
-async def test_ingest_writes_obsidian_datetime_time_and_files_without_edits(store):
+async def test_ingest_writes_date_as_a_datetime_and_files_without_edits(store):
     from coppermind_store import filing
 
     from coppermind.store_protocol import IngestRequest
@@ -471,11 +471,11 @@ async def test_ingest_writes_obsidian_datetime_time_and_files_without_edits(stor
     )
     result = await store.ingest(request)
     note = await store.get_note(result.note.id)
-    assert note.frontmatter["time"] == "2026-10-20T12:00:00"
-    assert "date" not in note.frontmatter
+    assert str(note.frontmatter["date"]) == "2026-10-20T12:00:00"
+    assert "time" not in note.frontmatter
     assert "timezone" not in note.frontmatter
     raw = (store.notes_root / note.path).read_text(encoding="utf-8")
-    assert "time: 2026-10-20T12:00:00\n" in raw
+    assert "date: 2026-10-20T12:00:00\n" in raw
 
     completed = await store.context.complete_review(
         {"note_id": note.id, "if_match": note.content_hash, "confirmation": "Complete review"}
@@ -486,7 +486,7 @@ async def test_ingest_writes_obsidian_datetime_time_and_files_without_edits(stor
     assert filed.path.startswith("2026-10/")
 
 
-async def test_legacy_date_and_hh_mm_time_keep_filing_and_explicit_timezone_rules(store):
+async def test_legacy_date_and_hh_mm_time_keep_filing_and_a_legacy_timezone_is_ignored(store):
     await enable(store)
     legacy = await store.create_note(
         CreateNote(
@@ -530,14 +530,14 @@ async def test_legacy_date_and_hh_mm_time_keep_filing_and_explicit_timezone_rule
             },
         )
     )
-    with pytest.raises(ValueError, match="timezone"):
-        await store.context.complete_review(
-            {
-                "note_id": invalid_tz.id,
-                "if_match": invalid_tz.content_hash,
-                "confirmation": "Complete review",
-            }
-        )
+    await store.context.complete_review(
+        {
+            "note_id": invalid_tz.id,
+            "if_match": invalid_tz.content_hash,
+            "confirmation": "Complete review",
+        }
+    )
+    assert await file_note(store, invalid_tz.id) is True
 
     unknown_with_time = await store.create_note(
         CreateNote(
@@ -690,8 +690,8 @@ async def test_persisted_schema_requiring_date_accepts_time_only_notes(store):
         )
     )
     ingested_note = await store.get_note(ingested.note.id)
-    assert "date" not in ingested_note.frontmatter
-    assert ingested_note.frontmatter["time"] == "2026-10-20T12:00:00"
+    assert str(ingested_note.frontmatter["date"]) == "2026-10-20T12:00:00"
+    assert "time" not in ingested_note.frontmatter
 
     store.control.ensure_defaults()
     date_def = next(k for k in store.control.schema().keys if k.name == "date")

@@ -1,7 +1,7 @@
 # Note workflow and shared Dropbox
 
 Enable **Admin > Note workflow** to add optional attendees,
-invitees, calendar reference, time, timezone and time-unknown properties. Existing
+invitees, calendar reference and time-unknown properties. Existing
 notes, type choices and schema roles are preserved. Conflicting property types stop setup.
 The common Dropbox defaults to `Dropbox` in the vault. Legacy per-calendar
 folders retain priority and are not processed a second time by the common router.
@@ -29,19 +29,25 @@ that do not share local secret storage.
 
 Open a note and run **Coppermind Review: Review current note**. The panel checks
 that the exact local bytes match the server before permitting completion. Wait
-for Obsidian Sync after editing. `time` (`YYYY-MM-DDTHH:MM:SS`, local datetime with
-no UTC offset, matching Obsidian's Date & time property) is the canonical field
-for a note's date and start time, and is written on new notes. Legacy notes with
-a separate `date` (`YYYY-MM-DD`) and `HH:MM` `time` remain supported; when both
-`date` and `time` are present and disagree, `time` wins and Problems reports a
-`date_mismatch` entry naming both dates. A `time` carrying a UTC offset is rejected
-at review validation with a Problems message. Work notes (`type: work`) require a
-start time in `time`, or `time_unknown: true` (which ignores the time-of-day part
-and takes only the date from `time` or `date`). `timezone` is optional and defaults
-to the configured timezone (`America/Chicago` by default); an explicit `timezone`
-overrides the default and an invalid one fails validation. Other note types need
-only a date from `time` or `date`. Midnight is an actual time, never a sentinel
-for unknown.
+for Obsidian Sync after editing. `date` is the one field for a note's date and
+start time: `YYYY-MM-DD`, or `YYYY-MM-DDTHH:MM:SS` as a local date-and-time with no
+UTC offset, matching Obsidian's Date and Date & time properties. Times are in the
+configured timezone (`America/Chicago` by default), a setting rather than a note
+property. New notes, ingest, enrichment and the review form write the start time
+into `date`, and never write `time` or `timezone`. A `date` carrying a UTC offset
+is rejected at review with a Problems message. Work notes (`type: work`) require a
+start time in `date`, or `time_unknown: true` with a date-only `date`. Other note
+types need only a day. Midnight is an actual time, never a sentinel for unknown.
+Legacy notes with a `date` and an `HH:MM` `time` keep validating and filing, a
+legacy `timezone` is ignored, and when a legacy `time` carries its own date and
+disagrees with `date`, `time` wins and Problems reports a `date_mismatch` entry
+naming both dates.
+
+`account` is a list of customer names. A plain string is read as a one-item list.
+`account` is required when `context: external` and needs at least one entry; an
+empty list fails review the same way a missing account does. A reference note
+that applies to several customers lists them all, and a note found by any one of
+them.
 
 Review completion is recorded durably before writes and can be resumed. Each
 selected change uses the existing version checks and approval receipts. The

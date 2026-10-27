@@ -20,12 +20,13 @@ schema_version: 1
 id: 01K4Q8Z3N7V2X9M1B5C6D8E0F2
 type: work
 context: external
-account: Acme
+account:
+  - Acme
 reviewed: false
 sources:
   - 01K4Q8Z2A0P1Q2R3S4T5U6V7W8
 tags: []
-time: 2026-09-08T14:02:11
+date: 2026-09-08T14:02:11
 ---
 # Acme Architecture Sync
 ...
@@ -34,7 +35,7 @@ time: 2026-09-08T14:02:11
 | Rule | Value |
 |---|---|
 | Required keys | `schema_version` (int), `id` (ULID), `type`, `context`, `reviewed` (bool), `sources` (list of ULID) |
-| Optional keys | `time` (local ISO datetime `YYYY-MM-DDTHH:MM:SS` with no UTC offset, written on new notes as the canonical date and start time; legacy `HH:MM` with `date` is also accepted; UTC offsets are rejected at review validation), `date` (optional `YYYY-MM-DD`; derived from `time` when omitted; when both are present and disagree, `time` wins and Problems records a `date_mismatch` entry), `timezone` (optional IANA timezone; defaults to `general.timezone`, `America/Chicago`), `time_unknown` (bool; ignores time-of-day and uses only the date from `time` or `date`), `account` (required when `context: external`), `tags` (list), `title` (only when it differs from the heading), `external_refs` (a passthrough map), `unresolved` (set by the curator on an ambiguous filing), `managed` (projections only) |
+| Optional keys | `date` (`YYYY-MM-DD`, or a local date-and-time `YYYY-MM-DDTHH:MM:SS` with no UTC offset in the configured timezone, `general.timezone`, `America/Chicago` by default; the one field for a note's date and start time, written as a date-and-time on new notes; a UTC offset is rejected at review validation), `time_unknown` (bool; a work note with a date-only `date` needs it), `account` (a list of customer names; a plain string is read as a one-item list; at least one entry is required when `context: external`), `tags` (list), `title` (only when it differs from the heading), `external_refs` (a passthrough map), `unresolved` (set by the curator on an ambiguous filing), `managed` (projections only). A legacy `HH:MM` `time` beside a `date` still validates and files, and a legacy `timezone` is ignored; when a legacy `time` carries its own date and disagrees with `date`, `time` wins and Problems records a `date_mismatch` entry |
 | Shipped `type` vocabulary | `work`, `personal`, `reference`, `journal` (default: `reference`) |
 | Shipped `context` vocabulary | `internal`, `external`, `personal` |
 | Filenames | Dated types: `YYYY-MM-DD Title.md`. Undated: `Title.md`. Journal: `Journal/YYYY/YYYY-MM-DD.md`. Names are Unicode-normalized, Windows-reserved characters and device names are stripped, capped at 120 characters, and a case-insensitive collision gets a numbered suffix |
@@ -150,7 +151,7 @@ to a concurrent edit.
 ## Filing rules (`/data/state/rules.yaml`)
 
 An ordered list of predicates on frontmatter, each mapping to a path
-template with placeholders for `{account}`, `{yyyy}`, and `{type}`, plus a
+template with placeholders for `{account}` (the first entry of the note's `account` list), `{yyyy}`, and `{type}`, plus a
 fallback for anything that matches nothing: leave it in place and mark it
 `unresolved: true` rather than guess. Shipped defaults:
 

@@ -566,11 +566,19 @@ class NoteSummary(BaseModel):
     date: date_type | None = None
     type: str | None = None
     context: str | None = None
-    account: str | None = None
+    account: list[str] = Field(default_factory=list)
     reviewed: bool
     tags: list[str] = Field(default_factory=list)
     content_hash: ETag
     updated_at: datetime
+
+    @field_validator("account", mode="before")
+    @classmethod
+    def account_is_a_list(cls, value: object) -> object:
+        """A plain name is a one-item list and no account is an empty one."""
+        if value is None:
+            return []
+        return [value] if isinstance(value, str) else value
 
 
 class Page[T](BaseModel):

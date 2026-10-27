@@ -51,7 +51,7 @@ not infer a calendar match or merge their contents.
     "title": "Intake test",
     "body": "Discussed the intake test.",
     "frontmatter": {
-      "time": "2026-10-13T09:30:00",
+      "date": "2026-10-13T09:30:00",
       "reviewed": false
     }
   }
@@ -94,7 +94,12 @@ New-install defaults use types `work`, `personal`, `reference`, and `journal`
 (default `reference`), and contexts `internal`, `external`, and `personal`
 (default `internal`). Workflow exports using `context: customer` should map
 that to `external`, retaining the customer name in `account`, which is required
-when context is `external`.
+when context is `external`. `account` is a list of customer names. A plain
+string is read as a one-item list, so `account: Acme` and `account: [Acme]`
+are the same note, and an empty list counts as no account. `date` is
+`YYYY-MM-DD` or a local date-and-time `YYYY-MM-DDTHH:MM:SS` with no UTC offset,
+in the configured timezone; ingest writes the start time into `date` and never
+writes `time` or `timezone`.
 Existing installations retain their saved schema.
 
 The currently configured frontmatter schema still applies. Keep workflow

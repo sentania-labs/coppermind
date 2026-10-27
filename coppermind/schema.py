@@ -191,9 +191,26 @@ class FrontmatterSchema(BaseModel):
         problems: list[tuple[str, str]] = []
         date_key = self.role("date_key")
         has_time_date = self._date_satisfied_by_time(frontmatter)
+        account_key = self.role("account_key")
         for definition in self.keys:
             present = definition.name in frontmatter
             value = frontmatter.get(definition.name)
+            if definition.name == account_key and present and value is not None:
+                # One list field: a string is read as a one-item list, and an
+                # empty list or blank text counts as no account at all.
+                if not isinstance(value, str | list):
+                    problems.append((definition.name, f"{definition.name}: expected a list"))
+                    continue
+                if any(
+                    not isinstance(item, str)
+                    for item in ([value] if isinstance(value, str) else value)
+                ):
+                    problems.append((definition.name, f"{definition.name}: expected text entries"))
+                    continue
+                if not account_list(value):
+                    value, present = None, False
+                else:
+                    continue
             if definition.required and (not present or value is None):
                 if definition.name == date_key and has_time_date:
                     continue
@@ -297,6 +314,20 @@ class FrontmatterSchema(BaseModel):
         return [alias for alias, canonical in self.tag_aliases.items() if canonical == tag]
 
 
+def account_list(value: Any) -> list[str]:
+    """The customer names an `account` value carries.
+
+    A plain string is a one-item list, a list keeps its non-blank text entries
+    in order without repeats, and anything else carries none.
+    """
+    items = [value] if isinstance(value, str) else value if isinstance(value, list) else []
+    names: list[str] = []
+    for item in items:
+        if isinstance(item, str) and item.strip() and item.strip() not in names:
+            names.append(item.strip())
+    return names
+
+
 def _requires(definition: KeyDefinition, frontmatter: dict[str, Any]) -> bool:
     if not definition.required_when:
         return False
@@ -312,8 +343,12 @@ def _check_value(definition: KeyDefinition, value: Any) -> list[str]:
         return [f"{name}: expected a whole number"]
     if definition.kind == "list" and not isinstance(value, list):
         return [f"{name}: expected a list"]
-    if definition.kind == "date" and not _is_date(value):
-        return [f"{name}: expected a date as YYYY-MM-DD"]
+    if definition.kind == "date":
+        parsed = parse_note_time(value)
+        if parsed.has_offset:
+            return [f"{name}: must be a local date or date-and-time without a UTC offset"]
+        if not _is_date(value):
+            return [f"{name}: expected a date as YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS"]
     if definition.kind in {"string", "enum"} and isinstance(value, datetime):
         value = value.isoformat()
     if definition.kind in {"string", "enum"} and not isinstance(value, str):
@@ -325,7 +360,8 @@ def _check_value(definition: KeyDefinition, value: Any) -> list[str]:
 
 
 def _is_date(value: Any) -> bool:
-    return parse_date_value(value) is not None
+    parsed = parse_note_time(value)
+    return parsed.valid and parsed.date_value is not None
 
 
 _LEGACY_TIME_PATTERN = re.compile(r"^\d{2}:\d{2}(?::\d{2})?$")
@@ -334,13 +370,14 @@ _LOCAL_DATETIME_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(?::\d{2
 
 @dataclass(frozen=True)
 class ParsedNoteTime:
-    """Parsed view of a note's `time` property.
+    """Parsed view of a note's `date` property, or of a legacy `time` property.
 
-    `time` is the canonical field carrying a note's date and local start time
-    as `YYYY-MM-DDTHH:MM:SS` without a UTC offset, matching Obsidian's Date &
-    time property. Legacy `HH:MM` (or `HH:MM:SS`) values paired with a separate
-    `date` field remain accepted. Any `time` carrying a UTC offset is flagged
-    with `has_offset=True` and `valid=False` so review validation rejects it.
+    `date` carries a note's day and, as a date-and-time, its local start time
+    as `YYYY-MM-DDTHH:MM:SS` without a UTC offset, matching Obsidian's Date and
+    Date & time properties. A legacy `time` of `HH:MM` (or `HH:MM:SS`) paired
+    with a separate `date` remains accepted. A value carrying a UTC offset is
+    flagged with `has_offset=True` and `valid=False` so review validation
+    rejects it.
     """
 
     present: bool
@@ -441,11 +478,17 @@ def parse_note_time(value: Any) -> ParsedNoteTime:
 
 
 def note_date(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> date | None:
-    """Return the note's effective date, preferring `time` over `date` when both exist."""
+    """Return the note's effective day.
+
+    `date` carries the day, and the start time too when it is a date-and-time.
+    A legacy `time` that carries its own date (written by v0.6.0) still wins
+    when it disagrees with `date`, which is the rule #57 settled.
+    """
     parsed = parse_note_time(frontmatter.get("time"))
     if parsed.valid and parsed.date_value is not None:
         return parsed.date_value
-    return parse_date_value(frontmatter.get(schema.role("date_key")))
+    explicit = parse_note_time(frontmatter.get(schema.role("date_key")))
+    return explicit.date_value if explicit.valid else None
 
 
 def note_date_mismatch(
@@ -453,14 +496,43 @@ def note_date_mismatch(
 ) -> tuple[date, date] | None:
     """Return `(date_field, time_date)` when both are valid and disagree."""
     parsed = parse_note_time(frontmatter.get("time"))
-    explicit = parse_date_value(frontmatter.get(schema.role("date_key")))
+    explicit = parse_note_time(frontmatter.get(schema.role("date_key")))
     if (
         parsed.valid
         and parsed.date_value is not None
-        and explicit is not None
-        and explicit != parsed.date_value
+        and explicit.valid
+        and explicit.date_value is not None
+        and explicit.date_value != parsed.date_value
     ):
-        return explicit, parsed.date_value
+        return explicit.date_value, parsed.date_value
+    return None
+
+
+def note_start_time(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> time | None:
+    """The note's local start time: from `date` when it is a date-and-time.
+
+    A legacy `time` (`HH:MM`, or a full datetime) is the fallback, so notes
+    written before `date` carried the time keep their start time.
+    """
+    explicit = parse_note_time(frontmatter.get(schema.role("date_key")))
+    if explicit.valid and explicit.date_value is not None and explicit.time_value is not None:
+        return explicit.time_value
+    legacy = parse_note_time(frontmatter.get("time"))
+    return legacy.time_value if legacy.valid else None
+
+
+def date_field_problem(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> str | None:
+    """Why the note's `date` or legacy `time` cannot be used at review, or None."""
+    date_key = schema.role("date_key")
+    raw = frontmatter.get(date_key)
+    if raw is not None and (not isinstance(raw, str) or raw.strip()):
+        parsed = parse_note_time(raw)
+        if parsed.has_offset:
+            return f"{date_key} must be a local date or date-and-time without a UTC offset"
+        if not parsed.valid or parsed.date_value is None:
+            return "expected a valid date"
+    if parse_note_time(frontmatter.get("time")).has_offset:
+        return "time must be a local datetime without a UTC offset"
     return None
 
 
@@ -505,7 +577,10 @@ def default_schema() -> FrontmatterSchema:
                 name="date",
                 kind="date",
                 required=False,
-                description="Optional note date (YYYY-MM-DD); derived from time when omitted.",
+                description=(
+                    "Note date, YYYY-MM-DD, or date and local start time, "
+                    "YYYY-MM-DDTHH:MM:SS with no UTC offset."
+                ),
             ),
             KeyDefinition(
                 name="type",
@@ -525,11 +600,14 @@ def default_schema() -> FrontmatterSchema:
             ),
             KeyDefinition(
                 name="account",
-                kind="string",
+                kind="list",
                 required=False,
                 required_when="context",
                 required_when_values=["external"],
-                description="Customer name. Required when context is external.",
+                description=(
+                    "Customer names, a list. A plain name is read as a one-item list. "
+                    "Needs at least one entry when context is external."
+                ),
             ),
             KeyDefinition(
                 name="reviewed",

@@ -29,12 +29,12 @@ def test_missing_keys_take_their_shipped_defaults():
     assert frontmatter["schema_version"] == 1
 
 
-def test_time_defaults_to_a_local_iso_datetime_without_date_or_timezone():
+def test_date_defaults_to_a_local_iso_datetime_without_time_or_timezone():
     frontmatter = build()
-    assert "date" not in frontmatter
+    assert "time" not in frontmatter
     assert "timezone" not in frontmatter
-    assert len(frontmatter["time"]) == 19
-    assert frontmatter["time"][10] == "T"
+    assert len(frontmatter["date"]) == 19
+    assert frontmatter["date"][10] == "T"
     explicit = build(frontmatter={"date": "2026-09-08"})
     assert isinstance(explicit["date"], date)
 
@@ -42,7 +42,7 @@ def test_time_defaults_to_a_local_iso_datetime_without_date_or_timezone():
 def test_keys_are_written_in_schema_order_with_a_persons_own_keys_after_them():
     frontmatter = build(frontmatter={"aliases": ["theirs"], "type": "work"})
     names = list(frontmatter)
-    assert names[:3] == ["schema_version", "id", "type"]
+    assert names[:3] == ["schema_version", "id", "date"]
     assert names[-1] == "aliases"
 
 
@@ -56,7 +56,7 @@ def test_null_known_keys_are_omitted_and_null_unknown_keys_are_preserved():
 
 def test_a_dated_type_gets_a_date_prefixed_filename():
     schema, settings = default_schema(), default_settings()
-    frontmatter = build(frontmatter={"type": "work", "time": "2026-10-20T12:00:00"})
+    frontmatter = build(frontmatter={"type": "work", "date": "2026-10-20T12:00:00"})
     assert _stem_for("Acme Architecture Sync", frontmatter, schema, settings) == (
         "2026-10-20 Acme Architecture Sync"
     )

@@ -23,7 +23,13 @@ from coppermind.context_config import (
     read_context_config,
 )
 from coppermind.ids import new_id
-from coppermind.schema import format_note_time, normalize_note_time, note_date
+from coppermind.schema import (
+    format_note_time,
+    normalize_note_time,
+    note_date,
+    note_start_time,
+    parse_note_time,
+)
 from coppermind.store_protocol import NoteQuery, PatchFrontmatter, RenameNote, StoreError
 from coppermind_store.calendar_archive import CalendarArchive
 from coppermind_store.calendar_import import MAX_UPLOAD
@@ -254,8 +260,6 @@ class ContextService:
                 ("attendees", "list", "Email addresses confirmed by the reviewed note"),
                 ("invitees", "list", "Email addresses invited to the meeting"),
                 ("calendar_event", "string", "Confirmed calendar event reference"),
-                ("time", "string", "Note date and local start time, YYYY-MM-DDTHH:MM:SS"),
-                ("timezone", "string", "Meeting timezone, for example America/Chicago"),
                 ("time_unknown", "bool", "Meeting time was unknown at review"),
             ]:
                 if name in managed:
@@ -265,11 +269,6 @@ class ContextService:
                         raise ValueError(
                             f"{name} already exists with a different type; resolve before setup"
                         )
-                    if (
-                        name == "time"
-                        and definitions[name].description == "Local meeting start time, HH:MM"
-                    ):
-                        definitions[name].description = description
                 else:
                     schema.keys.append(
                         KeyDefinition(name=name, kind=cast(KeyKind, kind), description=description)
@@ -950,20 +949,24 @@ class ContextService:
             assignment = self.config().assignments["enrichment"]
             if suggestion.kind == "field":
                 schema = self.store.control.schema()
-                changes[suggestion.field] = (
-                    normalize_note_time(
-                        suggestion.value, fallback_date=note_date(note.frontmatter, schema)
+                if suggestion.field in {schema.role("date_key"), "time"}:
+                    # The start time lives in `date`; `time` is never written.
+                    parsed = parse_note_time(suggestion.value)
+                    changes[schema.role("date_key")] = (
+                        normalize_note_time(
+                            suggestion.value, fallback_date=note_date(note.frontmatter, schema)
+                        )
+                        if parsed.valid and parsed.time_value is not None
+                        else suggestion.value
                     )
-                    if suggestion.field == "time"
-                    else suggestion.value
-                )
+                else:
+                    changes[suggestion.field] = suggestion.value
             elif suggestion.kind == "event" and assignment.event_field:
                 if len(suggestion.event_ids) != 1:
                     raise ValueError("select one event for the mapped event field")
                 changes[assignment.event_field] = suggestion.event_ids[0]
-                if "time" in {
-                    k.name for k in self.store.control.schema().keys
-                } and not note.frontmatter.get("time"):
+                schema = self.store.control.schema()
+                if note_start_time(note.frontmatter, schema) is None:
                     matched = next(
                         (
                             item
@@ -973,25 +976,12 @@ class ContextService:
                         None,
                     )
                     if matched and matched.get("start"):
-                        raw_tz = note.frontmatter.get("timezone")
-                        tz_name = (
-                            str(raw_tz).strip()
-                            if isinstance(raw_tz, str) and str(raw_tz).strip()
-                            else ""
-                        )
-                        try:
-                            zone = ZoneInfo(
-                                tz_name or self.store.control.settings().general.timezone
-                            )
-                        except (ValueError, KeyError):
-                            zone = ZoneInfo(self.store.control.settings().general.timezone)
+                        zone = ZoneInfo(self.store.control.settings().general.timezone)
                         start_dt = datetime.fromisoformat(str(matched["start"]))
                         if start_dt.tzinfo is not None:
                             local = start_dt.astimezone(zone)
-                            if local.date() == note_date(
-                                note.frontmatter, self.store.control.schema()
-                            ):
-                                changes["time"] = format_note_time(local)
+                            if local.date() == note_date(note.frontmatter, schema):
+                                changes[schema.role("date_key")] = format_note_time(local)
             elif suggestion.kind in {"contact", "attendee", "invitee"}:
                 field = (
                     assignment.attendees_field
