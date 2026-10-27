@@ -117,3 +117,18 @@ def test_markdown_titles_and_angle_destinations_are_resolved():
         '![p](<_Attachments/2026-09/SRC1-r0001-my photo.jpg> "T")'
     )
     assert rewrite('![p](other.jpg "x-image-01.jpg")') == '![p](other.jpg "x-image-01.jpg")'
+
+
+def test_balanced_parentheses_in_unbracketed_destinations():
+    name = "meeting(1)-image-01.jpg"
+    filed = "_Attachments/2026-09/SRC1-r0001-meeting(1)-image-01.jpg"
+    images = [("SRC1", name, filed)]
+    encoded = "_Attachments/2026-09/SRC1-r0001-meeting%281%29-image-01.jpg"
+    assert rewrite(f"![]({name})", images) == f"![]({encoded})"
+    assert rewrite(f'![p]({name} "Caption")', images) == f'![p]({encoded} "Caption")'
+    assert rewrite(f"![p](<{name}>)", images) == f"![p](<{filed}>)"
+    assert rewrite(f"![]({encoded})", images) == f"![]({encoded})"
+    deep = [("SRC1", "a(b(c)).jpg", "_Attachments/2026-09/SRC1-r0001-a(b(c)).jpg")]
+    assert rewrite("![](a(b(c)).jpg) tail", deep).endswith(".jpg) tail")
+    assert "SRC1-r0001" in rewrite("![](a(b(c)).jpg) tail", deep)
+    assert rewrite("![](a(b.jpg)", deep) == "![](a(b.jpg)"

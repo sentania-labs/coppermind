@@ -8,6 +8,8 @@ from urllib.parse import quote, unquote
 # A fence may sit inside blockquotes and list items, so allow their markers before it.
 _PREFIX = r"[ \t]*(?:>[ \t]*)*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*"
 _FENCE = re.compile(rf"^{_PREFIX}(`{{3,}}|~{{3,}})(.*)$")
+# CommonMark allows balanced parentheses in an unbracketed destination; three levels is plenty.
+_DESTINATION = r"(?:[^()\s<>]|\((?:[^()\s<>]|\((?:[^()\s<>]|\([^()\s<>]*\))*\))*\))+"
 _BACKTICKS = re.compile(r"`+")
 _MARKER = re.compile(r"^ *([-*+]|\d{1,9}[.)])( +|$)")
 
@@ -133,7 +135,7 @@ def rewrite_embeds(
 
     wiki = re.compile(r"!\[\[([^\]|\n]+)((?:\|[^\]\n]*)?)\]\]")
     markdown = re.compile(
-        r"(!\[[^\]\n]*\]\([ \t]*)(<[^<>\n]+>|[^()\s<>]+)"
+        rf"(!\[[^\]\n]*\]\([ \t]*)(<[^<>\n]+>|{_DESTINATION})"
         r"((?:[ \t]+(?:\"[^\"\n]*\"|'[^'\n]*'|\([^()\n]*\)))?[ \t]*\))"
     )
 
