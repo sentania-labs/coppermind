@@ -148,6 +148,9 @@ class FrontmatterSchema(BaseModel):
                 )
         return out
 
+    def _date_satisfied_by_time(self, frontmatter: dict[str, Any]) -> bool:
+        return parse_note_time(frontmatter.get("time")).date_value is not None
+
     def required_keys(self, frontmatter: dict[str, Any]) -> set[str]:
         """The keys this frontmatter must carry, conditional ones included.
 
@@ -155,10 +158,13 @@ class FrontmatterSchema(BaseModel):
         value that asks for it, which is the same rule
         `validate_frontmatter` reports on.
         """
+        date_key = self.role("date_key")
+        has_time_date = self._date_satisfied_by_time(frontmatter)
         return {
             definition.name
             for definition in self.keys
-            if definition.required or _requires(definition, frontmatter)
+            if (definition.required or _requires(definition, frontmatter))
+            and not (definition.name == date_key and has_time_date)
         }
 
     def validate_frontmatter(self, frontmatter: dict[str, Any]) -> list[str]:
@@ -183,10 +189,14 @@ class FrontmatterSchema(BaseModel):
 
     def _problems(self, frontmatter: dict[str, Any]) -> list[tuple[str, str]]:
         problems: list[tuple[str, str]] = []
+        date_key = self.role("date_key")
+        has_time_date = self._date_satisfied_by_time(frontmatter)
         for definition in self.keys:
             present = definition.name in frontmatter
             value = frontmatter.get(definition.name)
             if definition.required and (not present or value is None):
+                if definition.name == date_key and has_time_date:
+                    continue
                 problems.append((definition.name, f"{definition.name}: required"))
                 continue
             if not present or value is None:

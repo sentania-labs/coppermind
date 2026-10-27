@@ -250,6 +250,9 @@ class ContextService:
                 schema.role(r)
                 for r in ("id_key", "sources_key", "reviewed_key", "schema_version_key")
             }
+            date_def = definitions.get(schema.role("date_key"))
+            if date_def is not None and date_def.required:
+                date_def.required = False
             for name, kind, description in [
                 ("attendees", "list", "Email addresses confirmed by the reviewed note"),
                 ("invitees", "list", "Email addresses invited to the meeting"),
@@ -973,10 +976,21 @@ class ContextService:
                         None,
                     )
                     if matched and matched.get("start"):
-                        zone = self.store.control.settings().general.timezone
+                        raw_tz = note.frontmatter.get("timezone")
+                        tz_name = (
+                            str(raw_tz).strip()
+                            if isinstance(raw_tz, str) and str(raw_tz).strip()
+                            else ""
+                        )
+                        try:
+                            zone = ZoneInfo(
+                                tz_name or self.store.control.settings().general.timezone
+                            )
+                        except (ValueError, KeyError):
+                            zone = ZoneInfo(self.store.control.settings().general.timezone)
                         start_dt = datetime.fromisoformat(str(matched["start"]))
                         if start_dt.tzinfo is not None:
-                            local = start_dt.astimezone(ZoneInfo(zone))
+                            local = start_dt.astimezone(zone)
                             if local.date() == note_date(
                                 note.frontmatter, self.store.control.schema()
                             ):

@@ -641,3 +641,69 @@ async def test_disagreeing_date_and_time_uses_time_and_flags_date_mismatch_probl
     assert len(mismatch) == 1
     assert "2026-09-15" in mismatch[0].reason
     assert "2026-10-20" in mismatch[0].reason
+
+
+async def test_persisted_schema_requiring_date_accepts_time_only_notes_and_migrates(store):
+    from coppermind_store import filing
+
+    from coppermind.store_protocol import IngestRequest
+
+    state = store.control.store.read("schema")
+    body = dict(state.body)
+    for key in body["keys"]:
+        if key["name"] == "date":
+            key["required"] = True
+            key["description"] = "Date of the note (YYYY-MM-DD)."
+    store.control.store.write("schema", body, if_revision=state.revision)
+
+    created = await store.create_note(
+        CreateNote(
+            title="Created under old schema",
+            frontmatter={"type": "work", "time": "2026-10-20T12:00:00"},
+        )
+    )
+    assert "date" not in created.frontmatter
+    assert created.frontmatter["time"] == "2026-10-20T12:00:00"
+
+    ingested = await store.ingest(
+        IngestRequest.model_validate(
+            {
+                "source": {
+                    "provider": "plaud",
+                    "external_source_id": "rec-old-schema-57",
+                    "source_type": "transcript",
+                    "captured_at": "2026-10-20T17:00:00Z",
+                    "artifacts": [
+                        {
+                            "name": "transcript.txt",
+                            "mime_type": "text/plain",
+                            "content": "Synthetic transcript under old persisted schema.",
+                        }
+                    ],
+                },
+                "note": {
+                    "title": "Ingested under old schema",
+                    "body": "Summary.\n",
+                    "frontmatter": {"type": "work", "context": "internal"},
+                },
+            }
+        )
+    )
+    ingested_note = await store.get_note(ingested.note.id)
+    assert "date" not in ingested_note.frontmatter
+    assert ingested_note.frontmatter["time"] == "2026-10-20T12:00:00"
+
+    store.control.ensure_defaults()
+    date_def = next(k for k in store.control.schema().keys if k.name == "date")
+    assert date_def.required is False
+
+    await enable(store)
+    await store.context.complete_review(
+        {
+            "note_id": ingested_note.id,
+            "if_match": ingested_note.content_hash,
+            "confirmation": "Complete review",
+        }
+    )
+    assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+    assert (await store.get_note(ingested_note.id)).path.startswith("2026-10/")

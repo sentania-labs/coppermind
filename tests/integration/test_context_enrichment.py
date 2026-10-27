@@ -647,3 +647,41 @@ async def test_all_day_event_approval_does_not_shift_the_note_date(store):
     assert "time" not in updated.frontmatter
     assert str(updated.frontmatter["date"]) == "2026-10-14"
     assert context.load_job(job.id).state == "suggested"
+
+
+async def test_event_approval_filling_time_honors_note_explicit_timezone(store):
+    from coppermind_store.enrichment_models import Suggestions
+
+    context = await configure(store)
+    await context.setup_lifecycle({"revision": context.config().revision})
+    config = context.config()
+    config.assignments["enrichment"].event_field = "account"
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(
+            title="Planning",
+            body="Casey attended",
+            frontmatter={"date": "2026-10-14", "timezone": "America/New_York"},
+        )
+    )
+    assert "time" not in note.frontmatter
+    job = context.load_job(await context.queue_note(note.id))
+    job.evidence = await context.evidence(job)
+    candidate = job.evidence["events"][0]
+    job.result = Suggestions.model_validate(
+        {
+            "suggestions": [
+                {
+                    "kind": "event",
+                    "reason": "Calendar event",
+                    "event_ids": [candidate["event_id"]],
+                },
+            ]
+        }
+    )
+    job.state = "suggested"
+    context.save_job(job)
+    await context.approve({"id": job.id, "index": 0, "confirmation": "Apply selected suggestion"})
+    updated = await store.get_note(note.id)
+    assert updated.frontmatter["time"] == "2026-10-14T10:00:00"
+    assert updated.frontmatter["timezone"] == "America/New_York"
