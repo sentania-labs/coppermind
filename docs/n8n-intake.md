@@ -189,9 +189,9 @@ entry declares `artifact_id`, `role` (`transcript`, `summary`, `audio`, or
 `image`), `filename`, `mime_type`, `size_bytes`, and `sha256`. Version 1
 requires exactly one transcript and one summary, plus zero or one audio file
 and zero or more image files (named and sized as above, and embedded by
-artifact name). Summary content
-is UTF-8 Markdown and becomes the opening draft. An explicitly supplied
-meeting reference is metadata only, never an instruction to merge notes.
+artifact name). Summary content is UTF-8 Markdown and becomes the opening
+draft. An explicitly supplied meeting reference is metadata only, never an
+instruction to merge notes.
 
 Identity is `(provider, recording_id, submission_id)`. n8n must persist the
 submission ID and manifest before upload. An identical reservation returns
