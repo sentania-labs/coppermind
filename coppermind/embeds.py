@@ -9,7 +9,7 @@ from urllib.parse import quote, unquote
 _PREFIX = r"[ \t]*(?:>[ \t]*)*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*"
 _FENCE = re.compile(rf"^{_PREFIX}(`{{3,}}|~{{3,}})(.*)$")
 _BACKTICKS = re.compile(r"`+")
-_INDENTED = re.compile(r"^(?: {4}|\t)")
+_MARKER = re.compile(r"^ *([-*+]|\d{1,9}[.)])( +|$)")
 
 
 def _code_spans_split(text: str):
@@ -39,11 +39,13 @@ def _prose_and_code(body: str):
     """Yield (text, is_code) so authored code is never treated as an embed.
 
     Code is fenced blocks (also inside blockquotes and lists), indented code
-    blocks, and inline code spans. An indented line after a blank line is
-    treated as code even inside a list: that errs toward leaving text alone.
+    blocks, and inline code spans. Following CommonMark, an indented line is
+    code only when it is four columns past its container, so list item content
+    and its continuation lines stay prose.
     """
     fence: re.Match[str] | None = None
     prose: list[str] = []
+    items: list[int] = []
     previous_blank = True
     previous_code = False
 
@@ -54,10 +56,10 @@ def _prose_and_code(body: str):
             yield from _code_spans_split(paragraph)
 
     for line in body.splitlines(keepends=True):
-        blank = not line.strip()
+        stripped = line.rstrip("\r\n")
         if fence is not None:
             yield line, True
-            match = _FENCE.match(line.rstrip("\r\n"))
+            match = _FENCE.match(stripped)
             if (
                 match
                 and match.group(1)[0] == fence.group(1)[0]
@@ -67,24 +69,34 @@ def _prose_and_code(body: str):
                 fence = None
             previous_blank, previous_code = False, True
             continue
-        opening = _FENCE.match(line.rstrip("\r\n"))
+        if not stripped.strip():
+            prose.append(line)
+            previous_blank, previous_code = True, False
+            continue
+        measured = stripped.expandtabs(4)
+        indent = len(measured) - len(measured.lstrip(" "))
+        marker = _MARKER.match(measured)
+        lazy = bool(items) and not marker and not previous_blank and not previous_code
+        while items and indent < items[-1] and not lazy:
+            items.pop()
+        if indent - (items[-1] if items else 0) >= 4 and (previous_blank or previous_code):
+            yield from flush()
+            yield line, True
+            previous_blank, previous_code = False, True
+            continue
+        if marker:
+            spaces = len(marker.group(2))
+            width = marker.end() if 1 <= spaces <= 4 else marker.end(1) + 1
+            items.append(width)
+        opening = _FENCE.match(stripped)
         if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
             yield from flush()
             fence = opening
             yield line, True
             previous_blank, previous_code = False, True
             continue
-        indented = bool(_INDENTED.match(line)) and not blank
-        if indented and (previous_blank or previous_code):
-            yield from flush()
-            yield line, True
-            previous_blank, previous_code = False, True
-            continue
-        if blank and previous_code:
-            # A blank line inside an indented block belongs to it; harmless as prose.
-            pass
         prose.append(line)
-        previous_blank, previous_code = blank, False
+        previous_blank, previous_code = False, False
     yield from flush()
 
 

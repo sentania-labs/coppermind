@@ -82,6 +82,32 @@ def test_indented_code_blocks_are_not_rewritten():
     assert rewrite(body) == body[: body.rindex("![[")] + f"![[{FILED}]]\n"
 
 
+def test_list_item_content_and_continuations_are_rewritten():
+    body = (
+        "- item\n\n    ![[x-image-01.jpg]]\n"
+        "- other\n  ![](x-image-01.jpg)\n\n  ![[x-image-01.jpg]]\n"
+        "1. numbered\n\n      ![[x-image-01.jpg]]\n"
+        "- lazy\ncontinued ![[x-image-01.jpg]]\n"
+        "\t- tabbed ![[x-image-01.jpg]]\n"
+    )
+    assert rewrite(body) == body.replace("x-image-01.jpg", FILED)
+
+
+def test_nested_list_embeds_are_rewritten():
+    body = "- a\n  - b\n\n      ![[x-image-01.jpg]]\n    - c\n\n      ![[x-image-01.jpg]]\n"
+    assert rewrite(body) == body.replace("x-image-01.jpg", FILED)
+
+
+def test_indented_code_inside_a_list_item_is_not_rewritten():
+    body = "- item\n\n      ![[x-image-01.jpg]]\n\n  ![[x-image-01.jpg]]\n"
+    assert rewrite(body) == body[: body.rindex("![[")] + f"![[{FILED}]]\n"
+
+
+def test_prose_after_a_list_ends_it():
+    body = "- item\n\npara\n\n    ![[x-image-01.jpg]]\n"
+    assert rewrite(body) == body
+
+
 def test_markdown_titles_and_angle_destinations_are_resolved():
     assert rewrite('![photo](x-image-01.jpg "Caption")') == f'![photo]({FILED} "Caption")'
     assert rewrite("![photo](x-image-01.jpg 'Cap')") == f"![photo]({FILED} 'Cap')"
