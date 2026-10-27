@@ -68,6 +68,22 @@ async def conditions(store: LocalStore, query: NoteQuery, session: AsyncSession)
                 else NoteFieldValue.date_value == day
             )
             value = value.where(condition)
+            if clause.field == schema.role("date_key"):
+                note_condition = (
+                    Note.date >= day
+                    if clause.op == "gte"
+                    else Note.date <= day
+                    if clause.op == "lte"
+                    else Note.date == day
+                )
+                invalid_date = sa.select(NoteFieldValue.note_id).where(
+                    NoteFieldValue.generation == generation.id,
+                    NoteFieldValue.note_id == Note.id,
+                    NoteFieldValue.field == clause.field,
+                    NoteFieldValue.invalid_reason.is_not(None),
+                )
+                result.append(sa.and_(~invalid_date.exists(), note_condition))
+                continue
         else:
             value = value.where(
                 NoteFieldValue.value.contains(sa.literal(clause.value, type_=JSONB)),

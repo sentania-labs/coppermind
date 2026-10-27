@@ -14,6 +14,7 @@ from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes, sync
 from coppermind.db.models import Note, NoteSource, SearchDocument
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id
+from coppermind.schema import note_date, parse_date_value, parse_note_time
 from coppermind.store_protocol import MoveNote, ReplaceNote, StoreError
 from coppermind_store.fs import resolve
 
@@ -72,9 +73,22 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         return False
     if store.context.config().lifecycle_enabled:
         await store.context.lifecycle.finalize(note)
-    folder = str(note.frontmatter[schema.role("date_key")])[:7]
-    # The schema has already validated the date; reject anything that is not a month.
-    datetime.strptime(folder, "%Y-%m")
+    parsed_time = parse_note_time(note.frontmatter.get("time"))
+    if parsed_time.has_offset:
+        raise ValueError("time must be a local datetime without a UTC offset")
+    if (
+        note.frontmatter.get(schema.role("type_key")) == "work"
+        and parsed_time.present
+        and not parsed_time.valid
+    ):
+        raise ValueError("enter a valid local meeting time and timezone")
+    raw_date = note.frontmatter.get(schema.role("date_key"))
+    if raw_date is not None and str(raw_date).strip() != "" and parse_date_value(raw_date) is None:
+        raise ValueError("expected a valid date")
+    day = note_date(note.frontmatter, schema)
+    if day is None:
+        raise ValueError("a note date is required in time or date")
+    folder = day.strftime("%Y-%m")
     journal = store.control.store.state_dir / "filing" / f"{note_id}.json"
     plan = json.loads(journal.read_bytes()) if journal.exists() else None
     manifests = {}
@@ -229,9 +243,11 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
                 sync_directory(old.parent)
     # Refresh after source work, preserving edits that arrived while sources were filed.
     note = await store.get_note(note_id)
+    refreshed_day = note_date(note.frontmatter, schema)
     if (
         note.frontmatter.get(schema.role("reviewed_key")) is not True
-        or str(note.frontmatter.get(schema.role("date_key"), ""))[:7] != folder
+        or refreshed_day is None
+        or refreshed_day.strftime("%Y-%m") != folder
     ):
         raise ValueError("note review or date changed during filing")
     if set(note.sources) != {item["id"] for item in plan["sources"]}:
@@ -319,7 +335,11 @@ async def _file_reviewed(store: LocalStore) -> dict[str, int]:
             path = store.control.store.state_dir / "filing" / f"{note_id}.json"
             try:
                 state = json.loads(path.read_bytes()) if path.exists() else {"note_id": note_id}
-                state["error"] = type(exc).__name__
+                state["error"] = (
+                    f"{type(exc).__name__}: {exc}"
+                    if type(exc) is ValueError and str(exc)
+                    else type(exc).__name__
+                )
                 _save(path, state)
             except (OSError, ValueError):
                 from coppermind_store.reconciler import log

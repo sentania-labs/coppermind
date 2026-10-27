@@ -9,9 +9,10 @@ import json
 import os
 import stat
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from zoneinfo import ZoneInfo
 
 from coppermind.atomicio import atomic_write_text
 from coppermind.context_config import (
@@ -22,6 +23,7 @@ from coppermind.context_config import (
     read_context_config,
 )
 from coppermind.ids import new_id
+from coppermind.schema import format_note_time, normalize_note_time, note_date
 from coppermind.store_protocol import NoteQuery, PatchFrontmatter, RenameNote, StoreError
 from coppermind_store.calendar_archive import CalendarArchive
 from coppermind_store.calendar_import import MAX_UPLOAD
@@ -141,10 +143,9 @@ class ContextService:
         )
 
     async def calendar_candidates(self, note: Any) -> list[dict[str, Any]]:
-        explicit_date = note.frontmatter.get(self.store.control.schema().role("date_key"))
-        if not explicit_date:
+        day = note_date(note.frontmatter, self.store.control.schema())
+        if day is None:
             return []
-        day = date.fromisoformat(str(explicit_date)[:10])
         catalog = self.archive.catalog()
         sources = {s.id: s.timezone for s in self.config().sources}
         sources.update(
@@ -253,7 +254,7 @@ class ContextService:
                 ("attendees", "list", "Email addresses confirmed by the reviewed note"),
                 ("invitees", "list", "Email addresses invited to the meeting"),
                 ("calendar_event", "string", "Confirmed calendar event reference"),
-                ("time", "string", "Local meeting start time, HH:MM"),
+                ("time", "string", "Note date and local start time, YYYY-MM-DDTHH:MM:SS"),
                 ("timezone", "string", "Meeting timezone, for example America/Chicago"),
                 ("time_unknown", "bool", "Meeting time was unknown at review"),
             ]:
@@ -264,6 +265,11 @@ class ContextService:
                         raise ValueError(
                             f"{name} already exists with a different type; resolve before setup"
                         )
+                    if (
+                        name == "time"
+                        and definitions[name].description == "Local meeting start time, HH:MM"
+                    ):
+                        definitions[name].description = description
                 else:
                     schema.keys.append(
                         KeyDefinition(name=name, kind=cast(KeyKind, kind), description=description)
@@ -663,10 +669,9 @@ class ContextService:
             or self.schema_hash() != job.schema_hash
         ):
             raise ValueError("stale: note, evidence, schema or configuration changed")
-        explicit_date = note.frontmatter.get(schema.role("date_key"))
+        day = note_date(note.frontmatter, schema)
         candidates: list[dict[str, Any]] = []
-        if explicit_date:
-            day = date.fromisoformat(str(explicit_date)[:10])
+        if day is not None:
             catalog = self.archive.catalog()
             sources = [(source.id, source.timezone) for source in config.sources]
             sources += [
@@ -944,11 +949,49 @@ class ContextService:
             changes: dict[str, Any] = {}
             assignment = self.config().assignments["enrichment"]
             if suggestion.kind == "field":
-                changes[suggestion.field] = suggestion.value
+                schema = self.store.control.schema()
+                changes[suggestion.field] = (
+                    normalize_note_time(
+                        suggestion.value, fallback_date=note_date(note.frontmatter, schema)
+                    )
+                    if suggestion.field == "time"
+                    else suggestion.value
+                )
             elif suggestion.kind == "event" and assignment.event_field:
                 if len(suggestion.event_ids) != 1:
                     raise ValueError("select one event for the mapped event field")
                 changes[assignment.event_field] = suggestion.event_ids[0]
+                if "time" in {
+                    k.name for k in self.store.control.schema().keys
+                } and not note.frontmatter.get("time"):
+                    matched = next(
+                        (
+                            item
+                            for item in job.evidence["events"]
+                            if item["event_id"] == suggestion.event_ids[0]
+                        ),
+                        None,
+                    )
+                    if matched and matched.get("start"):
+                        raw_tz = note.frontmatter.get("timezone")
+                        tz_name = (
+                            str(raw_tz).strip()
+                            if isinstance(raw_tz, str) and str(raw_tz).strip()
+                            else ""
+                        )
+                        try:
+                            zone = ZoneInfo(
+                                tz_name or self.store.control.settings().general.timezone
+                            )
+                        except (ValueError, KeyError):
+                            zone = ZoneInfo(self.store.control.settings().general.timezone)
+                        start_dt = datetime.fromisoformat(str(matched["start"]))
+                        if start_dt.tzinfo is not None:
+                            local = start_dt.astimezone(zone)
+                            if local.date() == note_date(
+                                note.frontmatter, self.store.control.schema()
+                            ):
+                                changes["time"] = format_note_time(local)
             elif suggestion.kind in {"contact", "attendee", "invitee"}:
                 field = (
                     assignment.attendees_field
@@ -1073,8 +1116,10 @@ class ContextService:
             "body": note.body,
         }
         remaining = len(job.result.suggestions) - len(job.decisions) if job.result else 0
-        date_key = self.store.control.schema().role("date_key")
-        changed_date = date_key in approval["changes"]
+        schema = self.store.control.schema()
+        changed_date = note_date(approval["before_frontmatter"], schema) != note_date(
+            note.frontmatter, schema
+        )
         job.state = (
             "stale" if remaining and changed_date else "suggested" if remaining else "applied"
         )

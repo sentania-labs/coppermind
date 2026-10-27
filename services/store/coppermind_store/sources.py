@@ -47,7 +47,7 @@ from coppermind.db.models import (
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
 from coppermind.naming import sanitize_folder, unique_stem
-from coppermind.schema import FrontmatterSchema
+from coppermind.schema import FrontmatterSchema, note_date, note_date_mismatch
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
     ArtifactNotFound,
@@ -82,7 +82,6 @@ from coppermind.store_protocol import (
 )
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
 from coppermind_store.notes import (
-    _as_date,
     _build_frontmatter,
     _jsonable,
     _metadata_failure,
@@ -244,7 +243,14 @@ async def _ingest_new(
             schema.role("reviewed_key"): False,
         },
     )
-    frontmatter = _build_frontmatter(note_request, schema, settings, note_id)
+    frontmatter = _build_frontmatter(
+        note_request,
+        schema,
+        settings,
+        note_id,
+        captured_at=request.source.captured_at,
+        from_ingest=True,
+    )
     problems = schema.validate_frontmatter(frontmatter) + schema.tag_problems(frontmatter)
     if problems:
         await _record_rejection(store, request, "validation_error")
@@ -288,7 +294,7 @@ async def _ingest_new(
         # Compute the projection path inside the claim so the wikilink is
         # available when composing the note file.  This also serialises
         # concurrent ingests for the same external id.
-        projection_date = _as_date(frontmatter.get(schema.role("date_key"))) or _today(settings)
+        projection_date = note_date(frontmatter, schema) or _today(settings)
         projection_path = await asyncio.to_thread(
             new_projection_path,
             store.notes_root,
@@ -1259,6 +1265,13 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     )
                 ).all()
             )
+            ok_notes = list(
+                (
+                    await session.scalars(
+                        sa.select(Note).where(Note.state == "ok").order_by(Note.path)
+                    )
+                ).all()
+            )
             refused = {row.reference for row in rejections if row.kind == "ingest"}
             known = {
                 f"{provider}:{external}": source_id
@@ -1317,6 +1330,22 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         )
         for row in unparsed
     )
+    schema = store.control.schema()
+    for row in ok_notes:
+        mismatch = note_date_mismatch(row.frontmatter, schema)
+        if mismatch is not None:
+            explicit_date, time_date = mismatch
+            problems.append(
+                ProblemInfo(
+                    kind="date_mismatch",
+                    reference=row.path,
+                    reason=(
+                        f"date ({explicit_date}) and time ({time_date}) disagree; "
+                        f"using {time_date} from time"
+                    ),
+                    note_id=row.id,
+                )
+            )
     exclusions = store.control.read_reconciler_exclusions()
     problems.extend(
         ProblemInfo(

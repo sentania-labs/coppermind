@@ -111,3 +111,32 @@ def test_account_is_optional_outside_external_context(context):
     }
     assert "account" not in frontmatter
     assert schema.validate_frontmatter(frontmatter) == []
+
+
+def test_parse_note_time_and_date_derivation_and_mismatch():
+    from datetime import date, time
+
+    from coppermind import frontmatter as fm
+    from coppermind.schema import note_date, note_date_mismatch, parse_note_time
+
+    schema = default_schema()
+    parsed, _ = fm.parse("---\ntime: 2026-10-20T12:00:00\n---\n# Note\n")
+    info = parse_note_time(parsed["time"])
+    assert info.valid is True
+    assert info.has_offset is False
+    assert info.date_value == date(2026, 10, 20)
+    assert info.time_value == time(12, 0, 0)
+    assert note_date(parsed, schema) == date(2026, 10, 20)
+
+    legacy = parse_note_time("09:30")
+    assert legacy.valid is True
+    assert legacy.date_value is None
+    assert legacy.time_value == time(9, 30, 0)
+
+    with_offset = parse_note_time("2026-10-20T12:00:00-05:00")
+    assert with_offset.valid is False
+    assert with_offset.has_offset is True
+
+    disagree = {"date": "2026-10-19", "time": "2026-10-20T12:00:00"}
+    assert note_date(disagree, schema) == date(2026, 10, 20)
+    assert note_date_mismatch(disagree, schema) == (date(2026, 10, 19), date(2026, 10, 20))

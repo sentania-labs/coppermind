@@ -4,35 +4,55 @@ from __future__ import annotations
 
 import asyncio
 import time as clock
-from datetime import date, time
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from coppermind.ids import is_valid_id
+from coppermind.schema import note_date, parse_date_value, parse_note_time
 from coppermind.store_protocol import NoteDocument, PatchFrontmatter, StoreError
 
 if TYPE_CHECKING:
     from coppermind_store.context_service import ContextService
 
 
-def validate_review(note: NoteDocument, schema: Any) -> None:
-    date.fromisoformat(str(note.frontmatter.get(schema.role("date_key"), "")))
-    if note.frontmatter.get(schema.role("type_key")) != "work":
-        return
+def validate_review(
+    note: NoteDocument, schema: Any, default_timezone: str = "America/Chicago"
+) -> None:
+    """Validate a note's date, start time, and timezone for review completion and filing.
+
+    `time` is the canonical field carrying both the note's date and start time
+    (`YYYY-MM-DDTHH:MM:SS`, local time with no UTC offset). Legacy `HH:MM`
+    values paired with a separate `date` field remain accepted. A `time`
+    carrying a UTC offset is rejected. When `timezone` is omitted on a work
+    note, `default_timezone` (America/Chicago by default) is used; an explicit
+    `timezone` overrides the default and must name a valid IANA zone. With
+    `time_unknown: true`, the time-of-day part is ignored and only a valid
+    date from `time` or `date` is required.
+    """
     values = note.frontmatter
-    if values.get("time_unknown") is True:
-        if values.get("time"):
-            raise ValueError("choose either a meeting time or Time unknown")
+    parsed_time = parse_note_time(values.get("time"))
+    if parsed_time.has_offset:
+        raise ValueError("time must be a local datetime without a UTC offset")
+    date_key = schema.role("date_key")
+    raw_date = values.get(date_key)
+    if raw_date is not None and str(raw_date).strip() != "" and parse_date_value(raw_date) is None:
+        raise ValueError("expected a valid date")
+    if note_date(values, schema) is None:
+        raise ValueError("a note date is required in time or date")
+    if values.get(schema.role("type_key")) != "work":
         return
-    if not values.get("time") or not values.get("timezone"):
-        raise ValueError("confirm the meeting time and timezone, or select Time unknown")
+    if parsed_time.present and not parsed_time.valid:
+        raise ValueError("enter a valid local meeting time and timezone")
+    raw_tz = values.get("timezone")
+    tz_name = str(raw_tz).strip() if raw_tz is not None else ""
     try:
-        parsed = time.fromisoformat(str(values["time"]))
-        if parsed.tzinfo is not None:
-            raise ValueError("enter local meeting time; choose its timezone separately")
-        ZoneInfo(str(values["timezone"]))
+        ZoneInfo(tz_name or default_timezone)
     except (ValueError, KeyError) as exc:
         raise ValueError("enter a valid local meeting time and timezone") from exc
+    if values.get("time_unknown") is True:
+        return
+    if not parsed_time.valid or parsed_time.time_value is None:
+        raise ValueError("confirm the meeting time and timezone, or select Time unknown")
 
 
 class NoteLifecycle:
@@ -41,6 +61,9 @@ class NoteLifecycle:
         self.lock = asyncio.Lock()
         self.observed: dict[str, tuple[str, float]] = {}
         self.calendar_generation = ""
+
+    def _default_timezone(self) -> str:
+        return self.context.store.control.settings().general.timezone
 
     async def detail(self, payload: dict[str, Any]) -> dict[str, Any]:
         from coppermind_store.context_service import fingerprint
@@ -85,7 +108,7 @@ class NoteLifecycle:
         )
         problem = ""
         try:
-            validate_review(note, self.context.store.control.schema())
+            validate_review(note, self.context.store.control.schema(), self._default_timezone())
         except ValueError as exc:
             problem = str(exc)
         return {
@@ -137,7 +160,7 @@ class NoteLifecycle:
                     raise ValueError(
                         "note changed or has not synced; reload before finishing review"
                     )
-                validate_review(note, schema)
+                validate_review(note, schema, self._default_timezone())
                 if note.frontmatter.get(schema.role("reviewed_key")) is True:
                     raise ValueError("note is already reviewed")
                 if selected:
@@ -161,11 +184,13 @@ class NoteLifecycle:
                         s = job.result.suggestions[i]
                         if s.kind == "field":
                             prospective.frontmatter[s.field] = s.value
-                    validate_review(prospective, schema)
+                    validate_review(prospective, schema, self._default_timezone())
                     if fingerprint(await self.context.evidence(job)) != fingerprint(job.evidence):
                         raise ValueError("source evidence changed; regenerate the suggestion")
                     selected.sort(
-                        key=lambda i: job.result.suggestions[i].field == schema.role("date_key")
+                        key=lambda i: (
+                            job.result.suggestions[i].field in {schema.role("date_key"), "time"}
+                        )
                     )
                 receipt = {
                     "note_id": identity,
@@ -213,7 +238,7 @@ class NoteLifecycle:
                     receipt["expected_hash"] = job.decisions[-1]["after_hash"]
                     self.context.write(name, receipt)
             current = await self.context.store.get_note(identity)
-            validate_review(current, schema)
+            validate_review(current, schema, self._default_timezone())
             reviewed_key = schema.role("reviewed_key")
             if current.frontmatter.get(reviewed_key) is not True:
                 if current.content_hash != receipt["expected_hash"]:
@@ -255,7 +280,7 @@ class NoteLifecycle:
         from coppermind_store.context_service import now
 
         schema = self.context.store.control.schema()
-        validate_review(note, schema)
+        validate_review(note, schema, self._default_timezone())
         completion = self.context.read("review-completions/" + note.id, {})
         if (
             completion.get("state") != "complete"
@@ -278,7 +303,7 @@ class NoteLifecycle:
             "note_id": note.id,
             "note_hash": note.content_hash,
             "path": note.path,
-            "date": str(fields[schema.role("date_key")]),
+            "date": str(note_date(fields, schema)),
             "properties": fields,
             "attendees": [p for p in people if isinstance(p, str)],
             "calendar_hash": await self.context.note_evidence_hash(note),

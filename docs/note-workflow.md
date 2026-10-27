@@ -29,9 +29,19 @@ that do not share local secret storage.
 
 Open a note and run **Coppermind Review: Review current note**. The panel checks
 that the exact local bytes match the server before permitting completion. Wait
-for Obsidian Sync after editing. Work notes (`type: work`) require a date, local `time` and
-`timezone`, or `time_unknown: true` with no time value. Other note types need only
-a date. Midnight is an actual time, never a sentinel for unknown.
+for Obsidian Sync after editing. `time` (`YYYY-MM-DDTHH:MM:SS`, local datetime with
+no UTC offset, matching Obsidian's Date & time property) is the canonical field
+for a note's date and start time, and is written on new notes. Legacy notes with
+a separate `date` (`YYYY-MM-DD`) and `HH:MM` `time` remain supported; when both
+`date` and `time` are present and disagree, `time` wins and Problems reports a
+`date_mismatch` entry naming both dates. A `time` carrying a UTC offset is rejected
+at review validation with a Problems message. Work notes (`type: work`) require a
+start time in `time`, or `time_unknown: true` (which ignores the time-of-day part
+and takes only the date from `time` or `date`). `timezone` is optional and defaults
+to the configured timezone (`America/Chicago` by default); an explicit `timezone`
+overrides the default and an invalid one fails validation. Other note types need
+only a date from `time` or `date`. Midnight is an actual time, never a sentinel
+for unknown.
 
 Review completion is recorded durably before writes and can be resumed. Each
 selected change uses the existing version checks and approval receipts. The

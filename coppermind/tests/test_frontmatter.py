@@ -345,3 +345,17 @@ def test_replacing_a_value_in_place_refuses_what_it_cannot_do_exactly():
     assert fm.replace_value_in_place("---\nid: x\n---\n", "tags", ["a"]) is None
     assert fm.replace_value_in_place("---\ntags: [a] # why\n---\n", "tags", ["b"]) is None
     assert fm.replace_value_in_place("---\n{tags: [a], id: x}\n---\n", "tags", ["b"]) is None
+
+
+def test_time_datetime_is_written_unquoted_for_obsidian_date_and_time():
+    composed = fm.compose(
+        {"type": "work", "reviewed": True, "time": "2026-10-20T12:00:00"},
+        "# Sync\n",
+    )
+    assert "time: 2026-10-20T12:00:00\n" in composed
+    assert "'2026-10-20T12:00:00'" not in composed
+    assert '"2026-10-20T12:00:00"' not in composed
+    patched = fm.patch("---\ntype: work\n---\n# Sync\n", {"time": "2026-10-20T12:00:00"})
+    assert "time: 2026-10-20T12:00:00\n" in patched
+    filled = fm.fill_missing("---\ntype: work\n---\n# Sync\n", {"time": "2026-10-20T12:00:00"})
+    assert "time: 2026-10-20T12:00:00\n" in filled
