@@ -90,11 +90,10 @@ whose target is exactly an artifact name, is rewritten to the filed copy, for
 example `![[_Attachments/2026-09/<source_id>-r0001-meeting-image-01.jpg]]`.
 `![[name|300]]` keeps its size suffix. Links that match no artifact, text
 inside code (fenced or indented blocks and inline code spans), and all other
-prose are left as authored. When a later
-revision adds or changes an image, the next filing points the embeds at that
-revision's copies; earlier copies stay in `_Attachments/`. Refiling never
-rewrites a link twice, and a replay with identical image bytes creates no new
-revision.
+prose are left as authored. When a later revision adds or changes an image,
+the next filing points the embeds at that revision's copies; earlier copies
+stay in `_Attachments/`. Refiling never rewrites a link twice, and a replay
+with identical image bytes creates no new revision.
 
 Known limitations of the code detection, both rare: a fenced code block opened
 inside a list item or blockquote ends only at a matching closing fence, not
@@ -186,10 +185,11 @@ not call them until a release explicitly supports contract version 1.
 Reserve with `contract_version: 1`, `provider`, `recording_id`,
 `submission_id`, `title`, optional `note_date`, optional offset-qualified
 `captured_at`, optional `meeting_ref`, and an artifact manifest. Each manifest
-entry declares `artifact_id`, `role` (`transcript`, `summary`, `audio`, or `image`),
-`filename`, `mime_type`, `size_bytes`, and `sha256`. Version 1 requires exactly
-one transcript and one summary, plus zero or one audio file and zero or more
-image files (named and sized as above, and embedded by artifact name). Summary content
+entry declares `artifact_id`, `role` (`transcript`, `summary`, `audio`, or
+`image`), `filename`, `mime_type`, `size_bytes`, and `sha256`. Version 1
+requires exactly one transcript and one summary, plus zero or one audio file
+and zero or more image files (named and sized as above, and embedded by
+artifact name). Summary content
 is UTF-8 Markdown and becomes the opening draft. An explicitly supplied
 meeting reference is metadata only, never an instruction to merge notes.
 
