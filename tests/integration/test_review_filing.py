@@ -356,3 +356,77 @@ async def test_revoking_review_cannot_fall_back_to_another_notes_older_approval(
         note.id, PatchFrontmatter(set={"reviewed": False}), note.content_hash
     )
     assert not (await store.search(SearchQuery(q="aardvark"))).items
+
+
+def image_request(
+    external_id="image-embeds", data=b"synthetic jpeg one", embed="![[x-image-01.jpg]]"
+):
+    request = ingest_request(external_id)
+    request.note.body = f"Opening note.\n\n{embed}\n\n![](unrelated.jpg)\n"
+    request.source.artifacts.append(
+        IngestArtifact(
+            name="x-image-01.jpg",
+            mime_type="image/jpeg",
+            content_base64=base64.b64encode(data).decode(),
+        )
+    )
+    return request
+
+
+async def test_filing_rewrites_embeds_to_the_filed_attachment(store):
+    result = await store.ingest(image_request())
+    before = await store.get_note(result.note.id)
+    assert "![[x-image-01.jpg]]" in before.body
+    await approve(store, result.note.id)
+    filed = f"_Attachments/2026-09/{result.source.id}-r0001-x-image-01.jpg"
+    note = await store.get_note(result.note.id)
+    assert f"![[{filed}]]" in note.body
+    assert "![](unrelated.jpg)" in note.body
+    assert (store.notes_root / filed).read_bytes() == b"synthetic jpeg one"
+    assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 0}
+    assert (await store.get_note(result.note.id)).body == note.body
+
+
+async def test_markdown_embed_is_rewritten_and_unmatched_note_is_unchanged(store):
+    request = image_request("md-embed", embed="![](x-image-01.jpg)")
+    result = await store.ingest(request)
+    await approve(store, result.note.id)
+    filed = f"_Attachments/2026-09/{result.source.id}-r0001-x-image-01.jpg"
+    assert f"![]({filed})" in (await store.get_note(result.note.id)).body
+    plain = await store.ingest(ingest_request("no-images"))
+    body = (await store.get_note(plain.note.id)).body
+    await approve(store, plain.note.id)
+    source = await store.get_source(plain.source.id)
+    assert (await store.get_note(plain.note.id)).body == body.replace(
+        plain.projection_path.removesuffix(".md"), source.projection_path.removesuffix(".md")
+    )
+
+
+async def test_replayed_ingest_with_identical_images_adds_no_revision(store):
+    request = image_request("replay-images")
+    result = await store.ingest(request)
+    replay = await store.ingest(request)
+    assert replay.source.id == result.source.id
+    assert replay.source.revision == 1
+    assert not replay.note.created
+
+
+async def test_new_revision_repoints_embeds_to_the_current_attachments(store):
+    result = await store.ingest(image_request("revised-images"))
+    await approve(store, result.note.id)
+    revised = await store.ingest(image_request("revised-images", data=b"synthetic jpeg two"))
+    assert revised.source.revision == 2
+    note = await store.get_note(result.note.id)
+    path = store.notes_root / note.path
+    path.write_text(path.read_text().replace("reviewed: true", "reviewed: false"))
+    await reconcile_once(store)
+    path.write_text(path.read_text().replace("reviewed: false", "reviewed: true"))
+    await reconcile_once(store)
+    assert (await filing.file_reviewed(store))["filing_failed"] == 0
+    current = f"_Attachments/2026-09/{result.source.id}-r0002-x-image-01.jpg"
+    old = f"_Attachments/2026-09/{result.source.id}-r0001-x-image-01.jpg"
+    body = (await store.get_note(result.note.id)).body
+    assert f"![[{current}]]" in body
+    assert f"![[{old}]]" not in body
+    assert (store.notes_root / old).read_bytes() == b"synthetic jpeg one"
+    assert (store.notes_root / current).read_bytes() == b"synthetic jpeg two"
