@@ -1651,6 +1651,7 @@ def _build_frontmatter(
     supplied = request.frontmatter.get(date_key)
     given = parse_note_time(supplied)
     legacy_time = request.frontmatter.get("time")
+    legacy = parse_note_time(legacy_time)
     needs_default = (not supplied and not values.get(date_key) and not legacy_time) or (
         from_ingest
         and request.frontmatter.get("time_unknown") is not True
@@ -1669,6 +1670,11 @@ def _build_frontmatter(
         values[date_key] = default_date
     elif from_ingest and given.valid and given.time_value is not None:
         values[date_key] = normalize_note_time(supplied, fallback_date=_today(settings))
+    elif from_ingest and not supplied and legacy.valid and legacy.time_value is not None:
+        capture_day = parse_note_time(
+            _default_note_time(request.frontmatter, schema, settings, captured_at)
+        ).date_value
+        values[date_key] = normalize_note_time(legacy_time, fallback_date=capture_day)
     values[schema.role("id_key")] = note_id
     values.setdefault(schema.role("schema_version_key"), 1)
     return _ordered(values, schema)

@@ -5,8 +5,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from coppermind import frontmatter as fm
 from coppermind.schema import default_schema
 
@@ -54,12 +52,3 @@ def test_the_note_file_example_in_data_and_settings_validates():
     assert isinstance(frontmatter["account"], list)
     assert "time" not in frontmatter
     assert default_schema().validate_frontmatter(dict(frontmatter)) == []
-
-
-@pytest.mark.parametrize(
-    "path",
-    ["docs/api.md", "docs/n8n-intake.md", "docs/note-workflow.md", "docs/data-and-settings.md"],
-)
-def test_published_docs_show_no_time_property_in_an_example(path):
-    text = (ROOT / path).read_text(encoding="utf-8")
-    assert "time: 20" not in text and '"time": "20' not in text

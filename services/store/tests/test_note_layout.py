@@ -1,6 +1,6 @@
 """How a note becomes a file: frontmatter order, the filename and the body."""
 
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 
 from coppermind_store.notes import (
@@ -112,6 +112,22 @@ def test_ingest_keeps_a_supplied_legacy_time_instead_of_stamping_the_capture_mom
     )
     assert frontmatter["date"] == date(2026, 10, 13)
     assert frontmatter["time"] == "09:30"
+    assert note_start_time(frontmatter, default_schema()) == time(9, 30)
+
+
+def test_ingest_folds_a_bare_legacy_time_with_no_date_into_the_capture_day():
+    request = CreateNote(title="Plaud", frontmatter={"time": "09:30"})
+    captured_at = datetime(2026, 10, 13, 20, 15, tzinfo=UTC)
+    frontmatter = _build_frontmatter(
+        request,
+        default_schema(),
+        default_settings(),
+        "01ID",
+        captured_at=captured_at,
+        from_ingest=True,
+    )
+    assert frontmatter["date"] == "2026-10-13T09:30:00"
+    assert note_date(frontmatter, default_schema()) == date(2026, 10, 13)
     assert note_start_time(frontmatter, default_schema()) == time(9, 30)
 
 
