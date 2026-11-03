@@ -1,10 +1,12 @@
 """PostgreSQL calendar rebuilds and refused imports are visible through Problems."""
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 from coppermind_store.calendar_archive import CalendarArchive
 
 from coppermind.db.calendar import calendar_events, calendar_evidence, calendar_state
+from coppermind.db.models import SearchUnreadable
 from coppermind.settings import LimitSettings
 from services.store.tests.test_calendar_import import event, ics
 
@@ -53,7 +55,29 @@ async def test_postgres_stream_rebuild_and_budget_problem(store, wiring, monkeyp
             "parts": [{"import_id": second.id}],
         }
         dropbox.save(records)
-        assert (await store.get_status()).counters.calendar_import_failures == 1
+        async with store.session_factory() as session, session.begin():
+            session.add(
+                SearchUnreadable(
+                    kind="note",
+                    ref_id="unreadable-note",
+                    version="1",
+                    path="unreadable.md",
+                    observation="permission-denied",
+                    reason="Permission denied",
+                    observed_at=datetime.now(UTC),
+                )
+            )
+        counters = (await store.get_status()).counters
+        assert counters.calendar_import_failures == 1
+        assert counters.known_unreadable == 1
+        problems = await store.get_problems()
+        assert any(p.kind == "calendar_import" and p.reference == second.id for p in problems)
+        assert any(
+            p.kind == "search_unreadable"
+            and p.reference == "unreadable.md"
+            and p.reason == "Permission denied"
+            for p in problems
+        )
     finally:
         archive.engine.dispose()
 

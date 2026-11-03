@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
-from pydantic import ValidationError
 import ijson
+from pydantic import ValidationError
 
 from coppermind.atomicio import atomic_write_text
 from coppermind.context_config import (
