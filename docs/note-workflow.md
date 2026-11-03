@@ -78,8 +78,8 @@ Conflicting revisions appear in Problems. Partial exports retain missing events;
 explicit cancellation is different from absence.
 
 Originals and import history remain under the state volume. Completed and failed
-receipts can be dismissed; completed receipts also clear after seven days by
-default. An identical re-drop displays **Already imported** without a new import.
+receipts can be dismissed; completed receipts also clear after seven days. An identical re-drop displays
+**Already imported** without a new import.
 `GET /v1/dropbox` requires `sources:read`. Unsupported files remain preserved.
 Markdown in the vault Dropbox follows ordinary note adoption; the binary API does
 not adopt Markdown. Use the notes API for authored notes.
