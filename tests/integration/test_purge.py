@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
-from coppermind_store import note_history, purge
+from coppermind_store import indexer, note_history, purge
 from coppermind_store.reconciler import reconcile_once
 from coppermind_store.sources import _external_id_claim_path
 
@@ -134,6 +134,33 @@ async def test_orphan_bundle_projection_claim_and_search_removed(store):
         assert await session.scalar(sa.select(sa.func.count()).select_from(SearchDocument)) == 0
     await store.rebuild_metadata()
     assert not (await store.preview_purge()).candidates
+
+
+@pytest.mark.parametrize("keep_recorded", [False, True])
+async def test_discovered_generated_pages_are_bound_to_preview_and_removed(store, keep_recorded):
+    retention(store, 0)
+    ingested = await orphan(store)
+    bundle = store.sources_root / ingested.source.id
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    recorded = store.notes_root / manifest["projection_path"]
+    moved = store.notes_root / "_Sources" / "Relocated.md"
+    moved.write_bytes(recorded.read_bytes())
+    if not keep_recorded:
+        recorded.unlink()
+    preview = await store.preview_purge()
+    extra = moved.with_name("Another generated page.md")
+    extra.write_bytes(moved.read_bytes())
+    with pytest.raises(PurgeConflict):
+        await store.confirm_purge(confirmation(preview))
+    assert moved.exists() and extra.exists() and bundle.exists()
+
+    preview = await store.preview_purge()
+    await store.confirm_purge(confirmation(preview))
+    assert not any(path.exists() for path in (recorded, moved, extra, bundle))
+    assert (await indexer.rebuild(store))["sources"] == 0
+    async with store.session_factory() as session:
+        assert await session.get(Source, ingested.source.id) is None
+        assert await session.get(SearchDocument, ("source", ingested.source.id)) is None
 
 
 @pytest.mark.parametrize("mirrored", [False, True])
@@ -310,6 +337,43 @@ async def test_abandon_after_commit_reports_everything_removed(store, monkeypatc
     assert abandoned.completed == 2
     assert not (store.sources_root / ingested.source.id).exists()
     assert not [p for p in await store.get_problems() if p.kind == "purge"]
+
+
+async def test_abandoned_completed_note_proves_surviving_source_can_be_purged(store, monkeypatch):
+    retention(store, 0)
+    ingested = await orphan(store)
+    live = await store.create_note(CreateNote(title="Last live citation"))
+    live_path = store.notes_root / live.path
+    live_path.write_text(fm.patch(live_path.read_text(), {"sources": [ingested.source.id]}))
+    commit(store.notes_root)
+    await reconcile_once(store)
+    preview = await store.preview_purge()
+    assert [c.id for c in preview.candidates] == [ingested.note.id]
+    real = purge.save
+
+    def fail_complete(store, record):
+        if record["state"] == "complete":
+            raise OSError("state volume lost after database commit")
+        real(store, record)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(purge, "save", fail_complete)
+        with pytest.raises(NotesFilesystemUnavailable):
+            await store.confirm_purge(confirmation(preview))
+    abandoned = await store.abandon_purge(AbandonPurge(token=preview.token))
+    assert abandoned.completed == 1 and abandoned.remaining == []
+    assert purge.read(store, preview.token)["completed"] == [ingested.note.id]
+    assert not (await store.preview_purge()).candidates
+
+    live_path.unlink()
+    commit(store.notes_root)
+    await reconcile_once(store)
+    preview = await store.preview_purge()
+    assert {c.id for c in preview.candidates} == {live.id, ingested.source.id}
+    await store.confirm_purge(confirmation(preview))
+    assert not (store.sources_root / ingested.source.id).exists()
+    async with store.session_factory() as session:
+        assert await session.get(Source, ingested.source.id) is None
 
 
 async def test_corrupt_receipt_does_not_halt_reconcile_and_is_reported(store):

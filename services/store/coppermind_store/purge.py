@@ -249,6 +249,7 @@ async def candidates(store: LocalStore, now: datetime) -> list[dict[str, Any]]:
     disk_ids, disk_sources, pages = await asyncio.to_thread(disk_references, store)
     saved = await asyncio.to_thread(note_history.receipts, store)
     complete = await asyncio.to_thread(records, store, "complete")
+    abandoned = await asyncio.to_thread(records, store, "abandoned")
     async with store.session_factory() as session:
         notes = list((await session.scalars(sa.select(Note).order_by(Note.id))).all())
         sources = list((await session.scalars(sa.select(Source).order_by(Source.id))).all())
@@ -275,6 +276,15 @@ async def candidates(store: LocalStore, now: datetime) -> list[dict[str, Any]]:
         for i in r["items"]
         if i["candidate"]["kind"] == "note"
     }
+    # Abandon can follow a committed removal whose final receipt save failed.
+    # Only the items confirmed removed by abandon are evidence of a purge.
+    for record in abandoned:
+        removed = set(record.get("completed", []))
+        purged_notes.update(
+            item["candidate"]["id"]
+            for item in record["items"]
+            if item["candidate"]["kind"] == "note" and item["candidate"]["id"] in removed
+        )
     return await asyncio.to_thread(
         _plan,
         store,
@@ -389,11 +399,8 @@ def _plan(
             if json.loads(claim.read_bytes()).get("source_id") != source.id:
                 raise ValueError("source claim identity mismatch")
             files.append(_file(store, "sources", claim))
-        if state == "ok":
-            recorded = manifest.get("projection_path")
-            projections = [recorded] if recorded else []
-        else:
-            projections = pages.get(source.id, [])
+        recorded = manifest.get("projection_path") if state == "ok" else None
+        projections = sorted(set(pages.get(source.id, [])) | ({recorded} if recorded else set()))
         for projection in projections:
             path = resolve(store.notes_root, projection)
             if path.exists():
