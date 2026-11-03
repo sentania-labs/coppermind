@@ -261,3 +261,20 @@ def test_retention_has_one_home(signed_in):
         follow_redirects=False,
     )
     assert posted.status_code == 303 and posted.headers["location"] == "/admin/purge"
+
+
+def test_a_failed_page_load_is_not_reported_as_a_failed_save(signed_in, monkeypatch):
+    from coppermind_admin.pages import purge as page
+
+    client, _ = signed_in
+    client.app.state.store = PurgeStore()
+
+    def unreadable(control):
+        raise OSError("settings volume unavailable")
+
+    monkeypatch.setattr(page, "read_settings", unreadable)
+    response = client.get("/admin/purge")
+    assert response.status_code == 500
+    assert "Retention settings could not be read." in response.text
+    assert "could not be saved" not in response.text
+    assert "interrupted purge" not in response.text

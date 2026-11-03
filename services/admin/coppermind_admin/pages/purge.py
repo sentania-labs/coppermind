@@ -120,7 +120,13 @@ def router(wiring: Wiring) -> APIRouter:
             status_code=status,
         )
 
-    def failure(error: Exception, status: int = 503) -> HTMLResponse:
+    def failure(error: Exception, status: int = 503, message: str = "") -> HTMLResponse:
+        if message:
+            return page(
+                f'<p class="error" role="alert">{escape(message)}</p>'
+                '<a href="/admin/purge">Reload retention purge</a>',
+                status,
+            )
         if isinstance(error, SourcesFilesystemUnavailable):
             message = "The sources volume could not be read or written."
         elif isinstance(error, NotesFilesystemUnavailable):
@@ -129,7 +135,7 @@ def router(wiring: Wiring) -> APIRouter:
             status, body = to_http(error)
             message = body["message"][:1].upper() + body["message"][1:]
         else:
-            message = "The setting could not be saved. Reload this page and try again."
+            message = "Retention purge could not read or remove files. Try again."
         return page(
             f'<p class="error" role="alert">{escape(message)}</p>'
             "<p>An interrupted purge may have removed some items already. "
@@ -300,7 +306,9 @@ What was and was not removed is reported in Problems, and you can start a new pr
         try:
             return await home(request)
         except (OSError, ValueError) as error:
-            return failure(error)
+            return failure(
+                error, 500, "Retention settings could not be read. Reload this page and try again."
+            )
 
     @routes.post("/v1/admin/purge/settings", include_in_schema=False)
     async def settings(request: Request) -> Response:
@@ -338,7 +346,9 @@ What was and was not removed is reported in Problems, and you can start a new pr
                 form,
             )
         except OSError as error:
-            return failure(error)
+            return failure(
+                error, 500, "Retention could not be saved. Reload this page and try again."
+            )
 
     @routes.post("/v1/admin/purge/preview", include_in_schema=False)
     async def preview(request: Request) -> Response:
