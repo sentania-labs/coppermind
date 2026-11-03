@@ -1328,7 +1328,7 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
     problems.extend(
         ProblemInfo(kind="calendar_import", reference=item["id"], reason=item["error"])
         for item in store.context.dropbox.records()["items"].values()
-        if item["state"] == "failed"
+        if item["state"] == "failed" and not any(p.get("import_id") for p in item["parts"])
     )
     for path in sorted((store.control.store.state_dir / "filing").glob("*.json")):
         try:
