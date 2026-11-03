@@ -281,10 +281,8 @@ class ContactRows(Sequence["CalendarContact"]):
         yield from self.page(None)
 
     def page(self, limit: int | None = 100, offset: int = 0) -> Iterator[CalendarContact]:
+        from coppermind_store.calendar_archive import CalendarContact, ContactEvidence
 
-        query = sa.select(evidence.c.contact_id).distinct().order_by(evidence.c.contact_id)
-        if limit is not None:
-            query = query.limit(limit)
         # A page bounds IDs; streaming callers obtain subsequent pages separately.
         if limit is None:
             position = offset
@@ -294,11 +292,47 @@ class ContactRows(Sequence["CalendarContact"]):
                     return
                 yield from batch
                 position += len(batch)
-        else:
-            with self.engine.connect() as connection:
-                ids = connection.execute(query.offset(offset)).scalars().all()
-            for identity in ids:
-                yield self.contact(identity)
+            return
+
+        ids = (
+            sa.select(evidence.c.contact_id)
+            .distinct()
+            .order_by(evidence.c.contact_id)
+            .limit(limit)
+            .offset(offset)
+            .subquery()
+        )
+        # Rank IDs, not the evidence payloads. The join fetches at most 100
+        # records per selected contact while the window counts its full history.
+        # This stays one round trip for the entire contact page.
+        ranked = (
+            sa.select(
+                evidence.c.id.label("evidence_id"),
+                evidence.c.contact_id,
+                sa.func.count().over(partition_by=evidence.c.contact_id).label("total"),
+                sa.func.row_number()
+                .over(partition_by=evidence.c.contact_id, order_by=evidence.c.id)
+                .label("position"),
+            )
+            .where(evidence.c.contact_id.in_(sa.select(ids.c.contact_id)))
+            .subquery()
+        )
+        query = (
+            sa.select(ranked.c.contact_id, ranked.c.total, evidence.c.record)
+            .join_from(ranked, evidence, evidence.c.id == ranked.c.evidence_id)
+            .where(ranked.c.position <= 100)
+            .order_by(ranked.c.contact_id, ranked.c.position)
+        )
+        contact = None
+        with self.engine.connect() as connection:
+            for row in stream(connection, query):
+                if contact is None or contact.id != row.contact_id:
+                    if contact is not None:
+                        yield contact
+                    contact = CalendarContact(id=row.contact_id, evidence_count=row.total)
+                contact.evidence.append(ContactEvidence.model_validate_json(row.record))
+        if contact is not None:
+            yield contact
 
     def has(self, identity: str) -> bool:
         with self.engine.connect() as connection:
