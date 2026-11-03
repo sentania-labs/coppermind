@@ -291,3 +291,48 @@ async def test_mark_clears_when_entry_stops_being_a_candidate(store):
     async with store.session_factory() as session:
         assert await session.get(SearchUnreadable, ("note", created.id)) is None
     assert (await store.get_search_index_status()).known_unreadable == 0
+
+
+async def test_transient_read_error_is_retried_not_marked(store):
+    import os
+
+    import pytest
+    from structlog.testing import capture_logs
+
+    from coppermind.db.models import Note, SearchDocument
+    from coppermind.store_protocol import CreateNote
+
+    if os.geteuid() == 0:
+        pytest.skip("permission errors are not raised for root")
+    created = await store.create_note(
+        CreateNote(
+            title="Blip",
+            folder="2026-09",
+            body="Body",
+            frontmatter={
+                "date": "2026-09-08",
+                "type": "reference",
+                "context": "internal",
+                "reviewed": True,
+            },
+        )
+    )
+    await filing.file_reviewed(store)
+    async with store.session_factory() as session:
+        path = (await session.get(Note, created.id)).path
+    file = store.notes_root / path
+    async with store.session_factory() as session, session.begin():
+        await session.execute(sa.delete(SearchDocument))
+    file.chmod(0)
+    try:
+        with capture_logs() as logs:
+            first = await indexer.catch_up(store)
+            second = await indexer.catch_up(store)
+    finally:
+        file.chmod(0o644)
+    assert first["unreadable"] == 1
+    assert second["unreadable"] == 1
+    assert second["skipped_known_unreadable"] == 0
+    assert (await store.get_search_index_status()).known_unreadable == 0
+    assert any(item["event"] == "search entry unreadable" for item in logs)
+    assert (await indexer.catch_up(store))["indexed"] == 1

@@ -231,24 +231,35 @@ class Entry:
     version: str
 
 
+Reasons = list[tuple[str, bool]]
+
+
+def _os_failure(reasons: Reasons, exc: Exception, prefix: str = "") -> None:
+    """Record a read fault; only a missing path or bad path stays failed until it changes."""
+    durable = not isinstance(exc, OSError) or isinstance(
+        exc, (FileNotFoundError, NotADirectoryError)
+    )
+    reasons.append((f"{prefix}{type(exc).__name__}: {exc}", durable))
+
+
 def _read_note(
     root: Path,
     relative: str,
     note_id: str,
     expected_hash: str,
     id_key: str,
-    reasons: list[str] | None = None,
+    reasons: Reasons | None = None,
 ) -> Entry | None:
     """The entry for a mirrored note, or None if the file is not that note now."""
     try:
         data = resolve(root, relative).read_bytes()
     except (OSError, ValueError) as exc:
         if reasons is not None:
-            reasons.append(f"{type(exc).__name__}: {exc}")
+            _os_failure(reasons, exc)
         return None
     if content_hash(data) != expected_hash:
         if reasons is not None:
-            reasons.append("file content differs from the mirrored content hash")
+            reasons.append(("file content differs from the mirrored content hash", True))
         # The file moved on since the mirror read it; the next pass mirrors the
         # new bytes and the entry follows from there.
         return None
@@ -256,17 +267,17 @@ def _read_note(
         frontmatter, body = fm.parse(data.decode("utf-8"))
     except (UnicodeDecodeError, fm.FrontmatterError) as exc:
         if reasons is not None:
-            reasons.append(f"{type(exc).__name__}: {exc}")
+            reasons.append((f"{type(exc).__name__}: {exc}", True))
         return None
     if str(frontmatter.get(id_key, note_id)) != note_id:
         if reasons is not None:
-            reasons.append("file note identity differs from the mirrored identity")
+            reasons.append(("file note identity differs from the mirrored identity", True))
         return None
     return Entry("note", note_id, relative, _title_of(body, relative), body, expected_hash)
 
 
 def _read_projection(
-    root: Path, relative: str, source_id: str, revision: int, reasons: list[str] | None = None
+    root: Path, relative: str, source_id: str, revision: int, reasons: Reasons | None = None
 ) -> Entry | None:
     """The entry for a source's generated page, if the path still holds it."""
     try:
@@ -274,7 +285,7 @@ def _read_projection(
         frontmatter, body = fm.parse(text)
     except (OSError, ValueError, UnicodeDecodeError, fm.FrontmatterError) as exc:
         if reasons is not None:
-            reasons.append(f"{type(exc).__name__}: {exc}")
+            _os_failure(reasons, exc)
         return None
     if (
         frontmatter.get("reviewed") is not True
@@ -284,7 +295,11 @@ def _read_projection(
     ):
         if reasons is not None:
             reasons.append(
-                "projection is unreviewed, unmanaged, or has a different source identity/revision"
+                (
+                    "projection is unreviewed, unmanaged, or has a different source "
+                    "identity/revision",
+                    True,
+                )
             )
         return None
     return Entry(
@@ -293,7 +308,7 @@ def _read_projection(
 
 
 def _projection_path(
-    sources_root: Path, source_id: str, reasons: list[str] | None = None
+    sources_root: Path, source_id: str, reasons: Reasons | None = None
 ) -> str | None:
     """The page a source's manifest records, the only record of where it lives."""
     from coppermind_store.sources import _manifest_document
@@ -302,13 +317,13 @@ def _projection_path(
         manifest = _manifest_document(sources_root / source_id / "manifest.json")
     except (OSError, StoreError) as exc:
         if reasons is not None:
-            reasons.append(f"manifest {type(exc).__name__}: {exc}")
+            _os_failure(reasons, exc, "manifest ")
         return None
     recorded = manifest.get("projection_path")
     if isinstance(recorded, str) and recorded:
         return recorded
     if reasons is not None:
-        reasons.append("manifest records no projection path")
+        reasons.append(("manifest records no projection path", True))
     return None
 
 
@@ -461,9 +476,10 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
 
-    def read_all() -> tuple[list[Entry], list[dict[str, Any]], int]:
+    def read_all() -> tuple[list[Entry], list[dict[str, Any]], list[dict[str, Any]], int]:
         ready: list[Entry] = []
         failed: list[dict[str, Any]] = []
+        transient: list[dict[str, Any]] = []
         skipped = 0
         for kind, rows in (("note", stale_notes), ("source", stale_sources)):
             attempted = 0
@@ -479,7 +495,7 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                     if kind == "source"
                     else ""
                 )
-                reasons: list[str] = []
+                reasons: Reasons = []
                 if kind == "note":
                     path = row.path
                 elif previous and previous.observation.split("|", 1)[0] == manifest_state:
@@ -509,7 +525,15 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                 if entry is not None:
                     ready.append(entry)
                 else:
-                    failed.append(
+                    reason, durable = (
+                        reasons[0]
+                        if reasons
+                        else (
+                            "manifest has no readable projection path",
+                            True,
+                        )
+                    )
+                    (failed if durable else transient).append(
                         dict(
                             kind=kind,
                             ref_id=row.id,
@@ -517,15 +541,13 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                             path=path,
                             observation=observation,
                             observed_at=now,
-                            reason=reasons[0]
-                            if reasons
-                            else "manifest has no readable projection path",
+                            reason=reason,
                         )
                     )
-        return ready, failed, skipped
+        return ready, failed, transient, skipped
 
-    ready, failed, skipped = await asyncio.to_thread(read_all)
-    counts["unreadable"] = len(failed)
+    ready, failed, transient, skipped = await asyncio.to_thread(read_all)
+    counts["unreadable"] = len(failed) + len(transient)
     counts["skipped_known_unreadable"] = skipped
     logged: list[dict[str, Any]] = []
     try:
@@ -533,6 +555,7 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
             candidates = {("note", row.id) for row in stale_notes} | {
                 ("source", row.id) for row in stale_sources
             }
+            candidates -= {(item["kind"], item["ref_id"]) for item in transient}
             for kind in ("note", "source"):
                 obsolete = [ref for k, ref in failures if k == kind and (k, ref) not in candidates]
                 if obsolete:
@@ -603,7 +626,7 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                 counts["indexed"] += 1
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
-    for failure in logged:
+    for failure in [*logged, *transient]:
         log.warning(
             "search entry unreadable",
             **{

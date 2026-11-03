@@ -328,7 +328,7 @@ async def _index_after_pass(store: LocalStore) -> None:
     except Exception as exc:  # noqa: BLE001 - the index must not stop the reconciler
         log.warning("search index catch-up deferred", reason=type(exc).__name__)
         return
-    if any(counts.values()):
+    if any(counts.get(key) for key in ("indexed", "removed", "unreadable", "notes", "sources")):
         log.info("search index caught up", **counts)
 
 
