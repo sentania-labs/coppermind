@@ -33,6 +33,7 @@ from coppermind_store.control import ControlState
 from coppermind_store.fs import is_writable
 from coppermind_store.internal_api import router as internal_router
 from coppermind_store.notes import LocalStore
+from coppermind_store.purge import scan_problems
 from coppermind_store.reconciler import ReconcilerStatus, run_reconciler
 
 SERVICE = "coppermind-store"
@@ -65,6 +66,9 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             run_reconciler(app.state.store, app.state.reconcile_status),
             name="coppermind-reconciler",
         )
+        purge_scan_task = asyncio.create_task(
+            scan_problems(app.state.store), name="coppermind-purge-scan"
+        )
         context_task = asyncio.create_task(app.state.store.context.run(), name="coppermind-context")
         field_index_task = asyncio.create_task(
             app.state.store.field_index.run(), name="coppermind-field-index"
@@ -81,6 +85,9 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             field_index_task.cancel()
             with suppress(asyncio.CancelledError):
                 await field_index_task
+            purge_scan_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await purge_scan_task
             context_task.cancel()
             with suppress(asyncio.CancelledError):
                 await context_task

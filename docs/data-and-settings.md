@@ -335,3 +335,6 @@ exceed the number of candidates. The preview also reports what it kept:
 `kept.notes_within_retention` and `kept.sources_in_use`. The Overview Problems
 count includes unfinished purges, abandoned purges with items remaining, unreadable
 receipts and damaged bundles (`purge_problems`), so it agrees with the Problems page.
+Status stays cheap: it reads `/data/state/purge-problems.json` and the few receipts that
+can still be unfinished, and never walks a source bundle or a finished receipt. The store
+rewrites that file with a full scan at startup and after each preview, confirm and abandon.

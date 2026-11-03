@@ -24,6 +24,7 @@ from coppermind.atomicio import atomic_write_bytes, sync_directory
 from coppermind.db.models import Note, NoteSource, Source
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id
+from coppermind.logging import get_logger
 from coppermind.purge import (
     AbandonPurge,
     ConfirmPurge,
@@ -49,6 +50,8 @@ if TYPE_CHECKING:
 
 
 PurgeChanged = PurgeConflict
+
+log = get_logger("coppermind-store")
 
 
 def directory(store: LocalStore) -> Path:
@@ -86,14 +89,30 @@ def records(store: LocalStore, state: str | None = None) -> list[dict[str, Any]]
     return [r for p in sorted(folder.glob("*.json")) if (r := _load(p)) is not None]
 
 
-def unreadable(store: LocalStore) -> list[str]:
-    """Tokens of receipt files that cannot be read, in any live location."""
+def unreadable(store: LocalStore, states: tuple[str, ...] = ("", *TERMINAL)) -> list[str]:
+    """Tokens of receipt files that cannot be read, in the given locations."""
     return [
         p.stem
-        for state in ("", *TERMINAL)
+        for state in states
         for p in sorted(_folder(store, state).glob("*.json"))
         if _load(p) is None
     ]
+
+
+def _problems_path(store: LocalStore) -> Path:
+    return store.control.store.state_dir / "purge-problems.json"
+
+
+def recorded(store: LocalStore) -> dict[str, Any]:
+    """The purge problems found by the last maintenance scan. A small file, never a walk."""
+    empty: dict[str, Any] = {"damaged": [], "unreadable": [], "abandoned": []}
+    try:
+        value = json.loads(_problems_path(store).read_bytes())
+    except FileNotFoundError:
+        return empty
+    except ValueError:
+        return empty
+    return {key: value.get(key, []) for key in empty} if isinstance(value, dict) else empty
 
 
 def pending_ids(store: LocalStore, kind: str) -> set[str]:
@@ -502,6 +521,63 @@ def _residual(store: LocalStore, old: dict[str, Any]) -> dict[str, Any] | None:
     return item
 
 
+async def _scan(store: LocalStore) -> None:
+    async with store.session_factory() as session:
+        rows = (
+            await session.execute(
+                sa.select(Source.id, Source.provider, Source.external_source_id).order_by(Source.id)
+            )
+        ).all()
+    named = {row.id: row for row in rows}
+    damaged = await asyncio.to_thread(damaged_bundles, store, list(named))
+    abandoned = []
+    for receipt in await asyncio.to_thread(records, store, "abandoned"):
+        held = set(receipt.get("remaining", []))
+        _, remaining = await outcome(
+            store,
+            {**receipt, "items": [i for i in receipt["items"] if i["candidate"]["id"] in held]},
+        )
+        if remaining:
+            titles = {i["candidate"]["id"]: i["candidate"]["title"] for i in receipt["items"]}
+            abandoned.append(
+                {
+                    "token": receipt["token"],
+                    "total": len(receipt["items"]),
+                    "remaining": len(remaining),
+                    "titles": [titles[r] for r in remaining[:5]],
+                }
+            )
+    value = {
+        "damaged": [
+            {
+                "source_id": source_id,
+                "provider": named[source_id].provider,
+                "external_source_id": named[source_id].external_source_id,
+            }
+            for source_id in damaged
+        ],
+        "unreadable": await asyncio.to_thread(unreadable, store, tuple(TERMINAL)),
+        "abandoned": abandoned,
+    }
+    await asyncio.to_thread(
+        atomic_write_bytes, _problems_path(store), json.dumps(value).encode(), mode=0o600
+    )
+
+
+async def _rescan(store: LocalStore) -> None:
+    """Refresh the recorded problems from inside a purge action that holds the gate."""
+    try:
+        await _scan(store)
+    except Exception as exc:  # noqa: BLE001 - a stale list must not undo a finished action
+        log.warning("purge problems scan deferred", reason=type(exc).__name__)
+
+
+async def scan_problems(store: LocalStore) -> None:
+    """The full bundle and receipt scan: store startup, or an explicit maintenance action."""
+    async with store.maintenance.exclusive():
+        await _rescan(store)
+
+
 async def preview(store: LocalStore) -> PurgeResult:
     async with store.maintenance.exclusive():
         existing = await asyncio.to_thread(records, store)
@@ -524,6 +600,7 @@ async def preview(store: LocalStore) -> PurgeResult:
         for old in existing:
             if old["state"] == "preview":
                 (directory(store) / (old["token"] + ".json")).unlink(missing_ok=True)
+        await _rescan(store)
         return result(record)
 
 
@@ -671,6 +748,7 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
             )
             save(store, record)
             raise
+        await _rescan(store)
         return result(record)
 
 
@@ -715,12 +793,15 @@ async def abandon(store: LocalStore, request: AbandonPurge) -> PurgeResult:
         path = _locate(store, request.token)
         record = _load(path)
         if record is None:
-            return _quarantine(store, path)
+            quarantined = _quarantine(store, path)
+            await _rescan(store)
+            return quarantined
         if record["state"] not in {"applying", "failed"}:
             raise ValidationFailed(["Only an unfinished purge can be abandoned."])
         removed, remaining = await outcome(store, record)
         record.update(state="abandoned", completed=removed, remaining=remaining)
         save(store, record)
+        await _rescan(store)
         return result(record)
 
 

@@ -432,6 +432,7 @@ async def test_terminal_receipts_are_not_read_by_reconcile_or_problems(store):
     for path in (purge.directory(store) / "done").glob("*.json"):
         path.write_text("{broken")
     await reconcile_once(store)
+    await purge.scan_problems(store)
     assert [p.reference for p in await store.get_problems() if p.kind == "purge_receipt"] == [
         preview.token
     ]
@@ -678,11 +679,63 @@ async def test_status_count_agrees_with_every_kind_of_purge_problem(store):
     (store.sources_root / ingested.source.id / "manifest.json").unlink()
     purge.directory(store).mkdir(parents=True, exist_ok=True)
     (purge.directory(store) / ("e" * 64 + ".json")).write_text("{broken")
+    await purge.scan_problems(store)
     problems = [
         p for p in await store.get_problems() if p.kind in {"damaged_source", "purge_receipt"}
     ]
     assert sorted(p.kind for p in problems) == ["damaged_source", "purge_receipt"]
     assert (await store.get_status()).counters.purge_problems == 2
+
+
+async def test_status_never_walks_source_bundles_or_finished_receipts(store, monkeypatch):
+    retention(store, 0)
+    ingested = await orphan(store)
+    (store.sources_root / ingested.source.id / "manifest.json").unlink()
+    await purge.scan_problems(store)
+    now = datetime.now(UTC)
+    async with store.session_factory() as session:
+        for number in range(40):
+            session.add(
+                Source(
+                    id=f"01K4Q8Z2A0P1Q2R3S4T5U6V{number:03d}"[:26],
+                    provider="plaud",
+                    external_source_id=f"filler-{number}",
+                    source_type="transcript",
+                    content_identity="identity",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        await session.commit()
+    (purge.directory(store) / "done").mkdir(parents=True, exist_ok=True)
+    (purge.directory(store) / "done" / ("d" * 64 + ".json")).write_text("{broken")
+
+    walked = []
+
+    def forbidden(name):
+        def refuse(*args, **kwargs):
+            walked.append(name)
+            raise AssertionError(name)
+
+        return refuse
+
+    for name in ("_bundle", "damaged_bundles", "outcome"):
+        monkeypatch.setattr(purge, name, forbidden(name))
+    real_rglob = type(store.sources_root).rglob
+
+    def counting_rglob(self, *args, **kwargs):
+        if self.is_relative_to(store.sources_root):
+            walked.append("rglob")
+        return real_rglob(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(store.sources_root), "rglob", counting_rglob)
+    counters = (await store.get_status()).counters
+    problems = await store.get_problems()
+    assert not walked
+    assert counters.purge_problems == 1
+    assert [p.kind for p in problems if p.kind.startswith(("purge", "damaged"))] == [
+        "damaged_source"
+    ]
 
 
 async def test_preview_says_what_it_kept_and_separates_notes_from_sources(store):

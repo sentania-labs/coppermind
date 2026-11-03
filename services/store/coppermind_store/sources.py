@@ -1290,62 +1290,38 @@ def filing_problems(store: LocalStore) -> list[ProblemInfo]:
 
 
 async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
-    """Everything retention purge leaves for the owner, for Problems and the Overview count."""
-    from coppermind_store.purge import damaged_bundles, outcome, records, unreadable
+    """What retention purge leaves for the owner, for Problems and the Overview count.
 
-    problems: list[ProblemInfo] = []
+    This reads the problems the last maintenance scan recorded and the few receipts
+    that can still be unfinished. It never walks a source bundle or a finished receipt.
+    """
+    from coppermind_store.purge import recorded, records, unreadable
+
     try:
-        async with store.session_factory() as session:
-            rows = (
-                await session.execute(
-                    sa.select(Source.id, Source.provider, Source.external_source_id).order_by(
-                        Source.id
-                    )
-                )
-            ).all()
-    except (SQLAlchemyError, OSError) as exc:
-        raise MetadataUnavailable(str(exc)) from exc
-    try:
-        damaged = await asyncio.to_thread(damaged_bundles, store, [row.id for row in rows])
-    except OSError:
-        damaged = []
-        problems.append(
-            ProblemInfo(
-                kind="purge",
-                reference="sources",
-                reason=(
-                    "Source bundles could not be checked for retention purge. "
-                    "Check the sources volume."
-                ),
-            )
-        )
-    named = {row.id: row for row in rows}
-    problems.extend(
-        ProblemInfo(
-            kind="damaged_source",
-            reference=source_id,
-            reason=(
-                f"The preserved copy of {named[source_id].provider} source "
-                f"{named[source_id].external_source_id} has files but no readable manifest. "
-                "It is not offered for retention purge."
-            ),
-            source_id=source_id,
-        )
-        for source_id in damaged
-    )
-    try:
-        purge_records, abandoned, unreadable_tokens = await asyncio.to_thread(
-            lambda: (records(store), records(store, "abandoned"), unreadable(store))
+        found, unfinished, unreadable_now = await asyncio.to_thread(
+            lambda: (recorded(store), records(store), unreadable(store, ("",)))
         )
     except OSError:
         return [
-            *problems,
             ProblemInfo(
                 kind="purge",
                 reference="receipts",
                 reason="Retention purge receipts could not be read. Check storage health.",
-            ),
+            )
         ]
+    problems = [
+        ProblemInfo(
+            kind="damaged_source",
+            reference=entry["source_id"],
+            reason=(
+                f"The preserved copy of {entry['provider']} source "
+                f"{entry['external_source_id']} has files but no readable manifest. "
+                "It is not offered for retention purge."
+            ),
+            source_id=entry["source_id"],
+        )
+        for entry in found["damaged"]
+    ]
     problems.extend(
         ProblemInfo(
             kind="purge_receipt",
@@ -1355,9 +1331,9 @@ async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
                 "to move the file into quarantine."
             ),
         )
-        for token in unreadable_tokens
+        for token in sorted({*found["unreadable"], *unreadable_now})
     )
-    for receipt in purge_records:
+    for receipt in unfinished:
         if receipt["state"] in {"applying", "failed"}:
             problems.append(
                 ProblemInfo(
@@ -1380,31 +1356,21 @@ async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
                     ),
                 )
             )
-    for receipt in abandoned:
-        held = set(receipt.get("remaining", []))
-        try:
-            _, remaining = await outcome(
-                store,
-                {**receipt, "items": [i for i in receipt["items"] if i["candidate"]["id"] in held]},
+    for entry in found["abandoned"]:
+        shown = len(entry["titles"])
+        more = f" and {entry['remaining'] - shown} more" if entry["remaining"] > shown else ""
+        problems.append(
+            ProblemInfo(
+                kind="purge",
+                reference=entry["token"],
+                reason=(
+                    f"Retention purge was abandoned. {entry['total'] - entry['remaining']} "
+                    f"listed items were removed. {entry['remaining']} were not and still need "
+                    f"attention: {', '.join(entry['titles'])}{more}. "
+                    "Preview again from Retention purge to finish removing them."
+                ),
             )
-        except (SQLAlchemyError, OSError) as exc:
-            raise MetadataUnavailable(str(exc)) from exc
-        if remaining:
-            titles = {i["candidate"]["id"]: i["candidate"]["title"] for i in receipt["items"]}
-            listed = ", ".join(titles[r] for r in remaining[:5])
-            more = f" and {len(remaining) - 5} more" if len(remaining) > 5 else ""
-            problems.append(
-                ProblemInfo(
-                    kind="purge",
-                    reference=receipt["token"],
-                    reason=(
-                        f"Retention purge was abandoned. {len(receipt['items']) - len(remaining)} "
-                        f"listed items were removed. {len(remaining)} were not and still need "
-                        f"attention: {listed}{more}. Preview again from Retention purge "
-                        "to finish removing them."
-                    ),
-                )
-            )
+        )
     return problems
 
 
