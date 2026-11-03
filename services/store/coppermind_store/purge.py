@@ -54,27 +54,49 @@ def _folder(store: LocalStore, state: str) -> Path:
     return directory(store) / TERMINAL.get(state, "")
 
 
+QUARANTINE = "quarantine"
+
+
+def _load(path: Path) -> dict[str, Any] | None:
+    """A receipt, or None when the file is unreadable or not a receipt."""
+    try:
+        record = json.loads(path.read_bytes())
+        if (
+            record["token"] != path.stem
+            or not isinstance(record["state"], str)
+            or not isinstance(record["items"], list)
+        ):
+            return None
+        return dict(record)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def records(store: LocalStore, state: str | None = None) -> list[dict[str, Any]]:
-    """Receipts in one place; unfinished and preview receipts live in the root."""
+    """Readable receipts in one place; unfinished and preview receipts live in the root."""
     folder = _folder(store, state or "")
-    return [json.loads(p.read_bytes()) for p in sorted(folder.glob("*.json"))]
+    return [r for p in sorted(folder.glob("*.json")) if (r := _load(p)) is not None]
+
+
+def unreadable(store: LocalStore) -> list[str]:
+    """Tokens of receipt files that cannot be read, in any live location."""
+    return [
+        p.stem
+        for state in ("", *TERMINAL)
+        for p in sorted(_folder(store, state).glob("*.json"))
+        if _load(p) is None
+    ]
 
 
 def pending_ids(store: LocalStore, kind: str) -> set[str]:
     """Ids held by unfinished purges. An unreadable receipt is skipped, not fatal."""
-    ids: set[str] = set()
-    for path in sorted(directory(store).glob("*.json")):
-        try:
-            record = json.loads(path.read_bytes())
-            if record["state"] in {"applying", "failed"}:
-                ids.update(
-                    item["candidate"]["id"]
-                    for item in record["items"]
-                    if item["candidate"]["kind"] == kind
-                )
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
-    return ids
+    return {
+        item["candidate"]["id"]
+        for record in records(store)
+        if record["state"] in {"applying", "failed"}
+        for item in record["items"]
+        if item["candidate"]["kind"] == kind
+    }
 
 
 def save(store: LocalStore, record: dict[str, Any]) -> None:
@@ -110,15 +132,21 @@ def result(record: dict[str, Any]) -> PurgeResult:
     )
 
 
-def read(store: LocalStore, token: str) -> dict[str, Any]:
+def _locate(store: LocalStore, token: str) -> Path:
     if len(token) != 64 or any(c not in "0123456789abcdef" for c in token):
         raise ValidationFailed(["Invalid purge receipt. Run a new preview."])
     for state in ("", *TERMINAL):
-        try:
-            return json.loads((_folder(store, state) / (token + ".json")).read_bytes())
-        except FileNotFoundError:
-            continue
+        path = _folder(store, state) / (token + ".json")
+        if path.exists():
+            return path
     raise ValidationFailed(["Purge receipt not found. Run a new preview."])
+
+
+def read(store: LocalStore, token: str) -> dict[str, Any]:
+    record = _load(_locate(store, token))
+    if record is None:
+        raise ValidationFailed(["This purge receipt is unreadable. Abandon it from Problems."])
+    return record
 
 
 def resolve(root: Path, relative: str) -> Path:
@@ -241,11 +269,15 @@ def _plan(
     items = []
     for note in notes:
         receipt = saved.get(note.id)
-        if note.state != "deleted" or note.id in disk_ids or receipt is None:
+        if note.state != "deleted" or note.id in disk_ids:
             continue
-        if receipt.content_hash != note.content_hash or receipt.path != note.path:
+        if receipt is not None and (
+            receipt.content_hash != note.content_hash or receipt.path != note.path
+        ):
             continue
-        deleted_at = max(note.updated_at, receipt.recorded_at)
+        deleted_at = (
+            note.updated_at if receipt is None else max(note.updated_at, receipt.recorded_at)
+        )
         if deleted_at > cutoff:
             continue
         associated = [by_source[s] for s in note.source_ids if s in by_source]
@@ -257,6 +289,7 @@ def _plan(
             origins=sorted({s.origin or "Unspecified" for s in associated}) or ["Local notes"],
             providers=sorted({s.provider for s in associated}) or ["Local notes"],
             deleted_at=deleted_at,
+            leftover=receipt is None,
         )
         paths = sorted(note_history.directory(store).glob(f"{note.id}-*.json"))
         observation = note_history.directory(store) / "observed" / f"{note.id}.json"
@@ -278,17 +311,23 @@ def _plan(
         bundle = resolve(store.sources_root, source.id)
         for child in bundle.rglob("*"):
             resolve(store.sources_root, child.relative_to(store.sources_root).as_posix())
-        manifest = _manifest_document(bundle / "manifest.json")
-        opening = manifest.get("note_id")
-        if not is_valid_id(opening) or opening in disk_ids:
-            continue  # Legacy sources with no opening identity cannot be proved orphaned.
-        owner = by_note.get(opening)
-        if (owner is None and opening not in purged_notes) or (
-            owner is not None and owner.state != "deleted"
-        ):
-            continue
-        if manifest.get("source_id") != source.id:
-            raise ValueError("source manifest identity mismatch")
+        claim = _external_id_claim_path(
+            store.sources_root, source.provider, source.external_source_id
+        )
+        manifest: dict[str, Any] = {}
+        opening: Any = None
+        if (bundle / "manifest.json").exists():
+            manifest = _manifest_document(bundle / "manifest.json")
+            opening = manifest.get("note_id")
+            if not is_valid_id(opening) or opening in disk_ids:
+                continue  # Legacy sources with no opening identity cannot be proved orphaned.
+            owner = by_note.get(opening)
+            if (owner is None and opening not in purged_notes) or (
+                owner is not None and owner.state != "deleted"
+            ):
+                continue
+            if manifest.get("source_id") != source.id:
+                raise ValueError("source manifest identity mismatch")
         files = [_file(store, "sources", p) for p in sorted(bundle.rglob("*")) if not p.is_dir()]
         directories = [
             p.relative_to(store.sources_root).as_posix()
@@ -296,12 +335,10 @@ def _plan(
             if p.is_dir()
         ]
         directories.append(source.id)
-        claim = _external_id_claim_path(
-            store.sources_root, source.provider, source.external_source_id
-        )
-        if json.loads(claim.read_bytes()).get("source_id") != source.id:
-            raise ValueError("source claim identity mismatch")
-        files.append(_file(store, "sources", claim))
+        if claim.exists():
+            if json.loads(claim.read_bytes()).get("source_id") != source.id:
+                raise ValueError("source claim identity mismatch")
+            files.append(_file(store, "sources", claim))
         projection = manifest.get("projection_path")
         if projection:
             path = resolve(store.notes_root, projection)
@@ -317,6 +354,7 @@ def _plan(
             path=projection or "",
             origins=[source.origin or "Unspecified"],
             providers=[source.provider],
+            leftover=not manifest or not claim.exists(),
         )
         items.append(
             {
@@ -516,9 +554,29 @@ async def outcome(store: LocalStore, record: dict[str, Any]) -> tuple[list[str],
     return removed, remaining
 
 
+def _quarantine(store: LocalStore, path: Path) -> PurgeResult:
+    destination = directory(store) / QUARANTINE / path.name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(path, destination)
+    sync_directory(destination.parent)
+    sync_directory(path.parent)
+    now = datetime.now(UTC)
+    return PurgeResult(
+        token=path.stem,
+        state="abandoned",
+        created_at=now,
+        retention_days=store.control.settings().retention.days,
+        candidates=[],
+        counts=PurgeCounts(),
+    )
+
+
 async def abandon(store: LocalStore, request: AbandonPurge) -> PurgeResult:
     async with store.maintenance.exclusive():
-        record = read(store, request.token)
+        path = _locate(store, request.token)
+        record = _load(path)
+        if record is None:
+            return _quarantine(store, path)
         if record["state"] not in {"applying", "failed"}:
             raise ValidationFailed(["Only an unfinished purge can be abandoned."])
         removed, remaining = await outcome(store, record)

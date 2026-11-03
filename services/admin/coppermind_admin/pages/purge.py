@@ -78,7 +78,13 @@ def listing(value: PurgeResult, request: Request) -> str:
             if c.deleted_at
             else "Opening note removed"
         )
-        label = "Deleted note" if c.kind == "note" else "Orphaned source"
+        label = (
+            "Leftover from an interrupted purge"
+            if c.leftover
+            else "Deleted note"
+            if c.kind == "note"
+            else "Orphaned source"
+        )
         rows += f"""<tr><td>{label}<br><strong>{name}</strong><br>{escape(c.path)}</td>
 <td>{escape(", ".join(c.origins))}<br>{escape(", ".join(c.providers))}</td><td>{when}</td></tr>"""
     return f"""<div class="metrics"><div class="metric">Deleted notes
@@ -156,6 +162,12 @@ Saving takes effect on the next preview; it does not start a purge.</p>
         )
 
     def abandoned(value: PurgeResult) -> HTMLResponse:
+        if not value.candidates:
+            return page(
+                '<p class="notice" role="status">The unreadable receipt was moved to quarantine. '
+                "Nothing was removed.</p>"
+                '<p><a href="/admin/purge">Back to retention settings</a></p>'
+            )
         kept = "".join(
             f"<li>{escape(c.title)}<br>{escape(c.path)}</li>"
             for c in value.candidates

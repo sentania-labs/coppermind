@@ -14,6 +14,7 @@ class PurgeCandidate(BaseModel):
     origins: list[str]
     providers: list[str]
     deleted_at: datetime | None = None
+    leftover: bool = False
 
 
 class PurgeCounts(BaseModel):

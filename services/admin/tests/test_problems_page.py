@@ -291,3 +291,19 @@ def test_calendar_and_dropbox_failures_count_and_link_to_dismissal(signed_in):
     assert "<td>Dropbox</td>" in page.text
     assert "No excluded files." in page.text
     assert "No problems found." not in page.text
+
+
+def test_an_unreadable_purge_receipt_offers_abandon(signed_in):
+    client, _ = signed_in
+    store = ReadOnlyStore()
+    store.problems = [
+        ProblemInfo(kind="purge_receipt", reference="a" * 64, reason="A receipt is unreadable.")
+    ]
+    _install(client, store)
+
+    response = client.get("/admin/problems")
+
+    assert response.status_code == 200
+    assert 'action="/v1/admin/purge/abandon"' in response.text
+    assert f'name="token" value="{"a" * 64}"' in response.text
+    assert 'name="csrf"' in response.text

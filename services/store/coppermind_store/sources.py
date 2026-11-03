@@ -1348,21 +1348,29 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     note_id=path.stem,
                 )
             )
-    from coppermind_store.purge import outcome, records
+    from coppermind_store.purge import outcome, records, unreadable
 
     try:
         purge_records = records(store)
         abandoned = records(store, "abandoned")
-    except (OSError, ValueError):
+        problems.extend(
+            ProblemInfo(
+                kind="purge_receipt",
+                reference=token,
+                reason=(
+                    "A retention purge receipt is unreadable and is being ignored. Abandon it "
+                    "to move the file into quarantine."
+                ),
+            )
+            for token in unreadable(store)
+        )
+    except OSError:
         purge_records = abandoned = []
         problems.append(
             ProblemInfo(
                 kind="purge",
                 reference="receipts",
-                reason=(
-                    "A retention purge receipt is unreadable. Check storage "
-                    "or restore its backup before retrying."
-                ),
+                reason="Retention purge receipts could not be read. Check storage health.",
             )
         )
     for receipt in purge_records:

@@ -7,6 +7,7 @@ import pytest
 import sqlalchemy as sa
 from coppermind_store import note_history, purge
 from coppermind_store.reconciler import reconcile_once
+from coppermind_store.sources import _external_id_claim_path
 
 from coppermind import frontmatter as fm
 from coppermind.db.models import Note, SearchDocument, Source
@@ -317,8 +318,9 @@ async def test_corrupt_receipt_does_not_halt_reconcile_and_is_reported(store):
     (purge.directory(store) / ("f" * 64 + ".json")).write_text("{broken")
     await reconcile_once(store)
     assert purge.pending_ids(store, "note") == set()
-    problems = [p for p in await store.get_problems() if p.kind == "purge"]
-    assert len(problems) == 1 and "unreadable" in problems[0].reason
+    problems = [p for p in await store.get_problems() if p.kind == "purge_receipt"]
+    assert [p.reference for p in problems] == ["f" * 64]
+    assert "unreadable" in problems[0].reason
     assert note_history.receipts(store)[note.id]
 
 
@@ -333,7 +335,9 @@ async def test_terminal_receipts_are_not_read_by_reconcile_or_problems(store):
     for path in (purge.directory(store) / "done").glob("*.json"):
         path.write_text("{broken")
     await reconcile_once(store)
-    assert not [p for p in await store.get_problems() if p.kind == "purge"]
+    assert [p.reference for p in await store.get_problems() if p.kind == "purge_receipt"] == [
+        preview.token
+    ]
 
 
 async def test_unparseable_file_blocks_source_removal(store):
@@ -344,12 +348,62 @@ async def test_unparseable_file_blocks_source_removal(store):
         await store.preview_purge()
 
 
-async def test_unreadable_receipt_is_visible_and_refuses_purge(store):
+async def test_unreadable_receipt_is_skipped_reported_and_quarantined_by_abandon(store):
     retention(store, 0)
     note, _, _ = await deleted(store)
+    first = await store.preview_purge()
+    path = purge.directory(store) / (first.token + ".json")
+    path.write_text("broken")
+    second = await store.preview_purge()
+    assert second.token != first.token and [c.id for c in second.candidates] == [note.id]
+    problems = await store.get_problems()
+    assert [p.reference for p in problems if p.kind == "purge_receipt"] == [first.token]
+    with pytest.raises(ValidationFailed):
+        await store.confirm_purge(confirmation(AbandonPurge(token=first.token)))
+    done = await store.confirm_purge(confirmation(second))
+    assert done.state == "complete"
+
+    result = await store.abandon_purge(AbandonPurge(token=first.token))
+    assert result.state == "abandoned" and result.candidates == []
+    assert not path.exists()
+    assert (purge.directory(store) / "quarantine" / path.name).read_text() == "broken"
+    assert not [p for p in await store.get_problems() if p.kind.startswith("purge")]
+
+
+async def test_stuck_applying_receipt_can_be_abandoned(store):
+    retention(store, 0)
+    await deleted(store)
     preview = await store.preview_purge()
-    (purge.directory(store) / (preview.token + ".json")).write_text("broken")
-    with pytest.raises(NotesFilesystemUnavailable):
-        await store.preview_purge()
-    assert any(p.kind == "purge" and "unreadable" in p.reason for p in await store.get_problems())
-    assert note_history.receipts(store)[note.id]
+    record = purge.read(store, preview.token)
+    record.update(state="applying")
+    purge.save(store, record)
+    assert purge.pending_ids(store, "note")
+    result = await store.abandon_purge(AbandonPurge(token=preview.token))
+    assert result.state == "abandoned" and purge.pending_ids(store, "note") == set()
+    assert (await store.preview_purge()).state == "preview"
+
+
+async def test_leftover_rows_after_interrupted_purge_are_listed_and_removed(store):
+    retention(store, 0)
+    ingested = await orphan(store)
+    bundle = store.sources_root / ingested.source.id
+    async with store.session_factory() as session:
+        row = await session.get(Source, ingested.source.id)
+    assert row is not None
+    claim = _external_id_claim_path(store.sources_root, row.provider, row.external_source_id)
+    (bundle / "manifest.json").unlink()
+    claim.unlink()
+    for path in note_history.directory(store).glob(f"{ingested.note.id}-*.json"):
+        path.unlink()
+    preview = await store.preview_purge()
+    assert {(c.id, c.leftover) for c in preview.candidates} == {
+        (ingested.note.id, True),
+        (ingested.source.id, True),
+    }
+    done = await store.confirm_purge(confirmation(preview))
+    assert done.state == "complete"
+    assert not bundle.exists()
+    async with store.session_factory() as session:
+        assert await session.get(Note, ingested.note.id) is None
+        assert await session.get(Source, ingested.source.id) is None
+    assert (await store.preview_purge()).candidates == []

@@ -57,10 +57,17 @@ KIND_LABELS = {
     "calendar_conflict": "Calendar conflict",
     "dropbox": "Dropbox",
     "purge": "Retention purge",
+    "purge_receipt": "Retention purge receipt",
 }
 
 
 def _link(problem: ProblemInfo) -> str:
+    if problem.kind == "purge_receipt":
+        return (
+            '<form method="post" action="/v1/admin/purge/abandon">'
+            f'<input type="hidden" name="token" value="{escape(problem.reference, quote=True)}">'
+            "<button>Abandon this receipt</button></form>"
+        )
     if problem.kind == "purge":
         return '<a href="/admin/purge">Retention purge</a>'
     if problem.kind == "dropbox":
@@ -81,7 +88,7 @@ def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems fo
         return "<p>" + escape(empty_text) + "</p>"
     rows = "".join(
         f"<tr><td>{escape(KIND_LABELS.get(item.kind, item.kind))}</td>"
-        f"<td>{'Saved cleanup attempt' if item.kind == 'purge' else escape(item.reference)}</td>"
+        f"<td>{'Saved cleanup attempt' if item.kind in ('purge', 'purge_receipt') else escape(item.reference)}</td>"
         f"<td>{escape(item.reason)}</td><td>{_link(item)}</td></tr>"
         for item in problems
     )
