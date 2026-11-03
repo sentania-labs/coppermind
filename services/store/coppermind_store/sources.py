@@ -1297,8 +1297,8 @@ def _damaged_reason(entry: dict[str, str]) -> str:
     )
     if entry.get("cause") == "recovery":
         return (
-            f"{name} could not be verified during a metadata rebuild: a file is missing or "
-            "does not match its manifest. Restore it from a backup, then rebuild again."
+            f"{name} could not be verified during rebuild. "
+            "Check the source files and retry rebuilding."
         )
     return f"{name} has files but no readable manifest. It is not offered for retention purge."
 

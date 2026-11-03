@@ -821,7 +821,7 @@ async def test_recovery_records_an_unverifiable_bundle_with_an_accurate_reason(s
         await store.rebuild_metadata()
     (problem,) = damaged_problems(await store.get_problems())
     assert problem.source_id == ingested.source.id
-    assert "could not be verified during a metadata rebuild" in problem.reason
+    assert "could not be verified during rebuild" in problem.reason
     assert "no readable manifest" not in problem.reason
     assert (await store.get_status()).counters.purge_problems == 1
 
