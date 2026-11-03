@@ -91,6 +91,11 @@ async def test_dismissing_failed_receipt_acknowledges_import_failure(tmp_path):
     retried = store.context.archive.process(failed[0].id)
     assert retried.state == "failed"
     assert retried.dismissed is False
+    store.context.archive.dismiss(failed[0].id)
+    redrop = dropbox.submit("again.ics", calendar().replace(b"Planning", b"Conflict"))
+    await finish(store)
+    assert dropbox.records()["items"][redrop["id"]]["state"] == "failed"
+    assert [r.dismissed for r in store.context.archive.receipts() if r.state == "failed"] == [False]
 
 
 async def test_dismiss_expiry_redrop_and_failed_receipt_retention(tmp_path, monkeypatch):

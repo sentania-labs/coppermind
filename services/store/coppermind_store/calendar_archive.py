@@ -158,6 +158,9 @@ class CalendarArchive:
         with self._lock:
             existing = next((r for r in self.receipts() if r.content_hash == digest), None)
             if existing is not None:
+                if existing.dismissed:
+                    existing.dismissed = False
+                    self._save_receipt(existing)
                 return existing
             receipt_path = self.root / "imports" / identity / "receipt.json"
             if receipt_path.exists():
