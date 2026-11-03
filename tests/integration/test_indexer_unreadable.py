@@ -336,3 +336,47 @@ async def test_transient_read_error_is_retried_not_marked(store):
     assert (await store.get_search_index_status()).known_unreadable == 0
     assert any(item["event"] == "search entry unreadable" for item in logs)
     assert (await indexer.catch_up(store))["indexed"] == 1
+
+
+async def test_transient_manifest_read_error_is_retried_not_marked(store):
+    import json
+    import os
+
+    import pytest
+
+    from coppermind.db.models import SearchUnreadable
+
+    if os.geteuid() == 0:
+        pytest.skip("permission errors are not raised for root")
+    now = datetime.now(UTC)
+    async with store.session_factory() as session, session.begin():
+        session.add(
+            Source(
+                id="blip",
+                provider="test",
+                external_source_id="blip",
+                source_type="transcript",
+                current_revision=1,
+                content_identity="x",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    manifest = store.sources_root / "blip" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"projection_path": "Sources/blip.md"}))
+    manifest.chmod(0)
+    try:
+        first = await indexer.catch_up(store)
+        second = await indexer.catch_up(store)
+    finally:
+        manifest.chmod(0o644)
+    assert first["unreadable"] == 1
+    assert second["unreadable"] == 1
+    assert second["skipped_known_unreadable"] == 0
+    assert (await store.get_search_index_status()).known_unreadable == 0
+    assert (await indexer.catch_up(store))["unreadable"] == 1
+    async with store.session_factory() as session:
+        mark = await session.get(SearchUnreadable, ("source", "blip"))
+        assert mark is not None
+        assert "FileNotFoundError" in mark.reason

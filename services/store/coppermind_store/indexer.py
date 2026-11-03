@@ -236,8 +236,9 @@ Reasons = list[tuple[str, bool]]
 
 def _os_failure(reasons: Reasons, exc: Exception, prefix: str = "") -> None:
     """Record a read fault; only a missing path or bad path stays failed until it changes."""
-    durable = not isinstance(exc, OSError) or isinstance(
-        exc, (FileNotFoundError, NotADirectoryError)
+    cause = exc.__cause__ if isinstance(exc, StoreError) and exc.__cause__ else exc
+    durable = not isinstance(cause, OSError) or isinstance(
+        cause, (FileNotFoundError, NotADirectoryError)
     )
     reasons.append((f"{prefix}{type(exc).__name__}: {exc}", durable))
 
