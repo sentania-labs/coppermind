@@ -18,10 +18,12 @@ class ProviderError(ValueError):
 class InputLimitError(ProviderError):
     """The note and transcript text is larger than the configured limit."""
 
-    def __init__(self, size: int, limit: int) -> None:
+    def __init__(self, size: int, limit: int, *, at_least: bool = False) -> None:
         super().__init__("input exceeds the configured limit; nothing was sent")
         self.size = size
         self.limit = limit
+        # True when `size` is a proven lower bound, not the complete count.
+        self.at_least = at_least
 
 
 class ModelProvider:

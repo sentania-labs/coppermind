@@ -967,3 +967,76 @@ async def test_a_later_success_or_retry_clears_the_earlier_failure_rule(store):
     exhausted = context.load_job(job_id)
     assert "Attempt limit reached" in exhausted.error
     assert exhausted.error_rule == "" and exhausted.input_limit is None
+
+
+def _fake_transcript(store, monkeypatch, text, size_bytes=None):
+    from types import SimpleNamespace as NS
+
+    artifact = NS(
+        name="t.txt",
+        mime_type="text/plain",
+        size_bytes=size_bytes if size_bytes is not None else len(text.encode()),
+    )
+    manifest = NS(current_revision=1, revisions=[NS(revision=1, artifacts=[artifact])])
+
+    async def sources(note_id):
+        return [NS(id="s1")]
+
+    async def source(identity):
+        return manifest
+
+    async def document(*args):
+        return NS(content=text)
+
+    monkeypatch.setattr(store, "get_note_sources", sources)
+    monkeypatch.setattr(store, "get_source", source)
+    monkeypatch.setattr(store, "get_source_artifact", document)
+
+
+async def _long_run(store, monkeypatch, text, limit=2000, **kwargs):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = limit
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Short", body="hi", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+    job = context.load_job(job_id)
+    job.source_versions = {"s1": 1}
+    context.save_job(job)
+    _fake_transcript(store, monkeypatch, text, **kwargs)
+    return context, job_id
+
+
+async def test_non_ascii_transcript_under_the_limit_in_characters_is_not_rejected(
+    store, monkeypatch
+):
+    context, job_id = await _long_run(store, monkeypatch, "", limit=3000)
+    overhead = len(json.dumps(await context.evidence(context.load_job(job_id)), ensure_ascii=False))
+    fits = 3000 - overhead - 100
+    assert fits * 3 > 3000  # over the limit if bytes were counted as characters
+    _fake_transcript(store, monkeypatch, "字" * fits)
+    await context.run_job(context.load_job(job_id))
+    assert context.load_job(job_id).error_rule != "input-limit"
+
+
+async def test_non_ascii_size_is_reported_in_characters_the_limit_uses(store, monkeypatch):
+    text = "字" * 2500  # 7,500 bytes, 2,500 characters
+    context, job_id = await _long_run(store, monkeypatch, text)
+    await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.error_rule == "input-limit"
+    evidence_chars = len(json.dumps(await context.evidence(final), ensure_ascii=False))
+    assert final.input_size == evidence_chars
+    assert 2500 < final.input_size < 7500
+    assert "at least" not in final.error
+
+
+async def test_far_oversized_input_is_not_read_and_is_labelled_a_minimum(store, monkeypatch):
+    context, job_id = await _long_run(store, monkeypatch, "x", size_bytes=100_000)
+    await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.error_rule == "input-limit"
+    assert final.input_size == 25_000
+    assert "at least 25,000 characters" in final.error

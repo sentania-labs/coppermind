@@ -46,9 +46,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def _size_error(size: int, limit: int) -> str:
+def _size_error(size: int, limit: int, *, at_least: bool = False) -> str:
     return (
-        f"The input for the model (note, transcripts and calendar context) is {size:,} "
+        f"The input for the model (note, transcripts and calendar context) is "
+        f"{'at least ' if at_least else ''}{size:,} "
         f"characters; the limit is {limit:,}. "
         "Nothing was sent. Shorten the note or raise Maximum note and transcript characters."
     )
@@ -721,7 +722,10 @@ class ContextService:
                 "The note has more than five associated sources",
                 "Remove sources from the note, then retry.",
             )
-        input_size = len(note.body)
+        # Text is at most four bytes per character, so more than four times the limit in
+        # bytes is certainly over it. Anything smaller is read and counted exactly, in the
+        # characters the limit is applied to, by the provider before it sends anything.
+        text_bytes = 0
         for source in sources:
             manifest = await self.store.get_source(source.id)
             if manifest.current_revision != job.source_versions.get(source.id):
@@ -731,9 +735,11 @@ class ContextService:
             )
             for artifact in revision.artifacts:
                 if artifact.mime_type.startswith("text/"):
-                    input_size += artifact.size_bytes
-                    if input_size > assignment.max_input_chars:
-                        raise InputLimitError(input_size, assignment.max_input_chars)
+                    text_bytes += artifact.size_bytes
+                    if text_bytes > 4 * assignment.max_input_chars:
+                        raise InputLimitError(
+                            -(-text_bytes // 4), assignment.max_input_chars, at_least=True
+                        )
                     document = await self.store.get_source_artifact(
                         source.id, manifest.current_revision, artifact.name
                     )
@@ -926,7 +932,12 @@ class ContextService:
             stale = str(exc).startswith("stale:")
             job.state = "stale" if stale else "failed"
             if isinstance(exc, InputLimitError):
-                job.set_error(_size_error(exc.size, exc.limit), "input-limit", exc.size, exc.limit)
+                job.set_error(
+                    _size_error(exc.size, exc.limit, at_least=exc.at_least),
+                    "input-limit",
+                    exc.size,
+                    exc.limit,
+                )
             elif isinstance(exc, JobRejected):
                 job.set_error(str(exc), exc.rule)
             elif isinstance(exc, ProviderError) or stale:
