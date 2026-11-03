@@ -32,6 +32,7 @@ ACTIONS = {
     "upload": "upload",
     "retry-import": "retry_import",
     "dismiss-import": "dismiss_import",
+    "dismiss-calendar-conflict": "dismiss_calendar_conflict",
     "backlog": "backlog",
     "enqueue": "enqueue",
     "job": "job_detail",

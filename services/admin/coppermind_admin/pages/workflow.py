@@ -15,7 +15,15 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from coppermind.settings import Wiring
 from coppermind.store_protocol import PatchFrontmatter, StoreError
-from coppermind_admin.pages.context import _check, _form, _hidden, _input, _select
+from coppermind_admin.pages.context import (
+    _calendar_time,
+    _check,
+    _event_count,
+    _form,
+    _hidden,
+    _input,
+    _select,
+)
 from coppermind_admin.pages.problems import store_client
 
 
@@ -102,7 +110,7 @@ def router(wiring: Wiring) -> APIRouter:
                 )
                 body += (
                     '<p class="muted">Files must stay unchanged for 30 seconds. '
-                    "Intake limit: 200,000,000 bytes. ZIP limit: 40 MiB expanded, "
+                    "Intake limit: 200 MB. ZIP limit: 41.94 MB expanded, "
                     "100 entries. No files are deleted.</p>"
                     '<p>Every export merges into <a href="/admin/context?tab=calendar">'
                     "your calendar</a>. Event details show which exports witnessed it. "
@@ -113,18 +121,20 @@ def router(wiring: Wiring) -> APIRouter:
                     "<details><summary>Receipt settings</summary>"
                     + _form(
                         "save-intake",
-                        _input(
-                            "dropbox_receipt_retention_s",
-                            "Keep completed receipts (seconds)",
-                            str(config.get("dropbox_receipt_retention_s", 604800)),
-                            kind="number",
-                        ),
+                        '<label>Keep completed receipts (days)<input name="retention_days" '
+                        'type="number" min="0" max="365" step="any" value="'
+                        + format(config.get("dropbox_receipt_retention_s", 604800) / 86400, ".12g")
+                        + '"></label>',
                         "Save receipt settings",
                         revision=config["revision"],
                     )
-                    + "<p>604800 seconds is seven days. Changes apply immediately.</p></details>"
+                    + "<p>Default: 7 days. Zero clears completed receipts immediately. "
+                    "Import history stays.</p></details>"
                 )
-                if any(item["state"] in {"pending", "importing"} for item in dropbox["items"]):
+                if any(
+                    item["state"] in {"pending", "importing", "stabilizing"}
+                    for item in dropbox["items"]
+                ):
                     body += (
                         '<p role="status">Imports run in the background. '
                         '<a href="/admin/workflow?tab=intake">Refresh progress</a>.</p>'
@@ -136,6 +146,9 @@ def router(wiring: Wiring) -> APIRouter:
                         + "</h2><p>"
                         + e(
                             {
+                                "stabilizing": (
+                                    "Waiting for the file to settle (30 seconds without changes)"
+                                ),
                                 "pending": "Waiting to import",
                                 "importing": "Importing",
                                 "succeeded": "Imported",
@@ -146,6 +159,14 @@ def router(wiring: Wiring) -> APIRouter:
                         )
                         + "</p>"
                     )
+                    if item["state"] in {"succeeded", "already_imported"}:
+                        body += "<p>" + e(_event_count(item.get("event_count", 0))) + "</p>"
+                        if item.get("first_imported_at"):
+                            body += (
+                                "<p>First imported: "
+                                + e(_calendar_time(item["first_imported_at"]))
+                                + "</p>"
+                            )
                     if item["error"]:
                         body += '<p class="error">' + e(item["error"]) + "</p>"
                     if item["state"] in {"failed", "succeeded", "already_imported", "unsupported"}:
@@ -159,7 +180,9 @@ def router(wiring: Wiring) -> APIRouter:
                 if not dropbox["items"]:
                     body += (
                         '<p class="notice">No receipts to show. '
-                        "Drop an ICS or ZIP file here to import it.</p>"
+                        "Add an ICS or ZIP file to the "
+                        + e(dropbox["folder"])
+                        + " folder in your Obsidian vault to import it.</p>"
                     )
                 body += (
                     "<details><summary>Calendar and import history</summ"

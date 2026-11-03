@@ -57,7 +57,7 @@ class Dropbox:
         if not filename or len(filename) > 255 or any(ord(c) < 32 for c in filename):
             raise ValueError("invalid filename")
         if len(data) > MAX_UPLOAD:
-            raise ValueError("Dropbox intake limit is 200,000,000 bytes; file remains in the vault")
+            raise ValueError("Dropbox intake limit is 200 MB; file remains in the vault")
         digest = hashlib.sha256(data).hexdigest()
         records = self.records()
         existing = records["items"].get(digest)
@@ -180,22 +180,39 @@ class Dropbox:
     def snapshot(self) -> dict[str, Any]:
         records = self.records()
         self.expire(records)
-        return {
-            "folder": self.context.config().dropbox_folder,
-            "items": [
+        receipts = {r.id: r for r in self.context.archive.receipts()}
+        items = []
+        for item in records["items"].values():
+            imports = [
+                receipts[p["import_id"]] for p in item["parts"] if p["import_id"] in receipts
+            ]
+            items.append(
                 dict(
                     item,
+                    event_count=sum(r.event_count for r in imports),
+                    first_imported_at=min(
+                        (r.imported_at or r.received_at for r in imports if r.state == "succeeded"),
+                        default="",
+                    ),
                     parts=[
                         {k: v for k, v in part.items() if k != "data"} for part in item["parts"]
                     ],
                 )
-                for item in records["items"].values()
-            ],
+            )
+        items.extend(
+            {"id": "", "filename": key, "state": "stabilizing", "parts": [], "error": ""}
+            for key, (signature, _) in self.seen.items()
+            if records["observations"].get(key) != list(signature)
+        )
+        return {
+            "folder": self.context.config().dropbox_folder,
+            "items": items,
         }
 
     async def scan(self) -> None:
         root = self.context.store.notes_root / self.context.config().dropbox_folder
         if not root.exists():
+            self.seen.clear()
             return
         if root.is_symlink() or any(p.is_symlink() for p in root.parents):
             raise ValueError("Dropbox must not be a symlink")
@@ -237,7 +254,7 @@ class Dropbox:
                             "filename": name,
                             "state": "failed",
                             "parts": [],
-                            "error": "File exceeds 200,000,000 bytes. Original remains in Dropbox.",
+                            "error": "File exceeds 200 MB. Original remains in Dropbox.",
                         }
                         log.info("Dropbox fail file: intake byte limit exceeded")
                     else:
@@ -249,6 +266,7 @@ class Dropbox:
                     records["observations"][key] = list(signature)
                     self.save(records)
         async with self.context.lock:
+            self.seen = {key: value for key, value in self.seen.items() if key in present}
             records = self.records()
             records["observations"] = {
                 k: v for k, v in records["observations"].items() if k in present

@@ -50,6 +50,7 @@ class ImportReceipt(BaseModel):
     event_count: int = 0
     error: str = ""
     received_at: str
+    imported_at: str = ""
     # The ceiling this archived buffer was measured against: MAX_UPLOAD for an original
     # drop, MAX_EXPANDED for a calendar extracted from a ZIP. Recorded so a retried
     # receipt reuses the ceiling its bytes were accepted under.
@@ -146,7 +147,7 @@ class CalendarArchive:
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", calendar_id):
             raise CalendarImportError("calendar identity must be a short lowercase slug")
         if len(data) > limit:
-            raise CalendarImportError(f"calendar upload exceeds {limit // (1024 * 1024)} MiB")
+            raise CalendarImportError(f"calendar upload exceeds {limit / 1_000_000:g} MB")
         # The filename is display metadata, never a local filesystem destination.
         if not filename or len(filename) > 255 or any(ord(c) < 32 for c in filename):
             raise CalendarImportError("invalid upload filename")
@@ -202,6 +203,7 @@ class CalendarArchive:
             if receipt.id in catalog.imports:
                 receipt.state = "succeeded"
                 receipt.error = ""
+                receipt.imported_at = receipt.imported_at or receipt.received_at
                 self._save_receipt(receipt)
                 return receipt
             original = (receipt_path.parent / "original").read_bytes()
@@ -287,8 +289,23 @@ class CalendarArchive:
                 return receipt
             receipt.state = "succeeded"
             receipt.error = ""
+            receipt.imported_at = receipt.imported_at or datetime.now(UTC).isoformat()
             self._save_receipt(receipt)
             return receipt
+
+    def dismiss_conflict(self, event_id: str, version: str) -> None:
+        with self._lock:
+            catalog = self.catalog()
+            with self.engine.begin() as connection:
+                mirror.put_conflicts(
+                    connection,
+                    [
+                        event
+                        for event in mirror.get_conflicts(connection)
+                        if (event.identity, event.semantic_hash) != (event_id, version)
+                    ],
+                )
+                mirror.write_catalog(connection, self.root / "catalog.json", list(catalog.imports))
 
     def migrate(
         self, legacy_names: dict[str, str], origins: dict[str, tuple[str, str]] | None = None
@@ -414,6 +431,7 @@ class CalendarArchive:
                             record["event_id"] = aliases.get(record["event_id"], record["event_id"])
                             mirror.add_evidence(connection, contact_id, record)
                     mirror.put_conflicts(connection, conflicts)
+                    mirror.drop_superseded_conflicts(connection)
                     mirror.put_state(connection, "aliases", json.dumps(aliases))
                     mirror.write_catalog(connection, path, list(old.imports))
 

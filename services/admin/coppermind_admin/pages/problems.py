@@ -53,6 +53,8 @@ def store_client(request: Request, wiring: Wiring) -> StatusReader:
 
 
 def _link(problem: ProblemInfo) -> str:
+    if problem.kind == "Dropbox":
+        return '<a href="/admin/workflow?tab=intake">Dropbox receipts</a>'
     if problem.kind in {"Calendar import", "Calendar conflict"}:
         return '<a href="/admin/context?tab=calendar">Calendar import history</a>'
     if problem.note_id:
@@ -64,9 +66,9 @@ def _link(problem: ProblemInfo) -> str:
     return ""
 
 
-def _problem_rows(problems: list[ProblemInfo]) -> str:
+def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems found.") -> str:
     if not problems:
-        return "<p>No problems found.</p>"
+        return "<p>" + escape(empty_text) + "</p>"
     rows = "".join(
         f"<tr><td>{escape(item.kind)}</td><td>{escape(item.reference)}</td>"
         f"<td>{escape(item.reason)}</td><td>{_link(item)}</td></tr>"
@@ -88,6 +90,8 @@ def counters_html(status: StatusResponse) -> str:
         + counters.known_unreadable
         + counters.calendar_import_failures
     )
+    if counters.active_problems is not None:
+        problems = counters.active_problems
     states = ", ".join(
         f"{escape(state)}: {count}" for state, count in sorted(counters.notes_by_state.items())
     )
@@ -151,7 +155,9 @@ def router(wiring: Wiring) -> APIRouter:
             + "<h2>Intentional exclusions</h2><p>These files were left untouched. "
             "An exclusion is not a failure. "
             '<a href="/admin/settings?section=reconcile">Manage exclusion rules</a>.</p>'
-            + _problem_rows([item for item in problems if item.kind == "excluded"]),
+            + _problem_rows(
+                [item for item in problems if item.kind == "excluded"], "No excluded files."
+            ),
         )
 
     @routes.get("/admin/notes/{note_id}", response_class=HTMLResponse, include_in_schema=False)

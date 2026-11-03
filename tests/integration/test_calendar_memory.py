@@ -40,8 +40,8 @@ async def test_postgres_stream_rebuild_and_budget_problem(store, wiring, monkeyp
         assert refused.state == "failed"
         problems = await store.get_problems()
         assert any(
-            p.kind == "calendar_import"
-            and p.reference == second.id
+            p.kind == "Calendar import"
+            and p.reference == "extra.ics"
             and "calendar_max_events=2" in p.reason
             for p in problems
         )
@@ -71,7 +71,7 @@ async def test_postgres_stream_rebuild_and_budget_problem(store, wiring, monkeyp
         assert counters.calendar_import_failures == 1
         assert counters.known_unreadable == 1
         problems = await store.get_problems()
-        assert any(p.kind == "calendar_import" and p.reference == second.id for p in problems)
+        assert any(p.kind == "Calendar import" and p.reference == "extra.ics" for p in problems)
         assert any(
             p.kind == "search_unreadable"
             and p.reference == "unreadable.md"

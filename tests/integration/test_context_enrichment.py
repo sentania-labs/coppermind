@@ -1056,3 +1056,24 @@ async def test_a_model_no_longer_discovered_fails_the_job_with_a_named_rule(stor
     assert "refresh models" in final.error
     assert "could not be validated" not in final.error
     assert any("model-not-available" in r.getMessage() for r in caplog.records)
+
+
+async def test_calendar_and_dropbox_problem_counts_and_dismissal_agree(store):
+    from services.store.tests.test_dropbox import calendar, finish
+
+    dropbox = store.context.dropbox
+    dropbox.submit("base.ics", calendar())
+    await finish(store)
+    failed = dropbox.submit("conflict.ics", calendar().replace(b"Planning", b"Changed"))
+    unsupported = dropbox.submit("handout.pdf", b"%PDF-1.4 unsupported")
+    await finish(store)
+    await finish(store)
+    problems = await store.get_problems()
+    assert {p.kind for p in problems} == {"Calendar import", "Dropbox"}
+    assert (await store.get_status()).counters.active_problems == len(problems) == 2
+    await dropbox.dismiss({"id": unsupported["id"]})
+    assert (await store.get_status()).counters.active_problems == 1
+    receipt_id = dropbox.records()["items"][failed["id"]]["parts"][0]["import_id"]
+    await store.context.dismiss_import({"id": receipt_id})
+    assert await store.get_problems() == []
+    assert (await store.get_status()).counters.active_problems == 0

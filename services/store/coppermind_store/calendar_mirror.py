@@ -281,6 +281,20 @@ class EventRows(Mapping[str, CalendarEvent]):
             for value in stream(connection, query.offset(offset)).scalars():
                 yield CalendarEvent.model_validate_json(value)
 
+    def summaries(self, ids: set[str]) -> dict[str, tuple[str, str]]:
+        """Title and start for each known event, queried in bounded batches."""
+        found: dict[str, tuple[str, str]] = {}
+        ordered = sorted(ids)
+        with self.engine.connect() as connection:
+            for start in range(0, len(ordered), 500):
+                query = sa.select(events.c.id, events.c.record).where(
+                    events.c.id.in_(ordered[start : start + 500])
+                )
+                for row in connection.execute(query):
+                    event = CalendarEvent.model_validate_json(row.record)
+                    found[row.id] = (event.title, event.start)
+        return found
+
     def fingerprint(self) -> str:
         digest = hashlib.sha256()
         with self.engine.connect() as connection:

@@ -6,6 +6,7 @@ import json
 from typing import Any, cast
 
 import pytest
+from coppermind_store import calendar_mirror as mirror
 from coppermind_store.calendar_archive import ImportReceipt
 from coppermind_store.calendar_import import parse_export
 from coppermind_store.context_service import ContextService
@@ -292,7 +293,7 @@ async def test_zip_expanding_past_40_mib_fails_the_receipt(tmp_path):
     await finish(store)
     record = store.context.dropbox.records()["items"][item["id"]]
     assert record["state"] == "failed"
-    assert "40 MiB" in record["error"]
+    assert "expanded archive exceeds 41.94 MB" in record["error"]
 
 
 def legacy_archive(store):
@@ -402,3 +403,110 @@ async def test_migrated_api_shape_and_original_replay_keep_provenance(tmp_path):
         store.context.archive.process(receipt.id)
     event = next(iter(store.context.archive.catalog().events.values()))
     assert {p.legacy_calendar for p in event.provenance} == {"Old work", "personal"}
+
+
+async def test_waiting_receipt_tracks_changes_and_disappears_when_file_removed(
+    tmp_path, monkeypatch
+):
+    store = local_store(tmp_path)
+    folder = store.notes_root / "Dropbox"
+    folder.mkdir()
+    path = folder / "Exchange.ics"
+    path.write_bytes(calendar())
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    await store.context.dropbox.scan()
+    assert store.context.dropbox.snapshot()["items"][0]["state"] == "stabilizing"
+    clock[0] = 31
+    await store.context.tick()
+    item = store.context.dropbox.snapshot()["items"][0]
+    assert item["state"] == "succeeded"  # Reconciled during the same tick.
+    assert item["event_count"] == 1
+    first_imported = item["first_imported_at"]
+    assert first_imported
+    await store.context.dropbox.dismiss({"id": item["id"]})
+    store.context.dropbox.submit("again.ics", calendar())
+    assert store.context.dropbox.snapshot()["items"][0]["first_imported_at"] == first_imported
+    path.write_bytes(calendar(event="changed"))
+    await store.context.dropbox.scan()
+    assert any(i["state"] == "stabilizing" for i in store.context.dropbox.snapshot()["items"])
+    path.unlink()
+    await store.context.dropbox.scan()
+    assert all(i["state"] != "stabilizing" for i in store.context.dropbox.snapshot()["items"])
+
+
+async def test_calendar_history_dismisses_direct_and_dropbox_failures(tmp_path):
+    store = local_store(tmp_path)
+    archive = store.context.archive
+    archive.process(archive.submit("calendar", "base.ics", calendar()).id)
+    bad = calendar().replace(b"Planning", b"Wrong title")
+    archive.process(archive.submit("calendar", "direct.ics", bad).id)
+    store.context.dropbox.submit("redrop.zip", zip_bytes({"Work/Meeting.ics": bad}))
+    await finish(store)
+    failures = [r for r in archive.receipts() if r.state == "failed"]
+    assert len(failures) == 2
+    zipped = next(r for r in failures if r.filename.endswith("zip"))
+    for detail in (
+        "Wrong title",
+        "Planning",
+        "event-1",
+        "Work/Meeting.ics",
+        "Incoming revision",
+        "stored revision",
+    ):
+        assert detail in zipped.error
+    for receipt in failures:
+        await store.context.dismiss_import({"id": receipt.id})
+        with pytest.raises(ValueError, match="dismissed"):
+            await store.context.retry_import({"id": receipt.id})
+    assert store.context.dropbox.snapshot()["items"] == []
+    assert all(r.dismissed for r in archive.receipts() if r.state == "failed")
+    assert next(iter(archive.catalog().events.values())).title == "Planning"
+
+
+def test_migration_drops_superseded_conflicts_and_allows_acknowledgement(tmp_path):
+    store = local_store(tmp_path)
+    archive = store.context.archive
+    old = LegacyCatalog()
+    # Visit revisions 0, 0, 1 in old-identity order, the order migration uses.
+    sources = sorted(
+        ("work", "personal", "third"),
+        key=lambda name: parse_export(name, "old.ics", calendar())[0].identity,
+    )
+    for index, source in enumerate(sources):
+        data = calendar(source).replace(
+            b"SUMMARY", f"SEQUENCE:{int(index == 2)}\r\nSUMMARY".encode()
+        )
+        if index == 1:
+            data = data.replace(b"Planning", b"Conflicting")
+        event = parse_export(source, source + ".ics", data)[0]
+        old.events[event.identity] = event
+        digest = hashlib.sha256(data).hexdigest()
+        receipt = ImportReceipt(
+            id=digest,
+            calendar_id=source,
+            filename=source + ".ics",
+            content_hash=digest,
+            received_at="2026-10-01T00:00:00+00:00",
+            state="succeeded",
+        )
+        archive._save_receipt(receipt)
+        (archive.root / "imports" / receipt.id / "original").write_bytes(data)
+        old.imports.append(receipt.id)
+    second = list(old.events.values())[1]
+    (archive.root / "catalog.json").write_text(old.model_dump_json())
+    (store.context.root / "one-calendar-migration.json").unlink()
+    store.context = ContextService(store)
+    assert store.context.archive.catalog().conflicts == []
+    archive = store.context.archive
+    before = dict(archive.catalog().events.items())
+    conflict = second.model_copy(update={"calendar_id": "calendar"})
+    with archive.engine.begin() as connection:
+        mirror.put_conflicts(connection, [conflict])
+        mirror.write_catalog(
+            connection, archive.root / "catalog.json", list(archive.catalog().imports)
+        )
+    assert archive.catalog().conflicts == [conflict]
+    archive.dismiss_conflict(conflict.identity, conflict.semantic_hash)
+    assert archive.catalog().conflicts == []
+    assert dict(archive.catalog().events.items()) == before

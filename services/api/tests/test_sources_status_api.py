@@ -330,6 +330,7 @@ def test_status_returns_every_counter(api):
             "filing_failures": 0,
             "known_unreadable": 0,
             "calendar_import_failures": 0,
+            "active_problems": None,
         }
     }
 

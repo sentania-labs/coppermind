@@ -364,6 +364,32 @@ class ContextService:
             self.save_config(config)
             return {"enabled": True}
 
+    @staticmethod
+    def _contact_page(catalog: Any, contacts: Any, offset: int) -> list[dict[str, Any]]:
+        """A contact page with the title and start of each evidence event, in one query."""
+        page = list(contacts.page(100, offset))
+        known = catalog.events.summaries(
+            {item.event_id for contact in page for item in contact.evidence}
+        )
+        return [
+            contact.model_dump()
+            | {
+                "evidence": [
+                    item.model_dump()
+                    | (
+                        {
+                            "event_title": known[item.event_id][0],
+                            "event_start": known[item.event_id][1],
+                        }
+                        if item.event_id in known
+                        else {}
+                    )
+                    for item in contact.evidence
+                ]
+            }
+            for contact in page
+        ]
+
     async def snapshot(self, offset: int = 0) -> dict[str, Any]:
         return await asyncio.to_thread(self._snapshot, offset)
 
@@ -418,13 +444,24 @@ class ContextService:
                     }
                     for item in receipts[window]
                 ],
+                "conflicts": [
+                    event.model_dump(exclude={"component", "timezone_components"})
+                    | {
+                        "id": event.identity,
+                        "version": event.semantic_hash,
+                        "stored_title": catalog.events[event.identity].title,
+                        "stored_sequence": catalog.events[event.identity].sequence,
+                        "stored_modified": catalog.events[event.identity].modified,
+                    }
+                    for event in catalog.conflicts
+                ],
             },
             "events": [
                 event.model_dump(exclude={"component", "timezone_components"})
                 | {"id": event.identity}
                 for event in events.page(100, offset)
             ],
-            "contacts": [contact.model_dump() for contact in contacts.page(100, offset)],
+            "contacts": self._contact_page(catalog, contacts, offset),
             "contact_corrections": self.read("contact_corrections", {}),
             "associations": self.read("associations", {}),
             "jobs": [
@@ -663,6 +700,10 @@ class ContextService:
                     del records["items"][key]
             self.dropbox.save(records)
         return {"dismissed": identity}
+
+    async def dismiss_calendar_conflict(self, payload: dict[str, Any]) -> dict[str, Any]:
+        await asyncio.to_thread(self.archive.dismiss_conflict, payload["id"], payload["version"])
+        return {"dismissed": payload["id"]}
 
     async def backlog(self, payload: dict[str, Any]) -> dict[str, Any]:
         page = await self.store.list_notes(
@@ -1356,6 +1397,8 @@ class ContextService:
         pending = [item for item in self.archive.receipts() if item.state == "pending"]
         if pending:
             await asyncio.to_thread(self.archive.process, pending[0].id)
+            async with self.lock:
+                await self.dropbox.process()
         if self.config().lifecycle_enabled:
             await self.lifecycle.check_calendars()
         assignment = self.config().assignments["enrichment"]

@@ -152,7 +152,7 @@ def test_original_upload_uses_200_million_byte_cap():
 def test_zip_expanding_past_40_mib_is_rejected():
     # Four entries of ~11.9 MiB each: the archive is small, the expansion is ~47 MiB.
     source = zip_bytes({f"{n}.ics": large_ics(str(n)) for n in range(4)})
-    with pytest.raises(CalendarImportError, match="40 MiB"):
+    with pytest.raises(CalendarImportError, match="41.94 MB"):
         parse_export("work", "export.zip", source, MAX_EXPANDED)
 
 

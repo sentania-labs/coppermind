@@ -112,7 +112,7 @@ def _entries(filename: str, data: bytes, limit: int = MAX_UPLOAD) -> list[tuple[
     # MAX_EXPANDED, already summed by the loop below, not the external upload ceiling that
     # the original buffer passed at the intake boundary.
     if len(data) > limit:
-        raise CalendarImportError(f"calendar upload exceeds {limit // (1024 * 1024)} MiB")
+        raise CalendarImportError(f"calendar upload exceeds {limit / 1_000_000:g} MB")
     suffix = PurePosixPath(filename).suffix.lower()
     if suffix == ".ics":
         return [(filename, data)]
@@ -146,7 +146,7 @@ def _entries(filename: str, data: bytes, limit: int = MAX_UPLOAD) -> list[tuple[
                     raise CalendarImportError("archive must contain only ICS files and directories")
                 total += entry.file_size
                 if total > MAX_EXPANDED:
-                    raise CalendarImportError("expanded archive exceeds 40 MiB")
+                    raise CalendarImportError("expanded archive exceeds 41.94 MB")
                 with archive.open(entry) as stream:
                     content = stream.read(MAX_EXPANDED + 1)
                 if len(content) != entry.file_size:
@@ -292,7 +292,16 @@ def merge_events(
             merged[event.identity] = event
             continue
         if event.revision == previous.revision and event.semantic_hash != previous.semantic_hash:
-            raise CalendarImportError("event revision conflicts with the stored calendar")
+            raise CalendarImportError(
+                f'Event "{event.title or event.uid}" ({event.start or "date unknown"}, '
+                f"UID {event.uid}, entry {event.source_entry}) conflicts with stored event "
+                f'"{previous.title or previous.uid}". Incoming revision: SEQUENCE '
+                f"{event.sequence}, LAST-MODIFIED {event.modified or 'not supplied'}; "
+                f"stored revision: SEQUENCE {previous.sequence}, LAST-MODIFIED "
+                f"{previous.modified or 'not supplied'}. The revisions match but the "
+                "contents differ. Correct the event in its source calendar and export it "
+                "again, or dismiss this receipt."
+            )
         winner = event if event.revision > previous.revision else previous
         witnesses = list(previous.provenance)
         for witness in event.provenance:
