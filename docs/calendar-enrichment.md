@@ -110,11 +110,21 @@ usage fields; currency budgets and billing estimates are not provided.
 
 Only the selected note, explicitly associated text sources (maximum five),
 nearby calendar events, relevant contact corrections and selected schema
-guidance are sent. Oversized input fails before transmission. The model has
+guidance are sent. Oversized input fails before transmission; the job states the
+actual size against the limit and links to Maximum note and transcript
+characters under Processing limits. The model has
 no tools, URL fetches, or write access. It returns structured suggestions;
 Coppermind checks supplied identities, exact evidence quotes, and schema rules.
 Ambiguous matches can remain unresolved. Calendar invitees cannot become
 attendee proposals without a supporting quote in the note or transcript.
+
+A job the checks reject fails with a plain sentence on its Admin row and on
+Inspect that names the rule, the suggestion it concerned and what to do next
+(for example an unknown record, a quote not in the note, an unmapped field, or a
+value that does not fit the note schema). The rule's stable name is stored on the
+job as `error_rule`, and the store logs each failure at warning level with that
+rule. Neither the stored message nor the log holds model output beyond a short,
+sanitized field name.
 
 ## Human review and recovery
 
