@@ -1,6 +1,8 @@
 """Calendar queries and recovery remain bounded, and budgets fail before promotion."""
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -71,9 +73,40 @@ def test_preflight_rejects_event_budget_without_starting_parser(monkeypatch):
 
 
 def test_preflight_rejects_estimated_memory_budget():
-    data = ics(event() + "\r\nDESCRIPTION:" + "x" * (9 * 1024**2))
-    with pytest.raises(CalendarImportError, match="calendar_import_memory_mib=128"):
+    data = ics(event() + "\r\nDESCRIPTION:" + "x" * (5 * 1024**2))
+    with pytest.raises(CalendarImportError, match="calendar_import_memory_mib=128") as raised:
         check_import_budget("large.ics", data, len(data), 50000, 128)
+    assert "needs about 151 MiB" in str(raised.value)
+    assert "Raise the setting to at least 151" in str(raised.value)
+
+
+def test_preflight_and_hard_cap_agree_on_a_realistic_export():
+    body = "\r\nDESCRIPTION:" + "meeting notes " * 150
+    data = ics(*(event(str(i)) + body for i in range(2500)))
+    script = (
+        "import resource, sys\n"
+        "from coppermind_store.calendar_import import parse_export\n"
+        "data = sys.stdin.buffer.read()\n"
+        "before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+        "events = parse_export('work', 'big.ics', data)\n"
+        "print(len(events), resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], input=data, capture_output=True, check=True
+    )
+    parsed, grown_kib = map(int, result.stdout.split())
+    assert parsed == 2500
+    estimate_mib = -(-(len(data) * 30 + 2500 * 4096) // 1024**2)
+    assert grown_kib * 1024 <= estimate_mib * 1024**2
+    check_import_budget("big.ics", data, len(data), 50000, estimate_mib)
+    with pytest.raises(CalendarImportError, match="calendar_import_memory_mib"):
+        check_import_budget("big.ics", data, len(data), 50000, estimate_mib - 1)
+
+
+def test_default_budget_admits_the_owner_scale_export():
+    assert LimitSettings().calendar_import_memory_mib == 1024
+    data = ics(*(event(str(i)) for i in range(4499))) + b"X" * (14 * 1024**2)
+    check_import_budget("owner.ics", data, len(data), 50000, 1024)
 
 
 def test_crash_between_catalog_promotion_and_mirror_commit_rebuilds(tmp_path, monkeypatch):

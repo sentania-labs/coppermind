@@ -293,10 +293,13 @@ class LimitSettings(BaseModel):
         description="Maximum event records retained across all calendars.",
     )
     calendar_import_memory_mib: int = Field(
-        default=512,
+        default=1024,
         ge=128,
         le=2048,
-        description="Calendar parser address-space ceiling in MiB; size the store above this.",
+        description=(
+            "Calendar parser address-space ceiling in MiB; about 30x the expanded export "
+            "size. Size the store above this."
+        ),
     )
     ingest_max_bytes: int = Field(
         default=25 * MIB, gt=0, description="Maximum ingest payload in bytes."

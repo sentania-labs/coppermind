@@ -140,7 +140,7 @@ Nothing here needs to be set before the system runs.
 | events | `retention_days` | 7 |
 | events | `poll_fallback_s` | 5 |
 | limits | `calendar_max_events` | 50,000 retained events across calendars |
-| limits | `calendar_import_memory_mib` | 512 MiB parser address space |
+| limits | `calendar_import_memory_mib` | 1024 MiB parser address space; about 30x the expanded export size |
 | limits | `ingest_max_bytes` | 25 MiB |
 | limits | `attachment_max_bytes` | `sync.max_file_bytes` |
 | admin | `session_hours` | 12 |
@@ -159,8 +159,8 @@ calendars. Updating an existing identity does not consume another slot. Lowering
 it does not delete already accepted events or prevent serving them.
 
 The memory setting bounds each calendar parser subprocess's address space,
-including identity discovery. A conservative preflight rejects exports estimated
-to exceed it before constructing the parser's object graph. The subprocess also
+including identity discovery. A preflight estimate of about 30 bytes per expanded byte plus 4 KiB per event
+rejects exports that would exceed it before constructing the parser's object graph. The subprocess also
 has a hard address-space limit and a 45-second deadline. These are import limits,
 not a container RSS limit; reserve memory for the store and requests as described
 in [calendar sizing](calendar-enrichment.md#memory-and-deployment-sizing).
