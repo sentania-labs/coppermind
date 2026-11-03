@@ -30,6 +30,7 @@ from coppermind.store_protocol import (
     MetadataUnavailable,
     NotesFilesystemUnavailable,
     PurgeConflict,
+    SourcesFilesystemUnavailable,
     ValidationFailed,
 )
 from coppermind_store import indexer, note_history
@@ -187,10 +188,11 @@ def _root(store: LocalStore, area: str) -> Path:
     }[area]
 
 
-def disk_references(store: LocalStore) -> tuple[set[str], set[str]]:
+def disk_references(store: LocalStore) -> tuple[set[str], set[str], dict[str, list[str]]]:
     """Fail closed on unreadable notes; include unmirrored, excluded and trash notes."""
     ids: set[str] = set()
     cited: set[str] = set()
+    pages: dict[str, list[str]] = {}
     schema = store.control.schema()
     if not store.notes_root.is_dir() or not store.sources_root.is_dir():
         raise NotesFilesystemUnavailable("Notes or sources volume unavailable")
@@ -206,6 +208,7 @@ def disk_references(store: LocalStore) -> tuple[set[str], set[str]]:
             and is_valid_id(fields.get("source_id"))
             and not is_valid_id(fields.get(schema.role("id_key")))
         ):
+            pages.setdefault(fields["source_id"], []).append(relative.as_posix())
             continue
         identity = fields.get(schema.role("id_key"))
         if isinstance(identity, str):
@@ -214,7 +217,25 @@ def disk_references(store: LocalStore) -> tuple[set[str], set[str]]:
         if not isinstance(sources, list) or any(not isinstance(s, str) for s in sources):
             raise ValidationFailed(["A note has unreadable source references. Fix Problems first."])
         cited.update(sources)
-    return ids, cited
+    return ids, cited, pages
+
+
+def _bundle(bundle: Path) -> tuple[str, dict[str, Any]]:
+    """`empty` holds no files, `ok` has a readable manifest, `damaged` is anything else."""
+    if not any(not p.is_dir() for p in bundle.rglob("*")):
+        return "empty", {}
+    try:
+        return "ok", _manifest_document(bundle / "manifest.json")
+    except (SourcesFilesystemUnavailable, OSError):
+        return "damaged", {}
+
+
+def damaged_bundles(store: LocalStore, source_ids: list[str]) -> list[str]:
+    return [
+        source_id
+        for source_id in source_ids
+        if is_valid_id(source_id) and _bundle(store.sources_root / source_id)[0] == "damaged"
+    ]
 
 
 def _row_fingerprint(row) -> str:
@@ -225,12 +246,19 @@ def _row_fingerprint(row) -> str:
 async def candidates(store: LocalStore, now: datetime) -> list[dict[str, Any]]:
     days = store.control.settings().retention.days
     cutoff = now - timedelta(days=days)
-    disk_ids, disk_sources = await asyncio.to_thread(disk_references, store)
+    disk_ids, disk_sources, pages = await asyncio.to_thread(disk_references, store)
     saved = await asyncio.to_thread(note_history.receipts, store)
     complete = await asyncio.to_thread(records, store, "complete")
     async with store.session_factory() as session:
         notes = list((await session.scalars(sa.select(Note).order_by(Note.id))).all())
         sources = list((await session.scalars(sa.select(Source).order_by(Source.id))).all())
+        links = list(
+            (
+                await session.scalars(
+                    sa.select(NoteSource).order_by(NoteSource.created_at, NoteSource.note_id)
+                )
+            ).all()
+        )
         linked = set(
             (
                 await session.scalars(
@@ -238,6 +266,9 @@ async def candidates(store: LocalStore, now: datetime) -> list[dict[str, Any]]:
                 )
             ).all()
         )
+    openings: dict[str, str] = {}
+    for link in links:
+        openings.setdefault(link.source_id, link.note_id)
     purged_notes = {
         i["candidate"]["id"]
         for r in complete
@@ -245,7 +276,18 @@ async def candidates(store: LocalStore, now: datetime) -> list[dict[str, Any]]:
         if i["candidate"]["kind"] == "note"
     }
     return await asyncio.to_thread(
-        _plan, store, cutoff, disk_ids, disk_sources, saved, purged_notes, notes, sources, linked
+        _plan,
+        store,
+        cutoff,
+        disk_ids,
+        disk_sources,
+        pages,
+        openings,
+        saved,
+        purged_notes,
+        notes,
+        sources,
+        linked,
     )
 
 
@@ -254,6 +296,8 @@ def _plan(
     cutoff: datetime,
     disk_ids: set[str],
     disk_sources: set[str],
+    pages: dict[str, list[str]],
+    openings: dict[str, str],
     saved: dict[str, Any],
     purged_notes: set[str],
     notes: list[Note],
@@ -314,10 +358,11 @@ def _plan(
         claim = _external_id_claim_path(
             store.sources_root, source.provider, source.external_source_id
         )
-        manifest: dict[str, Any] = {}
-        opening: Any = None
-        if (bundle / "manifest.json").exists():
-            manifest = _manifest_document(bundle / "manifest.json")
+        state, manifest = _bundle(bundle)
+        opening: Any
+        if state == "damaged":
+            continue
+        if state == "ok":
             opening = manifest.get("note_id")
             if not is_valid_id(opening) or opening in disk_ids:
                 continue  # Legacy sources with no opening identity cannot be proved orphaned.
@@ -328,6 +373,11 @@ def _plan(
                 continue
             if manifest.get("source_id") != source.id:
                 raise ValueError("source manifest identity mismatch")
+        else:
+            opening = openings.get(source.id)
+            owner = by_note.get(opening) if opening else None
+            if owner is None or owner.state != "deleted" or opening in disk_ids:
+                continue
         files = [_file(store, "sources", p) for p in sorted(bundle.rglob("*")) if not p.is_dir()]
         directories = [
             p.relative_to(store.sources_root).as_posix()
@@ -339,8 +389,12 @@ def _plan(
             if json.loads(claim.read_bytes()).get("source_id") != source.id:
                 raise ValueError("source claim identity mismatch")
             files.append(_file(store, "sources", claim))
-        projection = manifest.get("projection_path")
-        if projection:
+        if state == "ok":
+            recorded = manifest.get("projection_path")
+            projections = [recorded] if recorded else []
+        else:
+            projections = pages.get(source.id, [])
+        for projection in projections:
             path = resolve(store.notes_root, projection)
             if path.exists():
                 fields, _ = fm.parse(path.read_text())
@@ -351,10 +405,10 @@ def _plan(
             kind="source",
             id=source.id,
             title=source.external_source_id,
-            path=projection or "",
+            path=projections[0] if projections else "",
             origins=[source.origin or "Unspecified"],
             providers=[source.provider],
-            leftover=not manifest or not claim.exists(),
+            leftover=state == "empty" or not claim.exists(),
         )
         items.append(
             {
@@ -393,7 +447,7 @@ async def preview(store: LocalStore) -> PurgeResult:
 
 
 async def _verify_resume(store: LocalStore, record: dict[str, Any]) -> None:
-    disk_ids, disk_sources = await asyncio.to_thread(disk_references, store)
+    disk_ids, disk_sources, _ = await asyncio.to_thread(disk_references, store)
     async with store.session_factory() as session:
         notes = list((await session.scalars(sa.select(Note))).all())
         by_note = {n.id: n for n in notes}
@@ -496,7 +550,7 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
                     and record["retention_days"] != store.control.settings().retention.days
                 ):
                     raise PurgeChanged()
-                disk_ids, cited = await asyncio.to_thread(disk_references, store)
+                disk_ids, cited, _ = await asyncio.to_thread(disk_references, store)
                 if any(
                     (
                         c["candidate"]["id"] in disk_ids

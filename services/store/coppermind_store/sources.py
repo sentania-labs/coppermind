@@ -1289,6 +1289,9 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     )
                 ).all()
             )
+            source_ids = list(
+                (await session.scalars(sa.select(Source.id).order_by(Source.id))).all()
+            )
             refused = {row.reference for row in rejections if row.kind == "ingest"}
             known = {
                 f"{provider}:{external}": source_id
@@ -1348,7 +1351,24 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     note_id=path.stem,
                 )
             )
-    from coppermind_store.purge import outcome, records, unreadable
+    from coppermind_store.purge import damaged_bundles, outcome, records, unreadable
+
+    try:
+        damaged = await asyncio.to_thread(damaged_bundles, store, source_ids)
+    except OSError as exc:
+        raise MetadataUnavailable(str(exc)) from exc
+    problems.extend(
+        ProblemInfo(
+            kind="damaged_source",
+            reference=source_id,
+            reason=(
+                "The source bundle has files but no readable manifest. "
+                "It is not offered for retention purge."
+            ),
+            source_id=source_id,
+        )
+        for source_id in damaged
+    )
 
     try:
         purge_records = records(store)

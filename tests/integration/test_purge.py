@@ -1,6 +1,7 @@
 """Retention removal against real Git, source bundles, and PostgreSQL."""
 
 import json
+import shutil
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -387,11 +388,15 @@ async def test_leftover_rows_after_interrupted_purge_are_listed_and_removed(stor
     retention(store, 0)
     ingested = await orphan(store)
     bundle = store.sources_root / ingested.source.id
+    projection = (
+        store.notes_root / json.loads((bundle / "manifest.json").read_text())["projection_path"]
+    )
+    assert projection.exists()
     async with store.session_factory() as session:
         row = await session.get(Source, ingested.source.id)
     assert row is not None
     claim = _external_id_claim_path(store.sources_root, row.provider, row.external_source_id)
-    (bundle / "manifest.json").unlink()
+    shutil.rmtree(bundle)
     claim.unlink()
     for path in note_history.directory(store).glob(f"{ingested.note.id}-*.json"):
         path.unlink()
@@ -402,8 +407,32 @@ async def test_leftover_rows_after_interrupted_purge_are_listed_and_removed(stor
     }
     done = await store.confirm_purge(confirmation(preview))
     assert done.state == "complete"
-    assert not bundle.exists()
+    assert not bundle.exists() and not projection.exists()
     async with store.session_factory() as session:
         assert await session.get(Note, ingested.note.id) is None
         assert await session.get(Source, ingested.source.id) is None
     assert (await store.preview_purge()).candidates == []
+
+
+async def test_damaged_bundle_is_not_a_leftover_and_is_reported(store):
+    retention(store, 0)
+    ingested = await orphan(store)
+    bundle = store.sources_root / ingested.source.id
+    (bundle / "manifest.json").unlink()
+    assert any(p.is_file() for p in bundle.rglob("*"))
+    preview = await store.preview_purge()
+    assert ingested.source.id not in {c.id for c in preview.candidates}
+    damaged = [p for p in await store.get_problems() if p.kind == "damaged_source"]
+    assert [p.source_id for p in damaged] == [ingested.source.id]
+    await store.confirm_purge(confirmation(preview))
+    assert bundle.exists()
+    async with store.session_factory() as session:
+        assert await session.get(Source, ingested.source.id) is not None
+
+
+async def test_empty_bundle_with_live_opening_note_is_not_a_leftover(store):
+    retention(store, 0)
+    ingested = await store.ingest(sample())
+    shutil.rmtree(store.sources_root / ingested.source.id)
+    preview = await store.preview_purge()
+    assert preview.candidates == []
