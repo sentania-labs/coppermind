@@ -179,7 +179,7 @@ requiring hand-populated configuration.
 | Claim (first boot) | `POST /v1/admin/claim {code, password}` | Set the admin password using the one-time code the store logged and wrote to `/data/state/internal/claim-code` |
 | Login, logout | `POST /v1/admin/login`, `POST /v1/admin/logout` | Password-backed session |
 | Overview | `GET /v1/admin/status` | Counters, helper status and ages, last reconcile, last commit, last sync, failed jobs |
-| Problems | `GET /v1/admin/notes/problems` | Every refused ingest, name collision (several files carrying one note identity) and unparseable file, each linked to the note or source it is about. Also lists failed calendar imports, unsupported or failed Dropbox receipts and calendar conflicts. Each row has a snake_case `kind` slug; the calendar and Dropbox rows use `calendar_import` (a failed import receipt), `dropbox` (a failed or unsupported Dropbox file) and `calendar_conflict` (two sources disagree on one event at the same revision). Computed from the mirror, recorded rejections and import receipts; nothing is ever written into a note |
+| Problems | `GET /v1/admin/notes/problems` | Every refused ingest, name collision (several files carrying one note identity) and unparseable file, each linked to the note or source it is about. Also lists failed calendar imports, unsupported or failed Dropbox receipts and calendar conflicts, plus unfinished or abandoned retention purges, unreadable purge receipts and damaged source bundles. Each row has a snake_case `kind` slug; the calendar and Dropbox rows use `calendar_import` (a failed import receipt), `dropbox` (a failed or unsupported Dropbox file) and `calendar_conflict` (two sources disagree on one event at the same revision). Computed from the mirror, recorded rejections and import receipts; nothing is ever written into a note |
 | API keys | `GET/POST /v1/admin/keys`, `DELETE /v1/admin/keys/{key_id}` | Create (secret shown once), list, and revoke keys graphically instead of through the store's command line |
 | Obsidian Sync | `GET /v1/admin/sync`, `POST /v1/admin/sync/connect`, `POST /v1/admin/sync/token`, `POST /v1/admin/sync/pause`, `/resume`, `/disconnect` | Connect with email, password, optional MFA, and a vault name or a pasted token; reveal a token once, with a hint for sealing it into GitOps; pause and resume around bulk operations |
 | Settings | `GET/PUT /v1/admin/settings {if_revision, body}` | Every key in the settings table below, grouped by section |
@@ -187,6 +187,7 @@ requiring hand-populated configuration.
 | Fields and tags (`/admin/fields`) | `POST /v1/admin/fields {revision, ...}` | Add, edit and retire keys (kind, required and required when, allowed values each with a one-line meaning, default, guidance); every tag in use with its note count from the mirror, a meaning and aliases per listed tag, and open or closed tags. Saves with the same revision check Settings uses; the role map is carried over untouched, and nothing here rewrites a note |
 | Filing rules | `GET/PUT /v1/admin/rules`, `POST /v1/admin/rules/preview {note_id}` | The ordered rules a note is filed by, with a dry run ("what would this note file as") before committing to a change |
 | Search index (`/admin/search-index`) | `POST /v1/admin/search-index/rebuild` | The number of notes and source pages indexed, the known unreadable count, when the index last changed and when it was last rebuilt, in the operator's timezone, and a Rebuild index button. A rebuild runs in the store's background, throws every entry away, except the last indexed text of a note that is currently unparsed, and reads the notes filesystem again; search keeps answering from the old entries until the new ones commit |
+| Retention purge (`/admin/purge`) | `POST /v1/admin/purge/preview`, `/confirm`, `/abandon`, `/settings` | Edit the retention window, preview what a manual purge would remove, confirm it, retry or abandon an unfinished one. See [Retention purge](#retention-purge-implemented) |
 | Jobs | `GET /v1/admin/jobs`, `POST /v1/admin/jobs {kind}`, `GET /v1/admin/jobs/{id}` | Run reconcile, a full rehash, rebuild metadata from disk, reindex, or rebuild projections, and see the history of each |
 | Sources | `GET /v1/admin/sources`, `GET /v1/admin/notes/problems` | Browse sources; see notes the reconciler could not parse or file |
 
@@ -218,6 +219,8 @@ The calls it exposes, grouped by what they touch:
   /internal/v1/search/index`), and starting a rebuild of the index from the
   notes filesystem (`POST /internal/v1/jobs/rebuild_search_index`, 202 with
   `started: false` when one is already running).
+- **Retention purge:** preview, confirm and abandon a manual purge
+  (`POST /internal/v1/purge/preview`, `/confirm`, `/abandon`).
 - **Jobs and status:** start a job by kind, check a job's progress, read
   overall store status, list the problems Admin shows.
 
