@@ -1069,7 +1069,7 @@ async def test_calendar_and_dropbox_problem_counts_and_dismissal_agree(store):
     await finish(store)
     await finish(store)
     problems = await store.get_problems()
-    assert {p.kind for p in problems} == {"Calendar import", "Dropbox"}
+    assert {p.kind for p in problems} == {"calendar_import", "dropbox"}
     assert (await store.get_status()).counters.active_problems == len(problems) == 2
     await dropbox.dismiss({"id": unsupported["id"]})
     assert (await store.get_status()).counters.active_problems == 1

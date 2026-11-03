@@ -279,13 +279,15 @@ def test_calendar_and_dropbox_failures_count_and_link_to_dismissal(signed_in):
     client, _ = signed_in
     fake = CalendarProblems()
     fake.problems = [
-        ProblemInfo(kind="Calendar import", reference="conflict.zip", reason="Planning conflicts"),
-        ProblemInfo(kind="Dropbox", reference="handout.pdf", reason="Unsupported file type"),
+        ProblemInfo(kind="calendar_import", reference="conflict.zip", reason="Planning conflicts"),
+        ProblemInfo(kind="dropbox", reference="handout.pdf", reason="Unsupported file type"),
     ]
     _install(client, fake)
     assert "Problems (2)" in client.get("/admin").text
     page = client.get("/admin/problems")
     assert 'href="/admin/context?tab=calendar"' in page.text
     assert 'href="/admin/workflow?tab=intake"' in page.text
+    assert "<td>Calendar import</td>" in page.text
+    assert "<td>Dropbox</td>" in page.text
     assert "No excluded files." in page.text
     assert "No problems found." not in page.text

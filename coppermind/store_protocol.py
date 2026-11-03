@@ -803,9 +803,9 @@ class ProblemInfo(BaseModel):
 
     `kind` is `ingest` (a refused ingest), `collision` (several files carry one
     note identity), `unparsed` (a file the reconciler could not read), `filing`
-    (monthly filing failed and will retry), `Calendar import` (a retained calendar
-    import failed validation or exceeded its configured budget), `Dropbox` (a Dropbox
-    file that is unsupported or failed), `Calendar conflict` (legacy exports that
+    (monthly filing failed and will retry), `calendar_import` (a retained calendar
+    import failed validation or exceeded its configured budget), `dropbox` (a Dropbox
+    file that is unsupported or failed), `calendar_conflict` (legacy exports that
     disagreed), `date_mismatch` (both `date` and
     `time` are present and disagree, with `date` winning) or `excluded`.
     `note_id` and `source_id` name what the problem is about when it exists.

@@ -269,7 +269,7 @@ async def test_calendar_conflicts_surface_in_problems(store):
     )
     assert store.context.archive.process(conflict.id).state == "failed"
     problems = await store.get_problems()
-    assert any(p.kind == "Calendar import" and p.reference == "second.ics" for p in problems)
+    assert any(p.kind == "calendar_import" and p.reference == "second.ics" for p in problems)
 
 
 async def test_finalized_attendees_follow_changed_and_cleared_mapping(store):

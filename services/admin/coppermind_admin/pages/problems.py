@@ -52,10 +52,17 @@ def store_client(request: Request, wiring: Wiring) -> StatusReader:
     return client
 
 
+KIND_LABELS = {
+    "calendar_import": "Calendar import",
+    "calendar_conflict": "Calendar conflict",
+    "dropbox": "Dropbox",
+}
+
+
 def _link(problem: ProblemInfo) -> str:
-    if problem.kind == "Dropbox":
+    if problem.kind == "dropbox":
         return '<a href="/admin/workflow?tab=intake">Dropbox receipts</a>'
-    if problem.kind in {"Calendar import", "Calendar conflict"}:
+    if problem.kind in {"calendar_import", "calendar_conflict"}:
         return '<a href="/admin/context?tab=calendar">Calendar import history</a>'
     if problem.note_id:
         target = f"/admin/notes/{quote(problem.note_id, safe='')}"
@@ -70,7 +77,7 @@ def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems fo
     if not problems:
         return "<p>" + escape(empty_text) + "</p>"
     rows = "".join(
-        f"<tr><td>{escape(item.kind)}</td><td>{escape(item.reference)}</td>"
+        f"<tr><td>{escape(KIND_LABELS.get(item.kind, item.kind))}</td><td>{escape(item.reference)}</td>"
         f"<td>{escape(item.reason)}</td><td>{_link(item)}</td></tr>"
         for item in problems
     )

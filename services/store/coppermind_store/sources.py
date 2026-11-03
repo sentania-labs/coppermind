@@ -1247,7 +1247,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
             unparseable_files=notes_by_state.get("unparsed", 0),
             excluded_count=excluded_count,
             filing_failures=sum(p.kind == "filing" for p in problems),
-            calendar_import_failures=sum(p.kind == "Calendar import" for p in problems),
+            calendar_import_failures=sum(p.kind == "calendar_import" for p in problems),
             active_problems=sum(p.kind != "excluded" for p in problems),
         )
     )
@@ -1385,18 +1385,18 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         for path, reason in sorted(exclusions.items())
     )
     problems.extend(
-        ProblemInfo(kind="Calendar import", reference=receipt.filename, reason=receipt.error)
+        ProblemInfo(kind="calendar_import", reference=receipt.filename, reason=receipt.error)
         for receipt in store.context.archive.receipts()
         if receipt.state == "failed" and not receipt.dismissed
     )
     problems.extend(
-        ProblemInfo(kind="Dropbox", reference=item["filename"], reason=item["error"])
+        ProblemInfo(kind="dropbox", reference=item["filename"], reason=item["error"])
         for item in store.context.dropbox.snapshot()["items"]
         if item["state"] in {"failed", "unsupported"} and not item["parts"]
     )
     problems.extend(
         ProblemInfo(
-            kind="Calendar conflict",
+            kind="calendar_conflict",
             reference=event.title or event.uid,
             reason=(
                 "Legacy exports disagree at the same revision. Original versions "
