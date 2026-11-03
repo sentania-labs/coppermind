@@ -1231,6 +1231,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
         raise MetadataUnavailable(str(exc)) from exc
     notes_by_state = {state: count for state, count in by_state}
     excluded_count = store.control.read_reconciler_excluded_count()
+    current_problems = await get_problems(store)
     return StatusResponse(
         counters=StatusCounters(
             notes_awaiting_review=notes_awaiting_review,
@@ -1240,7 +1241,8 @@ async def get_status(store: LocalStore) -> StatusResponse:
             name_collisions=name_collisions,
             unparseable_files=notes_by_state.get("unparsed", 0),
             excluded_count=excluded_count,
-            filing_failures=sum(p.kind == "filing" for p in await get_problems(store)),
+            filing_failures=sum(p.kind == "filing" for p in current_problems),
+            calendar_import_failures=sum(p.kind == "calendar_import" for p in current_problems),
         )
     )
 
@@ -1294,6 +1296,16 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         )
         for row in rejections
     ]
+    problems.extend(
+        ProblemInfo(kind="calendar_import", reference=receipt.id, reason=receipt.error)
+        for receipt in store.context.archive.receipts()
+        if receipt.state == "failed"
+    )
+    problems.extend(
+        ProblemInfo(kind="calendar_import", reference=item["id"], reason=item["error"])
+        for item in store.context.dropbox.records()["items"].values()
+        if item["state"] == "failed"
+    )
     for path in sorted((store.control.store.state_dir / "filing").glob("*.json")):
         try:
             filing = json.loads(path.read_bytes())

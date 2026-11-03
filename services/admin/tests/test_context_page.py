@@ -37,7 +37,21 @@ class ContextStore:
                         "cancelled": False,
                     }
                 ],
-                "contacts": [],
+                "contacts": [
+                    {
+                        "id": "casey",
+                        "evidence_count": 200,
+                        "evidence": [
+                            {
+                                "name": "Casey",
+                                "address": "mailto:casey@example.test",
+                                "role": "invitee",
+                                "participation": "ACCEPTED",
+                                "event_id": "meeting",
+                            }
+                        ],
+                    }
+                ],
                 "jobs": [],
                 "associations": {},
                 "watch_status": {},
@@ -57,6 +71,7 @@ def test_calendar_models_and_review_render_and_escape(signed_in):
     calendar = client.get("/admin/context")
     assert calendar.status_code == 200
     assert "&lt;script&gt;" in calendar.text
+    assert "Showing 1 of 200 retained evidence records" in calendar.text
     assert "9:00 AM CDT" in calendar.text
     assert "14:00:00+00:00" not in calendar.text
     models = client.get("/admin/context?tab=models")

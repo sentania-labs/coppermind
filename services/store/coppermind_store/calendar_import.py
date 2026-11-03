@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 import stat
 import zipfile
 from datetime import UTC, date, datetime
@@ -279,3 +280,31 @@ def merge_events(
         elif event.revision == previous.revision and event.semantic_hash != previous.semantic_hash:
             raise CalendarImportError("event revision conflicts with the stored calendar")
     return merged
+
+
+def check_import_budget(
+    filename: str,
+    data: bytes,
+    limit: int,
+    max_events: int,
+    memory_mib: int,
+) -> None:
+    """Reject expensive exports before constructing icalendar's object graph.
+
+    The conservative estimate is a preflight guard, not an RSS promise; the
+    subprocess address-space limit is the hard backstop for complex properties.
+    """
+    size = 0
+    count = 0
+    for _, content in _entries(filename, data, limit):
+        size += len(content)
+        count += sum(1 for _ in re.finditer(rb"(?im)^BEGIN:VEVENT\r?$", content))
+        if count > max_events:
+            raise CalendarImportError(
+                f"calendar event budget exceeded: limits.calendar_max_events={max_events}"
+            )
+        if size * 16 + count * 4096 > memory_mib * 1024**2:
+            raise CalendarImportError(
+                "calendar import exceeds estimated memory budget: "
+                f"limits.calendar_import_memory_mib={memory_mib}"
+            )

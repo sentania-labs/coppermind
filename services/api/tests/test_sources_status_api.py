@@ -328,6 +328,7 @@ def test_status_returns_every_counter(api):
             "unparseable_files": 0,
             "excluded_count": 0,
             "filing_failures": 0,
+            "calendar_import_failures": 0,
         }
     }
 

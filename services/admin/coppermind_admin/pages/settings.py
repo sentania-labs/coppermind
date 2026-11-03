@@ -37,6 +37,8 @@ UNAVAILABLE = {
     "schema_version": "This format version is managed by Coppermind and cannot be edited here.",
 }
 LABELS = {
+    "limits.calendar_max_events": "Maximum retained calendar events",
+    "limits.calendar_import_memory_mib": "Calendar import memory budget (MiB)",
     "general.timezone": "Local timezone",
     "reconcile.scan_interval_s": "Check for file changes every (seconds)",
     "reconcile.quiet_period_s": "Wait for new files to settle (seconds)",

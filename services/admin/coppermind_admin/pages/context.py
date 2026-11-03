@@ -213,6 +213,9 @@ def router(wiring: Wiring) -> APIRouter:
                     )
                     + "</ul>"
                 )
+                total = contact.get("evidence_count", len(evidence))
+                if total > len(evidence):
+                    body += f"<p>Showing {len(evidence)} of {total} retained evidence records.</p>"
                 linked = [
                     identity
                     for identity, assoc in data["associations"].items()

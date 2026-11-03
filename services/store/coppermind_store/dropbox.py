@@ -89,10 +89,13 @@ class Dropbox:
                 item["error"] = "Unsupported intake type; original preserved"
             else:
                 try:
+                    limits = self.context.store.control.settings().limits
                     parts = await asyncio.to_thread(
                         isolated_calendar,
                         {
                             "action": "identify",
+                            "max_events": limits.calendar_max_events,
+                            "memory_mib": limits.calendar_import_memory_mib,
                             "filename": "calendar" + str(handler),
                             "data": base64.b64encode(data).decode(),
                         },

@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
+import ijson
+
 from coppermind.atomicio import atomic_write_text
 from coppermind.context_config import (
     CalendarSource,
@@ -64,10 +66,14 @@ def now() -> str:
 
 
 class ContextService:
-    def __init__(self, store: LocalStore) -> None:
+    def __init__(self, store: LocalStore, database_url: str | None = None) -> None:
         self.store = store
         self.root = store.control.store.state_dir / "context"
-        self.archive = CalendarArchive(store.control.store.state_dir)
+        self.archive = CalendarArchive(
+            store.control.store.state_dir,
+            database_url,
+            limits=lambda: store.control.settings().limits,
+        )
         from coppermind_store.dropbox import Dropbox
         from coppermind_store.note_lifecycle import NoteLifecycle
 
@@ -86,6 +92,12 @@ class ContextService:
 
     def read(self, name: str, default: Any) -> Any:
         path = self.root / f"{name}.json"
+        if name == "calendar-followups" and path.exists():
+            with path.open("rb") as handle:
+                return {
+                    key: {k: v for k, v in value.items() if k != "candidates"}
+                    for key, value in ijson.kvitems(handle, "")
+                }
         return json.loads(path.read_bytes()) if path.exists() else default
 
     def write(self, name: str, value: Any) -> None:
@@ -137,37 +149,30 @@ class ContextService:
         return fingerprint({"assignment": values, "connection": connection})
 
     def evidence_hash(self) -> str:
-        return fingerprint(
-            {
-                "calendar": sorted(
-                    (identity, event.semantic_hash)
-                    for identity, event in self.archive.catalog().events.items()
-                ),
-                "contacts": self.read("contact_corrections", {}),
-            }
+        return self.archive.catalog().events.context_fingerprint(
+            self.read("contact_corrections", {})
         )
 
     async def calendar_candidates(self, note: Any) -> list[dict[str, Any]]:
         day = note_date(note.frontmatter, self.store.control.schema())
         if day is None:
             return []
-        catalog = self.archive.catalog()
+        catalog = await asyncio.to_thread(self.archive.catalog)
         sources = {s.id: s.timezone for s in self.config().sources}
         sources.update(
             {s["id"]: s["timezone"] for s in self.dropbox.records()["calendars"].values()}
         )
         matches = []
         for identity, timezone in sources.items():
-            events = [e for e in catalog.events.values() if e.calendar_id == identity]
-            if events:
-                matches.extend(await asyncio.to_thread(occurrences, events, day, timezone))
+            events = catalog.events.page(None, calendar_id=identity)
+            matches.extend(await asyncio.to_thread(occurrences, events, day, timezone))
         return matches
 
     async def note_evidence_hash(self, note: Any) -> str:
         if not self.config().lifecycle_enabled:
-            return self.evidence_hash()
+            return await asyncio.to_thread(self.evidence_hash)
         matches = await self.calendar_candidates(note)
-        catalog = self.archive.catalog()
+        catalog = await asyncio.to_thread(self.archive.catalog)
         event_ids = {m["event_id"] for m in matches}
         contacts = {p["contact_id"] for m in matches for p in m["people"]}
         return fingerprint(
@@ -293,7 +298,7 @@ class ContextService:
         jobs = sorted(self.jobs(), key=lambda job: job.created_at, reverse=True)
         if offset < 0:
             raise ValueError("invalid page offset")
-        events = sorted(catalog.events.values(), key=lambda event: event.identity)
+        events = catalog.events
         contacts = catalog.contacts()
         receipts = sorted(self.archive.receipts(), key=lambda item: item.received_at, reverse=True)
         window = slice(offset, offset + 100)
@@ -328,7 +333,7 @@ class ContextService:
             "events": [
                 event.model_dump(exclude={"component", "timezone_components"})
                 | {"id": event.identity}
-                for event in events[window]
+                for event in events.page(100, offset)
             ],
             "contacts": [contact.model_dump() for contact in contacts[window]],
             "contact_corrections": self.read("contact_corrections", {}),
@@ -670,13 +675,13 @@ class ContextService:
         day = note_date(note.frontmatter, schema)
         candidates: list[dict[str, Any]] = []
         if day is not None:
-            catalog = self.archive.catalog()
+            catalog = await asyncio.to_thread(self.archive.catalog)
             sources = [(source.id, source.timezone) for source in config.sources]
             sources += [
                 (s["id"], s["timezone"]) for s in self.dropbox.records()["calendars"].values()
             ]
             for source_id, timezone in sources:
-                events = [item for item in catalog.events.values() if item.calendar_id == source_id]
+                events = catalog.events.page(None, calendar_id=source_id)
                 candidates.extend(await asyncio.to_thread(occurrences, events, day, timezone))
         fields = [item.model_dump() for item in schema.keys if item.name in assignment.fields]
         # The authored note often already contains the imported summary. Read sources only
@@ -1125,10 +1130,11 @@ class ContextService:
 
     async def correct_contact(self, payload: dict[str, Any]) -> dict[str, Any]:
         async with self.lock:
-            known = {item.id for item in self.archive.catalog().contacts()}
+            catalog = await asyncio.to_thread(self.archive.catalog)
+            known = catalog.contacts()
             identity = str(payload["id"])
             target = str(payload.get("same_as", ""))
-            if identity not in known or (target and target not in known):
+            if not known.has(identity) or (target and not known.has(target)):
                 raise ValueError("contact does not exist")
             if payload.get("confirmation") != "Save contact correction":
                 raise ValueError("explicit contact correction approval is required")

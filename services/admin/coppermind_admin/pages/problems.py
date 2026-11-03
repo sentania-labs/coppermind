@@ -83,6 +83,7 @@ def counters_html(status: StatusResponse) -> str:
         + counters.name_collisions
         + counters.unparseable_files
         + counters.filing_failures
+        + counters.calendar_import_failures
     )
     states = ", ".join(
         f"{escape(state)}: {count}" for state, count in sorted(counters.notes_by_state.items())
@@ -103,6 +104,7 @@ Preserved sources<strong>{counters.sources}</strong></div>
 <li>Name collisions: {counters.name_collisions}</li>
 <li>Unparseable files: {counters.unparseable_files}</li>
 <li>Pending filing failures: {counters.filing_failures}</li>
+<li>Failed calendar imports: {counters.calendar_import_failures}</li>
 <li>Excluded (skipped by exclusion rules): {counters.excluded_count}</li>
 </ul>
 <p><a href="/admin/problems">Problems ({problems})</a></p>"""

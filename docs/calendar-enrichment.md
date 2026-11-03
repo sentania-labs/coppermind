@@ -33,7 +33,9 @@ A 202 response means the original and pending receipt are durable, not that
 parsing has succeeded. `GET /v1/calendars` with `sources:read` returns import
 status, event records, contacts, and pagination. Follow `next_offset` as the
 next request's `offset`. Admin uses the same queue and displays 100 records
-per section per page. The API does not expose model credentials or note jobs.
+per section per page. Contact previews include at most 100 evidence records and
+an `evidence_count` with the full retained count. The API does not expose model
+credentials or note jobs.
 
 ## Updates and contacts
 
@@ -175,3 +177,62 @@ An interrupted correction has a separate resume action. Rejecting one suggestion
 preserves the remaining choices; rejecting the remaining proposal stops all
 undecided choices. Semantically unchanged calendar re-exports do not invalidate
 accepted or rejected decisions solely because a new import receipt exists.
+
+
+## Memory and deployment sizing
+
+PostgreSQL holds the queryable calendar mirror. The store reads 100 event rows
+per snapshot page, retains at most 100 evidence records per contact preview, and
+streams recurrence evidence through a temporary file in series order. A series
+with more than 1,000 master/override records is refused during lookup. Follow-up
+records contain a fingerprint and message; candidates are queried only when that
+note's review opens. The context snapshot never embeds the calendar in follow-ups.
+
+`/data/state/calendars/catalog.json` remains an atomic filesystem snapshot,
+written incrementally from the mirror. It is streamed only when rebuilding a
+missing or stale mirror, including the first start after upgrading an existing
+catalog. A normal restart queries the existing rows. Preserve this directory and
+its import originals in backups. A crash after filesystem promotion and before
+mirror commit is repaired from the catalog before the next query. Standalone
+archive consumers without a PostgreSQL URL use a local, rebuildable SQLite mirror;
+the deployed store always uses PostgreSQL.
+
+Start with a **1 GiB store limit** for the default **512 MiB import parser budget**.
+Reserve the remainder for the store, bounded request pages, JSON handoff buffers
+and allocator overhead. PostgreSQL has its own memory allocation outside the
+store container. Raising `limits.calendar_import_memory_mib` requires raising the
+store limit as well; allow at least the parser ceiling plus 512 MiB. Event count
+alone is not an import sizing formula: descriptions, attendees, timezone
+components and recurrence overrides change parsing cost. Exports exceeding the
+memory or event budget fail visibly without replacing the accepted calendar.
+
+### Measured calendar workload
+
+Measured on Linux/Python 3.12 with Docker Compose and a **1 GiB store cap, no
+swap**: a synthetic Google Calendar export with 4,500 weekly recurring events,
+22 attendees and an organizer per event, and descriptions padded to exactly
+14,400,000 bytes. It was uploaded as a 90,349-byte ZIP to exercise the expanded
+calendar path. The original implementation wrote a 55,459,322-byte catalog.
+These measurements use an empty notes filesystem; other store workloads need
+additional headroom. MiB below means 1,048,576 bytes.
+
+| Operation | Original store RSS | Queryable mirror RSS | Container peak with mirror |
+| --- | ---: | ---: | ---: |
+| Empty calendar (0 events) | 88 MiB | 100 MiB | 145 MiB |
+| After fresh 4,500-event import | 197 MiB | 121 MiB | 407 MiB |
+| Read existing catalog after upgrade | 499 MiB after sequential snapshots | 100 MiB after streamed rebuild | 185 MiB |
+| Four concurrent snapshots | OOM kill, exit 137 at 1 GiB | 102 MiB | 185 MiB |
+| Restart, then four concurrent snapshots | OOM kill again | 95 MiB | 139 MiB |
+
+The one-time rebuild of this existing catalog took about 56 seconds; health
+requests continued to answer while it ran. The first context request may exceed
+a caller's timeout until that rebuild completes. Subsequent restarts reuse the
+mirror. The normal resident cost is bounded by request pages rather than a
+resident copy of every event; these are measured points, not a linear estimate
+for arbitrarily large descriptions or recurrence series.
+
+The fresh import and restart both completed without a kill at 1 GiB. With
+`calendar_max_events=4500`, an additional new event failed with the named ceiling
+in its receipt. With `calendar_import_memory_mib=128`, a new event with a 9 MiB
+description failed the memory preflight. Both failures appeared in Problems;
+the accepted 4,500 events remained queryable, and defaults were restored.
