@@ -15,6 +15,15 @@ class ProviderError(ValueError):
     pass
 
 
+class InputLimitError(ProviderError):
+    """The note and transcript text is larger than the configured limit."""
+
+    def __init__(self, size: int, limit: int) -> None:
+        super().__init__("input exceeds the configured limit; nothing was sent")
+        self.size = size
+        self.limit = limit
+
+
 class ModelProvider:
     def __init__(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.transport = transport
@@ -101,7 +110,7 @@ class ModelProvider:
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         content = json.dumps(evidence, ensure_ascii=False)
         if len(content) > assignment.max_input_chars:
-            raise ProviderError("input exceeds the configured limit; nothing was sent")
+            raise InputLimitError(len(content), assignment.max_input_chars)
         if connection.provider == "anthropic":
             payload = {
                 "model": assignment.model,

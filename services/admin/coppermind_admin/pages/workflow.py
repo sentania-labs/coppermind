@@ -234,7 +234,7 @@ def router(wiring: Wiring) -> APIRouter:
                     '<p><a href="/admin/workflow?tab=review">Choose existing notes separa'
                     "tely</a></p></fieldset>"
                 )
-                fields += "<details><summary>Processing limits</summary>"
+                fields += '<details id="processing-limits"><summary>Processing limits</summary>'
                 for key, label in [
                     ("timeout_s", "Request timeout (seconds)"),
                     ("max_input_chars", "Maximum note and transcript characters"),
