@@ -191,6 +191,7 @@ class Dropbox:
                 dict(
                     item,
                     event_count=sum(r.event_count for r in imports),
+                    retryable=any(r.retryable for r in imports if r.state == "failed"),
                     first_imported_at=min(
                         (r.imported_at or r.received_at for r in imports if r.state == "succeeded"),
                         default="",

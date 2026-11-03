@@ -31,8 +31,8 @@ Completed receipts clear after seven days; failed receipts stay until
 dismissed.
 Import history and originals remain after dismissal or expiry. Dismissing a failed
 receipt also clears its Problems entry; re-dropping the same failing bytes shows
-it again, and a failure that is not a conflict (a time or resource limit, a transient
-error) is retried by the re-drop. Any failed import can be dismissed from Calendar import history in
+it again, and a time or resource limit failure is retried by the re-drop. Any other
+failure needs a corrected export, which is a new file and a new receipt. Any failed import can be dismissed from Calendar import history in
 Admin or with `POST /v1/calendars/calendar/imports/{id}/dismiss`
 (`sources:write`), including failures from direct uploads and receipts carried
 over by the upgrade. A dismissed failure is marked as such and cannot be

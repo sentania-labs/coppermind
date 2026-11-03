@@ -197,7 +197,7 @@ def router(wiring: Wiring) -> APIRouter:
                 body += "</td><td>"
                 if state == "failed" and not receipt.get("dismissed"):
                     body += _form("dismiss-import", _hidden("id", receipt["id"]), "Dismiss failure")
-                    if receipt.get("conflict"):
+                    if not receipt.get("retryable"):
                         body += (
                             "<p>Correct the export in its source calendar and drop it again.</p>"
                         )

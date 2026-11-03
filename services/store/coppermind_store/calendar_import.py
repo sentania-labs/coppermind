@@ -36,8 +36,8 @@ class CalendarImportError(ValueError):
     """An export cannot be promoted in its entirety."""
 
 
-class CalendarConflictError(CalendarImportError):
-    """Two sources disagree about one event revision; repeating the import cannot help."""
+class CalendarTransientError(CalendarImportError):
+    """A time or resource limit stopped the import; the same bytes may succeed later."""
 
 
 class CalendarPerson(BaseModel):
@@ -292,7 +292,7 @@ def merge_event_into(merged: dict[str, CalendarEvent], event: CalendarEvent) -> 
         merged[event.identity] = event
         return
     if event.revision == previous.revision and event.semantic_hash != previous.semantic_hash:
-        raise CalendarConflictError(
+        raise CalendarImportError(
             f'Event "{event.title or event.uid}" ({event.start or "date unknown"}, '
             f"UID {event.uid}, entry {event.source_entry}) conflicts with stored event "
             f'"{previous.title or previous.uid}". Incoming revision: SEQUENCE '

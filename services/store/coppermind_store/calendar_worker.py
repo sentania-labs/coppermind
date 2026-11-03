@@ -22,6 +22,7 @@ from coppermind_store.calendar_import import (
     MAX_UPLOAD,
     CalendarEvent,
     CalendarImportError,
+    CalendarTransientError,
     parse_export,
 )
 
@@ -39,9 +40,9 @@ def isolated_calendar(payload: dict[str, Any]) -> Any:
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise CalendarImportError("calendar processing exceeded its time limit") from exc
+        raise CalendarTransientError("calendar processing exceeded its time limit") from exc
     if result.returncode:
-        raise CalendarImportError(
+        raise CalendarTransientError(
             "calendar processing failed or exceeded its configured memory/CPU budget: "
             f"limits.calendar_import_memory_mib={memory_mib}"
         )

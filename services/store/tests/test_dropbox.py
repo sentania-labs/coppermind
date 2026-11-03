@@ -3,14 +3,19 @@
 import asyncio
 import hashlib
 import json
+import subprocess
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from coppermind_store import calendar_archive
+from coppermind_store import calendar_archive, calendar_worker
 from coppermind_store import calendar_mirror as mirror
 from coppermind_store.calendar_archive import ImportReceipt
-from coppermind_store.calendar_import import CalendarImportError, parse_export
+from coppermind_store.calendar_import import (
+    CalendarImportError,
+    CalendarTransientError,
+    parse_export,
+)
 from coppermind_store.context_service import ContextService
 from coppermind_store.control import ControlState
 from coppermind_store.notes import LocalStore
@@ -555,15 +560,13 @@ async def test_unreadable_names_fail_visibly_without_blocking_other_intake(tmp_p
     assert "a\tb.ics" not in {item["filename"] for item in dropbox.snapshot()["items"]}
 
 
-async def test_redrop_retries_a_failed_non_conflict_import_and_keeps_conflicts_failed(
-    tmp_path, monkeypatch
-):
+async def test_redrop_retries_a_transient_import_failure(tmp_path, monkeypatch):
     store = local_store(tmp_path)
     archive = store.context.archive
     real = calendar_archive.parse_bounded
 
     def slow(*args, **kwargs):
-        raise CalendarImportError("calendar processing exceeded its time limit")
+        raise CalendarTransientError("calendar processing exceeded its time limit")
 
     monkeypatch.setattr("coppermind_store.calendar_archive.parse_bounded", slow)
     first = store.context.dropbox.submit("big.ics", calendar())
@@ -571,7 +574,8 @@ async def test_redrop_retries_a_failed_non_conflict_import_and_keeps_conflicts_f
     failed = store.context.dropbox.records()["items"][first["id"]]
     assert failed["state"] == "failed"
     assert failed["error"].endswith("time limit. Drop the export again to retry.")
-    assert not archive.receipts()[0].conflict
+    assert archive.receipts()[0].retryable
+    assert store.context.dropbox.snapshot()["items"][0]["retryable"]
 
     monkeypatch.setattr("coppermind_store.calendar_archive.parse_bounded", real)
     again = store.context.dropbox.submit("big.ics", calendar())
@@ -582,15 +586,43 @@ async def test_redrop_retries_a_failed_non_conflict_import_and_keeps_conflicts_f
     assert [r.state for r in archive.receipts()] == ["succeeded"]
     assert len(archive.catalog().events) == 1
 
-    conflicting = calendar().replace(b"Planning", b"Wrong title")
-    store.context.dropbox.submit("conflict.ics", conflicting)
+
+@pytest.mark.parametrize("kind", ["malformed", "conflict"])
+async def test_redrop_of_deterministic_failure_returns_the_same_failed_receipt(tmp_path, kind):
+    store = local_store(tmp_path)
+    archive = store.context.archive
+    archive.process(archive.submit("calendar", "base.ics", calendar()).id)
+    data = b"not a calendar" if kind == "malformed" else calendar().replace(b"Planning", b"Other")
+    store.context.dropbox.submit("bad.ics", data)
     await finish(store)
-    receipt = next(r for r in archive.receipts() if r.filename == "conflict.ics")
-    assert receipt.state == "failed" and receipt.conflict
-    assert "Drop the export again" not in receipt.error
-    store.context.dropbox.submit("conflict.ics", conflicting)
+    receipt = next(r for r in archive.receipts() if r.filename == "bad.ics")
+    assert receipt.state == "failed" and not receipt.retryable
+    assert "Drop the export again to retry" not in receipt.error
+    assert not store.context.dropbox.snapshot()["items"][0]["retryable"]
+
+    store.context.dropbox.submit("bad.ics", data)
     await finish(store)
-    assert next(r for r in archive.receipts() if r.id == receipt.id).state == "failed"
+    receipts = [r for r in archive.receipts() if r.filename == "bad.ics"]
+    assert [(r.id, r.state, r.error) for r in receipts] == [(receipt.id, "failed", receipt.error)]
+    assert store.context.dropbox.snapshot()["items"][0]["state"] == "failed"
+
+
+def test_worker_timeout_and_crash_are_transient_but_worker_errors_are_not(monkeypatch):
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired("worker", 45)
+
+    monkeypatch.setattr(calendar_worker.subprocess, "run", timeout)
+    with pytest.raises(CalendarTransientError):
+        calendar_worker.isolated_calendar({})
+    crashed = subprocess.CompletedProcess([], 1, b"", b"")
+    monkeypatch.setattr(calendar_worker.subprocess, "run", lambda *a, **k: crashed)
+    with pytest.raises(CalendarTransientError):
+        calendar_worker.isolated_calendar({})
+    refused = subprocess.CompletedProcess([], 0, b'{"error": "invalid ICS document"}', b"")
+    monkeypatch.setattr(calendar_worker.subprocess, "run", lambda *a, **k: refused)
+    with pytest.raises(CalendarImportError) as raised:
+        calendar_worker.isolated_calendar({})
+    assert not isinstance(raised.value, CalendarTransientError)
 
 
 def fake_notes(store, notes, monkeypatch, fail=()):

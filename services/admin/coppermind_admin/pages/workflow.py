@@ -157,10 +157,10 @@ def router(wiring: Wiring) -> APIRouter:
                         body += '<p class="error">' + e(item["error"]) + "</p>"
                     if item["state"] in {"failed", "succeeded", "already_imported", "unsupported"}:
                         body += _form("dismiss-drop", _hidden("id", item["id"]), "Dismiss receipt")
-                    if item["state"] == "failed":
+                    if item["state"] == "failed" and not item.get("retryable"):
                         body += (
                             '<p>Review <a href="/admin/context?tab=calendar">import '
-                            "history</a>, then dismiss this receipt or drop the file again.</p>"
+                            "history</a>, correct the export and drop it again.</p>"
                         )
                     body += "</section>"
                 if not dropbox["items"]:
