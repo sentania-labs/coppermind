@@ -1,5 +1,6 @@
 """Calendar queries and recovery remain bounded, and budgets fail before promotion."""
 
+import base64
 import json
 import subprocess
 import sys
@@ -80,27 +81,42 @@ def test_preflight_rejects_estimated_memory_budget():
     assert "Raise the setting to at least 151" in str(raised.value)
 
 
-def test_preflight_and_hard_cap_agree_on_a_realistic_export():
-    body = "\r\nDESCRIPTION:" + "meeting notes " * 150
-    data = ics(*(event(str(i)) + body for i in range(2500)))
-    script = (
-        "import resource, sys\n"
-        "from coppermind_store.calendar_import import parse_export\n"
-        "data = sys.stdin.buffer.read()\n"
-        "before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
-        "events = parse_export('work', 'big.ics', data)\n"
-        "print(len(events), resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before)\n"
+def _worker(data: bytes, cap_mib: int, budget_mib: int) -> subprocess.CompletedProcess:
+    payload = {
+        "action": "parse",
+        "memory_mib": budget_mib,
+        "max_events": 50000,
+        "calendar_id": "work",
+        "filename": "big.ics",
+        "data": base64.b64encode(data).decode(),
+    }
+    return subprocess.run(
+        [sys.executable, "-m", "coppermind_store.calendar_worker", str(cap_mib)],
+        input=json.dumps(payload).encode(),
+        capture_output=True,
+        check=False,
     )
-    result = subprocess.run(
-        [sys.executable, "-c", script], input=data, capture_output=True, check=True
+
+
+def test_preflight_estimate_is_enough_for_the_real_address_space_cap():
+    attendees = "\r\n".join(
+        f"ATTENDEE;CN=Person {n};PARTSTAT=ACCEPTED:mailto:person{n}@example.com" for n in range(22)
     )
-    parsed, grown_kib = map(int, result.stdout.split())
-    assert parsed == 2500
-    estimate_mib = -(-(len(data) * 30 + 2500 * 4096) // 1024**2)
-    assert grown_kib * 1024 <= estimate_mib * 1024**2
+    body = "DESCRIPTION:" + "meeting notes " * 100
+    data = ics(*(event(str(i)) + "\r\n" + attendees + "\r\n" + body for i in range(1500)))
+    needed = len(data) * 30 + 1500 * 4096
+    estimate_mib = -(-needed // 1024**2)
     check_import_budget("big.ics", data, len(data), 50000, estimate_mib)
+
+    within = _worker(data, estimate_mib, estimate_mib)
+    assert within.returncode == 0
+    assert len(json.loads(within.stdout)["result"]["events"]) == 1500
+
+    undersized = max(128, estimate_mib // 8)
     with pytest.raises(CalendarImportError, match="calendar_import_memory_mib"):
-        check_import_budget("big.ics", data, len(data), 50000, estimate_mib - 1)
+        check_import_budget("big.ics", data, len(data), 50000, undersized)
+    refused = _worker(data, undersized, estimate_mib)
+    assert refused.returncode != 0 or "error" in json.loads(refused.stdout)
 
 
 def test_default_budget_admits_the_owner_scale_export():
