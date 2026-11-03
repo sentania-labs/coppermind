@@ -11,7 +11,12 @@ from coppermind_store.reconciler import reconcile_once
 from coppermind import frontmatter as fm
 from coppermind.db.models import Note, SearchDocument, Source
 from coppermind.purge import ConfirmPurge
-from coppermind.store_protocol import CreateNote, NotesFilesystemUnavailable, PurgeConflict
+from coppermind.store_protocol import (
+    CreateNote,
+    NotesFilesystemUnavailable,
+    PurgeConflict,
+    ValidationFailed,
+)
 from tests.integration.test_ingest_write_protocol import sample
 from tests.integration.test_note_recovery import commit, deleted, git
 
@@ -205,6 +210,44 @@ async def test_partial_failure_receipt_problem_and_retry_after_restart(store, mo
     assert done.state == "complete"
     assert not (store.sources_root / ingested.source.id).exists()
     assert not any(p.kind == "purge" for p in await restarted.get_problems())
+
+
+async def test_failed_purge_survives_refused_retry_and_resumes(store, monkeypatch):
+    retention(store, 0)
+    ingested = await orphan(store)
+    preview = await store.preview_purge()
+    real = purge._unlink
+
+    def fail(store, item):
+        if item["candidate"]["kind"] == "source":
+            raise OSError("simulated disk error")
+        real(store, item)
+
+    monkeypatch.setattr(purge, "_unlink", fail)
+    with pytest.raises(NotesFilesystemUnavailable):
+        await store.confirm_purge(confirmation(preview))
+    monkeypatch.setattr(purge, "_unlink", real)
+    retention(store, 30)
+    monkeypatch.setattr(purge, "disk_references", lambda s: (_ for _ in ()).throw(OSError("x")))
+    with pytest.raises(NotesFilesystemUnavailable):
+        await store.confirm_purge(confirmation(preview))
+    assert purge.read(store, preview.token)["state"] == "failed"
+    assert (await store.preview_purge()).token == preview.token
+    monkeypatch.undo()
+    done = await store.confirm_purge(confirmation(preview))
+    assert done.state == "complete"
+    assert not (store.sources_root / ingested.source.id).exists()
+
+
+async def test_repeated_previews_keep_one_unconfirmed_receipt(store):
+    retention(store, 0)
+    await deleted(store)
+    first = await store.preview_purge()
+    second = await store.preview_purge()
+    assert first.token != second.token
+    assert [r["token"] for r in purge.records(store)] == [second.token]
+    with pytest.raises(ValidationFailed):
+        await store.confirm_purge(confirmation(first))
 
 
 async def test_unparseable_file_blocks_source_removal(store):

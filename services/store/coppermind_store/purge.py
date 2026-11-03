@@ -6,6 +6,7 @@ is resumed only by confirming that receipt again. No content is copied into it.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import secrets
@@ -171,8 +172,9 @@ def _row_fingerprint(row) -> str:
 async def candidates(store: LocalStore, now: datetime) -> list[dict[str, Any]]:
     days = store.control.settings().retention.days
     cutoff = now - timedelta(days=days)
-    disk_ids, disk_sources = disk_references(store)
-    saved = note_history.receipts(store)
+    disk_ids, disk_sources = await asyncio.to_thread(disk_references, store)
+    saved = await asyncio.to_thread(note_history.receipts, store)
+    complete = await asyncio.to_thread(records, store)
     async with store.session_factory() as session:
         notes = list((await session.scalars(sa.select(Note).order_by(Note.id))).all())
         sources = list((await session.scalars(sa.select(Source).order_by(Source.id))).all())
@@ -183,19 +185,35 @@ async def candidates(store: LocalStore, now: datetime) -> list[dict[str, Any]]:
                 )
             ).all()
         )
+    purged_notes = {
+        i["candidate"]["id"]
+        for r in complete
+        if r["state"] == "complete"
+        for i in r["items"]
+        if i["candidate"]["kind"] == "note"
+    }
+    return await asyncio.to_thread(
+        _plan, store, cutoff, disk_ids, disk_sources, saved, purged_notes, notes, sources, linked
+    )
+
+
+def _plan(
+    store: LocalStore,
+    cutoff: datetime,
+    disk_ids: set[str],
+    disk_sources: set[str],
+    saved: dict[str, Any],
+    purged_notes: set[str],
+    notes: list[Note],
+    sources: list[Source],
+    linked: set[str],
+) -> list[dict[str, Any]]:
     by_note = {n.id: n for n in notes}
     by_source = {s.id: s for s in sources}
     # Missing and unparsed rows are protected too: absence is not proof of deletion.
     protected = (
         disk_sources | linked | {s for n in notes if n.state != "deleted" for s in n.source_ids}
     )
-    purged_notes = {
-        i["candidate"]["id"]
-        for r in records(store)
-        if r["state"] == "complete"
-        for i in r["items"]
-        if i["candidate"]["kind"] == "note"
-    }
     items = []
     for note in notes:
         receipt = saved.get(note.id)
@@ -290,7 +308,8 @@ async def candidates(store: LocalStore, now: datetime) -> list[dict[str, Any]]:
 
 async def preview(store: LocalStore) -> PurgeResult:
     async with store.maintenance.exclusive():
-        unfinished = [r for r in records(store) if r["state"] in {"applying", "failed"}]
+        existing = await asyncio.to_thread(records, store)
+        unfinished = [r for r in existing if r["state"] in {"applying", "failed"}]
         if unfinished:
             return result(unfinished[0])
         now = datetime.now(UTC)
@@ -305,15 +324,14 @@ async def preview(store: LocalStore) -> PurgeResult:
             "completed": [],
         }
         save(store, record)
-        for old in records(store):
-            if old["state"] == "preview" and old.get("error") and not old.get("resolved"):
-                old["resolved"] = True
-                save(store, old)
+        for old in existing:
+            if old["state"] == "preview":
+                (directory(store) / (old["token"] + ".json")).unlink(missing_ok=True)
         return result(record)
 
 
 async def _verify_resume(store: LocalStore, record: dict[str, Any]) -> None:
-    disk_ids, disk_sources = disk_references(store)
+    disk_ids, disk_sources = await asyncio.to_thread(disk_references, store)
     async with store.session_factory() as session:
         notes = list((await session.scalars(sa.select(Note))).all())
         by_note = {n.id: n for n in notes}
@@ -344,26 +362,30 @@ async def _verify_resume(store: LocalStore, record: dict[str, Any]) -> None:
                     raise PurgeChanged()
             if row is not None and _row_fingerprint(row) != item["row"]:
                 raise PurgeChanged()
-            expected = {(f["area"], f["path"]) for f in item["files"]}
-            for f in item["files"]:
-                path = resolve(_root(store, f["area"]), f["path"])
-                if path.exists() and _digest(path) != f["hash"]:
-                    raise PurgeChanged()
-            if c["kind"] == "source":
-                for path in (store.sources_root / c["id"]).rglob("*"):
-                    if (
-                        not path.is_dir()
-                        and ("sources", path.relative_to(store.sources_root).as_posix())
-                        not in expected
-                    ):
-                        raise PurgeChanged()
-            else:
-                for path in note_history.directory(store).glob(f"{c['id']}-*.json"):
-                    if (
-                        "state",
-                        path.relative_to(store.control.store.state_dir).as_posix(),
-                    ) not in expected:
-                        raise PurgeChanged()
+            await asyncio.to_thread(_verify_files, store, item)
+
+
+def _verify_files(store: LocalStore, item: dict[str, Any]) -> None:
+    c = item["candidate"]
+    expected = {(f["area"], f["path"]) for f in item["files"]}
+    for f in item["files"]:
+        path = resolve(_root(store, f["area"]), f["path"])
+        if path.exists() and _digest(path) != f["hash"]:
+            raise PurgeChanged()
+    if c["kind"] == "source":
+        for path in (store.sources_root / c["id"]).rglob("*"):
+            if (
+                not path.is_dir()
+                and ("sources", path.relative_to(store.sources_root).as_posix()) not in expected
+            ):
+                raise PurgeChanged()
+    else:
+        for path in note_history.directory(store).glob(f"{c['id']}-*.json"):
+            if (
+                "state",
+                path.relative_to(store.control.store.state_dir).as_posix(),
+            ) not in expected:
+                raise PurgeChanged()
 
 
 def _unlink(store: LocalStore, item: dict[str, Any]) -> None:
@@ -386,12 +408,13 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
         record = read(store, request.token)
         if any(
             r["token"] != request.token and r["state"] in {"applying", "failed"}
-            for r in records(store)
+            for r in await asyncio.to_thread(records, store)
         ):
             raise ValidationFailed(["Finish the interrupted purge before confirming another list."])
         if record["state"] == "complete":
             return result(record)
-        if record["state"] == "preview":
+        resuming = record["state"] != "preview"
+        if not resuming:
             if record["retention_days"] != store.control.settings().retention.days or record[
                 "items"
             ] != await candidates(store, datetime.now(UTC)):
@@ -405,11 +428,13 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
             # Check the DB before any unlink, and commit removals together.
             async with transaction(store.session_factory) as session:
                 await session.execute(sa.text("SELECT 1"))
-                # Recheck the filesystem after the DB await. No await occurs
-                # between this check and removal, including source references.
-                if record["retention_days"] != store.control.settings().retention.days:
+                # Recheck the filesystem after the DB await, under the exclusive gate.
+                if (
+                    not resuming
+                    and record["retention_days"] != store.control.settings().retention.days
+                ):
                     raise PurgeChanged()
-                disk_ids, cited = disk_references(store)
+                disk_ids, cited = await asyncio.to_thread(disk_references, store)
                 if any(
                     (
                         c["candidate"]["id"] in disk_ids
@@ -421,7 +446,7 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
                     raise PurgeChanged()
                 removal_started = True
                 for item in record["items"]:
-                    _unlink(store, item)
+                    await asyncio.to_thread(_unlink, store, item)
                 now = datetime.now(UTC)
                 for item in record["items"]:
                     c = item["candidate"]
@@ -437,7 +462,7 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
             save(store, record)
         except BaseException:
             record.update(
-                state="failed" if removal_started else "preview",
+                state="failed" if removal_started or resuming else "preview",
                 error=(
                     "Purge did not finish. Check storage and database health, "
                     "then retry this saved list. Git history is unchanged."
