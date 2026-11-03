@@ -1,5 +1,6 @@
 """Exports merge automatically; transient receipts never own event history."""
 
+import asyncio
 import hashlib
 import json
 from typing import Any, cast
@@ -172,6 +173,36 @@ async def test_dismiss_expiry_redrop_and_failed_receipt_retention(tmp_path, monk
     await dropbox.dismiss({"id": bad["id"]})
     assert dropbox.snapshot()["items"] == []
     assert len(store.context.archive.receipts()) == 2
+
+
+async def test_oversize_file_failure_keeps_changes_saved_while_scan_waited(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    (root / "huge.zip").write_bytes(b"x" * 64)
+    monkeypatch.setattr("coppermind_store.dropbox.MAX_UPLOAD", 8)
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    dropbox = store.context.dropbox
+    await dropbox.scan()
+    clock[0] = 31
+    async with store.context.lock:
+        task = asyncio.create_task(dropbox.scan())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        records = dropbox.records()
+        records["items"]["concurrent"] = {
+            "id": "concurrent",
+            "filename": "later.ics",
+            "state": "failed",
+            "parts": [],
+            "error": "",
+        }
+        dropbox.save(records)
+    await task
+    items = dropbox.records()["items"]
+    assert "concurrent" in items
+    assert {item["filename"] for item in items.values()} == {"huge.zip", "later.ics"}
 
 
 async def test_scanner_logs_and_dismissal_survive_restart(tmp_path, monkeypatch, caplog):

@@ -270,8 +270,10 @@ class ContextService:
 
     async def upload_drop(self, payload: dict[str, Any]) -> dict[str, Any]:
         async with self.lock:
-            return self.dropbox.submit(
-                payload["filename"], base64.b64decode(payload["content_base64"], validate=True)
+            return await asyncio.to_thread(
+                lambda: self.dropbox.submit(
+                    payload["filename"], base64.b64decode(payload["content_base64"], validate=True)
+                )
             )
 
     async def configure_property(self, payload: dict[str, Any]) -> dict[str, Any]:

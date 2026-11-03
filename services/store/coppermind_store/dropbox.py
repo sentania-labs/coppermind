@@ -93,15 +93,33 @@ class Dropbox:
         log.info("Dropbox %s export %s", "skip" if duplicate else "adopt", digest)
         return item
 
+    def original(self, digest: str) -> bytes:
+        data = (self.context.root / "dropbox-originals" / digest).read_bytes()
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise ValueError("Dropbox original failed integrity verification")
+        return data
+
+    @staticmethod
+    def read_stable(path: Path, signature: tuple[int, int]) -> bytes | None:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            data = stream.read(MAX_UPLOAD + 1)
+            after = os.fstat(stream.fileno())
+        if (before.st_mtime_ns, before.st_size) != signature or (
+            after.st_mtime_ns,
+            after.st_size,
+        ) != signature:
+            return None
+        return data
+
     async def process(self) -> None:
         records = self.records()
         self.expire(records)
         for item in records["items"].values():
             if item["state"] == "pending":
                 try:
-                    data = (self.context.root / "dropbox-originals" / item["id"]).read_bytes()
-                    if hashlib.sha256(data).hexdigest() != item["id"]:
-                        raise ValueError("Dropbox original failed integrity verification")
+                    data = await asyncio.to_thread(self.original, item["id"])
                     handler = self.handler(data, item["filename"])
                     if handler is None:
                         item["state"] = "unsupported"
@@ -127,7 +145,7 @@ class Dropbox:
                     log.info("Dropbox fail export %s", item["id"])
                 self.save(records)
                 break
-        receipts = {r.id: r for r in self.context.archive.receipts()}
+        receipts = {r.id: r for r in await asyncio.to_thread(self.context.archive.receipts)}
         for item in records["items"].values():
             if item["state"] in {"importing", "failed"} and item["parts"]:
                 imports = [receipts[p["import_id"]] for p in item["parts"]]
@@ -211,6 +229,7 @@ class Dropbox:
                 if time.monotonic() - old[1] < 30:
                     continue
                 async with self.context.lock:
+                    records = self.records()
                     if info.st_size > MAX_UPLOAD:
                         identity = hashlib.sha256(f"{key}:{signature}".encode()).hexdigest()
                         records["items"][identity] = {
@@ -222,17 +241,10 @@ class Dropbox:
                         }
                         log.info("Dropbox fail file: intake byte limit exceeded")
                     else:
-                        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-                        with os.fdopen(fd, "rb") as stream:
-                            before = os.fstat(stream.fileno())
-                            data = stream.read(MAX_UPLOAD + 1)
-                            after = os.fstat(stream.fileno())
-                        if (before.st_mtime_ns, before.st_size) != signature or (
-                            after.st_mtime_ns,
-                            after.st_size,
-                        ) != signature:
+                        data = await asyncio.to_thread(self.read_stable, path, signature)
+                        if data is None:
                             continue
-                        self.submit(name, data)
+                        await asyncio.to_thread(self.submit, name, data)
                         records = self.records()
                     records["observations"][key] = list(signature)
                     self.save(records)
