@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from coppermind import frontmatter as fm
@@ -42,12 +43,8 @@ async def correct(context: ContextService, payload: dict[str, Any]) -> dict[str,
         "attendees": assignment.attendees_field,
         "invitees": assignment.invitees_field,
     }
-    contacts = {contact.id: contact for contact in context.archive.catalog().contacts()}
-    addresses = (
-        {evidence.address.partition(":")[2] for evidence in contacts[target].evidence}
-        if target in contacts
-        else set()
-    )
+    catalog = await asyncio.to_thread(context.archive.catalog)
+    addresses = catalog.contacts().addresses(target)
     changes: dict[str, Any] = {}
     unset: list[str] = []
     for key in remove_from:

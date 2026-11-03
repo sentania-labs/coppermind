@@ -139,6 +139,8 @@ Nothing here needs to be set before the system runs.
 | indexer | `reconcile_interval_s` | 600 |
 | events | `retention_days` | 7 |
 | events | `poll_fallback_s` | 5 |
+| limits | `calendar_max_events` | 50,000 retained events across calendars |
+| limits | `calendar_import_memory_mib` | 512 MiB parser address space |
 | limits | `ingest_max_bytes` | 25 MiB |
 | limits | `attachment_max_bytes` | `sync.max_file_bytes` |
 | admin | `session_hours` | 12 |
@@ -147,6 +149,27 @@ Every control state file, including this one, carries `schema_version` and
 `revision`. A write must state the revision it is replacing, and the file it
 replaces moves to `/data/state/history/`, so nothing is ever silently lost
 to a concurrent edit.
+
+### Calendar import budgets
+
+**Settings > Upload limits** exposes `limits.calendar_max_events` and
+`limits.calendar_import_memory_mib`; both take effect on the next import.
+The first bounds retained event identities, including cancellations, across all
+calendars. Updating an existing identity does not consume another slot. Lowering
+it does not delete already accepted events or prevent serving them.
+
+The memory setting bounds each calendar parser subprocess's address space,
+including identity discovery. A conservative preflight rejects exports estimated
+to exceed it before constructing the parser's object graph. The subprocess also
+has a hard address-space limit and a 45-second deadline. These are import limits,
+not a container RSS limit; reserve memory for the store and requests as described
+in [calendar sizing](calendar-enrichment.md#memory-and-deployment-sizing).
+
+An over-budget import retains its original, marks its receipt failed with the
+setting name and ceiling, and appears in **Problems**. The previous calendar
+remains queryable. Raise the budget only after sizing the deployment, or submit a
+smaller partial export. Retry the failed receipt explicitly after changing the
+setting; restarting does not automatically retry failed imports.
 
 ## Filing rules (`/data/state/rules.yaml`)
 

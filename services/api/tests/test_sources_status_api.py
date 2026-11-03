@@ -329,6 +329,7 @@ def test_status_returns_every_counter(api):
             "excluded_count": 0,
             "filing_failures": 0,
             "known_unreadable": 0,
+            "calendar_import_failures": 0,
         }
     }
 

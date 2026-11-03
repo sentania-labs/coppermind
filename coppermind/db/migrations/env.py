@@ -11,11 +11,11 @@ from __future__ import annotations
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from coppermind.db.models import Base
+from coppermind.db.calendar import metadata
 from coppermind.settings import Wiring
 
 config = context.config
-target_metadata = Base.metadata
+target_metadata = metadata
 
 
 def _url() -> str:
