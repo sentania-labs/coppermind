@@ -196,6 +196,50 @@ def test_size_failure_shows_both_numbers_and_links_to_the_setting(signed_in):
         assert link in page.text
 
 
+def test_calendar_import_failures_can_be_dismissed_and_dismissed_ones_are_marked(signed_in):
+    class HistoryStore(ContextStore):
+        async def context_action(self, action, payload):
+            result = await super().context_action(action, payload)
+            if action == "snapshot":
+                result["calendar"] = {
+                    "imports": [
+                        {
+                            "id": "open",
+                            "filename": "open.ics",
+                            "state": "failed",
+                            "error": "conflict",
+                            "dismissed": False,
+                        },
+                        {
+                            "id": "closed",
+                            "filename": "closed.ics",
+                            "state": "failed",
+                            "error": "conflict",
+                            "dismissed": True,
+                        },
+                    ]
+                }
+            return result
+
+    client, _ = signed_in
+    fake = HistoryStore()
+    client.app.state.store = fake
+    page = client.get("/admin/context?tab=calendar")
+    assert page.status_code == 200
+    assert page.text.count("Dismiss failure") == 1
+    assert page.text.count("Retry import") == 1
+    assert "Import failed (dismissed)" in page.text
+    assert client.post("/v1/admin/context/dismiss-import", data={"id": "open"}).status_code == 403
+    csrf = form_token(client, "/admin/context?tab=calendar")
+    result = client.post(
+        "/v1/admin/context/dismiss-import",
+        data={"id": "open", "csrf": csrf},
+        follow_redirects=False,
+    )
+    assert result.status_code == 303
+    assert fake.calls[-1] == ("dismiss-import", {"id": "open", "revision": 0})
+
+
 def test_dropbox_receipts_can_be_dismissed_through_guarded_form(signed_in):
     class ReceiptStore(ContextStore):
         async def context_action(self, action, payload):

@@ -151,20 +151,17 @@ def router(wiring: Wiring) -> APIRouter:
             body += "<table><tr><th>File</th><th>Result</th><th>Action</th></tr>"
             for receipt in data["calendar"]["imports"]:
                 body += "<tr><td>" + e(receipt["filename"]) + "</td><td>"
-                body += (
-                    e(
-                        {
-                            "succeeded": "Imported",
-                            "failed": "Import failed",
-                            "pending": "Waiting to import",
-                        }[receipt["state"]]
-                    )
-                    + ": "
-                    + e(receipt["error"])
-                    + "</td><td>"
-                )
-                if receipt["state"] == "failed":
+                label = {
+                    "succeeded": "Imported",
+                    "failed": "Import failed",
+                    "pending": "Waiting to import",
+                }[receipt["state"]]
+                if receipt["state"] == "failed" and receipt.get("dismissed"):
+                    label += " (dismissed)"
+                body += e(label) + ": " + e(receipt["error"]) + "</td><td>"
+                if receipt["state"] == "failed" and not receipt.get("dismissed"):
                     body += _form("retry-import", _hidden("id", receipt["id"]), "Retry import")
+                    body += _form("dismiss-import", _hidden("id", receipt["id"]), "Dismiss failure")
                 body += "</td></tr>"
             body += (
                 "</table><h2>Events</h2><table><tr><th>Event</th><th>Date</th><th>State</th></tr>"
@@ -717,6 +714,7 @@ picker.addEventListener('change', () => {
                 "test-model",
                 "save-assignment",
                 "retry-import",
+                "dismiss-import",
                 "enqueue",
                 "retry-job",
                 "reject",

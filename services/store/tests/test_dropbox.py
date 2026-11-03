@@ -119,6 +119,38 @@ async def test_retried_receipt_that_succeeds_completes_failed_dropbox_item(tmp_p
     assert dropbox.submit("again.ics", stale_bytes)["state"] == "already_imported"
 
 
+async def test_import_history_dismisses_direct_and_dropbox_failures(tmp_path):
+    store = local_store(tmp_path)
+    context = store.context
+    context.archive.process(context.archive.submit("calendar", "first.ics", calendar()).id)
+    direct = context.archive.submit(
+        "calendar", "direct.ics", calendar().replace(b"Planning", b"Direct")
+    )
+    assert context.archive.process(direct.id).state == "failed"
+    dropped = context.dropbox.submit("dropped.ics", calendar().replace(b"Planning", b"Dropped"))
+    await finish(store)
+    assert context.dropbox.records()["items"][dropped["id"]]["state"] == "failed"
+    failed = [r for r in context.archive.receipts() if r.state == "failed"]
+    assert len(failed) == 2
+    for receipt in failed:
+        assert await context.dismiss_import({"id": receipt.id}) == {"dismissed": receipt.id}
+        with pytest.raises(ValueError, match="dismissed"):
+            await context.retry_import({"id": receipt.id})
+    assert all(r.dismissed for r in context.archive.receipts() if r.state == "failed")
+    assert dropped["id"] not in context.dropbox.records()["items"]
+    snapshot = await context.snapshot()
+    assert {r["filename"] for r in snapshot["calendar"]["imports"] if r["dismissed"]} == {
+        "direct.ics",
+        "dropped.ics",
+    }
+    assert len(context.archive.receipts()) == 3
+    succeeded = next(r for r in context.archive.receipts() if r.state == "succeeded")
+    with pytest.raises(ValueError, match="Only failed"):
+        await context.dismiss_import({"id": succeeded.id})
+    with pytest.raises(ValueError, match="Unknown"):
+        await context.dismiss_import({"id": "0" * 64})
+
+
 async def test_dismiss_expiry_redrop_and_failed_receipt_retention(tmp_path, monkeypatch):
     store = local_store(tmp_path)
     dropbox = store.context.dropbox

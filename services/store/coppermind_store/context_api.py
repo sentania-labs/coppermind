@@ -31,6 +31,7 @@ ACTIONS = {
     "save-assignment": "save_assignment",
     "upload": "upload",
     "retry-import": "retry_import",
+    "dismiss-import": "dismiss_import",
     "backlog": "backlog",
     "enqueue": "enqueue",
     "job": "job_detail",

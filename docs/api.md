@@ -280,6 +280,7 @@ separate calendars. Calendar UID binding and identity claiming are removed.
 | `GET /v1/dropbox` | `sources:read` | `{folder, items}`; each receipt has `id`, `filename`, `state`, `error`, and import references in `parts` |
 | `POST /v1/dropbox/{id}/dismiss` | `sources:write` | Dismiss a completed, failed or unsupported receipt; 422 for pending/importing or unknown receipts |
 | `GET /v1/calendars?offset=0` | `sources:read` | Compatible `{calendar, events, contacts, offset, next_offset, totals}` response; calendar now also has `id: calendar`, `name: My calendar` |
+| `POST /v1/calendars/calendar/imports/{id}/dismiss` | `sources:write` | Dismiss a failed import receipt, whether it arrived by Dropbox, direct upload or the upgrade migration; the receipt stays in import history marked dismissed and leaves Problems; 422 for unknown or non-failed receipts |
 | `POST /v1/calendars/calendar/imports?filename=export.ics` | `sources:write` | Compatibility binary upload, 202 durable import receipt; other calendar IDs return 422 |
 
 Dropbox states are `pending`, `importing`, `succeeded`, `already_imported`,

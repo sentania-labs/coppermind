@@ -636,11 +636,30 @@ class ContextService:
         return receipt.model_dump()
 
     async def retry_import(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with self.lock:
-            item = self.dropbox.records()["items"].get(payload["id"])
-            if item and item["state"] == "failed" and not item["parts"]:
-                return self.dropbox.retry(payload["id"])
+        receipts = await asyncio.to_thread(self.archive.receipts)
+        if any(r.id == payload["id"] and r.dismissed for r in receipts):
+            raise ValueError("This failure was dismissed. Drop the export again to try again.")
         return (await asyncio.to_thread(self.archive.process, payload["id"])).model_dump()
+
+    async def dismiss_import(self, payload: dict[str, Any]) -> dict[str, Any]:
+        identity = str(payload["id"])
+        async with self.lock:
+            receipts = await asyncio.to_thread(self.archive.receipts)
+            receipt = next((r for r in receipts if r.id == identity), None)
+            if receipt is None:
+                raise ValueError("Unknown import receipt")
+            if receipt.state != "failed":
+                raise ValueError("Only failed imports can be dismissed")
+            await asyncio.to_thread(self.archive.dismiss, identity)
+            records = self.dropbox.records()
+            for key, item in list(records["items"].items()):
+                if item["state"] == "failed" and any(
+                    part["import_id"] == identity for part in item["parts"]
+                ):
+                    records["history"][key] = item
+                    del records["items"][key]
+            self.dropbox.save(records)
+        return {"dismissed": identity}
 
     async def backlog(self, payload: dict[str, Any]) -> dict[str, Any]:
         page = await self.store.list_notes(

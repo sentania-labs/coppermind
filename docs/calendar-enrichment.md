@@ -31,8 +31,12 @@ Completed receipts clear after seven days by default; failed receipts stay until
 dismissed. Change **Receipt settings** on Dropbox to set retention in seconds.
 Import history and originals remain after dismissal or expiry. Dismissing a failed
 receipt also clears its Problems entry; re-dropping the same failing bytes shows
-it again. Re-dropping bytes that already imported creates an **Already imported**
-receipt without another import.
+it again. Any failed import can be dismissed from Calendar import history in
+Admin or with `POST /v1/calendars/calendar/imports/{id}/dismiss`
+(`sources:write`), including failures from direct uploads and receipts carried
+over by the upgrade. A dismissed failure is marked as such, and **Retry import**
+no longer applies to it. Re-dropping bytes that already imported creates an
+**Already imported** receipt without another import.
 
 `GET /v1/calendars` retains its paginated response shape and describes the single
 calendar (`id: calendar`). Event details include provenance: export source ID,

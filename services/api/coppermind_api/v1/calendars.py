@@ -34,6 +34,19 @@ async def calendars(
     )
 
 
+@router.post("/calendar/imports/{receipt_id}/dismiss")
+async def dismiss_import(
+    receipt_id: str,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("sources:write")),
+) -> Response:
+    try:
+        result = await client.context_action("dismiss-import", {"id": receipt_id})
+    except StoreError as exc:
+        return failure(exc)
+    return JSONResponse(result)
+
+
 @router.post("/{calendar_id}/imports", status_code=202)
 async def upload(
     calendar_id: str,
