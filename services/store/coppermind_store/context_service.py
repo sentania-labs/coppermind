@@ -655,9 +655,10 @@ class ContextService:
             await asyncio.to_thread(self.archive.dismiss, identity)
             records = self.dropbox.records()
             for key, item in list(records["items"].items()):
-                if item["state"] == "failed" and any(
+                if item["state"] in {"importing", "failed"} and any(
                     part["import_id"] == identity for part in item["parts"]
                 ):
+                    item["state"], item["error"] = "failed", receipt.error
                     records["history"][key] = item
                     del records["items"][key]
             self.dropbox.save(records)

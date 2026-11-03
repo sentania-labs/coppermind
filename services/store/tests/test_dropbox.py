@@ -152,6 +152,22 @@ async def test_import_history_dismisses_direct_and_dropbox_failures(tmp_path):
         await context.dismiss_import({"id": "0" * 64})
 
 
+async def test_dismissing_failed_import_before_reconcile_clears_importing_item(tmp_path):
+    store = local_store(tmp_path)
+    context = store.context
+    context.archive.process(context.archive.submit("calendar", "first.ics", calendar()).id)
+    dropped = context.dropbox.submit("late.ics", calendar().replace(b"Planning", b"Late"))
+    await context.dropbox.process()
+    assert context.dropbox.records()["items"][dropped["id"]]["state"] == "importing"
+    receipt = next(r for r in context.archive.receipts() if r.state == "pending")
+    assert context.archive.process(receipt.id).state == "failed"
+    await context.dismiss_import({"id": receipt.id})
+    assert dropped["id"] not in context.dropbox.records()["items"]
+    await context.dropbox.process()
+    assert context.dropbox.snapshot()["items"] == []
+    assert context.dropbox.records()["history"][dropped["id"]]["state"] == "failed"
+
+
 async def test_dismiss_expiry_redrop_and_failed_receipt_retention(tmp_path, monkeypatch):
     store = local_store(tmp_path)
     dropbox = store.context.dropbox
