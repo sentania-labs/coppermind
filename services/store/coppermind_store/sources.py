@@ -1295,7 +1295,7 @@ async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
     This reads the problems the last maintenance scan recorded and the few receipts
     that can still be unfinished. It never walks a source bundle or a finished receipt.
     """
-    from coppermind_store.purge import recorded, records, unreadable
+    from coppermind_store.purge import live_ids, recorded, records, unreadable
 
     try:
         found, unfinished, unreadable_now = await asyncio.to_thread(
@@ -1314,9 +1314,13 @@ async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
             kind="damaged_source",
             reference=entry["source_id"],
             reason=(
-                f"The preserved copy of {entry['provider']} source "
-                f"{entry['external_source_id']} has files but no readable manifest. "
-                "It is not offered for retention purge."
+                (
+                    f"The preserved copy of {entry['provider']} source "
+                    f"{entry['external_source_id']}"
+                    if entry["provider"]
+                    else "A preserved source copy"
+                )
+                + " has files but no readable manifest. It is not offered for retention purge."
             ),
             source_id=entry["source_id"],
         )
@@ -1357,16 +1361,23 @@ async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
                 )
             )
     for entry in found["abandoned"]:
-        shown = len(entry["titles"])
-        more = f" and {entry['remaining'] - shown} more" if entry["remaining"] > shown else ""
+        try:
+            live = await live_ids(store, entry["remaining_ids"])
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
+        remaining = [r for r in entry["remaining_ids"] if r not in live]
+        if not remaining:
+            continue
+        titles = [entry["titles"][r] for r in remaining[:5] if r in entry["titles"]]
+        more = f" and {len(remaining) - len(titles)} more" if len(remaining) > len(titles) else ""
         problems.append(
             ProblemInfo(
                 kind="purge",
                 reference=entry["token"],
                 reason=(
-                    f"Retention purge was abandoned. {entry['total'] - entry['remaining']} "
-                    f"listed items were removed. {entry['remaining']} were not and still need "
-                    f"attention: {', '.join(entry['titles'])}{more}. "
+                    f"Retention purge was abandoned. {entry['removed']} listed items "
+                    f"were removed. {len(remaining)} were not and still need "
+                    f"attention: {', '.join(titles)}{more}. "
                     "Preview again from Retention purge to finish removing them."
                 ),
             )

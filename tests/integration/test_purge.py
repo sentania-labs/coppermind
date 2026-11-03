@@ -755,3 +755,71 @@ async def test_preview_says_what_it_kept_and_separates_notes_from_sources(store)
     assert preview.kept.notes_within_retention == 1
     assert preview.kept.sources_in_use == 1
     assert recent.id not in {c.id for c in preview.candidates}
+
+
+async def abandoned_with_rows_intact(store):
+    ingested = await orphan(store)
+    preview = await store.preview_purge()
+    unfinished = purge.read(store, preview.token)
+    purge.save(store, {**unfinished, "state": "applying"})
+    abandoned = await store.abandon_purge(AbandonPurge(token=preview.token))
+    assert sorted(abandoned.remaining) == sorted([ingested.note.id, ingested.source.id])
+    assert abandoned.completed == 0
+    return ingested
+
+
+def abandoned_problems(problems):
+    return [p for p in problems if p.kind == "purge"]
+
+
+async def test_restored_note_clears_its_abandoned_problem_and_is_never_listed(store):
+    retention(store, 0)
+    ingested = await abandoned_with_rows_intact(store)
+    assert (await store.get_status()).counters.purge_problems == 1
+    receipt = note_history.receipts(store)[ingested.note.id]
+    (store.notes_root / "Returned.md").write_bytes(receipt.data())
+    commit(store.notes_root)
+    await reconcile_once(store)
+
+    assert not abandoned_problems(await store.get_problems())
+    assert (await store.get_status()).counters.purge_problems == 0
+    assert not (await store.preview_purge()).candidates
+    assert (store.sources_root / ingested.source.id).exists()
+    async with store.session_factory() as session:
+        assert (await session.get(Note, ingested.note.id)).state != "deleted"
+
+
+async def test_new_live_citation_shrinks_the_abandoned_problem_and_protects_the_source(store):
+    retention(store, 0)
+    ingested = await abandoned_with_rows_intact(store)
+    live = await store.create_note(CreateNote(title="Now cites the source"))
+    live_path = store.notes_root / live.path
+    live_path.write_text(fm.patch(live_path.read_text(), {"sources": [ingested.source.id]}))
+    commit(store.notes_root)
+    await reconcile_once(store)
+
+    (problem,) = abandoned_problems(await store.get_problems())
+    assert "0 listed items were removed. 1 were not" in problem.reason
+    assert (await store.get_status()).counters.purge_problems == 1
+    preview = await store.preview_purge()
+    assert [c.id for c in preview.candidates] == [ingested.note.id]
+    assert (store.sources_root / ingested.source.id).exists()
+
+
+async def test_recovery_records_a_damaged_bundle_and_forgets_it_once_repaired(store):
+    retention(store, 0)
+    ingested = await store.ingest(sample())
+    bundle = store.sources_root / ingested.source.id
+    artifact = next(bundle.glob("r*/*.txt"))
+    content = artifact.read_bytes()
+    artifact.unlink()
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.rebuild_metadata()
+    (problem,) = [p for p in await store.get_problems() if p.kind == "damaged_source"]
+    assert problem.source_id == ingested.source.id
+    assert (await store.get_status()).counters.purge_problems == 1
+
+    artifact.write_bytes(content)
+    await store.rebuild_metadata()
+    assert not [p for p in await store.get_problems() if p.kind == "damaged_source"]
+    assert (await store.get_status()).counters.purge_problems == 0

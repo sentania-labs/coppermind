@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import secrets
+import threading
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -101,6 +102,81 @@ def unreadable(store: LocalStore, states: tuple[str, ...] = ("", *TERMINAL)) -> 
 
 def _problems_path(store: LocalStore) -> Path:
     return store.control.store.state_dir / "purge-problems.json"
+
+
+_RECORD_LOCK = threading.Lock()
+
+
+def _store_recorded(store: LocalStore, value: dict[str, Any]) -> None:
+    atomic_write_bytes(_problems_path(store), json.dumps(value).encode(), mode=0o600)
+
+
+def _change_recorded(store: LocalStore, change) -> None:
+    with _RECORD_LOCK:
+        value = recorded(store)
+        if change(value):
+            _store_recorded(store, value)
+
+
+def note_damaged(
+    store: LocalStore, source_id: str, provider: str = "", external_source_id: str = ""
+) -> None:
+    """Record a bundle that purge, recovery or a scan just found without a readable manifest."""
+    entry = {
+        "source_id": source_id,
+        "provider": provider,
+        "external_source_id": external_source_id,
+    }
+
+    def change(value: dict[str, Any]) -> bool:
+        others = [e for e in value["damaged"] if e["source_id"] != source_id]
+        if entry in value["damaged"] and len(others) == len(value["damaged"]) - 1:
+            return False
+        value["damaged"] = [*others, entry]
+        return True
+
+    with suppress(OSError):
+        _change_recorded(store, change)
+
+
+def note_repaired(store: LocalStore, source_id: str) -> None:
+    """Forget a damaged bundle that purge or recovery just read successfully."""
+
+    def change(value: dict[str, Any]) -> bool:
+        kept = [e for e in value["damaged"] if e["source_id"] != source_id]
+        changed = len(kept) != len(value["damaged"])
+        value["damaged"] = kept
+        return changed
+
+    with suppress(OSError):
+        _change_recorded(store, change)
+
+
+async def live_ids(store: LocalStore, ids: list[str]) -> set[str]:
+    """Which of these notes are live again, and which sources a live note now cites."""
+    if not ids:
+        return set()
+    async with store.session_factory() as session:
+        notes = (
+            await session.scalars(
+                sa.select(Note.id).where(Note.id.in_(ids), Note.state != "deleted")
+            )
+        ).all()
+        linked = (
+            await session.scalars(
+                sa.select(NoteSource.source_id)
+                .join(Note, Note.id == NoteSource.note_id)
+                .where(NoteSource.source_id.in_(ids), Note.state != "deleted")
+            )
+        ).all()
+        mirrored = (
+            await session.scalars(
+                sa.select(sa.func.unnest(Note.source_ids)).where(
+                    Note.state != "deleted", Note.source_ids.overlap(ids)
+                )
+            )
+        ).all()
+    return {*notes, *(({*linked, *mirrored}) & set(ids))}
 
 
 def recorded(store: LocalStore) -> dict[str, Any]:
@@ -416,7 +492,9 @@ def _plan(
         state, manifest = _bundle(bundle)
         opening: Any
         if state == "damaged":
+            note_damaged(store, source.id, source.provider, source.external_source_id)
             continue
+        note_repaired(store, source.id)
         if state == "ok":
             opening = manifest.get("note_id")
             if not is_valid_id(opening) or opening in disk_ids:
@@ -533,18 +611,26 @@ async def _scan(store: LocalStore) -> None:
     abandoned = []
     for receipt in await asyncio.to_thread(records, store, "abandoned"):
         held = set(receipt.get("remaining", []))
+        live = await live_ids(store, sorted(held))
         _, remaining = await outcome(
             store,
-            {**receipt, "items": [i for i in receipt["items"] if i["candidate"]["id"] in held]},
+            {
+                **receipt,
+                "items": [
+                    i
+                    for i in receipt["items"]
+                    if i["candidate"]["id"] in held and i["candidate"]["id"] not in live
+                ],
+            },
         )
         if remaining:
             titles = {i["candidate"]["id"]: i["candidate"]["title"] for i in receipt["items"]}
             abandoned.append(
                 {
                     "token": receipt["token"],
-                    "total": len(receipt["items"]),
-                    "remaining": len(remaining),
-                    "titles": [titles[r] for r in remaining[:5]],
+                    "removed": len(receipt.get("completed", [])),
+                    "remaining_ids": remaining,
+                    "titles": {r: titles[r] for r in remaining[:50]},
                 }
             )
     value = {
@@ -559,9 +645,12 @@ async def _scan(store: LocalStore) -> None:
         "unreadable": await asyncio.to_thread(unreadable, store, tuple(TERMINAL)),
         "abandoned": abandoned,
     }
-    await asyncio.to_thread(
-        atomic_write_bytes, _problems_path(store), json.dumps(value).encode(), mode=0o600
-    )
+
+    def write() -> None:
+        with _RECORD_LOCK:
+            _store_recorded(store, value)
+
+    await asyncio.to_thread(write)
 
 
 async def _rescan(store: LocalStore) -> None:

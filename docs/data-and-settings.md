@@ -335,6 +335,13 @@ exceed the number of candidates. The preview also reports what it kept:
 `kept.notes_within_retention` and `kept.sources_in_use`. The Overview Problems
 count includes unfinished purges, abandoned purges with items remaining, unreadable
 receipts and damaged bundles (`purge_problems`), so it agrees with the Problems page.
-Status stays cheap: it reads `/data/state/purge-problems.json` and the few receipts that
-can still be unfinished, and never walks a source bundle or a finished receipt. The store
-rewrites that file with a full scan at startup and after each preview, confirm and abandon.
+Status stays cheap: it reads `/data/state/purge-problems.json`, the few receipts that
+can still be unfinished and one bounded query on the ids an abandoned purge left, and
+never walks a source bundle or a finished receipt. The full scan that rewrites that file
+runs only at store startup and after a completed preview, confirm or abandon; a failed
+confirm leaves it as it was. Between scans, work that actually observes a bundle updates
+the file: a preview that finds a bundle unreadable or readable again, and a metadata
+rebuild whose source recovery fails to verify, or later verifies, a bundle. Reconciliation
+does not read source bundles or finished receipts, so it records nothing. An item an
+abandoned purge left drops out of the Problem as soon as its note is live again or a live
+note cites its source; that never makes it eligible for removal.
