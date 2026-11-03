@@ -48,13 +48,14 @@ log = logging.getLogger(__name__)
 
 def _size_error(size: int, limit: int) -> str:
     return (
-        f"The note and transcript text is {size:,} characters; the limit is {limit:,}. "
+        f"The input for the model (note, transcripts and calendar context) is {size:,} "
+        f"characters; the limit is {limit:,}. "
         "Nothing was sent. Shorten the note or raise Maximum note and transcript characters."
     )
 
 
-class SuggestionRejected(ValueError):
-    """A model answer broke a validation rule; the message is safe to show the owner."""
+class JobRejected(ValueError):
+    """A job broke a validation rule; the message is safe to show the owner."""
 
     def __init__(self, rule: str, detail: str, next_step: str) -> None:
         super().__init__(f"{detail} ({rule}). {next_step}")
@@ -715,7 +716,11 @@ class ContextService:
         transcripts = []
         sources = await self.store.get_note_sources(job.note_id)
         if len(sources) > 5:
-            raise ValueError("note exceeds the limit of five associated sources")
+            raise JobRejected(
+                "too-many-sources",
+                "The note has more than five associated sources",
+                "Remove sources from the note, then retry.",
+            )
         input_size = len(note.body)
         for source in sources:
             manifest = await self.store.get_source(source.id)
@@ -797,52 +802,59 @@ class ContextService:
         for item in result.suggestions:
             what = item.kind + (" " + _label(item.field) if item.field else "")
             if not set(item.event_ids) <= event_ids or not set(item.contact_ids) <= contact_ids:
-                raise SuggestionRejected(
+                raise JobRejected(
                     "unknown-record",
                     f"The model's {what} suggestion pointed at calendar events or contacts "
                     "it was not given",
                     RETRY,
                 )
             if item.quote and item.quote not in text:
-                raise SuggestionRejected(
+                raise JobRejected(
                     "quote-not-found",
                     f"The model's {what} suggestion quoted text that is not in the note "
                     "or transcript",
                     RETRY,
                 )
             if not item.quote and not item.event_ids:
-                raise SuggestionRejected(
+                raise JobRejected(
                     "no-evidence",
                     f"The model's {what} suggestion had no supporting quote or event",
                     RETRY,
                 )
             if item.kind == "attendee" and (not item.quote or not item.contact_ids):
-                raise SuggestionRejected(
+                raise JobRejected(
                     "attendance-evidence",
                     "The model's attendee suggestion lacked a note quote or a known contact",
                     RETRY,
                 )
             if item.kind == "event" and not item.event_ids:
-                raise SuggestionRejected(
+                raise JobRejected(
                     "event-missing",
                     "The model's event suggestion did not name a supplied event",
                     RETRY,
                 )
             if item.kind in {"contact", "invitee"} and not item.contact_ids:
-                raise SuggestionRejected(
+                raise JobRejected(
                     "contact-missing",
                     f"The model's {item.kind} suggestion did not name a supplied contact",
                     RETRY,
                 )
             if item.kind == "filename":
                 if not isinstance(item.value, str) or any(c in item.value for c in "/\\\r\n\0"):
-                    raise SuggestionRejected(
+                    raise JobRejected(
                         "invalid-filename",
                         "The model's filename suggestion was not a single-line title "
                         "without a path",
                         RETRY,
                     )
-                RenameNote(title=item.value)
+                try:
+                    RenameNote(title=item.value)
+                except ValidationError:
+                    raise JobRejected(
+                        "invalid-filename",
+                        "The model's filename suggestion was blank or too long to use as a title",
+                        RETRY,
+                    ) from None
             if item.kind == "field":
                 mapped = {
                     assignment.attendees_field,
@@ -851,7 +863,7 @@ class ContextService:
                     assignment.event_field,
                 } - {""}
                 if item.field not in assignment.fields or item.field in mapped:
-                    raise SuggestionRejected(
+                    raise JobRejected(
                         "unmapped-field",
                         f"The model suggested a value for field {_label(item.field)}, "
                         "which enrichment is not allowed to fill",
@@ -859,7 +871,7 @@ class ContextService:
                     )
                 updated = dict(evidence["note"]["frontmatter"], **{item.field: item.value})
                 if schema.validate_frontmatter(updated):
-                    raise SuggestionRejected(
+                    raise JobRejected(
                         "schema-mismatch",
                         f"The model's value for field {_label(item.field)} does not fit "
                         "that field's type in the note schema",
@@ -876,7 +888,9 @@ class ContextService:
             job.attempt_limit = assignment.attempts
         if job.attempts >= job.attempt_limit:
             job.state = "failed"
-            job.error = "Attempt limit reached; an interrupted request may already have been billed"
+            job.set_error(
+                "Attempt limit reached; an interrupted request may already have been billed"
+            )
             self.save_job(job)
             return
         try:
@@ -906,46 +920,44 @@ class ContextService:
             if fingerprint(await self.evidence(job)) != fingerprint(evidence):
                 raise ValueError("stale: source evidence changed during model processing")
             job.result, job.evidence, job.usage = result, evidence, usage
-            job.state, job.error = "suggested", ""
+            job.state = "suggested"
+            job.set_error()
         except (ValueError, StoreError, StopIteration) as exc:
             stale = str(exc).startswith("stale:")
             job.state = "stale" if stale else "failed"
-            job.error_rule = ""
-            job.input_size = job.input_limit = None
             if isinstance(exc, InputLimitError):
-                job.error_rule = "input-limit"
-                job.input_size, job.input_limit = exc.size, exc.limit
-                job.error = _size_error(exc.size, exc.limit)
-            elif isinstance(exc, SuggestionRejected):
-                job.error_rule = exc.rule
-                job.error = str(exc)
+                job.set_error(_size_error(exc.size, exc.limit), "input-limit", exc.size, exc.limit)
+            elif isinstance(exc, JobRejected):
+                job.set_error(str(exc), exc.rule)
             elif isinstance(exc, ProviderError) or stale:
-                job.error = str(exc)
+                job.set_error(str(exc))
             elif isinstance(exc, ValidationError):
                 places = sorted({".".join(str(p) for p in e["loc"][:3]) for e in exc.errors()})
-                job.error_rule = "answer-shape"
-                job.error = (
+                job.set_error(
                     "The model's answer was not in the expected format (answer-shape; "
-                    f"problem at {_label(', '.join(places)[:60])}). {RETRY}"
+                    f"problem at {_label(', '.join(places)[:60])}). {RETRY}",
+                    "answer-shape",
                 )
             else:
-                job.error = (
+                job.set_error(
                     "Suggestion could not be validated. Check the note, schema and provider; retry."
                 )
-            # Never log str(exc) for an unexpected error: validation errors can echo model output.
+            # A pydantic ValidationError can echo model output; every other error here
+            # comes from Coppermind or the provider client and is safe to log in full.
             log.warning(
                 "enrichment job %s for note %s failed: rule=%s state=%s reason=%s",
                 job.id,
                 job.path,
                 job.error_rule or type(exc).__name__,
                 job.state,
-                job.error
-                if job.error_rule or isinstance(exc, ProviderError) or stale
-                else type(exc).__name__,
+                type(exc).__name__ if isinstance(exc, ValidationError) else str(exc),
             )
         except Exception:
             job.state = "failed"
-            job.error = "Provider processing failed unexpectedly; the recorded attempt was consumed"
+            job.set_error(
+                "Provider processing failed unexpectedly; the recorded attempt was consumed"
+            )
+            log.exception("enrichment job %s for note %s failed unexpectedly", job.id, job.path)
         self.save_job(job)
 
     async def retry_job(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -957,7 +969,8 @@ class ContextService:
         async with self.lock:
             latest = self.load_job(identity)
             if latest.state == "failed":
-                latest.state, latest.attempts, latest.error = "queued", 0, ""
+                latest.state, latest.attempts = "queued", 0
+                latest.set_error()
                 self.save_job(latest)
         return {"job": identity}
 
@@ -1207,7 +1220,7 @@ class ContextService:
         job.state = (
             "stale" if remaining and changed_date else "suggested" if remaining else "applied"
         )
-        job.error = (
+        job.set_error(
             "Date changed; regenerate remaining suggestions" if remaining and changed_date else ""
         )
         self.save_job(job)
@@ -1369,7 +1382,7 @@ class ContextService:
             if job.state == "running":
                 if job.attempts >= job.attempt_limit:
                     job.state = "failed"
-                    job.error = (
+                    job.set_error(
                         "Attempt limit reached after interruption; request outcome is unknown"
                     )
                 else:

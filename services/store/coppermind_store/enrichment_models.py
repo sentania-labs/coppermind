@@ -51,3 +51,8 @@ class EnrichmentJob(ContextModel):
     usage: dict[str, Any] = Field(default_factory=dict)
     decisions: list[dict[str, Any]] = Field(default_factory=list)
     pending_approval: dict[str, Any] | None = None
+
+    def set_error(
+        self, message: str = "", rule: str = "", size: int | None = None, limit: int | None = None
+    ) -> None:
+        self.error, self.error_rule, self.input_size, self.input_limit = message, rule, size, limit

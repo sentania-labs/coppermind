@@ -840,6 +840,16 @@ RULE_CASES = [
         "single-line title without a path",
     ),
     (
+        "invalid-filename",
+        lambda ev: {
+            "kind": "filename",
+            "value": "   ",
+            "event_ids": [ev["events"][0]["event_id"]],
+            "reason": "r",
+        },
+        "blank or too long to use as a title",
+    ),
+    (
         "unmapped-field",
         lambda ev: {
             "kind": "field",
@@ -930,3 +940,30 @@ async def test_input_over_the_limit_records_size_and_limit(store):
     assert final.input_size > 2000
     assert f"{final.input_size:,} characters; the limit is 2,000" in final.error
     assert "Maximum note and transcript characters" in final.error
+
+
+async def test_a_later_success_or_retry_clears_the_earlier_failure_rule(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 2000
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Long", body="word " * 1000, frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+    await context.run_job(context.load_job(job_id))
+    assert context.load_job(job_id).error_rule == "input-limit"
+
+    await context.retry_job({"id": job_id})
+    queued = context.load_job(job_id)
+    assert (queued.state, queued.error, queued.error_rule) == ("queued", "", "")
+    assert queued.input_size is None and queued.input_limit is None
+
+    failed = context.load_job(job_id)
+    failed.set_error("x", "input-limit", 5, 2)
+    failed.attempts = failed.attempt_limit
+    context.save_job(failed)
+    await context.run_job(context.load_job(job_id))
+    exhausted = context.load_job(job_id)
+    assert "Attempt limit reached" in exhausted.error
+    assert exhausted.error_rule == "" and exhausted.input_limit is None
