@@ -16,7 +16,9 @@ The story behind these decisions is [architecture.md](architecture.md).
 - Every route needs a scope: `sources:read`, `sources:write`, `notes:read`,
   `notes:write`, `notes:move`, `notes:delete`, `journal:read`,
   `journal:write`, `search:read`, `admin:read`, `admin:write`, `admin:purge`. A key missing
-  the right scope gets 403, not a filtered response.
+  the right scope gets 403, not a filtered response. The bootstrap default key
+  and a key created with no `--scope` hold every scope except `admin:purge`,
+  which is granted only when named.
 - Admin's own pages use a signed session cookie; its `/v1/admin/*` API
   endpoints accept either that cookie or a key holding an `admin:*` scope.
 - Every non-2xx response is the same shape: `{"error": "<code>", "message":

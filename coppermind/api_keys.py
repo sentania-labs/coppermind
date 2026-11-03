@@ -31,6 +31,7 @@ API_SCOPES = (
     "admin:write",
     "admin:purge",
 )
+DEFAULT_SCOPES = tuple(scope for scope in API_SCOPES if scope != "admin:purge")
 
 KEY_ID_PATTERN = re.compile(r"^[a-z0-9]{16}$")
 KEY_PREFIX = "cm_"

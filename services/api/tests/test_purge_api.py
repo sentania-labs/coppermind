@@ -6,16 +6,14 @@ from coppermind_api.deps import store
 from coppermind_api.main import create_app
 from fastapi.testclient import TestClient
 
-from coppermind.api_keys import API_SCOPES, ApiKeySet, create_key
+from coppermind.api_keys import DEFAULT_SCOPES, ApiKeySet, create_key
 from coppermind.purge import PurgeCounts, PurgeResult
 from coppermind.settings import Wiring
 
 
 class PurgeStore:
     def __init__(self):
-        self.old, self.old_key = create_key(
-            "Existing admin", [s for s in API_SCOPES if s != "admin:purge"]
-        )
+        self.old, self.old_key = create_key("Default scopes", list(DEFAULT_SCOPES))
         self.operator, self.operator_key = create_key("Purge operator", ["admin:purge"])
         self.confirmed = []
         self.abandoned = []

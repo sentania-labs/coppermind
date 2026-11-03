@@ -13,7 +13,7 @@ from coppermind_store.keys import (
     revoke_key,
 )
 
-from coppermind.api_keys import split_credential, verify_secret
+from coppermind.api_keys import API_SCOPES, split_credential, verify_secret
 from coppermind.settings import Wiring
 
 
@@ -205,6 +205,15 @@ def test_a_live_default_whose_credential_is_gone_mints_no_second_key(tmp_path: P
     assert [record.key_id for record in records] == [first.key_id]
     assert records[0].revoked_at is None
     assert records[0].hash == first.hash
+
+
+def test_the_default_key_never_holds_the_purge_scope(tmp_path: Path):
+    wiring = wiring_for(tmp_path)
+    assert run(wiring) == 0
+    (default,) = ControlState(wiring.state_dir).api_keys().keys
+    assert default.bootstrap_default
+    assert "admin:purge" not in default.scopes
+    assert set(default.scopes) == set(API_SCOPES) - {"admin:purge"}
 
 
 def test_an_operator_key_named_like_the_default_is_not_bootstrap_owned(tmp_path: Path, capsys):

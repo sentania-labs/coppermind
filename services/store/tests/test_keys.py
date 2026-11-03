@@ -5,7 +5,7 @@ from pathlib import Path
 from coppermind_store.control import ControlState
 from coppermind_store.keys import run
 
-from coppermind.api_keys import split_credential, verify_secret
+from coppermind.api_keys import API_SCOPES, split_credential, verify_secret
 from coppermind.settings import Wiring
 
 
@@ -30,6 +30,18 @@ def test_create_command_prints_a_key_and_persists_only_its_hash(tmp_path: Path, 
 
     assert run(["revoke", key_id], wiring) == 0
     assert ControlState(wiring.state_dir).api_keys().keys[0].revoked_at is not None
+
+
+def test_a_key_created_without_scopes_excludes_purge_unless_named(tmp_path: Path, capsys) -> None:
+    wiring = Wiring(data_dir=tmp_path / "data")
+    wiring.state_dir.mkdir(parents=True)
+
+    assert run(["create", "--name", "flagless"], wiring) == 0
+    assert run(["create", "--name", "purger", "--scope", "admin:purge"], wiring) == 0
+
+    flagless, purger = ControlState(wiring.state_dir).api_keys().keys
+    assert set(flagless.scopes) == set(API_SCOPES) - {"admin:purge"}
+    assert purger.scopes == ["admin:purge"]
 
 
 def test_an_unknown_key_id_is_an_error_message_not_a_traceback(tmp_path: Path, capsys) -> None:

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from coppermind.api_keys import (
     API_SCOPES,
+    DEFAULT_SCOPES,
     ApiKeyRecord,
     ApiKeySet,
     add_key,
@@ -57,7 +58,7 @@ def _reveals(secret_file: Path, record: ApiKeyRecord) -> bool:
 
 
 def ensure_default_key(control: ControlState, secret_file: Path) -> str:
-    """Ensure bootstrap's full-scope default key, saying what became of it.
+    """Ensure bootstrap's default key (every scope except admin:purge), saying what became of it.
 
     `keys.json` decides, and the record's own `bootstrap_default` mark is what
     it decides by, so a key an operator happens to name the same thing is never
@@ -66,7 +67,7 @@ def ensure_default_key(control: ControlState, secret_file: Path) -> str:
     revoked, a default whose credential is still readable is kept untouched,
     and a default whose credential was lost is reported unrecoverable with the
     record left alone, because minting a replacement would leave the first one
-    live and full scope for whoever still holds it.
+    live for whoever still holds it.
     """
     key_set, exists = _load_keys(control)
     current = next((record for record in key_set.keys if record.bootstrap_default), None)
@@ -79,7 +80,7 @@ def ensure_default_key(control: ControlState, secret_file: Path) -> str:
         atomic_write_text(secret_file, UNRECOVERABLE_NOTICE + "\n", mode=0o600)
         return "unrecoverable"
 
-    record, credential = create_key(DEFAULT_KEY_NAME, list(API_SCOPES), bootstrap_default=True)
+    record, credential = create_key(DEFAULT_KEY_NAME, list(DEFAULT_SCOPES), bootstrap_default=True)
     atomic_write_text(secret_file, credential + "\n", mode=0o600)
     key_set.keys.append(record)
     control.store.write(
@@ -100,7 +101,7 @@ def parser() -> argparse.ArgumentParser:
         action="append",
         choices=API_SCOPES,
         dest="scopes",
-        help="scope to grant; repeat as needed (default: every scope)",
+        help="scope to grant; repeat as needed (default: every scope except admin:purge)",
     )
     revoke = commands.add_parser("revoke", help="revoke a key by id")
     revoke.add_argument("key_id")
@@ -116,7 +117,7 @@ def run(argv: list[str] | None = None, wiring: Wiring | None = None) -> int:
             credential = add_key(
                 control.store,
                 args.name,
-                args.scopes or list(API_SCOPES),
+                args.scopes or list(DEFAULT_SCOPES),
                 if_revision=load_keys(control.store).revision,
             )
             print(credential)
