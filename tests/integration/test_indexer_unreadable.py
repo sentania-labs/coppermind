@@ -5,7 +5,33 @@ from datetime import UTC, datetime
 import sqlalchemy as sa
 from coppermind_store import filing, indexer
 
-from coppermind.db.models import Source
+from coppermind.db.models import NoteSource, Source
+from coppermind.store_protocol import CreateNote
+
+
+async def _approve(store, source_ids, title="Approver"):
+    """A reviewed, filed note that approves revision 1 of each source."""
+    created = await store.create_note(
+        CreateNote(
+            title=title,
+            folder="2026-09",
+            body="Body",
+            frontmatter={
+                "date": "2026-09-08",
+                "type": "reference",
+                "context": "internal",
+                "reviewed": True,
+            },
+        )
+    )
+    await filing.file_reviewed(store)
+    now = datetime.now(UTC)
+    async with store.session_factory() as session, session.begin():
+        session.add_all(
+            NoteSource(note_id=created.id, source_id=ref, approved_revision=1, created_at=now)
+            for ref in source_ids
+        )
+    return created
 
 
 async def test_missing_projection_batch_is_not_retried(store, monkeypatch):
@@ -26,6 +52,7 @@ async def test_missing_projection_batch_is_not_retried(store, monkeypatch):
                 for i in range(200)
             ]
         )
+    created = await _approve(store, [f"missing-{i}" for i in range(200)], "Fresh work")
     first = await indexer.catch_up(store)
 
     def unexpected_read(*args):
@@ -41,31 +68,15 @@ async def test_missing_projection_batch_is_not_retried(store, monkeypatch):
 
     # Known failures leave the whole next batch available for real work.
     from coppermind.db.models import SearchDocument
-    from coppermind.store_protocol import CreateNote
 
-    created = await store.create_note(
-        CreateNote(
-            title="Fresh work",
-            folder="2026-09",
-            body="Index me",
-            frontmatter={
-                "date": "2026-09-08",
-                "type": "reference",
-                "context": "internal",
-                "reviewed": True,
-            },
-        )
-    )
-    await filing.file_reviewed(store)
     async with store.session_factory() as session, session.begin():
         await session.execute(sa.delete(SearchDocument).where(SearchDocument.ref_id == created.id))
     following = await indexer.catch_up(store)
     assert following["indexed"] == 1
     assert following["skipped_known_unreadable"] == 200
 
-    # Approval of one source must not make another pending source eligible.
-    from coppermind.db.models import NoteSource
-
+    # A source its note has not approved is not drawn at all, so it is neither
+    # read nor marked.
     async with store.session_factory() as session, session.begin():
         session.add(
             Source(
@@ -80,19 +91,14 @@ async def test_missing_projection_batch_is_not_retried(store, monkeypatch):
             )
         )
         await session.flush()
-        session.add_all(
-            [
-                NoteSource(
-                    note_id=created.id, source_id="missing-0", approved_revision=1, created_at=now
-                ),
-                NoteSource(
-                    note_id=created.id, source_id="pending", approved_revision=None, created_at=now
-                ),
-            ]
+        session.add(
+            NoteSource(
+                note_id=created.id, source_id="pending", approved_revision=None, created_at=now
+            )
         )
     pending = await indexer.catch_up(store)
-    # Only the newly approved source is read again; the pending one is left alone.
-    assert pending["unreadable"] == 1
+    assert pending["unreadable"] == 0
+    assert pending["skipped_known_unreadable"] == 200
     assert (await store.get_search_index_status()).known_unreadable == 200
     async with store.session_factory() as session:
         from coppermind.db.models import SearchUnreadable
@@ -119,11 +125,15 @@ async def test_source_revision_manifest_and_projection_changes_retry(store):
                 updated_at=now,
             )
         )
+    await _approve(store, ["retry"])
     assert (await indexer.catch_up(store))["unreadable"] == 1
     assert (await indexer.catch_up(store))["skipped_known_unreadable"] == 1
     async with store.session_factory() as session, session.begin():
         await session.execute(
             sa.update(Source).where(Source.id == "retry").values(current_revision=2)
+        )
+        await session.execute(
+            sa.update(NoteSource).where(NoteSource.source_id == "retry").values(approved_revision=2)
         )
     assert (await indexer.catch_up(store))["unreadable"] == 1
     manifest = store.sources_root / "retry" / "manifest.json"
@@ -141,11 +151,11 @@ async def test_source_revision_manifest_and_projection_changes_retry(store):
         "---\nreviewed: true\nmanaged: true\nsource_id: retry\n"
         "source_revision: 2\n---\nRestored projection"
     )
-    assert (await indexer.catch_up(store))["unreadable"] == 1
+    restored = await indexer.catch_up(store)
+    assert restored["unreadable"] == 0
+    assert restored["indexed"] == 1
     async with store.session_factory() as session:
-        mark = await session.get(SearchUnreadable, ("source", "retry"))
-        assert "no reviewed note approves" in mark.reason
-    assert (await indexer.catch_up(store))["skipped_known_unreadable"] == 1
+        assert await session.get(SearchUnreadable, ("source", "retry")) is None
 
 
 async def test_failure_log_once_status_problems_and_rebuild_retry(store):
@@ -167,6 +177,7 @@ async def test_failure_log_once_status_problems_and_rebuild_retry(store):
                 updated_at=now,
             )
         )
+    await _approve(store, ["log-once"])
     with capture_logs() as logs:
         await indexer.catch_up(store)
         await indexer.catch_up(store)
@@ -189,7 +200,6 @@ async def test_failure_log_once_status_problems_and_rebuild_retry(store):
 
 async def test_note_path_hash_and_file_repairs_retry(store):
     from coppermind.db.models import Note, SearchDocument, SearchUnreadable
-    from coppermind.store_protocol import CreateNote
 
     created = await store.create_note(
         CreateNote(
@@ -253,6 +263,7 @@ async def test_pass_only_reads_one_batch_of_unmarked_sources(store, monkeypatch)
                 for i in range(indexer.CATCH_UP_BATCH + 50)
             ]
         )
+    await _approve(store, [f"bulk-{i}" for i in range(indexer.CATCH_UP_BATCH + 50)])
     reads: list[str] = []
     original = indexer._projection_path
 
@@ -268,7 +279,6 @@ async def test_pass_only_reads_one_batch_of_unmarked_sources(store, monkeypatch)
 
 async def test_mark_clears_when_entry_stops_being_a_candidate(store):
     from coppermind.db.models import Note, SearchDocument, SearchUnreadable
-    from coppermind.store_protocol import CreateNote
 
     created = await store.create_note(
         CreateNote(
@@ -307,7 +317,6 @@ async def test_transient_read_error_is_retried_not_marked(store):
     from structlog.testing import capture_logs
 
     from coppermind.db.models import Note, SearchDocument
-    from coppermind.store_protocol import CreateNote
 
     if os.geteuid() == 0:
         pytest.skip("permission errors are not raised for root")
@@ -369,6 +378,7 @@ async def test_transient_manifest_read_error_is_retried_not_marked(store):
                 updated_at=now,
             )
         )
+    await _approve(store, ["blip"])
     manifest = store.sources_root / "blip" / "manifest.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(json.dumps({"projection_path": "Sources/blip.md"}))
@@ -389,25 +399,25 @@ async def test_transient_manifest_read_error_is_retried_not_marked(store):
         assert "FileNotFoundError" in mark.reason
 
 
-async def test_readable_orphan_projection_is_marked_not_counted_indexed(store):
+async def test_unapproved_source_is_neither_drawn_nor_marked(store):
     import json
 
-    from coppermind.db.models import NoteSource, SearchDocument, SearchUnreadable
-    from coppermind.store_protocol import CreateNote
+    from coppermind.db.models import SearchDocument, SearchUnreadable
 
     now = datetime.now(UTC)
     async with store.session_factory() as session, session.begin():
-        session.add(
+        session.add_all(
             Source(
-                id="orphan",
+                id=ref,
                 provider="test",
-                external_source_id="orphan",
+                external_source_id=ref,
                 source_type="transcript",
                 current_revision=1,
                 content_identity="x",
                 created_at=now,
                 updated_at=now,
             )
+            for ref in ("orphan", "gone")
         )
     manifest = store.sources_root / "orphan" / "manifest.json"
     manifest.parent.mkdir(parents=True)
@@ -419,37 +429,25 @@ async def test_readable_orphan_projection_is_marked_not_counted_indexed(store):
         "source_revision: 1\n---\nStill on disk"
     )
 
-    first = await indexer.catch_up(store)
-    assert first["indexed"] == 0
-    assert first["unreadable"] == 1
-    second = await indexer.catch_up(store)
-    assert second["unreadable"] == 0
-    assert second["skipped_known_unreadable"] == 1
+    for _ in range(2):
+        counts = await indexer.catch_up(store)
+        assert counts["indexed"] == 0
+        assert counts["unreadable"] == 0
+        assert counts["skipped_known_unreadable"] == 0
     async with store.session_factory() as session:
-        mark = await session.get(SearchUnreadable, ("source", "orphan"))
-        assert "no reviewed note approves" in mark.reason
+        for ref in ("orphan", "gone"):
+            assert await session.get(SearchUnreadable, ("source", ref)) is None
+            assert await session.get(SearchDocument, ("source", ref)) is None
+    assert (await store.get_search_index_status()).known_unreadable == 0
 
-    created = await store.create_note(
-        CreateNote(
-            title="Opens it",
-            folder="2026-09",
-            body="Body",
-            frontmatter={
-                "date": "2026-09-08",
-                "type": "reference",
-                "context": "internal",
-                "reviewed": True,
-            },
-        )
-    )
-    await filing.file_reviewed(store)
+    created = await _approve(store, ["orphan", "gone"], "Opens it")
     async with store.session_factory() as session, session.begin():
         await session.execute(sa.delete(SearchDocument))
-        session.add(
-            NoteSource(note_id=created.id, source_id="orphan", approved_revision=1, created_at=now)
-        )
     third = await indexer.catch_up(store)
     assert third["indexed"] == 2
+    assert third["unreadable"] == 1
     async with store.session_factory() as session:
-        assert await session.get(SearchUnreadable, ("source", "orphan")) is None
+        assert await session.get(SearchDocument, ("note", created.id)) is not None
         assert await session.get(SearchDocument, ("source", "orphan")) is not None
+        assert await session.get(SearchUnreadable, ("source", "orphan")) is None
+        assert await session.get(SearchUnreadable, ("source", "gone")) is not None
