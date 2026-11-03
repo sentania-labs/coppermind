@@ -23,7 +23,6 @@ ACTIONS = {
     "upload-drop": "upload_drop",
     "dismiss-drop": "dismiss_drop",
     "dropbox-list": "dropbox_list",
-    "save-intake": "save_intake",
     "save-connection": "save_connection",
     "convert-connection": "convert_connection",
     "discover": "discover",

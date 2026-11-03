@@ -117,20 +117,6 @@ def router(wiring: Wiring) -> APIRouter:
                     "Completed receipts clear automatically; import history and originals "
                     "remain. Failed receipts stay until you dismiss them.</p>"
                 )
-                body += (
-                    "<details><summary>Receipt settings</summary>"
-                    + _form(
-                        "save-intake",
-                        '<label>Keep completed receipts (days)<input name="retention_days" '
-                        'type="number" min="0" max="365" step="any" value="'
-                        + format(config.get("dropbox_receipt_retention_s", 604800) / 86400, ".12g")
-                        + '"></label>',
-                        "Save receipt settings",
-                        revision=config["revision"],
-                    )
-                    + "<p>Default: 7 days. Zero clears completed receipts immediately. "
-                    "Import history stays.</p></details>"
-                )
                 if any(
                     item["state"] in {"pending", "importing", "stabilizing"}
                     for item in dropbox["items"]
@@ -174,7 +160,7 @@ def router(wiring: Wiring) -> APIRouter:
                     if item["state"] == "failed":
                         body += (
                             '<p>Review <a href="/admin/context?tab=calendar">import '
-                            "history</a>, correct the export and drop it again.</p>"
+                            "history</a>, then dismiss this receipt or drop the file again.</p>"
                         )
                     body += "</section>"
                 if not dropbox["items"]:

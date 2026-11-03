@@ -284,8 +284,7 @@ separate calendars. Calendar UID binding and identity claiming are removed.
 | `POST /v1/calendars/calendar/imports?filename=export.ics` | `sources:write` | Compatibility binary upload, 202 durable import receipt; other calendar IDs return 422 |
 
 Dropbox states are `pending`, `importing`, `succeeded`, `already_imported`,
-`failed`, and `unsupported`. Completed receipts expire after the configured
-retention (604800 seconds by default); failed receipts remain until dismissed.
+`failed`, and `unsupported`. Completed receipts expire after seven days; failed receipts remain until dismissed.
 Dismissal never deletes original exports or calendar import history. An identical
 re-drop is `already_imported` and does not create another import.
 

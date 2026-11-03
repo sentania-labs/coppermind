@@ -415,7 +415,7 @@ def test_calendar_receipts_and_people_are_actionable(signed_in):
     assert "Action completed." not in response.text
 
 
-def test_receipts_show_waiting_original_import_and_settings_in_days(signed_in):
+def test_receipts_show_waiting_original_and_import(signed_in):
     client, _ = signed_in
     fake = CalendarUXStore()
     client.app.state.store = fake
@@ -424,19 +424,12 @@ def test_receipts_show_waiting_original_import_and_settings_in_days(signed_in):
     assert "No receipts to show" not in page.text
     assert "First imported: November 3, 2026, 9:00 AM CST" in page.text
     assert "2 events" in page.text
-    assert 'name="retention_days"' in page.text and 'value="7"' in page.text
+    assert "Receipt settings" not in page.text
     csrf = form_token(client, "/admin/workflow?tab=intake")
     response = client.post(
-        "/v1/admin/context/save-intake",
-        data={"csrf": csrf, "retention_days": "1.5"},
-        follow_redirects=False,
+        "/v1/admin/context/save-intake", data={"csrf": csrf, "retention_days": "1.5"}
     )
-    assert response.status_code == 303
-    assert fake.calls[-1][1]["dropbox_receipt_retention_s"] == 129600
-    invalid = client.post(
-        "/v1/admin/context/save-intake", data={"csrf": csrf, "retention_days": "NaN"}
-    )
-    assert invalid.status_code == 422
+    assert response.status_code == 422
 
 
 def test_calendar_empty_sections_explain_next_step(signed_in):

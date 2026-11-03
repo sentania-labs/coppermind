@@ -197,7 +197,10 @@ def router(wiring: Wiring) -> APIRouter:
                 body += "</td><td>"
                 if state == "failed" and not receipt.get("dismissed"):
                     body += _form("dismiss-import", _hidden("id", receipt["id"]), "Dismiss failure")
-                    body += "<p>Correct the export in its source calendar and drop it again.</p>"
+                    if receipt.get("conflict"):
+                        body += (
+                            "<p>Correct the export in its source calendar and drop it again.</p>"
+                        )
                 body += "</td></tr>"
             if imports:
                 body += "</table>"
@@ -729,17 +732,7 @@ picker.addEventListener('change', () => {
         try:
             payload: dict[str, Any] = {key: value for key, value in form.items() if key != "csrf"}
             payload["revision"] = int(form.get("revision", "0"))
-            if action == "save-intake":
-                from decimal import Decimal, InvalidOperation
-
-                try:
-                    days = Decimal(form["retention_days"])
-                    if not days.is_finite() or not 0 <= days <= 365:
-                        raise ValueError("Receipt retention must be between 0 and 365 days")
-                    payload["dropbox_receipt_retention_s"] = int(days * 86400)
-                except InvalidOperation as exc:
-                    raise ValueError("Enter a number of days") from exc
-            elif action in {"setup-lifecycle", "dismiss-drop", "configure-property"}:
+            if action in {"setup-lifecycle", "dismiss-drop", "configure-property"}:
                 pass
             elif action == "save-connection":
                 payload["connection"] = {
@@ -796,7 +789,6 @@ picker.addEventListener('change', () => {
                 "setup-lifecycle",
                 "configure-property",
                 "dismiss-drop",
-                "save-intake",
                 "save-connection",
                 "convert-connection",
                 "discover",
@@ -828,7 +820,7 @@ picker.addEventListener('change', () => {
             return error(exc)
         if action == "configure-property":
             return RedirectResponse("/admin/workflow?tab=enrichment&saved=1", status_code=303)
-        if action in {"setup-lifecycle", "dismiss-drop", "save-intake"}:
+        if action in {"setup-lifecycle", "dismiss-drop"}:
             return RedirectResponse("/admin/workflow?tab=intake&saved=1", status_code=303)
         tab = (
             "models"

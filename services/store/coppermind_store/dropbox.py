@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 COMPLETED = {"succeeded", "already_imported"}
+RECEIPT_RETENTION_S = 7 * 86400
 
 
 class Dropbox:
@@ -46,7 +47,7 @@ class Dropbox:
         self.context.write("dropbox", records)
 
     def expire(self, records: dict[str, Any]) -> None:
-        cutoff = time.time() - self.context.config().dropbox_receipt_retention_s
+        cutoff = time.time() - RECEIPT_RETENTION_S
         records["items"] = {
             key: item
             for key, item in records["items"].items()
@@ -61,7 +62,7 @@ class Dropbox:
         digest = hashlib.sha256(data).hexdigest()
         records = self.records()
         existing = records["items"].get(digest)
-        if existing and existing["state"] not in COMPLETED:
+        if existing and existing["state"] not in COMPLETED | {"failed"}:
             return existing
         history = records["history"].get(digest, {})
         imported = next(
@@ -167,7 +168,7 @@ class Dropbox:
             records = self.records()
             identity = str(payload.get("id", ""))
             item = records["items"].get(identity)
-            if not item or item["state"] not in COMPLETED | {"failed", "unsupported"}:
+            if not item or item["state"] not in COMPLETED | {"failed"}:
                 raise ValueError("Only completed or failed receipts can be dismissed")
             if item["state"] == "failed":
                 for part in item["parts"]:

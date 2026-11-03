@@ -3,18 +3,21 @@
 import asyncio
 import hashlib
 import json
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from coppermind_store import calendar_archive
 from coppermind_store import calendar_mirror as mirror
 from coppermind_store.calendar_archive import ImportReceipt
-from coppermind_store.calendar_import import parse_export
+from coppermind_store.calendar_import import CalendarImportError, parse_export
 from coppermind_store.context_service import ContextService
 from coppermind_store.control import ControlState
 from coppermind_store.notes import LocalStore
 
 from coppermind.context_config import CalendarSource
 from coppermind.settings import Wiring
+from coppermind.store_protocol import MetadataUnavailable, NotFound
 from services.store.tests.test_calendar_import import large_ics, zip_bytes
 
 
@@ -550,3 +553,113 @@ async def test_unreadable_names_fail_visibly_without_blocking_other_intake(tmp_p
     assert states["good.ics"]["state"] == "succeeded"
     await dropbox.dismiss({"id": states["a\tb.ics"]["id"]})
     assert "a\tb.ics" not in {item["filename"] for item in dropbox.snapshot()["items"]}
+
+
+async def test_redrop_retries_a_failed_non_conflict_import_and_keeps_conflicts_failed(
+    tmp_path, monkeypatch
+):
+    store = local_store(tmp_path)
+    archive = store.context.archive
+    real = calendar_archive.parse_bounded
+
+    def slow(*args, **kwargs):
+        raise CalendarImportError("calendar processing exceeded its time limit")
+
+    monkeypatch.setattr("coppermind_store.calendar_archive.parse_bounded", slow)
+    first = store.context.dropbox.submit("big.ics", calendar())
+    await finish(store)
+    failed = store.context.dropbox.records()["items"][first["id"]]
+    assert failed["state"] == "failed"
+    assert failed["error"].endswith("time limit. Drop the export again to retry.")
+    assert not archive.receipts()[0].conflict
+
+    monkeypatch.setattr("coppermind_store.calendar_archive.parse_bounded", real)
+    again = store.context.dropbox.submit("big.ics", calendar())
+    assert again["state"] == "pending"
+    await finish(store)
+    item = store.context.dropbox.records()["items"][first["id"]]
+    assert item["state"] == "succeeded" and item["error"] == ""
+    assert [r.state for r in archive.receipts()] == ["succeeded"]
+    assert len(archive.catalog().events) == 1
+
+    conflicting = calendar().replace(b"Planning", b"Wrong title")
+    store.context.dropbox.submit("conflict.ics", conflicting)
+    await finish(store)
+    receipt = next(r for r in archive.receipts() if r.filename == "conflict.ics")
+    assert receipt.state == "failed" and receipt.conflict
+    assert "Drop the export again" not in receipt.error
+    store.context.dropbox.submit("conflict.ics", conflicting)
+    await finish(store)
+    assert next(r for r in archive.receipts() if r.id == receipt.id).state == "failed"
+
+
+def fake_notes(store, notes, monkeypatch, fail=()):
+    patched = []
+
+    async def get_note(note_id):
+        if note_id not in notes:
+            raise NotFound(note_id)
+        return SimpleNamespace(
+            id=note_id, frontmatter=dict(notes[note_id]), content_hash="hash-" + note_id
+        )
+
+    async def patch_frontmatter(note_id, request, if_match):
+        if note_id in fail:
+            raise MetadataUnavailable("database down")
+        assert if_match == "hash-" + note_id and not request.unset
+        notes[note_id].update(request.set)
+        patched.append((note_id, request.set))
+
+    monkeypatch.setattr(store, "get_note", get_note)
+    monkeypatch.setattr(store, "patch_frontmatter", patch_frontmatter)
+    return patched
+
+
+async def test_upgrade_rewrites_legacy_event_ids_in_notes_and_records(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    old = legacy_archive(store)
+    config = store.context.config()
+    config.assignments["enrichment"].event_field = "calendar_event"
+    store.context.write("config", config.model_dump())
+    old_id = next(iter(old.events))
+    store.context = ContextService(store)
+    aliases = store.context.archive.catalog().aliases
+    new_id = aliases[old_id]
+    assert new_id != old_id
+    store.context.write(
+        "associations",
+        {
+            "n1": {"events": [old_id, "other"], "contacts": ["c"], "attendees": []},
+            "n2": {"events": [new_id], "contacts": [], "attendees": []},
+        },
+    )
+    store.context.write(
+        "finalized",
+        {"n1": {"confirmed_calendar": {"event_id": old_id, "at": "t"}}, "n3": {}},
+    )
+    notes = {
+        "n1": {"calendar_event": old_id, "title": "keep"},
+        "n2": {"calendar_event": new_id},
+        "n3": {"calendar_event": old_id},
+    }
+    patched = fake_notes(store, notes, monkeypatch, fail={"n3"})
+
+    await store.context.migrate_event_ids()
+    assert patched == [("n1", {"calendar_event": new_id})]
+    assert store.context.read("associations", {})["n1"]["events"] == [old_id, "other"]
+    assert not store.context.read("one-calendar-event-ids", {}).get("complete")
+
+    patched_failure = fake_notes(store, notes, monkeypatch)
+    await store.context.migrate_event_ids()
+    assert patched_failure == [("n3", {"calendar_event": new_id})]
+    associations = store.context.read("associations", {})
+    assert associations["n1"]["events"] == sorted([new_id, "other"])
+    assert associations["n2"]["events"] == [new_id]
+    assert store.context.read("finalized", {})["n1"]["confirmed_calendar"]["event_id"] == new_id
+    assert notes["n1"] == {"calendar_event": new_id, "title": "keep"}
+    assert (store.context.root / "before-one-calendar-event-ids.json").exists()
+    assert store.context.archive.catalog().aliases == aliases
+
+    patched_failure.clear()
+    await store.context.migrate_event_ids()
+    assert patched_failure == []

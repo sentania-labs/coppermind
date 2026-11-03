@@ -33,6 +33,7 @@ from coppermind_store import calendar_mirror as mirror
 from coppermind_store.calendar_import import (
     CALENDAR_ID,
     MAX_UPLOAD,
+    CalendarConflictError,
     CalendarEvent,
     CalendarImportError,
     EventProvenance,
@@ -62,6 +63,7 @@ class ImportReceipt(BaseModel):
     export_filename: str = ""
     original_entry: str = ""
     dismissed: bool = False
+    conflict: bool = False
 
 
 class ContactEvidence(BaseModel):
@@ -162,8 +164,10 @@ class CalendarArchive:
         with self._lock:
             existing = next((r for r in self.receipts() if r.content_hash == digest), None)
             if existing is not None:
-                if existing.dismissed:
+                if existing.dismissed or (existing.state == "failed" and not existing.conflict):
                     existing.dismissed = False
+                    if existing.state == "failed" and not existing.conflict:
+                        existing.state, existing.error = "pending", ""
                     self._save_receipt(existing)
                 return existing
             receipt_path = self.root / "imports" / identity / "receipt.json"
@@ -281,7 +285,12 @@ class CalendarArchive:
                     )
             except CalendarImportError as exc:
                 receipt.state = "failed"
-                receipt.error = str(exc)
+                receipt.conflict = isinstance(exc, CalendarConflictError)
+                receipt.error = (
+                    str(exc)
+                    if receipt.conflict
+                    else f"{str(exc).rstrip('.')}. Drop the export again to retry."
+                )
                 get_logger("coppermind-store").warning(
                     "calendar_import_failed",
                     receipt_id=receipt.id,

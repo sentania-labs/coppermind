@@ -30,7 +30,13 @@ from coppermind.schema import (
     note_date,
     note_start_time,
 )
-from coppermind.store_protocol import NoteQuery, PatchFrontmatter, RenameNote, StoreError
+from coppermind.store_protocol import (
+    NoteQuery,
+    NotFound,
+    PatchFrontmatter,
+    RenameNote,
+    StoreError,
+)
 from coppermind_store.calendar_archive import CalendarArchive
 from coppermind_store.calendar_import import CALENDAR_ID
 from coppermind_store.calendar_worker import occurrences
@@ -259,14 +265,6 @@ class ContextService:
 
     async def dropbox_list(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.dropbox.snapshot()
-
-    async def save_intake(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with self.lock:
-            config = self.config()
-            self.check_revision(config, payload)
-            config.dropbox_receipt_retention_s = int(payload["dropbox_receipt_retention_s"])
-            self.save_config(config)
-        return {"saved": "intake"}
 
     async def upload_drop(self, payload: dict[str, Any]) -> dict[str, Any]:
         async with self.lock:
@@ -1390,7 +1388,51 @@ class ContextService:
         async with self.lock:
             return await resume(self, self.read("association-corrections/" + payload["id"], {}))
 
+    async def migrate_event_ids(self) -> None:
+        if self.read("one-calendar-event-ids", {}).get("complete"):
+            return
+        aliases = self.archive.catalog().aliases
+        async with self.lock:
+            associations = self.read("associations", {})
+            finalized = self.read("finalized", {})
+            if aliases:
+                if not (self.root / "before-one-calendar-event-ids.json").exists():
+                    self.write(
+                        "before-one-calendar-event-ids",
+                        {"associations": associations, "finalized": finalized},
+                    )
+                field = self.config().assignments["enrichment"].event_field
+                complete = True
+                for note_id in sorted({*associations, *finalized} if field else ()):
+                    try:
+                        note = await self.store.get_note(note_id)
+                        value = note.frontmatter.get(field)
+                        if isinstance(value, str) and value in aliases:
+                            await self.store.patch_frontmatter(
+                                note_id,
+                                PatchFrontmatter(set={field: aliases[value]}),
+                                note.content_hash,
+                            )
+                    except NotFound:
+                        continue
+                    except StoreError as exc:
+                        complete = False
+                        log.warning("Event ID migration will retry note %s: %s", note_id, exc)
+                if not complete:
+                    return
+                for record in associations.values():
+                    record["events"] = sorted({aliases.get(i, i) for i in record.get("events", [])})
+                for record in finalized.values():
+                    confirmed = record.get("confirmed_calendar")
+                    if confirmed:
+                        event_id = confirmed["event_id"]
+                        confirmed["event_id"] = aliases.get(event_id, event_id)
+                self.write("associations", associations)
+                self.write("finalized", finalized)
+            self.write("one-calendar-event-ids", {"complete": True, "at": now()})
+
     async def tick(self) -> None:
+        await self.migrate_event_ids()
         await self.dropbox.scan()
         async with self.lock:
             await self.dropbox.process()
