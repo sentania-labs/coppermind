@@ -268,3 +268,32 @@ and the `search index caught up` line is logged only when a pass indexed,
 removed or failed something. Both search index status and store status expose
 `known_unreadable`; Admin Problems lists the entries and their reasons. These
 marks do not remove source archives or notes.
+
+## Calendar exports and Dropbox receipts
+
+Coppermind has one calendar. Export sources are provenance on each event, not
+separate calendars. Calendar UID binding and identity claiming are removed.
+
+| Route | Scope | Result |
+|---|---|---|
+| `POST /v1/dropbox?filename=export.zip` | `sources:write` | Binary ICS or ZIP, 202 after durable intake; 413 above 200,000,000 bytes |
+| `GET /v1/dropbox` | `sources:read` | `{folder, items}`; each receipt has `id`, `filename`, `state`, `error`, and import references in `parts` |
+| `POST /v1/dropbox/{id}/dismiss` | `sources:write` | Dismiss a completed, failed or unsupported receipt; 422 for pending/importing or unknown receipts |
+| `GET /v1/calendars?offset=0` | `sources:read` | Compatible `{calendar, events, contacts, offset, next_offset, totals}` response; calendar now also has `id: calendar`, `name: My calendar` |
+| `POST /v1/calendars/calendar/imports?filename=export.ics` | `sources:write` | Compatibility binary upload, 202 durable import receipt; other calendar IDs return 422 |
+
+Dropbox states are `pending`, `importing`, `succeeded`, `already_imported`,
+`failed`, and `unsupported`. Completed receipts expire after the configured
+retention (604800 seconds by default); failed receipts remain until dismissed.
+Dismissal never deletes original exports or calendar import history. An identical
+re-drop is `already_imported` and does not create another import.
+
+Events retain their existing fields and add `provenance`, a list of
+`{source_id, filename, entry, imported_at, legacy_calendar}` witnesses. The last
+field records a previous calendar on upgrade, otherwise an empty string.
+Timestamps use ISO 8601 with an offset. Multiple witnesses are expected, even
+when the event revision is unchanged or older. Pagination remains 100 records per
+section, following `next_offset`. No source filter is supported. Expanded ZIP
+limits remain 40 MiB and 100 entries; conflicts fail the export atomically and
+appear in Admin Problems. Without authentication these routes return 401;
+without the named scope they return 403.

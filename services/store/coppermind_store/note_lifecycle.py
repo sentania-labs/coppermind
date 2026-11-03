@@ -368,7 +368,7 @@ class NoteLifecycle:
             [
                 await asyncio.to_thread(self.context.evidence_hash),
                 self.context.config().model_dump(),
-                self.context.dropbox.snapshot()["calendars"],
+                self.context.store.control.settings().general.timezone,
             ]
         )
         changed = generation != self.calendar_generation

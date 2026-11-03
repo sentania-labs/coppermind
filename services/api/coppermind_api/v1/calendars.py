@@ -45,9 +45,10 @@ async def upload(
     data = bytearray()
     async for chunk in request.stream():
         data.extend(chunk)
-        if len(data) > 10 * 1024 * 1024:
+        if len(data) > 200_000_000:
             return JSONResponse(
-                {"error": "payload_too_large", "message": "Calendar limit: 10 MiB"}, status_code=413
+                {"error": "payload_too_large", "message": "Calendar limit: 200,000,000 bytes"},
+                status_code=413,
             )
     try:
         result = await client.context_action(

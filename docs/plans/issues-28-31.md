@@ -141,11 +141,12 @@ only when the linked reviewed note and source are eligible. Retraction, unreview
 missing notes and source revision changes invalidate derived search rows.
 
 Wrap existing calendar intake in the same job/status interface; do not rewrite
-calendar identity, UID binding, recurrence or partial-export behavior. Existing
+the single-calendar event identity, recurrence or partial-export behavior. Issue
+65 supersedes the former calendar UID binding model: exports are event provenance. Existing
 `/data/state/calendars` originals/catalogs remain readable. New calendar imports
 can expose source identities through the ordinary source API using a stable
-calendar-to-source mapping. Backfill is explicit, resumable and deduplicated.
-The structured query gains date range, calendar and attendee/organizer filters,
+export-to-source mapping. Backfill is explicit, resumable and deduplicated.
+The structured query gains date range and attendee/organizer filters,
 pagination and local timezone rendering. Calendar events remain data, not notes.
 
 **Acceptance:** text from a PDF page and PPTX slide is searchable after review

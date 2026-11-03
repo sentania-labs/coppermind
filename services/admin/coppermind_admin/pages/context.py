@@ -126,7 +126,7 @@ def router(wiring: Wiring) -> APIRouter:
         config = data["config"]
         revision = config["revision"]
         head = """<h1>Calendar and enrichment</h1><p class="section-links">
-<a href="/admin/context?tab=calendar">Calendars and contacts</a>
+<a href="/admin/context?tab=calendar">Calendar and contacts</a>
 <a href="/admin/context?tab=models">Connections and model</a>
 <a href="/admin/context?tab=review">Suggestions and backlog</a></p>"""
         if request.query_params.get("saved"):
@@ -137,40 +137,32 @@ def router(wiring: Wiring) -> APIRouter:
             head += '<p class="notice">' + e(problem) + "</p>"
         if tab == "calendar":
             body = (
-                "<p>Drop ICS or ZIP files into a configured Obsidian folder. "
-                "Originals are retained. "
+                "<p>All exports merge into your one calendar. Drop ICS or ZIP files in "
+                '<a href="/admin/workflow?tab=intake">Dropbox</a>. Originals are retained; '
+                "importing does not send calendar data to a model.</p>"
+                "<h2>Import history</h2><p>200,000,000 bytes per upload; 40 MiB expanded ZIP; "
+                "100 archive entries. Files must stay unchanged for 30 seconds.</p>"
             )
-            body += "Importing does not send calendar data to a model.</p><h2>Calendar sources</h2>"
-            for source in config["sources"]:
-                fields = _hidden("id", source["id"])
-                fields += _input("name", "Name", source["name"])
-                fields += _input("folder", "Vault drop folder", source["folder"])
-                fields += _input("timezone", "Calendar timezone", source["timezone"])
-                fields += _check("enabled", "Watch this folder", source["enabled"])
-                body += "<fieldset><legend>" + e(source["id"]) + "</legend>"
+            if not data["calendar"]["imports"]:
                 body += (
-                    "<p>"
-                    + e(data["watch_status"].get(source["id"], "Waiting for first scan"))
-                    + "</p>"
+                    '<p class="notice">No exports imported yet. Add an ICS or ZIP to '
+                    "Dropbox to begin.</p>"
                 )
-                body += (
-                    _form("save-source", fields, "Save source", revision=revision) + "</fieldset>"
-                )
-            fields = _input("id", "New calendar ID (lowercase letters, numbers, hyphens)")
-            fields += _input("name", "Calendar name")
-            fields += _input("folder", "Vault drop folder", "_Calendar/Work")
-            fields += _input("timezone", "Timezone", "America/Chicago")
-            fields += _check("enabled", "Watch this folder", True)
-            body += "<details><summary>Add calendar</summary>"
-            body += _form("save-source", fields, "Add calendar", revision=revision) + "</details>"
-            body += "<h2>Imports</h2><p>10 MiB upload; 40 MiB expanded ZIP; 100 archive entries. "
-            body += (
-                "Files must stay unchanged for 30 seconds. Non-ICS ZIP entries are rejected.</p>"
-            )
             body += "<table><tr><th>File</th><th>Result</th><th>Action</th></tr>"
             for receipt in data["calendar"]["imports"]:
                 body += "<tr><td>" + e(receipt["filename"]) + "</td><td>"
-                body += e(receipt["state"]) + ": " + e(receipt["error"]) + "</td><td>"
+                body += (
+                    e(
+                        {
+                            "succeeded": "Imported",
+                            "failed": "Import failed",
+                            "pending": "Waiting to import",
+                        }[receipt["state"]]
+                    )
+                    + ": "
+                    + e(receipt["error"])
+                    + "</td><td>"
+                )
                 if receipt["state"] == "failed":
                     body += _form("retry-import", _hidden("id", receipt["id"]), "Retry import")
                 body += "</td></tr>"
@@ -192,9 +184,24 @@ def router(wiring: Wiring) -> APIRouter:
                         if stamp.tzinfo
                         else stamp.strftime("%b %d, %Y %I:%M %p") + " (floating)"
                     )
-                body += (
-                    f"<tr><td>{e(event['title'])}<br><small>{e(event['calendar_id'])}</small></td>"
-                )
+                body += f"<tr><td>{e(event['title'])}"
+                body += "<details><summary>Export provenance</summary><ul>"
+                for witness in event.get("provenance", []):
+                    imported = witness["imported_at"]
+                    if imported:
+                        imported = local_time(datetime.fromisoformat(imported), zone)
+                    legacy = witness.get("legacy_calendar", "")
+                    body += (
+                        "<li>"
+                        + e(witness["filename"])
+                        + " · "
+                        + e(witness["entry"])
+                        + " · "
+                        + e(imported)
+                        + (" · Previous calendar: " + e(legacy) if legacy else "")
+                        + "</li>"
+                    )
+                body += "</ul></details></td>"
                 status = "Cancelled" if event["cancelled"] else "Recorded"
                 body += f"<td>{e(start)}</td><td>{status}</td></tr>"
             body += "</table><h2>Contacts</h2><p>Calendar invitees are not confirmed attendees. "
@@ -646,13 +653,8 @@ picker.addEventListener('change', () => {
         try:
             payload: dict[str, Any] = {key: value for key, value in form.items() if key != "csrf"}
             payload["revision"] = int(form.get("revision", "0"))
-            if action in {"setup-lifecycle", "identify-drop", "configure-property"}:
+            if action in {"setup-lifecycle", "dismiss-drop", "configure-property", "save-intake"}:
                 pass
-            elif action == "save-source":
-                payload["source"] = {
-                    key: form.get(key, "") for key in ("id", "name", "folder", "timezone")
-                }
-                payload["source"]["enabled"] = "enabled" in form
             elif action == "save-connection":
                 payload["connection"] = {
                     key: form.get(key, "") for key in ("id", "name", "provider", "base_url")
@@ -707,8 +709,8 @@ picker.addEventListener('change', () => {
             allowed = {
                 "setup-lifecycle",
                 "configure-property",
-                "identify-drop",
-                "save-source",
+                "dismiss-drop",
+                "save-intake",
                 "save-connection",
                 "convert-connection",
                 "discover",
@@ -731,7 +733,7 @@ picker.addEventListener('change', () => {
             return error(exc)
         if action == "configure-property":
             return RedirectResponse("/admin/workflow?tab=enrichment&saved=1", status_code=303)
-        if action in {"setup-lifecycle", "identify-drop"}:
+        if action in {"setup-lifecycle", "dismiss-drop", "save-intake"}:
             return RedirectResponse("/admin/workflow?tab=intake&saved=1", status_code=303)
         tab = (
             "models"

@@ -10,25 +10,32 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
+import tempfile
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+import ijson
 import sqlalchemy as sa
 from pydantic import BaseModel, ConfigDict, Field
 
 from coppermind.atomicio import atomic_write_bytes, atomic_write_text
 from coppermind.db.calendar import calendar_events as rows
+from coppermind.db.calendar import calendar_evidence as evidence_rows
 from coppermind.db.calendar import calendar_state as mirror_state
 from coppermind.logging import get_logger
 from coppermind.settings import LimitSettings
 from coppermind_store import calendar_mirror as mirror
 from coppermind_store.calendar_import import (
+    CALENDAR_ID,
     MAX_UPLOAD,
     CalendarEvent,
     CalendarImportError,
+    EventProvenance,
+    merge_events,
 )
 from coppermind_store.calendar_worker import parse_bounded
 
@@ -47,6 +54,9 @@ class ImportReceipt(BaseModel):
     # drop, MAX_EXPANDED for a calendar extracted from a ZIP. Recorded so a retried
     # receipt reuses the ceiling its bytes were accepted under.
     limit: int = MAX_UPLOAD
+    legacy_calendar: str = ""
+    export_filename: str = ""
+    original_entry: str = ""
 
 
 class ContactEvidence(BaseModel):
@@ -124,7 +134,13 @@ class CalendarArchive:
         )
 
     def submit(
-        self, calendar_id: str, filename: str, data: bytes, limit: int = MAX_UPLOAD
+        self,
+        calendar_id: str,
+        filename: str,
+        data: bytes,
+        limit: int = MAX_UPLOAD,
+        *,
+        export_filename: str = "",
     ) -> ImportReceipt:
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", calendar_id):
             raise CalendarImportError("calendar identity must be a short lowercase slug")
@@ -137,15 +153,19 @@ class CalendarArchive:
         if suffix not in {".ics", ".zip"}:
             raise CalendarImportError("expected an ICS or ZIP file")
         digest = hashlib.sha256(data).hexdigest()
-        identity = hashlib.sha256(f"{calendar_id}\0{suffix}\0{digest}".encode()).hexdigest()
+        identity = hashlib.sha256(f"{suffix}\0{digest}".encode()).hexdigest()
         with self._lock:
+            existing = next((r for r in self.receipts() if r.content_hash == digest), None)
+            if existing is not None:
+                return existing
             receipt_path = self.root / "imports" / identity / "receipt.json"
             if receipt_path.exists():
                 return ImportReceipt.model_validate_json(receipt_path.read_bytes())
             receipt = ImportReceipt(
                 id=identity,
-                calendar_id=calendar_id,
+                calendar_id=CALENDAR_ID,
                 filename=filename,
+                export_filename=export_filename or filename,
                 content_hash=digest,
                 received_at=datetime.now(UTC).isoformat(),
                 limit=limit,
@@ -176,13 +196,25 @@ class CalendarArchive:
             try:
                 limits = self.limits()
                 events = parse_bounded(
-                    receipt.calendar_id,
+                    CALENDAR_ID,
                     receipt.filename,
                     original,
                     receipt.limit,
                     max_events=limits.calendar_max_events,
                     memory_mib=limits.calendar_import_memory_mib,
                 )
+                for event in events:
+                    event.provenance = [
+                        EventProvenance(
+                            source_id=receipt.id,
+                            filename=receipt.export_filename or receipt.filename,
+                            entry=receipt.original_entry or entry,
+                            imported_at=receipt.received_at,
+                            legacy_calendar=receipt.legacy_calendar
+                            or (receipt.calendar_id if receipt.calendar_id != CALENDAR_ID else ""),
+                        )
+                        for entry in event.source_entries or [event.source_entry]
+                    ]
                 with self.engine.begin() as connection:
                     count = connection.execute(
                         sa.select(sa.func.count()).select_from(rows)
@@ -199,15 +231,13 @@ class CalendarArchive:
                                     "calendar event budget exceeded: "
                                     f"limits.calendar_max_events={limits.calendar_max_events}"
                                 )
-                        if previous is None or event.revision > previous.revision:
-                            mirror.put_event(connection, event.identity, event)
-                        elif (
-                            event.revision == previous.revision
-                            and event.semantic_hash != previous.semantic_hash
-                        ):
-                            raise CalendarImportError(
-                                "event revision conflicts with the stored calendar"
-                            )
+                        # Raises on an equal revision with different content; the whole
+                        # transaction rolls back and the receipt fails.
+                        merged = merge_events(
+                            {event.identity: previous} if previous else {}, [event]
+                        )[event.identity]
+                        if merged != previous:
+                            mirror.put_event(connection, event.identity, merged)
                         for person in event.people:
                             if person.contact_id is not None:
                                 evidence = ContactEvidence(
@@ -221,7 +251,9 @@ class CalendarArchive:
                                 mirror.add_evidence(
                                     connection, person.contact_id, evidence.model_dump()
                                 )
+                    mirror.drop_superseded_conflicts(connection)
                     receipt.event_count = len(events)
+                    # Persist the count before promotion so crash recovery can finish the receipt.
                     self._save_receipt(receipt)
                     # The atomic filesystem promotion precedes the database commit.
                     # A crash in between changes its signature and triggers a rebuild.
@@ -242,6 +274,133 @@ class CalendarArchive:
             receipt.error = ""
             self._save_receipt(receipt)
             return receipt
+
+    def migrate(
+        self, legacy_names: dict[str, str], origins: dict[str, tuple[str, str]] | None = None
+    ) -> None:
+        """One atomic catalog promotion, restart safe; originals/receipts never removed."""
+        with self._lock:
+            path = self.root / "catalog.json"
+            if not path.exists():
+                return
+            with path.open("rb") as handle:
+                if next(ijson.items(handle, "schema_version"), 1) == 2:
+                    return
+            backup = self.root / "before-one-calendar.json"
+            if not backup.exists():
+                staged = backup.with_name(".before-one-calendar.tmp")
+                shutil.copyfile(path, staged)
+                staged.chmod(0o600)
+                staged.replace(backup)
+            old = self.catalog()
+            witnesses: dict[str, list[EventProvenance]] = {}
+            receipts = self.receipts()
+            receipt_backup = self.root / "before-one-calendar-imports.json"
+            if not receipt_backup.exists():
+                atomic_write_text(
+                    receipt_backup,
+                    json.dumps(
+                        {
+                            receipt.id: json.loads(
+                                (self.root / "imports" / receipt.id / "receipt.json").read_bytes()
+                            )
+                            for receipt in receipts
+                        }
+                    ),
+                    mode=0o600,
+                )
+            limits = self.limits()
+            for receipt in receipts:
+                receipt.legacy_calendar = legacy_names.get(receipt.calendar_id, receipt.calendar_id)
+                if origins and receipt.id in origins:
+                    receipt.export_filename, receipt.original_entry = origins[receipt.id]
+                self._save_receipt(receipt)
+                if receipt.id not in old.imports:
+                    continue
+                original = (self.root / "imports" / receipt.id / "original").read_bytes()
+                if hashlib.sha256(original).hexdigest() != receipt.content_hash:
+                    raise CalendarImportError("archived original failed its integrity check")
+                for event in parse_bounded(
+                    receipt.calendar_id,
+                    receipt.filename,
+                    original,
+                    receipt.limit,
+                    max_events=limits.calendar_max_events,
+                    memory_mib=limits.calendar_import_memory_mib,
+                ):
+                    witnesses.setdefault(event.identity, []).extend(
+                        EventProvenance(
+                            source_id=receipt.id,
+                            filename=receipt.export_filename or receipt.filename,
+                            entry=receipt.original_entry or entry,
+                            imported_at=receipt.received_at,
+                            legacy_calendar=legacy_names.get(
+                                receipt.calendar_id, receipt.calendar_id
+                            ),
+                        )
+                        for entry in event.source_entries or [event.source_entry]
+                    )
+            # Stage the former rows and evidence on disk so the rewrite never holds the
+            # catalog in memory. Each former record is converted and merged into the one
+            # calendar's rows in a single transaction that ends with the file promotion.
+            aliases: dict[str, str] = {}
+            conflicts: list[CalendarEvent] = []
+            with tempfile.TemporaryDirectory(dir=self.root, prefix=".migrate-") as scratch:
+                former = Path(scratch) / "events.jsonl"
+                with former.open("w") as handle:
+                    for old_id, event in old.events.items():
+                        handle.write(json.dumps([old_id, event.model_dump_json()]) + "\n")
+                with self.engine.begin() as connection:
+                    staged_evidence = Path(scratch) / "evidence.jsonl"
+                    with staged_evidence.open("w") as handle:
+                        for row in mirror.stream(
+                            connection,
+                            sa.select(evidence_rows.c.contact_id, evidence_rows.c.record),
+                        ):
+                            handle.write(json.dumps([row.contact_id, row.record]) + "\n")
+                    connection.execute(rows.delete())
+                    connection.execute(evidence_rows.delete())
+                    with former.open() as handle:
+                        for line in handle:
+                            old_id, encoded = json.loads(line)
+                            event = CalendarEvent.model_validate_json(encoded)
+                            previous_calendar = event.calendar_id
+                            event.provenance = witnesses.get(old_id, event.provenance)
+                            if not event.provenance:
+                                event.provenance = [
+                                    EventProvenance(
+                                        source_id=previous_calendar,
+                                        filename=event.source_entry,
+                                        entry=event.source_entry,
+                                        imported_at="",
+                                        legacy_calendar=legacy_names.get(
+                                            previous_calendar, previous_calendar
+                                        ),
+                                    )
+                                ]
+                            event.calendar_id = CALENDAR_ID
+                            aliases[old_id] = event.identity
+                            value = connection.execute(
+                                sa.select(rows.c.record).where(rows.c.id == event.identity)
+                            ).scalar()
+                            current = CalendarEvent.model_validate_json(value) if value else None
+                            try:
+                                merged = merge_events(
+                                    {event.identity: current} if current else {}, [event]
+                                )[event.identity]
+                            except CalendarImportError:
+                                conflicts.append(event)
+                                continue
+                            mirror.put_event(connection, event.identity, merged)
+                    with staged_evidence.open() as handle:
+                        for line in handle:
+                            contact_id, encoded = json.loads(line)
+                            record = json.loads(encoded)
+                            record["event_id"] = aliases.get(record["event_id"], record["event_id"])
+                            mirror.add_evidence(connection, contact_id, record)
+                    mirror.put_conflicts(connection, conflicts)
+                    mirror.put_state(connection, "aliases", json.dumps(aliases))
+                    mirror.write_catalog(connection, path, list(old.imports))
 
     def export_manifest(self) -> dict[str, object]:
         """A read-only summary; originals and receipt paths stay server-side."""

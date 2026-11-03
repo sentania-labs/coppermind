@@ -1,24 +1,25 @@
-"""Preserved intake receipts and pluggable routing for the shared vault Dropbox."""
+"""Transient intake receipts backed by durable original exports and import history."""
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
+import logging
 import os
 import stat
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo
 
 from coppermind.atomicio import atomic_write_bytes
-from coppermind.ids import new_id
-from coppermind_store.calendar_import import MAX_SERIALIZED, MAX_UPLOAD
-from coppermind_store.calendar_worker import isolated_calendar
+from coppermind_store.calendar_import import CALENDAR_ID, MAX_UPLOAD
 
 if TYPE_CHECKING:
     from coppermind_store.context_service import ContextService
+
+log = logging.getLogger(__name__)
+COMPLETED = {"succeeded", "already_imported"}
 
 
 class Dropbox:
@@ -28,226 +29,143 @@ class Dropbox:
 
     @staticmethod
     def handler(data: bytes, filename: str) -> str | None:
-        """Extension point for future binary-source handlers; sniff actual content."""
         if data.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"BEGIN:VCALENDAR"):
             return ".ics"
         if data.startswith(b"PK\x03\x04"):
             return ".zip"
-        # Known extensions still reach validation so malformed input gets a useful error.
         suffix = Path(filename).suffix.lower()
         return suffix if suffix in {".ics", ".zip"} else None
 
     def records(self) -> dict[str, Any]:
-        return self.context.read("dropbox", {"items": {}, "calendars": {}})
+        records = self.context.read("dropbox", {"items": {}, "history": {}, "observations": {}})
+        records.setdefault("history", {})
+        records.setdefault("observations", {})
+        return records
 
     def save(self, records: dict[str, Any]) -> None:
         self.context.write("dropbox", records)
 
-    def discovery_limits(self) -> dict[str, int]:
-        limits = self.context.store.control.settings().limits
-        return {
-            "max_events": limits.calendar_max_events,
-            "memory_mib": limits.calendar_import_memory_mib,
+    def expire(self, records: dict[str, Any]) -> None:
+        cutoff = time.time() - self.context.config().dropbox_receipt_retention_s
+        records["items"] = {
+            key: item
+            for key, item in records["items"].items()
+            if item["state"] not in COMPLETED or item.get("completed_at", time.time()) > cutoff
         }
-
-    def retry(self, identity: str) -> dict[str, Any]:
-        records = self.records()
-        item = records["items"][identity]
-        if item["state"] != "failed" or item["parts"]:
-            raise ValueError("this item does not have a failed discovery to retry")
-        item["state"], item["error"] = "pending", ""
-        self.save(records)
-        return item
 
     def submit(self, filename: str, data: bytes) -> dict[str, Any]:
         if not filename or len(filename) > 255 or any(ord(c) < 32 for c in filename):
             raise ValueError("invalid filename")
         if len(data) > MAX_UPLOAD:
-            raise ValueError("Dropbox intake limit is 10 MiB; file remains in the vault")
+            raise ValueError("Dropbox intake limit is 200,000,000 bytes; file remains in the vault")
         digest = hashlib.sha256(data).hexdigest()
         records = self.records()
-        if digest in records["items"]:
-            item = records["items"][digest]
-            if (
-                item["state"] == "failed"
-                and not item["parts"]
-                and item.get("discovery_limits") != self.discovery_limits()
-            ):
-                return self.retry(digest)
-            return item
+        existing = records["items"].get(digest)
+        if existing and existing["state"] not in COMPLETED:
+            return existing
+        history = records["history"].get(digest, {})
+        imported = next(
+            (
+                r
+                for r in self.context.archive.receipts()
+                if r.content_hash == digest and r.state == "succeeded"
+            ),
+            None,
+        )
+        if imported is not None:
+            history = {"state": "succeeded", "parts": [{"import_id": imported.id}]}
+        duplicate = history.get("state") in COMPLETED or (
+            existing and existing["state"] in COMPLETED
+        )
         atomic_write_bytes(self.context.root / "dropbox-originals" / digest, data, mode=0o600)
-        records["items"][digest] = {
+        item = {
             "id": digest,
             "filename": filename,
-            "state": "pending",
-            "parts": [],
+            "state": "already_imported" if duplicate else "pending",
+            "parts": history.get("parts", []) if duplicate else [],
             "error": "",
+            "received_at": datetime.now(UTC).isoformat(),
         }
+        if duplicate:
+            item["completed_at"] = time.time()
+        records["items"][digest] = item
         self.save(records)
-        return records["items"][digest]
+        log.info("Dropbox %s export %s", "skip" if duplicate else "adopt", digest)
+        return item
 
     async def process(self) -> None:
         records = self.records()
-        # Compact receipts written by older versions, including completed imports.
-        archived = {r.id for r in self.context.archive.receipts()}
-        compacted = False
+        self.expire(records)
         for item in records["items"].values():
-            for part in item["parts"]:
-                if part.get("import_id") in archived and "data" in part:
-                    del part["data"]
-                    compacted = True
-        if compacted:
-            self.save(records)
-        for item in records["items"].values():
-            if item["state"] != "pending":
-                continue
-            data = (self.context.root / "dropbox-originals" / item["id"]).read_bytes()
-            if hashlib.sha256(data).hexdigest() != item["id"]:
-                raise ValueError("Dropbox original failed integrity verification")
-            # Handlers inspect content as well as the declared suffix. Unsupported
-            # originals are retained, never silently treated as completed imports.
-            handler = self.handler(data, item["filename"])
-            if handler is None:
-                item["state"] = "unsupported"
-                item["error"] = "Unsupported intake type; original preserved"
-            else:
+            if item["state"] == "pending":
                 try:
-                    item["discovery_limits"] = self.discovery_limits()
-                    parts = await asyncio.to_thread(
-                        isolated_calendar,
-                        {
-                            "action": "identify",
-                            **item["discovery_limits"],
-                            "filename": "calendar" + str(handler),
-                            "data": base64.b64encode(data).decode(),
-                        },
-                    )
-                    for part in parts:
-                        uid = part["uid"]
-                        bound = next(
-                            (
-                                c["id"]
-                                for c in records["calendars"].values()
-                                if uid and c.get("uid") == uid
-                            ),
-                            "",
+                    data = (self.context.root / "dropbox-originals" / item["id"]).read_bytes()
+                    if hashlib.sha256(data).hexdigest() != item["id"]:
+                        raise ValueError("Dropbox original failed integrity verification")
+                    handler = self.handler(data, item["filename"])
+                    if handler is None:
+                        item["state"] = "unsupported"
+                        item["error"] = (
+                            "Unsupported file type. Original preserved; dismiss this receipt."
                         )
-                        if bound:
-                            part["calendar_id"] = bound
-                        elif uid and not self.context.config().sources:
-                            identity = "cal_" + hashlib.sha256(uid.encode()).hexdigest()[:40]
-                            records["calendars"].setdefault(
-                                identity,
-                                {
-                                    "id": identity,
-                                    "name": part["name"] or "Imported calendar",
-                                    "uid": uid,
-                                    "timezone": part["timezone"] or "America/Chicago",
-                                },
-                            )
-                            part["calendar_id"] = identity
-                        else:
-                            part["calendar_id"] = ""
-                    item["parts"] = parts
-                    item["state"] = (
-                        "identified" if all(p["calendar_id"] for p in parts) else "needs_identity"
-                    )
-                except ValueError as exc:
+                        log.info("Dropbox park export %s: unsupported file type", item["id"])
+                    else:
+                        name = item["filename"]
+                        if Path(name).suffix.lower() != handler:
+                            name += handler
+                        receipt = await asyncio.to_thread(
+                            self.context.archive.submit,
+                            CALENDAR_ID,
+                            name,
+                            data,
+                            export_filename=item["filename"],
+                        )
+                        item["parts"] = [{"import_id": receipt.id}]
+                        item["state"] = "importing"
+                except (ValueError, OSError) as exc:
                     item["state"], item["error"] = "failed", str(exc)
-            self.save(records)
-            break
+                    log.info("Dropbox fail export %s", item["id"])
+                self.save(records)
+                break
+        receipts = {r.id: r for r in self.context.archive.receipts()}
         for item in records["items"].values():
-            if item["state"] not in {"identified", "importing"}:
-                continue
-            # All entries must be identified before submitting any of this archive.
-            for part in item["parts"]:
-                if not part.get("import_id"):
-                    # An extracted part is not a new external upload. Its bytes already
-                    # passed the 10 MiB ceiling as part of the original, so it is measured
-                    # against the ceiling for re-serialized calendars, which absorbs the
-                    # line re-folding `to_ical` adds on top of the 40 MiB expansion.
-                    receipt = self.context.archive.submit(
-                        part["calendar_id"],
-                        "calendar.ics",
-                        base64.b64decode(part["data"]),
-                        MAX_SERIALIZED,
-                    )
-                    part["import_id"] = receipt.id
-                    del part["data"]
-                    # Persist each durable handoff so interrupted ZIP dispatch resumes
-                    # without needing embedded bytes for already archived entries.
-                    self.save(records)
-            item["state"] = "importing"
-            receipts = {r.id: r for r in self.context.archive.receipts()}
-            if all(receipts[p["import_id"]].state == "succeeded" for p in item["parts"]):
-                item["state"] = "succeeded"
-            elif any(receipts[p["import_id"]].state == "failed" for p in item["parts"]):
-                item["state"] = "failed"
-                item["error"] = "Calendar import failed; inspect the calendar import receipt"
-            self.save(records)
+            if item["state"] == "importing":
+                imports = [receipts[p["import_id"]] for p in item["parts"]]
+                if all(r.state == "succeeded" for r in imports):
+                    item["state"] = "succeeded"
+                    item["completed_at"] = time.time()
+                    log.info("Dropbox adopt completed export %s", item["id"])
+                elif any(r.state == "failed" for r in imports):
+                    item["state"] = "failed"
+                    item["error"] = next(r.error for r in imports if r.state == "failed")
+                    log.info("Dropbox fail export %s", item["id"])
+            if item["state"] not in {"pending", "importing"}:
+                records["history"][item["id"]] = dict(item)
+        self.save(records)
 
-    async def identify(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def dismiss(self, payload: dict[str, Any]) -> dict[str, Any]:
         async with self.context.lock:
             records = self.records()
-            item = records["items"].get(str(payload.get("id", "")))
-            if not item or item["state"] != "needs_identity":
-                raise ValueError("this import does not need calendar identification")
-            index = int(payload["part"])
-            if index < 0 or index >= len(item["parts"]):
-                raise ValueError("invalid calendar selection")
-            part = item["parts"][index]
-            if part["calendar_id"]:
-                raise ValueError("calendar already identified")
-            target = str(payload.get("calendar_id", ""))
-            if target:
-                known = {s.id for s in self.context.config().sources} | set(records["calendars"])
-                if target not in known:
-                    raise ValueError("choose an existing calendar")
-            else:
-                name = str(payload.get("name", "")).strip()
-                if not name or len(name) > 120:
-                    raise ValueError("name this calendar")
-                timezone = str(payload.get("timezone", "America/Chicago"))
-                try:
-                    ZoneInfo(timezone)
-                except (ValueError, KeyError) as exc:
-                    raise ValueError("choose a valid timezone") from exc
-                target = "cal_" + new_id().lower()
-                records["calendars"][target] = {
-                    "id": target,
-                    "name": name,
-                    "uid": "",
-                    "timezone": timezone,
-                }
-            if part["uid"]:
-                existing = records["calendars"].get(target)
-                if existing and existing.get("uid") not in {"", part["uid"]}:
-                    raise ValueError("this calendar is already bound to another identifier")
-                source = next((s for s in self.context.config().sources if s.id == target), None)
-                if not existing:
-                    if source is None:
-                        raise ValueError("choose an existing calendar")
-                    existing = {"name": source.name, "timezone": source.timezone}
-                records["calendars"][target] = {
-                    "id": target,
-                    "name": existing["name"],
-                    "timezone": existing["timezone"],
-                    "uid": part["uid"],
-                }
-            part["calendar_id"] = target
-            if all(p["calendar_id"] for p in item["parts"]):
-                item["state"] = "identified"
+            identity = str(payload.get("id", ""))
+            item = records["items"].get(identity)
+            if not item or item["state"] not in COMPLETED | {"failed", "unsupported"}:
+                raise ValueError("Only completed or failed receipts can be dismissed")
+            records["history"][identity] = item
+            del records["items"][identity]
             self.save(records)
-            return {"identified": item["id"]}
+            return {"dismissed": identity}
 
     def snapshot(self) -> dict[str, Any]:
         records = self.records()
+        self.expire(records)
         return {
             "folder": self.context.config().dropbox_folder,
-            "calendars": list(records["calendars"].values()),
             "items": [
                 dict(
-                    item, parts=[{k: v for k, v in p.items() if k != "data"} for p in item["parts"]]
+                    item,
+                    parts=[
+                        {k: v for k, v in part.items() if k != "data"} for part in item["parts"]
+                    ],
                 )
                 for item in records["items"].values()
             ],
@@ -259,46 +177,64 @@ class Dropbox:
             return
         if root.is_symlink() or any(p.is_symlink() for p in root.parents):
             raise ValueError("Dropbox must not be a symlink")
-        legacy = [self.context.store.notes_root / s.folder for s in self.context.config().sources]
-        if any(root == folder or folder in root.parents for folder in legacy):
-            return
+        present = set()
         count = 0
         for directory, dirs, files in os.walk(root, followlinks=False):
             dirs[:] = [
                 d for d in dirs if not d.startswith(".") and not (Path(directory) / d).is_symlink()
             ]
-            dirs[:] = [d for d in dirs if (Path(directory) / d) not in legacy]
             for name in files:
+                path = Path(directory) / name
+                if name.startswith(".") or path.suffix.lower() == ".md":
+                    continue
                 count += 1
                 if count > 1000:
                     raise ValueError("Dropbox exceeds 1000 files")
-                path = Path(directory) / name
-                if name.startswith(".") or path.suffix.lower() == ".md":
-                    continue  # Markdown belongs to the ordinary note reconciler.
                 info = path.lstat()
                 if not stat.S_ISREG(info.st_mode):
                     continue
+                key = str(path.relative_to(root))
+                present.add(key)
                 signature = (info.st_mtime_ns, info.st_size)
-                old = self.seen.get(str(path))
+                records = self.records()
+                if records["observations"].get(key) == list(signature):
+                    continue
+                old = self.seen.get(key)
                 if old is None or old[0] != signature:
-                    self.seen[str(path)] = (signature, time.monotonic())
+                    self.seen[key] = (signature, time.monotonic())
+                    log.info("Dropbox park file: waiting for stable bytes")
                     continue
                 if time.monotonic() - old[1] < 30:
                     continue
-                if info.st_size > MAX_UPLOAD:
-                    self.context.watch_status["dropbox"] = (
-                        "A file exceeds 10 MiB; preserved in Dropbox"
-                    )
-                    continue
-                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-                with os.fdopen(fd, "rb") as stream:
-                    before = os.fstat(stream.fileno())
-                    data = stream.read(MAX_UPLOAD + 1)
-                    after = os.fstat(stream.fileno())
-                if (before.st_mtime_ns, before.st_size) != signature or (
-                    after.st_mtime_ns,
-                    after.st_size,
-                ) != signature:
-                    continue
                 async with self.context.lock:
-                    self.submit(name, data)
+                    if info.st_size > MAX_UPLOAD:
+                        identity = hashlib.sha256(f"{key}:{signature}".encode()).hexdigest()
+                        records["items"][identity] = {
+                            "id": identity,
+                            "filename": name,
+                            "state": "failed",
+                            "parts": [],
+                            "error": "File exceeds 200,000,000 bytes. Original remains in Dropbox.",
+                        }
+                        log.info("Dropbox fail file: intake byte limit exceeded")
+                    else:
+                        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                        with os.fdopen(fd, "rb") as stream:
+                            before = os.fstat(stream.fileno())
+                            data = stream.read(MAX_UPLOAD + 1)
+                            after = os.fstat(stream.fileno())
+                        if (before.st_mtime_ns, before.st_size) != signature or (
+                            after.st_mtime_ns,
+                            after.st_size,
+                        ) != signature:
+                            continue
+                        self.submit(name, data)
+                        records = self.records()
+                    records["observations"][key] = list(signature)
+                    self.save(records)
+        async with self.context.lock:
+            records = self.records()
+            records["observations"] = {
+                k: v for k, v in records["observations"].items() if k in present
+            }
+            self.save(records)

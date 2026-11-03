@@ -194,3 +194,41 @@ def test_size_failure_shows_both_numbers_and_links_to_the_setting(signed_in):
         page = client.get(url)
         assert "52,000 characters; the limit is 40,000" in page.text
         assert link in page.text
+
+
+def test_dropbox_receipts_can_be_dismissed_through_guarded_form(signed_in):
+    class ReceiptStore(ContextStore):
+        async def context_action(self, action, payload):
+            result = await super().context_action(action, payload)
+            if action == "snapshot":
+                result["dropbox"] = {
+                    "folder": "Dropbox",
+                    "items": [
+                        {
+                            "id": "receipt",
+                            "filename": "Exchange.zip",
+                            "state": "failed",
+                            "error": "Conflicting event revision",
+                            "parts": [],
+                        }
+                    ],
+                }
+            return result
+
+    client, _ = signed_in
+    fake = ReceiptStore()
+    client.app.state.store = fake
+    page = client.get("/admin/workflow?tab=intake")
+    assert page.status_code == 200
+    assert "Dismiss receipt" in page.text and "Import failed" in page.text
+    assert "Identify calendar" not in page.text
+    assert client.post("/v1/admin/context/dismiss-drop", data={"id": "receipt"}).status_code == 403
+    csrf = form_token(client, "/admin/workflow?tab=intake")
+    result = client.post(
+        "/v1/admin/context/dismiss-drop",
+        data={"id": "receipt", "csrf": csrf},
+        follow_redirects=False,
+    )
+    assert result.status_code == 303
+    assert fake.calls[-1][0] == "dismiss-drop"
+    assert fake.calls[-1][1]["id"] == "receipt"

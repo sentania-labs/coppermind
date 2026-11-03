@@ -1393,4 +1393,20 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         )
         for path, reason in sorted(exclusions.items())
     )
+    problems.extend(
+        ProblemInfo(kind="Calendar import", reference=receipt.filename, reason=receipt.error)
+        for receipt in store.context.archive.receipts()
+        if receipt.state == "failed"
+    )
+    problems.extend(
+        ProblemInfo(
+            kind="Calendar conflict",
+            reference=event.title or event.uid,
+            reason=(
+                "Legacy exports disagree at the same revision. Original versions "
+                "are preserved in import history."
+            ),
+        )
+        for event in store.context.archive.catalog().conflicts
+    )
     return problems

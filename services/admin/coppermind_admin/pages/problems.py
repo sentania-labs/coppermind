@@ -53,6 +53,8 @@ def store_client(request: Request, wiring: Wiring) -> StatusReader:
 
 
 def _link(problem: ProblemInfo) -> str:
+    if problem.kind in {"Calendar import", "Calendar conflict"}:
+        return '<a href="/admin/context?tab=calendar">Calendar import history</a>'
     if problem.note_id:
         target = f"/admin/notes/{quote(problem.note_id, safe='')}"
         return f'<a href="{escape(target)}">note {escape(problem.note_id)}</a>'

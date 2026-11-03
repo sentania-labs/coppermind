@@ -261,3 +261,10 @@ is a device display setting, not a server sync control.
 
 The plan and byte limits are local reference values, not client configuration or a
 subscription change. The calendar intake limit remains independent of Sync limits.
+
+Calendar Dropbox settings live in `/data/state/context/config.json` alongside
+workflow configuration. `dropbox_receipt_retention_s` defaults to `604800` (seven
+days), accepts 0 through 31536000 seconds, and is editable in **Dropbox > Receipt
+settings** with immediate effect. Zero clears completed receipts on the next
+scan. Failed receipts never expire automatically. Originals and import history
+remain under `/data/state/calendars` after receipt expiry or dismissal.

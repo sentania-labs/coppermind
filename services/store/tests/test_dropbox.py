@@ -1,15 +1,17 @@
-"""Calendar-source identity is separate from event identity and export filenames."""
+"""Exports merge automatically; transient receipts never own event history."""
 
-import base64
-import io
-import zipfile
+import hashlib
+import json
 from typing import Any, cast
 
 import pytest
-from coppermind_store.calendar_worker import isolated_calendar
+from coppermind_store.calendar_archive import ImportReceipt
+from coppermind_store.calendar_import import parse_export
+from coppermind_store.context_service import ContextService
 from coppermind_store.control import ControlState
 from coppermind_store.notes import LocalStore
 
+from coppermind.context_config import CalendarSource
 from coppermind.settings import Wiring
 from services.store.tests.test_calendar_import import large_ics, zip_bytes
 
@@ -23,48 +25,6 @@ def calendar(uid="", event="event-1", name="Family"):
     ).encode()
 
 
-def identify(data, filename="calendar.ics"):
-    return isolated_calendar(
-        {"action": "identify", "filename": filename, "data": base64.b64encode(data).decode()}
-    )
-
-
-def test_uses_calendar_uid_not_event_uid_or_name():
-    assert identify(calendar("family"))[0]["uid"] == "family"
-    assert identify(calendar())[0]["uid"] == ""
-    assert identify(calendar("work", name="Family"))[0]["uid"] == "work"
-
-
-def test_zip_keeps_physical_calendars_separate_and_refuses_mixed_content():
-    archive = io.BytesIO()
-    with zipfile.ZipFile(archive, "w") as z:
-        z.writestr("work.ics", calendar("work"))
-        z.writestr("family.ics", calendar("family"))
-    assert {p["uid"] for p in identify(archive.getvalue(), "export.zip")} == {"work", "family"}
-    with zipfile.ZipFile(archive, "a") as z:
-        z.writestr("slides.pdf", b"not a calendar")
-    with pytest.raises(ValueError, match="only ICS"):
-        identify(archive.getvalue(), "export.zip")
-
-
-def test_calendars_in_one_zip_are_validated_separately():
-    # The same meeting in two calendars of one export differs only in its timezone context,
-    # which is not a conflict: each calendar is imported under its own identity.
-    zone = (
-        "BEGIN:VTIMEZONE\r\nTZID:Zone/One\r\nBEGIN:STANDARD\r\nDTSTART:19701101T020000\r\n"
-        "TZOFFSETFROM:-0100\r\nTZOFFSETTO:-0100\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n"
-    )
-    first = calendar("work").replace(b"BEGIN:VEVENT", zone.encode() + b"BEGIN:VEVENT")
-    source = zip_bytes({"work.ics": first, "family.ics": calendar("family")})
-    assert {p["uid"] for p in identify(source, "export.zip")} == {"work", "family"}
-
-
-def test_identify_hands_off_the_calendar_as_exported():
-    cancelled = calendar("work").replace(b"VERSION:2.0", b"VERSION:2.0\r\nMETHOD:CANCEL")
-    handoff = base64.b64decode(identify(cancelled)[0]["data"])
-    assert b"STATUS:CANCELLED" not in handoff
-
-
 def local_store(tmp_path):
     wiring = Wiring(data_dir=tmp_path / "data")
     control = ControlState(wiring.state_dir)
@@ -73,95 +33,251 @@ def local_store(tmp_path):
     return LocalStore(wiring.notes_dir, control, cast(Any, object()), wiring.sources_dir)
 
 
-async def test_zip_with_an_ics_over_10_mib_imports_when_identity_is_available(tmp_path):
-    store = local_store(tmp_path)
-    source = zip_bytes({"calendar.ics": large_ics("large")})
-    item = store.context.dropbox.submit("export.zip", source)
-    await store.context.dropbox.process()
-    record = store.context.dropbox.records()["items"][item["id"]]
-    # One process pass identifies the part and hands it to the archive, which is why the
-    # receipt is pending while the item sits at `importing`.
-    assert record["state"] == "importing"
-    assert record["parts"][0]["uid"] == "large"
-    for receipt in store.context.archive.receipts():
-        assert store.context.archive.process(receipt.id).event_count == 12000
-    await store.context.dropbox.process()
-    assert store.context.dropbox.records()["items"][item["id"]]["state"] == "succeeded"
-    assert len(store.context.archive.catalog().events) == 12000
-
-
-async def test_zip_with_an_ics_over_10_mib_imports_after_an_explicit_identity_choice(tmp_path):
-    store = local_store(tmp_path)
-    # No calendar source is configured, so an unnamed calendar needs an explicit choice.
-    unnamed = large_ics().replace(b"UID:large\r\n", b"")
-    item = store.context.dropbox.submit("export.zip", zip_bytes({"calendar.ics": unnamed}))
-    await store.context.dropbox.process()
-    record = store.context.dropbox.records()["items"][item["id"]]
-    assert record["state"] == "needs_identity"
-    assert record["parts"][0]["calendar_id"] == ""
-    await store.context.identify_drop({"id": item["id"], "part": 0, "name": "Large"})
+async def finish(store):
     await store.context.dropbox.process()
     for receipt in store.context.archive.receipts():
-        assert store.context.archive.process(receipt.id).state == "succeeded"
+        if receipt.state == "pending":
+            store.context.archive.process(receipt.id)
     await store.context.dropbox.process()
-    assert store.context.dropbox.records()["items"][item["id"]]["state"] == "succeeded"
-    assert len(store.context.archive.catalog().events) == 12000
 
 
-async def test_original_upload_over_10_mib_is_rejected_at_intake(tmp_path):
+async def test_two_exports_and_two_files_witness_one_event(tmp_path):
     store = local_store(tmp_path)
-    with pytest.raises(ValueError, match="10 MiB"):
-        store.context.dropbox.submit("calendar.ics", large_ics())
-    assert store.context.dropbox.records()["items"] == {}
+    first = zip_bytes({"Exchange.ics": calendar(), "copy.ics": calendar()})
+    store.context.dropbox.submit("outlook.zip", first)
+    await finish(store)
+    store.context.dropbox.submit("second.ics", calendar("ignored-calendar-uid"))
+    await finish(store)
+    catalog = store.context.archive.catalog()
+    assert len(catalog.events) == 1
+    event = next(iter(catalog.events.values()))
+    assert event.calendar_id == "calendar"
+    assert len(event.provenance) == 3
+    assert {p.filename for p in event.provenance} == {"outlook.zip", "second.ics"}
+    assert {p.entry for p in event.provenance} == {"Exchange.ics", "copy.ics", "second.ics"}
+    assert all(p.imported_at for p in event.provenance)
+    # Reconstruct solely from durable archive originals and receipts.
+    (store.context.archive.root / "catalog.json").unlink()
+    for receipt in store.context.archive.receipts():
+        store.context.archive.process(receipt.id)
+    assert (
+        next(iter(store.context.archive.catalog().events.values())).provenance == event.provenance
+    )
+
+
+async def test_conflicting_source_fails_without_overwriting(tmp_path):
+    store = local_store(tmp_path)
+    store.context.dropbox.submit("one.ics", calendar())
+    await finish(store)
+    conflict = store.context.dropbox.submit("two.ics", calendar().replace(b"Planning", b"Conflict"))
+    await finish(store)
+    receipt = store.context.dropbox.records()["items"][conflict["id"]]
+    assert receipt["state"] == "failed"
+    assert "conflicts" in receipt["error"]
+    assert next(iter(store.context.archive.catalog().events.values())).title == "Planning"
+
+
+async def test_dismiss_expiry_redrop_and_failed_receipt_retention(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    dropbox = store.context.dropbox
+    item = dropbox.submit("one.ics", calendar())
+    await finish(store)
+    await dropbox.dismiss({"id": item["id"]})
+    assert dropbox.snapshot()["items"] == []
+    again = dropbox.submit("renamed.ics", calendar())
+    assert again["state"] == "already_imported"
+    await finish(store)
+    assert len(store.context.archive.receipts()) == 1
+    bad = dropbox.submit("bad.ics", b"bad")
+    await finish(store)
+    future = again["completed_at"] + 604801
+    monkeypatch.setattr("coppermind_store.dropbox.time.time", lambda: future)
+    await dropbox.process()
+    assert [i["id"] for i in dropbox.snapshot()["items"]] == [bad["id"]]
+    assert item["id"] in dropbox.records()["history"]
+    await dropbox.dismiss({"id": bad["id"]})
+    assert dropbox.snapshot()["items"] == []
+    assert len(store.context.archive.receipts()) == 2
+
+
+async def test_scanner_logs_and_dismissal_survive_restart(tmp_path, monkeypatch, caplog):
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    path = root / "outlook.zip"
+    original = zip_bytes({"calendar.ics": calendar()})
+    path.write_bytes(original)
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    with caplog.at_level("INFO"):
+        await store.context.dropbox.scan()
+        clock[0] = 31
+        await store.context.dropbox.scan()
+        await finish(store)
+        item = store.context.dropbox.snapshot()["items"][0]
+        await store.context.dropbox.dismiss({"id": item["id"]})
+        store.context = ContextService(store)
+        await store.context.dropbox.scan()
+        assert store.context.dropbox.snapshot()["items"] == []
+        path.unlink()
+        await store.context.dropbox.scan()
+        path.write_bytes(original)
+        await store.context.dropbox.scan()
+        clock[0] = 62
+        await store.context.dropbox.scan()
+    assert store.context.dropbox.snapshot()["items"][0]["state"] == "already_imported"
+    assert "Dropbox park" in caplog.text
+    assert "Dropbox adopt" in caplog.text
+    assert "Dropbox skip" in caplog.text
+
+
+async def test_uncompressed_exchange_zip_over_10_mib_imports(tmp_path):
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("Exchange.ics", large_ics(""))
+    data = buffer.getvalue()
+    assert len(data) > 10 * 1024**2
+    store = local_store(tmp_path)
+    store.context.dropbox.submit("Exchange.zip", data)
+    await finish(store)
+    assert len(store.context.archive.catalog().events) == 12000
+    assert store.context.dropbox.snapshot()["items"][0]["state"] == "succeeded"
+
+
+class LegacyCatalog:
+    """The schema-1 per-calendar catalog file written before one-calendar intake."""
+
+    def __init__(self):
+        self.events: dict[str, Any] = {}
+        self.imports: list[str] = []
+
+    def model_dump_json(self):
+        return json.dumps(
+            {
+                "schema_version": 1,
+                "events": {k: json.loads(v.model_dump_json()) for k, v in self.events.items()},
+                "imports": self.imports,
+            }
+        )
 
 
 async def test_zip_expanding_past_40_mib_fails_the_receipt(tmp_path):
     store = local_store(tmp_path)
     source = zip_bytes({f"{n}.ics": large_ics(str(n)) for n in range(4)})
     item = store.context.dropbox.submit("export.zip", source)
-    await store.context.dropbox.process()
+    await finish(store)
     record = store.context.dropbox.records()["items"][item["id"]]
     assert record["state"] == "failed"
     assert "40 MiB" in record["error"]
 
 
-@pytest.mark.parametrize("recovery", ["retry", "redrop"])
-async def test_budget_rejected_discovery_recovers_after_setting_increase(tmp_path, recovery):
+def legacy_archive(store):
+    archive = store.context.archive
+    old = LegacyCatalog()
+    for source in ("work", "personal"):
+        data = calendar(source)
+        digest = hashlib.sha256(data).hexdigest()
+        identity = hashlib.sha256(f"{source}\0.ics\0{digest}".encode()).hexdigest()
+        receipt = ImportReceipt(
+            id=identity,
+            calendar_id=source,
+            filename=source + ".ics",
+            content_hash=digest,
+            received_at="2026-10-01T00:00:00+00:00",
+            state="succeeded",
+        )
+        archive._save_receipt(receipt)
+        (archive.root / "imports" / identity / "original").write_bytes(data)
+        event = parse_export(source, receipt.filename, data)[0]
+        old.events[event.identity] = event
+        old.imports.append(identity)
+    (archive.root / "catalog.json").write_text(old.model_dump_json())
+    config = store.context.config()
+    config.sources = [CalendarSource(id="work", name="Old work", folder="Calendars/Work")]
+    store.context.write("config", config.model_dump())
+    (store.context.root / "one-calendar-migration.json").unlink()
+    return old
+
+
+def test_legacy_calendars_merge_once_preserving_provenance_and_backup(tmp_path):
     store = local_store(tmp_path)
+    old = legacy_archive(store)
+    store.context = ContextService(store)
+    catalog = store.context.archive.catalog()
+    assert len(catalog.events) == 1
+    event = next(iter(catalog.events.values()))
+    assert {p.legacy_calendar for p in event.provenance} == {"Old work", "personal"}
+    assert all(catalog.aliases[key] == event.identity for key in old.events)
+    assert store.context.config().sources == []
+    backup = store.context.archive.root / "before-one-calendar.json"
+    assert json.loads(backup.read_bytes())["events"].keys() == old.events.keys()
+    before = (store.context.archive.root / "catalog.json").read_bytes()
+    store.context = ContextService(store)
+    assert (store.context.archive.root / "catalog.json").read_bytes() == before
 
-    def budget(max_events):
-        settings = store.control.store.read("settings")
-        body = dict(settings.body)
-        body.pop("revision", None)
-        body["limits"] = {**body["limits"], "calendar_max_events": max_events}
-        store.control.store.write("settings", body, if_revision=settings.revision)
 
-    budget(1)
-    source = calendar("work").replace(
-        b"END:VCALENDAR",
-        b"BEGIN:VEVENT" + calendar("work", event="event-2").split(b"BEGIN:VEVENT", 1)[1],
-    )
-    dropbox = store.context.dropbox
-    item = dropbox.submit("export.ics", source)
-    await dropbox.process()
-    failed = dropbox.records()["items"][item["id"]]
-    assert failed["state"] == "failed"
-    assert "calendar_max_events=1" in failed["error"]
-    assert not failed["parts"]
-    assert store.context.archive.receipts() == []
-    # The unchanged file must not restart the parser on every watcher scan.
-    assert dropbox.submit("export.ics", source)["state"] == "failed"
-    budget(2)
-    if recovery == "retry":
-        await store.context.retry_import({"id": item["id"]})
-    else:
-        retried = dropbox.submit("export.ics", source)
-        assert retried["id"] == item["id"]
-        assert retried["state"] == "pending"
-    await dropbox.process()
-    receipts = store.context.archive.receipts()
-    assert len(receipts) == 1
-    assert store.context.archive.process(receipts[0].id).state == "succeeded"
-    await dropbox.process()
-    assert dropbox.records()["items"][item["id"]]["state"] == "succeeded"
-    assert len(store.context.archive.catalog().events) == 2
+def test_migration_retains_conflicting_legacy_version_and_unrelated_events(tmp_path):
+    store = local_store(tmp_path)
+    old = legacy_archive(store)
+    events = list(old.events.values())
+    events[0].title = "Conflicting"
+    events[0].component = events[0].component.replace("Planning", "Conflicting")
+    (store.context.archive.root / "catalog.json").write_text(old.model_dump_json())
+    store.context = ContextService(store)
+    catalog = store.context.archive.catalog()
+    assert len(catalog.events) == len(catalog.conflicts) == 1
+    assert {next(iter(catalog.events.values())).title, catalog.conflicts[0].title} == {
+        "Planning",
+        "Conflicting",
+    }
+
+
+async def test_pending_receipt_cannot_be_dismissed(tmp_path):
+    store = local_store(tmp_path)
+    item = store.context.dropbox.submit("one.ics", calendar())
+    with pytest.raises(ValueError, match="completed or failed"):
+        await store.context.dropbox.dismiss({"id": item["id"]})
+
+
+async def test_upgrade_resumes_unclaimed_exchange_export(tmp_path):
+    store = local_store(tmp_path)
+    item = store.context.dropbox.submit("exchange.zip", zip_bytes({"Exchange.ics": calendar()}))
+    records = store.context.dropbox.records()
+    records["items"][item["id"]]["state"] = "needs_identity"
+    records["items"][item["id"]]["parts"] = [{"calendar_id": "", "entry": "Exchange.ics"}]
+    records["calendars"] = {}
+    store.context.dropbox.save(records)
+    (store.context.root / "one-calendar-migration.json").unlink()
+    store.context = ContextService(store)
+    await finish(store)
+    assert store.context.dropbox.snapshot()["items"][0]["state"] == "succeeded"
+    assert len(store.context.archive.catalog().events) == 1
+
+
+async def test_direct_upload_then_drop_is_already_imported(tmp_path):
+    store = local_store(tmp_path)
+    receipt = store.context.archive.submit("calendar", "first.ics", calendar())
+    store.context.archive.process(receipt.id)
+    item = store.context.dropbox.submit("same.ics", calendar())
+    assert item["state"] == "already_imported"
+    await finish(store)
+    assert len(store.context.archive.receipts()) == 1
+
+
+async def test_migrated_api_shape_and_original_replay_keep_provenance(tmp_path):
+    store = local_store(tmp_path)
+    legacy_archive(store)
+    store.context = ContextService(store)
+    snapshot = await store.context.snapshot()
+    assert snapshot["calendar"]["id"] == "calendar"
+    assert {r["calendar_id"] for r in snapshot["calendar"]["imports"]} == {"calendar"}
+    assert "sources" not in snapshot["config"]
+    assert "calendars" not in snapshot["dropbox"]
+    (store.context.archive.root / "catalog.json").unlink()
+    for receipt in store.context.archive.receipts():
+        store.context.archive.process(receipt.id)
+    event = next(iter(store.context.archive.catalog().events.values()))
+    assert {p.legacy_calendar for p in event.provenance} == {"Old work", "personal"}

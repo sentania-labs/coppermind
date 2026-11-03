@@ -190,60 +190,6 @@ def _lookup(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return output
 
 
-def _identify(payload: dict[str, Any]) -> list[dict[str, str]]:
-    from coppermind_store.calendar_import import (
-        MAX_SERIALIZED,
-        _calendars,
-        _entries,
-        _parse_calendar,
-    )
-
-    data = base64.b64decode(payload["data"], validate=True)
-    from coppermind_store.calendar_import import check_import_budget
-
-    check_import_budget(
-        payload["filename"],
-        data,
-        MAX_UPLOAD,
-        int(payload.get("max_events", 50000)),
-        int(payload.get("memory_mib", 1024)),
-    )
-    output = []
-    # One parse per calendar serves both validation and the identity fields, so the whole
-    # advertised range fits the CPU budget. Each calendar is validated on its own, as it is
-    # parsed on its own after handoff, and is serialized before validation marks cancelled
-    # events, so the handoff bytes are the calendar as exported.
-    for filename, content in _entries(payload["filename"], data):
-        for calendar in _calendars(content):
-            encoded = calendar.to_ical()
-            _parse_calendar("validation", filename, calendar, {}, 0)
-            # The handoff bytes are the re-serialized calendar, which is a little larger
-            # than the archive entry, so they are measured against MAX_SERIALIZED.
-            if len(encoded) > MAX_SERIALIZED:
-                raise CalendarImportError("serialized calendar exceeds 44 MiB")
-            uid = calendar.get("UID", "")
-            if isinstance(uid, list):
-                raise CalendarImportError("calendar has multiple source identifiers")
-            timezone = str(calendar.get("X-WR-TIMEZONE", ""))
-            if timezone:
-                try:
-                    ZoneInfo(timezone)
-                except (ValueError, KeyError):
-                    timezone = ""
-            output.append(
-                {
-                    "uid": str(uid),
-                    "name": str(calendar.get("NAME", calendar.get("X-WR-CALNAME", ""))),
-                    "timezone": timezone,
-                    "entry": filename,
-                    "data": base64.b64encode(encoded).decode(),
-                }
-            )
-    if not output:
-        raise CalendarImportError("export contains no calendars")
-    return output
-
-
 def main() -> None:
     # Enforce the budget before reading JSON/base64 input, not after allocating it.
     memory_mib = int(sys.argv[1]) if len(sys.argv) > 1 else 1024
@@ -274,8 +220,6 @@ def main() -> None:
             result = {"timezones": list(table), "events": records}
         elif payload["action"] == "lookup-stream":
             result = _lookup_stream(payload)
-        elif payload["action"] == "identify":
-            result = _identify(payload)
         else:
             result = _lookup(payload)
         encoded = json.dumps({"result": result})

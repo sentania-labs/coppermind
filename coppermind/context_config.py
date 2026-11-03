@@ -102,6 +102,7 @@ class ContextConfig(ContextModel):
     revision: int = 0
     dropbox_folder: str = "Dropbox"
     lifecycle_enabled: bool = False
+    dropbox_receipt_retention_s: int = Field(default=604800, ge=0, le=31536000)
 
     @field_validator("dropbox_folder")
     @classmethod

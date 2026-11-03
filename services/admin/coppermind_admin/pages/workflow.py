@@ -101,51 +101,68 @@ def router(wiring: Wiring) -> APIRouter:
                     )
                 )
                 body += (
-                    '<p class="muted">Files must stay unchanged for 30 seconds. Intake li'
-                    "mit: 10 MiB. ZIP limit: 40 MiB expanded, 100 entries. No files are d"
-                    "eleted.</p>"
+                    '<p class="muted">Files must stay unchanged for 30 seconds. '
+                    "Intake limit: 200,000,000 bytes. ZIP limit: 40 MiB expanded, "
+                    "100 entries. No files are deleted.</p>"
+                    '<p>Every export merges into <a href="/admin/context?tab=calendar">'
+                    "your calendar</a>. Event details show which exports witnessed it. "
+                    "Completed receipts clear automatically; import history and originals "
+                    "remain. Failed receipts stay until you dismiss them.</p>"
                 )
-                calendars = [(s["id"], s["name"]) for s in config["sources"]] + [
-                    (s["id"], s["name"]) for s in dropbox["calendars"]
-                ]
+                body += (
+                    "<details><summary>Receipt settings</summary>"
+                    + _form(
+                        "save-intake",
+                        _input(
+                            "dropbox_receipt_retention_s",
+                            "Keep completed receipts (seconds)",
+                            str(config.get("dropbox_receipt_retention_s", 604800)),
+                            kind="number",
+                        ),
+                        "Save receipt settings",
+                        revision=config["revision"],
+                    )
+                    + "<p>604800 seconds is seven days. Changes apply immediately.</p></details>"
+                )
+                if any(item["state"] in {"pending", "importing"} for item in dropbox["items"]):
+                    body += (
+                        '<p role="status">Imports run in the background. '
+                        '<a href="/admin/workflow?tab=intake">Refresh progress</a>.</p>'
+                    )
                 for item in dropbox["items"]:
                     body += (
                         '<section class="connection-card"><h2>'
                         + e(item["filename"])
                         + "</h2><p>"
-                        + e(item["state"].replace("_", " "))
+                        + e(
+                            {
+                                "pending": "Waiting to import",
+                                "importing": "Importing",
+                                "succeeded": "Imported",
+                                "already_imported": "Already imported",
+                                "failed": "Import failed",
+                                "unsupported": "Unsupported file type",
+                            }.get(item["state"], "Processing")
+                        )
                         + "</p>"
                     )
                     if item["error"]:
                         body += '<p class="error">' + e(item["error"]) + "</p>"
-                    if item["state"] == "failed" and not item["parts"]:
-                        body += _form("retry-import", _hidden("id", item["id"]), "Retry import")
-                    if item["state"] == "needs_identity":
+                    if item["state"] in {"failed", "succeeded", "already_imported", "unsupported"}:
+                        body += _form("dismiss-drop", _hidden("id", item["id"]), "Dismiss receipt")
+                    if item["state"] == "failed":
                         body += (
-                            "<p>Choose whether this export updates an existing calendar "
-                            "or creates a calend"
-                            "ar. Names and filenames alone cannot establish identity.</p>"
+                            '<p>Review <a href="/admin/context?tab=calendar">import '
+                            "history</a>, correct the export and drop it again.</p>"
                         )
-                        for i, part in enumerate(item["parts"]):
-                            if part["calendar_id"]:
-                                continue
-                            fields = _hidden("id", item["id"]) + _hidden("part", str(i))
-                            fields += "<p>Entry: " + e(part["entry"]) + "</p>"
-                            fields += _select(
-                                "calendar_id",
-                                "Belongs to",
-                                [("", "Create a separate calendar"), *calendars],
-                            )
-                            fields += _input("name", "Name for a new calendar", part["name"])
-                            fields += _input(
-                                "timezone", "Timezone for a new calendar", "America/Chicago"
-                            )
-                            body += _form("identify-drop", fields, "Identify calendar")
                     body += "</section>"
                 if not dropbox["items"]:
-                    body += '<p class="notice">No files have been received yet.</p>'
+                    body += (
+                        '<p class="notice">No receipts to show. '
+                        "Drop an ICS or ZIP file here to import it.</p>"
+                    )
                 body += (
-                    "<details><summary>Existing calendar sources and import history</summ"
+                    "<details><summary>Calendar and import history</summ"
                     'ary><a href="/admin/context?tab=calendar">Inspect calendar records</'
                     "a></details>"
                 )

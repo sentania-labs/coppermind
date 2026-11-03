@@ -3,8 +3,7 @@
 Enable **Admin > Note workflow** to add optional attendees,
 invitees, calendar reference and time-unknown properties. Existing
 notes, type choices and schema roles are preserved. Conflicting property types stop setup.
-The common Dropbox defaults to `Dropbox` in the vault. Legacy per-calendar
-folders retain priority and are not processed a second time by the common router.
+The common Dropbox defaults to `Dropbox` in the vault. Old per-calendar folders are ordinary vault folders after automatic migration.
 
 ## Review once
 
@@ -69,31 +68,27 @@ company-profile synthesis.
 Drop ICS files or ZIPs containing ICS files into Dropbox, or send binary bytes to
 `POST /v1/dropbox?filename=export.ics` with `sources:write`. A 202 means the original
 and intake receipt are durable, not that parsing has completed. Inspect Dropbox
-in Admin for processing, identification and failure status. The vault scanner
+in Admin for processing and failure status. The vault scanner
 waits 30 seconds for stable bytes. It never deletes dropped files.
 
-Calendar-level VCALENDAR UID is the automatic identity. Event UID, filename,
-calendar name and attendee overlap are not physical-calendar identity. Exports
-without a calendar UID require a human choice of a separate new calendar or an
-existing calendar. That choice applies to the import, not to future filenames.
-If older configured calendars exist, an unfamiliar calendar UID also requires
-one explicit choice. Binding it to the existing calendar preserves its event
-history; subsequent exports with that UID route automatically.
-ICS entries in a ZIP are identified separately, and all must be identified before
-dispatch. Invalid or mixed archives do not partially dispatch during validation.
-Per-calendar merge failures remain visible in individual import receipts; a
-multi-calendar ZIP is not one atomic catalog transaction.
+All exports merge automatically into the owner's one calendar by event UID and
+recurrence instance. Calendar UID and filename never create a separate calendar.
+Event details show export and file provenance, including multiple witnesses.
+Conflicting revisions appear in Problems. Partial exports retain missing events;
+explicit cancellation is different from absence.
 
-Originals and receipts remain under the state volume. Unsupported binary formats
-are preserved with a visible unsupported status. Markdown in the vault Dropbox
-continues through ordinary note adoption. The binary API does not adopt Markdown;
-use the notes API for authored notes. Routing is isolated in `dropbox.py` so other
-source handlers can be added without changing note reconciliation.
+Originals and import history remain under the state volume. Completed and failed
+receipts can be dismissed; completed receipts also clear after seven days by
+default. An identical re-drop displays **Already imported** without a new import.
+`GET /v1/dropbox` requires `sources:read`. Unsupported files remain preserved.
+Markdown in the vault Dropbox follows ordinary note adoption; the binary API does
+not adopt Markdown. Use the notes API for authored notes.
 
-Existing calendar parser limits still apply: 10 MiB input, expanded size bounded by
-`limits.calendar_import_memory_mib` (about 40x), 100 archive entries, safe paths only, isolated parsing with CPU/memory limits.
-Oversized vault files stay in place with a watcher notice. Partial exports retain
-missing events; explicit cancellation is different from absence.
+Limits: 200,000,000 bytes input, expanded size bounded by
+`limits.calendar_import_memory_mib` (about 40x, never above 40 MiB), 100 archive
+entries, safe paths only, and isolated parsing with CPU/memory limits. Oversized vault files
+stay in place with a dismissible failed receipt. See
+[Calendar intake](calendar-enrichment.md) for upgrade and recovery details.
 
 ## Late calendar changes
 
