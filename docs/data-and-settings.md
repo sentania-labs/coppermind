@@ -168,8 +168,11 @@ in [calendar sizing](calendar-enrichment.md#memory-and-deployment-sizing).
 An over-budget import retains its original, marks its receipt failed with the
 setting name and ceiling, and appears in **Problems**. The previous calendar
 remains queryable. Raise the budget only after sizing the deployment, or submit a
-smaller partial export. Retry the failed receipt explicitly after changing the
-setting; restarting does not automatically retry failed imports.
+smaller partial export. After changing the setting, retry the failed item with
+**Retry import** in Admin's Dropbox list; for an item refused during identity
+discovery, submitting the same bytes again also re-arms it once the stored
+limits differ from the current ones. Restarting does not automatically retry
+failed imports.
 
 ## Filing rules (`/data/state/rules.yaml`)
 
