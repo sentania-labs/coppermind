@@ -304,8 +304,9 @@ The public API service accepts API keys explicitly holding `admin:purge`:
 
 | Method and path | Request | Response |
 |---|---|---|
-| `POST /v1/admin/purge/preview` | Empty body | Saved dry run: `token`, `state`, `created_at`, `retention_days`, `candidates`, `counts`, `completed`, `error` |
+| `POST /v1/admin/purge/preview` | Empty body | Saved dry run: `token`, `state`, `created_at`, `retention_days`, `candidates`, `counts`, `completed`, `remaining`, `error` |
 | `POST /v1/admin/purge/confirm` | `{"token":"<preview token>","confirmation":"Purge listed items"}` | Same candidate list and counts, `state: complete` on success |
+| `POST /v1/admin/purge/abandon` | `{"token":"<token of an unfinished or unreadable receipt>"}` | The receipt with `state: abandoned`; `completed` counts listed items now gone and `remaining` lists the ids that are not |
 
 Candidates include `kind` (note or source), `id`, `title`, `path`, `origins`,
 `providers`, and `deleted_at` for notes. Counts contain `notes`, `sources`,
@@ -317,11 +318,17 @@ metadata failures yield 503 and retain the receipt for inspection and retry.
 An unfinished purge is returned by preview with `state: applying` or `failed`;
 confirming its same token retries its saved list, after checking live references
 and surviving file hashes again. A completed token returns its prior result.
+Abandon stops an unfinished (`applying` or `failed`) list without retrying it
+and releases its ids so reconciliation and a fresh preview proceed. It reports
+what was and was not removed, and the items still present appear in Problems.
+It also moves an unreadable receipt file into quarantine. Confirming an
+abandoned token is refused with 422; run a new preview. Preview and confirm
+can run long on a large vault, so the store client allows them 10 minutes.
 
-Internal equivalents are `POST /internal/v1/purge/preview` and `/confirm`,
+Internal equivalents are `POST /internal/v1/purge/preview`, `/confirm` and `/abandon`,
 protected by the internal token. Admin's `/admin/purge` page uses the same store
 contract through its session and CSRF guarded forms at `/v1/admin/purge/preview`
-and `/confirm` on the separate Admin service. `/v1/admin/purge/settings` on
+`/confirm` and `/abandon` on the separate Admin service. `/v1/admin/purge/settings` on
 Admin saves `days` and `revision` from its form; the setting takes effect on the
 next preview. The two services keep their existing authentication boundaries.
 

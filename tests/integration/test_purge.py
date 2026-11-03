@@ -381,6 +381,11 @@ async def test_stuck_applying_receipt_can_be_abandoned(store):
     assert purge.pending_ids(store, "note")
     result = await store.abandon_purge(AbandonPurge(token=preview.token))
     assert result.state == "abandoned" and purge.pending_ids(store, "note") == set()
+    with pytest.raises(ValidationFailed):
+        await store.confirm_purge(confirmation(preview))
+    assert purge.read(store, preview.token)["state"] == "abandoned"
+    async with store.session_factory() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Note)) == 1
     assert (await store.preview_purge()).state == "preview"
 
 

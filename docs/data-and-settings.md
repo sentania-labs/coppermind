@@ -283,7 +283,11 @@ Unreadable notes refuse cleanup; legacy bundles without an opening-note identity
 are conservatively kept. A source's external-identity claim is removed with its
 bundle so a later ingest can create a new source normally.
 
-`/data/state/purges/<token>.json` contains the preview, candidate metadata,
+`/data/state/purges/<token>.json` holds a preview or unfinished receipt.
+Completed receipts move to `purges/done/` and abandoned ones to
+`purges/abandoned/`, so reconciliation reads only the receipts that can still
+hold identities. A receipt file that cannot be read is skipped, reported in
+Problems, and moved to `purges/quarantine/` by Abandon. Each receipt contains the preview, candidate metadata,
 file hashes, authorization state, and completion outcome. It contains no recovery
 body or artifact content. Confirmation rechecks settings, the candidate set,
 mirror fingerprints and file hashes. Any change requires a new preview. Normal
@@ -296,7 +300,14 @@ The durable `applying` receipt precedes every unlink. A failure or interruption
 appears in Problems; the next preview returns that saved list for explicit retry.
 Retry verifies surviving files and live references, then completes only the
 originally authorized work. Recovery skips pending purge identities so partial
-cleanup cannot recreate their recovery copies. No automatic destructive retry
+cleanup cannot recreate their recovery copies. **Abandon** (Admin or
+`/v1/admin/purge/abandon`) is the way out of a stuck `applying` or `failed`
+receipt: it retries nothing, records which listed items are gone and which
+remain (`remaining`, shown in Problems), and lets a fresh preview start. A source
+row whose bundle holds no files, or a deleted-note row whose recovery receipt
+is gone, is listed as a leftover from an interrupted purge and its row is
+removed on confirm. A bundle with files but no readable manifest is damaged: it
+is never offered, and Problems reports it. No automatic destructive retry
 runs at startup. Successful confirmation is idempotent. Purge removes all saved
 recovery generations and later-observation copies for each selected note,
 source bundles and generated projections for selected sources, mirror rows,

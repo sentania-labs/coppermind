@@ -73,6 +73,7 @@ from coppermind.store_protocol import (
 )
 
 INTERNAL_PREFIX = "/internal/v1"
+PURGE_TIMEOUT_S = 600.0
 _NOTE_SOURCES = TypeAdapter(list[NoteSourceInfo])
 _PROBLEMS = TypeAdapter(list[ProblemInfo])
 
@@ -231,12 +232,17 @@ class HttpStoreClient:
         return _NOTE_SOURCES.validate_python(response.json())
 
     async def preview_purge(self) -> PurgeResult:
-        response = await self._send("POST", f"{INTERNAL_PREFIX}/purge/preview")
+        response = await self._send(
+            "POST", f"{INTERNAL_PREFIX}/purge/preview", timeout=PURGE_TIMEOUT_S
+        )
         return PurgeResult.model_validate(response.json())
 
     async def confirm_purge(self, request: ConfirmPurge) -> PurgeResult:
         response = await self._send(
-            "POST", f"{INTERNAL_PREFIX}/purge/confirm", json=request.model_dump(mode="json")
+            "POST",
+            f"{INTERNAL_PREFIX}/purge/confirm",
+            json=request.model_dump(mode="json"),
+            timeout=PURGE_TIMEOUT_S,
         )
         return PurgeResult.model_validate(response.json())
 

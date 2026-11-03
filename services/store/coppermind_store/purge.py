@@ -529,6 +529,8 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
             raise ValidationFailed(["Finish the interrupted purge before confirming another list."])
         if record["state"] == "complete":
             return result(record)
+        if record["state"] == "abandoned":
+            raise ValidationFailed(["This purge was abandoned. Run a new preview."])
         resuming = record["state"] != "preview"
         if not resuming:
             if record["retention_days"] != store.control.settings().retention.days or record[
