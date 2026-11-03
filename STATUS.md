@@ -486,7 +486,9 @@ vertical path proved end to end, then widened.
   An ingest indexes its projection and opening note once it has committed. After
   every reconciliation pass a catch-up step indexes up to 200 notes and 200
   source pages the mirror describes and the index does not, which also covers a
-  crash between a file write and its commit. The first pass after the upgrade
+  crash between a file write and its commit; entries whose file cannot be read
+  are remembered and not drawn again until they change (see `docs/api.md`).
+  The first pass after the upgrade
   finds the index never built and builds it from the notes filesystem. A
   projection deleted by hand stays in the index until the next rebuild, because
   nothing mirrors projections. Bodies are indexed up to their first 250,000

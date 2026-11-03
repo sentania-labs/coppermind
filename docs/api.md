@@ -255,11 +255,16 @@ retry that could create a duplicate.
   part of it.
 
 Search catch-up remembers a failed read with its reason, content hash or source
-revision, path, and filesystem observation. Unchanged failures do not consume
-future catch-up batches. A revision, path, manifest, or projection file change
-makes an entry eligible for another read; Rebuild index also clears the marks
-and retries. Each new failed observation logs `search entry unreadable` with
-its identity, path, and reason. Catch-up summaries distinguish `unreadable`
-(failures this pass) from `skipped_known_unreadable`. Both search index status
-and store status expose `known_unreadable`; Admin Problems lists the entries
-and their reasons. These marks do not remove source archives or notes.
+revision, path, and filesystem observation, but only when the failure is
+durable: a missing file or projection, or content that cannot be parsed. A
+transient filesystem error (EIO, EACCES, EMFILE, ESTALE and the like) is
+logged and left unmarked, so the next pass retries it. Unchanged marked
+failures do not consume future catch-up batches. A revision, path, manifest, or
+projection file change makes an entry eligible for another read; Rebuild index
+also clears the marks and retries. Each new failed observation logs `search
+entry unreadable` with its identity, path, and reason. Catch-up summaries
+distinguish `unreadable` (failures this pass) from `skipped_known_unreadable`,
+and the `search index caught up` line is logged only when a pass indexed,
+removed or failed something. Both search index status and store status expose
+`known_unreadable`; Admin Problems lists the entries and their reasons. These
+marks do not remove source archives or notes.
