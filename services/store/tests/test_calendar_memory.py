@@ -143,3 +143,123 @@ def test_streamed_context_fingerprint_preserves_legacy_job_evidence(tmp_path):
         }
     )
     assert catalog.events.context_fingerprint(corrections) == expected
+
+
+def assert_batched_contact_pages(archive):
+    import sqlalchemy as sa
+    from coppermind_store.calendar_archive import ContactEvidence
+    from coppermind_store.calendar_mirror import ContactRows
+
+    from coppermind.db.calendar import calendar_evidence
+
+    records = []
+    for contact in range(105):
+        for item in range(125 if contact == 0 else 3):
+            records.append(
+                {
+                    "id": f"{contact:03}-{item:04}",
+                    "contact_id": f"{contact:03}",
+                    "record": ContactEvidence(
+                        event_id=f"meeting-{item}",
+                        address=f"mailto:p{contact}@example.test",
+                        name="Person",
+                        role="invitee",
+                        participation="ACCEPTED",
+                    ).model_dump_json(),
+                }
+            )
+    with archive.engine.begin() as connection:
+        connection.execute(calendar_evidence.delete())
+        connection.execute(calendar_evidence.insert(), records)
+    queries = []
+
+    def count_query(*args):
+        queries.append(1)
+
+    sa.event.listen(archive.engine, "before_cursor_execute", count_query)
+    try:
+        contacts = ContactRows(archive.engine)
+        page = list(contacts.page(100))
+        assert len(page) == 100
+        assert page[0].id == "000"
+        assert page[0].evidence_count == 125
+        assert len(page[0].evidence) == 100
+        assert page[-1].evidence_count == len(page[-1].evidence) == 3
+        assert len(queries) <= 2  # A bounded number of round trips, independent of contacts.
+        queries.clear()
+        assert [c.id for c in contacts.page(100, 100)] == [f"{n:03}" for n in range(100, 105)]
+        assert len(queries) <= 2
+    finally:
+        sa.event.remove(archive.engine, "before_cursor_execute", count_query)
+
+
+def test_contact_page_batches_counts_and_bounded_evidence(tmp_path):
+    assert_batched_contact_pages(CalendarArchive(tmp_path))
+
+
+async def test_snapshot_keeps_health_responsive_while_lazy_database_read_stalls(
+    tmp_path, monkeypatch
+):
+    import asyncio
+    from threading import Event, get_ident
+
+    import httpx
+    import sqlalchemy as sa
+    from coppermind_store.auth import InternalAuth
+    from coppermind_store.main import create_app
+
+    from coppermind.settings import Wiring
+    from services.store.tests.test_dropbox import local_store
+
+    store = local_store(tmp_path)
+    archive = store.context.archive
+    receipt = archive.submit("work", "one.ics", ics(event()))
+    archive.process(receipt.id)
+    ready, stalled, release = Event(), Event(), Event()
+    event_loop_thread = get_ident()
+    catalog = archive.catalog
+
+    def lazy_catalog():
+        view = catalog()
+        ready.set()  # Only stall a lazy page/count read, after catalog() has returned.
+        return view
+
+    def delayed_read(*args):
+        if ready.is_set():
+            assert get_ident() != event_loop_thread, "snapshot SQL ran on the event-loop thread"
+        if ready.is_set() and not stalled.is_set():
+            stalled.set()
+            if not release.wait(10):
+                raise AssertionError("snapshot database read blocked the event loop")
+
+    monkeypatch.setattr(archive, "catalog", lazy_catalog)
+    sa.event.listen(archive.engine, "before_cursor_execute", delayed_read)
+    app = create_app(Wiring(data_dir=tmp_path / "data"))
+    app.state.store = store
+    app.state.auth = InternalAuth("test-internal-token")
+    snapshot = None
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://store"
+        ) as client:
+            snapshot = asyncio.create_task(
+                client.post(
+                    "/internal/v1/context/snapshot",
+                    json={},
+                    headers={"Authorization": "Bearer test-internal-token"},
+                )
+            )
+            assert await asyncio.to_thread(stalled.wait, 5)
+            assert not snapshot.done()
+            health = await client.get("/healthz")
+            assert health.status_code == 200
+            assert not snapshot.done()  # The database is still stalled while health serves.
+            release.set()
+            response = await snapshot
+            assert response.status_code == 200
+            assert response.json()["totals"]["events"] == 1
+    finally:
+        release.set()
+        if snapshot is not None:
+            await asyncio.gather(snapshot, return_exceptions=True)
+        sa.event.remove(archive.engine, "before_cursor_execute", delayed_read)

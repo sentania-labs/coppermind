@@ -207,10 +207,13 @@ class ContextService:
         catalog = await asyncio.to_thread(self.archive.catalog)
         event_ids = {m["event_id"] for m in matches}
         contacts = {p["contact_id"] for m in matches for p in m["people"]}
+        event_hashes = await asyncio.to_thread(
+            lambda: sorted((i, catalog.events[i].semantic_hash) for i in event_ids)
+        )
         return fingerprint(
             {
                 "matches": sorted(matches, key=lambda m: (m["event_id"], m["occurrence"])),
-                "events": sorted((i, catalog.events[i].semantic_hash) for i in event_ids),
+                "events": event_hashes,
                 "corrections": {
                     k: v for k, v in self.read("contact_corrections", {}).items() if k in contacts
                 },
@@ -324,23 +327,28 @@ class ContextService:
             return {"enabled": True}
 
     async def snapshot(self, offset: int = 0) -> dict[str, Any]:
-        config = self.config()
-        schema = self.store.control.schema()
-        catalog = await asyncio.to_thread(self.archive.catalog)
-        jobs = sorted(self.jobs(), key=lambda job: job.created_at, reverse=True)
+        return await asyncio.to_thread(self._snapshot, offset)
+
+    def _snapshot(self, offset: int) -> dict[str, Any]:
+        """Materialize bounded mirror pages and counts outside the event loop."""
         if offset < 0:
             raise ValueError("invalid page offset")
+        config = self.config()
+        schema = self.store.control.schema()
+        catalog = self.archive.catalog()
+        jobs = sorted(self.jobs(), key=lambda job: job.created_at, reverse=True)
         events = catalog.events
         contacts = catalog.contacts()
+        event_count, contact_count = len(events), len(contacts)
         receipts = sorted(self.archive.receipts(), key=lambda item: item.received_at, reverse=True)
         window = slice(offset, offset + 100)
-        maximum = max(len(events), len(contacts), len(receipts), len(jobs))
+        maximum = max(event_count, contact_count, len(receipts), len(jobs))
         return {
             "offset": offset,
             "next_offset": offset + 100 if maximum > offset + 100 else None,
             "totals": {
-                "events": len(events),
-                "contacts": len(contacts),
+                "events": event_count,
+                "contacts": contact_count,
                 "imports": len(receipts),
                 "jobs": len(jobs),
             },
@@ -358,8 +366,8 @@ class ContextService:
                 }
             ],
             "calendar": {
-                "events": len(events),
-                "contacts": len(contacts),
+                "events": event_count,
+                "contacts": contact_count,
                 "imports": [item.model_dump() for item in receipts[window]],
             },
             "events": [
@@ -367,7 +375,7 @@ class ContextService:
                 | {"id": event.identity}
                 for event in events.page(100, offset)
             ],
-            "contacts": [contact.model_dump() for contact in contacts[window]],
+            "contacts": [contact.model_dump() for contact in contacts.page(100, offset)],
             "contact_corrections": self.read("contact_corrections", {}),
             "associations": self.read("associations", {}),
             "jobs": [
@@ -1263,7 +1271,11 @@ class ContextService:
             known = catalog.contacts()
             identity = str(payload["id"])
             target = str(payload.get("same_as", ""))
-            if not known.has(identity) or (target and not known.has(target)):
+
+            def contacts_exist() -> bool:
+                return known.has(identity) and (not target or known.has(target))
+
+            if not await asyncio.to_thread(contacts_exist):
                 raise ValueError("contact does not exist")
             if payload.get("confirmation") != "Save contact correction":
                 raise ValueError("explicit contact correction approval is required")

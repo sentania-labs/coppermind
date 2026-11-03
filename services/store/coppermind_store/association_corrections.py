@@ -44,7 +44,7 @@ async def correct(context: ContextService, payload: dict[str, Any]) -> dict[str,
         "invitees": assignment.invitees_field,
     }
     catalog = await asyncio.to_thread(context.archive.catalog)
-    addresses = catalog.contacts().addresses(target)
+    addresses = await asyncio.to_thread(catalog.contacts().addresses, target)
     changes: dict[str, Any] = {}
     unset: list[str] = []
     for key in remove_from:

@@ -56,3 +56,13 @@ async def test_postgres_stream_rebuild_and_budget_problem(store, wiring, monkeyp
         assert (await store.get_status()).counters.calendar_import_failures == 1
     finally:
         archive.engine.dispose()
+
+
+async def test_postgres_contact_pages_batch_full_counts_and_bounded_previews(wiring):
+    from services.store.tests.test_calendar_memory import assert_batched_contact_pages
+
+    archive = CalendarArchive(wiring.state_dir, wiring.database_url_for("psycopg"))
+    try:
+        assert_batched_contact_pages(archive)
+    finally:
+        archive.engine.dispose()
