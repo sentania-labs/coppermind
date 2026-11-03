@@ -1394,9 +1394,7 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
             )
         )
     for receipt in purge_records:
-        if receipt["state"] in {"applying", "failed"} or (
-            receipt.get("error") and not receipt.get("resolved")
-        ):
+        if receipt["state"] in {"applying", "failed"}:
             problems.append(
                 ProblemInfo(
                     kind="purge",

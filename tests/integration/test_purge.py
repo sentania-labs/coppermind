@@ -241,6 +241,28 @@ async def test_partial_failure_receipt_problem_and_retry_after_restart(store, mo
     assert not any(p.kind == "purge" for p in await restarted.get_problems())
 
 
+async def test_confirm_failing_before_removal_is_not_a_purge_problem(store, monkeypatch):
+    retention(store, 0)
+    ingested = await orphan(store)
+    preview = await store.preview_purge()
+    real = purge.disk_references
+    calls = []
+
+    def fail_in_transaction(store):
+        calls.append(1)
+        if len(calls) > 1:
+            raise OSError("simulated disk error")
+        return real(store)
+
+    monkeypatch.setattr(purge, "disk_references", fail_in_transaction)
+    with pytest.raises(NotesFilesystemUnavailable):
+        await store.confirm_purge(confirmation(preview))
+    assert len(calls) > 1
+    assert purge.read(store, preview.token)["state"] == "preview"
+    assert (store.sources_root / ingested.source.id).exists()
+    assert not [p for p in await store.get_problems() if p.kind == "purge"]
+
+
 async def test_failed_purge_survives_refused_retry_and_resumes(store, monkeypatch):
     retention(store, 0)
     ingested = await orphan(store)
