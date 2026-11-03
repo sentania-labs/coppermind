@@ -1396,7 +1396,7 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
     problems.extend(
         ProblemInfo(kind="Calendar import", reference=receipt.filename, reason=receipt.error)
         for receipt in store.context.archive.receipts()
-        if receipt.state == "failed"
+        if receipt.state == "failed" and not receipt.dismissed
     )
     problems.extend(
         ProblemInfo(

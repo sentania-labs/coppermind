@@ -77,6 +77,22 @@ async def test_conflicting_source_fails_without_overwriting(tmp_path):
     assert next(iter(store.context.archive.catalog().events.values())).title == "Planning"
 
 
+async def test_dismissing_failed_receipt_acknowledges_import_failure(tmp_path):
+    store = local_store(tmp_path)
+    dropbox = store.context.dropbox
+    dropbox.submit("one.ics", calendar())
+    await finish(store)
+    conflict = dropbox.submit("two.ics", calendar().replace(b"Planning", b"Conflict"))
+    await finish(store)
+    failed = [r for r in store.context.archive.receipts() if r.state == "failed"]
+    assert [r.dismissed for r in failed] == [False]
+    await dropbox.dismiss({"id": conflict["id"]})
+    assert [r.dismissed for r in store.context.archive.receipts() if r.state == "failed"] == [True]
+    retried = store.context.archive.process(failed[0].id)
+    assert retried.state == "failed"
+    assert retried.dismissed is False
+
+
 async def test_dismiss_expiry_redrop_and_failed_receipt_retention(tmp_path, monkeypatch):
     store = local_store(tmp_path)
     dropbox = store.context.dropbox

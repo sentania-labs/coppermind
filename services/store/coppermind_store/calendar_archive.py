@@ -57,6 +57,7 @@ class ImportReceipt(BaseModel):
     legacy_calendar: str = ""
     export_filename: str = ""
     original_entry: str = ""
+    dismissed: bool = False
 
 
 class ContactEvidence(BaseModel):
@@ -178,6 +179,16 @@ class CalendarArchive:
             self._save_receipt(receipt)
             return receipt
 
+    def dismiss(self, receipt_id: str) -> None:
+        if not re.fullmatch(r"[a-f0-9]{64}", receipt_id):
+            raise CalendarImportError("invalid import identity")
+        with self._lock:
+            path = self.root / "imports" / receipt_id / "receipt.json"
+            receipt = ImportReceipt.model_validate_json(path.read_bytes())
+            if receipt.state == "failed" and not receipt.dismissed:
+                receipt.dismissed = True
+                self._save_receipt(receipt)
+
     def process(self, receipt_id: str) -> ImportReceipt:
         if not re.fullmatch(r"[a-f0-9]{64}", receipt_id):
             raise CalendarImportError("invalid import identity")
@@ -268,6 +279,7 @@ class CalendarArchive:
                     receipt_id=receipt.id,
                     reason=receipt.error,
                 )
+                receipt.dismissed = False
                 self._save_receipt(receipt)
                 return receipt
             receipt.state = "succeeded"

@@ -150,6 +150,9 @@ class Dropbox:
             item = records["items"].get(identity)
             if not item or item["state"] not in COMPLETED | {"failed", "unsupported"}:
                 raise ValueError("Only completed or failed receipts can be dismissed")
+            if item["state"] == "failed":
+                for part in item["parts"]:
+                    self.context.archive.dismiss(part["import_id"])
             records["history"][identity] = item
             del records["items"][identity]
             self.save(records)
