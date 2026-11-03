@@ -56,10 +56,13 @@ KIND_LABELS = {
     "calendar_import": "Calendar import",
     "calendar_conflict": "Calendar conflict",
     "dropbox": "Dropbox",
+    "purge": "Retention purge",
 }
 
 
 def _link(problem: ProblemInfo) -> str:
+    if problem.kind == "purge":
+        return '<a href="/admin/purge">Retention purge</a>'
     if problem.kind == "dropbox":
         return '<a href="/admin/workflow?tab=intake">Dropbox receipts</a>'
     if problem.kind in {"calendar_import", "calendar_conflict"}:
@@ -78,7 +81,7 @@ def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems fo
         return "<p>" + escape(empty_text) + "</p>"
     rows = "".join(
         f"<tr><td>{escape(KIND_LABELS.get(item.kind, item.kind))}</td>"
-        f"<td>{escape(item.reference)}</td>"
+        f"<td>{'Saved cleanup attempt' if item.kind == 'purge' else escape(item.reference)}</td>"
         f"<td>{escape(item.reason)}</td><td>{_link(item)}</td></tr>"
         for item in problems
     )

@@ -137,6 +137,7 @@ Nothing here needs to be set before the system runs.
 | indexer | `enabled` | true |
 | indexer | `language` | `english` |
 | indexer | `reconcile_interval_s` | 600 |
+| retention | `days` | 30 (integer, 0 through 36500; 0 permits immediate manual purge) |
 | events | `retention_days` | 7 |
 | events | `poll_fallback_s` | 5 |
 | limits | `calendar_max_events` | 50,000 retained events across calendars |
@@ -264,3 +265,45 @@ subscription change. The calendar intake limit remains independent of Sync limit
 Completed Dropbox receipts clear after a fixed seven days. Failed receipts never
 expire automatically. Originals and import history
 remain under `/data/state/calendars` after receipt expiry or dismissal.
+
+## Retention purge receipts
+
+**Admin > Retention purge** edits `retention.days` with revision safety and
+previews manual cleanup. No timer erases data. The retention window begins
+at the later of the deleted row's last update and its recovery receipt's
+recorded time. The boundary is inclusive. Missing notes and notes still in
+Trash are not deleted-note candidates.
+
+An orphaned source is eligible independently of that window when its manifest
+identifies an opening note that is deleted, or a completed purge receipt proves
+that note was purged, and no live note cites the source. Missing and unparsed
+mirror rows are protected as potential live references. The store also reads
+current files, including unmirrored notes and Trash, before selecting sources.
+Unreadable notes refuse cleanup; legacy bundles without an opening-note identity
+are conservatively kept. A source's external-identity claim is removed with its
+bundle so a later ingest can create a new source normally.
+
+`/data/state/purges/<token>.json` contains the preview, candidate metadata,
+file hashes, authorization state, and completion outcome. It contains no recovery
+body or artifact content. Confirmation rechecks settings, the candidate set,
+mirror fingerprints and file hashes. Any change requires a new preview. Normal
+store writers overlap, but purge holds an exclusive maintenance barrier against
+note writes, ingest, reconciliation, recovery, filing and search-index publication. Filesystem sync writers
+remain external to that barrier; the store checks their latest files immediately
+before removal and never removes a live note file.
+
+The durable `applying` receipt precedes every unlink. A failure or interruption
+appears in Problems; the next preview returns that saved list for explicit retry.
+Retry verifies surviving files and live references, then completes only the
+originally authorized work. Recovery skips pending purge identities so partial
+cleanup cannot recreate their recovery copies. No automatic destructive retry
+runs at startup. Successful confirmation is idempotent. Purge removes all saved
+recovery generations and later-observation copies for each selected note,
+source bundles and generated projections for selected sources, mirror rows,
+and search entries through the indexer's removal functions. Receipts and Git's
+removal commits remain as audit evidence. Git history is never rewritten.
+
+Counts show notes and sources separately, plus item totals per origin and per
+provider. Notes inherit their associated sources' origins/providers; notes with
+none use Local notes. A note with several origins/providers counts once in each
+applicable group, so grouped totals can exceed the number of candidates.

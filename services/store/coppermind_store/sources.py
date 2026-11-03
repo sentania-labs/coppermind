@@ -1348,6 +1348,36 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     note_id=path.stem,
                 )
             )
+    from coppermind_store.purge import records
+
+    try:
+        purge_records = records(store)
+    except (OSError, ValueError):
+        purge_records = []
+        problems.append(
+            ProblemInfo(
+                kind="purge",
+                reference="receipts",
+                reason=(
+                    "A retention purge receipt is unreadable. Check storage "
+                    "or restore its backup before retrying."
+                ),
+            )
+        )
+    for receipt in purge_records:
+        if receipt["state"] in {"applying", "failed"} or (
+            receipt.get("error") and not receipt.get("resolved")
+        ):
+            problems.append(
+                ProblemInfo(
+                    kind="purge",
+                    reference=receipt["token"],
+                    reason=(
+                        "Retention purge is unfinished. Open Retention purge "
+                        "to review and retry the saved list."
+                    ),
+                )
+            )
     problems.extend(
         ProblemInfo(
             kind="unparsed",

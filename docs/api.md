@@ -15,7 +15,7 @@ The story behind these decisions is [architecture.md](architecture.md).
   creation.
 - Every route needs a scope: `sources:read`, `sources:write`, `notes:read`,
   `notes:write`, `notes:move`, `notes:delete`, `journal:read`,
-  `journal:write`, `search:read`, `admin:read`, `admin:write`. A key missing
+  `journal:write`, `search:read`, `admin:read`, `admin:write`, `admin:purge`. A key missing
   the right scope gets 403, not a filtered response.
 - Admin's own pages use a signed session cookie; its `/v1/admin/*` API
   endpoints accept either that cookie or a key holding an `admin:*` scope.
@@ -297,3 +297,35 @@ section, following `next_offset`. No source filter is supported. Expanded ZIP
 limits remain 40 MiB and 100 entries; conflicts fail the export atomically and
 appear in Admin Problems. Without authentication these routes return 401;
 without the named scope they return 403.
+
+## Retention purge (implemented)
+
+The public API service accepts API keys explicitly holding `admin:purge`:
+
+| Method and path | Request | Response |
+|---|---|---|
+| `POST /v1/admin/purge/preview` | Empty body | Saved dry run: `token`, `state`, `created_at`, `retention_days`, `candidates`, `counts`, `completed`, `error` |
+| `POST /v1/admin/purge/confirm` | `{"token":"<preview token>","confirmation":"Purge listed items"}` | Same candidate list and counts, `state: complete` on success |
+
+Candidates include `kind` (note or source), `id`, `title`, `path`, `origins`,
+`providers`, and `deleted_at` for notes. Counts contain `notes`, `sources`,
+`by_origin`, and `by_provider`. This dedicated scope is never added to an
+existing key; `admin:write`, `notes:delete`, and source scopes do not authorize
+purge. A changed candidate set, setting, mirror row or file yields 409
+`purge_conflict`; malformed or absent confirmation yields 422. Storage or
+metadata failures yield 503 and retain the receipt for inspection and retry.
+An unfinished purge is returned by preview with `state: applying` or `failed`;
+confirming its same token retries its saved list, after checking live references
+and surviving file hashes again. A completed token returns its prior result.
+
+Internal equivalents are `POST /internal/v1/purge/preview` and `/confirm`,
+protected by the internal token. Admin's `/admin/purge` page uses the same store
+contract through its session and CSRF guarded forms at `/v1/admin/purge/preview`
+and `/confirm` on the separate Admin service. `/v1/admin/purge/settings` on
+Admin saves `days` and `revision` from its form; the setting takes effect on the
+next preview. The two services keep their existing authentication boundaries.
+
+Purge is a separate removal operation. PUT, PATCH and DELETE on
+`/v1/sources/**` still always return 405. No live-reference override exists.
+The precise retention and failure recovery rules are in
+[data and settings](data-and-settings.md#retention-purge-receipts).

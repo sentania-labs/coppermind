@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from coppermind.api_keys import ApiKeySet
 from coppermind.errors import to_http
+from coppermind.purge import ConfirmPurge, PurgeResult
 from coppermind.store_protocol import (
     CreateNote,
     FolderTree,
@@ -341,3 +342,19 @@ async def field_index_status(request: Request, offset: Annotated[int, Query(ge=0
 @router.post("/field-index/rebuild", status_code=202)
 async def field_index_rebuild(request: Request) -> Response:
     return JSONResponse(_store(request).field_index.request_rebuild(), status_code=202)
+
+
+@router.post("/purge/preview", response_model=PurgeResult)
+async def preview_purge(request: Request) -> PurgeResult | JSONResponse:
+    try:
+        return await _store(request).preview_purge()
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.post("/purge/confirm", response_model=PurgeResult)
+async def confirm_purge(payload: ConfirmPurge, request: Request) -> PurgeResult | JSONResponse:
+    try:
+        return await _store(request).confirm_purge(payload)
+    except StoreError as error:
+        return _failure(error)

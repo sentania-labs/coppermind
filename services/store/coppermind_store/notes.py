@@ -51,6 +51,7 @@ from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
 from coppermind.logging import get_logger
 from coppermind.naming import note_stem, sanitize_folder, unique_stem
+from coppermind.purge import ConfirmPurge, PurgeResult
 from coppermind.schema import (
     FrontmatterSchema,
     account_list,
@@ -109,6 +110,7 @@ from coppermind.store_protocol import (
 from coppermind_store.control import ControlState
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, is_note_file, resolve
 from coppermind_store.indexer import index_note
+from coppermind_store.maintenance import writer
 
 log = get_logger("coppermind-store")
 
@@ -242,6 +244,9 @@ class LocalStore:
         # a sufficient guard for the compare-and-swap.
         self._locks: dict[str, asyncio.Lock] = {}
         self._source_locks: dict[str, asyncio.Lock] = {}
+        from coppermind_store.maintenance import MaintenanceGate
+
+        self.maintenance = MaintenanceGate()
         self._filing_lock = asyncio.Lock()
         self._reconcile_lock = asyncio.Lock()
         from coppermind_store.note_history import GitHistory
@@ -278,6 +283,7 @@ class LocalStore:
                 raise
             raise typed from exc
 
+    @writer
     async def restore_note(self, note_id: str, request: RestoreNote) -> NoteRecovery:
         from coppermind_store.note_history import restore
 
@@ -293,6 +299,7 @@ class LocalStore:
         """Read API key hashes from filesystem-first control state."""
         return self.control.api_keys()
 
+    @writer
     async def ingest(
         self, request: IngestRequest, *, payload_size_bytes: int | None = None
     ) -> IngestResult:
@@ -344,6 +351,16 @@ class LocalStore:
 
         return await get_note_sources(self, note_id)
 
+    async def preview_purge(self) -> PurgeResult:
+        from coppermind_store.purge import operation
+
+        return await operation(self)
+
+    async def confirm_purge(self, request: ConfirmPurge) -> PurgeResult:
+        from coppermind_store.purge import operation
+
+        return await operation(self, request)
+
     async def get_problems(self) -> list[ProblemInfo]:
         from coppermind_store.sources import get_problems
 
@@ -354,6 +371,7 @@ class LocalStore:
 
         return await get_status(self)
 
+    @writer
     async def create_note(self, request: CreateNote) -> NoteDocument:
         settings = self.control.settings()
         schema = self.control.schema()
@@ -580,6 +598,7 @@ class LocalStore:
         except (OSError, ValueError) as exc:
             raise StoreError(f"the frontmatter schema could not be read: {exc}") from exc
 
+    @writer
     async def replace_note(
         self, note_id: NoteId, request: ReplaceNote, if_match: ETag
     ) -> NoteDocument:
@@ -668,6 +687,7 @@ class LocalStore:
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
 
+    @writer
     async def patch_frontmatter(
         self, note_id: NoteId, request: PatchFrontmatter, if_match: ETag
     ) -> NoteDocument:
@@ -769,6 +789,7 @@ class LocalStore:
             sources=[str(source) for source in sources] if isinstance(sources, list) else [],
         )
 
+    @writer
     async def move_note(
         self, note_id: NoteId, request: MoveNote, if_match: ETag | None
     ) -> NoteDocument:
@@ -916,6 +937,7 @@ class LocalStore:
 
         return _document(note_id, new_relative, title, frontmatter, body, current_data, now, schema)
 
+    @writer
     async def rename_note(
         self, note_id: NoteId, request: RenameNote, if_match: ETag
     ) -> NoteDocument:
@@ -1114,6 +1136,7 @@ class LocalStore:
 
         return FolderTree(children=children)
 
+    @writer
     async def rebuild_metadata(self) -> RebuildMetadataResult:
         """Re-read every note file and rebuild its mirrored metadata."""
         from coppermind_store import indexer
@@ -1167,6 +1190,7 @@ class LocalStore:
         else:
             indexer.log.info("search index rebuilt", **counts)
 
+    @writer
     async def adopt_note(
         self,
         relative: str,

@@ -13,11 +13,13 @@ from coppermind.db.models import Note, NoteSource
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id
 from coppermind_store.fs import content_hash, resolve
+from coppermind_store.maintenance import writer
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
 
 
+@writer
 async def recover_sources(store: LocalStore) -> dict[str, int]:
     from coppermind_store.notes import _jsonable, _mirror_columns, _title_of
     from coppermind_store.sources import (
@@ -28,9 +30,14 @@ async def recover_sources(store: LocalStore) -> dict[str, int]:
 
     schema = store.control.schema()
     settings = store.control.settings()
+    from coppermind_store.purge import pending_ids
+
+    purging = pending_ids(store, "source")
     manifests = {}
     # Verify all originals before writing any mirror rows. A damaged backup is an error.
     for path in sorted(store.sources_root.glob("*/manifest.json")):
+        if path.parent.name in purging:
+            continue
         if not is_valid_id(path.parent.name) or path.is_symlink() or path.parent.is_symlink():
             raise ValueError("invalid source archive path")
         manifest = _manifest_document(path)

@@ -18,6 +18,7 @@ from coppermind.ids import is_valid_id
 from coppermind.schema import date_field_problem, note_date, parse_note_time
 from coppermind.store_protocol import MoveNote, ReplaceNote, StoreError
 from coppermind_store.fs import resolve
+from coppermind_store.maintenance import writer
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
@@ -308,6 +309,7 @@ async def _publish(store, note):
             )
 
 
+@writer
 async def file_reviewed(store: LocalStore) -> dict[str, int]:
     async with store._filing_lock:
         return await _file_reviewed(store)

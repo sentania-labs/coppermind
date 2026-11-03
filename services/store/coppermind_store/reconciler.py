@@ -53,6 +53,7 @@ from coppermind.settings import ProductSettings
 from coppermind.store_protocol import MetadataUnavailable, NotesFilesystemUnavailable
 from coppermind_store import indexer
 from coppermind_store.fs import content_hash, resolve
+from coppermind_store.maintenance import writer
 from coppermind_store.notes import _jsonable, _mirror_columns, _title_of
 from coppermind_store.rejections import reconcile_rejections
 
@@ -357,6 +358,7 @@ def _cadence(store: LocalStore) -> tuple[int, int, str, ZoneInfo]:
         return 60, 30, "03:30", ZoneInfo("UTC")
 
 
+@writer
 async def reconcile_once(
     store: LocalStore,
     *,
@@ -389,7 +391,10 @@ async def reconcile_once(
     await reconcile_rejections(store.control.store.state_dir, store.session_factory)
     remembered = {} if unidentified is None else unidentified
     scan_started = datetime.now(tz=UTC)
-    by_id = await _mirror_index(store)
+    from coppermind_store.purge import pending_ids
+
+    purging = pending_ids(store, "note")
+    by_id = {k: v for k, v in (await _mirror_index(store)).items() if k not in purging}
     by_path = _by_path(by_id)
     schema = store.control.schema()
     settings = store.control.settings()

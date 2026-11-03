@@ -17,6 +17,7 @@ router = APIRouter()
 SECTIONS = {
     "general": "General",
     "notes": "Folders",
+    "retention": "Retention",
     "reconcile": "File discovery",
     "git": "Git history",
     "sync": "Sync limits",
@@ -40,6 +41,7 @@ LABELS = {
     "limits.calendar_max_events": "Maximum retained calendar events",
     "limits.calendar_import_memory_mib": "Calendar import memory budget (MiB)",
     "general.timezone": "Local timezone",
+    "retention.days": "Keep deleted notes for (days)",
     "reconcile.scan_interval_s": "Check for file changes every (seconds)",
     "reconcile.quiet_period_s": "Wait for new files to settle (seconds)",
     "reconcile.full_rehash_daily_at": "Full daily scan at (local time)",

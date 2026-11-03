@@ -29,6 +29,7 @@ API_SCOPES = (
     "search:read",
     "admin:read",
     "admin:write",
+    "admin:purge",
 )
 
 KEY_ID_PATTERN = re.compile(r"^[a-z0-9]{16}$")

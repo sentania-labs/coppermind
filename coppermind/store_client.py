@@ -16,6 +16,7 @@ import httpx
 from pydantic import TypeAdapter
 
 from coppermind.api_keys import ApiKeySet
+from coppermind.purge import ConfirmPurge, PurgeResult
 from coppermind.store_protocol import (
     ArtifactNotFound,
     CreateNote,
@@ -45,6 +46,7 @@ from coppermind.store_protocol import (
     PreconditionRequired,
     ProblemInfo,
     ProjectionNotPlaced,
+    PurgeConflict,
     RebuildMetadataResult,
     RebuildSearchIndexResult,
     RenameNote,
@@ -228,6 +230,16 @@ class HttpStoreClient:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/notes/{_segment(note_id)}/sources")
         return _NOTE_SOURCES.validate_python(response.json())
 
+    async def preview_purge(self) -> PurgeResult:
+        response = await self._send("POST", f"{INTERNAL_PREFIX}/purge/preview")
+        return PurgeResult.model_validate(response.json())
+
+    async def confirm_purge(self, request: ConfirmPurge) -> PurgeResult:
+        response = await self._send(
+            "POST", f"{INTERNAL_PREFIX}/purge/confirm", json=request.model_dump(mode="json")
+        )
+        return PurgeResult.model_validate(response.json())
+
     async def get_problems(self) -> list[ProblemInfo]:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/problems")
         return _PROBLEMS.validate_python(response.json())
@@ -318,6 +330,8 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         return NotFound(payload.get("note_id", message))
     if code == "field_index_not_ready":
         return FieldIndexNotReady(payload.get("job_id", ""))
+    if code == "purge_conflict":
+        return PurgeConflict()
     if code == "filter_cursor_conflict":
         return FilterCursorConflict()
     if code == "path_collision":
