@@ -148,7 +148,7 @@ def configuration_form(product: ProductSettings, revision: int, status: dict) ->
     body += (
         "<p>Plan and limits are local reference values. They do not change your "
         "Obsidian subscription or its enforced limits. Calendar intake retains "
-        "its separate 10 MiB input limit.</p>"
+        "its separate 200,000,000 byte input limit.</p>"
     )
     body += (
         '<button name="preset" value="save">Save and apply</button> <button '
