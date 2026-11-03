@@ -88,11 +88,13 @@ vertical path proved end to end, then widened.
   answers 404 for an unknown note. `GET /v1/status` (any key) answers the
   counters: notes awaiting review (directly in the configured
   `notes.review_folder` with `reviewed: false`), notes by state, sources,
-  rejected ingests, name collisions and unparseable files. Only the counters
+  rejected ingests, name collisions, unparseable files and known unreadable
+  search entries. Only the counters
   are live; version, capabilities and helper ages are not yet in it.
 - Admin's Problems page lists every refused ingest (over the size limit or
   failing the schema), every note identity two files carry, and every
-  unparseable file, each linked to a read-only page for the note or source.
+  unparseable file, each linked to a read-only page for the note or source,
+  and every search entry known to be unreadable with its reason.
   Collisions are recomputed on every reconciliation pass; refused ingests are
   persisted under `/data/state/rejections/` and mirrored as rows, restored
   by reconciliation after database loss. Nothing is ever written into a note
@@ -485,10 +487,11 @@ vertical path proved end to end, then widened.
   stops parsing stays findable by its last indexed text with `state: unparsed`.
   An ingest indexes its projection and opening note once it has committed. After
   every reconciliation pass a catch-up step indexes up to 200 notes and 200
-  source pages the mirror describes and the index does not, which also covers a
-  crash between a file write and its commit; entries whose file cannot be read
-  are remembered and not drawn again until they change (see `docs/api.md`).
-  The first pass after the upgrade
+  source pages the mirror describes and the index does not (sources only when a
+  reviewed note approves their current revision), which also covers a
+  crash between a file write and its commit; entries whose file durably cannot
+  be read are remembered and not drawn again until they change (see
+  `docs/api.md`). The first pass after the upgrade
   finds the index never built and builds it from the notes filesystem. A
   projection deleted by hand stays in the index until the next rebuild, because
   nothing mirrors projections. Bodies are indexed up to their first 250,000
