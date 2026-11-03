@@ -683,7 +683,9 @@ Git blob identity, removal commit, exact recovery bytes, path, and note ID.
 They are loaded before filesystem reconciliation after mirror loss, so a
 returning file retains its old identity and source associations. They remain
 outside the notes repository and sync tree. Ordinary Git garbage collection
-cannot remove this independent recovery copy. No source bundle is removed.
+cannot remove this independent recovery copy. Deletion removes no source
+bundle; only a confirmed operator retention purge removes recovery copies and
+orphaned sources, see [data and settings](docs/data-and-settings.md#retention-purge-receipts).
 
 Git history alone cannot prove intent. Here `deleted` means absent with a
 recoverable committed removal. If the last observed edit never reached Git,
