@@ -129,13 +129,14 @@ class Dropbox:
                 break
         receipts = {r.id: r for r in self.context.archive.receipts()}
         for item in records["items"].values():
-            if item["state"] == "importing":
+            if item["state"] in {"importing", "failed"} and item["parts"]:
                 imports = [receipts[p["import_id"]] for p in item["parts"]]
                 if all(r.state == "succeeded" for r in imports):
                     item["state"] = "succeeded"
+                    item["error"] = ""
                     item["completed_at"] = time.time()
                     log.info("Dropbox adopt completed export %s", item["id"])
-                elif any(r.state == "failed" for r in imports):
+                elif item["state"] == "importing" and any(r.state == "failed" for r in imports):
                     item["state"] = "failed"
                     item["error"] = next(r.error for r in imports if r.state == "failed")
                     log.info("Dropbox fail export %s", item["id"])

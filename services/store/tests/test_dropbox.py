@@ -98,6 +98,27 @@ async def test_dismissing_failed_receipt_acknowledges_import_failure(tmp_path):
     assert [r.dismissed for r in store.context.archive.receipts() if r.state == "failed"] == [False]
 
 
+async def test_retried_receipt_that_succeeds_completes_failed_dropbox_item(tmp_path):
+    store = local_store(tmp_path)
+    dropbox = store.context.dropbox
+    dropbox.submit("one.ics", calendar())
+    await finish(store)
+    stale_bytes = calendar().replace(b"Planning", b"Conflict")
+    stale = dropbox.submit("two.ics", stale_bytes)
+    await finish(store)
+    assert dropbox.records()["items"][stale["id"]]["state"] == "failed"
+    newer = calendar().replace(b"Planning", b"Newer").replace(b"SUMMARY", b"SEQUENCE:1\r\nSUMMARY")
+    dropbox.submit("three.ics", newer)
+    await finish(store)
+    failed = [r for r in store.context.archive.receipts() if r.state == "failed"]
+    assert store.context.archive.process(failed[0].id).state == "succeeded"
+    await dropbox.process()
+    item = dropbox.records()["items"][stale["id"]]
+    assert item["state"] == "succeeded"
+    assert item["error"] == ""
+    assert dropbox.submit("again.ics", stale_bytes)["state"] == "already_imported"
+
+
 async def test_dismiss_expiry_redrop_and_failed_receipt_retention(tmp_path, monkeypatch):
     store = local_store(tmp_path)
     dropbox = store.context.dropbox
