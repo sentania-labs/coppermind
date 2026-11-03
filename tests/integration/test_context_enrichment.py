@@ -1042,3 +1042,22 @@ async def test_far_oversized_input_is_not_read_and_is_labelled_a_minimum(store, 
     assert final.error_rule == "input-limit"
     assert final.input_size == 25_000
     assert "at least 25,000 characters" in final.error
+
+
+async def test_a_model_no_longer_discovered_fails_the_job_with_a_named_rule(store, caplog):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+    context.write("discovery", {})
+
+    with caplog.at_level("WARNING"):
+        await context.run_job(context.load_job(job_id))
+
+    final = context.load_job(job_id)
+    assert final.state == "failed"
+    assert final.error_rule == "model-not-available"
+    assert "refresh models" in final.error
+    assert "could not be validated" not in final.error
+    assert any("model-not-available" in r.getMessage() for r in caplog.records)

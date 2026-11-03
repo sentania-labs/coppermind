@@ -120,7 +120,8 @@ attendee proposals without a supporting quote in the note or transcript.
 
 A job the checks reject fails with a plain sentence on its Admin row and on
 Inspect that names the rule, the suggestion it concerned and what to do next
-(for example an unknown record, a quote not in the note, an unmapped field, or a
+(for example an unknown record, a quote not in the note, an unmapped field, a model
+that is no longer discovered for its connection, or a
 value that does not fit the note schema). The rule's stable name is stored on the
 job as `error_rule`, and the store logs each failure at warning level with that
 rule. Neither the stored message nor the log holds model output beyond a short,

@@ -905,8 +905,15 @@ class ContextService:
             self.save_job(job)
             evidence = await self.evidence(job)
             assignment = self.config().assignments["enrichment"]
-            connection = self.connection(assignment.connection)
-            self.require_discovered(connection.id, assignment.model)
+            try:
+                connection = self.connection(assignment.connection)
+                self.require_discovered(connection.id, assignment.model)
+            except ValueError as exc:
+                raise JobRejected(
+                    "model-not-available",
+                    "The Enrichment connection or model is not set up: " + str(exc),
+                    "Open Enrichment, refresh models and choose one, then retry.",
+                ) from exc
             output, usage = await self.provider.suggest(
                 connection,
                 self.key(connection.id),
