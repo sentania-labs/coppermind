@@ -231,6 +231,7 @@ class LocalStore:
         control: ControlState,
         session_factory: async_sessionmaker[AsyncSession],
         sources_root: Path,
+        calendar_database_url: str | None = None,
     ) -> None:
         self.notes_root = notes_root
         self.sources_root = sources_root
@@ -248,7 +249,7 @@ class LocalStore:
         self.note_history = GitHistory(notes_root)
         from coppermind_store.context_service import ContextService
 
-        self.context = ContextService(self)
+        self.context = ContextService(self, calendar_database_url)
         from coppermind_store.field_index import FieldIndex
 
         self.field_index = FieldIndex(self)

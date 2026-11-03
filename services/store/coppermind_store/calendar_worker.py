@@ -7,7 +7,11 @@ import json
 import resource
 import subprocess
 import sys
+import tempfile
+from collections.abc import Iterable
 from datetime import date, datetime, time, timedelta
+from itertools import groupby
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -23,9 +27,12 @@ from coppermind_store.calendar_import import (
 
 
 def isolated_calendar(payload: dict[str, Any]) -> Any:
+    memory_mib = int(payload.get("memory_mib", 1024))
+    if not 128 <= memory_mib <= 2048:
+        raise CalendarImportError("calendar memory budget must be between 128 and 2048 MiB")
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "coppermind_store.calendar_worker"],
+            [sys.executable, "-m", "coppermind_store.calendar_worker", str(memory_mib)],
             input=json.dumps(payload).encode(),
             capture_output=True,
             timeout=45,
@@ -34,7 +41,10 @@ def isolated_calendar(payload: dict[str, Any]) -> Any:
     except subprocess.TimeoutExpired as exc:
         raise CalendarImportError("calendar processing exceeded its time limit") from exc
     if result.returncode:
-        raise CalendarImportError("calendar processing failed or exceeded its resource limit")
+        raise CalendarImportError(
+            "calendar processing failed or exceeded its configured memory/CPU budget: "
+            f"limits.calendar_import_memory_mib={memory_mib}"
+        )
     body = json.loads(result.stdout)
     if "error" in body:
         raise CalendarImportError(body["error"])
@@ -42,11 +52,22 @@ def isolated_calendar(payload: dict[str, Any]) -> Any:
 
 
 def parse_bounded(
-    calendar_id: str, filename: str, data: bytes, limit: int = MAX_UPLOAD
+    calendar_id: str,
+    filename: str,
+    data: bytes,
+    limit: int = MAX_UPLOAD,
+    *,
+    max_events: int = 50000,
+    memory_mib: int = 1024,
 ) -> list[CalendarEvent]:
+    from coppermind_store.calendar_import import check_import_budget
+
+    check_import_budget(filename, data, limit, max_events, memory_mib)
     result = isolated_calendar(
         {
             "action": "parse",
+            "memory_mib": memory_mib,
+            "max_events": max_events,
             "calendar_id": calendar_id,
             "filename": filename,
             "limit": limit,
@@ -62,16 +83,41 @@ def parse_bounded(
     ]
 
 
-def occurrences(events: list[CalendarEvent], day: date, timezone: str) -> list[dict[str, Any]]:
-    """A three-day matching window, with capped results and a process deadline."""
-    return isolated_calendar(
-        {
-            "action": "lookup",
-            "events": [event.model_dump() for event in events],
-            "day": day.isoformat(),
-            "timezone": timezone,
-        }
-    )
+def occurrences(events: Iterable[CalendarEvent], day: date, timezone: str) -> list[dict[str, Any]]:
+    """Spool ordered database rows; never send the entire calendar through JSON IPC."""
+    if isinstance(events, list):
+        events = sorted(events, key=lambda event: (event.calendar_id, event.uid))
+    with tempfile.TemporaryDirectory(prefix="coppermind-calendar-") as directory:
+        path = Path(directory) / "events.jsonl"
+        with path.open("w") as handle:
+            for event in events:
+                handle.write(event.model_dump_json() + "\n")
+        return isolated_calendar(
+            {
+                "action": "lookup-stream",
+                "events_file": str(path),
+                "day": day.isoformat(),
+                "timezone": timezone,
+            }
+        )
+
+
+def _lookup_stream(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    output = []
+    with Path(payload["events_file"]).open() as handle:
+        records = (json.loads(line) for line in handle)
+        for _, group in groupby(records, key=lambda event: (event["calendar_id"], event["uid"])):
+            # Keep a recurrence master and its overrides together, with a bound
+            # even for adversarial exports containing thousands of overrides.
+            batch = []
+            for event in group:
+                batch.append(event)
+                if len(batch) > 1000:
+                    raise CalendarImportError("one recurrence series exceeds 1000 event records")
+            output.extend(_lookup(payload | {"events": batch}))
+            if len(output) > 200:
+                raise CalendarImportError("matching window exceeds 200 occurrences")
+    return output
 
 
 def _same_occurrence(left: str, right: str) -> bool:
@@ -153,6 +199,15 @@ def _identify(payload: dict[str, Any]) -> list[dict[str, str]]:
     )
 
     data = base64.b64decode(payload["data"], validate=True)
+    from coppermind_store.calendar_import import check_import_budget
+
+    check_import_budget(
+        payload["filename"],
+        data,
+        MAX_UPLOAD,
+        int(payload.get("max_events", 50000)),
+        int(payload.get("memory_mib", 1024)),
+    )
     output = []
     # One parse per calendar serves both validation and the identity fields, so the whole
     # advertised range fits the CPU budget. Each calendar is validated on its own, as it is
@@ -190,10 +245,10 @@ def _identify(payload: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def main() -> None:
-    # Sized against the advertised ceilings and measured on this machine for a single
-    # calendar at the top of the 40 MiB expanded range: about 28s of CPU and 1.2 GiB peak
-    # RSS, so the budgets carry the whole range with room for interpreter startup.
-    resource.setrlimit(resource.RLIMIT_AS, (2048 * 1024**2, 2048 * 1024**2))
+    # Enforce the budget before reading JSON/base64 input, not after allocating it.
+    memory_mib = int(sys.argv[1]) if len(sys.argv) > 1 else 1024
+    memory_bytes = memory_mib * 1024**2
+    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
     resource.setrlimit(resource.RLIMIT_CPU, (45, 45))
     try:
         payload = json.load(sys.stdin)
@@ -217,6 +272,8 @@ def main() -> None:
                 ]
                 records.append(record)
             result = {"timezones": list(table), "events": records}
+        elif payload["action"] == "lookup-stream":
+            result = _lookup_stream(payload)
         elif payload["action"] == "identify":
             result = _identify(payload)
         else:
@@ -225,6 +282,15 @@ def main() -> None:
         if len(encoded) > 96 * 1024**2:
             raise CalendarImportError("parsed export exceeds the 96 MiB record limit")
         print(encoded)
+    except MemoryError:
+        print(
+            json.dumps(
+                {
+                    "error": "calendar import exceeded configured memory budget: "
+                    f"limits.calendar_import_memory_mib={memory_mib}"
+                }
+            )
+        )
     except Exception as exc:
         # Parser errors can contain calendar content. Only our fixed messages are safe.
         message = str(exc) if isinstance(exc, CalendarImportError) else "invalid calendar data"

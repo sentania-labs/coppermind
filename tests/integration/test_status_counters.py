@@ -94,6 +94,7 @@ async def test_a_fresh_store_counts_nothing(store: LocalStore):
         "excluded_count": 0,
         "filing_failures": 0,
         "known_unreadable": 0,
+        "calendar_import_failures": 0,
     }
 
 

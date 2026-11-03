@@ -54,7 +54,11 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         app.state.wiring = settings
         app.state.auth = InternalAuth.from_wiring(settings)
         app.state.store = LocalStore(
-            settings.notes_dir, control, factory, sources_root=settings.sources_dir
+            settings.notes_dir,
+            control,
+            factory,
+            sources_root=settings.sources_dir,
+            calendar_database_url=settings.database_url_for("psycopg"),
         )
         app.state.reconcile_status = ReconcilerStatus()
         reconcile_task = asyncio.create_task(
@@ -83,6 +87,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             reconcile_task.cancel()
             with suppress(asyncio.CancelledError):
                 await reconcile_task
+            app.state.store.context.archive.engine.dispose()
             await engine.dispose()
 
     app = FastAPI(

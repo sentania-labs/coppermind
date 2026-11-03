@@ -43,6 +43,22 @@ class Dropbox:
     def save(self, records: dict[str, Any]) -> None:
         self.context.write("dropbox", records)
 
+    def discovery_limits(self) -> dict[str, int]:
+        limits = self.context.store.control.settings().limits
+        return {
+            "max_events": limits.calendar_max_events,
+            "memory_mib": limits.calendar_import_memory_mib,
+        }
+
+    def retry(self, identity: str) -> dict[str, Any]:
+        records = self.records()
+        item = records["items"][identity]
+        if item["state"] != "failed" or item["parts"]:
+            raise ValueError("this item does not have a failed discovery to retry")
+        item["state"], item["error"] = "pending", ""
+        self.save(records)
+        return item
+
     def submit(self, filename: str, data: bytes) -> dict[str, Any]:
         if not filename or len(filename) > 255 or any(ord(c) < 32 for c in filename):
             raise ValueError("invalid filename")
@@ -51,7 +67,14 @@ class Dropbox:
         digest = hashlib.sha256(data).hexdigest()
         records = self.records()
         if digest in records["items"]:
-            return records["items"][digest]
+            item = records["items"][digest]
+            if (
+                item["state"] == "failed"
+                and not item["parts"]
+                and item.get("discovery_limits") != self.discovery_limits()
+            ):
+                return self.retry(digest)
+            return item
         atomic_write_bytes(self.context.root / "dropbox-originals" / digest, data, mode=0o600)
         records["items"][digest] = {
             "id": digest,
@@ -89,10 +112,12 @@ class Dropbox:
                 item["error"] = "Unsupported intake type; original preserved"
             else:
                 try:
+                    item["discovery_limits"] = self.discovery_limits()
                     parts = await asyncio.to_thread(
                         isolated_calendar,
                         {
                             "action": "identify",
+                            **item["discovery_limits"],
                             "filename": "calendar" + str(handler),
                             "data": base64.b64encode(data).decode(),
                         },

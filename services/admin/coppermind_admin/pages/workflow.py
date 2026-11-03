@@ -118,6 +118,8 @@ def router(wiring: Wiring) -> APIRouter:
                     )
                     if item["error"]:
                         body += '<p class="error">' + e(item["error"]) + "</p>"
+                    if item["state"] == "failed" and not item["parts"]:
+                        body += _form("retry-import", _hidden("id", item["id"]), "Retry import")
                     if item["state"] == "needs_identity":
                         body += (
                             "<p>Choose whether this export updates an existing calendar "

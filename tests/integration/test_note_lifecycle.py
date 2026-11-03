@@ -118,7 +118,16 @@ async def test_late_calendar_only_marks_affected_reviewed_notes_and_does_not_edi
     updates = store.context.read("calendar-followups", {})
     assert set(updates) == {affected.id}
     assert (await store.get_note(affected.id)).content_hash == before
-    update = updates[affected.id]
+    # Followups persist only a small invalidation record. Candidate evidence is
+    # reconstructed when this particular note's review is opened.
+    assert "candidates" not in updates[affected.id]
+    import json
+
+    saved_updates = json.loads((store.context.root / "calendar-followups.json").read_bytes())
+    assert "candidates" not in saved_updates[affected.id]
+    detail = await store.context.lifecycle_detail({"note_id": affected.id})
+    update = detail["calendar_update"]
+    assert update["candidates"]
     await store.context.resolve_calendar(
         {
             "note_id": affected.id,

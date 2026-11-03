@@ -689,6 +689,7 @@ class StatusCounters(BaseModel):
     excluded_count: int = 0
     filing_failures: int = 0
     known_unreadable: int = 0
+    calendar_import_failures: int = 0
 
 
 class StatusResponse(BaseModel):
@@ -801,7 +802,8 @@ class ProblemInfo(BaseModel):
 
     `kind` is `ingest` (a refused ingest), `collision` (several files carry one
     note identity), `unparsed` (a file the reconciler could not read), `filing`
-    (monthly filing failed and will retry), `date_mismatch` (both `date` and
+    (monthly filing failed and will retry), `calendar_import` (a retained calendar
+    import failed validation or exceeded its configured budget), `date_mismatch` (both `date` and
     `time` are present and disagree, with `date` winning) or `excluded`.
     `note_id` and `source_id` name what the problem is about when it exists.
     """

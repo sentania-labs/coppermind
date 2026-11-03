@@ -106,6 +106,9 @@ class NoteLifecycle:
             validate_review(note, self.context.store.control.schema(), self._default_timezone())
         except ValueError as exc:
             problem = str(exc)
+        update = self.context.read("calendar-followups", {}).get(note.id)
+        if update is not None:
+            update = dict(update, candidates=await self.context.calendar_candidates(note))
         return {
             "review_problem": problem,
             "note": note.model_dump(mode="json"),
@@ -116,7 +119,7 @@ class NoteLifecycle:
             "unresolved": job.result.unresolved if job and job.result else [],
             "roles": self.context.store.control.schema().roles,
             "finalization": self.context.read("finalized", {}).get(note.id),
-            "calendar_update": self.context.read("calendar-followups", {}).get(note.id),
+            "calendar_update": update,
             "body_hash": fingerprint(note.body),
             "completion": self.context.read("review-completions/" + note.id, {}),
         }
@@ -363,7 +366,7 @@ class NoteLifecycle:
 
         generation = fingerprint(
             [
-                self.context.evidence_hash(),
+                await asyncio.to_thread(self.context.evidence_hash),
                 self.context.config().model_dump(),
                 self.context.dropbox.snapshot()["calendars"],
             ]
@@ -393,7 +396,6 @@ class NoteLifecycle:
                         "state": "needs_review",
                         "message": "Calendar context changed after review; the note is unchanged",
                         "calendar_hash": current,
-                        "candidates": await self.context.calendar_candidates(note),
                         "at": now(),
                     }
             except (ValueError, StoreError):

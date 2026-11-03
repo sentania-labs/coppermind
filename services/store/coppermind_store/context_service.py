@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
+import ijson
 from pydantic import ValidationError
 
 from coppermind.atomicio import atomic_write_text
@@ -97,10 +98,14 @@ def now() -> str:
 
 
 class ContextService:
-    def __init__(self, store: LocalStore) -> None:
+    def __init__(self, store: LocalStore, database_url: str | None = None) -> None:
         self.store = store
         self.root = store.control.store.state_dir / "context"
-        self.archive = CalendarArchive(store.control.store.state_dir)
+        self.archive = CalendarArchive(
+            store.control.store.state_dir,
+            database_url,
+            limits=lambda: store.control.settings().limits,
+        )
         from coppermind_store.dropbox import Dropbox
         from coppermind_store.note_lifecycle import NoteLifecycle
 
@@ -119,6 +124,12 @@ class ContextService:
 
     def read(self, name: str, default: Any) -> Any:
         path = self.root / f"{name}.json"
+        if name == "calendar-followups" and path.exists():
+            with path.open("rb") as handle:
+                return {
+                    key: {k: v for k, v in value.items() if k != "candidates"}
+                    for key, value in ijson.kvitems(handle, "")
+                }
         return json.loads(path.read_bytes()) if path.exists() else default
 
     def write(self, name: str, value: Any) -> None:
@@ -170,43 +181,39 @@ class ContextService:
         return fingerprint({"assignment": values, "connection": connection})
 
     def evidence_hash(self) -> str:
-        return fingerprint(
-            {
-                "calendar": sorted(
-                    (identity, event.semantic_hash)
-                    for identity, event in self.archive.catalog().events.items()
-                ),
-                "contacts": self.read("contact_corrections", {}),
-            }
+        return self.archive.catalog().events.context_fingerprint(
+            self.read("contact_corrections", {})
         )
 
     async def calendar_candidates(self, note: Any) -> list[dict[str, Any]]:
         day = note_date(note.frontmatter, self.store.control.schema())
         if day is None:
             return []
-        catalog = self.archive.catalog()
+        catalog = await asyncio.to_thread(self.archive.catalog)
         sources = {s.id: s.timezone for s in self.config().sources}
         sources.update(
             {s["id"]: s["timezone"] for s in self.dropbox.records()["calendars"].values()}
         )
         matches = []
         for identity, timezone in sources.items():
-            events = [e for e in catalog.events.values() if e.calendar_id == identity]
-            if events:
-                matches.extend(await asyncio.to_thread(occurrences, events, day, timezone))
+            events = catalog.events.page(None, calendar_id=identity)
+            matches.extend(await asyncio.to_thread(occurrences, events, day, timezone))
         return matches
 
     async def note_evidence_hash(self, note: Any) -> str:
         if not self.config().lifecycle_enabled:
-            return self.evidence_hash()
+            return await asyncio.to_thread(self.evidence_hash)
         matches = await self.calendar_candidates(note)
-        catalog = self.archive.catalog()
+        catalog = await asyncio.to_thread(self.archive.catalog)
         event_ids = {m["event_id"] for m in matches}
         contacts = {p["contact_id"] for m in matches for p in m["people"]}
+        event_hashes = await asyncio.to_thread(
+            lambda: sorted((i, catalog.events[i].semantic_hash) for i in event_ids)
+        )
         return fingerprint(
             {
                 "matches": sorted(matches, key=lambda m: (m["event_id"], m["occurrence"])),
-                "events": sorted((i, catalog.events[i].semantic_hash) for i in event_ids),
+                "events": event_hashes,
                 "corrections": {
                     k: v for k, v in self.read("contact_corrections", {}).items() if k in contacts
                 },
@@ -320,23 +327,28 @@ class ContextService:
             return {"enabled": True}
 
     async def snapshot(self, offset: int = 0) -> dict[str, Any]:
-        config = self.config()
-        schema = self.store.control.schema()
-        catalog = await asyncio.to_thread(self.archive.catalog)
-        jobs = sorted(self.jobs(), key=lambda job: job.created_at, reverse=True)
+        return await asyncio.to_thread(self._snapshot, offset)
+
+    def _snapshot(self, offset: int) -> dict[str, Any]:
+        """Materialize bounded mirror pages and counts outside the event loop."""
         if offset < 0:
             raise ValueError("invalid page offset")
-        events = sorted(catalog.events.values(), key=lambda event: event.identity)
+        config = self.config()
+        schema = self.store.control.schema()
+        catalog = self.archive.catalog()
+        jobs = sorted(self.jobs(), key=lambda job: job.created_at, reverse=True)
+        events = catalog.events
         contacts = catalog.contacts()
+        event_count, contact_count = len(events), len(contacts)
         receipts = sorted(self.archive.receipts(), key=lambda item: item.received_at, reverse=True)
         window = slice(offset, offset + 100)
-        maximum = max(len(events), len(contacts), len(receipts), len(jobs))
+        maximum = max(event_count, contact_count, len(receipts), len(jobs))
         return {
             "offset": offset,
             "next_offset": offset + 100 if maximum > offset + 100 else None,
             "totals": {
-                "events": len(events),
-                "contacts": len(contacts),
+                "events": event_count,
+                "contacts": contact_count,
                 "imports": len(receipts),
                 "jobs": len(jobs),
             },
@@ -354,16 +366,16 @@ class ContextService:
                 }
             ],
             "calendar": {
-                "events": len(events),
-                "contacts": len(contacts),
+                "events": event_count,
+                "contacts": contact_count,
                 "imports": [item.model_dump() for item in receipts[window]],
             },
             "events": [
                 event.model_dump(exclude={"component", "timezone_components"})
                 | {"id": event.identity}
-                for event in events[window]
+                for event in events.page(100, offset)
             ],
-            "contacts": [contact.model_dump() for contact in contacts[window]],
+            "contacts": [contact.model_dump() for contact in contacts.page(100, offset)],
             "contact_corrections": self.read("contact_corrections", {}),
             "associations": self.read("associations", {}),
             "jobs": [
@@ -604,6 +616,10 @@ class ContextService:
         return receipt.model_dump()
 
     async def retry_import(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self.lock:
+            item = self.dropbox.records()["items"].get(payload["id"])
+            if item and item["state"] == "failed" and not item["parts"]:
+                return self.dropbox.retry(payload["id"])
         return (await asyncio.to_thread(self.archive.process, payload["id"])).model_dump()
 
     async def backlog(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -703,13 +719,13 @@ class ContextService:
         day = note_date(note.frontmatter, schema)
         candidates: list[dict[str, Any]] = []
         if day is not None:
-            catalog = self.archive.catalog()
+            catalog = await asyncio.to_thread(self.archive.catalog)
             sources = [(source.id, source.timezone) for source in config.sources]
             sources += [
                 (s["id"], s["timezone"]) for s in self.dropbox.records()["calendars"].values()
             ]
             for source_id, timezone in sources:
-                events = [item for item in catalog.events.values() if item.calendar_id == source_id]
+                events = catalog.events.page(None, calendar_id=source_id)
                 candidates.extend(await asyncio.to_thread(occurrences, events, day, timezone))
         fields = [item.model_dump() for item in schema.keys if item.name in assignment.fields]
         # The authored note often already contains the imported summary. Read sources only
@@ -1255,10 +1271,15 @@ class ContextService:
 
     async def correct_contact(self, payload: dict[str, Any]) -> dict[str, Any]:
         async with self.lock:
-            known = {item.id for item in self.archive.catalog().contacts()}
+            catalog = await asyncio.to_thread(self.archive.catalog)
+            known = catalog.contacts()
             identity = str(payload["id"])
             target = str(payload.get("same_as", ""))
-            if identity not in known or (target and target not in known):
+
+            def contacts_exist() -> bool:
+                return known.has(identity) and (not target or known.has(target))
+
+            if not await asyncio.to_thread(contacts_exist):
                 raise ValueError("contact does not exist")
             if payload.get("confirmation") != "Save contact correction":
                 raise ValueError("explicit contact correction approval is required")

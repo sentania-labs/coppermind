@@ -109,6 +109,9 @@ services:
     restart: "no"
 
   # The only writer of the notes filesystem. Exactly one replica, always.
+  # Calendar sizing: size the store at 2 GiB for the default 1024 MiB
+  # parser budget. PostgreSQL memory is separate. Measured import/restart RSS
+  # and guidance for larger parser budgets: docs/calendar-enrichment.md.
   store:
     <<: *store-image
     restart: unless-stopped

@@ -286,6 +286,21 @@ class EventSettings(BaseModel):
 class LimitSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    calendar_max_events: int = Field(
+        default=50000,
+        ge=1,
+        le=500000,
+        description="Maximum event records retained across all calendars.",
+    )
+    calendar_import_memory_mib: int = Field(
+        default=1024,
+        ge=128,
+        le=2048,
+        description=(
+            "Calendar parser address-space ceiling in MiB; about 40x the expanded export "
+            "size. Size the store above this."
+        ),
+    )
     ingest_max_bytes: int = Field(
         default=25 * MIB, gt=0, description="Maximum ingest payload in bytes."
     )

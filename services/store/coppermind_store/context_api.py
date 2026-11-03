@@ -7,9 +7,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 
 from coppermind.errors import to_http
-from coppermind.store_protocol import StoreError
+from coppermind.store_protocol import MetadataUnavailable, StoreError
 from coppermind_store.auth import require_internal_token
 from coppermind_store.context_service import ContextService
 
@@ -54,6 +55,9 @@ async def context_action(action: str, payload: dict[str, Any], request: Request)
         else:
             return JSONResponse({"error": "not_found", "message": "unknown operation"}, 404)
         return JSONResponse(result)
+    except SQLAlchemyError:
+        status, body = to_http(MetadataUnavailable(), surface="internal")
+        return JSONResponse(body, status)
     except StoreError as exc:
         status, body = to_http(exc, surface="internal")
         return JSONResponse(body, status)
