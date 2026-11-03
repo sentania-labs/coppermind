@@ -44,6 +44,15 @@ async def test_postgres_stream_rebuild_and_budget_problem(store, wiring, monkeyp
             for p in problems
         )
         assert len(archive.catalog().events) == 1
+        dropbox = store.context.dropbox
+        records = dropbox.records()
+        records["items"]["mirror"] = {
+            "id": "mirror",
+            "state": "failed",
+            "error": "Calendar import failed; inspect the calendar import receipt",
+            "parts": [{"import_id": second.id}],
+        }
+        dropbox.save(records)
         assert (await store.get_status()).counters.calendar_import_failures == 1
     finally:
         archive.engine.dispose()
