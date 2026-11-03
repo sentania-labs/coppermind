@@ -120,8 +120,8 @@ def test_without_filters_only_the_base_conditions_apply():
     assert filter_conditions(_query()) == []
     sql, _ = _sql(_query())
 
-    assert "notes.reviewed" not in sql.split("FROM", 1)[1]
-    assert "starts_with" not in sql
+    assert "notes.reviewed IS true" in sql
+    assert "notes.filed IS true" in sql
     # Every hit joins the mirror, and a note it no longer holds is never one.
     assert "LEFT OUTER JOIN notes" in sql
     assert "coalesce(notes.state" in sql

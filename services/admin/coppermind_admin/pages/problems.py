@@ -83,6 +83,7 @@ def counters_html(status: StatusResponse) -> str:
         + counters.name_collisions
         + counters.unparseable_files
         + counters.filing_failures
+        + counters.known_unreadable
     )
     states = ", ".join(
         f"{escape(state)}: {count}" for state, count in sorted(counters.notes_by_state.items())
@@ -102,6 +103,7 @@ Preserved sources<strong>{counters.sources}</strong></div>
 <li>Rejected ingests: {counters.rejected_ingests}</li>
 <li>Name collisions: {counters.name_collisions}</li>
 <li>Unparseable files: {counters.unparseable_files}</li>
+<li>Known unreadable search entries: {counters.known_unreadable}</li>
 <li>Pending filing failures: {counters.filing_failures}</li>
 <li>Excluded (skipped by exclusion rules): {counters.excluded_count}</li>
 </ul>
@@ -138,6 +140,8 @@ def router(wiring: Wiring) -> APIRouter:
             '<h1>Problems</h1><p><a href="/admin">Overview</a></p>'
             "<p>Computed from the metadata mirror and recorded rejections. "
             "Nothing is written into a note.</p>"
+            "<p>Known unreadable search entries: "
+            f"{sum(p.kind == 'search_unreadable' for p in problems)}</p>"
             f"<p>Files skipped by exclusion: {sum(p.kind == 'excluded' for p in problems)}</p>"
             + _problem_rows([item for item in problems if item.kind != "excluded"])
             + "<h2>Intentional exclusions</h2><p>These files were left untouched. "

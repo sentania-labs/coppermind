@@ -71,6 +71,7 @@ def status_html(status: SearchIndexStatus, zone: ZoneInfo) -> str:
     return f"""<ul>
 <li>Notes indexed: {status.notes}</li>
 <li>Source pages indexed: {status.sources}</li>
+<li>Known unreadable entries: {status.known_unreadable}</li>
 <li>Last updated: {escape(local_time(status.last_updated_at, zone))}</li>
 <li>Rebuild: {rebuild}</li>
 </ul>{failure}"""

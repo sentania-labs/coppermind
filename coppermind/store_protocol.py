@@ -637,6 +637,7 @@ class SearchIndexStatus(BaseModel):
     or a rebuild finished, and is None for an index nothing has written yet.
     """
 
+    known_unreadable: int = 0
     notes: int
     sources: int
     last_updated_at: datetime | None = None
@@ -687,6 +688,7 @@ class StatusCounters(BaseModel):
     unparseable_files: int
     excluded_count: int = 0
     filing_failures: int = 0
+    known_unreadable: int = 0
 
 
 class StatusResponse(BaseModel):

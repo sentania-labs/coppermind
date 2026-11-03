@@ -211,6 +211,19 @@ class SearchDocument(Base):
     )
 
 
+class SearchUnreadable(Base):
+    """A failed search read at a particular version and filesystem state."""
+
+    __tablename__ = "search_unreadable"
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    ref_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    version: Mapped[str] = mapped_column(Text, nullable=False)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    observation: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class SearchIndexState(Base):
     """The one row describing the index as a whole, for Admin and readiness."""
 
