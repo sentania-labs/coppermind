@@ -123,3 +123,45 @@ async def test_zip_expanding_past_40_mib_fails_the_receipt(tmp_path):
     record = store.context.dropbox.records()["items"][item["id"]]
     assert record["state"] == "failed"
     assert "40 MiB" in record["error"]
+
+
+@pytest.mark.parametrize("recovery", ["retry", "redrop"])
+async def test_budget_rejected_discovery_recovers_after_setting_increase(tmp_path, recovery):
+    store = local_store(tmp_path)
+
+    def budget(max_events):
+        settings = store.control.store.read("settings")
+        body = dict(settings.body)
+        body.pop("revision", None)
+        body["limits"] = {**body["limits"], "calendar_max_events": max_events}
+        store.control.store.write("settings", body, if_revision=settings.revision)
+
+    budget(1)
+    source = calendar("work").replace(
+        b"END:VCALENDAR",
+        b"BEGIN:VEVENT" + calendar("work", event="event-2").split(b"BEGIN:VEVENT", 1)[1],
+    )
+    dropbox = store.context.dropbox
+    item = dropbox.submit("export.ics", source)
+    await dropbox.process()
+    failed = dropbox.records()["items"][item["id"]]
+    assert failed["state"] == "failed"
+    assert "calendar_max_events=1" in failed["error"]
+    assert not failed["parts"]
+    assert store.context.archive.receipts() == []
+    # The unchanged file must not restart the parser on every watcher scan.
+    assert dropbox.submit("export.ics", source)["state"] == "failed"
+    budget(2)
+    if recovery == "retry":
+        await store.context.retry_import({"id": item["id"]})
+    else:
+        retried = dropbox.submit("export.ics", source)
+        assert retried["id"] == item["id"]
+        assert retried["state"] == "pending"
+    await dropbox.process()
+    receipts = store.context.archive.receipts()
+    assert len(receipts) == 1
+    assert store.context.archive.process(receipts[0].id).state == "succeeded"
+    await dropbox.process()
+    assert dropbox.records()["items"][item["id"]]["state"] == "succeeded"
+    assert len(store.context.archive.catalog().events) == 2

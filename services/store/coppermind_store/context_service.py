@@ -616,6 +616,10 @@ class ContextService:
         return receipt.model_dump()
 
     async def retry_import(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self.lock:
+            item = self.dropbox.records()["items"].get(payload["id"])
+            if item and item["state"] == "failed" and not item["parts"]:
+                return self.dropbox.retry(payload["id"])
         return (await asyncio.to_thread(self.archive.process, payload["id"])).model_dump()
 
     async def backlog(self, payload: dict[str, Any]) -> dict[str, Any]:

@@ -155,3 +155,41 @@ def test_work_review_time_controls_and_save(signed_in):
         assert response.status_code == 200
         assert 'name="date"' in response.text
         assert 'name="time_unknown"' not in response.text
+
+
+def test_failed_dropbox_discovery_has_a_working_retry_action(signed_in):
+    class FailedDiscoveryStore(ContextStore):
+        async def context_action(self, action, payload):
+            result = await super().context_action(action, payload)
+            if action == "snapshot":
+                result["dropbox"] = {
+                    "folder": "Dropbox",
+                    "calendars": [],
+                    "items": [
+                        {
+                            "id": "failed-discovery",
+                            "filename": "export.ics",
+                            "state": "failed",
+                            "error": "limits.calendar_max_events=1 exceeded",
+                            "parts": [],
+                        }
+                    ],
+                }
+            return result
+
+    client, _ = signed_in
+    fake = FailedDiscoveryStore()
+    client.app.state.store = fake
+    response = client.get("/admin/workflow?tab=intake")
+    assert "Retry import" in response.text
+    assert 'action="/v1/admin/context/retry-import"' in response.text
+    token = form_token(client, "/admin/workflow?tab=intake")
+    retried = client.post(
+        "/v1/admin/context/retry-import",
+        data={"csrf": token, "id": "failed-discovery"},
+        follow_redirects=False,
+    )
+    assert retried.status_code == 303
+    action, payload = fake.calls[-1]
+    assert action == "retry-import"
+    assert payload["id"] == "failed-discovery"
