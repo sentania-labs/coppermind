@@ -806,7 +806,11 @@ async def test_new_live_citation_shrinks_the_abandoned_problem_and_protects_the_
     assert (store.sources_root / ingested.source.id).exists()
 
 
-async def test_recovery_records_a_damaged_bundle_and_forgets_it_once_repaired(store):
+def damaged_problems(problems):
+    return [p for p in problems if p.kind == "damaged_source"]
+
+
+async def test_recovery_records_an_unverifiable_bundle_with_an_accurate_reason(store):
     retention(store, 0)
     ingested = await store.ingest(sample())
     bundle = store.sources_root / ingested.source.id
@@ -815,11 +819,61 @@ async def test_recovery_records_a_damaged_bundle_and_forgets_it_once_repaired(st
     artifact.unlink()
     with pytest.raises(SourcesFilesystemUnavailable):
         await store.rebuild_metadata()
-    (problem,) = [p for p in await store.get_problems() if p.kind == "damaged_source"]
+    (problem,) = damaged_problems(await store.get_problems())
     assert problem.source_id == ingested.source.id
+    assert "could not be verified during a metadata rebuild" in problem.reason
+    assert "no readable manifest" not in problem.reason
     assert (await store.get_status()).counters.purge_problems == 1
 
     artifact.write_bytes(content)
     await store.rebuild_metadata()
-    assert not [p for p in await store.get_problems() if p.kind == "damaged_source"]
+    assert not damaged_problems(await store.get_problems())
     assert (await store.get_status()).counters.purge_problems == 0
+
+
+async def test_purge_planning_does_not_clear_what_recovery_found(store):
+    retention(store, 0)
+    ingested = await orphan(store)
+    bundle = store.sources_root / ingested.source.id
+    artifact = next(bundle.glob("r*/*.txt"))
+    content = artifact.read_bytes()
+    artifact.unlink()
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.rebuild_metadata()
+
+    preview = await store.preview_purge()
+    assert ingested.source.id in {c.id for c in preview.candidates}
+    (problem,) = damaged_problems(await store.get_problems())
+    assert "could not be verified" in problem.reason
+    assert (await store.get_status()).counters.purge_problems == 1
+
+    artifact.write_bytes(content)
+    await store.preview_purge()
+    assert damaged_problems(await store.get_problems())
+    await store.rebuild_metadata()
+    assert not damaged_problems(await store.get_problems())
+
+
+async def test_an_authorized_purge_removes_what_recovery_recorded(store):
+    retention(store, 0)
+    ingested = await orphan(store)
+    bundle = store.sources_root / ingested.source.id
+    next(bundle.glob("r*/*.txt")).unlink()
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.rebuild_metadata()
+    assert len(damaged_problems(await store.get_problems())) == 1
+
+    preview = await store.preview_purge()
+    assert (await store.confirm_purge(confirmation(preview))).state == "complete"
+    assert not bundle.exists()
+    assert not damaged_problems(await store.get_problems())
+    assert (await store.get_status()).counters.purge_problems == 0
+
+
+async def test_a_manifest_unreadable_bundle_is_still_reported_as_such(store):
+    retention(store, 0)
+    ingested = await orphan(store)
+    (store.sources_root / ingested.source.id / "manifest.json").unlink()
+    await store.preview_purge()
+    (problem,) = damaged_problems(await store.get_problems())
+    assert "no readable manifest" in problem.reason

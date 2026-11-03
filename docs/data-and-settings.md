@@ -341,7 +341,10 @@ never walks a source bundle or a finished receipt. The full scan that rewrites t
 runs only at store startup and after a completed preview, confirm or abandon; a failed
 confirm leaves it as it was. Between scans, work that actually observes a bundle updates
 the file: a preview that finds a bundle unreadable or readable again, and a metadata
-rebuild whose source recovery fails to verify, or later verifies, a bundle. Reconciliation
+rebuild whose source recovery fails to verify, or later verifies, a bundle. Each record
+keeps what found it: an unreadable manifest is cleared when purge reads it again, and a
+bundle recovery could not verify (a missing file, a mismatch) is cleared only when a
+rebuild verifies it or a confirmed purge removes it. Purge planning never clears the latter. Reconciliation
 does not read source bundles or finished receipts, so it records nothing. An item an
 abandoned purge left drops out of the Problem as soon as its note is live again or a live
 note cites its source; that never makes it eligible for removal.

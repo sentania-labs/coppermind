@@ -119,18 +119,27 @@ def _change_recorded(store: LocalStore, change) -> None:
 
 
 def note_damaged(
-    store: LocalStore, source_id: str, provider: str = "", external_source_id: str = ""
+    store: LocalStore,
+    source_id: str,
+    provider: str = "",
+    external_source_id: str = "",
+    cause: str = "manifest",
 ) -> None:
-    """Record a bundle that purge, recovery or a scan just found without a readable manifest."""
+    """Record what found a bundle damaged: `manifest` (purge or a scan) or `recovery`."""
     entry = {
         "source_id": source_id,
         "provider": provider,
         "external_source_id": external_source_id,
+        "cause": cause,
     }
 
     def change(value: dict[str, Any]) -> bool:
-        others = [e for e in value["damaged"] if e["source_id"] != source_id]
-        if entry in value["damaged"] and len(others) == len(value["damaged"]) - 1:
+        others = [
+            e
+            for e in value["damaged"]
+            if (e["source_id"], e.get("cause", "manifest")) != (source_id, cause)
+        ]
+        if len(others) == len(value["damaged"]) - 1 and entry in value["damaged"]:
             return False
         value["damaged"] = [*others, entry]
         return True
@@ -139,11 +148,15 @@ def note_damaged(
         _change_recorded(store, change)
 
 
-def note_repaired(store: LocalStore, source_id: str) -> None:
-    """Forget a damaged bundle that purge or recovery just read successfully."""
+def note_repaired(store: LocalStore, source_id: str, cause: str | None = None) -> None:
+    """Forget what was recorded for a bundle once that condition is verified repaired."""
 
     def change(value: dict[str, Any]) -> bool:
-        kept = [e for e in value["damaged"] if e["source_id"] != source_id]
+        kept = [
+            e
+            for e in value["damaged"]
+            if e["source_id"] != source_id or (cause and e.get("cause", "manifest") != cause)
+        ]
         changed = len(kept) != len(value["damaged"])
         value["damaged"] = kept
         return changed
@@ -494,7 +507,7 @@ def _plan(
         if state == "damaged":
             note_damaged(store, source.id, source.provider, source.external_source_id)
             continue
-        note_repaired(store, source.id)
+        note_repaired(store, source.id, "manifest")
         if state == "ok":
             opening = manifest.get("note_id")
             if not is_valid_id(opening) or opening in disk_ids:
@@ -633,15 +646,22 @@ async def _scan(store: LocalStore) -> None:
                     "titles": {r: titles[r] for r in remaining[:50]},
                 }
             )
+    verification = [
+        e
+        for e in recorded(store)["damaged"]
+        if e.get("cause") == "recovery" and (store.sources_root / e["source_id"]).exists()
+    ]
     value = {
         "damaged": [
             {
                 "source_id": source_id,
                 "provider": named[source_id].provider,
                 "external_source_id": named[source_id].external_source_id,
+                "cause": "manifest",
             }
             for source_id in damaged
-        ],
+        ]
+        + verification,
         "unreadable": await asyncio.to_thread(unreadable, store, tuple(TERMINAL)),
         "abandoned": abandoned,
     }

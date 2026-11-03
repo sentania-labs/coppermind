@@ -1289,6 +1289,20 @@ def filing_problems(store: LocalStore) -> list[ProblemInfo]:
     return problems
 
 
+def _damaged_reason(entry: dict[str, str]) -> str:
+    name = (
+        f"The preserved copy of {entry['provider']} source {entry['external_source_id']}"
+        if entry["provider"]
+        else "A preserved source copy"
+    )
+    if entry.get("cause") == "recovery":
+        return (
+            f"{name} could not be verified during a metadata rebuild: a file is missing or "
+            "does not match its manifest. Restore it from a backup, then rebuild again."
+        )
+    return f"{name} has files but no readable manifest. It is not offered for retention purge."
+
+
 async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
     """What retention purge leaves for the owner, for Problems and the Overview count.
 
@@ -1313,15 +1327,7 @@ async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
         ProblemInfo(
             kind="damaged_source",
             reference=entry["source_id"],
-            reason=(
-                (
-                    f"The preserved copy of {entry['provider']} source "
-                    f"{entry['external_source_id']}"
-                    if entry["provider"]
-                    else "A preserved source copy"
-                )
-                + " has files but no readable manifest. It is not offered for retention purge."
-            ),
+            reason=_damaged_reason(entry),
             source_id=entry["source_id"],
         )
         for entry in found["damaged"]

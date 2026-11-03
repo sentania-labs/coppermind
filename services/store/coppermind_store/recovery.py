@@ -41,6 +41,7 @@ async def recover_sources(store: LocalStore) -> dict[str, int]:
             continue
         if not is_valid_id(path.parent.name) or path.is_symlink() or path.parent.is_symlink():
             raise ValueError("invalid source archive path")
+        manifest: dict = {}
         try:
             manifest = _manifest_document(path)
             if manifest.get("source_id") != path.parent.name:
@@ -48,7 +49,13 @@ async def recover_sources(store: LocalStore) -> dict[str, int]:
             for revision in manifest["revisions"]:
                 _verify_revision_artifacts(path.parent, revision["revision"], revision["artifacts"])
         except (SourcesFilesystemUnavailable, OSError, ValueError, KeyError):
-            note_damaged(store, path.parent.name)
+            note_damaged(
+                store,
+                path.parent.name,
+                str(manifest.get("provider", "")),
+                str(manifest.get("external_source_id", "")),
+                "recovery",
+            )
             raise
         note_repaired(store, path.parent.name)
         manifests[path.parent.name] = manifest
