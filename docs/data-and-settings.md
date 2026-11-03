@@ -238,6 +238,8 @@ old deletion with a later return. None of these files is synced.
 Rebuild seeds identities from receipts before scanning files. Observed file
 contents always win when an identity returns. `deleted` is reversible absence
 with Git recovery evidence, not an instruction to erase files or sources.
+Only a confirmed [retention purge](#retention-purge-receipts) removes a
+receipt and its observation copies.
 Historical source approvals remain in their existing review/filing receipts.
 
 A complete backup must preserve `/data/notes` including `.git`, `/data/sources`,
