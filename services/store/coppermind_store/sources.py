@@ -1189,6 +1189,9 @@ def _review_prefix(store: LocalStore) -> str:
     return f"{folder}/" if folder else ""
 
 
+PURGE_PROBLEM_KINDS = frozenset({"purge", "purge_unfinished", "purge_receipt", "damaged_source"})
+
+
 async def get_status(store: LocalStore) -> StatusResponse:
     """Counters computed from the mirror and the recorded rejections."""
     prefix = _review_prefix(store)
@@ -1248,82 +1251,14 @@ async def get_status(store: LocalStore) -> StatusResponse:
             excluded_count=excluded_count,
             filing_failures=sum(p.kind == "filing" for p in problems),
             calendar_import_failures=sum(p.kind == "calendar_import" for p in problems),
+            purge_problems=sum(p.kind in PURGE_PROBLEM_KINDS for p in problems),
             active_problems=sum(p.kind != "excluded" for p in problems),
         )
     )
 
 
-async def get_problems(store: LocalStore) -> list[ProblemInfo]:
-    """Every problem the dashboard lists, computed, never written into a note."""
-    try:
-        async with store.session_factory() as session:
-            unreadable = list(
-                (
-                    await session.scalars(
-                        sa.select(SearchUnreadable).order_by(
-                            SearchUnreadable.kind, SearchUnreadable.ref_id
-                        )
-                    )
-                ).all()
-            )
-            rejections = list(
-                (
-                    await session.scalars(
-                        sa.select(RecordedRejection).order_by(
-                            RecordedRejection.created_at.desc(), RecordedRejection.id.desc()
-                        )
-                    )
-                ).all()
-            )
-            unparsed = list(
-                (
-                    await session.scalars(
-                        sa.select(Note).where(Note.state == "unparsed").order_by(Note.path)
-                    )
-                ).all()
-            )
-            ok_notes = list(
-                (
-                    await session.scalars(
-                        sa.select(Note).where(Note.state == "ok").order_by(Note.path)
-                    )
-                ).all()
-            )
-            source_ids = list(
-                (await session.scalars(sa.select(Source.id).order_by(Source.id))).all()
-            )
-            refused = {row.reference for row in rejections if row.kind == "ingest"}
-            known = {
-                f"{provider}:{external}": source_id
-                for source_id, provider, external in (
-                    await session.execute(
-                        sa.select(Source.id, Source.provider, Source.external_source_id)
-                    )
-                ).all()
-                if f"{provider}:{external}" in refused
-            }
-    except (SQLAlchemyError, OSError) as exc:
-        raise MetadataUnavailable(str(exc)) from exc
-    problems = [
-        ProblemInfo(
-            kind=row.kind,
-            reference=row.reference,
-            reason=row.reason,
-            note_id=row.reference if row.kind == "collision" else None,
-            source_id=known.get(row.reference) if row.kind == "ingest" else None,
-        )
-        for row in rejections
-    ]
-    problems.extend(
-        ProblemInfo(
-            kind="search_unreadable",
-            reference=row.path or row.ref_id,
-            reason=row.reason,
-            note_id=row.ref_id if row.kind == "note" else None,
-            source_id=row.ref_id if row.kind == "source" else None,
-        )
-        for row in unreadable
-    )
+def filing_problems(store: LocalStore) -> list[ProblemInfo]:
+    problems: list[ProblemInfo] = []
     for path in sorted((store.control.store.state_dir / "filing").glob("*.json")):
         try:
             filing = json.loads(path.read_bytes())
@@ -1351,54 +1286,82 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     note_id=path.stem,
                 )
             )
+    return problems
+
+
+async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
+    """Everything retention purge leaves for the owner, for Problems and the Overview count."""
     from coppermind_store.purge import damaged_bundles, outcome, records, unreadable
 
+    problems: list[ProblemInfo] = []
     try:
-        damaged = await asyncio.to_thread(damaged_bundles, store, source_ids)
-    except OSError as exc:
+        async with store.session_factory() as session:
+            rows = (
+                await session.execute(
+                    sa.select(Source.id, Source.provider, Source.external_source_id).order_by(
+                        Source.id
+                    )
+                )
+            ).all()
+    except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
+    try:
+        damaged = await asyncio.to_thread(damaged_bundles, store, [row.id for row in rows])
+    except OSError:
+        damaged = []
+        problems.append(
+            ProblemInfo(
+                kind="purge",
+                reference="sources",
+                reason=(
+                    "Source bundles could not be checked for retention purge. "
+                    "Check the sources volume."
+                ),
+            )
+        )
+    named = {row.id: row for row in rows}
     problems.extend(
         ProblemInfo(
             kind="damaged_source",
             reference=source_id,
             reason=(
-                "The source bundle has files but no readable manifest. "
+                f"The preserved copy of {named[source_id].provider} source "
+                f"{named[source_id].external_source_id} has files but no readable manifest. "
                 "It is not offered for retention purge."
             ),
             source_id=source_id,
         )
         for source_id in damaged
     )
-
     try:
         purge_records, abandoned, unreadable_tokens = await asyncio.to_thread(
             lambda: (records(store), records(store, "abandoned"), unreadable(store))
         )
-        problems.extend(
-            ProblemInfo(
-                kind="purge_receipt",
-                reference=token,
-                reason=(
-                    "A retention purge receipt is unreadable and is being ignored. Abandon it "
-                    "to move the file into quarantine."
-                ),
-            )
-            for token in unreadable_tokens
-        )
     except OSError:
-        purge_records = abandoned = []
-        problems.append(
+        return [
+            *problems,
             ProblemInfo(
                 kind="purge",
                 reference="receipts",
                 reason="Retention purge receipts could not be read. Check storage health.",
-            )
+            ),
+        ]
+    problems.extend(
+        ProblemInfo(
+            kind="purge_receipt",
+            reference=token,
+            reason=(
+                "A retention purge receipt is unreadable and is being ignored. Abandon it "
+                "to move the file into quarantine."
+            ),
         )
+        for token in unreadable_tokens
+    )
     for receipt in purge_records:
         if receipt["state"] in {"applying", "failed"}:
             problems.append(
                 ProblemInfo(
-                    kind="purge",
+                    kind="purge_unfinished",
                     reference=receipt["token"],
                     reason=(
                         "Retention purge is unfinished. Open Retention purge "
@@ -1437,10 +1400,84 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     reason=(
                         f"Retention purge was abandoned. {len(receipt['items']) - len(remaining)} "
                         f"listed items were removed. {len(remaining)} were not and still need "
-                        f"attention: {listed}{more}."
+                        f"attention: {listed}{more}. Preview again from Retention purge "
+                        "to finish removing them."
                     ),
                 )
             )
+    return problems
+
+
+async def get_problems(store: LocalStore) -> list[ProblemInfo]:
+    """Every problem the dashboard lists, computed, never written into a note."""
+    try:
+        async with store.session_factory() as session:
+            unreadable = list(
+                (
+                    await session.scalars(
+                        sa.select(SearchUnreadable).order_by(
+                            SearchUnreadable.kind, SearchUnreadable.ref_id
+                        )
+                    )
+                ).all()
+            )
+            rejections = list(
+                (
+                    await session.scalars(
+                        sa.select(RecordedRejection).order_by(
+                            RecordedRejection.created_at.desc(), RecordedRejection.id.desc()
+                        )
+                    )
+                ).all()
+            )
+            unparsed = list(
+                (
+                    await session.scalars(
+                        sa.select(Note).where(Note.state == "unparsed").order_by(Note.path)
+                    )
+                ).all()
+            )
+            ok_notes = list(
+                (
+                    await session.scalars(
+                        sa.select(Note).where(Note.state == "ok").order_by(Note.path)
+                    )
+                ).all()
+            )
+            refused = {row.reference for row in rejections if row.kind == "ingest"}
+            known = {
+                f"{provider}:{external}": source_id
+                for source_id, provider, external in (
+                    await session.execute(
+                        sa.select(Source.id, Source.provider, Source.external_source_id)
+                    )
+                ).all()
+                if f"{provider}:{external}" in refused
+            }
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
+    problems = [
+        ProblemInfo(
+            kind=row.kind,
+            reference=row.reference,
+            reason=row.reason,
+            note_id=row.reference if row.kind == "collision" else None,
+            source_id=known.get(row.reference) if row.kind == "ingest" else None,
+        )
+        for row in rejections
+    ]
+    problems.extend(
+        ProblemInfo(
+            kind="search_unreadable",
+            reference=row.path or row.ref_id,
+            reason=row.reason,
+            note_id=row.ref_id if row.kind == "note" else None,
+            source_id=row.ref_id if row.kind == "source" else None,
+        )
+        for row in unreadable
+    )
+    problems.extend(filing_problems(store))
+    problems.extend(await purge_problems(store))
     problems.extend(
         ProblemInfo(
             kind="unparsed",

@@ -12,7 +12,12 @@ from coppermind.errors import to_http
 from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
 from coppermind.settings import ProductSettings, Wiring, read_settings
 from coppermind.statefiles import RevisionConflict
-from coppermind.store_protocol import StoreError
+from coppermind.store_protocol import (
+    NotesFilesystemUnavailable,
+    ProblemInfo,
+    SourcesFilesystemUnavailable,
+    StoreError,
+)
 from coppermind_admin.pages.problems import store_client
 from coppermind_admin.pages.search_index import _zone, local_time
 
@@ -21,53 +26,44 @@ class PurgeControl(Protocol):
     async def preview_purge(self) -> PurgeResult: ...
     async def confirm_purge(self, request: ConfirmPurge) -> PurgeResult: ...
     async def abandon_purge(self, request: AbandonPurge) -> PurgeResult: ...
+    async def get_problems(self) -> list[ProblemInfo]: ...
 
-
-# This extension deliberately uses the existing Admin shell/components. There
-# is no lattice.css in this application; a global theme migration is separate.
-DARK = """<style>
-@media(prefers-color-scheme:dark) {
-:root {color-scheme:dark;background:#171c19;color:#edf0eb}
-.sidebar {background:#202820;border-color:#465346}
-.brand,a,.breadcrumb {color:#b1d7b9}
-.sidebar button {color:#b1d7b9;border-color:#8b9f8b}
-main {background:#202820;border-color:#465346}
-input {background:#171c19;color:#edf0eb;border-color:#8b9f8b}
-.metric {background:#293329;border-color:#465346}
-th,td {border-color:#465346}th,.muted,.field-help {color:#c2cdbf}
-.notice {background:#493c22;color:#fff1d6}
-.error {background:#4a2924;color:#fde8e4}
-.success {background:#293e2e;color:#e9f0e9}
-}
-</style>"""
 
 PROGRESS = """<script>
 for (const form of document.querySelectorAll('main form')) {
-  form.addEventListener('submit', () => {
-    for (const button of form.querySelectorAll('button')) button.disabled = true;
+  form.addEventListener('submit', (event) => {
+    const target = event.submitter ? event.submitter.formAction : form.action;
     document.getElementById('progress').textContent =
-      form.action.endsWith('/confirm') ? 'Removing the confirmed items. Keep this page open.' :
-      form.action.endsWith('/abandon') ? 'Abandoning the saved list. Nothing is being removed.' :
-      form.action.endsWith('/preview') ?
+      target.endsWith('/confirm') ? 'Removing the confirmed items. Keep this page open.' :
+      target.endsWith('/abandon') ? 'Abandoning the saved list. Nothing is being removed.' :
+      target.endsWith('/preview') ?
       'Checking deleted notes and source references. Nothing is being removed.' :
       'Saving retention. No items are being removed.';
+    setTimeout(() => {
+      for (const button of form.querySelectorAll('button')) button.disabled = true;
+    }, 0);
   });
 }
 </script>"""
 
 
+def plural(count: int, singular: str, many: str | None = None) -> str:
+    return f"{count} {singular if count == 1 else many or singular + 's'}"
+
+
 def listing(value: PurgeResult, request: Request) -> str:
     groups = ""
     for label, values in [
-        ("Origin", value.counts.by_origin),
-        ("Provider", value.counts.by_provider),
+        ("origin", value.counts.by_origin),
+        ("provider", value.counts.by_provider),
     ]:
         rows = "".join(
-            f"<tr><td>{escape(k)}</td><td>{n}</td></tr>" for k, n in sorted(values.items())
+            f"<tr><td>{escape(k)}</td><td>{n.notes}</td><td>{n.sources}</td></tr>"
+            for k, n in sorted(values.items())
         )
         groups += (
-            f"<section><h2>By {label.lower()}</h2><table><thead>"
-            f"<tr><th>{label}</th><th>Items</th></tr></thead>"
+            f"<section><h2>By {label}</h2><table><thead><tr><th>{label.capitalize()}</th>"
+            f"<th>Deleted notes</th><th>Orphaned sources</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></section>"
         )
     rows = ""
@@ -78,15 +74,12 @@ def listing(value: PurgeResult, request: Request) -> str:
             if c.deleted_at
             else "Opening note removed"
         )
-        label = (
-            "Leftover from an interrupted purge"
-            if c.leftover
-            else "Deleted note"
-            if c.kind == "note"
-            else "Orphaned source"
-        )
+        label = "Deleted note" if c.kind == "note" else "Orphaned source"
+        if c.leftover:
+            label += " (leftover from an interrupted purge)"
+        where = c.origins if c.origins == c.providers else [*c.origins, *c.providers]
         rows += f"""<tr><td>{label}<br><strong>{name}</strong><br>{escape(c.path)}</td>
-<td>{escape(", ".join(c.origins))}<br>{escape(", ".join(c.providers))}</td><td>{when}</td></tr>"""
+<td>{"<br>".join(escape(v) for v in where)}</td><td>{when}</td></tr>"""
     return f"""<div class="metrics"><div class="metric">Deleted notes
 <strong>{value.counts.notes}</strong></div>
 <div class="metric">Orphaned sources<strong>{value.counts.sources}</strong></div></div>
@@ -94,6 +87,17 @@ def listing(value: PurgeResult, request: Request) -> str:
 <p class="muted">An item associated with several origins or providers counts once in each group.</p>
 <h2>Items in this list</h2><table><thead><tr><th>Item</th><th>Origin / provider</th>
 <th>Deletion recorded</th></tr></thead><tbody>{rows}</tbody></table>"""
+
+
+def kept_line(value: PurgeResult) -> str:
+    kept = value.kept
+    return (
+        '<p class="muted">Kept: '
+        f"{plural(kept.notes_within_retention, 'deleted note')} still inside the "
+        f"{value.retention_days}-day retention window and "
+        f"{plural(kept.sources_in_use, 'source')} still used by live notes. "
+        "Git history is never rewritten.</p>"
+    )
 
 
 def router(wiring: Wiring) -> APIRouter:
@@ -108,8 +112,7 @@ def router(wiring: Wiring) -> APIRouter:
         return HTMLResponse(
             render(
                 "Retention purge",
-                DARK
-                + "<h1>Retention purge</h1>"
+                "<h1>Retention purge</h1>"
                 + body
                 + '<p id="progress" role="status" aria-live="polite"></p>'
                 + PROGRESS,
@@ -118,20 +121,44 @@ def router(wiring: Wiring) -> APIRouter:
         )
 
     def failure(error: Exception, status: int = 503) -> HTMLResponse:
-        if isinstance(error, StoreError):
+        if isinstance(error, SourcesFilesystemUnavailable):
+            message = "The sources volume could not be read or written."
+        elif isinstance(error, NotesFilesystemUnavailable):
+            message = "The notes or state volume could not be read or written."
+        elif isinstance(error, StoreError):
             status, body = to_http(error)
-            message = body["message"]
+            message = body["message"][:1].upper() + body["message"][1:]
         else:
             message = "The setting could not be saved. Reload this page and try again."
         return page(
             f'<p class="error" role="alert">{escape(message)}</p>'
-            "<p>Review the saved list again before retrying. "
-            "An interrupted purge may have removed some files already.</p>"
-            '<a href="/admin/purge">Back to retention purge</a>',
+            "<p>An interrupted purge may have removed some items already. "
+            "Open Retention purge to review its saved list, then retry it or abandon it.</p>"
+            '<a href="/admin/purge">Open retention purge</a>',
             status,
         )
 
-    def home(
+    async def attention(request: Request) -> str:
+        try:
+            problems = await client(request).get_problems()
+        except (StoreError, OSError):
+            return ""
+        mine = [p for p in problems if p.kind in {"purge", "purge_unfinished", "purge_receipt"}]
+        if not mine:
+            return ""
+        reasons = "".join(f"<li>{escape(p.reason)}</li>" for p in mine)
+        review = ""
+        if any(p.kind == "purge_unfinished" for p in mine):
+            review = (
+                '<form method="post" action="/v1/admin/purge/preview">'
+                "<button>Review the unfinished purge</button></form>"
+            )
+        return (
+            '<div class="error" role="alert"><h2>A purge needs attention</h2>'
+            f'<ul>{reasons}</ul>{review}<p><a href="/admin/problems">See all problems</a></p></div>'
+        )
+
+    async def home(
         request: Request, notice: str = "", status: int = 200, submitted: dict | None = None
     ) -> HTMLResponse:
         state = request.app.state.control.read("settings")
@@ -142,22 +169,23 @@ def router(wiring: Wiring) -> APIRouter:
             revision = submitted.get("revision", [revision])[0]
         days, revision = escape(days, quote=True), escape(revision, quote=True)
         return page(
-            f'''{notice}<p>Remove deleted-note recovery copies and unused source material.
+            f'''{notice}{await attention(request)}
+<p>Remove deleted-note recovery copies and unused source material.
 First preview the list. Nothing is removed until you confirm it.</p>
 <p>Git history and its removal commits stay intact.
 Live notes and sources they reference are protected.
 Orphaned sources are eligible as soon as their opening note is deleted or purged
 and no live note cites them.
 Notes still present in Trash are protected.</p>
-<form method="post" action="/v1/admin/purge/settings">
+<form method="post" action="/v1/admin/purge/preview">
 <input type="hidden" name="revision" value="{revision}">
 <label for="days">Keep deleted notes for (days)</label>
 <input id="days" name="days" type="number" min="0" max="36500" required value="{days}">
 <p class="field-help">Default: 30 days from the recorded deletion. Zero permits immediate removal.
-Saving takes effect on the next preview; it does not start a purge.</p>
-<button>Save retention</button></form>
-<form method="post" action="/v1/admin/purge/preview">
-<button>Preview what will be removed</button></form>''',
+Save a changed value before previewing. Saving does not start a purge.</p>
+<button>Preview what will be removed</button>
+<button class="secondary" formaction="/v1/admin/purge/settings">Save retention</button>
+</form>''',
             status,
         )
 
@@ -176,7 +204,8 @@ Saving takes effect on the next preview; it does not start a purge.</p>
         return page(
             f'<p class="notice" role="status">Purge abandoned. {value.completed} listed items '
             f"were removed and {len(value.remaining)} were not. Nothing was retried. "
-            "Items that were not removed are listed in Problems.</p>"
+            "Items that were not removed are listed in Problems; preview again to finish "
+            "removing them.</p>"
             + (f"<h2>Not removed</h2><ul>{kept}</ul>" if kept else "")
             + '<p><a href="/admin/purge">Back to retention settings</a></p>'
         )
@@ -189,9 +218,11 @@ Saving takes effect on the next preview; it does not start a purge.</p>
                 '<p class="success">Nothing is eligible for removal.</p>'
                 "<p>Deleted notes within the retention window "
                 "and sources with live references are kept.</p>"
-                '<a href="/admin/purge">Back to retention settings</a>'
+                + kept_line(value)
+                + '<a href="/admin/purge">Back to retention settings</a>'
             )
         complete = value.state == "complete"
+        unfinished = value.state in {"failed", "applying"}
         heading = (
             (
                 '<p class="success" role="status">Purge complete. The listed items were removed. '
@@ -203,11 +234,12 @@ Saving takes effect on the next preview; it does not start a purge.</p>
                 "Nothing has been removed by this preview.</p>"
             )
         )
-        if value.state in {"failed", "applying"}:
+        if unfinished:
             heading = (
                 '<p class="error">An earlier purge did not finish. '
-                "Some files may already be gone. Review its saved list below, "
-                "then retry to finish removing only these items.</p>"
+                "Some items may already be removed and some files may remain. "
+                "Review its saved list below, then retry to finish removing only these items, "
+                "or abandon it.</p>"
             )
         body = (
             heading
@@ -215,40 +247,50 @@ Saving takes effect on the next preview; it does not start a purge.</p>
             + listing(value, request)
         )
         if not complete:
-            notes_label = f"{value.counts.notes} deleted note" + (
-                "s" if value.counts.notes != 1 else ""
-            )
-            sources_label = f"{value.counts.sources} orphaned source" + (
-                "s" if value.counts.sources != 1 else ""
-            )
+            body += kept_line(value)
+            parts = []
+            if value.counts.notes:
+                parts.append(
+                    f"{plural(value.counts.notes, 'deleted note')} and their recovery copies"
+                )
+            if value.counts.sources:
+                parts.append(
+                    f"{plural(value.counts.sources, 'orphaned source')} with "
+                    + (
+                        "its original bundle and generated pages"
+                        if value.counts.sources == 1
+                        else "their original bundles and generated pages"
+                    )
+                )
             action = (
-                "Retry removal of listed items"
-                if value.state in {"failed", "applying"}
-                else "Permanently remove listed items"
+                "Retry removal of listed items" if unfinished else "Permanently remove listed items"
             )
             body += f'''<div class="notice"><h2>Confirm permanent removal</h2>
-<p>This removes {notes_label} and their recovery copies,
-and {sources_label} with their original bundles and generated pages.
+<p>This removes {" and ".join(parts)}.
 Their search entries are removed too.
 Admin cannot undo this. Git history remains,
 but it does not contain the original source bundles.</p></div>
 <form method="post" action="/v1/admin/purge/confirm">
 <input type="hidden" name="token" value="{escape(value.token)}">
-<label for="confirmation">Type Purge listed items to confirm</label>
+<label for="confirmation">Type <code>Purge listed items</code> to confirm</label>
 <input id="confirmation" name="confirmation" required autocomplete="off"
 pattern="Purge listed items">
 <button class="danger">{action}</button>
 </form>'''
-            if value.state in {"failed", "applying"}:
+            if unfinished:
                 body += f'''<h2>Or abandon this purge</h2>
 <p>Abandoning stops this saved list without retrying it. Nothing more is removed.
 What was and was not removed is reported in Problems, and you can start a new preview.</p>
 <form method="post" action="/v1/admin/purge/abandon">
 <input type="hidden" name="token" value="{escape(value.token)}">
-<button>Abandon this purge</button></form>'''
+<button class="secondary">Abandon this purge</button></form>'''
         body += (
             '<p><a href="/admin/purge">'
-            + ("Back to retention settings" if complete else "Cancel and keep remaining items")
+            + (
+                "Back to retention settings (nothing removed)"
+                if value.state == "preview"
+                else "Back to retention settings"
+            )
             + "</a></p>"
         )
         return page(body)
@@ -256,7 +298,7 @@ What was and was not removed is reported in Problems, and you can start a new pr
     @routes.get("/admin/purge", include_in_schema=False)
     async def retention(request: Request) -> Response:
         try:
-            return home(request)
+            return await home(request)
         except (OSError, ValueError) as error:
             return failure(error)
 
@@ -274,13 +316,13 @@ What was and was not removed is reported in Problems, and you can start a new pr
                 product.model_dump(mode="json"),
                 if_revision=int(form.get("revision", [""])[0]),
             )
-            return home(
+            return await home(
                 request,
                 '<p class="success" role="status">Retention saved. '
                 "Preview the list to continue.</p>",
             )
         except RevisionConflict:
-            return home(
+            return await home(
                 request,
                 '<p class="error">Retention changed in another session. '
                 '<a href="/admin/purge">Reload current settings</a> before trying again.</p>',
@@ -288,7 +330,7 @@ What was and was not removed is reported in Problems, and you can start a new pr
                 form,
             )
         except ValueError:
-            return home(
+            return await home(
                 request,
                 '<p class="error">Enter a whole number of days from 0 to 36500. '
                 "Your choice has not been saved.</p>",
@@ -300,7 +342,19 @@ What was and was not removed is reported in Problems, and you can start a new pr
 
     @routes.post("/v1/admin/purge/preview", include_in_schema=False)
     async def preview(request: Request) -> Response:
+        form = parse_qs((await request.body()).decode())
         try:
+            submitted = form.get("days", [None])[0]
+            if submitted is not None and submitted.strip() != str(
+                read_settings(request.app.state.control).retention.days
+            ):
+                return await home(
+                    request,
+                    '<p class="error">You changed the number of days but have not saved it. '
+                    "Choose Save retention first, then preview.</p>",
+                    422,
+                    form,
+                )
             return reviewed(await client(request).preview_purge(), request)
         except StoreError as error:
             return failure(error)

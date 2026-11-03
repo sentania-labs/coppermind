@@ -11,7 +11,6 @@ import hashlib
 import json
 import os
 import secrets
-from collections import Counter
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,7 +24,15 @@ from coppermind.atomicio import atomic_write_bytes, sync_directory
 from coppermind.db.models import Note, NoteSource, Source
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id
-from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeCandidate, PurgeCounts, PurgeResult
+from coppermind.purge import (
+    AbandonPurge,
+    ConfirmPurge,
+    PurgeBreakdown,
+    PurgeCandidate,
+    PurgeCounts,
+    PurgeKept,
+    PurgeResult,
+)
 from coppermind.store_protocol import (
     MetadataUnavailable,
     NotesFilesystemUnavailable,
@@ -113,6 +120,18 @@ def save(store: LocalStore, record: dict[str, Any]) -> None:
             (_folder(store, state) / name).unlink(missing_ok=True)
 
 
+def _breakdown(candidates: list[PurgeCandidate], field: str) -> dict[str, PurgeBreakdown]:
+    counts: dict[str, PurgeBreakdown] = {}
+    for c in candidates:
+        for value in getattr(c, field):
+            entry = counts.setdefault(value, PurgeBreakdown())
+            if c.kind == "note":
+                entry.notes += 1
+            else:
+                entry.sources += 1
+    return counts
+
+
 def result(record: dict[str, Any]) -> PurgeResult:
     candidates = [PurgeCandidate.model_validate(i["candidate"]) for i in record["items"]]
     return PurgeResult(
@@ -124,9 +143,10 @@ def result(record: dict[str, Any]) -> PurgeResult:
         counts=PurgeCounts(
             notes=sum(c.kind == "note" for c in candidates),
             sources=sum(c.kind == "source" for c in candidates),
-            by_origin=dict(Counter(v for c in candidates for v in c.origins)),
-            by_provider=dict(Counter(v for c in candidates for v in c.providers)),
+            by_origin=_breakdown(candidates, "origins"),
+            by_provider=_breakdown(candidates, "providers"),
         ),
+        kept=PurgeKept.model_validate(record.get("kept", {})),
         completed=len(record.get("completed", [])),
         remaining=record.get("remaining", []),
         error=record.get("error"),
@@ -243,7 +263,9 @@ def _row_fingerprint(row) -> str:
     return hashlib.sha256(json.dumps(values, sort_keys=True, default=str).encode()).hexdigest()
 
 
-async def candidates(store: LocalStore, now: datetime) -> list[dict[str, Any]]:
+async def candidates(
+    store: LocalStore, now: datetime
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     days = store.control.settings().retention.days
     cutoff = now - timedelta(days=days)
     disk_ids, disk_sources, pages = await asyncio.to_thread(disk_references, store)
@@ -298,6 +320,7 @@ async def candidates(store: LocalStore, now: datetime) -> list[dict[str, Any]]:
         notes,
         sources,
         linked,
+        abandoned,
     )
 
 
@@ -313,14 +336,16 @@ def _plan(
     notes: list[Note],
     sources: list[Source],
     linked: set[str],
-) -> list[dict[str, Any]]:
+    abandoned: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     by_note = {n.id: n for n in notes}
     by_source = {s.id: s for s in sources}
     # Missing and unparsed rows are protected too: absence is not proof of deletion.
     protected = (
         disk_sources | linked | {s for n in notes if n.state != "deleted" for s in n.source_ids}
     )
-    items = []
+    items: list[dict[str, Any]] = []
+    kept_notes = 0
     for note in notes:
         receipt = saved.get(note.id)
         if note.state != "deleted" or note.id in disk_ids:
@@ -333,6 +358,7 @@ def _plan(
             note.updated_at if receipt is None else max(note.updated_at, receipt.recorded_at)
         )
         if deleted_at > cutoff:
+            kept_notes += 1
             continue
         associated = [by_source[s] for s in note.source_ids if s in by_source]
         candidate = PurgeCandidate(
@@ -411,7 +437,7 @@ def _plan(
         candidate = PurgeCandidate(
             kind="source",
             id=source.id,
-            title=source.external_source_id,
+            title=Path(projections[0]).stem if projections else source.external_source_id,
             path=projections[0] if projections else "",
             origins=[source.origin or "Unspecified"],
             providers=[source.provider],
@@ -426,7 +452,54 @@ def _plan(
                 "directories": directories,
             }
         )
-    return items
+    seen = {i["candidate"]["id"] for i in items}
+    for record in abandoned:
+        held = set(record.get("remaining", []))
+        for old in record["items"]:
+            c = old["candidate"]
+            if c["id"] not in held or c["id"] in seen:
+                continue
+            if c["kind"] == "note":
+                if c["id"] in by_note or c["id"] in disk_ids:
+                    continue
+            else:
+                owner = by_note.get(old["opening"])
+                if (
+                    c["id"] in by_source
+                    or c["id"] in protected
+                    or old["opening"] in disk_ids
+                    or (owner is not None and owner.state != "deleted")
+                ):
+                    continue
+            leftover = _residual(store, old)
+            if leftover is not None:
+                items.append(leftover)
+                seen.add(c["id"])
+    kept = {
+        "notes_within_retention": kept_notes,
+        "sources_in_use": sum(s.id in protected for s in sources),
+    }
+    return items, kept
+
+
+def _residual(store: LocalStore, old: dict[str, Any]) -> dict[str, Any] | None:
+    """What an abandoned purge left behind, limited to the files its receipt recorded."""
+    files = [f for f in old["files"] if resolve(_root(store, f["area"]), f["path"]).exists()]
+    directories = [d for d in old["directories"] if resolve(store.sources_root, d).exists()]
+    if not files and not directories:
+        return None
+    item = {
+        **old,
+        "candidate": {**old["candidate"], "leftover": True},
+        "row": None,
+        "files": files,
+        "directories": directories,
+    }
+    try:
+        _verify_files(store, item)
+    except PurgeChanged:
+        return None
+    return item
 
 
 async def preview(store: LocalStore) -> PurgeResult:
@@ -436,7 +509,7 @@ async def preview(store: LocalStore) -> PurgeResult:
         if unfinished:
             return result(unfinished[0])
         now = datetime.now(UTC)
-        items = await candidates(store, now)
+        items, kept = await candidates(store, now)
         record = {
             "token": secrets.token_hex(32),
             "state": "preview",
@@ -444,6 +517,7 @@ async def preview(store: LocalStore) -> PurgeResult:
             "schema_version": 1,
             "retention_days": store.control.settings().retention.days,
             "items": items,
+            "kept": kept,
             "completed": [],
         }
         save(store, record)
@@ -540,17 +614,19 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
             raise ValidationFailed(["This purge was abandoned. Run a new preview."])
         resuming = record["state"] != "preview"
         if not resuming:
-            if record["retention_days"] != store.control.settings().retention.days or record[
-                "items"
-            ] != await candidates(store, datetime.now(UTC)):
+            if (
+                record["retention_days"] != store.control.settings().retention.days
+                or record["items"] != (await candidates(store, datetime.now(UTC)))[0]
+            ):
                 raise PurgeChanged()
         else:
             await _verify_resume(store, record)
         record.update(state="applying", error=None)
         save(store, record)
-        removal_started = False
+        committed = False
         try:
-            # Check the DB before any unlink, and commit removals together.
+            # The rows go first and together. A file is unlinked only after that commit,
+            # so a failure leaves the mirror and the disk telling the same story.
             async with transaction(store.session_factory) as session:
                 await session.execute(sa.text("SELECT 1"))
                 # Recheck the filesystem after the DB await, under the exclusive gate.
@@ -569,9 +645,6 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
                     for c in record["items"]
                 ):
                     raise PurgeChanged()
-                removal_started = True
-                for item in record["items"]:
-                    await asyncio.to_thread(_unlink, store, item)
                 now = datetime.now(UTC)
                 for item in record["items"]:
                     c = item["candidate"]
@@ -581,13 +654,16 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
                     else:
                         await indexer.drop_source(session, c["id"], now)
                         await session.execute(sa.delete(Source).where(Source.id == c["id"]))
+            committed = True
+            for item in record["items"]:
+                await asyncio.to_thread(_unlink, store, item)
             record.update(
                 state="complete", completed=[i["candidate"]["id"] for i in record["items"]]
             )
             save(store, record)
         except BaseException:
             record.update(
-                state="failed" if removal_started or resuming else "preview",
+                state="failed" if committed or resuming else "preview",
                 error=(
                     "Purge did not finish. Check storage and database health, "
                     "then retry this saved list. Git history is unchanged."
@@ -664,9 +740,11 @@ async def operation(
     except (OSError, ValueError, fm.FrontmatterError) as exc:
         if request is None:
             preview_failure(store)
-        raise NotesFilesystemUnavailable(
-            "Purge could not safely read or remove files. Inspect Problems and retry."
-        ) from exc
+        message = "Purge could not safely read or remove files. Inspect Problems and retry."
+        filename = getattr(exc, "filename", None)
+        if filename and Path(str(filename)).is_relative_to(store.sources_root):
+            raise SourcesFilesystemUnavailable(message) from exc
+        raise NotesFilesystemUnavailable(message) from exc
 
 
 def preview_failure(store: LocalStore) -> None:

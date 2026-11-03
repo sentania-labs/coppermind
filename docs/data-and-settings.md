@@ -271,7 +271,9 @@ remain under `/data/state/calendars` after receipt expiry or dismissal.
 ## Retention purge receipts
 
 **Admin > Retention purge** edits `retention.days` with revision safety and
-previews manual cleanup. No timer erases data. The retention window begins
+previews manual cleanup. It is the only place that setting is edited: Settings >
+Retention opens this page, as Sync limits opens the Obsidian Sync page. An
+unsaved change to the days is refused at preview rather than ignored. No timer erases data. The retention window begins
 at the later of the deleted row's last update and its recovery receipt's
 recorded time. The boundary is inclusive. Missing notes and notes still in
 Trash are not deleted-note candidates.
@@ -298,14 +300,23 @@ note writes, ingest, reconciliation, recovery, filing and search-index publicati
 remain external to that barrier; the store checks their latest files immediately
 before removal and never removes a live note file.
 
-The durable `applying` receipt precedes every unlink. A failure or interruption
-appears in Problems; the next preview returns that saved list for explicit retry.
-Retry verifies surviving files and live references, then completes only the
-originally authorized work. Recovery skips pending purge identities so partial
-cleanup cannot recreate their recovery copies. **Abandon** (Admin or
+The durable `applying` receipt precedes any removal, and the database commit
+precedes every unlink: mirror rows and search entries for the whole list go
+together in one transaction, and only then are files unlinked (a source's
+`manifest.json` first, so reconciliation and recovery ignore a half-removed
+bundle). A failure before the commit removes nothing and leaves the preview
+usable. A failure after it leaves a `failed` receipt whose rows are already gone
+and whose files may remain. The failure appears in Problems and on the Retention
+purge page; the next preview returns that saved list for explicit retry. Retry
+verifies surviving files and live references, then completes only the originally
+authorized work. Recovery skips pending purge identities so partial cleanup cannot
+recreate their recovery copies. **Abandon** (Admin or
 `/v1/admin/purge/abandon`) is the way out of a stuck `applying` or `failed`
 receipt: it retries nothing, records which listed items are gone and which
-remain (`remaining`, shown in Problems), and lets a fresh preview start. A source
+remain (`remaining`, shown in Problems), and lets a fresh preview start. Files an
+abandoned receipt recorded and left behind are offered again by the next preview
+as leftovers, but only while they are unchanged, nothing else sits in their
+bundle, and no live note cites them. A source
 row whose bundle holds no files, or a deleted-note row whose recovery receipt
 is gone, is listed as a leftover from an interrupted purge and its row is
 removed on confirm. A bundle with files but no readable manifest is damaged: it
@@ -316,7 +327,11 @@ source bundles and generated projections for selected sources, mirror rows,
 and search entries through the indexer's removal functions. Receipts and Git's
 removal commits remain as audit evidence. Git history is never rewritten.
 
-Counts show notes and sources separately, plus item totals per origin and per
-provider. Notes inherit their associated sources' origins/providers; notes with
-none use Local notes. A note with several origins/providers counts once in each
-applicable group, so grouped totals can exceed the number of candidates.
+Counts show notes and sources separately, and each origin and provider shows its
+own deleted-note and orphaned-source counts. Notes inherit their associated
+sources' origins/providers; notes with none use Local notes. A note with several
+origins/providers counts once in each applicable group, so grouped totals can
+exceed the number of candidates. The preview also reports what it kept:
+`kept.notes_within_retention` and `kept.sources_in_use`. The Overview Problems
+count includes unfinished purges, abandoned purges with items remaining, unreadable
+receipts and damaged bundles (`purge_problems`), so it agrees with the Problems page.

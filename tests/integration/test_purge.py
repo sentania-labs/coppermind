@@ -12,11 +12,13 @@ from coppermind_store.sources import _external_id_claim_path
 
 from coppermind import frontmatter as fm
 from coppermind.db.models import Note, SearchDocument, Source
-from coppermind.purge import AbandonPurge, ConfirmPurge
+from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeBreakdown
 from coppermind.store_protocol import (
     CreateNote,
+    MetadataUnavailable,
     NotesFilesystemUnavailable,
     PurgeConflict,
+    SourcesFilesystemUnavailable,
     ValidationFailed,
 )
 from tests.integration.test_ingest_write_protocol import sample
@@ -62,8 +64,9 @@ async def test_retention_boundary_and_default(store):
     now = datetime.now(UTC)
     boundary = now - timedelta(days=30)
     await age(store, note.id, boundary)
-    assert len(await purge.candidates(store, now)) == 1
-    assert not await purge.candidates(store, now - timedelta(microseconds=1))
+    assert len((await purge.candidates(store, now))[0]) == 1
+    items, kept = await purge.candidates(store, now - timedelta(microseconds=1))
+    assert not items and kept["notes_within_retention"] == 1
 
 
 async def test_zero_day_exact_list_index_and_git_preserved(store):
@@ -85,7 +88,7 @@ async def test_zero_day_exact_list_index_and_git_preserved(store):
     before = git(store.notes_root, "rev-parse", "HEAD")
     preview = await store.preview_purge()
     assert [c.id for c in preview.candidates] == [note.id]
-    assert preview.counts.by_origin == {"Local notes": 1}
+    assert preview.counts.by_origin == {"Local notes": PurgeBreakdown(notes=1)}
     done = await store.confirm_purge(confirmation(preview))
     assert done.candidates == preview.candidates
     assert done.state == "complete"
@@ -124,7 +127,7 @@ async def test_orphan_bundle_projection_claim_and_search_removed(store):
         await session.commit()
     preview = await store.preview_purge()
     assert preview.counts.notes == preview.counts.sources == 1
-    assert preview.counts.by_provider == {"plaud": 2}
+    assert preview.counts.by_provider == {"plaud": PurgeBreakdown(notes=1, sources=1)}
     done = await store.confirm_purge(confirmation(preview))
     assert done.candidates == preview.candidates
     assert not bundle.exists() and not projection.exists()
@@ -225,7 +228,7 @@ async def test_partial_failure_receipt_problem_and_retry_after_restart(store, mo
     with pytest.raises(NotesFilesystemUnavailable):
         await store.confirm_purge(confirmation(preview))
     assert purge.read(store, preview.token)["state"] == "failed"
-    assert any(p.kind == "purge" for p in await store.get_problems())
+    assert any(p.kind == "purge_unfinished" for p in await store.get_problems())
     assert not note_history.receipts(store)
     await reconcile_once(store)
     assert (await store.preview_purge()).token == preview.token
@@ -238,7 +241,7 @@ async def test_partial_failure_receipt_problem_and_retry_after_restart(store, mo
     done = await restarted.confirm_purge(confirmation(preview))
     assert done.state == "complete"
     assert not (store.sources_root / ingested.source.id).exists()
-    assert not any(p.kind == "purge" for p in await restarted.get_problems())
+    assert not any(p.kind.startswith("purge") for p in await restarted.get_problems())
 
 
 async def test_confirm_failing_before_removal_says_to_preview_again(store, monkeypatch):
@@ -260,14 +263,14 @@ async def test_confirm_failing_before_removal_says_to_preview_again(store, monke
     assert len(calls) > 1
     assert purge.read(store, preview.token)["state"] == "preview"
     assert (store.sources_root / ingested.source.id).exists()
-    problems = [p for p in await store.get_problems() if p.kind == "purge"]
+    problems = [p for p in await store.get_problems() if p.kind.startswith("purge")]
     assert [p.reference for p in problems] == [preview.token]
     assert "new preview" in problems[0].reason
     assert "abandon" not in problems[0].reason
     monkeypatch.setattr(purge, "disk_references", real)
     fresh = await store.preview_purge()
     assert fresh.token != preview.token
-    assert not [p for p in await store.get_problems() if p.kind == "purge"]
+    assert not [p for p in await store.get_problems() if p.kind.startswith("purge")]
 
 
 async def test_failed_purge_survives_refused_retry_and_resumes(store, monkeypatch):
@@ -330,7 +333,7 @@ async def test_abandon_releases_failed_purge_and_reports_outcome(store, monkeypa
     assert abandoned.completed == 0
     assert purge.pending_ids(store, "source") == set()
     assert purge.read(store, preview.token)["state"] == "abandoned"
-    problems = [p for p in await store.get_problems() if p.kind == "purge"]
+    problems = [p for p in await store.get_problems() if p.kind.startswith("purge")]
     assert len(problems) == 1 and "2 were not" in problems[0].reason
     assert (store.sources_root / ingested.source.id).exists()
 
@@ -342,7 +345,7 @@ async def test_abandon_releases_failed_purge_and_reports_outcome(store, monkeypa
     assert {c.id for c in fresh.candidates} == {ingested.note.id, ingested.source.id}
     done = await store.confirm_purge(confirmation(fresh))
     assert done.state == "complete"
-    assert not [p for p in await store.get_problems() if p.kind == "purge"]
+    assert not [p for p in await store.get_problems() if p.kind.startswith("purge")]
 
 
 async def test_abandon_after_commit_reports_everything_removed(store, monkeypatch):
@@ -365,7 +368,7 @@ async def test_abandon_after_commit_reports_everything_removed(store, monkeypatc
     assert abandoned.state == "abandoned" and abandoned.remaining == []
     assert abandoned.completed == 2
     assert not (store.sources_root / ingested.source.id).exists()
-    assert not [p for p in await store.get_problems() if p.kind == "purge"]
+    assert not [p for p in await store.get_problems() if p.kind.startswith("purge")]
 
 
 async def test_abandoned_completed_note_proves_surviving_source_can_be_purged(store, monkeypatch):
@@ -534,3 +537,168 @@ async def test_empty_bundle_with_live_opening_note_is_not_a_leftover(store):
     shutil.rmtree(store.sources_root / ingested.source.id)
     preview = await store.preview_purge()
     assert preview.candidates == []
+
+
+def partial_source_failure(real):
+    """Remove the manifest as a real interrupted unlink would, then fail."""
+
+    def unlink(store, item):
+        if item["candidate"]["kind"] == "source":
+            (store.sources_root / item["candidate"]["id"] / "manifest.json").unlink()
+            raise OSError("simulated disk error")
+        real(store, item)
+
+    return unlink
+
+
+async def test_database_commits_before_any_file_is_removed(store, monkeypatch):
+    retention(store, 0)
+    ingested = await orphan(store)
+    preview = await store.preview_purge()
+    bundle = store.sources_root / ingested.source.id
+    recovery = sorted(note_history.directory(store).glob(f"{ingested.note.id}-*.json"))
+    assert recovery
+
+    async def refuse(session, source_id, now):
+        raise sa.exc.OperationalError("DELETE", {}, Exception("database went away"))
+
+    monkeypatch.setattr(indexer, "drop_source", refuse)
+    with pytest.raises(MetadataUnavailable):
+        await store.confirm_purge(confirmation(preview))
+    assert purge.read(store, preview.token)["state"] == "preview"
+    assert bundle.exists() and (bundle / "manifest.json").exists()
+    assert sorted(note_history.directory(store).glob(f"{ingested.note.id}-*.json")) == recovery
+    async with store.session_factory() as session:
+        assert await session.get(Note, ingested.note.id) is not None
+        assert await session.get(Source, ingested.source.id) is not None
+
+    monkeypatch.undo()
+    assert (await store.confirm_purge(confirmation(preview))).state == "complete"
+    assert not bundle.exists()
+
+
+async def test_mid_flight_failure_is_consistent_truthfully_reported_and_finishable(
+    store, monkeypatch
+):
+    retention(store, 0)
+    ingested = await orphan(store)
+    preview = await store.preview_purge()
+    bundle = store.sources_root / ingested.source.id
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    projection = store.notes_root / manifest["projection_path"]
+    monkeypatch.setattr(purge, "_unlink", partial_source_failure(purge._unlink))
+    with pytest.raises(NotesFilesystemUnavailable):
+        await store.confirm_purge(confirmation(preview))
+    monkeypatch.undo()
+
+    assert purge.read(store, preview.token)["state"] == "failed"
+    async with store.session_factory() as session:
+        assert await session.get(Note, ingested.note.id) is None
+        assert await session.get(Source, ingested.source.id) is None
+    assert not list(note_history.directory(store).glob(f"{ingested.note.id}-*.json"))
+    assert bundle.exists() and not (bundle / "manifest.json").exists()
+
+    await reconcile_once(store)
+    async with store.session_factory() as session:
+        assert await session.get(Note, ingested.note.id) is None
+    assert not list(note_history.directory(store).glob(f"{ingested.note.id}-*.json"))
+    problems = await store.get_problems()
+    assert [p.kind for p in problems if p.kind.startswith("purge")] == ["purge_unfinished"]
+    assert not [p for p in problems if p.kind == "damaged_source"]
+    assert (await store.get_status()).counters.purge_problems == 1
+
+    abandoned = await store.abandon_purge(AbandonPurge(token=preview.token))
+    assert abandoned.completed == 1 and abandoned.remaining == [ingested.source.id]
+    await reconcile_once(store)
+    async with store.session_factory() as session:
+        assert await session.get(Note, ingested.note.id) is None
+        assert await session.get(Source, ingested.source.id) is None
+    problems = await store.get_problems()
+    assert not [p for p in problems if p.kind == "damaged_source"]
+    (remaining,) = [p for p in problems if p.kind == "purge"]
+    assert "1 listed items were removed. 1 were not" in remaining.reason
+    assert (await store.get_status()).counters.purge_problems == 1
+
+    fresh = await store.preview_purge()
+    assert [(c.id, c.leftover) for c in fresh.candidates] == [(ingested.source.id, True)]
+    done = await store.confirm_purge(confirmation(fresh))
+    assert done.state == "complete"
+    assert not bundle.exists() and not projection.exists()
+    assert not list(store.sources_root.glob(".external-id-*.json"))
+    assert not [p for p in await store.get_problems() if p.kind.startswith("purge")]
+    assert (await store.get_status()).counters.purge_problems == 0
+
+
+async def test_residual_files_are_finished_only_while_unchanged_and_unreferenced(
+    store, monkeypatch
+):
+    retention(store, 0)
+    ingested = await orphan(store)
+    preview = await store.preview_purge()
+    bundle = store.sources_root / ingested.source.id
+    monkeypatch.setattr(purge, "_unlink", partial_source_failure(purge._unlink))
+    with pytest.raises(NotesFilesystemUnavailable):
+        await store.confirm_purge(confirmation(preview))
+    monkeypatch.undo()
+    await store.abandon_purge(AbandonPurge(token=preview.token))
+
+    stray = bundle / "stray.txt"
+    stray.write_text("not part of the saved list")
+    assert not (await store.preview_purge()).candidates
+    stray.unlink()
+    assert [c.id for c in (await store.preview_purge()).candidates] == [ingested.source.id]
+
+    live = await store.create_note(CreateNote(title="Cites the leftover"))
+    live_path = store.notes_root / live.path
+    live_path.write_text(fm.patch(live_path.read_text(), {"sources": [ingested.source.id]}))
+    commit(store.notes_root)
+    await reconcile_once(store)
+    assert not (await store.preview_purge()).candidates
+    assert bundle.exists()
+
+
+async def test_file_failures_name_the_volume_that_failed(store, monkeypatch):
+    retention(store, 0)
+    ingested = await orphan(store)
+    preview = await store.preview_purge()
+    bundle = store.sources_root / ingested.source.id
+
+    def fail(store, item):
+        if item["candidate"]["kind"] == "source":
+            raise OSError(5, "I/O error", str(bundle / "manifest.json"))
+
+    monkeypatch.setattr(purge, "_unlink", fail)
+    with pytest.raises(SourcesFilesystemUnavailable):
+        await store.confirm_purge(confirmation(preview))
+
+
+async def test_status_count_agrees_with_every_kind_of_purge_problem(store):
+    retention(store, 0)
+    ingested = await orphan(store)
+    (store.sources_root / ingested.source.id / "manifest.json").unlink()
+    purge.directory(store).mkdir(parents=True, exist_ok=True)
+    (purge.directory(store) / ("e" * 64 + ".json")).write_text("{broken")
+    problems = [
+        p for p in await store.get_problems() if p.kind in {"damaged_source", "purge_receipt"}
+    ]
+    assert sorted(p.kind for p in problems) == ["damaged_source", "purge_receipt"]
+    assert (await store.get_status()).counters.purge_problems == 2
+
+
+async def test_preview_says_what_it_kept_and_separates_notes_from_sources(store):
+    retention(store, 30)
+    recent, _, _ = await deleted(store)
+    ingested = await orphan(store)
+    live = await store.create_note(CreateNote(title="Keeps the source"))
+    live_path = store.notes_root / live.path
+    live_path.write_text(fm.patch(live_path.read_text(), {"sources": [ingested.source.id]}))
+    commit(store.notes_root)
+    await reconcile_once(store)
+    await age(store, ingested.note.id, datetime.now(UTC) - timedelta(days=60))
+    preview = await store.preview_purge()
+    assert [c.id for c in preview.candidates] == [ingested.note.id]
+    assert preview.counts.sources == 0
+    assert preview.counts.by_provider == {"plaud": PurgeBreakdown(notes=1)}
+    assert preview.kept.notes_within_retention == 1
+    assert preview.kept.sources_in_use == 1
+    assert recent.id not in {c.id for c in preview.candidates}

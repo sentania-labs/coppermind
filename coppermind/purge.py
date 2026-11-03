@@ -17,11 +17,23 @@ class PurgeCandidate(BaseModel):
     leftover: bool = False
 
 
+class PurgeBreakdown(BaseModel):
+    notes: int = 0
+    sources: int = 0
+
+
 class PurgeCounts(BaseModel):
     notes: int = 0
     sources: int = 0
-    by_origin: dict[str, int] = Field(default_factory=dict)
-    by_provider: dict[str, int] = Field(default_factory=dict)
+    by_origin: dict[str, PurgeBreakdown] = Field(default_factory=dict)
+    by_provider: dict[str, PurgeBreakdown] = Field(default_factory=dict)
+
+
+class PurgeKept(BaseModel):
+    """What the dry run looked at and left alone, so a short list is not a mystery."""
+
+    notes_within_retention: int = 0
+    sources_in_use: int = 0
 
 
 class PurgeResult(BaseModel):
@@ -31,6 +43,7 @@ class PurgeResult(BaseModel):
     retention_days: int
     candidates: list[PurgeCandidate]
     counts: PurgeCounts
+    kept: PurgeKept = Field(default_factory=PurgeKept)
     completed: int = 0
     remaining: list[str] = Field(default_factory=list)
     error: str | None = None

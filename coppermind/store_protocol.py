@@ -699,6 +699,7 @@ class StatusCounters(BaseModel):
     known_unreadable: int = 0
     calendar_import_failures: int = 0
     active_problems: int | None = None
+    purge_problems: int = 0
 
 
 class StatusResponse(BaseModel):

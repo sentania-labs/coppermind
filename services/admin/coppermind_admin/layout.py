@@ -54,6 +54,8 @@ button,.button {display:inline-block;margin-top:1rem;border:1px solid #245c3b;bo
   text-decoration:none}
 button.danger {background:#a93624;border-color:#a93624}
 button.danger:hover {background:#80291c}
+button.secondary {background:white;color:#245c3b;margin-left:.5rem}
+button.secondary:hover {background:#e9f0e9}
 button:hover,.button:hover {background:#19442b} button:disabled {opacity:.55;cursor:default}
 .error,.notice,.success {padding:1rem;border-radius:.3rem;line-height:1.6}
 .error {background:#fde8e4;border-left:.25rem solid #a93624}

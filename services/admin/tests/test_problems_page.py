@@ -307,3 +307,39 @@ def test_an_unreadable_purge_receipt_offers_abandon(signed_in):
     assert 'action="/v1/admin/purge/abandon"' in response.text
     assert f'name="token" value="{"a" * 64}"' in response.text
     assert 'name="csrf"' in response.text
+
+
+def test_the_overview_count_includes_purge_problems():
+    from coppermind_admin.pages.problems import counters_html
+
+    html = counters_html(
+        StatusResponse(
+            counters=StatusCounters(
+                notes_awaiting_review=0,
+                notes_by_state={},
+                sources=0,
+                rejected_ingests=1,
+                name_collisions=0,
+                unparseable_files=0,
+                purge_problems=3,
+            )
+        )
+    )
+    assert "Problems (4)" in html and "Retention purge items needing attention: 3" in html
+
+
+def test_a_damaged_source_bundle_is_plain_and_has_no_dead_link(signed_in):
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = [
+        ProblemInfo(
+            kind="damaged_source",
+            reference=SOURCE_ID,
+            reason="The preserved copy of plaud source recording-1 has files but no manifest.",
+            source_id=SOURCE_ID,
+        )
+    ]
+    page = client.get("/admin/problems").text
+    assert "Damaged source bundle" in page and "Preserved source copy" in page
+    assert "damaged_source" not in page and SOURCE_ID not in page
+    assert "/admin/sources/" not in page

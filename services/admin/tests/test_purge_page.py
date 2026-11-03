@@ -1,10 +1,16 @@
 """Retention controls, exact preview, destructive confirmation and CSRF."""
 
+import re
 from datetime import UTC, datetime
 from typing import Literal
 
-from coppermind.purge import PurgeCandidate, PurgeCounts, PurgeResult
+from coppermind.purge import PurgeBreakdown, PurgeCandidate, PurgeCounts, PurgeKept, PurgeResult
 from coppermind.settings import read_settings
+from coppermind.store_protocol import (
+    NotesFilesystemUnavailable,
+    ProblemInfo,
+    SourcesFilesystemUnavailable,
+)
 from services.admin.tests.browser import admin_browser as admin_browser
 from services.admin.tests.test_admin import form_token
 
@@ -15,8 +21,15 @@ class PurgeStore:
         self.abandoned = []
         self.empty = False
         self.state: Literal["preview", "failed"] = "preview"
+        self.problems: list[ProblemInfo] = []
+        self.previews = 0
+        self.kind: Literal["note", "source"] = "note"
+
+    async def get_problems(self):
+        return list(self.problems)
 
     async def preview_purge(self):
+        self.previews += 1
         return PurgeResult(
             token="a" * 64,
             state=self.state,
@@ -26,7 +39,7 @@ class PurgeStore:
             if self.empty
             else [
                 PurgeCandidate(
-                    kind="note",
+                    kind=self.kind,
                     id="test-id",
                     title="<script>bad</script>",
                     path="Review/Old.md",
@@ -36,10 +49,12 @@ class PurgeStore:
                 )
             ],
             counts=PurgeCounts(
-                notes=0 if self.empty else 1,
-                by_origin={"Local notes": 1},
-                by_provider={"Local notes": 1},
+                notes=0 if self.empty or self.kind == "source" else 1,
+                sources=1 if self.kind == "source" and not self.empty else 0,
+                by_origin={"Local notes": PurgeBreakdown(notes=1)},
+                by_provider={"Local notes": PurgeBreakdown(notes=1)},
             ),
+            kept=PurgeKept(notes_within_retention=2, sources_in_use=1),
         )
 
     async def confirm_purge(self, payload):
@@ -134,3 +149,115 @@ def test_unfinished_purge_offers_abandon_and_reports_outcome(signed_in):
     assert "Purge abandoned" in result.text and "2 listed items were removed" in result.text
     assert "&lt;script&gt;" in result.text and "Permanently remove" not in result.text
     assert len(fake.abandoned) == 1
+
+
+def test_preview_separates_notes_from_sources_and_says_what_is_kept(signed_in):
+    client, _ = signed_in
+    client.app.state.store = PurgeStore()
+    csrf = form_token(client, "/admin/purge")
+    page = client.post("/v1/admin/purge/preview", data={"csrf": csrf}).text
+    assert "<th>Deleted notes</th><th>Orphaned sources</th>" in page
+    assert "Kept: 2 deleted notes still inside the 30-day retention window" in page
+    assert "1 source still used by live notes" in page
+    assert page.count("Local notes") == 3  # one group row per table and one item row
+    assert "<code>Purge listed items</code>" in page
+    assert "Back to retention settings (nothing removed)" in page
+    assert "0 orphaned" not in page and "Cancel and keep" not in page
+
+
+def test_confirmation_wording_agrees_with_a_single_source(signed_in):
+    client, _ = signed_in
+    fake = PurgeStore()
+    fake.kind = "source"
+    client.app.state.store = fake
+    csrf = form_token(client, "/admin/purge")
+    page = client.post("/v1/admin/purge/preview", data={"csrf": csrf}).text
+    assert "1 orphaned source with its original bundle and generated pages" in page
+    assert "deleted note" not in page.split("Confirm permanent removal")[1].split("</p>")[0]
+
+
+def test_purge_page_has_no_appearance_of_its_own(signed_in):
+    client, _ = signed_in
+    client.app.state.store = PurgeStore()
+    csrf = form_token(client, "/admin/purge")
+
+    def styles(text):
+        return re.findall(r"<style.*?</style>", text, flags=re.S)
+
+    purge_page = client.post("/v1/admin/purge/preview", data={"csrf": csrf}).text
+    other = client.get("/admin/settings").text
+    assert styles(purge_page) == styles(other)
+
+
+def test_unfinished_purge_is_shown_when_the_owner_lands_on_the_page(signed_in):
+    client, _ = signed_in
+    fake = PurgeStore()
+    client.app.state.store = fake
+    quiet = client.get("/admin/purge").text
+    assert "needs attention" not in quiet and "Review the unfinished purge" not in quiet
+    fake.problems = [
+        ProblemInfo(
+            kind="purge_unfinished",
+            reference="a" * 64,
+            reason="Retention purge is unfinished. Open Retention purge to retry the saved list.",
+        ),
+        ProblemInfo(kind="damaged_source", reference="b" * 26, reason="Damaged bundle elsewhere."),
+    ]
+    page = client.get("/admin/purge").text
+    assert "A purge needs attention" in page and "Retention purge is unfinished" in page
+    assert "Review the unfinished purge" in page and "Damaged bundle elsewhere" not in page
+    assert fake.previews == 0
+    reviewed = client.post(
+        "/v1/admin/purge/preview", data={"csrf": form_token(client, "/admin/purge")}
+    )
+    assert fake.previews == 1 and reviewed.status_code == 200
+
+
+def test_unsaved_days_are_never_silently_discarded(signed_in):
+    client, _ = signed_in
+    fake = PurgeStore()
+    client.app.state.store = fake
+    csrf = form_token(client, "/admin/purge")
+    refused = client.post("/v1/admin/purge/preview", data={"csrf": csrf, "days": "5"})
+    assert refused.status_code == 422 and "have not saved it" in refused.text
+    assert fake.previews == 0 and 'value="5"' in refused.text
+    saved = str(read_settings(client.app.state.control).retention.days)
+    allowed = client.post("/v1/admin/purge/preview", data={"csrf": csrf, "days": saved})
+    assert allowed.status_code == 200 and fake.previews == 1
+
+
+def test_a_failed_confirmation_names_the_volume_and_the_way_back(signed_in):
+    client, _ = signed_in
+    fake = PurgeStore()
+    client.app.state.store = fake
+    csrf = form_token(client, "/admin/purge")
+    body = {"csrf": csrf, "token": "a" * 64, "confirmation": "Purge listed items"}
+
+    async def sources_down(payload):
+        raise SourcesFilesystemUnavailable("sources")
+
+    fake.confirm_purge = sources_down  # type: ignore[method-assign]
+    sources = client.post("/v1/admin/purge/confirm", data=body)
+    assert sources.status_code == 503
+    assert "The sources volume could not be read or written." in sources.text
+    assert 'href="/admin/purge"' in sources.text and "retry it or abandon it" in sources.text
+
+    async def notes_down(payload):
+        raise NotesFilesystemUnavailable("notes")
+
+    fake.confirm_purge = notes_down  # type: ignore[method-assign]
+    notes = client.post("/v1/admin/purge/confirm", data=body)
+    assert "The notes or state volume could not be read or written." in notes.text
+    assert "the notes filesystem" not in notes.text
+
+
+def test_retention_has_one_home(signed_in):
+    client, _ = signed_in
+    moved = client.get("/admin/settings?section=retention", follow_redirects=False)
+    assert moved.status_code == 303 and moved.headers["location"] == "/admin/purge"
+    posted = client.post(
+        "/v1/admin/settings?section=retention",
+        data={"csrf": form_token(client, "/admin/purge")},
+        follow_redirects=False,
+    )
+    assert posted.status_code == 303 and posted.headers["location"] == "/admin/purge"

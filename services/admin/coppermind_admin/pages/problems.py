@@ -57,7 +57,9 @@ KIND_LABELS = {
     "calendar_conflict": "Calendar conflict",
     "dropbox": "Dropbox",
     "purge": "Retention purge",
+    "purge_unfinished": "Retention purge",
     "purge_receipt": "Retention purge receipt",
+    "damaged_source": "Damaged source bundle",
 }
 
 
@@ -68,12 +70,14 @@ def _link(problem: ProblemInfo) -> str:
             f'<input type="hidden" name="token" value="{escape(problem.reference, quote=True)}">'
             "<button>Abandon this receipt</button></form>"
         )
-    if problem.kind == "purge":
+    if problem.kind in {"purge", "purge_unfinished"}:
         return '<a href="/admin/purge">Retention purge</a>'
     if problem.kind == "dropbox":
         return '<a href="/admin/workflow?tab=intake">Dropbox receipts</a>'
     if problem.kind in {"calendar_import", "calendar_conflict"}:
         return '<a href="/admin/context?tab=calendar">Calendar import history</a>'
+    if problem.kind == "damaged_source":
+        return ""
     if problem.note_id:
         target = f"/admin/notes/{quote(problem.note_id, safe='')}"
         return f'<a href="{escape(target)}">note {escape(problem.note_id)}</a>'
@@ -83,12 +87,21 @@ def _link(problem: ProblemInfo) -> str:
     return ""
 
 
+PURGE_KINDS = {"purge", "purge_unfinished", "purge_receipt"}
+
+
+def _what(item: ProblemInfo) -> str:
+    if item.kind == "damaged_source":
+        return "Preserved source copy"
+    return "Saved cleanup attempt" if item.kind in PURGE_KINDS else escape(item.reference)
+
+
 def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems found.") -> str:
     if not problems:
         return "<p>" + escape(empty_text) + "</p>"
     rows = "".join(
         f"<tr><td>{escape(KIND_LABELS.get(item.kind, item.kind))}</td>"
-        f"<td>{'Saved cleanup attempt' if item.kind in ('purge', 'purge_receipt') else escape(item.reference)}</td>"
+        f"<td>{_what(item)}</td>"
         f"<td>{escape(item.reason)}</td><td>{_link(item)}</td></tr>"
         for item in problems
     )
@@ -107,6 +120,7 @@ def counters_html(status: StatusResponse) -> str:
         + counters.filing_failures
         + counters.known_unreadable
         + counters.calendar_import_failures
+        + counters.purge_problems
     )
     if counters.active_problems is not None:
         problems = counters.active_problems
@@ -131,6 +145,7 @@ Preserved sources<strong>{counters.sources}</strong></div>
 <li>Known unreadable search entries: {counters.known_unreadable}</li>
 <li>Pending filing failures: {counters.filing_failures}</li>
 <li>Failed calendar imports: {counters.calendar_import_failures}</li>
+<li>Retention purge items needing attention: {counters.purge_problems}</li>
 <li>Excluded (skipped by exclusion rules): {counters.excluded_count}</li>
 </ul>
 <p><a href="/admin/problems">Problems ({problems})</a></p>"""
