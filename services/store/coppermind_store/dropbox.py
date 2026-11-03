@@ -153,7 +153,7 @@ class Dropbox:
                 raise ValueError("Only completed or failed receipts can be dismissed")
             if item["state"] == "failed":
                 for part in item["parts"]:
-                    self.context.archive.dismiss(part["import_id"])
+                    await asyncio.to_thread(self.context.archive.dismiss, part["import_id"])
             records["history"][identity] = item
             del records["items"][identity]
             self.save(records)
