@@ -184,7 +184,7 @@ requiring hand-populated configuration.
 | Frontmatter schema | `GET/PUT /v1/admin/schema`, `POST /v1/admin/schema/rename-key {from, to}` | Keys, kinds, and vocabularies; renaming a key runs the migration job that rewrites every note through the store |
 | Fields and tags (`/admin/fields`) | `POST /v1/admin/fields {revision, ...}` | Add, edit and retire keys (kind, required and required when, allowed values each with a one-line meaning, default, guidance); every tag in use with its note count from the mirror, a meaning and aliases per listed tag, and open or closed tags. Saves with the same revision check Settings uses; the role map is carried over untouched, and nothing here rewrites a note |
 | Filing rules | `GET/PUT /v1/admin/rules`, `POST /v1/admin/rules/preview {note_id}` | The ordered rules a note is filed by, with a dry run ("what would this note file as") before committing to a change |
-| Search index (`/admin/search-index`) | `POST /v1/admin/search-index/rebuild` | The number of notes and source pages indexed, when the index last changed and when it was last rebuilt, in the operator's timezone, and a Rebuild index button. A rebuild runs in the store's background, throws every entry away, except the last indexed text of a note that is currently unparsed, and reads the notes filesystem again; search keeps answering from the old entries until the new ones commit |
+| Search index (`/admin/search-index`) | `POST /v1/admin/search-index/rebuild` | The number of notes and source pages indexed, the known unreadable count, when the index last changed and when it was last rebuilt, in the operator's timezone, and a Rebuild index button. A rebuild runs in the store's background, throws every entry away, except the last indexed text of a note that is currently unparsed, and reads the notes filesystem again; search keeps answering from the old entries until the new ones commit |
 | Jobs | `GET /v1/admin/jobs`, `POST /v1/admin/jobs {kind}`, `GET /v1/admin/jobs/{id}` | Run reconcile, a full rehash, rebuild metadata from disk, reindex, or rebuild projections, and see the history of each |
 | Sources | `GET /v1/admin/sources`, `GET /v1/admin/notes/problems` | Browse sources; see notes the reconciler could not parse or file |
 
@@ -253,3 +253,18 @@ retry that could create a duplicate.
   between folders and never renames one. The rename endpoint exists for a
   person to use deliberately, and it documents that link rewriting is not
   part of it.
+
+Search catch-up remembers a failed read with its reason, content hash or source
+revision, path, and filesystem observation, but only when the failure is
+durable: a missing file or projection, or content that cannot be parsed. A
+transient filesystem error (EIO, EACCES, EMFILE, ESTALE and the like) is
+logged and left unmarked, so the next pass retries it. Unchanged marked
+failures do not consume future catch-up batches. A revision, path, manifest, or
+projection file change makes an entry eligible for another read; Rebuild index
+also clears the marks and retries. Each new failed observation logs `search
+entry unreadable` with its identity, path, and reason. Catch-up summaries
+distinguish `unreadable` (failures this pass) from `skipped_known_unreadable`,
+and the `search index caught up` line is logged only when a pass indexed,
+removed or failed something. Both search index status and store status expose
+`known_unreadable`; Admin Problems lists the entries and their reasons. These
+marks do not remove source archives or notes.

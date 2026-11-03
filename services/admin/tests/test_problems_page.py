@@ -62,6 +62,7 @@ class ReadOnlyStore:
                 rejected_ingests=2,
                 name_collisions=3,
                 unparseable_files=1,
+                known_unreadable=sum(p.kind == "search_unreadable" for p in self.problems),
             )
         )
 
@@ -241,3 +242,28 @@ def test_exclusions_do_not_inflate_problem_counter_and_are_separated(signed_in):
     failures, exclusions = response.text.split("<h2>Intentional exclusions</h2>")
     assert "Templates/example.md" not in failures
     assert "Templates/example.md" in exclusions
+
+
+def test_known_unreadable_search_entries_are_counted_and_linked(signed_in):
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems.append(
+        ProblemInfo(
+            kind="search_unreadable",
+            reference="Sources/missing.md",
+            reason="FileNotFoundError: missing projection",
+            source_id=SOURCE_ID,
+        )
+    )
+    response = client.get("/admin/problems")
+    assert response.status_code == 200
+    assert "Known unreadable search entries: 1" in response.text
+    assert "Sources/missing.md" in response.text
+    assert "FileNotFoundError: missing projection" in response.text
+    assert f'href="/admin/sources/{SOURCE_ID}"' in response.text
+
+    status = client.get("/v1/admin/status")
+    assert status.status_code == 200
+    assert status.json()["counters"]["known_unreadable"] == 1
+    overview = client.get("/admin")
+    assert "Known unreadable search entries: 1" in overview.text

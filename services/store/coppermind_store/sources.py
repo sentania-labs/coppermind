@@ -40,6 +40,7 @@ from coppermind.db.models import (
     Note,
     NoteSource,
     RecordedRejection,
+    SearchUnreadable,
     Source,
     SourceArtifact,
     SourceRevision,
@@ -1206,6 +1207,9 @@ async def get_status(store: LocalStore) -> StatusResponse:
         awaiting = awaiting.where(sa.func.strpos(Note.path, "/") == 0)
     try:
         async with store.session_factory() as session:
+            known_unreadable = (
+                await session.scalar(sa.select(sa.func.count()).select_from(SearchUnreadable)) or 0
+            )
             notes_awaiting_review = await session.scalar(awaiting) or 0
             by_state = (
                 await session.execute(sa.select(Note.state, sa.func.count()).group_by(Note.state))
@@ -1233,6 +1237,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
     excluded_count = store.control.read_reconciler_excluded_count()
     return StatusResponse(
         counters=StatusCounters(
+            known_unreadable=known_unreadable,
             notes_awaiting_review=notes_awaiting_review,
             notes_by_state=notes_by_state,
             sources=sources,
@@ -1249,6 +1254,15 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
     """Every problem the dashboard lists, computed, never written into a note."""
     try:
         async with store.session_factory() as session:
+            unreadable = list(
+                (
+                    await session.scalars(
+                        sa.select(SearchUnreadable).order_by(
+                            SearchUnreadable.kind, SearchUnreadable.ref_id
+                        )
+                    )
+                ).all()
+            )
             rejections = list(
                 (
                     await session.scalars(
@@ -1294,6 +1308,16 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         )
         for row in rejections
     ]
+    problems.extend(
+        ProblemInfo(
+            kind="search_unreadable",
+            reference=row.path or row.ref_id,
+            reason=row.reason,
+            note_id=row.ref_id if row.kind == "note" else None,
+            source_id=row.ref_id if row.kind == "source" else None,
+        )
+        for row in unreadable
+    )
     for path in sorted((store.control.store.state_dir / "filing").glob("*.json")):
         try:
             filing = json.loads(path.read_bytes())

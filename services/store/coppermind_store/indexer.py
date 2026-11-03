@@ -21,7 +21,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coppermind import frontmatter as fm
-from coppermind.db.models import Note, SearchDocument, SearchIndexState, Source
+from coppermind.db.models import (
+    Note,
+    NoteSource,
+    SearchDocument,
+    SearchIndexState,
+    SearchUnreadable,
+    Source,
+)
 from coppermind.db.session import transaction
 from coppermind.logging import get_logger
 from coppermind.naming import sanitize_folder
@@ -143,6 +150,11 @@ async def _upsert(
         "version": version,
         "indexed_at": now,
     }
+    await session.execute(
+        sa.delete(SearchUnreadable).where(
+            SearchUnreadable.kind == kind, SearchUnreadable.ref_id == ref_id
+        )
+    )
     allowed = eligible(sa.literal(kind), sa.literal(ref_id))
     await session.execute(
         sa.delete(SearchDocument).where(
@@ -184,6 +196,9 @@ async def status(store: LocalStore) -> SearchIndexStatus:
                     )
                 ).all()
             )
+            known_unreadable = (
+                await session.scalar(sa.select(sa.func.count()).select_from(SearchUnreadable)) or 0
+            )
             newest = await session.scalar(sa.select(sa.func.max(SearchDocument.indexed_at)))
             state = await session.get(SearchIndexState, 1)
     except (SQLAlchemyError, OSError) as exc:
@@ -193,6 +208,7 @@ async def status(store: LocalStore) -> SearchIndexStatus:
         times += [state.last_changed_at, state.rebuild_completed_at]
     known = [moment for moment in times if moment is not None]
     return SearchIndexStatus(
+        known_unreadable=known_unreadable,
         notes=int(counts.get("note", 0)),
         sources=int(counts.get("source", 0)),
         last_updated_at=max(known) if known else None,
@@ -215,33 +231,62 @@ class Entry:
     version: str
 
 
+Reasons = list[tuple[str, bool]]
+
+
+def _os_failure(reasons: Reasons, exc: Exception, prefix: str = "") -> None:
+    """Record a read fault; only a missing path or bad path stays failed until it changes."""
+    cause = exc.__cause__ if isinstance(exc, StoreError) and exc.__cause__ else exc
+    durable = not isinstance(cause, OSError) or isinstance(
+        cause, (FileNotFoundError, NotADirectoryError)
+    )
+    reasons.append((f"{prefix}{type(exc).__name__}: {exc}", durable))
+
+
 def _read_note(
-    root: Path, relative: str, note_id: str, expected_hash: str, id_key: str
+    root: Path,
+    relative: str,
+    note_id: str,
+    expected_hash: str,
+    id_key: str,
+    reasons: Reasons | None = None,
 ) -> Entry | None:
     """The entry for a mirrored note, or None if the file is not that note now."""
     try:
         data = resolve(root, relative).read_bytes()
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        if reasons is not None:
+            _os_failure(reasons, exc)
         return None
     if content_hash(data) != expected_hash:
+        if reasons is not None:
+            reasons.append(("file content differs from the mirrored content hash", True))
         # The file moved on since the mirror read it; the next pass mirrors the
         # new bytes and the entry follows from there.
         return None
     try:
         frontmatter, body = fm.parse(data.decode("utf-8"))
-    except (UnicodeDecodeError, fm.FrontmatterError):
+    except (UnicodeDecodeError, fm.FrontmatterError) as exc:
+        if reasons is not None:
+            reasons.append((f"{type(exc).__name__}: {exc}", True))
         return None
     if str(frontmatter.get(id_key, note_id)) != note_id:
+        if reasons is not None:
+            reasons.append(("file note identity differs from the mirrored identity", True))
         return None
     return Entry("note", note_id, relative, _title_of(body, relative), body, expected_hash)
 
 
-def _read_projection(root: Path, relative: str, source_id: str, revision: int) -> Entry | None:
+def _read_projection(
+    root: Path, relative: str, source_id: str, revision: int, reasons: Reasons | None = None
+) -> Entry | None:
     """The entry for a source's generated page, if the path still holds it."""
     try:
         text = resolve(root, relative).read_text(encoding="utf-8")
         frontmatter, body = fm.parse(text)
-    except (OSError, ValueError, UnicodeDecodeError, fm.FrontmatterError):
+    except (OSError, ValueError, UnicodeDecodeError, fm.FrontmatterError) as exc:
+        if reasons is not None:
+            _os_failure(reasons, exc)
         return None
     if (
         frontmatter.get("reviewed") is not True
@@ -249,22 +294,38 @@ def _read_projection(root: Path, relative: str, source_id: str, revision: int) -
         or frontmatter.get("source_id") != source_id
         or frontmatter.get("source_revision") != revision
     ):
+        if reasons is not None:
+            reasons.append(
+                (
+                    "projection is unreviewed, unmanaged, or has a different source "
+                    "identity/revision",
+                    True,
+                )
+            )
         return None
     return Entry(
         "source", source_id, relative, _title_of(body, relative), body, source_version(revision)
     )
 
 
-def _projection_path(sources_root: Path, source_id: str) -> str | None:
+def _projection_path(
+    sources_root: Path, source_id: str, reasons: Reasons | None = None
+) -> str | None:
     """The page a source's manifest records, the only record of where it lives."""
     from coppermind_store.sources import _manifest_document
 
     try:
         manifest = _manifest_document(sources_root / source_id / "manifest.json")
-    except (OSError, StoreError):
+    except (OSError, StoreError) as exc:
+        if reasons is not None:
+            _os_failure(reasons, exc, "manifest ")
         return None
     recorded = manifest.get("projection_path")
-    return recorded if isinstance(recorded, str) and recorded else None
+    if isinstance(recorded, str) and recorded:
+        return recorded
+    if reasons is not None:
+        reasons.append(("manifest records no projection path", True))
+    return None
 
 
 async def index_projection(store: LocalStore, source_id: str, revision: int, path: str) -> bool:
@@ -283,6 +344,28 @@ async def _write(session: AsyncSession, entry: Entry, now: datetime) -> None:
     )
 
 
+def _file_state(path: Path) -> str:
+    """Detect changes without rereading known failed files."""
+    try:
+        stat = path.stat()
+        return f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}"
+    except FileNotFoundError:
+        return "missing"
+    except OSError as exc:
+        return f"error:{exc.errno}"
+
+
+def _relative_state(root: Path, path: str) -> str:
+    if not path:
+        return "no-path"
+    try:
+        return _file_state(resolve(root, path))
+    except ValueError:
+        return "invalid-path"
+    except OSError as exc:
+        return f"error:{exc.errno}"
+
+
 async def catch_up(store: LocalStore) -> dict[str, int]:
     """Bring the index level with the mirror, a bounded batch at a time.
 
@@ -291,7 +374,7 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
     `CATCH_UP_BATCH` notes and source projections the index describes at an
     older version, or not at all, are read from their files and indexed.
     """
-    counts = {"indexed": 0, "removed": 0, "unreadable": 0}
+    counts = {"indexed": 0, "removed": 0, "unreadable": 0, "skipped_known_unreadable": 0}
     id_key = store.control.schema().role("id_key")
     now = datetime.now(tz=UTC)
     live = sa.select(Note.id).where(Note.id == SearchDocument.ref_id, reviewed_note())
@@ -326,6 +409,10 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                 .values(path=Note.path)
             )
         async with store.session_factory() as session:
+            failures = {
+                (row.kind, row.ref_id): row
+                for row in (await session.scalars(sa.select(SearchUnreadable))).all()
+            }
             stale_notes = (
                 await session.execute(
                     sa.select(Note.id, Note.path, Note.content_hash)
@@ -341,15 +428,25 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                             SearchDocument.version != Note.content_hash,
                         ),
                     )
-                    # Random rather than by identifier, so a batch of files
-                    # that cannot be read this pass never starves the rest.
+                    # Randomize new attempts; known failures are filtered by
+                    # their filesystem observation before consuming the batch.
                     .order_by(sa.func.random())
-                    .limit(CATCH_UP_BATCH)
                 )
             ).all()
+            approved = sa.exists(
+                sa.select(NoteSource.source_id)
+                .join(Note, Note.id == NoteSource.note_id)
+                .where(
+                    NoteSource.source_id == Source.id,
+                    NoteSource.approved_revision == Source.current_revision,
+                    reviewed_note(),
+                )
+            )
             stale_sources = (
                 await session.execute(
                     sa.select(Source.id, Source.current_revision)
+                    # Only sources a reviewed note approves are eligible.
+                    .where(approved)
                     .outerjoin(
                         SearchDocument,
                         sa.and_(
@@ -363,46 +460,167 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                         )
                     )
                     .order_by(sa.func.random())
-                    .limit(CATCH_UP_BATCH)
                 )
             ).all()
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
 
-    def read_all() -> list[Entry | None]:
-        found: list[Entry | None] = [
-            _read_note(store.notes_root, row.path, row.id, row.content_hash, id_key)
-            for row in stale_notes
-        ]
-        for row in stale_sources:
-            page = _projection_path(store.sources_root, row.id)
-            found.append(
-                None
-                if page is None
-                else _read_projection(store.notes_root, page, row.id, row.current_revision)
-            )
-        return found
-
-    entries = await asyncio.to_thread(read_all)
-    ready = [entry for entry in entries if entry is not None]
-    counts["unreadable"] = len(entries) - len(ready)
-    if ready:
-        try:
-            async with transaction(store.session_factory) as session:
-                for entry in ready:
-                    if entry.kind == "note":
-                        # Index only the bytes the mirror still describes: a
-                        # store write that landed since the read has already
-                        # indexed newer ones in its own transaction.
-                        current = await session.scalar(
-                            sa.select(Note.content_hash).where(Note.id == entry.ref_id)
+    def read_all() -> tuple[list[Entry], list[dict[str, Any]], list[dict[str, Any]], int]:
+        ready: list[Entry] = []
+        failed: list[dict[str, Any]] = []
+        transient: list[dict[str, Any]] = []
+        skipped = 0
+        for kind, rows in (("note", stale_notes), ("source", stale_sources)):
+            attempted = 0
+            for row in rows:
+                version = (
+                    row.content_hash if kind == "note" else source_version(row.current_revision)
+                )
+                previous = failures.get((kind, row.id))
+                if previous is None and attempted >= CATCH_UP_BATCH:
+                    continue
+                manifest_state = (
+                    _file_state(store.sources_root / row.id / "manifest.json")
+                    if kind == "source"
+                    else ""
+                )
+                reasons: Reasons = []
+                if kind == "note":
+                    path = row.path
+                elif previous and previous.observation.split("|", 1)[0] == manifest_state:
+                    path = previous.path
+                else:
+                    path = _projection_path(store.sources_root, row.id, reasons) or ""
+                observation = manifest_state + "|" + _relative_state(store.notes_root, path)
+                if previous and (previous.version, previous.path, previous.observation) == (
+                    version,
+                    path,
+                    observation,
+                ):
+                    skipped += 1
+                    continue
+                if attempted >= CATCH_UP_BATCH:
+                    continue
+                attempted += 1
+                entry = (
+                    _read_note(store.notes_root, path, row.id, version, id_key, reasons)
+                    if kind == "note"
+                    else _read_projection(
+                        store.notes_root, path, row.id, row.current_revision, reasons
+                    )
+                    if path
+                    else None
+                )
+                if entry is not None:
+                    ready.append(entry)
+                else:
+                    reason, durable = (
+                        reasons[0]
+                        if reasons
+                        else ("manifest has no readable projection path", True)
+                    )
+                    (failed if durable else transient).append(
+                        dict(
+                            kind=kind,
+                            ref_id=row.id,
+                            version=version,
+                            path=path,
+                            observation=observation,
+                            observed_at=now,
+                            reason=reason,
                         )
-                        if current != entry.version:
-                            continue
-                    await _write(session, entry, now)
-                    counts["indexed"] += 1
-        except (SQLAlchemyError, OSError) as exc:
-            raise MetadataUnavailable(str(exc)) from exc
+                    )
+        return ready, failed, transient, skipped
+
+    ready, failed, transient, skipped = await asyncio.to_thread(read_all)
+    counts["unreadable"] = len(failed) + len(transient)
+    counts["skipped_known_unreadable"] = skipped
+    logged: list[dict[str, Any]] = []
+    try:
+        async with transaction(store.session_factory) as session:
+            candidates = {("note", row.id) for row in stale_notes} | {
+                ("source", row.id) for row in stale_sources
+            }
+            candidates -= {(item["kind"], item["ref_id"]) for item in transient}
+            for kind in ("note", "source"):
+                obsolete = [ref for k, ref in failures if k == kind and (k, ref) not in candidates]
+                if obsolete:
+                    await session.execute(
+                        sa.delete(SearchUnreadable).where(
+                            SearchUnreadable.kind == kind, SearchUnreadable.ref_id.in_(obsolete)
+                        )
+                    )
+            for failure in failed:
+                # A store write may have indexed newer bytes while this read
+                # was in flight. Do not leave a failure over its successful row.
+                kind, ref_id = failure["kind"], failure["ref_id"]
+                mirrored = (
+                    sa.exists(
+                        sa.select(Note.id).where(
+                            Note.id == ref_id,
+                            Note.path == failure["path"],
+                            Note.content_hash == failure["version"],
+                            reviewed_note(),
+                        )
+                    )
+                    if kind == "note"
+                    else sa.exists(
+                        sa.select(Source.id).where(
+                            Source.id == ref_id,
+                            sa.func.concat("r", Source.current_revision) == failure["version"],
+                        )
+                    )
+                )
+                indexed = sa.exists(
+                    sa.select(SearchDocument.ref_id).where(
+                        SearchDocument.kind == kind,
+                        SearchDocument.ref_id == ref_id,
+                        SearchDocument.version == failure["version"],
+                    )
+                )
+                statement = insert(SearchUnreadable).from_select(
+                    list(failure),
+                    sa.select(*(sa.literal(value) for value in failure.values())).where(
+                        mirrored, ~indexed
+                    ),
+                )
+                changed = await session.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=[SearchUnreadable.kind, SearchUnreadable.ref_id],
+                        set_={
+                            key: statement.excluded[key]
+                            for key in failure
+                            if key not in {"kind", "ref_id"}
+                        },
+                        where=sa.or_(
+                            SearchUnreadable.version != statement.excluded.version,
+                            SearchUnreadable.path != statement.excluded.path,
+                            SearchUnreadable.observation != statement.excluded.observation,
+                        ),
+                    ).returning(SearchUnreadable.ref_id)
+                )
+                if changed.first() is not None:
+                    logged.append(failure)
+            for entry in ready:
+                if entry.kind == "note":
+                    current = await session.scalar(
+                        sa.select(Note.content_hash).where(Note.id == entry.ref_id)
+                    )
+                    if current != entry.version:
+                        continue
+                await _write(session, entry, now)
+                counts["indexed"] += 1
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
+    for failure in [*logged, *transient]:
+        log.warning(
+            "search entry unreadable",
+            **{
+                **failure,
+                "path": failure["path"]
+                or str(store.sources_root / failure["ref_id"] / "manifest.json"),
+            },
+        )
     return counts
 
 
@@ -477,6 +695,7 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
     started = datetime.now(tz=UTC)
     try:
         async with transaction(store.session_factory) as session:
+            await session.execute(sa.delete(SearchUnreadable))
             await session.execute(
                 sa.update(SearchIndexState)
                 .where(SearchIndexState.id == 1)
