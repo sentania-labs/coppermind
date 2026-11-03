@@ -433,22 +433,23 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                     .order_by(sa.func.random())
                 )
             ).all()
+            approved = sa.exists(
+                sa.select(NoteSource.source_id)
+                .join(Note, Note.id == NoteSource.note_id)
+                .where(
+                    NoteSource.source_id == Source.id,
+                    NoteSource.approved_revision == Source.current_revision,
+                    reviewed_note(),
+                )
+            )
             stale_sources = (
                 await session.execute(
-                    sa.select(Source.id, Source.current_revision)
+                    sa.select(Source.id, Source.current_revision, approved.label("approved"))
                     # A normal pending projection is readable but unpublished.
                     # Leave it until review; orphaned sources still need a mark.
                     .where(
                         sa.or_(
-                            sa.exists(
-                                sa.select(NoteSource.source_id)
-                                .join(Note, Note.id == NoteSource.note_id)
-                                .where(
-                                    NoteSource.source_id == Source.id,
-                                    NoteSource.approved_revision == Source.current_revision,
-                                    reviewed_note(),
-                                )
-                            ),
+                            approved,
                             ~sa.exists(
                                 sa.select(NoteSource.source_id)
                                 .join(Note, Note.id == NoteSource.note_id)
@@ -503,7 +504,13 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                     path = previous.path
                 else:
                     path = _projection_path(store.sources_root, row.id, reasons) or ""
-                observation = manifest_state + "|" + _relative_state(store.notes_root, path)
+                unapproved = kind == "source" and not row.approved
+                observation = (
+                    manifest_state
+                    + "|"
+                    + _relative_state(store.notes_root, path)
+                    + ("|unapproved" if unapproved else "")
+                )
                 if previous and (previous.version, previous.path, previous.observation) == (
                     version,
                     path,
@@ -523,16 +530,15 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                     if path
                     else None
                 )
-                if entry is not None:
+                if entry is not None and not unapproved:
                     ready.append(entry)
                 else:
                     reason, durable = (
-                        reasons[0]
+                        ("no reviewed note approves this revision", True)
+                        if entry is not None
+                        else reasons[0]
                         if reasons
-                        else (
-                            "manifest has no readable projection path",
-                            True,
-                        )
+                        else ("manifest has no readable projection path", True)
                     )
                     (failed if durable else transient).append(
                         dict(

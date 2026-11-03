@@ -91,8 +91,13 @@ async def test_missing_projection_batch_is_not_retried(store, monkeypatch):
             ]
         )
     pending = await indexer.catch_up(store)
-    assert pending["unreadable"] == 0
+    # Only the newly approved source is read again; the pending one is left alone.
+    assert pending["unreadable"] == 1
     assert (await store.get_search_index_status()).known_unreadable == 200
+    async with store.session_factory() as session:
+        from coppermind.db.models import SearchUnreadable
+
+        assert await session.get(SearchUnreadable, ("source", "pending")) is None
 
 
 async def test_source_revision_manifest_and_projection_changes_retry(store):
@@ -136,9 +141,11 @@ async def test_source_revision_manifest_and_projection_changes_retry(store):
         "---\nreviewed: true\nmanaged: true\nsource_id: retry\n"
         "source_revision: 2\n---\nRestored projection"
     )
-    assert (await indexer.catch_up(store))["unreadable"] == 0
+    assert (await indexer.catch_up(store))["unreadable"] == 1
     async with store.session_factory() as session:
-        assert await session.get(SearchUnreadable, ("source", "retry")) is None
+        mark = await session.get(SearchUnreadable, ("source", "retry"))
+        assert "no reviewed note approves" in mark.reason
+    assert (await indexer.catch_up(store))["skipped_known_unreadable"] == 1
 
 
 async def test_failure_log_once_status_problems_and_rebuild_retry(store):
@@ -380,3 +387,69 @@ async def test_transient_manifest_read_error_is_retried_not_marked(store):
         mark = await session.get(SearchUnreadable, ("source", "blip"))
         assert mark is not None
         assert "FileNotFoundError" in mark.reason
+
+
+async def test_readable_orphan_projection_is_marked_not_counted_indexed(store):
+    import json
+
+    from coppermind.db.models import NoteSource, SearchDocument, SearchUnreadable
+    from coppermind.store_protocol import CreateNote
+
+    now = datetime.now(UTC)
+    async with store.session_factory() as session, session.begin():
+        session.add(
+            Source(
+                id="orphan",
+                provider="test",
+                external_source_id="orphan",
+                source_type="transcript",
+                current_revision=1,
+                content_identity="x",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    manifest = store.sources_root / "orphan" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"projection_path": "Sources/orphan.md"}))
+    page = store.notes_root / "Sources/orphan.md"
+    page.parent.mkdir(parents=True)
+    page.write_text(
+        "---\nreviewed: true\nmanaged: true\nsource_id: orphan\n"
+        "source_revision: 1\n---\nStill on disk"
+    )
+
+    first = await indexer.catch_up(store)
+    assert first["indexed"] == 0
+    assert first["unreadable"] == 1
+    second = await indexer.catch_up(store)
+    assert second["unreadable"] == 0
+    assert second["skipped_known_unreadable"] == 1
+    async with store.session_factory() as session:
+        mark = await session.get(SearchUnreadable, ("source", "orphan"))
+        assert "no reviewed note approves" in mark.reason
+
+    created = await store.create_note(
+        CreateNote(
+            title="Opens it",
+            folder="2026-09",
+            body="Body",
+            frontmatter={
+                "date": "2026-09-08",
+                "type": "reference",
+                "context": "internal",
+                "reviewed": True,
+            },
+        )
+    )
+    await filing.file_reviewed(store)
+    async with store.session_factory() as session, session.begin():
+        await session.execute(sa.delete(SearchDocument))
+        session.add(
+            NoteSource(note_id=created.id, source_id="orphan", approved_revision=1, created_at=now)
+        )
+    third = await indexer.catch_up(store)
+    assert third["indexed"] == 2
+    async with store.session_factory() as session:
+        assert await session.get(SearchUnreadable, ("source", "orphan")) is None
+        assert await session.get(SearchDocument, ("source", "orphan")) is not None
