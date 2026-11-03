@@ -723,12 +723,11 @@ and recurrence instance, with per-event export/file/time provenance. Upgrade
 merges legacy calendars automatically and retains old calendar names as
 provenance. There is no identity claim or per-calendar folder watcher. Conflicts
 appear in Problems. Dropbox receipts are dismissible, completed receipts expire
-after seven days by default, and identical re-drops show Already imported.
+after seven days, and identical re-drops show Already imported.
 The sources:read API exposes Dropbox receipts. The upload cap is 200,000,000
 bytes; expanded ZIP and event-count safeguards remain.
 
-Admin shows waiting files, event counts and original import times, with receipt
-retention expressed in days. Calendar failures identify the conflicting event
+Admin shows waiting files, event counts and original import times. Calendar failures identify the conflicting event
 and revisions, can be dismissed from import history, and stay marked dismissed.
 Overview and Problems count the same active failures, including unsupported
 Dropbox files. Upgrade discards conflicts superseded by a newer event revision.

@@ -168,7 +168,7 @@ class Dropbox:
             records = self.records()
             identity = str(payload.get("id", ""))
             item = records["items"].get(identity)
-            if not item or item["state"] not in COMPLETED | {"failed"}:
+            if not item or item["state"] not in COMPLETED | {"failed", "unsupported"}:
                 raise ValueError("Only completed or failed receipts can be dismissed")
             if item["state"] == "failed":
                 for part in item["parts"]:

@@ -31,11 +31,16 @@ from coppermind.schema import (
     note_start_time,
 )
 from coppermind.store_protocol import (
+    FieldIndexNotReady,
+    MetadataUnavailable,
     NoteQuery,
+    NotesFilesystemUnavailable,
     NotFound,
     PatchFrontmatter,
     RenameNote,
     StoreError,
+    StoreUnavailable,
+    VersionConflict,
 )
 from coppermind_store.calendar_archive import CalendarArchive
 from coppermind_store.calendar_import import CALENDAR_ID
@@ -47,6 +52,13 @@ if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
 
 log = logging.getLogger(__name__)
+TRANSIENT_STORE_ERRORS = (
+    FieldIndexNotReady,
+    MetadataUnavailable,
+    NotesFilesystemUnavailable,
+    StoreUnavailable,
+    VersionConflict,
+)
 
 
 def _size_error(size: int, limit: int, *, at_least: bool = False) -> str:
@@ -1415,9 +1427,11 @@ class ContextService:
                             )
                     except NotFound:
                         continue
-                    except StoreError as exc:
+                    except TRANSIENT_STORE_ERRORS as exc:
                         complete = False
                         log.warning("Event ID migration will retry note %s: %s", note_id, exc)
+                    except StoreError as exc:
+                        log.warning("Event ID migration skipped note %s: %s", note_id, exc)
                 if not complete:
                     return
                 for record in associations.values():

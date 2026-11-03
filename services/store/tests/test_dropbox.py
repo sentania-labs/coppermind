@@ -22,7 +22,12 @@ from coppermind_store.notes import LocalStore
 
 from coppermind.context_config import CalendarSource
 from coppermind.settings import Wiring
-from coppermind.store_protocol import MetadataUnavailable, NotFound
+from coppermind.store_protocol import (
+    MetadataUnavailable,
+    NoteUnparseable,
+    NotFound,
+    ValidationFailed,
+)
 from services.store.tests.test_calendar_import import large_ics, zip_bytes
 
 
@@ -625,7 +630,8 @@ def test_worker_timeout_and_crash_are_transient_but_worker_errors_are_not(monkey
     assert not isinstance(raised.value, CalendarTransientError)
 
 
-def fake_notes(store, notes, monkeypatch, fail=()):
+def fake_notes(store, notes, monkeypatch, fail=None):
+    fail = fail or {}
     patched = []
 
     async def get_note(note_id):
@@ -637,7 +643,7 @@ def fake_notes(store, notes, monkeypatch, fail=()):
 
     async def patch_frontmatter(note_id, request, if_match):
         if note_id in fail:
-            raise MetadataUnavailable("database down")
+            raise fail[note_id]
         assert if_match == "hash-" + note_id and not request.unset
         notes[note_id].update(request.set)
         patched.append((note_id, request.set))
@@ -674,7 +680,9 @@ async def test_upgrade_rewrites_legacy_event_ids_in_notes_and_records(tmp_path, 
         "n2": {"calendar_event": new_id},
         "n3": {"calendar_event": old_id},
     }
-    patched = fake_notes(store, notes, monkeypatch, fail={"n3"})
+    patched = fake_notes(
+        store, notes, monkeypatch, fail={"n3": MetadataUnavailable("database down")}
+    )
 
     await store.context.migrate_event_ids()
     assert patched == [("n1", {"calendar_event": new_id})]
@@ -695,3 +703,47 @@ async def test_upgrade_rewrites_legacy_event_ids_in_notes_and_records(tmp_path, 
     patched_failure.clear()
     await store.context.migrate_event_ids()
     assert patched_failure == []
+
+
+async def test_upgrade_skips_notes_that_can_never_be_patched_and_finishes(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    old = legacy_archive(store)
+    config = store.context.config()
+    config.assignments["enrichment"].event_field = "calendar_event"
+    store.context.write("config", config.model_dump())
+    old_id = next(iter(old.events))
+    store.context = ContextService(store)
+    new_id = store.context.archive.catalog().aliases[old_id]
+    store.context.write(
+        "associations",
+        {
+            name: {"events": [old_id], "contacts": [], "attendees": []}
+            for name in ("n1", "n2", "n3")
+        },
+    )
+    notes = {name: {"calendar_event": old_id} for name in ("n1", "n2", "n3")}
+    patched = fake_notes(
+        store,
+        notes,
+        monkeypatch,
+        fail={"n1": ValidationFailed(["bad field"]), "n2": NoteUnparseable("n2", "yaml")},
+    )
+    await store.context.migrate_event_ids()
+    assert patched == [("n3", {"calendar_event": new_id})]
+    assert store.context.read("one-calendar-event-ids", {}).get("complete")
+    associations = store.context.read("associations", {})
+    assert all(record["events"] == [new_id] for record in associations.values())
+    patched.clear()
+    await store.context.migrate_event_ids()
+    assert patched == []
+
+
+async def test_unsupported_receipt_can_be_dismissed(tmp_path):
+    store = local_store(tmp_path)
+    dropbox = store.context.dropbox
+    item = dropbox.submit("notes.pdf", b"%PDF-1.4 not a calendar")
+    await finish(store)
+    assert dropbox.snapshot()["items"][0]["state"] == "unsupported"
+    assert await dropbox.dismiss({"id": item["id"]}) == {"dismissed": item["id"]}
+    assert dropbox.snapshot()["items"] == []
+    assert dropbox.records()["history"][item["id"]]["state"] == "unsupported"
