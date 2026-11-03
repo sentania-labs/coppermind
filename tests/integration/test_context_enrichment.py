@@ -778,3 +778,286 @@ async def test_event_approval_filling_time_ignores_a_legacy_note_timezone(store)
     # The configured America/Chicago setting is the only timezone.
     assert str(updated.frontmatter["date"]) == "2026-10-14T09:00:00"
     assert "time" not in updated.frontmatter
+
+
+def _answer(*suggestions):
+    return {"suggestions": list(suggestions), "unresolved": []}
+
+
+RULE_CASES = [
+    (
+        "unknown-record",
+        lambda ev: {
+            "kind": "event",
+            "event_ids": ["not-supplied"],
+            "reason": "r",
+        },
+        "pointed at calendar events or contacts it was not given",
+    ),
+    (
+        "quote-not-found",
+        lambda ev: {
+            "kind": "filename",
+            "value": "Title",
+            "event_ids": [ev["events"][0]["event_id"]],
+            "quote": "words nobody wrote",
+            "reason": "r",
+        },
+        "quoted text that is not in the note or transcript",
+    ),
+    (
+        "no-evidence",
+        lambda ev: {"kind": "filename", "value": "Title", "reason": "r"},
+        "no supporting quote or event",
+    ),
+    (
+        "attendance-evidence",
+        lambda ev: {
+            "kind": "attendee",
+            "quote": "Casey attended",
+            "reason": "r",
+        },
+        "lacked a note quote or a known contact",
+    ),
+    (
+        "event-missing",
+        lambda ev: {"kind": "event", "quote": "Casey attended", "reason": "r"},
+        "did not name a supplied event",
+    ),
+    (
+        "contact-missing",
+        lambda ev: {"kind": "contact", "quote": "Casey attended", "reason": "r"},
+        "did not name a supplied contact",
+    ),
+    (
+        "invalid-filename",
+        lambda ev: {
+            "kind": "filename",
+            "value": "a/b",
+            "event_ids": [ev["events"][0]["event_id"]],
+            "reason": "r",
+        },
+        "single-line title without a path",
+    ),
+    (
+        "invalid-filename",
+        lambda ev: {
+            "kind": "filename",
+            "value": "   ",
+            "event_ids": [ev["events"][0]["event_id"]],
+            "reason": "r",
+        },
+        "blank or too long to use as a title",
+    ),
+    (
+        "unmapped-field",
+        lambda ev: {
+            "kind": "field",
+            "field": "secret_field",
+            "value": "x",
+            "quote": "Casey attended",
+            "reason": "r",
+        },
+        "field secret_field, which enrichment is not allowed to fill",
+    ),
+    (
+        "schema-mismatch",
+        lambda ev: {
+            "kind": "field",
+            "field": "account",
+            "value": {"not": "a list"},
+            "quote": "Casey attended",
+            "reason": "r",
+        },
+        "does not fit that field's type",
+    ),
+]
+
+
+@pytest.mark.parametrize(("rule", "build", "text"), RULE_CASES, ids=[c[0] for c in RULE_CASES])
+async def test_validation_failure_states_the_rule_and_logs_without_model_output(
+    store, rule, build, text, caplog
+):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+
+    async def answer(connection, key, assignment, system, evidence):
+        return _answer(build(evidence) | {"reason": "SECRET-MODEL-TEXT"}), {}
+
+    context.provider.suggest = answer
+    with caplog.at_level("WARNING"):
+        await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.state == "failed"
+    assert final.error_rule == rule
+    assert text in final.error
+    assert f"({rule})" in final.error
+    assert "Suggestion could not be validated" not in final.error
+    assert final.error.rstrip().endswith(".")
+    assert "SECRET-MODEL-TEXT" not in final.error
+    logged = [r.getMessage() for r in caplog.records if job_id in r.getMessage()]
+    assert logged
+    assert all(rule in m and note.path in m and "SECRET-MODEL-TEXT" not in m for m in logged)
+
+
+async def test_malformed_answer_names_the_problem_location_not_the_content(store, caplog):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+
+    async def answer(*args):
+        return {"suggestions": [{"kind": "filename", "reason": ["SECRET-MODEL-TEXT"]}], "x": 1}, {}
+
+    context.provider.suggest = answer
+    with caplog.at_level("WARNING"):
+        await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.error_rule == "answer-shape"
+    assert "not in the expected format" in final.error
+    assert "suggestions.0" in final.error
+    assert "(unreadable name)" not in final.error
+    assert "SECRET-MODEL-TEXT" not in final.error
+    assert all("SECRET-MODEL-TEXT" not in r.getMessage() for r in caplog.records)
+
+
+async def test_input_over_the_limit_records_size_and_limit(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 2000
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Long", body="word " * 1000, frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+    await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.state == "failed"
+    assert final.error_rule == "input-limit"
+    assert final.input_limit == 2000
+    assert final.input_size > 2000
+    assert f"{final.input_size:,} characters; the limit is 2,000" in final.error
+    assert "Maximum note and transcript characters" in final.error
+
+
+async def test_a_later_success_or_retry_clears_the_earlier_failure_rule(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 2000
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Long", body="word " * 1000, frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+    await context.run_job(context.load_job(job_id))
+    assert context.load_job(job_id).error_rule == "input-limit"
+
+    await context.retry_job({"id": job_id})
+    queued = context.load_job(job_id)
+    assert (queued.state, queued.error, queued.error_rule) == ("queued", "", "")
+    assert queued.input_size is None and queued.input_limit is None
+
+    failed = context.load_job(job_id)
+    failed.set_error("x", "input-limit", 5, 2)
+    failed.attempts = failed.attempt_limit
+    context.save_job(failed)
+    await context.run_job(context.load_job(job_id))
+    exhausted = context.load_job(job_id)
+    assert "Attempt limit reached" in exhausted.error
+    assert exhausted.error_rule == "" and exhausted.input_limit is None
+
+
+def _fake_transcript(store, monkeypatch, text, size_bytes=None):
+    from types import SimpleNamespace as NS
+
+    artifact = NS(
+        name="t.txt",
+        mime_type="text/plain",
+        size_bytes=size_bytes if size_bytes is not None else len(text.encode()),
+    )
+    manifest = NS(current_revision=1, revisions=[NS(revision=1, artifacts=[artifact])])
+
+    async def sources(note_id):
+        return [NS(id="s1")]
+
+    async def source(identity):
+        return manifest
+
+    async def document(*args):
+        return NS(content=text)
+
+    monkeypatch.setattr(store, "get_note_sources", sources)
+    monkeypatch.setattr(store, "get_source", source)
+    monkeypatch.setattr(store, "get_source_artifact", document)
+
+
+async def _long_run(store, monkeypatch, text, limit=2000, **kwargs):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = limit
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Short", body="hi", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+    job = context.load_job(job_id)
+    job.source_versions = {"s1": 1}
+    context.save_job(job)
+    _fake_transcript(store, monkeypatch, text, **kwargs)
+    return context, job_id
+
+
+async def test_non_ascii_transcript_under_the_limit_in_characters_is_not_rejected(
+    store, monkeypatch
+):
+    context, job_id = await _long_run(store, monkeypatch, "", limit=3000)
+    overhead = len(json.dumps(await context.evidence(context.load_job(job_id)), ensure_ascii=False))
+    fits = 3000 - overhead - 100
+    assert fits * 3 > 3000  # over the limit if bytes were counted as characters
+    _fake_transcript(store, monkeypatch, "字" * fits)
+    await context.run_job(context.load_job(job_id))
+    assert context.load_job(job_id).error_rule != "input-limit"
+
+
+async def test_non_ascii_size_is_reported_in_characters_the_limit_uses(store, monkeypatch):
+    text = "字" * 2500  # 7,500 bytes, 2,500 characters
+    context, job_id = await _long_run(store, monkeypatch, text)
+    await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.error_rule == "input-limit"
+    evidence_chars = len(json.dumps(await context.evidence(final), ensure_ascii=False))
+    assert final.input_size == evidence_chars
+    assert 2500 < final.input_size < 7500
+    assert "at least" not in final.error
+
+
+async def test_far_oversized_input_is_not_read_and_is_labelled_a_minimum(store, monkeypatch):
+    context, job_id = await _long_run(store, monkeypatch, "x", size_bytes=100_000)
+    await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.error_rule == "input-limit"
+    assert final.input_size == 25_000
+    assert "at least 25,000 characters" in final.error
+
+
+async def test_a_model_no_longer_discovered_fails_the_job_with_a_named_rule(store, caplog):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+    context.write("discovery", {})
+
+    with caplog.at_level("WARNING"):
+        await context.run_job(context.load_job(job_id))
+
+    final = context.load_job(job_id)
+    assert final.state == "failed"
+    assert final.error_rule == "model-not-available"
+    assert "refresh models" in final.error
+    assert "could not be validated" not in final.error
+    assert any("model-not-available" in r.getMessage() for r in caplog.records)

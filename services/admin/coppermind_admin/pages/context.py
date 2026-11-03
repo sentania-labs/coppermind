@@ -54,6 +54,16 @@ def _select(name: str, label: str, choices: list[tuple[str, str]], selected: str
     return f'<label>{e(label)}<select name="{name}">{options}</select></label>'
 
 
+def _limit_link(job: dict[str, Any]) -> str:
+    """Point a size failure at the setting that controls it."""
+    if not job.get("input_limit"):
+        return ""
+    return (
+        '<br><a href="/admin/workflow?tab=enrichment#processing-limits">'
+        "Change Maximum note and transcript characters</a>"
+    )
+
+
 def _proposal_value(value: Any) -> str:
     if isinstance(value, str):
         return _hidden("value_kind", "text") + _input("value", "Proposed value", value)
@@ -454,7 +464,8 @@ picker.addEventListener('change', () => {
             body += "<h2>Jobs</h2><table><tr><th>Note</th><th>Status</th><th>Open</th></tr>"
             for job in data["jobs"]:
                 body += (
-                    f"<tr><td>{e(job['path'])}</td><td>{e(job['state'])}<br>{e(job['error'])}</td>"
+                    f"<tr><td>{e(job['path'])}</td><td>{e(job['state'])}<br>{e(job['error'])}"
+                    f"{_limit_link(job)}</td>"
                 )
                 body += f'<td><a href="/admin/context/jobs/{job["id"]}">Inspect</a></td></tr>'
             body += "</table><h2>Existing Review backlog</h2>"
@@ -493,6 +504,7 @@ picker.addEventListener('change', () => {
             + "</p><p>"
             + e(job["state"] + ": " + job["error"])
             + "</p>"
+            + _limit_link(job)
         )
         body += (
             "<p>Current metadata</p><pre>"

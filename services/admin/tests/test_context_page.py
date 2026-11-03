@@ -147,3 +147,35 @@ def test_conversion_is_csrf_protected(signed_in):
     assert response.status_code == 303
     assert fake.calls[-1][0] == "convert-connection"
     assert fake.calls[-1][1]["connection"] == "local"
+
+
+def test_size_failure_shows_both_numbers_and_links_to_the_setting(signed_in):
+    client, _ = signed_in
+    job = {
+        "id": "a" * 64,
+        "path": "Long.md",
+        "state": "failed",
+        "error": "The note and transcript text is 52,000 characters; the limit is 40,000.",
+        "error_rule": "input-limit",
+        "input_size": 52000,
+        "input_limit": 40000,
+        "result": None,
+        "decisions": [],
+        "current": {"frontmatter": {}},
+    }
+
+    class JobStore(ContextStore):
+        async def context_action(self, action, payload):
+            if action == "job":
+                return job
+            data = await super().context_action(action, payload)
+            if action == "snapshot":
+                data["jobs"] = [job]
+            return data
+
+    client.app.state.store = JobStore()
+    link = 'href="/admin/workflow?tab=enrichment#processing-limits"'
+    for url in ("/admin/context?tab=review", f"/admin/context/jobs/{job['id']}"):
+        page = client.get(url)
+        assert "52,000 characters; the limit is 40,000" in page.text
+        assert link in page.text

@@ -40,9 +40,19 @@ class EnrichmentJob(ContextModel):
     attempts: int = 0
     attempt_limit: int | None = Field(default=None, ge=1, le=3)
     error: str = ""
+    # Stable name of the rule that failed the job, and for size failures the measured
+    # size against the limit. Never holds model output.
+    error_rule: str = ""
+    input_size: int | None = None
+    input_limit: int | None = None
     created_at: str
     result: Suggestions | None = None
     evidence: dict[str, Any] = Field(default_factory=dict)
     usage: dict[str, Any] = Field(default_factory=dict)
     decisions: list[dict[str, Any]] = Field(default_factory=list)
     pending_approval: dict[str, Any] | None = None
+
+    def set_error(
+        self, message: str = "", rule: str = "", size: int | None = None, limit: int | None = None
+    ) -> None:
+        self.error, self.error_rule, self.input_size, self.input_limit = message, rule, size, limit
