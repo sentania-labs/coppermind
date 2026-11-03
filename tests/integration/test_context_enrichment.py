@@ -911,7 +911,7 @@ async def test_malformed_answer_names_the_problem_location_not_the_content(store
     job_id = await context.queue_note(note.id)
 
     async def answer(*args):
-        return {"suggestions": [{"kind": "filename", "reason": "SECRET-MODEL-TEXT"}], "x": 1}, {}
+        return {"suggestions": [{"kind": "filename", "reason": ["SECRET-MODEL-TEXT"]}], "x": 1}, {}
 
     context.provider.suggest = answer
     with caplog.at_level("WARNING"):
@@ -919,6 +919,8 @@ async def test_malformed_answer_names_the_problem_location_not_the_content(store
     final = context.load_job(job_id)
     assert final.error_rule == "answer-shape"
     assert "not in the expected format" in final.error
+    assert "suggestions.0" in final.error
+    assert "(unreadable name)" not in final.error
     assert "SECRET-MODEL-TEXT" not in final.error
     assert all("SECRET-MODEL-TEXT" not in r.getMessage() for r in caplog.records)
 

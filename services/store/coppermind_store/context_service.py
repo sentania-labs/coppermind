@@ -943,10 +943,12 @@ class ContextService:
             elif isinstance(exc, ProviderError) or stale:
                 job.set_error(str(exc))
             elif isinstance(exc, ValidationError):
-                places = sorted({".".join(str(p) for p in e["loc"][:3]) for e in exc.errors()})
+                places = sorted(
+                    {_label(".".join(str(p) for p in e["loc"][:3])) for e in exc.errors()}
+                )
                 job.set_error(
                     "The model's answer was not in the expected format (answer-shape; "
-                    f"problem at {_label(', '.join(places)[:60])}). {RETRY}",
+                    f"problem at {', '.join(places)[:60]}). {RETRY}",
                     "answer-shape",
                 )
             else:
