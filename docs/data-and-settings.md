@@ -154,12 +154,12 @@ to a concurrent edit.
 
 **Settings > Upload limits** exposes `limits.calendar_max_events` and
 `limits.calendar_import_memory_mib`; both take effect on the next import.
-The first bounds retained event identities, including cancellations, across all
-calendars. Updating an existing identity does not consume another slot. Lowering
+The first bounds retained event identities, including cancellations, in the one
+calendar. Updating an existing identity does not consume another slot. Lowering
 it does not delete already accepted events or prevent serving them.
 
-The memory setting bounds each calendar parser subprocess's address space,
-including identity discovery. A preflight estimate of about 40 bytes per
+The memory setting bounds each calendar parser subprocess's address space.
+A preflight estimate of about 40 bytes per
 expanded byte plus 5.3 KiB per event rejects exports that would exceed it before
 constructing the parser's object graph. The subprocess also has a hard address-space limit and a 45-second deadline. These are import limits,
 not a container RSS limit; reserve memory for the store and requests as described
@@ -168,10 +168,9 @@ in [calendar sizing](calendar-enrichment.md#memory-and-deployment-sizing).
 An over-budget import retains its original, marks its receipt failed with the
 setting name and ceiling, and appears in **Problems**. The previous calendar
 remains queryable. Raise the budget only after sizing the deployment, or submit a
-smaller partial export. After changing the setting, retry the failed item with
-**Retry import** in Admin's Dropbox list; for an item refused during identity
-discovery, submitting the same bytes again also re-arms it once the stored
-limits differ from the current ones. Restarting does not automatically retry
+smaller partial export, then drop the corrected export. A budget refusal is a
+deterministic failure: its failed receipt stays until dismissed in Admin, and an
+identical re-drop does not retry it. Restarting does not automatically retry
 failed imports.
 
 ## Filing rules (`/data/state/rules.yaml`)
