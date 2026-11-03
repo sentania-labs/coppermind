@@ -25,12 +25,13 @@ class PurgeCounts(BaseModel):
 
 class PurgeResult(BaseModel):
     token: str
-    state: Literal["preview", "applying", "failed", "complete"]
+    state: Literal["preview", "applying", "failed", "complete", "abandoned"]
     created_at: datetime
     retention_days: int
     candidates: list[PurgeCandidate]
     counts: PurgeCounts
     completed: int = 0
+    remaining: list[str] = Field(default_factory=list)
     error: str | None = None
 
 
@@ -38,3 +39,8 @@ class ConfirmPurge(BaseModel):
     model_config = ConfigDict(extra="forbid")
     token: str = Field(pattern=r"^[0-9a-f]{64}$")
     confirmation: Literal["Purge listed items"]
+
+
+class AbandonPurge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str = Field(pattern=r"^[0-9a-f]{64}$")

@@ -10,7 +10,7 @@ from coppermind_store.reconciler import reconcile_once
 
 from coppermind import frontmatter as fm
 from coppermind.db.models import Note, SearchDocument, Source
-from coppermind.purge import ConfirmPurge
+from coppermind.purge import AbandonPurge, ConfirmPurge
 from coppermind.store_protocol import (
     CreateNote,
     NotesFilesystemUnavailable,
@@ -248,6 +248,92 @@ async def test_repeated_previews_keep_one_unconfirmed_receipt(store):
     assert [r["token"] for r in purge.records(store)] == [second.token]
     with pytest.raises(ValidationFailed):
         await store.confirm_purge(confirmation(first))
+
+
+async def test_abandon_releases_failed_purge_and_reports_outcome(store, monkeypatch):
+    retention(store, 0)
+    ingested = await orphan(store)
+    preview = await store.preview_purge()
+    real = purge._unlink
+
+    def fail(store, item):
+        raise OSError("simulated disk error")
+
+    monkeypatch.setattr(purge, "_unlink", fail)
+    with pytest.raises(NotesFilesystemUnavailable):
+        await store.confirm_purge(confirmation(preview))
+    assert purge.pending_ids(store, "source") == {ingested.source.id}
+    with pytest.raises(ValidationFailed):
+        await store.abandon_purge(AbandonPurge(token="0" * 64))
+
+    abandoned = await store.abandon_purge(AbandonPurge(token=preview.token))
+    assert abandoned.state == "abandoned"
+    assert sorted(abandoned.remaining) == sorted([ingested.note.id, ingested.source.id])
+    assert abandoned.completed == 0
+    assert purge.pending_ids(store, "source") == set()
+    assert purge.read(store, preview.token)["state"] == "abandoned"
+    problems = [p for p in await store.get_problems() if p.kind == "purge"]
+    assert len(problems) == 1 and "2 were not" in problems[0].reason
+    assert (store.sources_root / ingested.source.id).exists()
+
+    monkeypatch.setattr(purge, "_unlink", real)
+    with pytest.raises(ValidationFailed):
+        await store.abandon_purge(AbandonPurge(token=preview.token))
+    fresh = await store.preview_purge()
+    assert fresh.token != preview.token and fresh.state == "preview"
+    assert {c.id for c in fresh.candidates} == {ingested.note.id, ingested.source.id}
+    done = await store.confirm_purge(confirmation(fresh))
+    assert done.state == "complete"
+    assert not [p for p in await store.get_problems() if p.kind == "purge"]
+
+
+async def test_abandon_after_commit_reports_everything_removed(store, monkeypatch):
+    retention(store, 0)
+    ingested = await orphan(store)
+    preview = await store.preview_purge()
+    real = purge.save
+
+    def crash_before_complete(store, record):
+        if record["state"] == "complete":
+            raise OSError("state volume lost")
+        real(store, record)
+
+    monkeypatch.setattr(purge, "save", crash_before_complete)
+    with pytest.raises(NotesFilesystemUnavailable):
+        await store.confirm_purge(confirmation(preview))
+    monkeypatch.setattr(purge, "save", real)
+    assert purge.read(store, preview.token)["state"] == "failed"
+    abandoned = await store.abandon_purge(AbandonPurge(token=preview.token))
+    assert abandoned.state == "abandoned" and abandoned.remaining == []
+    assert abandoned.completed == 2
+    assert not (store.sources_root / ingested.source.id).exists()
+    assert not [p for p in await store.get_problems() if p.kind == "purge"]
+
+
+async def test_corrupt_receipt_does_not_halt_reconcile_and_is_reported(store):
+    retention(store, 0)
+    note, _, _ = await deleted(store)
+    purge.directory(store).mkdir(parents=True, exist_ok=True)
+    (purge.directory(store) / ("f" * 64 + ".json")).write_text("{broken")
+    await reconcile_once(store)
+    assert purge.pending_ids(store, "note") == set()
+    problems = [p for p in await store.get_problems() if p.kind == "purge"]
+    assert len(problems) == 1 and "unreadable" in problems[0].reason
+    assert note_history.receipts(store)[note.id]
+
+
+async def test_terminal_receipts_are_not_read_by_reconcile_or_problems(store):
+    retention(store, 0)
+    await deleted(store)
+    preview = await store.preview_purge()
+    done = await store.confirm_purge(confirmation(preview))
+    assert done.state == "complete"
+    assert list(purge.directory(store).glob("*.json")) == []
+    assert purge.read(store, preview.token)["state"] == "complete"
+    for path in (purge.directory(store) / "done").glob("*.json"):
+        path.write_text("{broken")
+    await reconcile_once(store)
+    assert not [p for p in await store.get_problems() if p.kind == "purge"]
 
 
 async def test_unparseable_file_blocks_source_removal(store):

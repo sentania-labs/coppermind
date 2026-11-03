@@ -1,6 +1,7 @@
 """Retention controls, exact preview, destructive confirmation and CSRF."""
 
 from datetime import UTC, datetime
+from typing import Literal
 
 from coppermind.purge import PurgeCandidate, PurgeCounts, PurgeResult
 from coppermind.settings import read_settings
@@ -11,12 +12,14 @@ from services.admin.tests.test_admin import form_token
 class PurgeStore:
     def __init__(self):
         self.confirmed = []
+        self.abandoned = []
         self.empty = False
+        self.state: Literal["preview", "failed"] = "preview"
 
     async def preview_purge(self):
         return PurgeResult(
             token="a" * 64,
-            state="preview",
+            state=self.state,
             created_at=datetime.now(UTC),
             retention_days=30,
             candidates=[]
@@ -101,3 +104,33 @@ def test_zero_setting_and_empty_preview(signed_in):
     empty = client.post("/v1/admin/purge/preview", data={"csrf": csrf})
     assert "Nothing is eligible" in empty.text
     assert "Permanently remove" not in empty.text
+
+
+def test_unfinished_purge_offers_abandon_and_reports_outcome(signed_in):
+    client, _ = signed_in
+    fake = PurgeStore()
+    fake.state = "failed"
+    client.app.state.store = fake
+    csrf = form_token(client, "/admin/purge")
+    page = client.post("/v1/admin/purge/preview", data={"csrf": csrf})
+    assert "Retry removal of listed items" in page.text
+    assert "/v1/admin/purge/abandon" in page.text
+    assert client.post("/v1/admin/purge/abandon", data={"token": "a" * 64}).status_code == 403
+    assert not fake.abandoned
+    assert (
+        client.post("/v1/admin/purge/abandon", data={"csrf": csrf, "token": "bad"}).status_code
+        == 422
+    )
+
+    async def abandon(payload):
+        fake.abandoned.append(payload)
+        return (await fake.preview_purge()).model_copy(
+            update={"state": "abandoned", "remaining": ["test-id"], "completed": 2}
+        )
+
+    fake.abandon_purge = abandon  # type: ignore[attr-defined]
+    result = client.post("/v1/admin/purge/abandon", data={"csrf": csrf, "token": "a" * 64})
+    assert result.status_code == 200
+    assert "Purge abandoned" in result.text and "2 listed items were removed" in result.text
+    assert "&lt;script&gt;" in result.text and "Permanently remove" not in result.text
+    assert len(fake.abandoned) == 1

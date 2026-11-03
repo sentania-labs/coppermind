@@ -16,7 +16,7 @@ import httpx
 from pydantic import TypeAdapter
 
 from coppermind.api_keys import ApiKeySet
-from coppermind.purge import ConfirmPurge, PurgeResult
+from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
 from coppermind.store_protocol import (
     ArtifactNotFound,
     CreateNote,
@@ -237,6 +237,12 @@ class HttpStoreClient:
     async def confirm_purge(self, request: ConfirmPurge) -> PurgeResult:
         response = await self._send(
             "POST", f"{INTERNAL_PREFIX}/purge/confirm", json=request.model_dump(mode="json")
+        )
+        return PurgeResult.model_validate(response.json())
+
+    async def abandon_purge(self, request: AbandonPurge) -> PurgeResult:
+        response = await self._send(
+            "POST", f"{INTERNAL_PREFIX}/purge/abandon", json=request.model_dump(mode="json")
         )
         return PurgeResult.model_validate(response.json())
 

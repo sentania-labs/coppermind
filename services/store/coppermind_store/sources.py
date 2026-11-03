@@ -1348,12 +1348,13 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     note_id=path.stem,
                 )
             )
-    from coppermind_store.purge import records
+    from coppermind_store.purge import outcome, records
 
     try:
         purge_records = records(store)
+        abandoned = records(store, "abandoned")
     except (OSError, ValueError):
-        purge_records = []
+        purge_records = abandoned = []
         problems.append(
             ProblemInfo(
                 kind="purge",
@@ -1374,7 +1375,27 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     reference=receipt["token"],
                     reason=(
                         "Retention purge is unfinished. Open Retention purge "
-                        "to review and retry the saved list."
+                        "to retry the saved list or abandon it."
+                    ),
+                )
+            )
+    for receipt in abandoned:
+        try:
+            _, remaining = await outcome(store, receipt)
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
+        if remaining:
+            titles = {i["candidate"]["id"]: i["candidate"]["title"] for i in receipt["items"]}
+            listed = ", ".join(titles[r] for r in remaining[:5])
+            more = f" and {len(remaining) - 5} more" if len(remaining) > 5 else ""
+            problems.append(
+                ProblemInfo(
+                    kind="purge",
+                    reference=receipt["token"],
+                    reason=(
+                        f"Retention purge was abandoned. {len(receipt['items']) - len(remaining)} "
+                        f"listed items were removed. {len(remaining)} were not and still need "
+                        f"attention: {listed}{more}."
                     ),
                 )
             )

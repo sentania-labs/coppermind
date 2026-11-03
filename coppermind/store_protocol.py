@@ -23,7 +23,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from coppermind.api_keys import ApiKeySet
-from coppermind.purge import ConfirmPurge, PurgeResult
+from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
 from coppermind.schema import FrontmatterSchema
 
 # `"sha256:<hex of the file bytes>"`. A move does not change it; a change to
@@ -762,6 +762,8 @@ class Store(Protocol):
     async def preview_purge(self) -> PurgeResult: ...
 
     async def confirm_purge(self, request: ConfirmPurge) -> PurgeResult: ...
+
+    async def abandon_purge(self, request: AbandonPurge) -> PurgeResult: ...
 
     async def get_problems(self) -> list[ProblemInfo]: ...
 

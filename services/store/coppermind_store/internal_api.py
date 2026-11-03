@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 from coppermind.api_keys import ApiKeySet
 from coppermind.errors import to_http
-from coppermind.purge import ConfirmPurge, PurgeResult
+from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
 from coppermind.store_protocol import (
     CreateNote,
     FolderTree,
@@ -356,5 +356,13 @@ async def preview_purge(request: Request) -> PurgeResult | JSONResponse:
 async def confirm_purge(payload: ConfirmPurge, request: Request) -> PurgeResult | JSONResponse:
     try:
         return await _store(request).confirm_purge(payload)
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.post("/purge/abandon", response_model=PurgeResult)
+async def abandon_purge(payload: AbandonPurge, request: Request) -> PurgeResult | JSONResponse:
+    try:
+        return await _store(request).abandon_purge(payload)
     except StoreError as error:
         return _failure(error)

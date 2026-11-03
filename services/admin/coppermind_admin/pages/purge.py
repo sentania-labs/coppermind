@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import ValidationError
 
 from coppermind.errors import to_http
-from coppermind.purge import ConfirmPurge, PurgeResult
+from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
 from coppermind.settings import ProductSettings, Wiring, read_settings
 from coppermind.statefiles import RevisionConflict
 from coppermind.store_protocol import StoreError
@@ -20,6 +20,7 @@ from coppermind_admin.pages.search_index import _zone, local_time
 class PurgeControl(Protocol):
     async def preview_purge(self) -> PurgeResult: ...
     async def confirm_purge(self, request: ConfirmPurge) -> PurgeResult: ...
+    async def abandon_purge(self, request: AbandonPurge) -> PurgeResult: ...
 
 
 # This extension deliberately uses the existing Admin shell/components. There
@@ -46,6 +47,7 @@ for (const form of document.querySelectorAll('main form')) {
     for (const button of form.querySelectorAll('button')) button.disabled = true;
     document.getElementById('progress').textContent =
       form.action.endsWith('/confirm') ? 'Removing the confirmed items. Keep this page open.' :
+      form.action.endsWith('/abandon') ? 'Abandoning the saved list. Nothing is being removed.' :
       form.action.endsWith('/preview') ?
       'Checking deleted notes and source references. Nothing is being removed.' :
       'Saving retention. No items are being removed.';
@@ -153,7 +155,23 @@ Saving takes effect on the next preview; it does not start a purge.</p>
             status,
         )
 
+    def abandoned(value: PurgeResult) -> HTMLResponse:
+        kept = "".join(
+            f"<li>{escape(c.title)}<br>{escape(c.path)}</li>"
+            for c in value.candidates
+            if c.id in value.remaining
+        )
+        return page(
+            f'<p class="notice" role="status">Purge abandoned. {value.completed} listed items '
+            f"were removed and {len(value.remaining)} were not. Nothing was retried. "
+            "Items that were not removed are listed in Problems.</p>"
+            + (f"<h2>Not removed</h2><ul>{kept}</ul>" if kept else "")
+            + '<p><a href="/admin/purge">Back to retention settings</a></p>'
+        )
+
     def reviewed(value: PurgeResult, request: Request) -> HTMLResponse:
+        if value.state == "abandoned":
+            return abandoned(value)
         if not value.candidates:
             return page(
                 '<p class="success">Nothing is eligible for removal.</p>'
@@ -209,6 +227,13 @@ but it does not contain the original source bundles.</p></div>
 pattern="Purge listed items">
 <button class="danger">{action}</button>
 </form>'''
+            if value.state in {"failed", "applying"}:
+                body += f'''<h2>Or abandon this purge</h2>
+<p>Abandoning stops this saved list without retrying it. Nothing more is removed.
+What was and was not removed is reported in Problems, and you can start a new preview.</p>
+<form method="post" action="/v1/admin/purge/abandon">
+<input type="hidden" name="token" value="{escape(value.token)}">
+<button>Abandon this purge</button></form>'''
         body += (
             '<p><a href="/admin/purge">'
             + ("Back to retention settings" if complete else "Cancel and keep remaining items")
@@ -283,6 +308,21 @@ pattern="Purge listed items">
             return page(
                 '<p class="error">Confirmation did not match. '
                 "Preview the list and type Purge listed items exactly.</p>"
+                '<a href="/admin/purge">Back</a>',
+                422,
+            )
+        except StoreError as error:
+            return failure(error)
+
+    @routes.post("/v1/admin/purge/abandon", include_in_schema=False)
+    async def abandon(request: Request) -> Response:
+        form = parse_qs((await request.body()).decode())
+        try:
+            payload = AbandonPurge.model_validate({"token": form.get("token", [""])[0]})
+            return reviewed(await client(request).abandon_purge(payload), request)
+        except ValidationError:
+            return page(
+                '<p class="error">That saved list is no longer valid. Preview again.</p>'
                 '<a href="/admin/purge">Back</a>',
                 422,
             )

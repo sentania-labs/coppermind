@@ -18,6 +18,7 @@ class PurgeStore:
         )
         self.operator, self.operator_key = create_key("Purge operator", ["admin:purge"])
         self.confirmed = []
+        self.abandoned = []
 
     async def get_api_keys(self):
         return ApiKeySet(keys=[self.old, self.operator])
@@ -36,6 +37,10 @@ class PurgeStore:
         self.confirmed.append(payload)
         return (await self.preview_purge()).model_copy(update={"state": "complete"})
 
+    async def abandon_purge(self, payload):
+        self.abandoned.append(payload)
+        return (await self.preview_purge()).model_copy(update={"state": "abandoned"})
+
 
 def test_scope_and_explicit_confirmation(tmp_path):
     token = tmp_path / "internal"
@@ -45,10 +50,12 @@ def test_scope_and_explicit_confirmation(tmp_path):
     app.dependency_overrides[store] = lambda: fake
     with TestClient(app) as client:
         app.state.api_key_auth._store = fake
-        for route in ["preview", "confirm"]:
+        for route in ["preview", "confirm", "abandon"]:
             body = (
                 {"token": "a" * 64, "confirmation": "Purge listed items"}
                 if route == "confirm"
+                else {"token": "a" * 64}
+                if route == "abandon"
                 else {}
             )
             url = "/v1/admin/purge/" + route
@@ -65,7 +72,7 @@ def test_scope_and_explicit_confirmation(tmp_path):
                 ).status_code
                 == 200
             )
-        assert len(fake.confirmed) == 1
+        assert len(fake.confirmed) == 1 and len(fake.abandoned) == 1
         assert (
             client.post(
                 "/v1/admin/purge/confirm",

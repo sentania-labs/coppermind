@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, Response
 from fastapi.responses import JSONResponse
 
-from coppermind.purge import ConfirmPurge
+from coppermind.purge import AbandonPurge, ConfirmPurge
 from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import StoreError
 from coppermind_api.auth import Principal
@@ -32,5 +32,17 @@ async def confirm(
 ) -> Response:
     try:
         return JSONResponse((await client.confirm_purge(payload)).model_dump(mode="json"))
+    except StoreError as error:
+        return failure(error)
+
+
+@router.post("/abandon")
+async def abandon(
+    payload: AbandonPurge,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("admin:purge")),
+) -> Response:
+    try:
+        return JSONResponse((await client.abandon_purge(payload)).model_dump(mode="json"))
     except StoreError as error:
         return failure(error)

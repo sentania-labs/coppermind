@@ -51,7 +51,7 @@ from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
 from coppermind.logging import get_logger
 from coppermind.naming import note_stem, sanitize_folder, unique_stem
-from coppermind.purge import ConfirmPurge, PurgeResult
+from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
 from coppermind.schema import (
     FrontmatterSchema,
     account_list,
@@ -357,6 +357,11 @@ class LocalStore:
         return await operation(self)
 
     async def confirm_purge(self, request: ConfirmPurge) -> PurgeResult:
+        from coppermind_store.purge import operation
+
+        return await operation(self, request)
+
+    async def abandon_purge(self, request: AbandonPurge) -> PurgeResult:
         from coppermind_store.purge import operation
 
         return await operation(self, request)

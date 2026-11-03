@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import secrets
 from collections import Counter
 from contextlib import suppress
@@ -24,7 +25,7 @@ from coppermind.atomicio import atomic_write_bytes, sync_directory
 from coppermind.db.models import Note, NoteSource, Source
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id
-from coppermind.purge import ConfirmPurge, PurgeCandidate, PurgeCounts, PurgeResult
+from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeCandidate, PurgeCounts, PurgeResult
 from coppermind.store_protocol import (
     MetadataUnavailable,
     NotesFilesystemUnavailable,
@@ -46,26 +47,47 @@ def directory(store: LocalStore) -> Path:
     return store.control.store.state_dir / "purges"
 
 
-def records(store: LocalStore) -> list[dict[str, Any]]:
-    return [json.loads(p.read_bytes()) for p in sorted(directory(store).glob("*.json"))]
+TERMINAL = {"complete": "done", "abandoned": "abandoned"}
+
+
+def _folder(store: LocalStore, state: str) -> Path:
+    return directory(store) / TERMINAL.get(state, "")
+
+
+def records(store: LocalStore, state: str | None = None) -> list[dict[str, Any]]:
+    """Receipts in one place; unfinished and preview receipts live in the root."""
+    folder = _folder(store, state or "")
+    return [json.loads(p.read_bytes()) for p in sorted(folder.glob("*.json"))]
 
 
 def pending_ids(store: LocalStore, kind: str) -> set[str]:
-    return {
-        item["candidate"]["id"]
-        for record in records(store)
-        if record["state"] in {"applying", "failed"}
-        for item in record["items"]
-        if item["candidate"]["kind"] == kind
-    }
+    """Ids held by unfinished purges. An unreadable receipt is skipped, not fatal."""
+    ids: set[str] = set()
+    for path in sorted(directory(store).glob("*.json")):
+        try:
+            record = json.loads(path.read_bytes())
+            if record["state"] in {"applying", "failed"}:
+                ids.update(
+                    item["candidate"]["id"]
+                    for item in record["items"]
+                    if item["candidate"]["kind"] == kind
+                )
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return ids
 
 
 def save(store: LocalStore, record: dict[str, Any]) -> None:
+    name = record["token"] + ".json"
     atomic_write_bytes(
-        directory(store) / (record["token"] + ".json"),
+        _folder(store, record["state"]) / name,
         json.dumps(record, sort_keys=True).encode(),
         mode=0o600,
     )
+    here = record["state"] if record["state"] in TERMINAL else ""
+    for state in ("", *TERMINAL):
+        if state != here:
+            (_folder(store, state) / name).unlink(missing_ok=True)
 
 
 def result(record: dict[str, Any]) -> PurgeResult:
@@ -83,6 +105,7 @@ def result(record: dict[str, Any]) -> PurgeResult:
             by_provider=dict(Counter(v for c in candidates for v in c.providers)),
         ),
         completed=len(record.get("completed", [])),
+        remaining=record.get("remaining", []),
         error=record.get("error"),
     )
 
@@ -90,10 +113,12 @@ def result(record: dict[str, Any]) -> PurgeResult:
 def read(store: LocalStore, token: str) -> dict[str, Any]:
     if len(token) != 64 or any(c not in "0123456789abcdef" for c in token):
         raise ValidationFailed(["Invalid purge receipt. Run a new preview."])
-    try:
-        return json.loads((directory(store) / (token + ".json")).read_bytes())
-    except FileNotFoundError as exc:
-        raise ValidationFailed(["Purge receipt not found. Run a new preview."]) from exc
+    for state in ("", *TERMINAL):
+        try:
+            return json.loads((_folder(store, state) / (token + ".json")).read_bytes())
+        except FileNotFoundError:
+            continue
+    raise ValidationFailed(["Purge receipt not found. Run a new preview."])
 
 
 def resolve(root: Path, relative: str) -> Path:
@@ -174,7 +199,7 @@ async def candidates(store: LocalStore, now: datetime) -> list[dict[str, Any]]:
     cutoff = now - timedelta(days=days)
     disk_ids, disk_sources = await asyncio.to_thread(disk_references, store)
     saved = await asyncio.to_thread(note_history.receipts, store)
-    complete = await asyncio.to_thread(records, store)
+    complete = await asyncio.to_thread(records, store, "complete")
     async with store.session_factory() as session:
         notes = list((await session.scalars(sa.select(Note).order_by(Note.id))).all())
         sources = list((await session.scalars(sa.select(Source).order_by(Source.id))).all())
@@ -188,7 +213,6 @@ async def candidates(store: LocalStore, now: datetime) -> list[dict[str, Any]]:
     purged_notes = {
         i["candidate"]["id"]
         for r in complete
-        if r["state"] == "complete"
         for i in r["items"]
         if i["candidate"]["kind"] == "note"
     }
@@ -473,9 +497,45 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
         return result(record)
 
 
-async def operation(store: LocalStore, request: ConfirmPurge | None = None) -> PurgeResult:
+def _present(store: LocalStore, item: dict[str, Any]) -> bool:
+    relative = [(_root(store, f["area"]), f["path"]) for f in item["files"]]
+    relative += [(store.sources_root, d) for d in item["directories"]]
+    return any(os.path.lexists(root / path) for root, path in relative)
+
+
+async def outcome(store: LocalStore, record: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Which listed ids are gone and which still have a row or a file."""
+    removed: list[str] = []
+    remaining: list[str] = []
+    async with store.session_factory() as session:
+        for item in record["items"]:
+            c = item["candidate"]
+            row = await session.get(Note if c["kind"] == "note" else Source, c["id"])
+            held = row is not None or await asyncio.to_thread(_present, store, item)
+            (remaining if held else removed).append(c["id"])
+    return removed, remaining
+
+
+async def abandon(store: LocalStore, request: AbandonPurge) -> PurgeResult:
+    async with store.maintenance.exclusive():
+        record = read(store, request.token)
+        if record["state"] not in {"applying", "failed"}:
+            raise ValidationFailed(["Only an unfinished purge can be abandoned."])
+        removed, remaining = await outcome(store, record)
+        record.update(state="abandoned", completed=removed, remaining=remaining)
+        save(store, record)
+        return result(record)
+
+
+async def operation(
+    store: LocalStore, request: ConfirmPurge | AbandonPurge | None = None
+) -> PurgeResult:
     try:
-        return await preview(store) if request is None else await confirm(store, request)
+        if request is None:
+            return await preview(store)
+        if isinstance(request, AbandonPurge):
+            return await abandon(store, request)
+        return await confirm(store, request)
     except SQLAlchemyError as exc:
         if request is None:
             preview_failure(store)
