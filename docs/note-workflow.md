@@ -91,7 +91,7 @@ use the notes API for authored notes. Routing is isolated in `dropbox.py` so oth
 source handlers can be added without changing note reconciliation.
 
 Existing calendar parser limits still apply: 10 MiB input, expanded size bounded by
-`limits.calendar_import_memory_mib` (about 30x), 100 archive entries, safe paths only, isolated parsing with CPU/memory limits.
+`limits.calendar_import_memory_mib` (about 40x), 100 archive entries, safe paths only, isolated parsing with CPU/memory limits.
 Oversized vault files stay in place with a watcher notice. Partial exports retain
 missing events; explicit cancellation is different from absence.
 
