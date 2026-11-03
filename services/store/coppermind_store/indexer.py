@@ -472,6 +472,8 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                     row.content_hash if kind == "note" else source_version(row.current_revision)
                 )
                 previous = failures.get((kind, row.id))
+                if previous is None and attempted >= CATCH_UP_BATCH:
+                    continue
                 manifest_state = (
                     _file_state(store.sources_root / row.id / "manifest.json")
                     if kind == "source"
@@ -528,26 +530,17 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
     logged: list[dict[str, Any]] = []
     try:
         async with transaction(store.session_factory) as session:
-            await session.execute(
-                sa.delete(SearchUnreadable).where(
-                    sa.or_(
-                        sa.and_(
-                            SearchUnreadable.kind == "note",
-                            ~sa.exists(
-                                sa.select(Note.id).where(
-                                    Note.id == SearchUnreadable.ref_id, reviewed_note()
-                                )
-                            ),
-                        ),
-                        sa.and_(
-                            SearchUnreadable.kind == "source",
-                            ~sa.exists(
-                                sa.select(Source.id).where(Source.id == SearchUnreadable.ref_id)
-                            ),
-                        ),
+            candidates = {("note", row.id) for row in stale_notes} | {
+                ("source", row.id) for row in stale_sources
+            }
+            for kind in ("note", "source"):
+                obsolete = [ref for k, ref in failures if k == kind and (k, ref) not in candidates]
+                if obsolete:
+                    await session.execute(
+                        sa.delete(SearchUnreadable).where(
+                            SearchUnreadable.kind == kind, SearchUnreadable.ref_id.in_(obsolete)
+                        )
                     )
-                )
-            )
             for failure in failed:
                 # A store write may have indexed newer bytes while this read
                 # was in flight. Do not leave a failure over its successful row.

@@ -226,3 +226,68 @@ async def test_note_path_hash_and_file_repairs_retry(store):
     assert (await indexer.catch_up(store))["indexed"] == 1
     async with store.session_factory() as session:
         assert await session.get(SearchUnreadable, ("note", created.id)) is None
+
+
+async def test_pass_only_reads_one_batch_of_unmarked_sources(store, monkeypatch):
+    now = datetime.now(UTC)
+    async with store.session_factory() as session, session.begin():
+        session.add_all(
+            [
+                Source(
+                    id=f"bulk-{i}",
+                    provider="test",
+                    external_source_id=str(i),
+                    source_type="transcript",
+                    current_revision=1,
+                    content_identity=str(i),
+                    created_at=now,
+                    updated_at=now,
+                )
+                for i in range(indexer.CATCH_UP_BATCH + 50)
+            ]
+        )
+    reads: list[str] = []
+    original = indexer._projection_path
+
+    def counting(sources_root, source_id, reasons=None):
+        reads.append(source_id)
+        return original(sources_root, source_id, reasons)
+
+    monkeypatch.setattr(indexer, "_projection_path", counting)
+    counts = await indexer.catch_up(store)
+    assert counts["unreadable"] == indexer.CATCH_UP_BATCH
+    assert len(reads) == indexer.CATCH_UP_BATCH
+
+
+async def test_mark_clears_when_entry_stops_being_a_candidate(store):
+    from coppermind.db.models import Note, SearchDocument, SearchUnreadable
+    from coppermind.store_protocol import CreateNote
+
+    created = await store.create_note(
+        CreateNote(
+            title="Goes unparsed",
+            folder="2026-09",
+            body="Body",
+            frontmatter={
+                "date": "2026-09-08",
+                "type": "reference",
+                "context": "internal",
+                "reviewed": True,
+            },
+        )
+    )
+    await filing.file_reviewed(store)
+    async with store.session_factory() as session:
+        path = (await session.get(Note, created.id)).path
+    (store.notes_root / path).unlink()
+    async with store.session_factory() as session, session.begin():
+        await session.execute(sa.delete(SearchDocument))
+    assert (await indexer.catch_up(store))["unreadable"] == 1
+    async with store.session_factory() as session:
+        assert await session.get(SearchUnreadable, ("note", created.id)) is not None
+    async with store.session_factory() as session, session.begin():
+        await session.execute(sa.update(Note).where(Note.id == created.id).values(state="unparsed"))
+    await indexer.catch_up(store)
+    async with store.session_factory() as session:
+        assert await session.get(SearchUnreadable, ("note", created.id)) is None
+    assert (await store.get_search_index_status()).known_unreadable == 0
