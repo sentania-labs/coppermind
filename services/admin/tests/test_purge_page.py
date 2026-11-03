@@ -278,3 +278,40 @@ def test_a_failed_page_load_is_not_reported_as_a_failed_save(signed_in, monkeypa
     assert "Retention settings could not be read." in response.text
     assert "could not be saved" not in response.text
     assert "interrupted purge" not in response.text
+
+
+def test_interrupted_purge_warning_only_where_removal_may_have_started(signed_in):
+    from coppermind.store_protocol import MetadataUnavailable, PurgeConflict, ValidationFailed
+
+    client, _ = signed_in
+    fake = PurgeStore()
+    client.app.state.store = fake
+    csrf = form_token(client, "/admin/purge")
+    body = {"csrf": csrf, "token": "a" * 64, "confirmation": "Purge listed items"}
+    warning = "An interrupted purge may have removed some items already"
+
+    def failing(error):
+        async def fail(payload=None):
+            raise error
+
+        return fail
+
+    fake.preview_purge = failing(NotesFilesystemUnavailable("notes"))  # type: ignore[method-assign]
+    preview = client.post("/v1/admin/purge/preview", data={"csrf": csrf})
+    assert preview.status_code == 503 and warning not in preview.text
+    assert "Reload retention purge" in preview.text
+
+    fake.abandon_purge = failing(NotesFilesystemUnavailable("notes"))  # type: ignore[attr-defined]
+    abandon = client.post("/v1/admin/purge/abandon", data={"csrf": csrf, "token": "a" * 64})
+    assert abandon.status_code == 503 and warning not in abandon.text
+
+    for refusal in (PurgeConflict(), ValidationFailed(["Run a new preview."])):
+        fake.confirm_purge = failing(refusal)  # type: ignore[method-assign]
+        refused = client.post("/v1/admin/purge/confirm", data=body)
+        assert refused.status_code in {409, 422} and warning not in refused.text
+
+    for error in (NotesFilesystemUnavailable("notes"), MetadataUnavailable("db")):
+        fake.confirm_purge = failing(error)  # type: ignore[method-assign]
+        failed = client.post("/v1/admin/purge/confirm", data=body)
+        assert failed.status_code == 503 and warning in failed.text
+        assert "Open retention purge" in failed.text

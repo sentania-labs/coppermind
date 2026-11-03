@@ -15,8 +15,10 @@ from coppermind.statefiles import RevisionConflict
 from coppermind.store_protocol import (
     NotesFilesystemUnavailable,
     ProblemInfo,
+    PurgeConflict,
     SourcesFilesystemUnavailable,
     StoreError,
+    ValidationFailed,
 )
 from coppermind_admin.pages.problems import store_client
 from coppermind_admin.pages.search_index import _zone, local_time
@@ -120,7 +122,9 @@ def router(wiring: Wiring) -> APIRouter:
             status_code=status,
         )
 
-    def failure(error: Exception, status: int = 503, message: str = "") -> HTMLResponse:
+    def failure(
+        error: Exception, status: int = 503, message: str = "", interrupted: bool = False
+    ) -> HTMLResponse:
         if message:
             return page(
                 f'<p class="error" role="alert">{escape(message)}</p>'
@@ -136,6 +140,8 @@ def router(wiring: Wiring) -> APIRouter:
             message = body["message"][:1].upper() + body["message"][1:]
         else:
             message = "Retention purge could not read or remove files. Try again."
+        if not interrupted:
+            return failure(error, status, message)
         return page(
             f'<p class="error" role="alert">{escape(message)}</p>'
             "<p>An interrupted purge may have removed some items already. "
@@ -388,7 +394,9 @@ What was and was not removed is reported in Problems, and you can start a new pr
                 422,
             )
         except StoreError as error:
-            return failure(error)
+            return failure(
+                error, interrupted=not isinstance(error, PurgeConflict | ValidationFailed)
+            )
 
     @routes.post("/v1/admin/purge/abandon", include_in_schema=False)
     async def abandon(request: Request) -> Response:
