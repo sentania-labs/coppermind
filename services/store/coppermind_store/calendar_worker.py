@@ -27,7 +27,7 @@ from coppermind_store.calendar_import import (
 
 
 def isolated_calendar(payload: dict[str, Any]) -> Any:
-    memory_mib = int(payload.get("memory_mib", 512))
+    memory_mib = int(payload.get("memory_mib", 1024))
     if not 128 <= memory_mib <= 2048:
         raise CalendarImportError("calendar memory budget must be between 128 and 2048 MiB")
     try:
@@ -58,7 +58,7 @@ def parse_bounded(
     limit: int = MAX_UPLOAD,
     *,
     max_events: int = 50000,
-    memory_mib: int = 512,
+    memory_mib: int = 1024,
 ) -> list[CalendarEvent]:
     from coppermind_store.calendar_import import check_import_budget
 
@@ -206,7 +206,7 @@ def _identify(payload: dict[str, Any]) -> list[dict[str, str]]:
         data,
         MAX_UPLOAD,
         int(payload.get("max_events", 50000)),
-        int(payload.get("memory_mib", 512)),
+        int(payload.get("memory_mib", 1024)),
     )
     output = []
     # One parse per calendar serves both validation and the identity fields, so the whole
@@ -246,7 +246,7 @@ def _identify(payload: dict[str, Any]) -> list[dict[str, str]]:
 
 def main() -> None:
     # Enforce the budget before reading JSON/base64 input, not after allocating it.
-    memory_mib = int(sys.argv[1]) if len(sys.argv) > 1 else 512
+    memory_mib = int(sys.argv[1]) if len(sys.argv) > 1 else 1024
     memory_bytes = memory_mib * 1024**2
     resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
     resource.setrlimit(resource.RLIMIT_CPU, (45, 45))

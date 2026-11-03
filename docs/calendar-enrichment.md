@@ -20,8 +20,10 @@ it does not delete the dropped files and does not call a model. Markdown in a
 configured drop folder is excluded from adoption. Files already carrying a
 known note identity continue to follow the ordinary identity reconciliation rule.
 
-Limits are 10 MiB per upload, 40 MiB expanded ZIP, 100 ZIP entries, 50,000 event
-records per export, and 1,000 input files per drop folder. Encrypted archives,
+Limits are 10 MiB per upload, 100 ZIP entries, 50,000 event records per export,
+and 1,000 input files per drop folder. The expanded size of an export is bounded
+by `limits.calendar_import_memory_mib` (see the sizing table below), never above
+a 40 MiB zip-bomb guard. Encrypted archives,
 symlinks, nested archives, unsafe paths, and unsupported calendar component
 types are refused. Parsing and recurrence lookup have process memory and CPU
 limits. A failed import leaves the previous calendar intact and retains its
@@ -197,14 +199,30 @@ mirror commit is repaired from the catalog before the next query. Standalone
 archive consumers without a PostgreSQL URL use a local, rebuildable SQLite mirror;
 the deployed store always uses PostgreSQL.
 
-Start with a **1 GiB store limit** for the default **512 MiB import parser budget**.
-Reserve the remainder for the store, bounded request pages, JSON handoff buffers
-and allocator overhead. PostgreSQL has its own memory allocation outside the
-store container. Raising `limits.calendar_import_memory_mib` requires raising the
-store limit as well; allow at least the parser ceiling plus 512 MiB. Event count
-alone is not an import sizing formula: descriptions, attendees, timezone
-components and recurrence overrides change parsing cost. Exports exceeding the
-memory or event budget fail visibly without replacing the accepted calendar.
+Size the store for the **1024 MiB import parser budget** (the default) with a
+**2 GiB store limit**. The parser runs in a subprocess under that address-space
+cap; reserve at least another 512 MiB for the store, bounded request pages, JSON
+handoff buffers and allocator overhead. PostgreSQL has its own memory allocation
+outside the store container. Raising `limits.calendar_import_memory_mib` requires
+raising the store limit as well.
+
+Parser memory is about **30 bytes per expanded export byte, plus 4 KiB per
+event**. The import preflight uses exactly that estimate, so it refuses what the
+parser's memory cap would refuse, before parsing starts. The refusal names the
+setting, the budget the export needs and the expanded size the current budget
+fits. Event count alone is not an import sizing formula: descriptions,
+attendees, timezone components and recurrence overrides change parsing cost.
+Exports exceeding the memory or event budget fail visibly without replacing the
+accepted calendar.
+
+| Expanded export | Events | Required `calendar_import_memory_mib` |
+| ---: | ---: | ---: |
+| 5 MiB | 1,000 | 160 |
+| 14 MiB (owner-scale, 4,499 events) | 4,499 | 440 |
+| 32 MiB | 10,000 | 1,000 |
+| 40 MiB | 15,000 | 1,260 (about 1.25 GiB) |
+
+Round up when setting it; the maximum is 2048.
 
 ### Measured calendar workload
 

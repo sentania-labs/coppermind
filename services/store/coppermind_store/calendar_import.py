@@ -20,6 +20,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 MAX_UPLOAD = 10 * 1024 * 1024
 MAX_EXPANDED = 40 * 1024 * 1024
+MEMORY_PER_BYTE = 30
+MEMORY_PER_EVENT = 4096
 # A re-serialized calendar is larger than the archive entry it came from: ``to_ical``
 # re-folds long properties, adding a continuation pair per 75 columns (measured 2.3% on a
 # 38 MiB single calendar). The bytes handed to the archive are that output, so they are
@@ -289,10 +291,10 @@ def check_import_budget(
     max_events: int,
     memory_mib: int,
 ) -> None:
-    """Reject expensive exports before constructing icalendar's object graph.
+    """Reject exports the parser subprocess could not hold under its address-space limit.
 
-    The conservative estimate is a preflight guard, not an RSS promise; the
-    subprocess address-space limit is the hard backstop for complex properties.
+    The estimate uses the measured peak of about 30 bytes of parser memory per
+    expanded byte plus a per-event term, so it agrees with the RLIMIT_AS backstop.
     """
     size = 0
     count = 0
@@ -303,8 +305,15 @@ def check_import_budget(
             raise CalendarImportError(
                 f"calendar event budget exceeded: limits.calendar_max_events={max_events}"
             )
-        if size * 16 + count * 4096 > memory_mib * 1024**2:
-            raise CalendarImportError(
-                "calendar import exceeds estimated memory budget: "
-                f"limits.calendar_import_memory_mib={memory_mib}"
-            )
+    needed = size * MEMORY_PER_BYTE + count * MEMORY_PER_EVENT
+    if needed > memory_mib * 1024**2:
+        needed_mib = -(-needed // 1024**2)
+        fits_mib = (
+            max(0, (memory_mib * 1024**2 - count * MEMORY_PER_EVENT) // MEMORY_PER_BYTE) // 1024**2
+        )
+        raise CalendarImportError(
+            f"calendar import needs about {needed_mib} MiB of parser memory; "
+            f"limits.calendar_import_memory_mib={memory_mib} fits about {fits_mib} MiB of "
+            f"expanded calendar data. Raise the setting to at least {needed_mib} "
+            "or split the export"
+        )
