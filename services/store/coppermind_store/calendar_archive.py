@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import shutil
 import tempfile
@@ -38,6 +39,8 @@ from coppermind_store.calendar_import import (
     merge_events,
 )
 from coppermind_store.calendar_worker import parse_bounded
+
+log = logging.getLogger(__name__)
 
 
 class ImportReceipt(BaseModel):
@@ -349,17 +352,26 @@ class CalendarArchive:
                 self._save_receipt(receipt)
                 if receipt.id not in old.imports:
                     continue
-                original = (self.root / "imports" / receipt.id / "original").read_bytes()
-                if hashlib.sha256(original).hexdigest() != receipt.content_hash:
-                    raise CalendarImportError("archived original failed its integrity check")
-                for event in parse_bounded(
-                    receipt.calendar_id,
-                    receipt.filename,
-                    original,
-                    receipt.limit,
-                    max_events=limits.calendar_max_events,
-                    memory_mib=limits.calendar_import_memory_mib,
-                ):
+                try:
+                    original = (self.root / "imports" / receipt.id / "original").read_bytes()
+                    if hashlib.sha256(original).hexdigest() != receipt.content_hash:
+                        raise CalendarImportError("archived original failed its integrity check")
+                    parsed = parse_bounded(
+                        receipt.calendar_id,
+                        receipt.filename,
+                        original,
+                        receipt.limit,
+                        max_events=limits.calendar_max_events,
+                        memory_mib=limits.calendar_import_memory_mib,
+                    )
+                except (CalendarImportError, OSError) as exc:
+                    log.warning(
+                        "Calendar migration kept existing provenance for import %s: %s",
+                        receipt.id,
+                        exc,
+                    )
+                    continue
+                for event in parsed:
                     witnesses.setdefault(event.identity, []).extend(
                         EventProvenance(
                             source_id=receipt.id,

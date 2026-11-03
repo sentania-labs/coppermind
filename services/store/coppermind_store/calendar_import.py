@@ -281,39 +281,42 @@ def parse_export(
     return list(events.values())
 
 
+def merge_event_into(merged: dict[str, CalendarEvent], event: CalendarEvent) -> None:
+    """Merge one event in place; an equal-version conflict raises before any change."""
+    previous = merged.get(event.identity)
+    if previous is None:
+        merged[event.identity] = event
+        return
+    if event.revision == previous.revision and event.semantic_hash != previous.semantic_hash:
+        raise CalendarImportError(
+            f'Event "{event.title or event.uid}" ({event.start or "date unknown"}, '
+            f"UID {event.uid}, entry {event.source_entry}) conflicts with stored event "
+            f'"{previous.title or previous.uid}". Incoming revision: SEQUENCE '
+            f"{event.sequence}, LAST-MODIFIED {event.modified or 'not supplied'}; "
+            f"stored revision: SEQUENCE {previous.sequence}, LAST-MODIFIED "
+            f"{previous.modified or 'not supplied'}. The revisions match but the "
+            "contents differ. Correct the event in its source calendar and export it "
+            "again, or dismiss this receipt."
+        )
+    winner = event if event.revision > previous.revision else previous
+    witnesses = list(previous.provenance)
+    for witness in event.provenance:
+        if witness not in witnesses:
+            witnesses.append(witness)
+    merged[event.identity] = winner.model_copy(
+        update={
+            "provenance": sorted(witnesses, key=lambda p: (p.imported_at, p.source_id, p.entry)),
+        }
+    )
+
+
 def merge_events(
     current: dict[str, CalendarEvent], incoming: list[CalendarEvent]
 ) -> dict[str, CalendarEvent]:
     """A partial export never removes absent records; equal-version conflicts fail."""
     merged = dict(current)
     for event in incoming:
-        previous = merged.get(event.identity)
-        if previous is None:
-            merged[event.identity] = event
-            continue
-        if event.revision == previous.revision and event.semantic_hash != previous.semantic_hash:
-            raise CalendarImportError(
-                f'Event "{event.title or event.uid}" ({event.start or "date unknown"}, '
-                f"UID {event.uid}, entry {event.source_entry}) conflicts with stored event "
-                f'"{previous.title or previous.uid}". Incoming revision: SEQUENCE '
-                f"{event.sequence}, LAST-MODIFIED {event.modified or 'not supplied'}; "
-                f"stored revision: SEQUENCE {previous.sequence}, LAST-MODIFIED "
-                f"{previous.modified or 'not supplied'}. The revisions match but the "
-                "contents differ. Correct the event in its source calendar and export it "
-                "again, or dismiss this receipt."
-            )
-        winner = event if event.revision > previous.revision else previous
-        witnesses = list(previous.provenance)
-        for witness in event.provenance:
-            if witness not in witnesses:
-                witnesses.append(witness)
-        merged[event.identity] = winner.model_copy(
-            update={
-                "provenance": sorted(
-                    witnesses, key=lambda p: (p.imported_at, p.source_id, p.entry)
-                ),
-            }
-        )
+        merge_event_into(merged, event)
     return merged
 
 

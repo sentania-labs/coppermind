@@ -228,7 +228,9 @@ class Dropbox:
                     continue
                 count += 1
                 if count > 1000:
-                    raise ValueError("Dropbox exceeds 1000 files")
+                    if count == 1001:
+                        log.info("Dropbox fail folder: more than 1000 files; extras not scanned")
+                    continue
                 info = path.lstat()
                 if not stat.S_ISREG(info.st_mode):
                     continue
@@ -247,22 +249,30 @@ class Dropbox:
                     continue
                 async with self.context.lock:
                     records = self.records()
+                    error = ""
                     if info.st_size > MAX_UPLOAD:
+                        error = "File exceeds 200 MB. Original remains in Dropbox."
+                    else:
+                        try:
+                            data = await asyncio.to_thread(self.read_stable, path, signature)
+                            if data is None:
+                                continue
+                            await asyncio.to_thread(self.submit, name, data)
+                            records = self.records()
+                        except ValueError as exc:
+                            error = str(exc)
+                        except OSError as exc:
+                            error = f"File could not be read: {exc.strerror or 'I/O error'}"
+                    if error:
                         identity = hashlib.sha256(f"{key}:{signature}".encode()).hexdigest()
                         records["items"][identity] = {
                             "id": identity,
                             "filename": name,
                             "state": "failed",
                             "parts": [],
-                            "error": "File exceeds 200 MB. Original remains in Dropbox.",
+                            "error": error,
                         }
-                        log.info("Dropbox fail file: intake byte limit exceeded")
-                    else:
-                        data = await asyncio.to_thread(self.read_stable, path, signature)
-                        if data is None:
-                            continue
-                        await asyncio.to_thread(self.submit, name, data)
-                        records = self.records()
+                        log.info("Dropbox fail file: intake rejected")
                     records["observations"][key] = list(signature)
                     self.save(records)
         async with self.context.lock:

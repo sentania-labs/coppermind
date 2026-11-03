@@ -341,6 +341,24 @@ def test_legacy_calendars_merge_once_preserving_provenance_and_backup(tmp_path):
     assert (store.context.archive.root / "catalog.json").read_bytes() == before
 
 
+def test_migration_survives_unparseable_original_and_keeps_legacy_provenance(tmp_path):
+    store = local_store(tmp_path)
+    old = legacy_archive(store)
+    receipt = store.context.archive.receipts()[0]
+    (store.context.archive.root / "imports" / receipt.id / "original").write_bytes(b"corrupt")
+    store.context = ContextService(store)
+    catalog = store.context.archive.catalog()
+    assert (
+        json.loads((store.context.archive.root / "catalog.json").read_bytes())["schema_version"]
+        == 2
+    )
+    assert len(catalog.events) == 1
+    event = next(iter(catalog.events.values()))
+    assert {p.legacy_calendar for p in event.provenance} <= {"Old work", "personal"}
+    assert event.provenance
+    assert all(catalog.aliases[key] == event.identity for key in old.events)
+
+
 def test_migration_retains_conflicting_legacy_version_and_unrelated_events(tmp_path):
     store = local_store(tmp_path)
     old = legacy_archive(store)
@@ -510,3 +528,25 @@ def test_migration_drops_superseded_conflicts_and_allows_acknowledgement(tmp_pat
     archive.dismiss_conflict(conflict.identity, conflict.semantic_hash)
     assert archive.catalog().conflicts == []
     assert dict(archive.catalog().events.items()) == before
+
+
+async def test_unreadable_names_fail_visibly_without_blocking_other_intake(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    (root / "a\tb.ics").write_bytes(calendar())
+    (root / "good.ics").write_bytes(calendar(event="event-2"))
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    dropbox = store.context.dropbox
+    await dropbox.scan()
+    clock[0] = 31
+    await dropbox.scan()
+    await dropbox.scan()
+    await finish(store)
+    states = {item["filename"]: item for item in dropbox.snapshot()["items"]}
+    assert states["a\tb.ics"]["state"] == "failed"
+    assert "invalid filename" in states["a\tb.ics"]["error"]
+    assert states["good.ics"]["state"] == "succeeded"
+    await dropbox.dismiss({"id": states["a\tb.ics"]["id"]})
+    assert "a\tb.ics" not in {item["filename"] for item in dropbox.snapshot()["items"]}
