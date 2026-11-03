@@ -241,7 +241,7 @@ async def test_partial_failure_receipt_problem_and_retry_after_restart(store, mo
     assert not any(p.kind == "purge" for p in await restarted.get_problems())
 
 
-async def test_confirm_failing_before_removal_is_not_a_purge_problem(store, monkeypatch):
+async def test_confirm_failing_before_removal_says_to_preview_again(store, monkeypatch):
     retention(store, 0)
     ingested = await orphan(store)
     preview = await store.preview_purge()
@@ -260,6 +260,13 @@ async def test_confirm_failing_before_removal_is_not_a_purge_problem(store, monk
     assert len(calls) > 1
     assert purge.read(store, preview.token)["state"] == "preview"
     assert (store.sources_root / ingested.source.id).exists()
+    problems = [p for p in await store.get_problems() if p.kind == "purge"]
+    assert [p.reference for p in problems] == [preview.token]
+    assert "new preview" in problems[0].reason
+    assert "abandon" not in problems[0].reason
+    monkeypatch.setattr(purge, "disk_references", real)
+    fresh = await store.preview_purge()
+    assert fresh.token != preview.token
     assert not [p for p in await store.get_problems() if p.kind == "purge"]
 
 

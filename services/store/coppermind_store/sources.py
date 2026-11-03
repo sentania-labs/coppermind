@@ -1371,8 +1371,9 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
     )
 
     try:
-        purge_records = records(store)
-        abandoned = records(store, "abandoned")
+        purge_records, abandoned, unreadable_tokens = await asyncio.to_thread(
+            lambda: (records(store), records(store, "abandoned"), unreadable(store))
+        )
         problems.extend(
             ProblemInfo(
                 kind="purge_receipt",
@@ -1382,7 +1383,7 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     "to move the file into quarantine."
                 ),
             )
-            for token in unreadable(store)
+            for token in unreadable_tokens
         )
     except OSError:
         purge_records = abandoned = []
@@ -1405,9 +1406,24 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     ),
                 )
             )
+        elif receipt["state"] == "preview" and receipt.get("error"):
+            problems.append(
+                ProblemInfo(
+                    kind="purge",
+                    reference=receipt["token"],
+                    reason=(
+                        "Retention purge failed before anything was removed. "
+                        "Run a new preview from Retention purge."
+                    ),
+                )
+            )
     for receipt in abandoned:
+        held = set(receipt.get("remaining", []))
         try:
-            _, remaining = await outcome(store, receipt)
+            _, remaining = await outcome(
+                store,
+                {**receipt, "items": [i for i in receipt["items"] if i["candidate"]["id"] in held]},
+            )
         except (SQLAlchemyError, OSError) as exc:
             raise MetadataUnavailable(str(exc)) from exc
         if remaining:
