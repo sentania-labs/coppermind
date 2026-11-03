@@ -297,7 +297,7 @@ class LimitSettings(BaseModel):
         ge=128,
         le=2048,
         description=(
-            "Calendar parser address-space ceiling in MiB; about 30x the expanded export "
+            "Calendar parser address-space ceiling in MiB; about 40x the expanded export "
             "size. Size the store above this."
         ),
     )

@@ -20,8 +20,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 MAX_UPLOAD = 10 * 1024 * 1024
 MAX_EXPANDED = 40 * 1024 * 1024
-MEMORY_PER_BYTE = 30
-MEMORY_PER_EVENT = 4096
+MEMORY_PER_BYTE = 40
+MEMORY_PER_EVENT = 5461
 # A re-serialized calendar is larger than the archive entry it came from: ``to_ical``
 # re-folds long properties, adding a continuation pair per 75 columns (measured 2.3% on a
 # 38 MiB single calendar). The bytes handed to the archive are that output, so they are
@@ -294,7 +294,8 @@ def check_import_budget(
     """Reject exports the parser subprocess could not hold under its address-space limit.
 
     The estimate uses the measured peak of about 30 bytes of parser memory per
-    expanded byte plus a per-event term, so it agrees with the RLIMIT_AS backstop.
+    expanded byte, with a third of headroom (40 bytes per byte plus a per-event
+    term), so it refuses what the RLIMIT_AS backstop would refuse.
     """
     size = 0
     count = 0

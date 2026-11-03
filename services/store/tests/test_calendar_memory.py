@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 from coppermind_store.calendar_archive import CalendarArchive
-from coppermind_store.calendar_import import CalendarImportError, check_import_budget
+from coppermind_store.calendar_import import (
+    MEMORY_PER_BYTE,
+    MEMORY_PER_EVENT,
+    CalendarImportError,
+    check_import_budget,
+)
 from coppermind_store.calendar_worker import parse_bounded
 
 from coppermind.settings import LimitSettings
@@ -77,8 +82,9 @@ def test_preflight_rejects_estimated_memory_budget():
     data = ics(event() + "\r\nDESCRIPTION:" + "x" * (5 * 1024**2))
     with pytest.raises(CalendarImportError, match="calendar_import_memory_mib=128") as raised:
         check_import_budget("large.ics", data, len(data), 50000, 128)
-    assert "needs about 151 MiB" in str(raised.value)
-    assert "Raise the setting to at least 151" in str(raised.value)
+    needed_mib = -(-(len(data) * MEMORY_PER_BYTE + MEMORY_PER_EVENT) // 1024**2)
+    assert f"needs about {needed_mib} MiB" in str(raised.value)
+    assert f"Raise the setting to at least {needed_mib}" in str(raised.value)
 
 
 def _worker(data: bytes, cap_mib: int, budget_mib: int) -> subprocess.CompletedProcess:
@@ -104,7 +110,8 @@ def test_preflight_estimate_is_enough_for_the_real_address_space_cap():
     )
     body = "DESCRIPTION:" + "meeting notes " * 100
     data = ics(*(event(str(i)) + "\r\n" + attendees + "\r\n" + body for i in range(1500)))
-    needed = len(data) * 30 + 1500 * 4096
+    # The parser measures near 30 bytes per byte here; the estimate is 40, a third of headroom.
+    needed = len(data) * MEMORY_PER_BYTE + 1500 * MEMORY_PER_EVENT
     estimate_mib = -(-needed // 1024**2)
     check_import_budget("big.ics", data, len(data), 50000, estimate_mib)
 
@@ -112,7 +119,7 @@ def test_preflight_estimate_is_enough_for_the_real_address_space_cap():
     assert within.returncode == 0
     assert len(json.loads(within.stdout)["result"]["events"]) == 1500
 
-    undersized = max(128, estimate_mib // 8)
+    undersized = estimate_mib // 2
     with pytest.raises(CalendarImportError, match="calendar_import_memory_mib"):
         check_import_budget("big.ics", data, len(data), 50000, undersized)
     refused = _worker(data, undersized, estimate_mib)
