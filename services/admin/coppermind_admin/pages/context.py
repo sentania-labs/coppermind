@@ -88,6 +88,37 @@ def _proposal_value(value: Any) -> str:
     return _hidden("value_kind", "unchanged")
 
 
+def _calendar_time(value: str) -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from coppermind_admin.pages.search_index import local_time
+
+    if not value:
+        return "Date not recorded"
+    stamp = datetime.fromisoformat(value)
+    if "T" not in value:
+        return stamp.strftime("%B %d, %Y")
+    if stamp.tzinfo:
+        return local_time(stamp, ZoneInfo("America/Chicago"))
+    return stamp.strftime("%b %d, %Y %I:%M %p") + " (floating)"
+
+
+def _event_count(count: int) -> str:
+    return f"{count} event" + ("" if count == 1 else "s")
+
+
+def _address(value: str) -> str:
+    return value[7:] if value.lower().startswith("mailto:") else value
+
+
+def _contact_label(contact: dict[str, Any], corrections: dict[str, Any]) -> str:
+    return corrections.get(contact["id"], {}).get("name") or next(
+        (item["name"] or _address(item["address"]) for item in contact["evidence"]),
+        "Unnamed contact",
+    )
+
+
 def router(wiring: Wiring) -> APIRouter:
     routes = APIRouter()
 
@@ -126,7 +157,7 @@ def router(wiring: Wiring) -> APIRouter:
         config = data["config"]
         revision = config["revision"]
         head = """<h1>Calendar and enrichment</h1><p class="section-links">
-<a href="/admin/context?tab=calendar">Calendars and contacts</a>
+<a href="/admin/context?tab=calendar">Calendar and contacts</a>
 <a href="/admin/context?tab=models">Connections and model</a>
 <a href="/admin/context?tab=review">Suggestions and backlog</a></p>"""
         if request.query_params.get("saved"):
@@ -137,92 +168,140 @@ def router(wiring: Wiring) -> APIRouter:
             head += '<p class="notice">' + e(problem) + "</p>"
         if tab == "calendar":
             body = (
-                "<p>Drop ICS or ZIP files into a configured Obsidian folder. "
-                "Originals are retained. "
+                "<p>All exports merge into your one calendar. Add ICS or ZIP files to the "
+                '<a href="/admin/workflow?tab=intake">Dropbox folder in your vault</a>. '
+                "Originals are retained; importing does not send calendar data to a model.</p>"
+                "<h2>Import history</h2><p>200 MB per upload; 41.94 MB expanded ZIP; "
+                "100 archive entries. Files must stay unchanged for 30 seconds.</p>"
             )
-            body += "Importing does not send calendar data to a model.</p><h2>Calendar sources</h2>"
-            for source in config["sources"]:
-                fields = _hidden("id", source["id"])
-                fields += _input("name", "Name", source["name"])
-                fields += _input("folder", "Vault drop folder", source["folder"])
-                fields += _input("timezone", "Calendar timezone", source["timezone"])
-                fields += _check("enabled", "Watch this folder", source["enabled"])
-                body += "<fieldset><legend>" + e(source["id"]) + "</legend>"
+            imports = data["calendar"]["imports"]
+            if not imports:
                 body += (
-                    "<p>"
-                    + e(data["watch_status"].get(source["id"], "Waiting for first scan"))
-                    + "</p>"
+                    '<p class="notice">No import history on this page. '
+                    "Add an ICS or ZIP to the Dropbox folder in your vault to begin.</p>"
                 )
-                body += (
-                    _form("save-source", fields, "Save source", revision=revision) + "</fieldset>"
-                )
-            fields = _input("id", "New calendar ID (lowercase letters, numbers, hyphens)")
-            fields += _input("name", "Calendar name")
-            fields += _input("folder", "Vault drop folder", "_Calendar/Work")
-            fields += _input("timezone", "Timezone", "America/Chicago")
-            fields += _check("enabled", "Watch this folder", True)
-            body += "<details><summary>Add calendar</summary>"
-            body += _form("save-source", fields, "Add calendar", revision=revision) + "</details>"
-            body += "<h2>Imports</h2><p>10 MiB upload; 40 MiB expanded ZIP; 100 archive entries. "
-            body += (
-                "Files must stay unchanged for 30 seconds. Non-ICS ZIP entries are rejected.</p>"
-            )
-            body += "<table><tr><th>File</th><th>Result</th><th>Action</th></tr>"
-            for receipt in data["calendar"]["imports"]:
-                body += "<tr><td>" + e(receipt["filename"]) + "</td><td>"
-                body += e(receipt["state"]) + ": " + e(receipt["error"]) + "</td><td>"
-                if receipt["state"] == "failed":
-                    body += _form("retry-import", _hidden("id", receipt["id"]), "Retry import")
+            else:
+                body += "<table><tr><th>File</th><th>Result</th><th>Action</th></tr>"
+            for receipt in imports:
+                state = receipt["state"]
+                label = {
+                    "succeeded": "Imported (" + _event_count(receipt.get("event_count", 0)) + ")",
+                    "failed": "Import failed",
+                    "pending": "Waiting to import",
+                }[state]
+                if state == "failed" and receipt.get("dismissed"):
+                    label += " (dismissed)"
+                body += "<tr><td>" + e(receipt["filename"]) + "</td><td>" + e(label)
+                if receipt.get("error"):
+                    body += ": " + e(receipt["error"])
+                body += "</td><td>"
+                if state == "failed" and not receipt.get("dismissed"):
+                    body += _form("dismiss-import", _hidden("id", receipt["id"]), "Dismiss failure")
+                    if not receipt.get("retryable"):
+                        body += (
+                            "<p>Correct the export in its source calendar and drop it again.</p>"
+                        )
                 body += "</td></tr>"
-            body += (
-                "</table><h2>Events</h2><table><tr><th>Event</th><th>Date</th><th>State</th></tr>"
-            )
-            from datetime import datetime
-            from zoneinfo import ZoneInfo
-
-            from coppermind_admin.pages.search_index import local_time
-
-            zone = ZoneInfo("America/Chicago")
-            for event in data["events"]:
-                start = event["start"]
-                if "T" in start:
-                    stamp = datetime.fromisoformat(start)
-                    start = (
-                        local_time(stamp, zone)
-                        if stamp.tzinfo
-                        else stamp.strftime("%b %d, %Y %I:%M %p") + " (floating)"
-                    )
+            if imports:
+                body += "</table>"
+            for conflict in data["calendar"].get("conflicts", []):
                 body += (
-                    f"<tr><td>{e(event['title'])}<br><small>{e(event['calendar_id'])}</small></td>"
+                    "<section><h2>Legacy calendar conflict</h2><p>"
+                    + e(
+                        (conflict["title"] or "Untitled event")
+                        + " · "
+                        + _calendar_time(conflict["start"])
+                        + " · UID "
+                        + conflict["uid"]
+                        + " · "
+                        + conflict["source_entry"]
+                        + f" · Incoming revision: SEQUENCE {conflict['sequence']}, "
+                        + f"LAST-MODIFIED {conflict['modified'] or 'not supplied'}"
+                        + f" · Stored event: {conflict['stored_title']}, "
+                        + f"SEQUENCE {conflict['stored_sequence']}, "
+                        + f"LAST-MODIFIED {conflict['stored_modified'] or 'not supplied'}"
+                    )
+                    + "</p><p>Legacy exports disagree. The current event and original exports "
+                    "are retained. Dismiss acknowledges this conflict.</p>"
                 )
+                body += (
+                    _form(
+                        "dismiss-calendar-conflict",
+                        _hidden("id", conflict["id"]) + _hidden("version", conflict["version"]),
+                        "Dismiss conflict",
+                    )
+                    + "</section>"
+                )
+            body += "<h2>Events</h2>"
+            if data["events"]:
+                body += "<table><tr><th>Event</th><th>Date</th><th>State</th></tr>"
+            else:
+                body += (
+                    '<p class="notice">No calendar events on this page. '
+                    "Imported events will appear here.</p>"
+                )
+            for event in data["events"]:
+                body += "<tr><td>" + e(event["title"] or "Untitled event")
+                people = event.get("people", [])
+                if people:
+                    body += "<ul>"
+                    for person in people:
+                        address = _address(person["address"])
+                        label = person.get("name") or address
+                        if person.get("name") and address:
+                            label += " (" + address + ")"
+                        role = "Organizer" if person["role"] == "organizer" else "Invitee"
+                        body += "<li>" + e(role + ": " + label) + "</li>"
+                    body += "</ul>"
+                else:
+                    body += "<p>No organizer or invitees recorded.</p>"
+                body += "<details><summary>Export provenance</summary><ul>"
+                for witness in event.get("provenance", []):
+                    parts = [witness["filename"]]
+                    if witness["entry"] and witness["entry"] != witness["filename"]:
+                        parts.append(witness["entry"])
+                    if witness["imported_at"]:
+                        parts.append(_calendar_time(witness["imported_at"]))
+                    if witness.get("legacy_calendar"):
+                        parts.append("Previous calendar: " + witness["legacy_calendar"])
+                    body += "<li>" + e(" · ".join(parts)) + "</li>"
+                body += "</ul></details></td>"
                 status = "Cancelled" if event["cancelled"] else "Recorded"
-                body += f"<td>{e(start)}</td><td>{status}</td></tr>"
-            body += "</table><h2>Contacts</h2><p>Calendar invitees are not confirmed attendees. "
+                body += "<td>" + e(_calendar_time(event["start"])) + f"</td><td>{status}</td></tr>"
+            if data["events"]:
+                body += "</table>"
             body += (
+                "<h2>Contacts</h2><p>Calendar invitees are not confirmed attendees. "
                 "Matching email addresses share an identity; names alone do not merge contacts.</p>"
             )
+            if not data["contacts"]:
+                body += (
+                    '<p class="notice">No calendar contacts on this page. '
+                    "Contacts come from organizers and invitees in your exports.</p>"
+                )
+            event_lookup = {ev.get("id"): ev for ev in data["events"]}
             for contact in data["contacts"]:
                 correction = data["contact_corrections"].get(contact["id"], {})
                 evidence = contact["evidence"]
-                title = correction.get("name") or next(
-                    (item["name"] for item in evidence if item["name"]), contact["id"]
-                )
-                body += "<details><summary>" + e(title) + "</summary>"
                 body += (
-                    "<p>" + e(", ".join(sorted({item["address"] for item in evidence}))) + "</p>"
+                    "<details><summary>"
+                    + e(_contact_label(contact, data["contact_corrections"]))
+                    + "</summary>"
                 )
                 body += (
-                    "<ul>"
-                    + "".join(
-                        "<li>"
-                        + e(item["role"] + ": " + item["participation"])
-                        + " <code>"
-                        + e(item["event_id"])
-                        + "</code></li>"
-                        for item in evidence
+                    "<p>"
+                    + e(", ".join(sorted({_address(item["address"]) for item in evidence})))
+                    + "</p><ul>"
+                )
+                for item in evidence:
+                    event = event_lookup.get(item["event_id"], {})
+                    title = item.get("event_title") or event.get("title") or "Untitled event"
+                    start = item.get("event_start") or event.get("start", "")
+                    role = "Organizer" if item["role"] == "organizer" else "Invitee"
+                    body += (
+                        "<li>" + e(role + ": " + title + " · " + _calendar_time(start)) + "</li>"
                     )
-                    + "</ul>"
-                )
+                body += "</ul>"
                 total = contact.get("evidence_count", len(evidence))
                 if total > len(evidence):
                     body += f"<p>Showing {len(evidence)} of {total} retained evidence records.</p>"
@@ -233,20 +312,27 @@ def router(wiring: Wiring) -> APIRouter:
                 ]
                 body += (
                     "<p>Approved notes: "
-                    + ", ".join(
-                        f'<a href="/admin/notes/{quote(identity, safe="")}">{e(identity)}</a>'
-                        for identity in linked
+                    + (
+                        ", ".join(
+                            f'<a href="/admin/notes/{quote(identity, safe="")}">{e(identity)}</a>'
+                            for identity in linked
+                        )
+                        or "None"
                     )
                     + "</p>"
                 )
                 fields = _hidden("id", contact["id"]) + _input(
                     "name", "Corrected name", correction.get("name", "")
                 )
-                fields += _input(
-                    "same_as",
-                    "Same person as contact ID (blank clears alias)",
-                    correction.get("same_as", ""),
-                )
+                choices = [("", "No linked contact")] + [
+                    (other["id"], _contact_label(other, data["contact_corrections"]))
+                    for other in data["contacts"]
+                    if other["id"] != contact["id"]
+                ]
+                alias = correction.get("same_as", "")
+                if alias and alias not in {value for value, _ in choices}:
+                    choices.append((alias, "Previously linked contact"))
+                fields += _select("same_as", "Same person as", choices, alias)
                 fields += _hidden("confirmation", "Save contact correction")
                 body += _form("correct-contact", fields, "Save contact correction") + "</details>"
         elif tab == "models":
@@ -646,13 +732,8 @@ picker.addEventListener('change', () => {
         try:
             payload: dict[str, Any] = {key: value for key, value in form.items() if key != "csrf"}
             payload["revision"] = int(form.get("revision", "0"))
-            if action in {"setup-lifecycle", "identify-drop", "configure-property"}:
+            if action in {"setup-lifecycle", "dismiss-drop", "configure-property"}:
                 pass
-            elif action == "save-source":
-                payload["source"] = {
-                    key: form.get(key, "") for key in ("id", "name", "folder", "timezone")
-                }
-                payload["source"]["enabled"] = "enabled" in form
             elif action == "save-connection":
                 payload["connection"] = {
                     key: form.get(key, "") for key in ("id", "name", "provider", "base_url")
@@ -707,14 +788,15 @@ picker.addEventListener('change', () => {
             allowed = {
                 "setup-lifecycle",
                 "configure-property",
-                "identify-drop",
-                "save-source",
+                "dismiss-drop",
                 "save-connection",
                 "convert-connection",
                 "discover",
                 "test-model",
                 "save-assignment",
                 "retry-import",
+                "dismiss-import",
+                "dismiss-calendar-conflict",
                 "enqueue",
                 "retry-job",
                 "reject",
@@ -726,12 +808,19 @@ picker.addEventListener('change', () => {
             }
             if action not in allowed:
                 raise ValueError("unknown action")
-            await client(request).context_action(action, payload)
+            result = await client(request).context_action(action, payload)
+            if action == "retry-import" and result.get("state") == "failed":
+                return error(
+                    ValueError(
+                        result.get("error")
+                        or "The import still failed. Correct the export and drop it again."
+                    )
+                )
         except (StoreError, ValueError, KeyError) as exc:
             return error(exc)
         if action == "configure-property":
             return RedirectResponse("/admin/workflow?tab=enrichment&saved=1", status_code=303)
-        if action in {"setup-lifecycle", "identify-drop"}:
+        if action in {"setup-lifecycle", "dismiss-drop"}:
             return RedirectResponse("/admin/workflow?tab=intake&saved=1", status_code=303)
         tab = (
             "models"

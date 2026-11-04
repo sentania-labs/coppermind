@@ -79,14 +79,10 @@ async def test_direct_review_with_missing_meeting_time_blocks_filing(store):
     assert (await store.get_note(note.id)).path.startswith("Review/")
 
 
-async def test_dropbox_unknown_identity_preserves_and_requires_choice(store):
+async def test_dropbox_exchange_export_imports_without_choice(store):
     from services.store.tests.test_dropbox import calendar
 
     item = store.context.dropbox.submit("export.ics", calendar())
-    await store.context.dropbox.process()
-    assert store.context.dropbox.records()["items"][item["id"]]["state"] == "needs_identity"
-    assert store.context.archive.receipts() == []
-    await store.context.identify_drop({"id": item["id"], "part": 0, "name": "Family"})
     await store.context.dropbox.process()
     receipt = store.context.archive.receipts()[0]
     assert store.context.archive.process(receipt.id).state == "succeeded"
@@ -263,27 +259,17 @@ async def test_selected_suggestion_and_review_are_one_resumable_action(store):
     assert final.frontmatter["reviewed"] is True
 
 
-async def test_dropbox_binds_existing_calendar_before_import_and_remembers_uid(store):
-    from coppermind.context_config import CalendarSource
+async def test_calendar_conflicts_surface_in_problems(store):
     from services.store.tests.test_dropbox import calendar
 
-    config = store.context.config()
-    config.sources = [CalendarSource(id="work", name="Work", folder="Calendars/Work")]
-    store.context.write("config", config.model_dump())
-    data = calendar("physical-work")
-    receipt = store.context.archive.submit("work", "old.ics", data)
-    assert store.context.archive.process(receipt.id).state == "succeeded"
-    item = store.context.dropbox.submit("new.ics", data)
-    await store.context.dropbox.process()
-    assert store.context.dropbox.records()["items"][item["id"]]["state"] == "needs_identity"
-    await store.context.identify_drop({"id": item["id"], "part": 0, "calendar_id": "work"})
-    await store.context.dropbox.process()
-    assert {r.calendar_id for r in store.context.archive.receipts()} == {"work"}
-    updated = store.context.dropbox.submit("later.ics", data.replace(b"Planning", b"Updated"))
-    await store.context.dropbox.process()
-    assert (
-        store.context.dropbox.records()["items"][updated["id"]]["parts"][0]["calendar_id"] == "work"
+    first = store.context.archive.submit("calendar", "first.ics", calendar())
+    store.context.archive.process(first.id)
+    conflict = store.context.archive.submit(
+        "calendar", "second.ics", calendar().replace(b"Planning", b"Changed")
     )
+    assert store.context.archive.process(conflict.id).state == "failed"
+    problems = await store.get_problems()
+    assert any(p.kind == "calendar_import" and p.reference == "second.ics" for p in problems)
 
 
 async def test_finalized_attendees_follow_changed_and_cleared_mapping(store):
@@ -314,51 +300,36 @@ async def test_finalized_attendees_follow_changed_and_cleared_mapping(store):
         assert (await store.get_note(note.id)).content_hash == reviewed.content_hash
 
 
-async def test_dropbox_archived_parts_are_compact_and_resume_after_interruption(store, monkeypatch):
-    import io
-    import zipfile
-
+async def test_dropbox_original_handoff_resumes_after_interruption(store, monkeypatch):
     from coppermind_store.dropbox import Dropbox
 
+    from services.store.tests.test_calendar_import import zip_bytes
     from services.store.tests.test_dropbox import calendar
 
-    zipped = io.BytesIO()
-    with zipfile.ZipFile(zipped, "w") as archive:
-        archive.writestr("work.ics", calendar("work"))
-        archive.writestr("family.ics", calendar("family"))
-    item = store.context.dropbox.submit("both.zip", zipped.getvalue())
+    data = zip_bytes({"work.ics": calendar("work"), "family.ics": calendar("family")})
+    item = store.context.dropbox.submit("both.zip", data)
     original_submit = store.context.archive.submit
-    calls = 0
 
-    def interrupt(*args):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("interrupted between archived parts")
-        return original_submit(*args)
+    def interrupt(*args, **kwargs):
+        original_submit(*args, **kwargs)
+        raise RuntimeError("crash after durable archive receipt, before Dropbox handoff")
 
     monkeypatch.setattr(store.context.archive, "submit", interrupt)
-    with pytest.raises(OSError):
+    with pytest.raises(RuntimeError, match="crash"):
         await store.context.dropbox.process()
-    parts = store.context.dropbox.records()["items"][item["id"]]["parts"]
-    assert "data" not in parts[0]
-    assert "data" in parts[1]
+    assert store.context.dropbox.records()["items"][item["id"]]["state"] == "pending"
     monkeypatch.setattr(store.context.archive, "submit", original_submit)
     restarted = Dropbox(store.context)
     await restarted.process()
+    assert len(store.context.archive.receipts()) == 1
     for receipt in store.context.archive.receipts():
         assert store.context.archive.process(receipt.id).state == "succeeded"
     await restarted.process()
     records = restarted.records()
     assert records["items"][item["id"]]["state"] == "succeeded"
-    assert all("data" not in p for p in records["items"][item["id"]]["parts"])
-    assert len(store.context.archive.catalog().events) == 2
-    assert (store.context.root / "dropbox-originals" / item["id"]).read_bytes() == zipped.getvalue()
-    # Completed receipts from the previous version are compacted too.
-    records["items"][item["id"]]["parts"][0]["data"] = "redundant old bytes"
-    restarted.save(records)
-    await restarted.process()
-    assert "data" not in restarted.records()["items"][item["id"]]["parts"][0]
+    assert all(set(p) == {"import_id"} for p in records["items"][item["id"]]["parts"])
+    assert len(store.context.archive.catalog().events) == 1
+    assert (store.context.root / "dropbox-originals" / item["id"]).read_bytes() == data
 
 
 async def test_workflow_setup_preserves_type_choices(store):

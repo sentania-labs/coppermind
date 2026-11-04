@@ -1235,7 +1235,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
         raise MetadataUnavailable(str(exc)) from exc
     notes_by_state = {state: count for state, count in by_state}
     excluded_count = store.control.read_reconciler_excluded_count()
-    current_problems = await get_problems(store)
+    problems = await get_problems(store)
     return StatusResponse(
         counters=StatusCounters(
             known_unreadable=known_unreadable,
@@ -1246,8 +1246,9 @@ async def get_status(store: LocalStore) -> StatusResponse:
             name_collisions=name_collisions,
             unparseable_files=notes_by_state.get("unparsed", 0),
             excluded_count=excluded_count,
-            filing_failures=sum(p.kind == "filing" for p in current_problems),
-            calendar_import_failures=sum(p.kind == "calendar_import" for p in current_problems),
+            filing_failures=sum(p.kind == "filing" for p in problems),
+            calendar_import_failures=sum(p.kind == "calendar_import" for p in problems),
+            active_problems=sum(p.kind != "excluded" for p in problems),
         )
     )
 
@@ -1320,16 +1321,6 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         )
         for row in unreadable
     )
-    problems.extend(
-        ProblemInfo(kind="calendar_import", reference=receipt.id, reason=receipt.error)
-        for receipt in store.context.archive.receipts()
-        if receipt.state == "failed"
-    )
-    problems.extend(
-        ProblemInfo(kind="calendar_import", reference=item["id"], reason=item["error"])
-        for item in store.context.dropbox.records()["items"].values()
-        if item["state"] == "failed" and not any(p.get("import_id") for p in item["parts"])
-    )
     for path in sorted((store.control.store.state_dir / "filing").glob("*.json")):
         try:
             filing = json.loads(path.read_bytes())
@@ -1392,5 +1383,26 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
             source_id=None,
         )
         for path, reason in sorted(exclusions.items())
+    )
+    problems.extend(
+        ProblemInfo(kind="calendar_import", reference=receipt.filename, reason=receipt.error)
+        for receipt in store.context.archive.receipts()
+        if receipt.state == "failed" and not receipt.dismissed
+    )
+    problems.extend(
+        ProblemInfo(kind="dropbox", reference=item["filename"], reason=item["error"])
+        for item in store.context.dropbox.snapshot()["items"]
+        if item["state"] in {"failed", "unsupported"} and not item["parts"]
+    )
+    problems.extend(
+        ProblemInfo(
+            kind="calendar_conflict",
+            reference=event.title or event.uid,
+            reason=(
+                "Legacy exports disagree at the same revision. Original versions "
+                "are preserved in import history."
+            ),
+        )
+        for event in store.context.archive.catalog().conflicts
     )
     return problems

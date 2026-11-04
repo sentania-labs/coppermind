@@ -64,6 +64,35 @@ def add_evidence(connection: Connection, contact_id: str, record: dict[str, Any]
         )
 
 
+def get_conflicts(connection: Connection) -> list[CalendarEvent]:
+    return [
+        CalendarEvent.model_validate(v)
+        for v in json.loads(get_state(connection, "conflicts", "[]"))
+    ]
+
+
+def put_conflicts(connection: Connection, conflicts: list[CalendarEvent]) -> None:
+    put_state(connection, "conflicts", json.dumps([c.model_dump(mode="json") for c in conflicts]))
+
+
+def get_aliases(connection: Connection) -> dict[str, str]:
+    return json.loads(get_state(connection, "aliases", "{}"))
+
+
+def drop_superseded_conflicts(connection: Connection) -> None:
+    """A retained conflict ends when its event is later revised past it."""
+    conflicts = get_conflicts(connection)
+    kept = []
+    for conflict in conflicts:
+        value = connection.execute(
+            sa.select(events.c.record).where(events.c.id == conflict.identity)
+        ).scalar()
+        if value is None or CalendarEvent.model_validate_json(value).revision <= conflict.revision:
+            kept.append(conflict)
+    if len(kept) != len(conflicts):
+        put_conflicts(connection, kept)
+
+
 def put_event(connection: Connection, identity: str, event: CalendarEvent) -> None:
     connection.execute(events.delete().where(events.c.id == identity))
     connection.execute(
@@ -81,17 +110,31 @@ def rebuild(connection: Connection, path: Path) -> None:
     """A crash rolls back the mirror; a later reader safely retries the rebuild."""
     connection.execute(events.delete())
     connection.execute(evidence.delete())
+    put_state(connection, "conflicts", "[]")
+    put_state(connection, "aliases", "{}")
     imports: list[str] = []
     if path.exists():
         with path.open("rb") as handle:
             version = next(ijson.items(handle, "schema_version"), 1)
-        if version != 1:
+        if version not in {1, 2}:
             raise CalendarImportError("unsupported calendar catalog schema version")
         with path.open("rb") as handle:
             for identity, event_record in ijson.kvitems(handle, "events"):
                 put_event(connection, identity, CalendarEvent.model_validate(event_record))
         with path.open("rb") as handle:
             imports = list(ijson.items(handle, "imports.item"))
+        with path.open("rb") as handle:
+            put_state(
+                connection,
+                "conflicts",
+                json.dumps(list(ijson.items(handle, "conflicts.item")), default=str),
+            )
+        with path.open("rb") as handle:
+            put_state(
+                connection,
+                "aliases",
+                json.dumps(next(ijson.items(handle, "aliases"), {})),
+            )
         # Build one evidence record at a time, even when a single contact has
         # participated in the entire calendar. Avoid kvitems(contact_records).
         contact = ""
@@ -141,7 +184,13 @@ def write_catalog(connection: Connection, path: Path, imports: list[str]) -> Non
     temporary = Path(name)
     try:
         with os.fdopen(fd, "w") as handle:
-            handle.write('{"schema_version":1,"events":{')
+            handle.write(
+                '{"schema_version":2,"conflicts":'
+                + json.dumps(json.loads(get_state(connection, "conflicts", "[]")))
+                + ',"aliases":'
+                + json.dumps(get_aliases(connection))
+                + ',"events":{'
+            )
             separator = ""
             for row in stream(
                 connection, sa.select(events.c.id, events.c.record).order_by(events.c.id)
@@ -209,6 +258,13 @@ class EventRows(Mapping[str, CalendarEvent]):
     def values(self) -> Iterator[CalendarEvent]:  # type: ignore[override]
         yield from self.page(None)
 
+    def items(self) -> Iterator[tuple[str, CalendarEvent]]:  # type: ignore[override]
+        with self.engine.connect() as connection:
+            for row in stream(
+                connection, sa.select(events.c.id, events.c.record).order_by(events.c.id)
+            ):
+                yield row.id, CalendarEvent.model_validate_json(row.record)
+
     def page(
         self, limit: int | None = 100, offset: int = 0, calendar_id: str | None = None
     ) -> Iterator[CalendarEvent]:
@@ -224,6 +280,20 @@ class EventRows(Mapping[str, CalendarEvent]):
         with self.engine.connect() as connection:
             for value in stream(connection, query.offset(offset)).scalars():
                 yield CalendarEvent.model_validate_json(value)
+
+    def summaries(self, ids: set[str]) -> dict[str, tuple[str, str]]:
+        """Title and start for each known event, queried in bounded batches."""
+        found: dict[str, tuple[str, str]] = {}
+        ordered = sorted(ids)
+        with self.engine.connect() as connection:
+            for start in range(0, len(ordered), 500):
+                query = sa.select(events.c.id, events.c.record).where(
+                    events.c.id.in_(ordered[start : start + 500])
+                )
+                for row in connection.execute(query):
+                    event = CalendarEvent.model_validate_json(row.record)
+                    found[row.id] = (event.title, event.start)
+        return found
 
     def fingerprint(self) -> str:
         digest = hashlib.sha256()
@@ -386,3 +456,13 @@ class CatalogView:
 
     def contacts(self) -> ContactRows:
         return ContactRows(self.engine)
+
+    @property
+    def conflicts(self) -> list[CalendarEvent]:
+        with self.engine.connect() as connection:
+            return get_conflicts(connection)
+
+    @property
+    def aliases(self) -> dict[str, str]:
+        with self.engine.connect() as connection:
+            return get_aliases(connection)

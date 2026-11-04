@@ -18,7 +18,8 @@ from typing import Any
 from icalendar import Calendar
 from pydantic import BaseModel, ConfigDict, Field
 
-MAX_UPLOAD = 10 * 1024 * 1024
+CALENDAR_ID = "calendar"
+MAX_UPLOAD = 200_000_000
 MAX_EXPANDED = 40 * 1024 * 1024
 MEMORY_PER_BYTE = 40
 MEMORY_PER_EVENT = 5461
@@ -33,6 +34,10 @@ MAX_EVENTS = 50_000
 
 class CalendarImportError(ValueError):
     """An export cannot be promoted in its entirety."""
+
+
+class CalendarTransientError(CalendarImportError):
+    """A time or resource limit stopped the import; the same bytes may succeed later."""
 
 
 class CalendarPerson(BaseModel):
@@ -55,6 +60,14 @@ class CalendarPerson(BaseModel):
         return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+class EventProvenance(BaseModel):
+    source_id: str
+    filename: str
+    entry: str
+    imported_at: str
+    legacy_calendar: str = ""
+
+
 class CalendarEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
     calendar_id: str
@@ -69,6 +82,8 @@ class CalendarEvent(BaseModel):
     people: list[CalendarPerson] = Field(default_factory=list)
     component: str
     timezone_components: list[str] = Field(default_factory=list)
+    provenance: list[EventProvenance] = Field(default_factory=list)
+    source_entries: list[str] = Field(default_factory=list)
     source_entry: str
 
     @property
@@ -98,10 +113,10 @@ class CalendarEvent(BaseModel):
 
 def _entries(filename: str, data: bytes, limit: int = MAX_UPLOAD) -> list[tuple[str, bytes]]:
     # ``limit`` is the ceiling for this buffer only. Extracted archive entries arrive with
-    # MAX_EXPANDED, already summed by the loop below, not the 10 MiB upload ceiling that
+    # MAX_EXPANDED, already summed by the loop below, not the external upload ceiling that
     # the original buffer passed at the intake boundary.
     if len(data) > limit:
-        raise CalendarImportError(f"calendar upload exceeds {limit // (1024 * 1024)} MiB")
+        raise CalendarImportError(f"calendar upload exceeds {limit / 1_000_000:g} MB")
     suffix = PurePosixPath(filename).suffix.lower()
     if suffix == ".ics":
         return [(filename, data)]
@@ -135,7 +150,7 @@ def _entries(filename: str, data: bytes, limit: int = MAX_UPLOAD) -> list[tuple[
                     raise CalendarImportError("archive must contain only ICS files and directories")
                 total += entry.file_size
                 if total > MAX_EXPANDED:
-                    raise CalendarImportError("expanded archive exceeds 40 MiB")
+                    raise CalendarImportError("expanded archive exceeds 41.94 MB")
                 with archive.open(entry) as stream:
                     content = stream.read(MAX_EXPANDED + 1)
                 if len(content) != entry.file_size:
@@ -247,12 +262,12 @@ def _parse_calendar(
             component=component.to_ical().decode(),
             timezone_components=timezones,
             source_entry=entry,
+            source_entries=[entry],
         )
-        previous = events.get(event.identity)
-        if previous is None or event.revision > previous.revision:
-            events[event.identity] = event
-        elif event.revision == previous.revision and event.semantic_hash != previous.semantic_hash:
-            raise CalendarImportError("conflicting event versions within export")
+        prior = events.get(event.identity)
+        merged = merge_events({event.identity: prior} if prior else {}, [event])[event.identity]
+        merged.source_entries = sorted(set((prior.source_entries if prior else []) + [entry]))
+        events[event.identity] = merged
     return count
 
 
@@ -270,17 +285,42 @@ def parse_export(
     return list(events.values())
 
 
+def merge_event_into(merged: dict[str, CalendarEvent], event: CalendarEvent) -> None:
+    """Merge one event in place; an equal-version conflict raises before any change."""
+    previous = merged.get(event.identity)
+    if previous is None:
+        merged[event.identity] = event
+        return
+    if event.revision == previous.revision and event.semantic_hash != previous.semantic_hash:
+        raise CalendarImportError(
+            f'Event "{event.title or event.uid}" ({event.start or "date unknown"}, '
+            f"UID {event.uid}, entry {event.source_entry}) conflicts with stored event "
+            f'"{previous.title or previous.uid}". Incoming revision: SEQUENCE '
+            f"{event.sequence}, LAST-MODIFIED {event.modified or 'not supplied'}; "
+            f"stored revision: SEQUENCE {previous.sequence}, LAST-MODIFIED "
+            f"{previous.modified or 'not supplied'}. The revisions match but the "
+            "contents differ. Correct the event in its source calendar and export it "
+            "again, or dismiss this receipt."
+        )
+    winner = event if event.revision > previous.revision else previous
+    witnesses = list(previous.provenance)
+    for witness in event.provenance:
+        if witness not in witnesses:
+            witnesses.append(witness)
+    merged[event.identity] = winner.model_copy(
+        update={
+            "provenance": sorted(witnesses, key=lambda p: (p.imported_at, p.source_id, p.entry)),
+        }
+    )
+
+
 def merge_events(
     current: dict[str, CalendarEvent], incoming: list[CalendarEvent]
 ) -> dict[str, CalendarEvent]:
     """A partial export never removes absent records; equal-version conflicts fail."""
     merged = dict(current)
     for event in incoming:
-        previous = merged.get(event.identity)
-        if previous is None or event.revision > previous.revision:
-            merged[event.identity] = event
-        elif event.revision == previous.revision and event.semantic_hash != previous.semantic_hash:
-            raise CalendarImportError("event revision conflicts with the stored calendar")
+        merge_event_into(merged, event)
     return merged
 
 

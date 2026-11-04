@@ -19,7 +19,7 @@ def test_raw_calendar_upload_requires_source_write_and_preserves_bytes(tmp_path)
     with TestClient(app) as client:
         app.state.store = fake
         app.state.api_key_auth._store = fake
-        url = "/v1/calendars/work/imports?filename=export.ics"
+        url = "/v1/calendars/calendar/imports?filename=export.ics"
         assert client.post(url, content=b"calendar").status_code == 401
         assert (
             client.post(
@@ -45,7 +45,7 @@ def test_raw_calendar_upload_requires_source_write_and_preserves_bytes(tmp_path)
         assert (
             client.post(
                 url,
-                content=b"x" * (10 * 1024**2 + 1),
+                content=b"x" * (200_000_000 + 1),
                 headers={
                     "Authorization": f"Bearer {fake.sources_key}",
                 },
@@ -53,3 +53,60 @@ def test_raw_calendar_upload_requires_source_write_and_preserves_bytes(tmp_path)
             == 413
         )
         assert len(calls) == 1
+
+
+def test_import_dismissal_requires_sources_write_and_names_the_receipt(tmp_path):
+    app, fake = client_for(tmp_path)
+    calls = []
+
+    async def context_action(action, payload):
+        calls.append((action, payload))
+        return {"dismissed": payload["id"]}
+
+    fake.context_action = context_action
+    with TestClient(app) as client:
+        app.state.store = fake
+        app.state.api_key_auth._store = fake
+        url = "/v1/calendars/calendar/imports/abc/dismiss"
+        assert client.post(url).status_code == 401
+        assert (
+            client.post(url, headers={"Authorization": f"Bearer {fake.notes_key}"}).status_code
+            == 403
+        )
+        assert calls == []
+        response = client.post(url, headers={"Authorization": f"Bearer {fake.sources_key}"})
+        assert response.status_code == 200
+        assert response.json() == {"dismissed": "abc"}
+        assert calls == [("dismiss-import", {"id": "abc"})]
+
+
+def test_dropbox_read_requires_sources_read(tmp_path):
+    from datetime import UTC, datetime
+
+    from coppermind.api_keys import create_key
+
+    app, fake = client_for(tmp_path)
+    fake.full_record, fake.full_key = create_key(
+        "reader", ["sources:read"], created_at=datetime.now(UTC)
+    )
+    calls = []
+
+    async def context_action(action, payload):
+        calls.append(action)
+        return {"folder": "Dropbox", "items": [{"filename": "export.zip", "state": "succeeded"}]}
+
+    fake.context_action = context_action
+    with TestClient(app) as client:
+        app.state.store = fake
+        app.state.api_key_auth._store = fake
+        assert client.get("/v1/dropbox").status_code == 401
+        assert (
+            client.get(
+                "/v1/dropbox", headers={"Authorization": f"Bearer {fake.sources_key}"}
+            ).status_code
+            == 403
+        )
+        response = client.get("/v1/dropbox", headers={"Authorization": f"Bearer {fake.full_key}"})
+        assert response.status_code == 200
+        assert response.json()["items"][0]["filename"] == "export.zip"
+        assert calls == ["dropbox-list"]

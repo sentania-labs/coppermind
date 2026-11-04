@@ -7,12 +7,9 @@ import base64
 import hashlib
 import json
 import logging
-import os
 import re
-import stat
 import time
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
@@ -21,7 +18,6 @@ from pydantic import ValidationError
 
 from coppermind.atomicio import atomic_write_text
 from coppermind.context_config import (
-    CalendarSource,
     ContextConfig,
     FeatureAssignment,
     ModelConnection,
@@ -34,9 +30,20 @@ from coppermind.schema import (
     note_date,
     note_start_time,
 )
-from coppermind.store_protocol import NoteQuery, PatchFrontmatter, RenameNote, StoreError
+from coppermind.store_protocol import (
+    FieldIndexNotReady,
+    MetadataUnavailable,
+    NoteQuery,
+    NotesFilesystemUnavailable,
+    NotFound,
+    PatchFrontmatter,
+    RenameNote,
+    StoreError,
+    StoreUnavailable,
+    VersionConflict,
+)
 from coppermind_store.calendar_archive import CalendarArchive
-from coppermind_store.calendar_import import MAX_UPLOAD
+from coppermind_store.calendar_import import CALENDAR_ID
 from coppermind_store.calendar_worker import occurrences
 from coppermind_store.enrichment_models import EnrichmentJob, Suggestions
 from coppermind_store.model_provider import InputLimitError, ModelProvider, ProviderError
@@ -45,6 +52,13 @@ if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
 
 log = logging.getLogger(__name__)
+TRANSIENT_STORE_ERRORS = (
+    FieldIndexNotReady,
+    MetadataUnavailable,
+    NotesFilesystemUnavailable,
+    StoreUnavailable,
+    VersionConflict,
+)
 
 
 def _size_error(size: int, limit: int, *, at_least: bool = False) -> str:
@@ -118,6 +132,40 @@ class ContextService:
         self.worker_error = ""
         self.eligibility_errors: dict[str, str] = {}
         self.auto_cursor: str | None = None
+        self.migrate_calendar()
+
+    def migrate_calendar(self) -> None:
+        if self.read("one-calendar-migration", {}).get("complete"):
+            return
+        config = self.config()
+        records = self.dropbox.records()
+        names = {source.id: source.name for source in config.sources}
+        names.update({key: value["name"] for key, value in records.get("calendars", {}).items()})
+        # Preserve compatible state before the idempotent upgrade changes any file.
+        if not (self.root / "before-one-calendar.json").exists():
+            self.write("before-one-calendar", {"config": config.model_dump(), "dropbox": records})
+        origins = {
+            part["import_id"]: (item["filename"], part.get("entry", "calendar.ics"))
+            for item in records["items"].values()
+            for part in item.get("parts", [])
+            if part.get("import_id")
+        }
+        self.archive.migrate(names, origins)
+        config.sources = []
+        if names or config.revision:
+            self.save_config(config)
+        records.pop("calendars", None)
+        for item in records["items"].values():
+            if item["state"] in {"needs_identity", "identified"}:
+                item["state"], item["parts"] = "pending", []
+            item["parts"] = [
+                {"import_id": part["import_id"]} for part in item["parts"] if part.get("import_id")
+            ]
+            if item["state"] == "succeeded":
+                item.setdefault("completed_at", time.time())
+                records["history"][item["id"]] = dict(item)
+        self.dropbox.save(records)
+        self.write("one-calendar-migration", {"complete": True, "at": now()})
 
     def config(self) -> ContextConfig:
         return read_context_config(self.root.parent)
@@ -190,15 +238,10 @@ class ContextService:
         if day is None:
             return []
         catalog = await asyncio.to_thread(self.archive.catalog)
-        sources = {s.id: s.timezone for s in self.config().sources}
-        sources.update(
-            {s["id"]: s["timezone"] for s in self.dropbox.records()["calendars"].values()}
+        events = catalog.events.page(None, calendar_id=CALENDAR_ID)
+        return await asyncio.to_thread(
+            occurrences, events, day, self.store.control.settings().general.timezone
         )
-        matches = []
-        for identity, timezone in sources.items():
-            events = catalog.events.page(None, calendar_id=identity)
-            matches.extend(await asyncio.to_thread(occurrences, events, day, timezone))
-        return matches
 
     async def note_evidence_hash(self, note: Any) -> str:
         if not self.config().lifecycle_enabled:
@@ -229,13 +272,18 @@ class ContextService:
     async def complete_review(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.lifecycle.complete(payload)
 
-    async def identify_drop(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self.dropbox.identify(payload)
+    async def dismiss_drop(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.dropbox.dismiss(payload)
+
+    async def dropbox_list(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.dropbox.snapshot()
 
     async def upload_drop(self, payload: dict[str, Any]) -> dict[str, Any]:
         async with self.lock:
-            return self.dropbox.submit(
-                payload["filename"], base64.b64decode(payload["content_base64"], validate=True)
+            return await asyncio.to_thread(
+                lambda: self.dropbox.submit(
+                    payload["filename"], base64.b64decode(payload["content_base64"], validate=True)
+                )
             )
 
     async def configure_property(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -326,6 +374,32 @@ class ContextService:
             self.save_config(config)
             return {"enabled": True}
 
+    @staticmethod
+    def _contact_page(catalog: Any, contacts: Any, offset: int) -> list[dict[str, Any]]:
+        """A contact page with the title and start of each evidence event, in one query."""
+        page = list(contacts.page(100, offset))
+        known = catalog.events.summaries(
+            {item.event_id for contact in page for item in contact.evidence}
+        )
+        return [
+            contact.model_dump()
+            | {
+                "evidence": [
+                    item.model_dump()
+                    | (
+                        {
+                            "event_title": known[item.event_id][0],
+                            "event_start": known[item.event_id][1],
+                        }
+                        if item.event_id in known
+                        else {}
+                    )
+                    for item in contact.evidence
+                ]
+            }
+            for contact in page
+        ]
+
     async def snapshot(self, offset: int = 0) -> dict[str, Any]:
         return await asyncio.to_thread(self._snapshot, offset)
 
@@ -352,7 +426,7 @@ class ContextService:
                 "imports": len(receipts),
                 "jobs": len(jobs),
             },
-            "config": config.model_dump(),
+            "config": config.model_dump(exclude={"sources"}),
             "dropbox": self.dropbox.snapshot(),
             "dossiers": self.read("dossiers", {}),
             "calendar_followups": self.read("calendar-followups", {}),
@@ -366,16 +440,38 @@ class ContextService:
                 }
             ],
             "calendar": {
+                "id": CALENDAR_ID,
+                "name": "My calendar",
                 "events": event_count,
                 "contacts": contact_count,
-                "imports": [item.model_dump() for item in receipts[window]],
+                "imports": [
+                    item.model_dump(
+                        exclude={"legacy_calendar", "export_filename", "original_entry"}
+                    )
+                    | {
+                        "calendar_id": CALENDAR_ID,
+                        "filename": item.export_filename or item.filename,
+                    }
+                    for item in receipts[window]
+                ],
+                "conflicts": [
+                    event.model_dump(exclude={"component", "timezone_components"})
+                    | {
+                        "id": event.identity,
+                        "version": event.semantic_hash,
+                        "stored_title": catalog.events[event.identity].title,
+                        "stored_sequence": catalog.events[event.identity].sequence,
+                        "stored_modified": catalog.events[event.identity].modified,
+                    }
+                    for event in catalog.conflicts
+                ],
             },
             "events": [
                 event.model_dump(exclude={"component", "timezone_components"})
                 | {"id": event.identity}
                 for event in events.page(100, offset)
             ],
-            "contacts": [contact.model_dump() for contact in contacts.page(100, offset)],
+            "contacts": self._contact_page(catalog, contacts, offset),
             "contact_corrections": self.read("contact_corrections", {}),
             "associations": self.read("associations", {}),
             "jobs": [
@@ -390,30 +486,6 @@ class ContextService:
             },
             "tests": self.read("model_tests", {}),
         }
-
-    async def save_source(self, payload: dict[str, Any]) -> dict[str, Any]:
-        source = CalendarSource.model_validate(payload["source"])
-        async with self.lock:
-            config = self.config()
-            self.check_revision(config, payload)
-            reserved = self.store.control.settings().notes
-            names = [
-                reserved.review_folder,
-                reserved.trash_folder,
-                reserved.sources_folder,
-                reserved.attachments_folder,
-                reserved.journal_folder,
-            ]
-            for name in names:
-                a, b = name.casefold(), source.folder.casefold()
-                if a == b or a.startswith(b + "/") or b.startswith(a + "/"):
-                    raise ValueError("drop folder overlaps a managed notes folder")
-            old = next((item for item in config.sources if item.id == source.id), None)
-            if old and old.folder != source.folder:
-                raise ValueError("an existing calendar's drop folder cannot be reassigned")
-            config.sources = [item for item in config.sources if item.id != source.id] + [source]
-            self.save_config(config)
-        return {"saved": source.id}
 
     @staticmethod
     def check_revision(config: ContextConfig, payload: dict[str, Any]) -> None:
@@ -604,23 +676,44 @@ class ContextService:
         return {"saved": "enrichment"}
 
     async def upload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        source = next(
-            (item for item in self.config().sources if item.id == payload["calendar_id"]), None
-        )
-        if source is None:
-            raise ValueError("calendar source does not exist")
-        if not source.enabled:
-            raise ValueError("calendar intake is disabled")
+        if payload["calendar_id"] != CALENDAR_ID:
+            raise ValueError("Use calendar as the calendar ID, or upload to /v1/dropbox")
         data = base64.b64decode(payload["content_base64"], validate=True)
-        receipt = await asyncio.to_thread(self.archive.submit, source.id, payload["filename"], data)
+        receipt = await asyncio.to_thread(
+            self.archive.submit, CALENDAR_ID, payload["filename"], data
+        )
         return receipt.model_dump()
 
     async def retry_import(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with self.lock:
-            item = self.dropbox.records()["items"].get(payload["id"])
-            if item and item["state"] == "failed" and not item["parts"]:
-                return self.dropbox.retry(payload["id"])
+        receipts = await asyncio.to_thread(self.archive.receipts)
+        if any(r.id == payload["id"] and r.dismissed for r in receipts):
+            raise ValueError("This failure was dismissed. Drop the export again to try again.")
         return (await asyncio.to_thread(self.archive.process, payload["id"])).model_dump()
+
+    async def dismiss_import(self, payload: dict[str, Any]) -> dict[str, Any]:
+        identity = str(payload["id"])
+        async with self.lock:
+            receipts = await asyncio.to_thread(self.archive.receipts)
+            receipt = next((r for r in receipts if r.id == identity), None)
+            if receipt is None:
+                raise ValueError("Unknown import receipt")
+            if receipt.state != "failed":
+                raise ValueError("Only failed imports can be dismissed")
+            await asyncio.to_thread(self.archive.dismiss, identity)
+            records = self.dropbox.records()
+            for key, item in list(records["items"].items()):
+                if item["state"] in {"importing", "failed"} and any(
+                    part["import_id"] == identity for part in item["parts"]
+                ):
+                    item["state"], item["error"] = "failed", receipt.error
+                    records["history"][key] = item
+                    del records["items"][key]
+            self.dropbox.save(records)
+        return {"dismissed": identity}
+
+    async def dismiss_calendar_conflict(self, payload: dict[str, Any]) -> dict[str, Any]:
+        await asyncio.to_thread(self.archive.dismiss_conflict, payload["id"], payload["version"])
+        return {"dismissed": payload["id"]}
 
     async def backlog(self, payload: dict[str, Any]) -> dict[str, Any]:
         page = await self.store.list_notes(
@@ -716,17 +809,7 @@ class ContextService:
             or self.schema_hash() != job.schema_hash
         ):
             raise ValueError("stale: note, evidence, schema or configuration changed")
-        day = note_date(note.frontmatter, schema)
-        candidates: list[dict[str, Any]] = []
-        if day is not None:
-            catalog = await asyncio.to_thread(self.archive.catalog)
-            sources = [(source.id, source.timezone) for source in config.sources]
-            sources += [
-                (s["id"], s["timezone"]) for s in self.dropbox.records()["calendars"].values()
-            ]
-            for source_id, timezone in sources:
-                events = catalog.events.page(None, calendar_id=source_id)
-                candidates.extend(await asyncio.to_thread(occurrences, events, day, timezone))
+        candidates = await self.calendar_candidates(note)
         fields = [item.model_dump() for item in schema.keys if item.name in assignment.fields]
         # The authored note often already contains the imported summary. Read sources only
         # when explicitly associated; never search across unreviewed notes for context.
@@ -1317,69 +1400,61 @@ class ContextService:
         async with self.lock:
             return await resume(self, self.read("association-corrections/" + payload["id"], {}))
 
-    async def watch(self) -> None:
-        for source in self.config().sources:
-            if not source.enabled:
-                continue
-            root = self.store.notes_root / source.folder
-            try:
-                if not root.exists():
-                    self.watch_status[source.id] = "Waiting for the configured folder to arrive"
-                    continue
-                if root.is_symlink() or any(parent.is_symlink() for parent in root.parents):
-                    raise ValueError("symlink drop folders are not supported")
-                count = 0
-                for directory, subdirs, names in os.walk(root, followlinks=False):
-                    subdirs[:] = [
-                        name
-                        for name in subdirs
-                        if not name.startswith(".") and not (Path(directory) / name).is_symlink()
-                    ]
-                    for name in names:
-                        path = Path(directory) / name
-                        if path.suffix.lower() not in {".ics", ".zip"}:
-                            continue
-                        count += 1
-                        if count > 1000:
-                            raise ValueError("drop folder exceeds 1000 files")
-                        info = path.lstat()
-                        if not stat.S_ISREG(info.st_mode):
-                            continue
-                        if info.st_size > MAX_UPLOAD:
-                            raise ValueError("a drop file exceeds 10 MiB")
-                        signature = (info.st_mtime_ns, info.st_size)
-                        key = str(path)
-                        prior = self.seen.get(key)
-                        if prior is None or prior[0] != signature:
-                            self.seen[key] = signature, time.monotonic()
-                            continue
-                        if time.monotonic() - prior[1] < 30:
-                            continue
-                        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-                        with os.fdopen(fd, "rb") as handle:
-                            before = os.fstat(handle.fileno())
-                            data = handle.read(MAX_UPLOAD + 1)
-                            after = os.fstat(handle.fileno())
-                        if (before.st_mtime_ns, before.st_size) != signature or (
-                            after.st_mtime_ns,
-                            after.st_size,
-                        ) != signature:
-                            continue
-                        await asyncio.to_thread(self.archive.submit, source.id, path.name, data)
-                self.watch_status[source.id] = "Watching for stable ICS and ZIP files"
-            except (OSError, ValueError):
-                self.watch_status[source.id] = (
-                    "Cannot read drop folder or file exceeds intake limits"
-                )
+    async def migrate_event_ids(self) -> None:
+        if self.read("one-calendar-event-ids", {}).get("complete"):
+            return
+        aliases = self.archive.catalog().aliases
+        async with self.lock:
+            associations = self.read("associations", {})
+            finalized = self.read("finalized", {})
+            if aliases:
+                if not (self.root / "before-one-calendar-event-ids.json").exists():
+                    self.write(
+                        "before-one-calendar-event-ids",
+                        {"associations": associations, "finalized": finalized},
+                    )
+                field = self.config().assignments["enrichment"].event_field
+                complete = True
+                for note_id in sorted({*associations, *finalized} if field else ()):
+                    try:
+                        note = await self.store.get_note(note_id)
+                        value = note.frontmatter.get(field)
+                        if isinstance(value, str) and value in aliases:
+                            await self.store.patch_frontmatter(
+                                note_id,
+                                PatchFrontmatter(set={field: aliases[value]}),
+                                note.content_hash,
+                            )
+                    except NotFound:
+                        continue
+                    except TRANSIENT_STORE_ERRORS as exc:
+                        complete = False
+                        log.warning("Event ID migration will retry note %s: %s", note_id, exc)
+                    except StoreError as exc:
+                        log.warning("Event ID migration skipped note %s: %s", note_id, exc)
+                if not complete:
+                    return
+                for record in associations.values():
+                    record["events"] = sorted({aliases.get(i, i) for i in record.get("events", [])})
+                for record in finalized.values():
+                    confirmed = record.get("confirmed_calendar")
+                    if confirmed:
+                        event_id = confirmed["event_id"]
+                        confirmed["event_id"] = aliases.get(event_id, event_id)
+                self.write("associations", associations)
+                self.write("finalized", finalized)
+            self.write("one-calendar-event-ids", {"complete": True, "at": now()})
 
     async def tick(self) -> None:
-        await self.watch()
+        await self.migrate_event_ids()
         await self.dropbox.scan()
         async with self.lock:
             await self.dropbox.process()
         pending = [item for item in self.archive.receipts() if item.state == "pending"]
         if pending:
             await asyncio.to_thread(self.archive.process, pending[0].id)
+            async with self.lock:
+                await self.dropbox.process()
         if self.config().lifecycle_enabled:
             await self.lifecycle.check_calendars()
         assignment = self.config().assignments["enrichment"]

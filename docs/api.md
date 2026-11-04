@@ -162,7 +162,7 @@ is still returned. Dashboard reads never write into notes.
 | `GET /v1/search` | `notes:read` | Full-text search over reviewed, successfully filed note bodies and titles and their approved generated source pages under the sources folder. `q` (1 to 500 characters) is read the way a search box is: words, `"quoted phrases"`, `or`, and `-word` to exclude. English stemming applies, so `runs` also finds `running`, and an excluded word is excluded in every form: `budget -runs` finds no note that says `running`. Takes every listing filter (`folder, reviewed, type, context, account, from, to, tag, state`) with listing's meaning (`account` matches any entry of a note's list, `from` and `to` take the day from `date`), and pages the same way, by `cursor` and `limit` | 200, page of `{id, kind, title, path, folder, excerpt, rank, state}`, best match first. `kind` is `note`, or `source` for a generated source page, whose `id` is then the source identifier. `excerpt` is a short passage with every matched word between `**` markers. `rank` orders one answer and means nothing across answers | 422 `validation_error` for an empty `q`, a bad filter, or a cursor from a different `q`; 503 `metadata_unavailable`, never an empty page |
 | `POST /v1/attachments` | `notes:write` | Upload a file (multipart); name comes from the filename | 201, `{path, embed: "![[name.png]]", size_bytes}` | 413 over the plan's file-size limit; 409 |
 | `GET /v1/attachments/{name}` | `notes:read` | Download an attachment | 200 | 404 |
-| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, rejected_ingests, name_collisions, unparseable_files, excluded_count, filing_failures, calendar_import_failures}`, computed from the metadata mirror, recorded rejections and import receipts; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false` | 200 | 503 `metadata_unavailable` or `store_unavailable` |
+| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, rejected_ingests, name_collisions, unparseable_files, excluded_count, filing_failures, calendar_import_failures, active_problems}`, computed from the metadata mirror, recorded rejections and import receipts; `active_problems` counts every Problems row except intentional exclusions, including calendar and Dropbox failures; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false` | 200 | 503 `metadata_unavailable` or `store_unavailable` |
 | `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /openapi.json` | none | Process liveness, real readiness (checks PostgreSQL and the notes filesystem), Prometheus metrics, the generated API contract | 200 | 503 on `/readyz` when a real dependency is down |
 
 ## Admin: pages and their endpoints
@@ -177,7 +177,7 @@ requiring hand-populated configuration.
 | Claim (first boot) | `POST /v1/admin/claim {code, password}` | Set the admin password using the one-time code the store logged and wrote to `/data/state/internal/claim-code` |
 | Login, logout | `POST /v1/admin/login`, `POST /v1/admin/logout` | Password-backed session |
 | Overview | `GET /v1/admin/status` | Counters, helper status and ages, last reconcile, last commit, last sync, failed jobs |
-| Problems | `GET /v1/admin/notes/problems` | Every refused ingest, name collision (several files carrying one note identity) and unparseable file, each linked to the note or source it is about. Computed from the mirror and recorded rejections; nothing is ever written into a note |
+| Problems | `GET /v1/admin/notes/problems` | Every refused ingest, name collision (several files carrying one note identity) and unparseable file, each linked to the note or source it is about. Also lists failed calendar imports, unsupported or failed Dropbox receipts and calendar conflicts. Each row has a snake_case `kind` slug; the calendar and Dropbox rows use `calendar_import` (a failed import receipt), `dropbox` (a failed or unsupported Dropbox file) and `calendar_conflict` (two sources disagree on one event at the same revision). Computed from the mirror, recorded rejections and import receipts; nothing is ever written into a note |
 | API keys | `GET/POST /v1/admin/keys`, `DELETE /v1/admin/keys/{key_id}` | Create (secret shown once), list, and revoke keys graphically instead of through the store's command line |
 | Obsidian Sync | `GET /v1/admin/sync`, `POST /v1/admin/sync/connect`, `POST /v1/admin/sync/token`, `POST /v1/admin/sync/pause`, `/resume`, `/disconnect` | Connect with email, password, optional MFA, and a vault name or a pasted token; reveal a token once, with a hint for sealing it into GitOps; pause and resume around bulk operations |
 | Settings | `GET/PUT /v1/admin/settings {if_revision, body}` | Every key in the settings table below, grouped by section |
@@ -268,3 +268,32 @@ and the `search index caught up` line is logged only when a pass indexed,
 removed or failed something. Both search index status and store status expose
 `known_unreadable`; Admin Problems lists the entries and their reasons. These
 marks do not remove source archives or notes.
+
+## Calendar exports and Dropbox receipts
+
+Coppermind has one calendar. Export sources are provenance on each event, not
+separate calendars. Calendar UID binding and identity claiming are removed.
+
+| Route | Scope | Result |
+|---|---|---|
+| `POST /v1/dropbox?filename=export.zip` | `sources:write` | Binary ICS or ZIP, 202 after durable intake; 413 above 200,000,000 bytes |
+| `GET /v1/dropbox` | `sources:read` | `{folder, items}`; each receipt has `id`, `filename`, `state`, `error`, `event_count`, `first_imported_at`, and import references in `parts`; files still being copied have state `stabilizing` and an empty `id` until accepted |
+| `POST /v1/dropbox/{id}/dismiss` | `sources:write` | Dismiss a completed, failed or unsupported receipt; 422 for pending/importing or unknown receipts |
+| `GET /v1/calendars?offset=0` | `sources:read` | Compatible `{calendar, events, contacts, offset, next_offset, totals}` response; calendar now also has `id: calendar`, `name: My calendar` |
+| `POST /v1/calendars/calendar/imports/{id}/dismiss` | `sources:write` | Dismiss a failed import receipt, whether it arrived by Dropbox, direct upload or the upgrade migration; the receipt stays in import history marked dismissed and leaves Problems; 422 for unknown or non-failed receipts |
+| `POST /v1/calendars/calendar/imports?filename=export.ics` | `sources:write` | Compatibility binary upload, 202 durable import receipt; other calendar IDs return 422 |
+
+Dropbox states are `pending`, `importing`, `succeeded`, `already_imported`,
+`failed`, and `unsupported`. Completed receipts expire after seven days; failed receipts remain until dismissed.
+Dismissal never deletes original exports or calendar import history. An identical
+re-drop is `already_imported` and does not create another import.
+
+Events retain their existing fields and add `provenance`, a list of
+`{source_id, filename, entry, imported_at, legacy_calendar}` witnesses. The last
+field records a previous calendar on upgrade, otherwise an empty string.
+Timestamps use ISO 8601 with an offset. Multiple witnesses are expected, even
+when the event revision is unchanged or older. Pagination remains 100 records per
+section, following `next_offset`. No source filter is supported. Expanded ZIP
+limits remain 40 MiB and 100 entries; conflicts fail the export atomically and
+appear in Admin Problems. Without authentication these routes return 401;
+without the named scope they return 403.

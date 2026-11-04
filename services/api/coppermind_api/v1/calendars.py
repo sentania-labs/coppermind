@@ -34,6 +34,19 @@ async def calendars(
     )
 
 
+@router.post("/calendar/imports/{receipt_id}/dismiss")
+async def dismiss_import(
+    receipt_id: str,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("sources:write")),
+) -> Response:
+    try:
+        result = await client.context_action("dismiss-import", {"id": receipt_id})
+    except StoreError as exc:
+        return failure(exc)
+    return JSONResponse(result)
+
+
 @router.post("/{calendar_id}/imports", status_code=202)
 async def upload(
     calendar_id: str,
@@ -45,9 +58,10 @@ async def upload(
     data = bytearray()
     async for chunk in request.stream():
         data.extend(chunk)
-        if len(data) > 10 * 1024 * 1024:
+        if len(data) > 200_000_000:
             return JSONResponse(
-                {"error": "payload_too_large", "message": "Calendar limit: 10 MiB"}, status_code=413
+                {"error": "payload_too_large", "message": "Calendar limit: 200,000,000 bytes"},
+                status_code=413,
             )
     try:
         result = await client.context_action(

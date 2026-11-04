@@ -93,7 +93,7 @@ def test_equal_revision_conflict_is_not_last_writer_wins():
     conflicting = parse_export("work", "two.ics", ics(event(title="Different")))
     with pytest.raises(CalendarImportError, match="conflicts"):
         merge_events({first[0].identity: first[0]}, conflicting)
-    with pytest.raises(CalendarImportError, match="conflicting"):
+    with pytest.raises(CalendarImportError, match="conflicts"):
         parse_export("work", "one.ics", ics(event(), event(title="Different")))
 
 
@@ -120,7 +120,7 @@ def test_zip_rejects_unsafe_or_unsupported_entries(name):
 
 def test_expanded_ics_over_10_mib_passes_the_expanded_ceiling():
     source = large_ics()
-    assert MAX_UPLOAD < len(source) < MAX_EXPANDED
+    assert 10 * 1024**2 < len(source) < MAX_EXPANDED
     records = parse_export("work", "calendar.ics", source, MAX_EXPANDED)
     assert len(records) == 12000
     assert records[0].source_entry == "calendar.ics"
@@ -137,22 +137,22 @@ def test_top_of_range_single_calendar_fits_the_serialized_ceiling():
     # expansion. `to_ical` re-folds long properties, so the handoff bytes are measured
     # against MAX_SERIALIZED rather than the expansion they came from.
     source = large_ics(n=45000)
-    assert MAX_UPLOAD < len(source) < MAX_EXPANDED
+    assert 10 * 1024**2 < len(source) < MAX_EXPANDED
     records = parse_export("work", "calendar.ics", source, MAX_SERIALIZED)
     assert len(records) == 45000
     assert len(Calendar.from_ical(source).to_ical()) <= MAX_SERIALIZED
 
 
-def test_original_upload_over_10_mib_is_rejected():
-    source = large_ics()
-    with pytest.raises(CalendarImportError, match="exceeds 10 MiB"):
-        parse_export("work", "calendar.ics", source)
+def test_original_upload_uses_200_million_byte_cap():
+    assert MAX_UPLOAD == 200_000_000
+    with pytest.raises(CalendarImportError, match="exceeds"):
+        parse_export("calendar", "calendar.ics", b"x" * (MAX_UPLOAD + 1))
 
 
 def test_zip_expanding_past_40_mib_is_rejected():
     # Four entries of ~11.9 MiB each: the archive is small, the expansion is ~47 MiB.
     source = zip_bytes({f"{n}.ics": large_ics(str(n)) for n in range(4)})
-    with pytest.raises(CalendarImportError, match="40 MiB"):
+    with pytest.raises(CalendarImportError, match="41.94 MB"):
         parse_export("work", "export.zip", source, MAX_EXPANDED)
 
 

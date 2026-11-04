@@ -267,3 +267,27 @@ def test_known_unreadable_search_entries_are_counted_and_linked(signed_in):
     assert status.json()["counters"]["known_unreadable"] == 1
     overview = client.get("/admin")
     assert "Known unreadable search entries: 1" in overview.text
+
+
+def test_calendar_and_dropbox_failures_count_and_link_to_dismissal(signed_in):
+    class CalendarProblems(ReadOnlyStore):
+        async def get_status(self):
+            result = await super().get_status()
+            result.counters.active_problems = 2
+            return result
+
+    client, _ = signed_in
+    fake = CalendarProblems()
+    fake.problems = [
+        ProblemInfo(kind="calendar_import", reference="conflict.zip", reason="Planning conflicts"),
+        ProblemInfo(kind="dropbox", reference="handout.pdf", reason="Unsupported file type"),
+    ]
+    _install(client, fake)
+    assert "Problems (2)" in client.get("/admin").text
+    page = client.get("/admin/problems")
+    assert 'href="/admin/context?tab=calendar"' in page.text
+    assert 'href="/admin/workflow?tab=intake"' in page.text
+    assert "<td>Calendar import</td>" in page.text
+    assert "<td>Dropbox</td>" in page.text
+    assert "No excluded files." in page.text
+    assert "No problems found." not in page.text

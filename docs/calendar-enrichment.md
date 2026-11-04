@@ -5,43 +5,71 @@ Enrichment never writes the note body. Explicit review completion can accept
 selected proposals and mark the note reviewed. See [Note workflow](note-workflow.md)
 for the shared Dropbox, Obsidian companion and lifecycle setup.
 
-## Legacy per-calendar intake
+## One calendar, automatic intake
 
-Open **Calendar and enrichment** and add a calendar source. Give it a stable
-lowercase ID, a name, a vault drop folder such as `_Calendar/Work`, and its
-local timezone. Use a separate, non-overlapping folder for each calendar.
-Changing an existing calendar's drop folder is refused rather than silently
-reassigning its history. Disable its watcher to stop further intake.
+Coppermind is a single-owner knowledge base with one calendar. Drop `.ics` files
+or ZIP archives containing ICS files into the vault's existing Dropbox folder.
+No calendar UID, binding, identification or claim is needed. Every export merges
+by event UID and recurrence instance. Calendar names and export filenames are
+provenance, never separate calendar identities. No per-source views are provided.
 
-Drop `.ics` files, or ZIP archives containing only ICS files and directories,
-into that folder through Obsidian. The files must remain unchanged across scans
-for 30 seconds. Importing preserves originals under `/data/state/calendars`;
-it does not delete the dropped files and does not call a model. Markdown in a
-configured drop folder is excluded from adoption. Files already carrying a
-known note identity continue to follow the ordinary identity reconciliation rule.
+Files must remain unchanged for 30 seconds. Originals and import history are
+preserved under `/data/state/calendars`; dropped files are not deleted. Intake
+never calls a model. Limits are 200,000,000 bytes per upload, 100 ZIP entries and
+50,000 event records per export. The expanded size of an export is bounded by
+`limits.calendar_import_memory_mib` (see the sizing table below), never above a
+40 MiB zip-bomb guard. Encrypted archives,
+symlinks, nested archives, unsafe paths and unsupported components are refused.
+Parsing and recurrence lookup have memory and CPU limits. An invalid or
+conflicting export leaves the previous calendar intact and appears in Problems.
 
-Limits are 10 MiB per upload, 100 ZIP entries, 50,000 event records per export,
-and 1,000 input files per drop folder. The expanded size of an export is bounded
-by `limits.calendar_import_memory_mib` (see the sizing table below), never above
-a 40 MiB zip-bomb guard. Encrypted archives,
-symlinks, nested archives, unsafe paths, and unsupported calendar component
-types are refused. Parsing and recurrence lookup have process memory and CPU
-limits. A failed import leaves the previous calendar intact and retains its
-original and an error receipt. Retry it from Admin after resolving the cause.
+Send binary bytes to `POST /v1/dropbox?filename=export.zip` with `sources:write`.
+A 202 means the original and pending receipt are durable. Read receipts through
+`GET /v1/dropbox` with `sources:read`. Failed and completed receipts can be
+dismissed in Admin or with `POST /v1/dropbox/{id}/dismiss` (`sources:write`).
+Completed receipts clear after seven days; failed receipts stay until
+dismissed.
+Import history and originals remain after dismissal or expiry. Dismissing a failed
+receipt also clears its Problems entry; re-dropping the same failing bytes shows
+it again, and a time or resource limit failure is retried by the re-drop. Any other
+failure needs a corrected export, which is a new file and a new receipt. Any failed import can be dismissed from Calendar import history in
+Admin or with `POST /v1/calendars/calendar/imports/{id}/dismiss`
+(`sources:write`), including failures from direct uploads and receipts carried
+over by the upgrade. A dismissed failure is marked as such and cannot be
+silently reopened by retrying there. Re-dropping bytes that already imported
+creates an **Already imported** receipt without another import, showing the
+event count and original import time. Files waiting for the 30-second stability
+check appear as waiting receipts.
 
-An alternate intake is `POST /v1/calendars/{calendar_id}/imports?filename=export.ics`.
-Send the binary file as the request body with a `sources:write` API key.
-A 202 response means the original and pending receipt are durable, not that
-parsing has succeeded. `GET /v1/calendars` with `sources:read` returns import
-status, event records, contacts, and pagination. Follow `next_offset` as the
-next request's `offset`. Admin uses the same queue and displays 100 records
-per section per page. Contact previews include at most 100 evidence records and
-an `evidence_count` with the full retained count. The API does not expose model
-credentials or note jobs.
+Conflict errors name the event, UID, archive entry and incoming and stored
+revisions. Correct the event in its source calendar and export it again, or
+use **Dismiss failure** in Calendar import history. Legacy calendar conflicts
+can also be acknowledged on that page without removing the current event or
+originals. Problems includes unsupported and oversized Dropbox files, and
+Overview uses the same active problem count.
+
+`GET /v1/calendars` retains its paginated response shape and describes the single
+calendar (`id: calendar`). Event details include provenance: export source ID,
+original filename, archive entry and import timestamp. Several exports can witness
+one event, including older revisions. There are no source-specific calendar views.
+The compatibility upload route is `POST /v1/calendars/calendar/imports`.
+
+On first startup after upgrade, the store snapshots legacy state and merges
+existing calendars automatically. Previous calendar names remain on event
+provenance. Conflicting legacy versions are retained and reported in Problems.
+Old per-calendar folders become ordinary vault folders; new calendar exports
+belong in Dropbox. Pending identity requests resume automatically. The migration
+is idempotent and needs no clicks. Preserve the complete calendars and context
+trees for recovery; the pre-upgrade snapshots alone are not an ongoing backup.
+Catalog schema version 2 requires this version or newer. To roll back, stop the
+store and restore the matching pre-upgrade state, including context configuration,
+Dropbox state, catalog and import receipts. Migration retains compatible snapshots
+as `context/before-one-calendar.json`, `calendars/before-one-calendar.json` and
+`calendars/before-one-calendar-imports.json`. Originals are never rewritten.
 
 ## Updates and contacts
 
-Calendar ID, event UID, and recurrence identity determine event identity;
+Event UID and recurrence identity determine event identity;
 export filenames do not. Sequence and last-modified time order updates. Equal
 revision numbers with different content are a visible conflict, not a
 last-writer-wins update. Missing events in a partial export are retained.

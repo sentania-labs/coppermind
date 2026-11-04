@@ -16,19 +16,9 @@ from services.store.tests.test_calendar_import import event, ics
 
 async def configure(store):
     context = store.context
-    await context.save_source(
-        {
-            "revision": 0,
-            "source": {
-                "id": "work",
-                "name": "Work",
-                "folder": "_Calendar/Work",
-            },
-        }
-    )
     saved_connection = await context.save_connection(
         {
-            "revision": 1,
+            "revision": 0,
             "connection": {
                 "name": "Local",
                 "provider": "compatible",
@@ -66,7 +56,7 @@ async def configure(store):
     await context.test_model({"connection": saved_connection["saved"], "model": "test-model"})
     await context.save_assignment(
         {
-            "revision": 2,
+            "revision": 1,
             "assignment": FeatureAssignment(
                 connection=saved_connection["saved"],
                 model="test-model",
@@ -77,7 +67,7 @@ async def configure(store):
     )
     imported = await context.upload(
         {
-            "calendar_id": "work",
+            "calendar_id": "calendar",
             "filename": "work.ics",
             "content_base64": base64.b64encode(ics(event())).decode(),
         }
@@ -152,19 +142,24 @@ async def test_stale_note_and_calendar_refuse_approval(store):
     assert (await store.get_note(note.id)).path == note.path
 
 
-async def test_drop_folder_is_not_adopted_and_requires_stability(store):
+async def test_dropbox_requires_stability_and_legacy_folders_are_ordinary(store):
     context = await configure(store)
-    folder = store.notes_root / "_Calendar/Work"
+    folder = store.notes_root / "Dropbox"
     folder.mkdir(parents=True)
     (folder / "export.ics").write_bytes(ics(event("second")))
-    (folder / "do-not-adopt.md").write_text("# Not a note")
-    await context.watch()
+    legacy = store.notes_root / "_Calendar/Work"
+    legacy.mkdir(parents=True)
+    (legacy / "ordinary.md").write_text("# Ordinary note")
+    await context.dropbox.scan()
     assert len(context.archive.receipts()) == 1
-    context.seen = {key: (value[0], value[1] - 31) for key, value in context.seen.items()}
-    await context.watch()
+    context.dropbox.seen = {
+        key: (value[0], value[1] - 31) for key, value in context.dropbox.seen.items()
+    }
+    await context.dropbox.scan()
+    await context.dropbox.process()
     assert len(context.archive.receipts()) == 2
     await reconcile_once(store)
-    assert (await store.list_notes(NoteQuery())).items == []
+    assert len((await store.list_notes(NoteQuery())).items) == 1
 
 
 async def test_calendar_invitation_cannot_become_attendance_without_note_evidence(store):
@@ -415,7 +410,7 @@ async def test_noop_calendar_reexport_keeps_rejection_and_evidence_version(store
     exported = ics(event() + "\r\nDTSTAMP:20261014T160000Z")
     receipt = await context.upload(
         {
-            "calendar_id": "work",
+            "calendar_id": "calendar",
             "filename": "new.ics",
             "content_base64": base64.b64encode(exported).decode(),
         }
@@ -545,7 +540,7 @@ async def test_association_approvals_preserve_human_and_prior_values(store, kind
     await context.save_assignment({"revision": context.config().revision, "assignment": assignment})
     imported = await context.upload(
         {
-            "calendar_id": "work",
+            "calendar_id": "calendar",
             "filename": "updated.ics",
             "content_base64": base64.b64encode(
                 ics(event(sequence=1) + "\r\nATTENDEE;CN=Jordan:mailto:Jordan@example.com")
@@ -703,7 +698,7 @@ async def test_all_day_event_approval_does_not_shift_the_note_date(store):
     )
     imported = await context.upload(
         {
-            "calendar_id": "work",
+            "calendar_id": "calendar",
             "filename": "all-day.ics",
             "content_base64": base64.b64encode(ics(all_day)).decode(),
         }
@@ -1061,3 +1056,24 @@ async def test_a_model_no_longer_discovered_fails_the_job_with_a_named_rule(stor
     assert "refresh models" in final.error
     assert "could not be validated" not in final.error
     assert any("model-not-available" in r.getMessage() for r in caplog.records)
+
+
+async def test_calendar_and_dropbox_problem_counts_and_dismissal_agree(store):
+    from services.store.tests.test_dropbox import calendar, finish
+
+    dropbox = store.context.dropbox
+    dropbox.submit("base.ics", calendar())
+    await finish(store)
+    failed = dropbox.submit("conflict.ics", calendar().replace(b"Planning", b"Changed"))
+    unsupported = dropbox.submit("handout.pdf", b"%PDF-1.4 unsupported")
+    await finish(store)
+    await finish(store)
+    problems = await store.get_problems()
+    assert {p.kind for p in problems} == {"calendar_import", "dropbox"}
+    assert (await store.get_status()).counters.active_problems == len(problems) == 2
+    await dropbox.dismiss({"id": unsupported["id"]})
+    assert (await store.get_status()).counters.active_problems == 1
+    receipt_id = dropbox.records()["items"][failed["id"]]["parts"][0]["import_id"]
+    await store.context.dismiss_import({"id": receipt_id})
+    assert await store.get_problems() == []
+    assert (await store.get_status()).counters.active_problems == 0

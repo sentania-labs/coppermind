@@ -70,6 +70,23 @@ async def refresh(
     )
 
 
+@router.get("/dropbox")
+async def dropbox_list(
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("sources:read")),
+) -> Response:
+    return await call(client, "dropbox-list", {})
+
+
+@router.post("/dropbox/{receipt_id}/dismiss")
+async def dismiss_drop(
+    receipt_id: str,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("sources:write")),
+) -> Response:
+    return await call(client, "dismiss-drop", {"id": receipt_id})
+
+
 @router.post("/dropbox", status_code=202)
 async def drop(
     request: Request,
@@ -80,9 +97,9 @@ async def drop(
     data = bytearray()
     async for chunk in request.stream():
         data.extend(chunk)
-        if len(data) > 10 * 1024 * 1024:
+        if len(data) > 200_000_000:
             return JSONResponse(
-                {"error": "payload_too_large", "message": "Dropbox limit: 10 MiB"}, 413
+                {"error": "payload_too_large", "message": "Dropbox limit: 200,000,000 bytes"}, 413
             )
     result = await call(
         client,

@@ -157,17 +157,16 @@ def test_work_review_time_controls_and_save(signed_in):
         assert 'name="time_unknown"' not in response.text
 
 
-def test_failed_dropbox_discovery_has_a_working_retry_action(signed_in):
-    class FailedDiscoveryStore(ContextStore):
+def test_failed_dropbox_file_is_dismissed_not_retried(signed_in):
+    class FailedStore(ContextStore):
         async def context_action(self, action, payload):
             result = await super().context_action(action, payload)
             if action == "snapshot":
                 result["dropbox"] = {
                     "folder": "Dropbox",
-                    "calendars": [],
                     "items": [
                         {
-                            "id": "failed-discovery",
+                            "id": "failed-file",
                             "filename": "export.ics",
                             "state": "failed",
                             "error": "limits.calendar_max_events=1 exceeded",
@@ -178,18 +177,18 @@ def test_failed_dropbox_discovery_has_a_working_retry_action(signed_in):
             return result
 
     client, _ = signed_in
-    fake = FailedDiscoveryStore()
+    fake = FailedStore()
     client.app.state.store = fake
     response = client.get("/admin/workflow?tab=intake")
-    assert "Retry import" in response.text
-    assert 'action="/v1/admin/context/retry-import"' in response.text
+    assert "Retry import" not in response.text
+    assert 'action="/v1/admin/context/dismiss-drop"' in response.text
     token = form_token(client, "/admin/workflow?tab=intake")
-    retried = client.post(
-        "/v1/admin/context/retry-import",
-        data={"csrf": token, "id": "failed-discovery"},
+    dismissed = client.post(
+        "/v1/admin/context/dismiss-drop",
+        data={"csrf": token, "id": "failed-file"},
         follow_redirects=False,
     )
-    assert retried.status_code == 303
+    assert dismissed.status_code == 303
     action, payload = fake.calls[-1]
-    assert action == "retry-import"
-    assert payload["id"] == "failed-discovery"
+    assert action == "dismiss-drop"
+    assert payload["id"] == "failed-file"
