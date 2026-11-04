@@ -77,7 +77,8 @@ def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems fo
     if not problems:
         return "<p>" + escape(empty_text) + "</p>"
     rows = "".join(
-        f"<tr><td>{escape(KIND_LABELS.get(item.kind, item.kind))}</td><td>{escape(item.reference)}</td>"
+        f"<tr><td>{escape(KIND_LABELS.get(item.kind, item.kind))}</td>"
+        f"<td>{escape(item.reference)}</td>"
         f"<td>{escape(item.reason)}</td><td>{_link(item)}</td></tr>"
         for item in problems
     )
