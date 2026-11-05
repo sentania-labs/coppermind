@@ -17,10 +17,12 @@ Scott's decisions:
 ## Required behavior
 
 Use `YYYY-MM` for reviewed notes, browsable `_Sources` pages, and browsable
-attachments. Provider, account, and topic remain metadata. Use explicit note
-date first, otherwise the first received date in the configured local
-timezone. Do not infer a meeting date from text or regenerate received date
-on retries.
+attachments. Superseded 2026-11-05 for notes and `_Sources` pages: they nest
+as `YYYY/YYYY-MM`, notes under `Notes/`; `_Attachments/YYYY-MM/` stays flat.
+docs/data-and-settings.md documents the current layout. Provider, account, and
+topic remain metadata. Use explicit note date first, otherwise the first received
+date in the configured local timezone. Do not infer a meeting date from text or
+regenerate received date on retries.
 
 Keep immutable originals in the internal source archive under stable source
 identities. Moving a browsable projection must not relocate or rewrite the
