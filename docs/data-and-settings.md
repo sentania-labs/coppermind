@@ -199,6 +199,25 @@ claimed. Both are files under `/data/state`, mode 0600, never database rows,
 because the API-key cache and the admin session both need to keep working
 even if PostgreSQL is unavailable.
 
+## Reviewed-note filing layout
+
+Reviewed notes are filed under `{notes.notes_folder}/{yyyy}/{yyyy-mm}/` by note
+date, and filed source pages under `{notes.sources_folder}/{yyyy}/{yyyy-mm}/`;
+pending source pages wait under `{sources_folder}/_Pending/{yyyy}/{yyyy-mm}/`.
+`notes_folder` must be a portable relative folder that does not collide with
+another reserved root. `_Attachments/YYYY-MM/` stays flat. Notes and source
+pages filed in the old flat `YYYY-MM/` layout are moved on the next filing pass
+through the same recoverable journal; an emptied old `YYYY-MM/` folder (at the
+root or under `_Sources`) is removed, and one that still holds files is left
+alone. A reviewed note moved by hand out of its filed folder is moved back on
+the next pass.
+
+`/data/state/reconciler_notices.json` records these returns and kept folders.
+Admin's Overview lists each current notice with the reason and lets the
+operator dismiss a returned-note notice. A notice is dropped when its note is
+gone or its folder no longer exists; a kept-folder notice clears itself when the
+folder empties.
+
 ## The PostgreSQL mirror
 
 Nothing here is durable on its own; the `rebuild_metadata` job recreates all
