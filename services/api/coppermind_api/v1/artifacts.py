@@ -9,7 +9,8 @@ touches a file: the store does all of it.
 
 `POST` takes either `multipart/form-data` (a `file` part plus text fields) or
 JSON (`url`, or `filename` with `content_base64`). The upload is bounded at
-200,000,000 bytes here and at `limits.artifact_max_bytes` in the store.
+`limits.artifact_max_bytes`, which the store reports and this API enforces before
+it buffers the body; a larger file needs the staged upload path, not built yet.
 """
 
 from __future__ import annotations
@@ -43,7 +44,6 @@ from coppermind_api.errors import failure
 
 router = APIRouter(prefix="/v1/artifacts", tags=["artifacts"])
 
-MAX_UPLOAD_BYTES = 200_000_000
 # Text fields a multipart submission may carry beside the file.
 TEXT_FIELDS = (
     "kind",
@@ -61,13 +61,14 @@ TEXT_FIELDS = (
 _MEDIA_TYPE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$")
 
 
-def _too_large() -> JSONResponse:
+def _too_large(limit: int) -> JSONResponse:
     return JSONResponse(
         status_code=413,
         content=envelope(
             "payload_too_large",
-            f"the artifact upload exceeds {MAX_UPLOAD_BYTES:,} bytes",
-            limit_bytes=MAX_UPLOAD_BYTES,
+            f"the artifact upload exceeds {limit:,} bytes; larger files need the staged "
+            "upload path, which is not built yet",
+            limit_bytes=limit,
         ),
     )
 
@@ -90,25 +91,27 @@ def _messages(error: ValidationError) -> list[str]:
     return problems
 
 
-def _declared_too_large(request: Request) -> bool:
+def _declared_too_large(request: Request, limit: int) -> bool:
     """Whether the request announces a body no artifact could fit in.
 
     Multipart framing and base64 add to the file's own size, so the ceiling
     here leaves room for them; the exact check is on the decoded bytes.
     """
     declared = request.headers.get("content-length", "")
-    return declared.isdigit() and int(declared) > MAX_UPLOAD_BYTES + MAX_UPLOAD_BYTES // 2
+    return declared.isdigit() and int(declared) > limit + limit // 2
 
 
-async def _from_multipart(request: Request) -> tuple[dict[str, Any], int] | JSONResponse:
+async def _from_multipart(
+    request: Request, limit: int
+) -> tuple[dict[str, Any], int] | JSONResponse:
     """The declared fields and the file of a multipart upload, bounded."""
-    if _declared_too_large(request):
-        return _too_large()
+    if _declared_too_large(request, limit):
+        return _too_large(limit)
     try:
-        form = await request.form(max_files=2, max_fields=32, max_part_size=MAX_UPLOAD_BYTES)
+        form = await request.form(max_files=2, max_fields=32, max_part_size=limit)
     except HTTPException as exc:
         if exc.status_code == 413:
-            return _too_large()
+            return _too_large(limit)
         return _validation([f"multipart body could not be read: {exc.detail}"])
     payload: dict[str, Any] = {}
     for field in TEXT_FIELDS:
@@ -123,9 +126,9 @@ async def _from_multipart(request: Request) -> tuple[dict[str, Any], int] | JSON
         chunks: list[bytes] = []
         while chunk := await upload.read(1 << 20):
             size += len(chunk)
-            if size > MAX_UPLOAD_BYTES:
+            if size > limit:
                 await upload.close()
-                return _too_large()
+                return _too_large(limit)
             chunks.append(chunk)
         data = b"".join(chunks)
         payload["content_base64"] = base64.b64encode(data).decode()
@@ -136,14 +139,14 @@ async def _from_multipart(request: Request) -> tuple[dict[str, Any], int] | JSON
     return payload, size
 
 
-async def _from_json(request: Request) -> tuple[dict[str, Any], int] | JSONResponse:
-    if _declared_too_large(request):
-        return _too_large()
+async def _from_json(request: Request, limit: int) -> tuple[dict[str, Any], int] | JSONResponse:
+    if _declared_too_large(request, limit):
+        return _too_large(limit)
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
-        if len(body) > MAX_UPLOAD_BYTES + MAX_UPLOAD_BYTES // 2:
-            return _too_large()
+        if len(body) > limit + limit // 2:
+            return _too_large(limit)
     try:
         payload = json.loads(bytes(body) or b"{}")
     except ValueError:
@@ -174,11 +177,15 @@ async def create_artifact(
     artifact. Identical bytes under the same filename, or the same URL,
     answer 200 with `created: false`.
     """
+    try:
+        limit = await client.get_artifact_limit()
+    except StoreError as error:
+        return failure(error)
     content_type = request.headers.get("content-type", "")
     parsed = (
-        await _from_multipart(request)
+        await _from_multipart(request, limit)
         if content_type.startswith("multipart/form-data")
-        else await _from_json(request)
+        else await _from_json(request, limit)
     )
     if isinstance(parsed, JSONResponse):
         return parsed

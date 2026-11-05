@@ -375,6 +375,10 @@ class HttpStoreClient:
     async def remove_artifact(self, artifact_id: ArtifactId) -> None:
         await self._send("DELETE", f"{INTERNAL_PREFIX}/artifacts/{_segment(artifact_id)}")
 
+    async def get_artifact_limit(self) -> int:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/artifacts/limit")
+        return int(response.json()["limit_bytes"])
+
     async def is_ready(self) -> bool:
         """True when the store reports itself ready. Never raises."""
         try:

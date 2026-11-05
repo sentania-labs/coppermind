@@ -22,7 +22,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from coppermind import frontmatter as fm
 from coppermind.atomicio import atomic_write_bytes, sync_directory
-from coppermind.db.models import Note, NoteSource, Source
+from coppermind.db.models import Artifact, Note, NoteSource, Source
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id
 from coppermind.logging import get_logger
@@ -235,6 +235,8 @@ def _breakdown(candidates: list[PurgeCandidate], field: str) -> dict[str, PurgeB
             entry = counts.setdefault(value, PurgeBreakdown())
             if c.kind == "note":
                 entry.notes += 1
+            elif c.kind == "artifact":
+                entry.artifacts += 1
             else:
                 entry.sources += 1
     return counts
@@ -251,6 +253,7 @@ def result(record: dict[str, Any]) -> PurgeResult:
         counts=PurgeCounts(
             notes=sum(c.kind == "note" for c in candidates),
             sources=sum(c.kind == "source" for c in candidates),
+            artifacts=sum(c.kind == "artifact" for c in candidates),
             by_origin=_breakdown(candidates, "origins"),
             by_provider=_breakdown(candidates, "providers"),
         ),
@@ -290,6 +293,10 @@ def resolve(root: Path, relative: str) -> Path:
     return filesystem_path(root, relative)
 
 
+def _directory_root(store: LocalStore, item: dict[str, Any]) -> Path:
+    return store.artifacts_root if item["candidate"]["kind"] == "artifact" else store.sources_root
+
+
 def _digest(path: Path) -> str:
     if path.is_symlink() or not path.is_file():
         raise ValueError("purge files must be regular files")
@@ -312,6 +319,7 @@ def _root(store: LocalStore, area: str) -> Path:
     return {
         "notes": store.notes_root,
         "sources": store.sources_root,
+        "artifacts": store.artifacts_root,
         "state": store.control.store.state_dir,
     }[area]
 
@@ -383,6 +391,7 @@ async def candidates(
     async with store.session_factory() as session:
         notes = list((await session.scalars(sa.select(Note).order_by(Note.id))).all())
         sources = list((await session.scalars(sa.select(Source).order_by(Source.id))).all())
+        live_artifacts = set((await session.scalars(sa.select(Artifact.id))).all())
         links = list(
             (
                 await session.scalars(
@@ -429,7 +438,68 @@ async def candidates(
         sources,
         linked,
         abandoned,
+        live_artifacts,
     )
+
+
+def _removed_archives(
+    store: LocalStore, cutoff: datetime, live: set[str]
+) -> tuple[list[dict[str, Any]], int]:
+    """Archives whose manifest marks them removed before `cutoff` and that no row holds."""
+    items: list[dict[str, Any]] = []
+    within = 0
+    for manifest_file in sorted(store.artifacts_root.glob("*/manifest.json")):
+        artifact_id = manifest_file.parent.name
+        if not is_valid_id(artifact_id) or artifact_id in live:
+            continue
+        try:
+            manifest = json.loads(manifest_file.read_bytes())
+            removed_at = datetime.fromisoformat(manifest["removed_at"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("artifact_id") != artifact_id
+            or manifest.get("kind") != "artifact"
+            or removed_at.utcoffset() is None
+        ):
+            continue
+        if removed_at > cutoff:
+            within += 1
+            continue
+        archive = resolve(store.artifacts_root, artifact_id)
+        for child in archive.rglob("*"):
+            resolve(store.artifacts_root, child.relative_to(store.artifacts_root).as_posix())
+        origin = str(manifest.get("origin") or "Unspecified")
+        candidate = PurgeCandidate(
+            kind="artifact",
+            id=artifact_id,
+            title=str(manifest.get("title") or manifest.get("filename") or artifact_id),
+            path="",
+            origins=[origin],
+            providers=["Artifacts"],
+            deleted_at=removed_at,
+        )
+        items.append(
+            {
+                "candidate": candidate.model_dump(mode="json"),
+                "row": None,
+                "files": [
+                    _file(store, "artifacts", p)
+                    for p in sorted(archive.rglob("*"))
+                    if not p.is_dir()
+                ],
+                "directories": [
+                    *(
+                        p.relative_to(store.artifacts_root).as_posix()
+                        for p in sorted(archive.rglob("*"))
+                        if p.is_dir()
+                    ),
+                    artifact_id,
+                ],
+            }
+        )
+    return items, within
 
 
 def _plan(
@@ -445,6 +515,7 @@ def _plan(
     sources: list[Source],
     linked: set[str],
     abandoned: list[dict[str, Any]],
+    live_artifacts: set[str],
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     by_note = {n.id: n for n in notes}
     by_source = {s.id: s for s in sources}
@@ -565,6 +636,8 @@ def _plan(
                 "directories": directories,
             }
         )
+    removed_artifacts, artifacts_within = _removed_archives(store, cutoff, live_artifacts)
+    items.extend(removed_artifacts)
     seen = {i["candidate"]["id"] for i in items}
     for record in abandoned:
         held = set(record.get("remaining", []))
@@ -574,6 +647,9 @@ def _plan(
                 continue
             if c["kind"] == "note":
                 if c["id"] in by_note or c["id"] in disk_ids:
+                    continue
+            elif c["kind"] == "artifact":
+                if c["id"] in live_artifacts:
                     continue
             else:
                 owner = by_note.get(old["opening"])
@@ -591,6 +667,7 @@ def _plan(
     kept = {
         "notes_within_retention": kept_notes,
         "sources_in_use": sum(s.id in protected for s in sources),
+        "artifacts_within_retention": artifacts_within,
     }
     return items, kept
 
@@ -598,7 +675,8 @@ def _plan(
 def _residual(store: LocalStore, old: dict[str, Any]) -> dict[str, Any] | None:
     """What an abandoned purge left behind, limited to the files its receipt recorded."""
     files = [f for f in old["files"] if resolve(_root(store, f["area"]), f["path"]).exists()]
-    directories = [d for d in old["directories"] if resolve(store.sources_root, d).exists()]
+    directory_root = _directory_root(store, old)
+    directories = [d for d in old["directories"] if resolve(directory_root, d).exists()]
     if not files and not directories:
         return None
     item = {
@@ -737,6 +815,10 @@ async def _verify_resume(store: LocalStore, record: dict[str, Any]) -> None:
                 row = by_note.get(c["id"])
                 if c["id"] in disk_ids or (row and row.state != "deleted"):
                     raise PurgeChanged()
+            elif c["kind"] == "artifact":
+                if await session.get(Artifact, c["id"]) is not None:
+                    raise PurgeChanged()
+                row = None
             else:
                 row = await session.get(Source, c["id"])
                 owner = by_note.get(item["opening"])
@@ -765,6 +847,13 @@ def _verify_files(store: LocalStore, item: dict[str, Any]) -> None:
                 and ("sources", path.relative_to(store.sources_root).as_posix()) not in expected
             ):
                 raise PurgeChanged()
+    elif c["kind"] == "artifact":
+        for path in (store.artifacts_root / c["id"]).rglob("*"):
+            if (
+                not path.is_dir()
+                and ("artifacts", path.relative_to(store.artifacts_root).as_posix()) not in expected
+            ):
+                raise PurgeChanged()
     else:
         for path in note_history.directory(store).glob(f"{c['id']}-*.json"):
             if (
@@ -782,8 +871,9 @@ def _unlink(store: LocalStore, item: dict[str, Any]) -> None:
                 raise PurgeChanged()
             path.unlink()
             sync_directory(path.parent)
+    directory_root = _directory_root(store, item)
     for relative in sorted(item["directories"], key=lambda p: len(Path(p).parts), reverse=True):
-        path = resolve(store.sources_root, relative)
+        path = resolve(directory_root, relative)
         if path.exists():
             path.rmdir()  # Never recursively erase a file absent from the preview.
             sync_directory(path.parent)
@@ -825,10 +915,13 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
                 ):
                     raise PurgeChanged()
                 disk_ids, cited, _ = await asyncio.to_thread(disk_references, store)
+                live_artifacts = set((await session.scalars(sa.select(Artifact.id))).all())
                 if any(
                     (
                         c["candidate"]["id"] in disk_ids
                         if c["candidate"]["kind"] == "note"
+                        else c["candidate"]["id"] in live_artifacts
+                        if c["candidate"]["kind"] == "artifact"
                         else c["candidate"]["id"] in cited or c["opening"] in disk_ids
                     )
                     for c in record["items"]
@@ -840,6 +933,8 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
                     if c["kind"] == "note":
                         await indexer.drop_note(session, c["id"], now)
                         await session.execute(sa.delete(Note).where(Note.id == c["id"]))
+                    elif c["kind"] == "artifact":
+                        continue
                     else:
                         await indexer.drop_source(session, c["id"], now)
                         await session.execute(sa.delete(Source).where(Source.id == c["id"]))
@@ -866,7 +961,7 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
 
 def _present(store: LocalStore, item: dict[str, Any]) -> bool:
     relative = [(_root(store, f["area"]), f["path"]) for f in item["files"]]
-    relative += [(store.sources_root, d) for d in item["directories"]]
+    relative += [(_directory_root(store, item), d) for d in item["directories"]]
     return any(os.path.lexists(root / path) for root, path in relative)
 
 
@@ -877,7 +972,8 @@ async def outcome(store: LocalStore, record: dict[str, Any]) -> tuple[list[str],
     async with store.session_factory() as session:
         for item in record["items"]:
             c = item["candidate"]
-            row = await session.get(Note if c["kind"] == "note" else Source, c["id"])
+            model = {"note": Note, "source": Source, "artifact": Artifact}[c["kind"]]
+            row = await session.get(model, c["id"])
             held = row is not None or await asyncio.to_thread(_present, store, item)
             (remaining if held else removed).append(c["id"])
     return removed, remaining

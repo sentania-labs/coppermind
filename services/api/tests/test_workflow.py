@@ -46,3 +46,25 @@ def test_review_write_requires_write_scope():
         )
     assert result.status_code == 403
     assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "scopes,kind,expected",
+    [
+        (["sources:write"], "artifact", 403),
+        (["artifacts:write"], "artifact", 403),
+        (["sources:write", "artifacts:write"], "artifact", 202),
+        (["sources:write"], None, 202),
+    ],
+)
+def test_a_drop_that_declares_a_kind_needs_the_artifact_write_scope(scopes, kind, expected):
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    params = {"filename": "deck.pptx", **({"kind": kind} if kind else {})}
+    with TestClient(app) as client:
+        result = client.post("/v1/dropbox", params=params, content=b"PK")
+    assert result.status_code == expected
+    assert [action for action, _ in fake.calls] == (["upload-drop"] if expected == 202 else [])

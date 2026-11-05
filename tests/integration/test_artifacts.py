@@ -117,6 +117,13 @@ async def test_a_pptx_upload_is_a_browsable_file_and_searchable_at_once_with_not
     assert served.content == data and served.filename == "VCDX design package.pptx"
 
 
+async def test_search_can_leave_artifact_hits_out(store):
+    created = await store.create_artifact(upload("notes.txt", b"hidden quokka text\n"))
+    assert [hit.id for hit in await hits(store, "quokka")] == [created.id]
+    assert await hits(store, "quokka", include_artifacts=False) == []
+    assert await hits(store, "quokka", kind="artifact", include_artifacts=False) == []
+
+
 async def test_deleting_the_browsable_copy_takes_the_record_and_search_on_the_next_pass(
     store, tmp_path
 ):

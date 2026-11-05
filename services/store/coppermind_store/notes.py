@@ -412,6 +412,9 @@ class LocalStore:
 
         return await list_artifacts(self, query)
 
+    async def get_artifact_limit(self) -> int:
+        return self.control.settings().limits.artifact_max_bytes
+
     async def remove_artifact(self, artifact_id: ArtifactId) -> None:
         from coppermind_store.artifacts import remove_artifact
 

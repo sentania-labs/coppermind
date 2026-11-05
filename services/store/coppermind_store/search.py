@@ -191,6 +191,8 @@ def filter_conditions(query: SearchQuery) -> list[sa.ColumnElement[bool]]:
         conditions.append(note_state() == query.state)
     if query.kind is not None:
         conditions.append(SearchDocument.kind == query.kind)
+    if not query.include_artifacts:
+        conditions.append(SearchDocument.kind != "artifact")
     if query.citing_note is not None:
         cites = sa.exists(
             sa.select(Note.id).where(

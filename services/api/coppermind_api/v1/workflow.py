@@ -93,9 +93,20 @@ async def drop(
     filename: str = Query(min_length=1, max_length=255),
     kind: str | None = Query(default=None, min_length=1, max_length=40),
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("sources:write")),
+    principal: Principal = Depends(require_scopes("sources:write")),
 ) -> Response:
-    """Drop a file. Calendars route themselves; anything else needs `kind=artifact`."""
+    """Drop a file. Calendars route themselves; anything else needs `kind=artifact`.
+
+    A drop that declares a kind stores an artifact, so it also needs `artifacts:write`.
+    """
+    if kind is not None and not principal.has("artifacts:write"):
+        return JSONResponse(
+            {
+                "error": "forbidden",
+                "message": "the API key does not grant the required scope",
+            },
+            403,
+        )
     data = bytearray()
     async for chunk in request.stream():
         data.extend(chunk)

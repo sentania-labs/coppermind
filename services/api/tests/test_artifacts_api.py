@@ -49,6 +49,7 @@ class FakeStore:
     def __init__(self) -> None:
         self.created: list[CreateArtifact] = []
         self.sizes: list[int | None] = []
+        self.limit = 10 * 1024 * 1024
         created = datetime(2026, 9, 8, tzinfo=UTC)
         self.write_record, self.write_key = create_key(
             "writer", ["artifacts:write"], created_at=created
@@ -103,6 +104,9 @@ class FakeStore:
             RECORD.model_dump(exclude={"text", "revisions", "extractor_version"})
         )
         return Page[ArtifactSummary](items=[summary], next_cursor=None)
+
+    async def get_artifact_limit(self) -> int:
+        return self.limit
 
     async def is_ready(self) -> bool:
         return True
@@ -287,22 +291,23 @@ def test_an_upload_that_announces_an_impossible_size_is_refused_before_parsing(a
         headers={
             **_as(fake, "write"),
             "Content-Type": "application/json",
-            "Content-Length": str(400_000_000),
+            "Content-Length": str(40_000_000),
         },
     )
     assert response.status_code == 413
-    assert response.json()["error"] == "payload_too_large"
-    assert response.json()["limit_bytes"] == 200_000_000
+    body = response.json()
+    assert body["error"] == "payload_too_large"
+    assert body["limit_bytes"] == 10 * 1024 * 1024
+    assert "staged upload path" in body["message"]
     assert fake.created == []
 
 
-def test_a_file_part_over_the_ceiling_is_refused(api, monkeypatch):
-    import coppermind_api.v1.artifacts as module
-
+def test_a_file_part_over_the_ceiling_is_refused(api):
     client, fake = api
-    # The ceiling leaves room for multipart framing, so the exact check is on the
-    # decoded bytes: one byte over is refused, the ceiling itself is accepted.
-    monkeypatch.setattr(module, "MAX_UPLOAD_BYTES", 1024)
+    # The ceiling comes from the store's setting and leaves room for multipart
+    # framing, so the exact check is on the decoded bytes: one byte over is
+    # refused, the ceiling itself is accepted.
+    fake.limit = 1024
     response = client.post(
         "/v1/artifacts",
         files={"file": ("big.bin", b"x" * 1025)},
@@ -318,3 +323,29 @@ def test_a_file_part_over_the_ceiling_is_refused(api, monkeypatch):
         headers=_as(fake, "write"),
     )
     assert small.status_code == 201
+
+
+def test_the_ceiling_follows_the_store_setting_and_refuses_before_buffering(api):
+    client, fake = api
+    fake.limit = 2048
+    response = client.post(
+        "/v1/artifacts",
+        content=b"{}",
+        headers={
+            **_as(fake, "write"),
+            "Content-Type": "application/json",
+            "Content-Length": str(2048 + 1025),
+        },
+    )
+    assert response.status_code == 413
+    assert response.json()["limit_bytes"] == 2048
+    assert fake.created == []
+    fake.limit = 100 * 1024 * 1024
+    larger = client.post(
+        "/v1/artifacts",
+        files={"file": ("big.bin", b"x" * (11 * 1024 * 1024))},
+        data={"kind": "artifact"},
+        headers=_as(fake, "write"),
+    )
+    assert larger.status_code == 201
+    assert len(fake.created) == 1

@@ -60,12 +60,14 @@ def listing(value: PurgeResult, request: Request) -> str:
         ("provider", value.counts.by_provider),
     ]:
         rows = "".join(
-            f"<tr><td>{escape(k)}</td><td>{n.notes}</td><td>{n.sources}</td></tr>"
+            f"<tr><td>{escape(k)}</td><td>{n.notes}</td><td>{n.sources}</td>"
+            f"<td>{n.artifacts}</td></tr>"
             for k, n in sorted(values.items())
         )
         groups += (
             f"<section><h2>By {label}</h2><table><thead><tr><th>{label.capitalize()}</th>"
-            f"<th>Deleted notes</th><th>Orphaned sources</th></tr></thead>"
+            f"<th>Deleted notes</th><th>Orphaned sources</th>"
+            f"<th>Removed artifacts</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></section>"
         )
     rows = ""
@@ -76,7 +78,11 @@ def listing(value: PurgeResult, request: Request) -> str:
             if c.deleted_at
             else "Opening note removed"
         )
-        label = "Deleted note" if c.kind == "note" else "Orphaned source"
+        label = {
+            "note": "Deleted note",
+            "source": "Orphaned source",
+            "artifact": "Removed artifact",
+        }[c.kind]
         if c.leftover:
             label += " (leftover from an interrupted purge)"
         where = c.origins if c.origins == c.providers else [*c.origins, *c.providers]
@@ -84,7 +90,8 @@ def listing(value: PurgeResult, request: Request) -> str:
 <td>{"<br>".join(escape(v) for v in where)}</td><td>{when}</td></tr>"""
     return f"""<div class="metrics"><div class="metric">Deleted notes
 <strong>{value.counts.notes}</strong></div>
-<div class="metric">Orphaned sources<strong>{value.counts.sources}</strong></div></div>
+<div class="metric">Orphaned sources<strong>{value.counts.sources}</strong></div>
+<div class="metric">Removed artifacts<strong>{value.counts.artifacts}</strong></div></div>
 <div class="review-grid">{groups}</div>
 <p class="muted">An item associated with several origins or providers counts once in each group.</p>
 <h2>Items in this list</h2><table><thead><tr><th>Item</th><th>Origin / provider</th>
@@ -97,7 +104,8 @@ def kept_line(value: PurgeResult) -> str:
         '<p class="muted">Kept: '
         f"{plural(kept.notes_within_retention, 'deleted note')} still inside the "
         f"{value.retention_days}-day retention window and "
-        f"{plural(kept.sources_in_use, 'source')} still used by live notes. "
+        f"{plural(kept.sources_in_use, 'source')} still used by live notes, and "
+        f"{plural(kept.artifacts_within_retention, 'removed artifact')} still inside the window. "
         "Git history is never rewritten.</p>"
     )
 
@@ -273,6 +281,11 @@ Save a changed value before previewing. Saving does not start a purge.</p>
                         if value.counts.sources == 1
                         else "their original bundles and generated pages"
                     )
+                )
+            if value.counts.artifacts:
+                parts.append(
+                    f"{plural(value.counts.artifacts, 'removed artifact')} "
+                    "with their archived bytes"
                 )
             action = (
                 "Retry removal of listed items" if unfinished else "Permanently remove listed items"

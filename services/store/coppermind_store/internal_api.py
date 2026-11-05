@@ -341,6 +341,15 @@ async def create_artifact(
     )
 
 
+@router.get("/artifacts/limit")
+async def get_artifact_limit(request: Request) -> Response:
+    try:
+        limit = await _store(request).get_artifact_limit()
+    except StoreError as error:
+        return _failure(error)
+    return JSONResponse({"limit_bytes": limit})
+
+
 @router.get("/artifacts", response_model=Page[ArtifactSummary])
 async def list_artifacts(
     request: Request, query: Annotated[ArtifactQuery, Query()]

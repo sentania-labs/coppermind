@@ -164,7 +164,7 @@ Nothing here needs to be set before the system runs.
 | limits | `calendar_max_events` | 50,000 retained events across calendars |
 | limits | `calendar_import_memory_mib` | 1024 MiB parser address space; about 40x the expanded export size |
 | limits | `ingest_max_bytes` | 25 MiB |
-| limits | `artifact_max_bytes` | 200,000,000 bytes per artifact file |
+| limits | `artifact_max_bytes` | 10 MiB (10,485,760 bytes) per inline artifact file; larger files need the staged upload path, not built yet |
 | limits | `attachment_max_bytes` | null (legacy; superseded by `artifact_max_bytes`) |
 | admin | `session_hours` | 12 |
 
@@ -328,6 +328,13 @@ current files, including unmirrored notes and Trash, before selecting sources.
 Unreadable notes refuse cleanup; legacy bundles without an opening-note identity
 are conservatively kept. A source's external-identity claim is removed with its
 bundle so a later ingest can create a new source normally.
+
+A removed artifact's archive under `/data/artifacts/<id>` is a candidate once its
+manifest's `removed_at` is older than the same window (inclusive boundary). Only an
+archive marked removed and held by no mirror row is listed; a live artifact is never a
+candidate. Confirmation deletes the archive's files and directories after rechecking their
+hashes, through the same dry run, confirm and abandon flow as notes and sources. A note that
+still cites the artifact keeps its citation.
 
 `/data/state/purges/<token>.json` holds a preview or unfinished receipt.
 Completed receipts move to `purges/done/` and abandoned ones to

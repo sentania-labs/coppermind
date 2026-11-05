@@ -399,11 +399,11 @@ class LimitSettings(BaseModel):
         default=25 * MIB, gt=0, description="Maximum ingest payload in bytes."
     )
     artifact_max_bytes: int = Field(
-        default=200_000_000,
+        default=10 * MIB,
         ge=1,
         description=(
-            "Maximum artifact file in bytes, the Sync Plus per-file cap by default. "
-            "A larger upload is refused with 413."
+            "Maximum artifact file in bytes accepted inline. A larger upload is refused "
+            "with 413; files above this need the staged upload path, which is not built yet."
         ),
     )
     # Null marks this override as unset. Kept so a settings file written before

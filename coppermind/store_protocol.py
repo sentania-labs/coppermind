@@ -173,7 +173,7 @@ class IncompleteRevision(StoreError):
 
 class PayloadTooLarge(StoreError):
     def __init__(self, limit_bytes: int) -> None:
-        super().__init__(f"the ingest payload exceeds the {limit_bytes} byte limit")
+        super().__init__(f"the payload exceeds the {limit_bytes} byte limit")
         self.limit_bytes = limit_bytes
 
 
@@ -842,6 +842,8 @@ class SearchQuery(NoteQuery):
     """Only hits of this kind. `tag` narrows notes and artifacts alike."""
     citing_note: str | None = Field(default=None, min_length=1)
     """Only artifacts this note cites in its frontmatter."""
+    include_artifacts: bool = True
+    """`false` leaves artifact hits out; the API sets it for a key without `artifacts:read`."""
 
     @field_validator("q")
     @classmethod
@@ -1068,6 +1070,8 @@ class Store(Protocol):
     async def list_artifacts(self, query: ArtifactQuery) -> Page[ArtifactSummary]: ...
 
     async def remove_artifact(self, artifact_id: ArtifactId) -> None: ...
+
+    async def get_artifact_limit(self) -> int: ...
 
 
 def etag_from_if_match(header: str | None) -> ETag:
