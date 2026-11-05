@@ -329,7 +329,7 @@ Abandon stops an unfinished (`applying` or `failed`) list without retrying it
 and releases its ids so reconciliation and a fresh preview proceed. It reports
 what was and was not removed, and the items still present appear in Problems.
 It also moves an unreadable receipt file into quarantine. Confirming an
-abandoned token is refused with 422; run a new preview. Preview and confirm
+abandoned token is refused with 422; run a new preview. Preview, confirm and abandon
 can run long on a large vault, so the store client allows them 10 minutes.
 
 Internal equivalents are `POST /internal/v1/purge/preview`, `/confirm` and `/abandon`,

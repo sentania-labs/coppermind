@@ -248,7 +248,10 @@ class HttpStoreClient:
 
     async def abandon_purge(self, request: AbandonPurge) -> PurgeResult:
         response = await self._send(
-            "POST", f"{INTERNAL_PREFIX}/purge/abandon", json=request.model_dump(mode="json")
+            "POST",
+            f"{INTERNAL_PREFIX}/purge/abandon",
+            json=request.model_dump(mode="json"),
+            timeout=PURGE_TIMEOUT_S,
         )
         return PurgeResult.model_validate(response.json())
 

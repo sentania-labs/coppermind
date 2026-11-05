@@ -591,3 +591,35 @@ def test_key_state_that_holds_no_usable_key_is_still_ready(tmp_path):
     revoked = record.model_copy(update={"revoked_at": datetime(2026, 9, 9, tzinfo=UTC)})
     with TestClient(bootstrapped_app(tmp_path, [revoked])) as client:
         assert control_check(client.get("/readyz"))["ok"] is True
+
+
+async def test_every_purge_call_gets_the_long_timeout_the_work_needs():
+    """Preview, confirm and abandon each scan the vault, so none may use the 30 s default."""
+    from coppermind.purge import AbandonPurge, ConfirmPurge
+    from coppermind.store_client import PURGE_TIMEOUT_S
+
+    timeouts: dict[str, dict] = {}
+    body = {
+        "token": "a" * 64,
+        "state": "preview",
+        "created_at": "2026-01-01T00:00:00Z",
+        "retention_days": 30,
+        "candidates": [],
+        "counts": {},
+    }
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        timeouts[request.url.path.rsplit("/", 1)[-1]] = request.extensions["timeout"]
+        return httpx.Response(200, json=body)
+
+    client = HttpStoreClient("http://store", TOKEN, transport=httpx.MockTransport(answer))
+    try:
+        await client.preview_purge()
+        await client.confirm_purge(ConfirmPurge(token="a" * 64, confirmation="Purge listed items"))
+        await client.abandon_purge(AbandonPurge(token="a" * 64))
+    finally:
+        await client.aclose()
+
+    assert set(timeouts) == {"preview", "confirm", "abandon"}
+    for seen in timeouts.values():
+        assert seen["read"] == PURGE_TIMEOUT_S
