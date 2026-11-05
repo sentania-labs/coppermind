@@ -168,6 +168,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         and set(note.sources) == {item["id"] for item in plan["sources"]}
         and all(
             item["revision"] == manifests[item["id"]]["current_revision"]
+            and item["to"] == manifests[item["id"]]["projection_path"]
             and filed_source_path(
                 settings.notes.sources_folder, manifests[item["id"]], item["id"], month
             )
@@ -196,7 +197,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         # note rewrite succeeds, including a page an interrupted attempt moved.
         link_froms = {link_from, old_path}
         if previous:
-            link_froms |= {previous["from"], *previous.get("link_froms", [])}
+            link_froms |= {previous["from"], previous["to"], *previous.get("link_froms", [])}
         sources.append(
             {
                 "id": source_id,

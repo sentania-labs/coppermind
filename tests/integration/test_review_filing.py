@@ -544,6 +544,62 @@ async def test_a_retried_migration_rewrites_the_link_an_interrupted_attempt_left
     assert flat.removesuffix(".md") not in body
 
 
+async def test_upgrade_keeps_the_first_filing_notes_link_when_a_sharing_note_moves_the_page(
+    store,
+):
+    from coppermind import frontmatter as fm
+
+    first = await store.ingest(ingest_request("first-shared"))
+    second = await store.ingest(ingest_request("second-shared"))
+    late, early = sorted((first.note.id, second.note.id), reverse=True)
+    await approve(store, late)
+    source_id = (first if first.note.id == late else second).source.id
+    nested = (await store.get_source(source_id)).projection_path
+    sharer = await store.get_note(early)
+    path = store.notes_root / sharer.path
+    metadata, body = fm.parse(path.read_text())
+    metadata["sources"].append(source_id)
+    path.write_text(fm.compose(metadata, body + f"\n[[{nested.removesuffix('.md')}]]\n"))
+    await reconcile_once(store)
+    assert (await approve(store, early))["filing_failed"] == 0
+
+    flat = nested.replace("_Sources/2026/", "_Sources/")
+    (store.notes_root / flat).parent.mkdir(parents=True)
+    (store.notes_root / nested).rename(store.notes_root / flat)
+    manifest_path = store.sources_root / source_id / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["projection_path"] = manifest["filed_projection_path"] = flat
+    manifest_path.write_text(json.dumps(manifest))
+    for note_id in (late, early):
+        note = await store.get_note(note_id)
+        await store.replace_note(
+            note_id,
+            ReplaceNote(
+                frontmatter=note.frontmatter,
+                body=note.body.replace(nested.removesuffix(".md"), flat.removesuffix(".md")),
+            ),
+            note.content_hash,
+        )
+        journal = store.control.store.state_dir / "filing" / f"{note_id}.json"
+        receipt = json.loads(journal.read_bytes())
+        for item in receipt["sources"]:
+            if item["id"] == source_id:
+                item["to"] = flat
+                item["from"] = (
+                    "_Sources/_Pending/2026/2026-09/original" if note_id == late else flat
+                )
+                item["link_from"] = item["from"]
+                item.pop("link_froms", None)
+        journal.write_text(json.dumps(receipt))
+
+    assert await filing.file_reviewed(store) == {"filed": 2, "filing_failed": 0}
+    for note_id in (late, early):
+        body = (await store.get_note(note_id)).body
+        assert nested.removesuffix(".md") in body
+        assert flat.removesuffix(".md") not in body
+    assert (store.notes_root / nested).is_file()
+
+
 async def test_a_configured_notes_root_governs_filing_search_and_indexing(store):
     state = store.control.store
     settings = store.control.settings()
