@@ -224,14 +224,16 @@ async def test_a_name_with_glob_characters_is_matched_literally_against_history(
     from tests.integration.test_note_recovery import commit, git
 
     created = await store.create_artifact(upload("Q1 [final]*?.txt", b"glob quokka\n"))
+    pattern = (store.notes_root / created.path).name
+    assert pattern.startswith("Q1 [final]")
     git(store.notes_root, "init", "-q")
     folder = (store.notes_root / created.path).parent
-    decoy = folder / "Q1 f.txt"
+    (store.notes_root / created.path).unlink()
+    decoy = folder / "Q1 fxy.txt"
     decoy.write_bytes(b"another file")
     commit(store.notes_root)
     decoy.unlink()
     commit(store.notes_root)
-    (store.notes_root / created.path).unlink()
 
     swept = await artifacts.sweep(store)
 
@@ -239,6 +241,37 @@ async def test_a_name_with_glob_characters_is_matched_literally_against_history(
     manifest = json.loads((store.artifacts_root / created.id / "manifest.json").read_text())
     assert "removed_at" not in manifest
     assert await hits(store, "quokka")
+
+
+async def test_an_unfinished_search_for_a_moved_copy_never_retires_the_artifact(store, monkeypatch):
+    from pathlib import Path
+
+    from tests.integration.test_note_recovery import commit, git
+
+    data = b"unreadable quokka\n"
+    created = await store.create_artifact(upload("deck.txt", data))
+    git(store.notes_root, "init", "-q")
+    commit(store.notes_root)
+    (store.notes_root / created.path).unlink()
+    stray = store.notes_root / "Elsewhere" / "sync-temp.bin"
+    stray.parent.mkdir()
+    stray.write_bytes(b"x" * len(data))
+    commit(store.notes_root)
+    real = Path.read_bytes
+
+    def flaky(self):
+        if self.name == "sync-temp.bin":
+            raise OSError("vanished during sync")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    swept = await artifacts.sweep(store)
+
+    assert swept["artifacts_removed"] == 0 and swept["artifacts_missing"] == 1
+    manifest = json.loads((store.artifacts_root / created.id / "manifest.json").read_text())
+    assert "removed_at" not in manifest
+    monkeypatch.undo()
+    assert (await artifacts.sweep(store))["artifacts_removed"] == 1
 
 
 async def test_an_older_deletion_at_the_same_name_does_not_retire_a_newer_artifact(store):

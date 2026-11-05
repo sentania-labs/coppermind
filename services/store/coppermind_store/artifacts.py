@@ -1335,8 +1335,11 @@ async def sweep(store: LocalStore, *, full: bool = False) -> dict[str, int]:
                 outcome = await asyncio.to_thread(_observe_browse, store, manifest, document, full)
                 if outcome == "gone":
                     elsewhere = {r.path for r in rows if r.id != row.id and r.path}
-                    if await asyncio.to_thread(_restore_moved_copy, store, manifest, elsewhere):
+                    moved = await asyncio.to_thread(_restore_moved_copy, store, manifest, elsewhere)
+                    if moved == "restored":
                         outcome = "ok"
+                    elif moved == "unknown":
+                        outcome = "missing"
                     else:
                         commit = await asyncio.to_thread(
                             store.note_history.removal_commit,
@@ -1367,43 +1370,64 @@ async def sweep(store: LocalStore, *, full: bool = False) -> dict[str, int]:
     return counts
 
 
-def _restore_moved_copy(store: LocalStore, manifest: dict[str, Any], others: set[str]) -> bool:
-    """Return a copy the owner moved or renamed in the vault to its filed place.
+def _restore_moved_copy(store: LocalStore, manifest: dict[str, Any], others: set[str]) -> str:
+    """`restored`, `absent` or `unknown` for a copy the owner moved or renamed in the vault.
 
     Moving or renaming is not deleting: a file under the notes root holding
     exactly the archived bytes, and not another artifact's copy, is put back at
     the path this artifact was filed under, and the artifact is never retired.
+    `absent` is answered only after every file was examined; a file that could
+    not be read, or a restore that failed, answers `unknown`, which callers
+    must not read as a deletion.
     """
     current = _current_revision(manifest)
+    unreadable: list[OSError] = []
+    complete = True
     try:
         filed = resolve(store.notes_root, str(manifest["path"]))
         size = int(current["size_bytes"])
-        for directory, subdirs, names in os.walk(store.notes_root):
-            subdirs[:] = [name for name in subdirs if not name.startswith(".")]
-            for name in names:
-                found = Path(directory) / name
-                relative = found.relative_to(store.notes_root).as_posix()
-                if relative in others or found.is_symlink() or found.stat().st_size != size:
+    except (ValueError, KeyError):
+        return "unknown"
+    for directory, subdirs, names in os.walk(store.notes_root, onerror=unreadable.append):
+        subdirs[:] = [name for name in subdirs if not name.startswith(".")]
+        for name in names:
+            found = Path(directory) / name
+            relative = found.relative_to(store.notes_root).as_posix()
+            if relative in others:
+                continue
+            try:
+                if found.is_symlink() or found.stat().st_size != size:
                     continue
                 data = found.read_bytes()
-                if hashlib.sha256(data).hexdigest() != current.get("sha256"):
-                    continue
+            except OSError:
+                complete = False
+                continue
+            if hashlib.sha256(data).hexdigest() != current.get("sha256"):
+                continue
+            try:
                 filed.parent.mkdir(parents=True, exist_ok=True)
                 create_exclusive_bytes(filed, data)
+            except OSError:
+                return "unknown"
+            try:
                 found.unlink()
                 sync_directory(filed.parent)
                 sync_directory(found.parent)
+            except OSError:
                 log.warning(
-                    "artifact %s was moved in the vault from %s to %s; "
-                    "it is back at its filed location and stays stored",
+                    "artifact %s is restored but %s could not be removed",
                     manifest["artifact_id"],
-                    manifest["path"],
                     relative,
                 )
-                return True
-    except (OSError, ValueError):
-        return False
-    return False
+            log.warning(
+                "artifact %s was moved in the vault from %s to %s; "
+                "it is back at its filed location and stays stored",
+                manifest["artifact_id"],
+                manifest["path"],
+                relative,
+            )
+            return "restored"
+    return "absent" if complete and not unreadable else "unknown"
 
 
 def _observe_browse(
