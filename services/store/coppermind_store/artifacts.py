@@ -30,6 +30,7 @@ import binascii
 import contextlib
 import hashlib
 import json
+import os
 import re
 import shutil
 from datetime import UTC, date, datetime, time
@@ -1333,18 +1334,23 @@ async def sweep(store: LocalStore, *, full: bool = False) -> dict[str, int]:
             if row.path:
                 outcome = await asyncio.to_thread(_observe_browse, store, manifest, document, full)
                 if outcome == "gone":
-                    commit = await asyncio.to_thread(
-                        store.note_history.removal_commit,
-                        str(manifest["path"]),
-                        settings.git.enabled,
-                    )
-                    if commit is not None:
-                        await _retire(
-                            store, manifest, reason=DELETED_IN_OBSIDIAN, removal_commit=commit
+                    elsewhere = {r.path for r in rows if r.id != row.id and r.path}
+                    if await asyncio.to_thread(_restore_moved_copy, store, manifest, elsewhere):
+                        outcome = "ok"
+                    else:
+                        commit = await asyncio.to_thread(
+                            store.note_history.removal_commit,
+                            str(manifest["path"]),
+                            settings.git.enabled,
+                            _time(_current_revision(manifest)["stored_at"], "stored_at"),
                         )
-                        counts["artifacts_removed"] += 1
-                        continue
-                    outcome = "missing"
+                        if commit is not None:
+                            await _retire(
+                                store, manifest, reason=DELETED_IN_OBSIDIAN, removal_commit=commit
+                            )
+                            counts["artifacts_removed"] += 1
+                            continue
+                        outcome = "missing"
                 if outcome in {"missing", "modified", "ok"} and outcome != document.get(
                     "state", "ok"
                 ):
@@ -1359,6 +1365,45 @@ async def sweep(store: LocalStore, *, full: bool = False) -> dict[str, int]:
     if (store.notes_root / sanitize_folder(settings.notes.attachments_folder)).is_dir():
         counts.update(await migrate_attachments(store))
     return counts
+
+
+def _restore_moved_copy(store: LocalStore, manifest: dict[str, Any], others: set[str]) -> bool:
+    """Return a copy the owner moved or renamed in the vault to its filed place.
+
+    Moving or renaming is not deleting: a file under the notes root holding
+    exactly the archived bytes, and not another artifact's copy, is put back at
+    the path this artifact was filed under, and the artifact is never retired.
+    """
+    current = _current_revision(manifest)
+    try:
+        filed = resolve(store.notes_root, str(manifest["path"]))
+        size = int(current["size_bytes"])
+        for directory, subdirs, names in os.walk(store.notes_root):
+            subdirs[:] = [name for name in subdirs if not name.startswith(".")]
+            for name in names:
+                found = Path(directory) / name
+                relative = found.relative_to(store.notes_root).as_posix()
+                if relative in others or found.is_symlink() or found.stat().st_size != size:
+                    continue
+                data = found.read_bytes()
+                if hashlib.sha256(data).hexdigest() != current.get("sha256"):
+                    continue
+                filed.parent.mkdir(parents=True, exist_ok=True)
+                create_exclusive_bytes(filed, data)
+                found.unlink()
+                sync_directory(filed.parent)
+                sync_directory(found.parent)
+                log.warning(
+                    "artifact %s was moved in the vault from %s to %s; "
+                    "it is back at its filed location and stays stored",
+                    manifest["artifact_id"],
+                    manifest["path"],
+                    relative,
+                )
+                return True
+    except (OSError, ValueError):
+        return False
+    return False
 
 
 def _observe_browse(

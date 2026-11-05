@@ -170,6 +170,118 @@ async def test_deleting_the_file_in_obsidian_retires_the_artifact_once_git_recor
     assert (await store.get_status()).counters.artifacts == 1
 
 
+@pytest.mark.parametrize("destination", ["renamed deck.pptx", "Elsewhere/Deeper/deck.pptx"])
+async def test_moving_or_renaming_the_file_in_obsidian_is_not_a_delete(
+    store, tmp_path, destination
+):
+    from tests.integration.test_note_recovery import commit, git
+
+    data = pptx_bytes(tmp_path, "Enablement deck", "Platypus enablement")
+    created = await store.create_artifact(upload("deck.pptx", data))
+    git(store.notes_root, "init", "-q")
+    commit(store.notes_root)
+    original = store.notes_root / created.path
+    target = (
+        original.parent / destination
+        if "/" not in destination
+        else (store.notes_root / destination)
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    original.rename(target)
+    commit(store.notes_root)
+
+    swept = await artifacts.sweep(store)
+
+    assert swept["artifacts_removed"] == 0
+    assert original.read_bytes() == data
+    assert not target.exists()
+    assert (await store.get_artifact(created.id)).state == "ok"
+    assert await hits(store, "platypus")
+    manifest = json.loads((store.artifacts_root / created.id / "manifest.json").read_text())
+    assert "removed_at" not in manifest
+
+
+async def test_a_moved_copy_is_never_taken_from_another_artifact(store, tmp_path):
+    from tests.integration.test_note_recovery import commit, git
+
+    data = pptx_bytes(tmp_path, "Twin", "Identical bytes")
+    first = await store.create_artifact(upload("deck.pptx", data))
+    second = await store.create_artifact(upload("copy of deck.pptx", data))
+    git(store.notes_root, "init", "-q")
+    commit(store.notes_root)
+    assert first.id != second.id
+    (store.notes_root / first.path).unlink()
+    commit(store.notes_root)
+
+    swept = await artifacts.sweep(store)
+
+    assert swept["artifacts_removed"] == 1
+    assert (store.notes_root / second.path).read_bytes() == data
+    assert (await store.get_artifact(second.id)).state == "ok"
+
+
+async def test_a_name_with_glob_characters_is_matched_literally_against_history(store):
+    from tests.integration.test_note_recovery import commit, git
+
+    created = await store.create_artifact(upload("Q1 [final]*?.txt", b"glob quokka\n"))
+    git(store.notes_root, "init", "-q")
+    folder = (store.notes_root / created.path).parent
+    decoy = folder / "Q1 f.txt"
+    decoy.write_bytes(b"another file")
+    commit(store.notes_root)
+    decoy.unlink()
+    commit(store.notes_root)
+    (store.notes_root / created.path).unlink()
+
+    swept = await artifacts.sweep(store)
+
+    assert swept["artifacts_removed"] == 0 and swept["artifacts_missing"] == 1
+    manifest = json.loads((store.artifacts_root / created.id / "manifest.json").read_text())
+    assert "removed_at" not in manifest
+    assert await hits(store, "quokka")
+
+
+async def test_an_older_deletion_at_the_same_name_does_not_retire_a_newer_artifact(store):
+    import os
+    import subprocess
+
+    from tests.integration.test_note_recovery import git
+
+    git(store.notes_root, "init", "-q")
+    folder = store.notes_root / month_folder(store)
+    folder.mkdir(parents=True)
+    old = folder / "deck.txt"
+    old.write_bytes(b"an older artifact")
+    past = {**os.environ, "GIT_COMMITTER_DATE": "2020-01-01T00:00:00Z"}
+    for message in ("add", "delete"):
+        if message == "delete":
+            old.unlink()
+        git(store.notes_root, "add", "-A")
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@example.test",
+                "commit",
+                "-qm",
+                message,
+            ],
+            cwd=store.notes_root,
+            env={**past, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"},
+            check=True,
+        )
+    created = await store.create_artifact(upload("deck.txt", b"newer wombat\n"))
+    assert created.path == f"{month_folder(store)}/deck.txt"
+    (store.notes_root / created.path).unlink()
+
+    swept = await artifacts.sweep(store)
+
+    assert swept["artifacts_removed"] == 0 and swept["artifacts_missing"] == 1
+    assert await hits(store, "wombat")
+
+
 async def test_a_copy_that_comes_back_clears_missing_and_a_rebuild_never_retires(store, tmp_path):
     data = pptx_bytes(tmp_path, "Deck", "Returning quoll")
     created = await store.create_artifact(upload("deck.pptx", data))

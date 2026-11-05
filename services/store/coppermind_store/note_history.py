@@ -255,37 +255,45 @@ class GitHistory:
                     break
         self.removed = removed
 
-    def removal_commit(self, path: str, enabled: bool) -> str | None:
+    def removal_commit(self, path: str, enabled: bool, since: datetime) -> str | None:
         """The commit that removed `path` from the notes filesystem, if history records one.
 
         Artifact files carry no identity in their bytes, so the question is
-        about the path alone: the newest first-parent commit that deleted it,
-        provided HEAD no longer holds that path. Unreadable or disabled history
-        answers None, which callers read as no evidence rather than as absence.
+        about the path alone: the newest first-parent commit that deleted
+        exactly that path, provided HEAD no longer holds it and the commit is
+        no older than `since`, when the copy was placed. A deletion of an
+        earlier file at the same name is not evidence about this one. Unreadable
+        or disabled history answers None, which callers read as no evidence
+        rather than as absence.
         """
         if not enabled:
             return None
         try:
-            held = self.git("ls-tree", "-z", "HEAD", "--", path)
+            held = self.git("--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", path)
             if held.strip(b"\0"):
                 return None
-            commit = (
+            fields = (
                 self.git(
+                    "--literal-pathspecs",
                     "log",
                     "--first-parent",
                     "-1",
-                    "--format=%H",
+                    "--format=%H %ct",
                     "--diff-filter=D",
                     "HEAD",
                     "--",
                     path,
                 )
                 .decode()
-                .strip()
+                .split()
             )
         except (HistoryUnavailable, UnicodeError):
             return None
-        return commit if re.fullmatch(r"[0-9a-f]{40,64}", commit) else None
+        if len(fields) != 2 or not re.fullmatch(r"[0-9a-f]{40,64}", fields[0]):
+            return None
+        if not fields[1].isdigit() or int(fields[1]) < int(since.timestamp()):
+            return None
+        return fields[0]
 
     @staticmethod
     def identity(data: bytes, key: str) -> str | None:
