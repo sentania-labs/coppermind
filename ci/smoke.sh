@@ -555,8 +555,18 @@ cmp -s "$served" "$artifact_pdf" || fail "the served bytes differ from the uploa
 [ "$(status_of "${AUTH[@]}" "$API/v1/notes?folder=Artifacts")" = "200" ] || fail "listing notes under Artifacts failed"
 [ "$(curl -sS -G "${AUTH[@]}" "$API/v1/notes" --data-urlencode 'folder=Artifacts' | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["items"]))')" = "0" ] \
     || fail "the artifact was listed as a note"
-admin_page -f "$ADMIN/admin/artifacts" | grep -Fq "$artifact_id" \
+# The operator signed out earlier in the storyline, so sign in again to read the page.
+admin_csrf="$(admin_page -f "$ADMIN/admin/login" | form_value csrf | head -1)"
+[ "$(admin -X POST "$ADMIN/v1/admin/login" --data-urlencode "password=$admin_password")" \
+    = "$ADMIN/admin" ] \
+    || fail "the admin password did not sign in before reading the artifacts page"
+artifacts_page="$(admin_page -f "$ADMIN/admin/artifacts")"
+printf '%s' "$artifacts_page" | grep -Fq "$artifact_id" \
     || fail "Admin's artifacts page does not list the artifact"
+printf '%s' "$artifacts_page" | grep -Fq '<strong>artifact</strong>' \
+    || fail "Admin's artifacts page does not say the kind"
+admin_csrf="$(admin_page -f "$ADMIN/admin" | form_value csrf | head -1)"
+admin -X POST "$ADMIN/v1/admin/logout" >/dev/null
 ok "the PDF is a browsable file under Artifacts/, archived, searchable by its text as an artifact, and not a note"
 
 step "create a note through the API"
