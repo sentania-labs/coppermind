@@ -172,7 +172,9 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         review = {"reviewed": True, "sources": approved}
         _save(review_path, review)
     if store.context.config().lifecycle_enabled and (
-        not plan or plan.get("content_hash") != note.content_hash
+        not plan
+        or plan.get("content_hash") != note.content_hash
+        or not await store.context.lifecycle.follow(note)
     ):
         await store.context.lifecycle.finalize(note)
     same_filing = (

@@ -167,7 +167,10 @@ async def test_filing_link_rewrite_does_not_restart_stability_wait(store, monkey
     monkeypatch.setattr(note_lifecycle.clock, "monotonic", lambda: later)
     assert (await filing.file_reviewed(store))["filed"] == 1
     assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 0}
-    assert (await store.get_note(note.id)).filed
+    filed = await store.get_note(note.id)
+    assert filed.filed
+    record = store.context.read("finalized", {})[note.id]
+    assert (record["path"], record["note_hash"]) == (filed.path, filed.content_hash)
     plan = json.loads((store.control.store.state_dir / "filing" / f"{note.id}.json").read_bytes())
     assert len(plan["copies"]) >= 2
     journal = store.control.store.state_dir / "filing" / f"{note.id}.json"

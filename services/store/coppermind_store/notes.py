@@ -511,6 +511,9 @@ class LocalStore:
         )
 
     async def get_note(self, note_id: NoteId) -> NoteDocument:
+        return await self._with_filing_state(await self._read_current(note_id))
+
+    async def _read_current(self, note_id: NoteId) -> NoteDocument:
         async with self._lock_for(note_id):
             relative, path = await self._locate(note_id)
             data, mtime = _read(note_id, path)
@@ -528,20 +531,16 @@ class LocalStore:
                 data, mtime = _read(note_id, path)
                 frontmatter, body = _parse(note_id, relative, data, schema)
             sources = frontmatter.get(schema.role("sources_key"), [])
-            return await self._with_filing_state(
-                NoteDocument(
-                    id=note_id,
-                    path=relative,
-                    title=_title_of(body, path),
-                    frontmatter=_jsonable(frontmatter),
-                    body=body,
-                    content_hash=content_hash(data),
-                    size_bytes=len(data),
-                    updated_at=datetime.fromtimestamp(mtime, tz=UTC),
-                    sources=[str(source) for source in sources]
-                    if isinstance(sources, list)
-                    else [],
-                )
+            return NoteDocument(
+                id=note_id,
+                path=relative,
+                title=_title_of(body, path),
+                frontmatter=_jsonable(frontmatter),
+                body=body,
+                content_hash=content_hash(data),
+                size_bytes=len(data),
+                updated_at=datetime.fromtimestamp(mtime, tz=UTC),
+                sources=[str(source) for source in sources] if isinstance(sources, list) else [],
             )
 
     async def list_notes(self, query: NoteQuery) -> Page[NoteSummary]:
@@ -578,21 +577,22 @@ class LocalStore:
                     if not rows:
                         break
                     after = rows[-1].id
-                    visible = []
-                    for row in rows:
-                        if row.state == "ok":
-                            try:
-                                await self.get_note(row.id)
-                            except (NotFound, NoteUnparseable):
-                                continue
-                        visible.append(row)
                     from coppermind_store.filing import filing_state
 
-                    summaries = _scan_rows(visible, query, wanted - len(matched))
-                    for summary in summaries:
+                    for row in rows:
+                        summary = _mirrored_summary(row, cast(NoteState, row.state))
+                        if not _matches_query(summary, query):
+                            continue
+                        if row.state == "ok":
+                            try:
+                                await self._read_current(row.id)
+                            except (NotFound, NoteUnparseable):
+                                continue
                         for key, value in filing_state(self, summary.id).items():
                             setattr(summary, key, value)
-                    matched.extend(summaries)
+                        matched.append(summary)
+                        if len(matched) == wanted:
+                            break
                     if len(rows) < batch_size:
                         break
         except (SQLAlchemyError, OSError) as exc:
@@ -1559,19 +1559,6 @@ def _parse(
         # the honest answer is a miss until reconciliation clears the row.
         raise NotFound(note_id)
     return frontmatter, body
-
-
-def _scan_rows(rows: list[Note], query: NoteQuery, needed: int) -> list[NoteSummary]:
-    """Filter one mirror batch, stopping once `needed` rows match."""
-    found: list[NoteSummary] = []
-    for row in rows:
-        summary = _mirrored_summary(row, cast(NoteState, row.state))
-        if not _matches_query(summary, query):
-            continue
-        found.append(summary)
-        if len(found) == needed:
-            break
-    return found
 
 
 def _mirrored_summary(row: Note, state: NoteState) -> NoteSummary:
