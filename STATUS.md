@@ -42,9 +42,9 @@ vertical path proved end to end, then widened.
   manual setup and no hand populated setting. The one-shot `bootstrap`
   container creates `/data`, generates the internal bearer token and the
   PostgreSQL password as files on volumes (never environment values), creates
-  a working default API key (every scope except `admin:purge`) in a separate restricted volume, and
-  writes `settings.yaml`, `schema.yaml` and the key's Argon2 hash at revision
-  1. Running it again keeps every existing secret, key and setting. Revoke
+  a working default API key (every scope except `admin:purge`) in a separate
+  restricted volume, and writes `settings.yaml`, `schema.yaml` and the key's
+  Argon2 hash at revision 1. Running it again keeps every existing secret, key and setting. Revoke
   that default and it stays revoked. The revocation takes effect for
   authentication as soon as the API's cache next loads; the reveal file is
   replaced by a sentence saying so at the next `docker compose up`, so until
