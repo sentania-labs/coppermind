@@ -478,4 +478,5 @@ def test_the_overview_lists_old_folders_kept_with_why():
     assert "<strong>2026-08/ was kept</strong>" in html
     assert "<code>2026-08</code>" in html
     assert "2026-08/ still holds files." in html
-    assert 'action="/v1/admin/notices/folder%3A2026-08/dismiss"' in html
+    assert "Dismiss" not in html
+    assert "<form" not in html

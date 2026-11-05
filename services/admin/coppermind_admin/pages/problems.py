@@ -119,6 +119,11 @@ def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems fo
     )
 
 
+def _dismiss_form(notice: ReconcilerNotice) -> str:
+    action = f"/v1/admin/notices/{quote(notice.note_id, safe='')}/dismiss"
+    return f'<form method="post" action="{action}"><button>Dismiss</button></form>'
+
+
 def _notices_html(notices: Sequence[ReconcilerNotice], zone: ZoneInfo) -> str:
     from coppermind_admin.pages.search_index import local_time
 
@@ -126,7 +131,6 @@ def _notices_html(notices: Sequence[ReconcilerNotice], zone: ZoneInfo) -> str:
         return ""
     items = ""
     for notice in notices:
-        dismiss_id = quote(notice.note_id, safe="")
         where = (
             f"found at <code>{escape(notice.from_path)}</code>, returned to "
             f"<code>{escape(notice.path)}</code>, {escape(local_time(notice.at, zone))}"
@@ -137,8 +141,7 @@ def _notices_html(notices: Sequence[ReconcilerNotice], zone: ZoneInfo) -> str:
             f"<li><strong>{escape(notice.title)}</strong> "
             f'<span class="muted">{where}</span>'
             f"<br>{escape(notice.reason)}"
-            f'<form method="post" action="/v1/admin/notices/{dismiss_id}/dismiss">'
-            "<button>Dismiss</button></form></li>"
+            f"{_dismiss_form(notice) if notice.kind == 'note' else ''}</li>"
         )
     return f"<ul>{items}</ul>"
 

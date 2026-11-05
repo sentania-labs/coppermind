@@ -632,13 +632,10 @@ async def test_old_month_folders_are_removed_when_empty_and_reported_when_not(st
     assert (await store.get_status()).counters.folders_kept == 0
 
 
-async def test_a_folder_notice_is_dropped_once_the_folder_is_gone_and_can_be_dismissed(store):
+async def test_a_folder_notice_is_dropped_once_the_folder_is_gone(store):
     folder = store.notes_root / "2026-08"
     folder.mkdir()
     (folder / "keep.txt").write_text("mine")
-    await filing.file_reviewed(store)
-    await store.dismiss_reconciler_notice("folder:2026-08")
-    assert await store.list_reconciler_notices() == []
     await filing.file_reviewed(store)
     assert len(await store.list_reconciler_notices()) == 1
     (folder / "keep.txt").unlink()
