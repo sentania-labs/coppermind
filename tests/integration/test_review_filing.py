@@ -501,6 +501,7 @@ async def test_upgrade_carries_flat_filed_source_pages_into_their_year_folder(st
     body = (await store.get_note(note.id)).body
     assert link in body
     assert flat.removesuffix(".md") not in body
+    assert not (store.notes_root / flat).parent.exists()
     hits = (await store.search(SearchQuery(q="kerfuffle"))).items
     assert [hit.id for hit in hits] == [result.source.id]
     assert hits[0].path == nested
@@ -548,9 +549,7 @@ async def test_upgrade_refiles_legacy_notes_and_search_never_empties(store):
     assert note.id in await _eligible_ids(store)
     assert moved.sources == note.sources
     assert (await store.get_status()).counters.notes_to_refile == 0
-    assert not (store.notes_root / "2026-09").exists() or not any(
-        (store.notes_root / "2026-09").glob("*.md")
-    )
+    assert not (store.notes_root / "2026-09").exists()
     await indexer.catch_up(store)
     assert (await store.search(SearchQuery(q="kerfuffle"))).items
     # A second pass has nothing left to move and records no notice.
@@ -578,6 +577,74 @@ async def test_a_hand_moved_note_returns_with_a_reconciler_notice(store):
     assert notice.path == note.path
     assert "Notes/2026/2026-09" in notice.reason
     assert (await store.get_status()).counters.notes_returned == 1
+
+
+async def test_a_hand_move_notice_survives_a_failed_first_return(store, monkeypatch):
+    result = await store.ingest(ingest_request())
+    await approve(store, result.note.id)
+    note = await store.get_note(result.note.id)
+    source = store.notes_root / note.path
+    (store.notes_root / "Elsewhere").mkdir()
+    source.rename(store.notes_root / "Elsewhere" / source.name)
+    await reconcile_once(store)
+    move_note = store.move_note
+    failures: list[bool] = []
+
+    async def failing_once(*args, **kwargs):
+        if not failures:
+            failures.append(True)
+            raise ValueError("the destination is busy")
+        return await move_note(*args, **kwargs)
+
+    monkeypatch.setattr(store, "move_note", failing_once)
+    assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 1}
+    assert await store.list_reconciler_notices() == []
+    assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+    [notice] = await store.list_reconciler_notices()
+    assert notice.from_path == f"Elsewhere/{source.name}"
+    assert (await store.get_note(note.id)).path == note.path
+    assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 0}
+
+
+async def test_old_month_folders_are_removed_when_empty_and_reported_when_not(store):
+    kept = [store.notes_root / "2026-08", store.notes_root / "_Sources" / "2026-08"]
+    empty = [store.notes_root / "2026-07", store.notes_root / "_Sources" / "2026-07"]
+    for folder in (*kept, *empty):
+        folder.mkdir(parents=True)
+    for folder in kept:
+        (folder / "keep.txt").write_text("mine")
+    await filing.file_reviewed(store)
+    assert not any(folder.exists() for folder in empty)
+    assert all((folder / "keep.txt").read_text() == "mine" for folder in kept)
+    notices = {n.note_id: n for n in await store.list_reconciler_notices()}
+    assert set(notices) == {"folder:2026-08", "folder:_Sources/2026-08"}
+    assert {n.kind for n in notices.values()} == {"folder"}
+    assert "still holds files" in notices["folder:2026-08"].reason
+    counters = (await store.get_status()).counters
+    assert (counters.folders_kept, counters.notes_returned) == (2, 0)
+    await filing.file_reviewed(store)
+    assert len(await store.list_reconciler_notices()) == 2
+    for folder in kept:
+        (folder / "keep.txt").unlink()
+    await filing.file_reviewed(store)
+    assert not any(folder.exists() for folder in kept)
+    assert await store.list_reconciler_notices() == []
+    assert (await store.get_status()).counters.folders_kept == 0
+
+
+async def test_a_folder_notice_is_dropped_once_the_folder_is_gone_and_can_be_dismissed(store):
+    folder = store.notes_root / "2026-08"
+    folder.mkdir()
+    (folder / "keep.txt").write_text("mine")
+    await filing.file_reviewed(store)
+    await store.dismiss_reconciler_notice("folder:2026-08")
+    assert await store.list_reconciler_notices() == []
+    await filing.file_reviewed(store)
+    assert len(await store.list_reconciler_notices()) == 1
+    (folder / "keep.txt").unlink()
+    folder.rmdir()
+    assert await store.list_reconciler_notices() == []
+    assert store.control.read_reconciler_notices() == {}
 
 
 async def _hand_move_and_return(store):

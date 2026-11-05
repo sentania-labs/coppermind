@@ -119,20 +119,27 @@ def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems fo
     )
 
 
-def _returned_notes_html(notices: Sequence[ReconcilerNotice], zone: ZoneInfo) -> str:
+def _notices_html(notices: Sequence[ReconcilerNotice], zone: ZoneInfo) -> str:
     from coppermind_admin.pages.search_index import local_time
 
     if not notices:
         return ""
-    items = "".join(
-        f"<li><strong>{escape(notice.title)}</strong> "
-        f'<span class="muted">found at <code>{escape(notice.from_path)}</code>, returned to '
-        f"<code>{escape(notice.path)}</code>, {escape(local_time(notice.at, zone))}</span>"
-        f"<br>{escape(notice.reason)}"
-        f'<form method="post" action="/v1/admin/notices/{quote(notice.note_id, safe="")}/dismiss">'
-        "<button>Dismiss</button></form></li>"
-        for notice in notices
-    )
+    items = ""
+    for notice in notices:
+        dismiss_id = quote(notice.note_id, safe="")
+        where = (
+            f"found at <code>{escape(notice.from_path)}</code>, returned to "
+            f"<code>{escape(notice.path)}</code>, {escape(local_time(notice.at, zone))}"
+            if notice.kind == "note"
+            else f"<code>{escape(notice.from_path)}</code>, {escape(local_time(notice.at, zone))}"
+        )
+        items += (
+            f"<li><strong>{escape(notice.title)}</strong> "
+            f'<span class="muted">{where}</span>'
+            f"<br>{escape(notice.reason)}"
+            f'<form method="post" action="/v1/admin/notices/{dismiss_id}/dismiss">'
+            "<button>Dismiss</button></form></li>"
+        )
     return f"<ul>{items}</ul>"
 
 
@@ -179,7 +186,9 @@ Preserved sources<strong>{counters.sources}</strong></div>
 <li>Notes root: {escape(counters.notes_folder or "Notes")}/</li>
 <li>Notes the next filing pass will move: {counters.notes_to_refile}</li>
 <li>Hand-moved notes returned to their filed folder: {counters.notes_returned}
-{_returned_notes_html(notices, zone)}</li>
+{_notices_html([n for n in notices if n.kind == "note"], zone)}</li>
+<li>Old month folders left in place because they are not empty: {counters.folders_kept}
+{_notices_html([n for n in notices if n.kind == "folder"], zone)}</li>
 </ul>
 <p><a href="/admin/problems">Problems ({problems})</a></p>"""
 
@@ -190,7 +199,12 @@ async def overview_counters(request: Request, wiring: Wiring) -> str:
     client = store_client(request, wiring)
     try:
         status = await client.get_status()
-        notices = await client.list_reconciler_notices() if status.counters.notes_returned else []
+        counters = status.counters
+        notices = (
+            await client.list_reconciler_notices()
+            if counters.notes_returned or counters.folders_kept
+            else []
+        )
     except (StoreError, OSError):
         return f'<p class="error">{UNREACHABLE}</p>'
     return counters_html(status, notices, _zone(request))

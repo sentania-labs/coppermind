@@ -698,6 +698,7 @@ class StatusCounters(BaseModel):
     notes_folder: str | None = None
     notes_to_refile: int = 0
     notes_returned: int = 0
+    folders_kept: int = 0
     filing_failures: int = 0
     known_unreadable: int = 0
     calendar_import_failures: int = 0
@@ -714,6 +715,7 @@ class ReconcilerNotice(BaseModel):
     path: str
     reason: str
     at: datetime
+    kind: Literal["note", "folder"] = "note"
 
 
 class StatusResponse(BaseModel):

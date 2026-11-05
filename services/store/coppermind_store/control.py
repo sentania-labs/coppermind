@@ -134,6 +134,7 @@ class ControlState:
         folder: str,
         reason: str,
         at: datetime,
+        kind: str = "note",
     ) -> None:
         """Record why a hand-moved reviewed note was returned to its filed folder."""
 
@@ -146,6 +147,7 @@ class ControlState:
                 "folder": folder,
                 "reason": reason,
                 "at": at.isoformat(),
+                "kind": kind,
             }
             return True
 

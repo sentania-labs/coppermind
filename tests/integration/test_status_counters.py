@@ -95,6 +95,7 @@ async def test_a_fresh_store_counts_nothing(store: LocalStore):
         "notes_folder": "Notes",
         "notes_to_refile": 0,
         "notes_returned": 0,
+        "folders_kept": 0,
         "filing_failures": 0,
         "known_unreadable": 0,
         "calendar_import_failures": 0,

@@ -1195,27 +1195,35 @@ PURGE_PROBLEM_KINDS = frozenset({"purge", "purge_unfinished", "purge_receipt", "
 
 
 async def list_reconciler_notices(store: LocalStore) -> list[ReconcilerNotice]:
-    """Notices for notes the mirror still holds; a deleted or vanished note's notice is dropped."""
+    """Notices still true: a gone note's, or a folder that no longer exists, is dropped."""
     notices = store.control.read_reconciler_notices()
     if not notices:
         return []
-    try:
-        async with store.session_factory() as session:
-            present = set(
-                (
-                    await session.scalars(
-                        sa.select(Note.id).where(
-                            Note.id.in_(list(notices)), Note.state.not_in(("missing", "deleted"))
+    note_ids = [key for key, notice in notices.items() if notice.get("kind", "note") == "note"]
+    present: set[str] = set()
+    if note_ids:
+        try:
+            async with store.session_factory() as session:
+                present = set(
+                    (
+                        await session.scalars(
+                            sa.select(Note.id).where(
+                                Note.id.in_(note_ids), Note.state.not_in(("missing", "deleted"))
+                            )
                         )
-                    )
-                ).all()
-            )
-    except (SQLAlchemyError, OSError) as exc:
-        raise MetadataUnavailable(str(exc)) from exc
-    for note_id in notices.keys() - present:
-        store.control.clear_reconciler_notice(note_id)
+                    ).all()
+                )
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
+    present |= {
+        key
+        for key, notice in notices.items()
+        if notice.get("kind") == "folder" and (store.notes_root / notice["from_path"]).is_dir()
+    }
+    for key in notices.keys() - present:
+        store.control.clear_reconciler_notice(key)
     return sorted(
-        (ReconcilerNotice.model_validate(notices[note_id]) for note_id in present),
+        (ReconcilerNotice.model_validate(notices[key]) for key in present),
         key=lambda notice: notice.at,
         reverse=True,
     )
@@ -1225,6 +1233,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
     """Counters computed from the mirror and the recorded rejections."""
     prefix = _review_prefix(store)
     notes_folder = store.control.settings().notes.notes_folder
+    notices = await list_reconciler_notices(store)
     awaiting = (
         sa.select(sa.func.count())
         .select_from(Note)
@@ -1289,7 +1298,8 @@ async def get_status(store: LocalStore) -> StatusResponse:
             excluded_count=excluded_count,
             notes_folder=notes_folder,
             notes_to_refile=notes_to_refile,
-            notes_returned=len(await list_reconciler_notices(store)),
+            notes_returned=sum(n.kind == "note" for n in notices),
+            folders_kept=sum(n.kind == "folder" for n in notices),
             filing_failures=sum(p.kind == "filing" for p in problems),
             calendar_import_failures=sum(p.kind == "calendar_import" for p in problems),
             purge_problems=sum(p.kind in PURGE_PROBLEM_KINDS for p in problems),

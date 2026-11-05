@@ -330,6 +330,7 @@ def test_status_returns_every_counter(api):
             "notes_folder": None,
             "notes_to_refile": 0,
             "notes_returned": 0,
+            "folders_kept": 0,
             "filing_failures": 0,
             "known_unreadable": 0,
             "calendar_import_failures": 0,

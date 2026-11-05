@@ -140,6 +140,8 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         and plan.get("complete")
         and plan.get("folder") == folder
         and not note.path.startswith(folder + "/")
+        else (plan or {}).get("hand_moved_from")
+        if plan and plan.get("folder") == folder
         else None
     )
     same_filing = (
@@ -206,6 +208,8 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         "sources": sources,
         "complete": False,
     }
+    if hand_moved_from is not None:
+        plan["hand_moved_from"] = hand_moved_from
     async with transaction(store.session_factory) as session:
         await session.execute(sa.update(Note).where(Note.id == note_id).values(filed=False))
         # A move changes the projection path without changing its archive revision.
@@ -308,19 +312,20 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         )
     if not note.path.startswith(folder + "/"):
         note = await store.move_note(note_id, MoveNote(target_folder=folder), note.content_hash)
-        if hand_moved_from is not None:
-            store.control.record_reconciler_notice(
-                note_id=note_id,
-                title=note.title,
-                from_path=hand_moved_from,
-                path=note.path,
-                folder=folder,
-                reason=(
-                    f"Moved back to {folder}/ because reviewed notes are filed by "
-                    "note date; a hand move outside that folder is not kept."
-                ),
-                at=datetime.now(tz=UTC),
-            )
+    if hand_moved_from is not None:
+        store.control.record_reconciler_notice(
+            note_id=note_id,
+            title=note.title,
+            from_path=hand_moved_from,
+            path=note.path,
+            folder=folder,
+            reason=(
+                f"Moved back to {folder}/ because reviewed notes are filed by "
+                "note date; a hand move outside that folder is not kept."
+            ),
+            at=datetime.now(tz=UTC),
+        )
+        plan.pop("hand_moved_from", None)
     plan["complete"] = True
     plan.pop("error", None)
     _save(journal, plan)
@@ -369,6 +374,47 @@ async def file_reviewed(store: LocalStore) -> dict[str, int]:
         return await _file_reviewed(store)
 
 
+def _tidy_legacy_month_folders(store: LocalStore) -> None:
+    """Remove emptied flat `YYYY-MM/` folders; one that still holds anything is reported."""
+    sources_folder = store.control.settings().notes.sources_folder.strip("/")
+    for prefix in ("", sources_folder):
+        root = resolve(store.notes_root, prefix) if prefix else store.notes_root
+        try:
+            folders = [
+                entry
+                for entry in root.iterdir()
+                if _FILED_MONTH.fullmatch(entry.name) and entry.is_dir() and not entry.is_symlink()
+            ]
+        except OSError:
+            continue
+        for entry in folders:
+            relative = f"{prefix}/{entry.name}" if prefix else entry.name
+            key = f"folder:{relative}"
+            try:
+                if any(entry.iterdir()):
+                    if key not in store.control.read_reconciler_notices():
+                        store.control.record_reconciler_notice(
+                            note_id=key,
+                            title=f"{relative}/ was kept",
+                            from_path=relative,
+                            path=relative,
+                            folder=relative,
+                            reason=(
+                                f"{relative}/ is an old flat month folder, but it still holds "
+                                "files, so it was left in place. Move or delete what is in it; "
+                                "an empty one is removed on the next filing pass."
+                            ),
+                            at=datetime.now(tz=UTC),
+                            kind="folder",
+                        )
+                else:
+                    entry.rmdir()
+                    sync_directory(root)
+                    store.control.clear_reconciler_notice(key)
+            except OSError:
+                continue
+
+
 async def _file_reviewed(store: LocalStore) -> dict[str, int]:
     """A failed item stays durable and visible; other items can finish."""
     async with store.session_factory() as session:
@@ -403,4 +449,5 @@ async def _file_reviewed(store: LocalStore) -> dict[str, int]:
                 from coppermind_store.reconciler import log
 
                 log.warning("filing failure could not be recorded", note_id=note_id)
+    _tidy_legacy_month_folders(store)
     return counts

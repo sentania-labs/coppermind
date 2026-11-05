@@ -444,3 +444,38 @@ def test_dismissing_needs_the_form_token(signed_in):
 
     assert client.post(f"/v1/admin/notices/{NOTE_ID}/dismiss", data={}).status_code == 403
     assert len(store.notices) == 1
+
+
+def test_the_overview_lists_old_folders_kept_with_why():
+    from coppermind_admin.pages.problems import counters_html
+
+    html = counters_html(
+        StatusResponse(
+            counters=StatusCounters(
+                notes_awaiting_review=0,
+                notes_by_state={},
+                sources=0,
+                rejected_ingests=0,
+                name_collisions=0,
+                unparseable_files=0,
+                folders_kept=1,
+            )
+        ),
+        [
+            ReconcilerNotice(
+                note_id="folder:2026-08",
+                title="2026-08/ was kept",
+                from_path="2026-08",
+                path="2026-08",
+                reason="2026-08/ still holds files.",
+                at=datetime(2026, 11, 5, 15, 30, tzinfo=UTC),
+                kind="folder",
+            )
+        ],
+    )
+
+    assert "left in place because they are not empty: 1" in html
+    assert "<strong>2026-08/ was kept</strong>" in html
+    assert "<code>2026-08</code>" in html
+    assert "2026-08/ still holds files." in html
+    assert 'action="/v1/admin/notices/folder%3A2026-08/dismiss"' in html
