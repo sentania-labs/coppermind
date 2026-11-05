@@ -1046,10 +1046,12 @@ async def list_artifacts(store: LocalStore, query: ArtifactQuery) -> Page[Artifa
             )
         )
         statement = statement.where(cites)
+    zone = store.control.settings().general.timezone
+    received_day = sa.cast(sa.func.timezone(zone, Artifact.received_at), sa.Date)
     if query.from_date is not None:
-        statement = statement.where(sa.cast(Artifact.received_at, sa.Date) >= query.from_date)
+        statement = statement.where(received_day >= query.from_date)
     if query.to_date is not None:
-        statement = statement.where(sa.cast(Artifact.received_at, sa.Date) <= query.to_date)
+        statement = statement.where(received_day <= query.to_date)
     if query.cursor:
         at, after = _decode_cursor(query.cursor)
         statement = statement.where(
@@ -1387,10 +1389,8 @@ async def migrate_attachments(store: LocalStore) -> dict[str, int]:
         files = sorted(p for p in legacy_root.rglob("*") if p.is_file())
     except OSError as exc:
         raise NotesFilesystemUnavailable(str(exc)) from exc
-    for path in files[:MIGRATE_PER_PASS]:
-        match = _LEGACY_ATTACHMENT.match(path.name)
-        if match is None:
-            continue
+    legacy = [(p, m) for p in files if (m := _LEGACY_ATTACHMENT.match(p.name)) is not None]
+    for path, match in legacy[:MIGRATE_PER_PASS]:
         source_id = match.group("source")
         revision_number = int(match.group("rev"))
         name = match.group("name")

@@ -28,6 +28,7 @@ from coppermind.store_protocol import (
     CreateNote,
     IngestArtifact,
     PatchFrontmatter,
+    ReplaceNote,
     SearchQuery,
     ValidationFailed,
 )
@@ -442,6 +443,82 @@ async def test_remove_takes_the_projection_and_keeps_the_archive(store, tmp_path
         await store.get_artifact(created.id)
     assert (await store.rebuild_metadata()).counts["recovered_artifacts"] == 0
     assert await hits(store, "bilby") == []
+
+
+async def test_a_note_keeps_citing_an_artifact_that_was_removed_and_can_still_be_written(
+    store, tmp_path
+):
+    gone = await store.create_artifact(
+        upload("gone.pptx", pptx_bytes(tmp_path, "Gone", "Vanishing dingo"))
+    )
+    other = await store.create_artifact(upload("other.txt", b"second artifact\n"))
+    note = await store.create_note(
+        CreateNote(
+            title="Cites both",
+            frontmatter={"type": "reference", "context": "internal", "artifacts": [gone.id]},
+        )
+    )
+    await store.remove_artifact(gone.id)
+
+    current = await store.get_note(note.id)
+    replaced = await store.replace_note(
+        note.id,
+        ReplaceNote(frontmatter=current.frontmatter, body=current.body + "\nedited\n"),
+        current.content_hash,
+    )
+    assert replaced.frontmatter["artifacts"] == [gone.id]
+
+    await artifacts.cite(store, note.id, [other.id])
+    assert (await store.get_note(note.id)).frontmatter["artifacts"] == [gone.id, other.id]
+
+    current = await store.get_note(note.id)
+    with pytest.raises(ValidationFailed, match="no artifact with id"):
+        await store.replace_note(
+            note.id,
+            ReplaceNote(
+                frontmatter={**current.frontmatter, "artifacts": [gone.id, other.id, "0" * 26]},
+                body=current.body,
+            ),
+            current.content_hash,
+        )
+
+
+async def test_the_received_day_filters_use_the_operators_zone(store):
+    created = await store.create_artifact(upload("late.txt", b"received in the evening\n"))
+    async with store.session_factory() as session:
+        await session.execute(
+            sa.update(Artifact)
+            .where(Artifact.id == created.id)
+            .values(received_at=datetime(2026, 11, 5, 2, 0, tzinfo=UTC))
+        )
+        await session.commit()
+    on_the_fourth = await store.list_artifacts(
+        ArtifactQuery.model_validate({"from": "2026-11-04", "to": "2026-11-04"})
+    )
+    assert [item.id for item in on_the_fourth.items] == [created.id]
+    on_the_fifth = await store.list_artifacts(ArtifactQuery.model_validate({"from": "2026-11-05"}))
+    assert on_the_fifth.items == []
+
+
+async def test_unmatched_files_in_the_legacy_folder_do_not_starve_the_migration(store):
+    request = ingest_request("starved")
+    request.source.artifacts.append(
+        IngestArtifact(
+            name="x-image-01.jpg", mime_type="image/jpeg", content_base64=encoded(b"jpeg")
+        )
+    )
+    result = await store.ingest(request)
+    folder = store.notes_root / "_Attachments/2026-09"
+    folder.mkdir(parents=True)
+    for index in range(artifacts.MIGRATE_PER_PASS + 5):
+        (folder / f"a-pasted-{index:03d}.png").write_bytes(b"pasted")
+    (folder / f"{result.source.id}-r0001-x-image-01.jpg").write_bytes(b"jpeg")
+
+    counts = await artifacts.migrate_attachments(store)
+
+    assert counts == {"attachments_migrated": 1}
+    assert len((await store.list_artifacts(ArtifactQuery())).items) == 1
+    assert len(list(folder.iterdir())) == artifacts.MIGRATE_PER_PASS + 5
 
 
 async def test_an_older_extractor_version_is_regenerated_by_the_sweep(store, tmp_path):

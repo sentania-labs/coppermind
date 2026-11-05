@@ -75,7 +75,7 @@ def read_kind_marker(data: bytes) -> dict[str, Any] | None:
 class Dropbox:
     def __init__(self, context: ContextService) -> None:
         self.context = context
-        self.seen: dict[str, tuple[tuple[int, int], float]] = {}
+        self.seen: dict[str, tuple[tuple[int, int, int, int], float]] = {}
 
     @staticmethod
     def handler(data: bytes, filename: str) -> str | None:
@@ -122,7 +122,8 @@ class Dropbox:
         digest = hashlib.sha256(data).hexdigest()
         records = self.records()
         existing = records["items"].get(digest)
-        if existing and existing["state"] not in COMPLETED | {"failed"}:
+        replaceable = COMPLETED | {"failed"} | ({"unsupported"} if kind else set())
+        if existing and existing["state"] not in replaceable:
             return existing
         history = records["history"].get(digest, {})
         imported = next(
@@ -174,6 +175,14 @@ class Dropbox:
         ) != signature:
             return None
         return data
+
+    @staticmethod
+    def sidecar_signature(path: Path) -> tuple[int, int]:
+        try:
+            info = path.lstat()
+        except OSError:
+            return (0, -1)
+        return (info.st_mtime_ns, info.st_size)
 
     async def process(self) -> None:
         records = self.records()
@@ -334,12 +343,13 @@ class Dropbox:
                 key = str(path.relative_to(root))
                 present.add(key)
                 signature = (info.st_mtime_ns, info.st_size)
+                observed = signature + self.sidecar_signature(path.parent / (name + KIND_SUFFIX))
                 records = self.records()
-                if records["observations"].get(key) == list(signature):
+                if records["observations"].get(key) == list(observed):
                     continue
                 old = self.seen.get(key)
-                if old is None or old[0] != signature:
-                    self.seen[key] = (signature, time.monotonic())
+                if old is None or old[0] != observed:
+                    self.seen[key] = (observed, time.monotonic())
                     log.info("Dropbox park file: waiting for stable bytes")
                     continue
                 if time.monotonic() - old[1] < 30:
@@ -380,7 +390,7 @@ class Dropbox:
                             "error": error,
                         }
                         log.info("Dropbox fail file: intake rejected")
-                    records["observations"][key] = list(signature)
+                    records["observations"][key] = list(observed)
                     self.save(records)
         async with self.context.lock:
             self.seen = {key: value for key, value in self.seen.items() if key in present}

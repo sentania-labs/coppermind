@@ -127,7 +127,7 @@ class ContextService:
         self.dropbox = Dropbox(self)
         self.provider = ModelProvider()
         self.lock = asyncio.Lock()
-        self.seen: dict[str, tuple[tuple[int, int], float]] = {}
+        self.seen: dict[str, tuple[tuple[int, int, int, int], float]] = {}
         self.watch_status: dict[str, str] = {}
         self.worker_error = ""
         self.eligibility_errors: dict[str, str] = {}

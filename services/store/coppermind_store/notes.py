@@ -417,18 +417,28 @@ class LocalStore:
 
         await remove_artifact(self, artifact_id)
 
-    async def _artifact_links(self, frontmatter: dict[str, Any]) -> list[str]:
+    async def _artifact_links(
+        self, frontmatter: dict[str, Any], current: dict[str, Any] | None = None
+    ) -> list[str]:
         """The links a note should carry for the artifacts its frontmatter cites.
 
-        Every cited identifier must name a stored artifact; an unknown one is a
-        validation failure, so a note never cites something that is not there.
+        Every newly cited identifier must name a stored artifact; an unknown one
+        is a validation failure, so a note never gains a citation to something
+        that is not there. An identifier the note already cites is left alone,
+        so a note keeps its citation of an artifact that was since removed.
         """
         from coppermind_store.artifacts import known_paths, link_for, read_manifest
 
         cited = frontmatter.get(self.control.schema().optional_role("artifacts_key"))
         if not isinstance(cited, list) or not cited:
             return []
-        ids = [value for value in cited if isinstance(value, str)]
+        held = (
+            current.get(self.control.schema().optional_role("artifacts_key")) if current else None
+        )
+        held_ids = (
+            {value for value in held if isinstance(value, str)} if isinstance(held, list) else set()
+        )
+        ids = [value for value in cited if isinstance(value, str) and value not in held_ids]
         paths = await known_paths(self, ids)
         links = []
         for artifact_id in ids:
@@ -749,12 +759,12 @@ class LocalStore:
         problems = schema.validate_frontmatter(sent)
         if problems:
             raise ValidationFailed(problems)
-        await self._artifact_links(sent)
         body = _terminated(request.body)
 
         relative, path = await self._locate(note_id)
         async with self._lock_for(note_id):
             _, current, _ = _bytes_at(note_id, relative, path, schema, if_match)
+            await self._artifact_links(sent, current)
             problems = schema.tag_problems(sent, current)
             if problems:
                 raise ValidationFailed(problems)
@@ -861,7 +871,7 @@ class LocalStore:
             if problems:
                 raise ValidationFailed(problems)
             if schema.optional_role("artifacts_key") in request.set:
-                await self._artifact_links(frontmatter)
+                await self._artifact_links(frontmatter, current_frontmatter)
 
             sources = frontmatter.get(schema.role("sources_key"), [])
             now = datetime.now(tz=UTC)

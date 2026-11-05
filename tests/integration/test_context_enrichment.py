@@ -10,7 +10,7 @@ from coppermind_store.model_provider import ModelProvider
 from coppermind_store.reconciler import reconcile_once
 
 from coppermind.context_config import FeatureAssignment
-from coppermind.store_protocol import CreateNote, NoteQuery, PatchFrontmatter
+from coppermind.store_protocol import ArtifactQuery, CreateNote, NoteQuery, PatchFrontmatter
 from services.store.tests.test_calendar_import import event, ics
 
 
@@ -160,6 +160,33 @@ async def test_dropbox_requires_stability_and_legacy_folders_are_ordinary(store)
     assert len(context.archive.receipts()) == 2
     await reconcile_once(store)
     assert len((await store.list_notes(NoteQuery())).items) == 1
+
+
+async def test_a_kind_sidecar_added_after_the_file_was_parked_rescues_it(store):
+    context = await configure(store)
+    folder = store.notes_root / "Dropbox"
+    folder.mkdir(parents=True)
+    (folder / "design.bin").write_bytes(b"not a calendar, no marker")
+
+    async def settle():
+        await context.dropbox.scan()
+        context.dropbox.seen = {
+            key: (value[0], value[1] - 31) for key, value in context.dropbox.seen.items()
+        }
+        await context.dropbox.scan()
+        await context.dropbox.process()
+
+    await settle()
+    parked = [item for item in context.dropbox.snapshot()["items"] if item["id"]]
+    assert [item["state"] for item in parked] == ["unsupported"]
+
+    (folder / "design.bin.kind").write_text("artifact\n")
+    await settle()
+
+    states = [item["state"] for item in context.dropbox.snapshot()["items"] if item["id"]]
+    assert states == ["succeeded"]
+    stored = await store.list_artifacts(ArtifactQuery())
+    assert [item.filename for item in stored.items] == ["design.bin"]
 
 
 async def test_calendar_invitation_cannot_become_attendance_without_note_evidence(store):
