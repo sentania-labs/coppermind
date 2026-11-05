@@ -152,7 +152,8 @@ Ingest always creates an unreviewed draft, even if automation supplies
 `reviewed: true`. Drafts live in `Review/`; source pages wait under
 `_Sources/_Pending/YYYY/YYYY-MM/`. Mark the note reviewed in Obsidian or through the
 frontmatter API. The next reconciliation pass files the note and source page
-under their respective month folders, copies non-text, non-audio attachments
+under their respective year and month folders (`Notes/YYYY/YYYY-MM/` and
+`_Sources/YYYY/YYYY-MM/`), copies non-text, non-audio attachments
 under `_Attachments/YYYY-MM/`, and permits indexing only after successful filing.
 A source keeps the month chosen when it was first filed, including when another
 note cites it or a note's date is later corrected. All citing notes retain the

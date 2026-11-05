@@ -108,6 +108,7 @@ Nothing here needs to be set before the system runs.
 | Section | Key | Default |
 |---|---|---|
 | general | `timezone` | `America/Chicago` |
+| notes | `notes_folder` | `Notes` |
 | notes | `review_folder` | `Review` |
 | notes | `trash_folder` | `_Trash` |
 | notes | `sources_folder` | `_Sources` |
