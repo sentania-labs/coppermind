@@ -219,6 +219,56 @@ async def test_listing_stale_rows_walks_the_tree_once(store, monkeypatch):
     assert scans == 1
 
 
+async def test_listing_waits_on_a_note_lock_without_holding_a_pooled_connection(store):
+    held = await store.create_note(CreateNote(title="Held", frontmatter={"type": "reference"}))
+    other = await store.create_note(CreateNote(title="Other", frontmatter={"type": "reference"}))
+    first = min(held.id, other.id)
+    other_id = max(held.id, other.id)
+    async with store._lock_for(first):
+        lists = [asyncio.create_task(store.list_notes(NoteQuery(state="ok"))) for _ in range(14)]
+        await asyncio.sleep(0.5)
+        assert (await asyncio.wait_for(store.get_note(other_id), timeout=5)).id == other_id
+        assert (await asyncio.wait_for(store.get_status(), timeout=5)).counters.filing_failures == 0
+    pages = await asyncio.wait_for(asyncio.gather(*lists), timeout=30)
+    assert all({n.id for n in page.items} == {held.id, other.id} for page in pages)
+
+
+async def test_listing_pages_past_unreadable_rows_without_skipping_notes(store):
+    ids = []
+    for i in range(6):
+        ids.append(
+            (
+                await store.create_note(
+                    CreateNote(title=f"Row {i}", frontmatter={"type": "reference"})
+                )
+            ).id
+        )
+    ids.sort()
+    for note_id in ids[:2]:
+        (store.notes_root / (await store.get_note(note_id)).path).unlink()
+    first = await store.list_notes(NoteQuery(state="ok", limit=2))
+    assert [n.id for n in first.items] == ids[2:4]
+    second = await store.list_notes(NoteQuery(state="ok", limit=2, cursor=first.next_cursor))
+    assert [n.id for n in second.items] == ids[4:]
+    assert second.next_cursor is None
+
+
+async def test_failed_validation_then_external_delete_is_not_called_a_filing_vanish(store):
+    note = await store.create_note(
+        CreateNote(
+            title="Undated",
+            frontmatter={"date": "2026-09-01", "type": "work", "time": "99:99", "reviewed": True},
+        )
+    )
+    assert (await filing.file_reviewed(store))["filing_failed"] == 1
+    (store.notes_root / (await store.get_note(note.id)).path).unlink()
+    assert (await reconcile_once(store))["missing"] == 1
+    row = (await store.list_notes(NoteQuery(state="missing"))).items[0]
+    assert row.id == note.id
+    assert row.state_reason
+    assert "between filing paths" not in row.state_reason
+
+
 async def test_finalize_runs_even_when_filing_cannot_proceed(store, monkeypatch):
     from coppermind_store import note_lifecycle
 

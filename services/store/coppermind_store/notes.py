@@ -563,42 +563,47 @@ class LocalStore:
         wanted = query.limit + 1
         batch_size = max(wanted, _SCAN_BATCH)
         matched: list[NoteSummary] = []
+        identities = _Identities(self)
+        exhausted = False
         try:
-            async with self.session_factory() as session, session.begin():
-                if query.filter:
-                    await session.execute(
-                        sa.text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-                    )
-                predicates = await conditions(self, query, session)
-                identities = _Identities(self)
-                while len(matched) < wanted:
-                    statement = (
-                        sa.select(Note).where(*predicates).order_by(Note.id).limit(batch_size)
-                    )
-                    if after is not None:
-                        statement = statement.where(Note.id > after)
-                    rows = list((await session.scalars(statement)).all())
-                    if not rows:
-                        break
-                    after = rows[-1].id
-                    from coppermind_store.filing import filing_state
+            while len(matched) < wanted and not exhausted:
+                needed = wanted - len(matched)
+                candidates: list[tuple[str, NoteSummary]] = []
+                async with self.session_factory() as session, session.begin():
+                    if query.filter:
+                        await session.execute(
+                            sa.text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                        )
+                    predicates = await conditions(self, query, session)
+                    while len(candidates) < needed:
+                        statement = (
+                            sa.select(Note).where(*predicates).order_by(Note.id).limit(batch_size)
+                        )
+                        if after is not None:
+                            statement = statement.where(Note.id > after)
+                        rows = list((await session.scalars(statement)).all())
+                        for row in rows:
+                            after = row.id
+                            summary = _mirrored_summary(row, cast(NoteState, row.state))
+                            if _matches_query(summary, query):
+                                candidates.append((row.state, summary))
+                                if len(candidates) == needed:
+                                    break
+                        else:
+                            if len(rows) < batch_size:
+                                exhausted = True
+                                break
+                from coppermind_store.filing import filing_state
 
-                    for row in rows:
-                        summary = _mirrored_summary(row, cast(NoteState, row.state))
-                        if not _matches_query(summary, query):
+                for state, summary in candidates:
+                    if state == "ok":
+                        try:
+                            await self._read_current(summary.id, identities)
+                        except (NotFound, NoteUnparseable):
                             continue
-                        if row.state == "ok":
-                            try:
-                                await self._read_current(row.id, identities)
-                            except (NotFound, NoteUnparseable):
-                                continue
-                        for key, value in filing_state(self, summary.id).items():
-                            setattr(summary, key, value)
-                        matched.append(summary)
-                        if len(matched) == wanted:
-                            break
-                    if len(rows) < batch_size:
-                        break
+                    for key, value in filing_state(self, summary.id).items():
+                        setattr(summary, key, value)
+                    matched.append(summary)
         except (SQLAlchemyError, OSError) as exc:
             raise MetadataUnavailable(str(exc)) from exc
         if query.filter and self.control.schema_document().revision != revision:

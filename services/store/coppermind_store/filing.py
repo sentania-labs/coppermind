@@ -69,7 +69,7 @@ def vanished_receipt(store, row):
     try:
         plan = json.loads(path.read_bytes())
         copies = plan.get("copies", [])
-        if plan.get("complete") and not copies:
+        if not copies and plan.get("complete") is not False:
             return None, None
         current = next((c for c in reversed(copies) if c["hash"] == row.content_hash), None)
         if current is None:
