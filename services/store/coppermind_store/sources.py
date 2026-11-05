@@ -1189,6 +1189,9 @@ def _review_prefix(store: LocalStore) -> str:
     return f"{folder}/" if folder else ""
 
 
+PURGE_PROBLEM_KINDS = frozenset({"purge", "purge_unfinished", "purge_receipt", "damaged_source"})
+
+
 async def get_status(store: LocalStore) -> StatusResponse:
     """Counters computed from the mirror and the recorded rejections."""
     prefix = _review_prefix(store)
@@ -1248,9 +1251,144 @@ async def get_status(store: LocalStore) -> StatusResponse:
             excluded_count=excluded_count,
             filing_failures=sum(p.kind == "filing" for p in problems),
             calendar_import_failures=sum(p.kind == "calendar_import" for p in problems),
+            purge_problems=sum(p.kind in PURGE_PROBLEM_KINDS for p in problems),
             active_problems=sum(p.kind != "excluded" for p in problems),
         )
     )
+
+
+def filing_problems(store: LocalStore) -> list[ProblemInfo]:
+    problems: list[ProblemInfo] = []
+    for path in sorted((store.control.store.state_dir / "filing").glob("*.json")):
+        try:
+            filing = json.loads(path.read_bytes())
+            if filing.get("error"):
+                problems.append(
+                    ProblemInfo(
+                        kind="filing",
+                        reference=path.stem,
+                        reason=(
+                            "Source material changed. Review it, then mark the note unreviewed "
+                            "and reviewed again."
+                            if filing["error"] == "SourceRevisionNeedsReview"
+                            else "Monthly filing is pending; it will retry automatically: "
+                            + filing["error"]
+                        ),
+                        note_id=path.stem,
+                    )
+                )
+        except (OSError, ValueError):
+            problems.append(
+                ProblemInfo(
+                    kind="filing",
+                    reference=path.stem,
+                    reason="Filing receipt is unreadable",
+                    note_id=path.stem,
+                )
+            )
+    return problems
+
+
+def _damaged_reason(entry: dict[str, str]) -> str:
+    name = (
+        f"The preserved copy of {entry['provider']} source {entry['external_source_id']}"
+        if entry["provider"]
+        else "A preserved source copy"
+    )
+    if entry.get("cause") == "recovery":
+        return (
+            f"{name} could not be verified during rebuild. "
+            "Check the source files and retry rebuilding."
+        )
+    return f"{name} has files but no readable manifest. It is not offered for retention purge."
+
+
+async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
+    """What retention purge leaves for the owner, for Problems and the Overview count.
+
+    This reads the problems the last maintenance scan recorded and the few receipts
+    that can still be unfinished. It never walks a source bundle or a finished receipt.
+    """
+    from coppermind_store.purge import live_ids, recorded, records, unreadable
+
+    try:
+        found, unfinished, unreadable_now = await asyncio.to_thread(
+            lambda: (recorded(store), records(store), unreadable(store, ("",)))
+        )
+    except OSError:
+        return [
+            ProblemInfo(
+                kind="purge",
+                reference="receipts",
+                reason="Retention purge receipts could not be read. Check storage health.",
+            )
+        ]
+    problems = [
+        ProblemInfo(
+            kind="damaged_source",
+            reference=entry["source_id"],
+            reason=_damaged_reason(entry),
+            source_id=entry["source_id"],
+        )
+        for entry in found["damaged"]
+    ]
+    problems.extend(
+        ProblemInfo(
+            kind="purge_receipt",
+            reference=token,
+            reason=(
+                "A retention purge receipt is unreadable and is being ignored. Abandon it "
+                "to move the file into quarantine."
+            ),
+        )
+        for token in sorted({*found["unreadable"], *unreadable_now})
+    )
+    for receipt in unfinished:
+        if receipt["state"] in {"applying", "failed"}:
+            problems.append(
+                ProblemInfo(
+                    kind="purge_unfinished",
+                    reference=receipt["token"],
+                    reason=(
+                        "Retention purge is unfinished. Open Retention purge "
+                        "to retry the saved list or abandon it."
+                    ),
+                )
+            )
+        elif receipt["state"] == "preview" and receipt.get("error"):
+            problems.append(
+                ProblemInfo(
+                    kind="purge",
+                    reference=receipt["token"],
+                    reason=(
+                        "Retention purge failed before anything was removed. "
+                        "Run a new preview from Retention purge."
+                    ),
+                )
+            )
+    for entry in found["abandoned"]:
+        try:
+            live = await live_ids(store, entry["remaining_ids"])
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
+        remaining = [r for r in entry["remaining_ids"] if r not in live]
+        if not remaining:
+            continue
+        titles = [entry["titles"][r] for r in remaining[:5] if r in entry["titles"]]
+        more = f" and {len(remaining) - len(titles)} more" if len(remaining) > len(titles) else ""
+        problems.append(
+            ProblemInfo(
+                kind="purge",
+                reference=entry["token"],
+                reason=(
+                    f"Retention purge was abandoned. {entry['removed']} listed items "
+                    f"were removed. {len(remaining)} were not and still need "
+                    f"attention: {', '.join(titles)}{more}. "
+                    "Preview again from Retention purge to finish removing them."
+                ),
+            )
+        )
+    return problems
 
 
 async def get_problems(store: LocalStore) -> list[ProblemInfo]:
@@ -1321,33 +1459,8 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         )
         for row in unreadable
     )
-    for path in sorted((store.control.store.state_dir / "filing").glob("*.json")):
-        try:
-            filing = json.loads(path.read_bytes())
-            if filing.get("error"):
-                problems.append(
-                    ProblemInfo(
-                        kind="filing",
-                        reference=path.stem,
-                        reason=(
-                            "Source material changed. Review it, then mark the note unreviewed "
-                            "and reviewed again."
-                            if filing["error"] == "SourceRevisionNeedsReview"
-                            else "Monthly filing is pending; it will retry automatically: "
-                            + filing["error"]
-                        ),
-                        note_id=path.stem,
-                    )
-                )
-        except (OSError, ValueError):
-            problems.append(
-                ProblemInfo(
-                    kind="filing",
-                    reference=path.stem,
-                    reason="Filing receipt is unreadable",
-                    note_id=path.stem,
-                )
-            )
+    problems.extend(filing_problems(store))
+    problems.extend(await purge_problems(store))
     problems.extend(
         ProblemInfo(
             kind="unparsed",

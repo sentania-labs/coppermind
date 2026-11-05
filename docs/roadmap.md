@@ -16,8 +16,9 @@ scheduled.
 
 Reversible Git-backed note deletion, automatic identity recovery, Admin/API
 restore previews, exclusive restore, durable recovery copies, and Git health
-visibility are being delivered together. No grace-period setting, source
-purge, delete-to-trash action, or general history browser is included.
+visibility are being delivered together. Delete-to-trash and a general history
+browser are not included. Removing expired recovery copies and orphaned sources
+is the separate operator [retention purge](data-and-settings.md#retention-purge-receipts).
 The Admin sidebar tagline is removed in the same batch.
 
 Next acceptance remains a deployed phone delete/return/restore round trip,

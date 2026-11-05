@@ -40,6 +40,7 @@ from coppermind.store_protocol import (
 )
 from coppermind_store.eligibility import current_source, eligible, reviewed_note
 from coppermind_store.fs import content_hash, resolve
+from coppermind_store.maintenance import writer
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
@@ -125,6 +126,17 @@ async def drop_note(session: AsyncSession, note_id: str, now: datetime) -> None:
     result = await session.execute(
         sa.delete(SearchDocument)
         .where(SearchDocument.kind == "note", SearchDocument.ref_id == note_id)
+        .returning(SearchDocument.ref_id)
+    )
+    if result.first() is not None:
+        await _changed(session, now)
+
+
+async def drop_source(session: AsyncSession, source_id: str, now: datetime) -> None:
+    """Remove a purged source through the indexer's removal path."""
+    result = await session.execute(
+        sa.delete(SearchDocument)
+        .where(SearchDocument.kind == "source", SearchDocument.ref_id == source_id)
         .returning(SearchDocument.ref_id)
     )
     if result.first() is not None:
@@ -328,6 +340,7 @@ def _projection_path(
     return None
 
 
+@writer
 async def index_projection(store: LocalStore, source_id: str, revision: int, path: str) -> bool:
     """Index the page an ingest just wrote. False when the path does not hold it."""
     entry = await asyncio.to_thread(_read_projection, store.notes_root, path, source_id, revision)
@@ -366,6 +379,7 @@ def _relative_state(root: Path, path: str) -> str:
         return f"error:{exc.errno}"
 
 
+@writer
 async def catch_up(store: LocalStore) -> dict[str, int]:
     """Bring the index level with the mirror, a bounded batch at a time.
 
@@ -686,6 +700,7 @@ def _walk(
     yield from sources.values()
 
 
+@writer
 async def rebuild(store: LocalStore) -> dict[str, int]:
     """Throw the index away and read it back from the notes filesystem.
 

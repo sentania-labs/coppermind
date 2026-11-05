@@ -23,6 +23,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from coppermind.api_keys import ApiKeySet
+from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
 from coppermind.schema import FrontmatterSchema
 
 # `"sha256:<hex of the file bytes>"`. A move does not change it; a change to
@@ -56,6 +57,13 @@ class FieldIndexNotReady(StoreError):
     def __init__(self, job_id: str) -> None:
         super().__init__("declared-field index is not ready; inspect or retry its rebuild in Admin")
         self.job_id = job_id
+
+
+class PurgeConflict(StoreError):
+    def __init__(self) -> None:
+        super().__init__(
+            "The purge list or its files changed. Run a new preview before confirming."
+        )
 
 
 class FilterCursorConflict(StoreError):
@@ -691,6 +699,7 @@ class StatusCounters(BaseModel):
     known_unreadable: int = 0
     calendar_import_failures: int = 0
     active_problems: int | None = None
+    purge_problems: int = 0
 
 
 class StatusResponse(BaseModel):
@@ -751,6 +760,12 @@ class Store(Protocol):
     async def get_note_sources(self, note_id: NoteId) -> list[NoteSourceInfo]: ...
 
     async def get_status(self) -> StatusResponse: ...
+    async def preview_purge(self) -> PurgeResult: ...
+
+    async def confirm_purge(self, request: ConfirmPurge) -> PurgeResult: ...
+
+    async def abandon_purge(self, request: AbandonPurge) -> PurgeResult: ...
+
     async def get_problems(self) -> list[ProblemInfo]: ...
 
     async def get_note_history_status(self) -> HistoryStatus: ...

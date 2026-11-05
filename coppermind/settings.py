@@ -276,6 +276,21 @@ class IndexerSettings(BaseModel):
     )
 
 
+class RetentionSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    days: int = Field(
+        default=30,
+        ge=0,
+        le=36500,
+        strict=True,
+        description=(
+            "Days to keep deleted-note recovery copies before a manual purge. "
+            "Zero allows immediate purge. Git history is retained."
+        ),
+    )
+
+
 class EventSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -342,6 +357,7 @@ class ProductSettings(BaseModel):
     indexer: IndexerSettings = Field(
         default_factory=IndexerSettings, description="Search indexing settings."
     )
+    retention: RetentionSettings = Field(default_factory=RetentionSettings)
     events: EventSettings = Field(
         default_factory=EventSettings, description="Event processing settings."
     )

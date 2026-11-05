@@ -27,6 +27,7 @@ from coppermind.store_protocol import (
     PayloadTooLarge,
     PreconditionRequired,
     ProjectionNotPlaced,
+    PurgeConflict,
     SourceClaimMissing,
     SourceNotFound,
     SourcesFilesystemUnavailable,
@@ -83,6 +84,8 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
     cause = {"detail": str(error)} if surface == "internal" else {}
     if isinstance(error, FieldIndexNotReady):
         return 503, envelope("field_index_not_ready", str(error), job_id=error.job_id)
+    if isinstance(error, PurgeConflict):
+        return 409, envelope("purge_conflict", str(error))
     if isinstance(error, FilterCursorConflict):
         return 409, envelope("filter_cursor_conflict", str(error))
     if isinstance(error, NotFound):

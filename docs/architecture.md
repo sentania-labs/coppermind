@@ -230,3 +230,13 @@ layout, the contract shapes, the deferred list) still matches what was
 approved. Check [STATUS.md](../STATUS.md) before assuming any specific
 behavior is live; this document describes the destination, not today's
 position on the way there.
+
+## Operator retention cleanup
+
+The store owns manual retention purge, including durable preview and completion
+receipts under control state. Admin and an explicitly scoped public API request
+that work through the store contract. It removes expired deleted-note mirrors
+and recovery copies, and source bundles that have lost their opening note and
+all live citations. It preserves Git history. See the precise eligibility,
+confirmation and interrupted-operation rules in
+[data and settings](data-and-settings.md#retention-purge-receipts).

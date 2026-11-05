@@ -90,10 +90,12 @@ def router(wiring: Wiring) -> APIRouter:
 Last commit: {escape(local_time(status.last_commit_at, _zone(request)))}</p>
 <p>Git records removals; it cannot establish intent. Deleted notes return automatically
 when their ID reappears. Missing notes await a recoverable, matching Git version.
-No source bundles are removed. Git history is local history, not an off-device backup.</p>
+Restoring does not remove source bundles.
+Git history is local history, not an off-device backup.</p>
 <p><a href="/admin/note-history?state=deleted">Deleted</a> ·
 <a href="/admin/note-history?state=missing">Missing</a> ·
 <a href="/admin/settings?section=git">Git settings</a></p>
+<p><a href="/admin/purge">Purge old deleted notes and orphaned sources</a></p>
 <h2>{state.capitalize()}</h2><table><thead><tr><th>Note</th><th>Reason</th><th>Action</th></tr></thead>
 <tbody>{"".join(rows)}</tbody></table>{next_link}""")
 

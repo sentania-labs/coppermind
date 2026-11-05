@@ -17,6 +17,7 @@ router = APIRouter()
 SECTIONS = {
     "general": "General",
     "notes": "Folders",
+    "retention": "Retention",
     "reconcile": "File discovery",
     "git": "Git history",
     "sync": "Sync limits",
@@ -40,6 +41,7 @@ LABELS = {
     "limits.calendar_max_events": "Maximum retained calendar events",
     "limits.calendar_import_memory_mib": "Calendar import memory budget (MiB)",
     "general.timezone": "Local timezone",
+    "retention.days": "Keep deleted notes for (days)",
     "reconcile.scan_interval_s": "Check for file changes every (seconds)",
     "reconcile.quiet_period_s": "Wait for new files to settle (seconds)",
     "reconcile.full_rehash_daily_at": "Full daily scan at (local time)",
@@ -202,6 +204,8 @@ def failure(error: Exception, status: int = 500) -> HTMLResponse:
 async def settings_page(request: Request) -> Response:
     if request.query_params.get("section") == "sync":
         return RedirectResponse("/admin/sync", status_code=303)
+    if request.query_params.get("section") == "retention":
+        return RedirectResponse("/admin/purge", status_code=303)
     try:
         return render(
             request.app.state.control, section=request.query_params.get("section", "general")
@@ -232,6 +236,8 @@ async def save(request: Request) -> Response:
     section = request.query_params.get("section")
     if section == "sync":
         return RedirectResponse("/admin/sync?result=legacy", status_code=303)
+    if section == "retention":
+        return RedirectResponse("/admin/purge", status_code=303)
     try:
         if section is not None and (section not in SECTIONS or section in UNAVAILABLE):
             raise ValueError("This settings section is not editable.")

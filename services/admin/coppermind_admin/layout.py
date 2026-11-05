@@ -52,6 +52,10 @@ legend {font-weight:650;padding:0 .4rem}
 button,.button {display:inline-block;margin-top:1rem;border:1px solid #245c3b;border-radius:.4rem;
   padding:.7rem 1rem;background:#245c3b;color:white;font-weight:650;cursor:pointer;
   text-decoration:none}
+button.danger {background:#a93624;border-color:#a93624}
+button.danger:hover {background:#80291c}
+button.secondary {background:white;color:#245c3b;margin-left:.5rem}
+button.secondary:hover {background:#e9f0e9}
 button:hover,.button:hover {background:#19442b} button:disabled {opacity:.55;cursor:default}
 .error,.notice,.success {padding:1rem;border-radius:.3rem;line-height:1.6}
 .error {background:#fde8e4;border-left:.25rem solid #a93624}
@@ -100,6 +104,7 @@ LINKS = (
     ("/admin/sync", "Obsidian Sync"),
     ("/admin/search-index", "Search index"),
     ("/admin/note-history", "Note recovery"),
+    ("/admin/purge", "Retention purge"),
     ("/admin/field-index", "Field index"),
     ("/admin/workflow", "Note workflow"),
     ("/admin/context", "Connections & calendar records"),

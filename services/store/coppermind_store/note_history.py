@@ -342,8 +342,12 @@ def remember_return(store: LocalStore, note: Note, values: dict) -> None:
 async def recover_rows(store: LocalStore) -> None:
     """Seed absent identities before scanning, including when their files return."""
     from coppermind_store.notes import _jsonable, _mirror_columns, _title_of
+    from coppermind_store.purge import pending_ids
 
-    saved = await asyncio.to_thread(receipts, store)
+    pending = pending_ids(store, "note")
+    saved = {
+        k: v for k, v in (await asyncio.to_thread(receipts, store)).items() if k not in pending
+    }
     if not saved:
         return
     schema = store.control.schema()

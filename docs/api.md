@@ -15,8 +15,10 @@ The story behind these decisions is [architecture.md](architecture.md).
   creation.
 - Every route needs a scope: `sources:read`, `sources:write`, `notes:read`,
   `notes:write`, `notes:move`, `notes:delete`, `journal:read`,
-  `journal:write`, `search:read`, `admin:read`, `admin:write`. A key missing
-  the right scope gets 403, not a filtered response.
+  `journal:write`, `search:read`, `admin:read`, `admin:write`, `admin:purge`. A key missing
+  the right scope gets 403, not a filtered response. The bootstrap default key
+  and a key created with no `--scope` hold every scope except `admin:purge`,
+  which is granted only when named.
 - Admin's own pages use a signed session cookie; its `/v1/admin/*` API
   endpoints accept either that cookie or a key holding an `admin:*` scope.
 - Every non-2xx response is the same shape: `{"error": "<code>", "message":
@@ -162,7 +164,7 @@ is still returned. Dashboard reads never write into notes.
 | `GET /v1/search` | `notes:read` | Full-text search over reviewed, successfully filed note bodies and titles and their approved generated source pages under the sources folder. `q` (1 to 500 characters) is read the way a search box is: words, `"quoted phrases"`, `or`, and `-word` to exclude. English stemming applies, so `runs` also finds `running`, and an excluded word is excluded in every form: `budget -runs` finds no note that says `running`. Takes every listing filter (`folder, reviewed, type, context, account, from, to, tag, state`) with listing's meaning (`account` matches any entry of a note's list, `from` and `to` take the day from `date`), and pages the same way, by `cursor` and `limit` | 200, page of `{id, kind, title, path, folder, excerpt, rank, state}`, best match first. `kind` is `note`, or `source` for a generated source page, whose `id` is then the source identifier. `excerpt` is a short passage with every matched word between `**` markers. `rank` orders one answer and means nothing across answers | 422 `validation_error` for an empty `q`, a bad filter, or a cursor from a different `q`; 503 `metadata_unavailable`, never an empty page |
 | `POST /v1/attachments` | `notes:write` | Upload a file (multipart); name comes from the filename | 201, `{path, embed: "![[name.png]]", size_bytes}` | 413 over the plan's file-size limit; 409 |
 | `GET /v1/attachments/{name}` | `notes:read` | Download an attachment | 200 | 404 |
-| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, rejected_ingests, name_collisions, unparseable_files, excluded_count, filing_failures, calendar_import_failures, active_problems}`, computed from the metadata mirror, recorded rejections and import receipts; `active_problems` counts every Problems row except intentional exclusions, including calendar and Dropbox failures; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false` | 200 | 503 `metadata_unavailable` or `store_unavailable` |
+| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, rejected_ingests, name_collisions, unparseable_files, excluded_count, filing_failures, calendar_import_failures, known_unreadable, purge_problems, active_problems}`, computed from the metadata mirror, recorded rejections and import receipts; `active_problems` counts every Problems row except intentional exclusions, including calendar, Dropbox and retention purge problems; `purge_problems` counts the retention purge ones; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false` | 200 | 503 `metadata_unavailable` or `store_unavailable` |
 | `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /openapi.json` | none | Process liveness, real readiness (checks PostgreSQL and the notes filesystem), Prometheus metrics, the generated API contract | 200 | 503 on `/readyz` when a real dependency is down |
 
 ## Admin: pages and their endpoints
@@ -177,7 +179,7 @@ requiring hand-populated configuration.
 | Claim (first boot) | `POST /v1/admin/claim {code, password}` | Set the admin password using the one-time code the store logged and wrote to `/data/state/internal/claim-code` |
 | Login, logout | `POST /v1/admin/login`, `POST /v1/admin/logout` | Password-backed session |
 | Overview | `GET /v1/admin/status` | Counters, helper status and ages, last reconcile, last commit, last sync, failed jobs |
-| Problems | `GET /v1/admin/notes/problems` | Every refused ingest, name collision (several files carrying one note identity) and unparseable file, each linked to the note or source it is about. Also lists failed calendar imports, unsupported or failed Dropbox receipts and calendar conflicts. Each row has a snake_case `kind` slug; the calendar and Dropbox rows use `calendar_import` (a failed import receipt), `dropbox` (a failed or unsupported Dropbox file) and `calendar_conflict` (two sources disagree on one event at the same revision). Computed from the mirror, recorded rejections and import receipts; nothing is ever written into a note |
+| Problems | `GET /v1/admin/notes/problems` | Every refused ingest, name collision (several files carrying one note identity) and unparseable file, each linked to the note or source it is about. Also lists failed calendar imports, unsupported or failed Dropbox receipts and calendar conflicts, plus unfinished or abandoned retention purges, unreadable purge receipts and damaged source bundles. Each row has a snake_case `kind` slug; the calendar and Dropbox rows use `calendar_import` (a failed import receipt), `dropbox` (a failed or unsupported Dropbox file) and `calendar_conflict` (two sources disagree on one event at the same revision). Computed from the mirror, recorded rejections and import receipts; nothing is ever written into a note |
 | API keys | `GET/POST /v1/admin/keys`, `DELETE /v1/admin/keys/{key_id}` | Create (secret shown once), list, and revoke keys graphically instead of through the store's command line |
 | Obsidian Sync | `GET /v1/admin/sync`, `POST /v1/admin/sync/connect`, `POST /v1/admin/sync/token`, `POST /v1/admin/sync/pause`, `/resume`, `/disconnect` | Connect with email, password, optional MFA, and a vault name or a pasted token; reveal a token once, with a hint for sealing it into GitOps; pause and resume around bulk operations |
 | Settings | `GET/PUT /v1/admin/settings {if_revision, body}` | Every key in the settings table below, grouped by section |
@@ -185,6 +187,7 @@ requiring hand-populated configuration.
 | Fields and tags (`/admin/fields`) | `POST /v1/admin/fields {revision, ...}` | Add, edit and retire keys (kind, required and required when, allowed values each with a one-line meaning, default, guidance); every tag in use with its note count from the mirror, a meaning and aliases per listed tag, and open or closed tags. Saves with the same revision check Settings uses; the role map is carried over untouched, and nothing here rewrites a note |
 | Filing rules | `GET/PUT /v1/admin/rules`, `POST /v1/admin/rules/preview {note_id}` | The ordered rules a note is filed by, with a dry run ("what would this note file as") before committing to a change |
 | Search index (`/admin/search-index`) | `POST /v1/admin/search-index/rebuild` | The number of notes and source pages indexed, the known unreadable count, when the index last changed and when it was last rebuilt, in the operator's timezone, and a Rebuild index button. A rebuild runs in the store's background, throws every entry away, except the last indexed text of a note that is currently unparsed, and reads the notes filesystem again; search keeps answering from the old entries until the new ones commit |
+| Retention purge (`/admin/purge`) | `POST /v1/admin/purge/preview`, `/confirm`, `/abandon`, `/settings` | Edit the retention window, preview what a manual purge would remove, confirm it, retry or abandon an unfinished one. See [Retention purge](#retention-purge-implemented) |
 | Jobs | `GET /v1/admin/jobs`, `POST /v1/admin/jobs {kind}`, `GET /v1/admin/jobs/{id}` | Run reconcile, a full rehash, rebuild metadata from disk, reindex, or rebuild projections, and see the history of each |
 | Sources | `GET /v1/admin/sources`, `GET /v1/admin/notes/problems` | Browse sources; see notes the reconciler could not parse or file |
 
@@ -216,6 +219,8 @@ The calls it exposes, grouped by what they touch:
   /internal/v1/search/index`), and starting a rebuild of the index from the
   notes filesystem (`POST /internal/v1/jobs/rebuild_search_index`, 202 with
   `started: false` when one is already running).
+- **Retention purge:** preview, confirm and abandon a manual purge
+  (`POST /internal/v1/purge/preview`, `/confirm`, `/abandon`).
 - **Jobs and status:** start a job by kind, check a job's progress, read
   overall store status, list the problems Admin shows.
 
@@ -297,3 +302,44 @@ section, following `next_offset`. No source filter is supported. Expanded ZIP
 limits remain 40 MiB and 100 entries; conflicts fail the export atomically and
 appear in Admin Problems. Without authentication these routes return 401;
 without the named scope they return 403.
+
+## Retention purge (implemented)
+
+The public API service accepts API keys explicitly holding `admin:purge`:
+
+| Method and path | Request | Response |
+|---|---|---|
+| `POST /v1/admin/purge/preview` | Empty body | Saved dry run: `token`, `state`, `created_at`, `retention_days`, `candidates`, `counts`, `kept`, `completed`, `remaining`, `error` |
+| `POST /v1/admin/purge/confirm` | `{"token":"<preview token>","confirmation":"Purge listed items"}` | Same candidate list and counts, `state: complete` on success |
+| `POST /v1/admin/purge/abandon` | `{"token":"<token of an unfinished or unreadable receipt>"}` | The receipt with `state: abandoned`; `completed` counts listed items now gone and `remaining` lists the ids that are not |
+
+Candidates include `kind` (note or source), `id`, `title`, `path`, `origins`,
+`providers`, and `deleted_at` for notes. Counts contain `notes`, `sources`,
+`by_origin`, and `by_provider`; each origin and provider carries its own `notes` and
+`sources` counts, so a deleted note is never mistaken for a removed source. `kept` reports
+what the dry run left alone: `notes_within_retention` and `sources_in_use`. This dedicated scope is never added to an
+existing key; `admin:write`, `notes:delete`, and source scopes do not authorize
+purge. A changed candidate set, setting, mirror row or file yields 409
+`purge_conflict`; malformed or absent confirmation yields 422. Storage or
+metadata failures yield 503 and retain the receipt for inspection and retry.
+An unfinished purge is returned by preview with `state: applying` or `failed`;
+confirming its same token retries its saved list, after checking live references
+and surviving file hashes again. A completed token returns its prior result.
+Abandon stops an unfinished (`applying` or `failed`) list without retrying it
+and releases its ids so reconciliation and a fresh preview proceed. It reports
+what was and was not removed, and the items still present appear in Problems.
+It also moves an unreadable receipt file into quarantine. Confirming an
+abandoned token is refused with 422; run a new preview. Preview, confirm and abandon
+can run long on a large vault, so the store client allows them 10 minutes.
+
+Internal equivalents are `POST /internal/v1/purge/preview`, `/confirm` and `/abandon`,
+protected by the internal token. Admin's `/admin/purge` page uses the same store
+contract through its session and CSRF guarded forms at `/v1/admin/purge/preview`
+`/confirm` and `/abandon` on the separate Admin service. `/v1/admin/purge/settings` on
+Admin saves `days` and `revision` from its form; the setting takes effect on the
+next preview. The two services keep their existing authentication boundaries.
+
+Purge is a separate removal operation. PUT, PATCH and DELETE on
+`/v1/sources/**` still always return 405. No live-reference override exists.
+The precise retention and failure recovery rules are in
+[data and settings](data-and-settings.md#retention-purge-receipts).

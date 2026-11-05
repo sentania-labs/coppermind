@@ -42,9 +42,9 @@ vertical path proved end to end, then widened.
   manual setup and no hand populated setting. The one-shot `bootstrap`
   container creates `/data`, generates the internal bearer token and the
   PostgreSQL password as files on volumes (never environment values), creates
-  a working full-scope default API key in a separate restricted volume, and
-  writes `settings.yaml`, `schema.yaml` and the key's Argon2 hash at revision
-  1. Running it again keeps every existing secret, key and setting. Revoke
+  a working default API key (every scope except `admin:purge`) in a separate
+  restricted volume, and writes `settings.yaml`, `schema.yaml` and the key's
+  Argon2 hash at revision 1. Running it again keeps every existing secret, key and setting. Revoke
   that default and it stays revoked. The revocation takes effect for
   authentication as soon as the API's cache next loads; the reveal file is
   replaced by a sentence saying so at the next `docker compose up`, so until
@@ -53,7 +53,7 @@ vertical path proved end to end, then widened.
   record's own mark in `keys.json` rather than its name. Lose the credential
   volume while the default is live and the next start reports it
   unrecoverable and leaves the record alone, rather than minting a second
-  full-scope key while the first stays usable.
+  default key while the first stays usable.
 - Every `/v1` route requires `Bearer cm_<key_id>_<secret>`. A missing or bad
   key answers 401 and a key without the route's scope answers 403. Note reads
   need `notes:read`; creates and replacements need `notes:write`; frontmatter
@@ -683,7 +683,9 @@ Git blob identity, removal commit, exact recovery bytes, path, and note ID.
 They are loaded before filesystem reconciliation after mirror loss, so a
 returning file retains its old identity and source associations. They remain
 outside the notes repository and sync tree. Ordinary Git garbage collection
-cannot remove this independent recovery copy. No source bundle is removed.
+cannot remove this independent recovery copy. Deletion removes no source
+bundle; only a confirmed operator retention purge removes recovery copies and
+orphaned sources, see [data and settings](docs/data-and-settings.md#retention-purge-receipts).
 
 Git history alone cannot prove intent. Here `deleted` means absent with a
 recoverable committed removal. If the last observed edit never reached Git,

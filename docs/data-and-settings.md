@@ -137,6 +137,7 @@ Nothing here needs to be set before the system runs.
 | indexer | `enabled` | true |
 | indexer | `language` | `english` |
 | indexer | `reconcile_interval_s` | 600 |
+| retention | `days` | 30 (integer, 0 through 36500; 0 permits immediate manual purge) |
 | events | `retention_days` | 7 |
 | events | `poll_fallback_s` | 5 |
 | limits | `calendar_max_events` | 50,000 retained events across calendars |
@@ -237,6 +238,8 @@ old deletion with a later return. None of these files is synced.
 Rebuild seeds identities from receipts before scanning files. Observed file
 contents always win when an identity returns. `deleted` is reversible absence
 with Git recovery evidence, not an instruction to erase files or sources.
+Only a confirmed [retention purge](#retention-purge-receipts) removes a
+receipt and its observation copies.
 Historical source approvals remain in their existing review/filing receipts.
 
 A complete backup must preserve `/data/notes` including `.git`, `/data/sources`,
@@ -264,3 +267,84 @@ subscription change. The calendar intake limit remains independent of Sync limit
 Completed Dropbox receipts clear after a fixed seven days. Failed receipts never
 expire automatically. Originals and import history
 remain under `/data/state/calendars` after receipt expiry or dismissal.
+
+## Retention purge receipts
+
+**Admin > Retention purge** edits `retention.days` with revision safety and
+previews manual cleanup. It is the only place that setting is edited: Settings >
+Retention opens this page, as Sync limits opens the Obsidian Sync page. An
+unsaved change to the days is refused at preview rather than ignored. No timer erases data. The retention window begins
+at the later of the deleted row's last update and its recovery receipt's
+recorded time. The boundary is inclusive. Missing notes and notes still in
+Trash are not deleted-note candidates.
+
+An orphaned source is eligible independently of that window when its manifest
+identifies an opening note that is deleted, or a completed purge receipt proves
+that note was purged, and no live note cites the source. Missing and unparsed
+mirror rows are protected as potential live references. The store also reads
+current files, including unmirrored notes and Trash, before selecting sources.
+Unreadable notes refuse cleanup; legacy bundles without an opening-note identity
+are conservatively kept. A source's external-identity claim is removed with its
+bundle so a later ingest can create a new source normally.
+
+`/data/state/purges/<token>.json` holds a preview or unfinished receipt.
+Completed receipts move to `purges/done/` and abandoned ones to
+`purges/abandoned/`, so reconciliation reads only the receipts that can still
+hold identities. A receipt file that cannot be read is skipped, reported in
+Problems, and moved to `purges/quarantine/` by Abandon. Each receipt contains the preview, candidate metadata,
+file hashes, authorization state, and completion outcome. It contains no recovery
+body or artifact content. Confirmation rechecks settings, the candidate set,
+mirror fingerprints and file hashes. Any change requires a new preview. Normal
+store writers overlap, but purge holds an exclusive maintenance barrier against
+note writes, ingest, reconciliation, recovery, filing and search-index publication. Filesystem sync writers
+remain external to that barrier; the store checks their latest files immediately
+before removal and never removes a live note file.
+
+The durable `applying` receipt precedes any removal, and the database commit
+precedes every unlink: mirror rows and search entries for the whole list go
+together in one transaction, and only then are files unlinked (a source's
+`manifest.json` first, so reconciliation and recovery ignore a half-removed
+bundle). A failure before the commit removes nothing and leaves the preview
+usable. A failure after it leaves a `failed` receipt whose rows are already gone
+and whose files may remain. The failure appears in Problems and on the Retention
+purge page; the next preview returns that saved list for explicit retry. Retry
+verifies surviving files and live references, then completes only the originally
+authorized work. Recovery skips pending purge identities so partial cleanup cannot
+recreate their recovery copies. **Abandon** (Admin or
+`/v1/admin/purge/abandon`) is the way out of a stuck `applying` or `failed`
+receipt: it retries nothing, records which listed items are gone and which
+remain (`remaining`, shown in Problems), and lets a fresh preview start. Files an
+abandoned receipt recorded and left behind are offered again by the next preview
+as leftovers, but only while they are unchanged, nothing else sits in their
+bundle, and no live note cites them. A source
+row whose bundle holds no files, or a deleted-note row whose recovery receipt
+is gone, is listed as a leftover from an interrupted purge and its row is
+removed on confirm. A bundle with files but no readable manifest is damaged: it
+is never offered, and Problems reports it. No automatic destructive retry
+runs at startup. Successful confirmation is idempotent. Purge removes all saved
+recovery generations and later-observation copies for each selected note,
+source bundles and generated projections for selected sources, mirror rows,
+and search entries through the indexer's removal functions. Receipts and Git's
+removal commits remain as audit evidence. Git history is never rewritten.
+
+Counts show notes and sources separately, and each origin and provider shows its
+own deleted-note and orphaned-source counts. Notes inherit their associated
+sources' origins/providers; notes with none use Local notes. A note with several
+origins/providers counts once in each applicable group, so grouped totals can
+exceed the number of candidates. The preview also reports what it kept:
+`kept.notes_within_retention` and `kept.sources_in_use`. The Overview Problems
+count includes unfinished purges, abandoned purges with items remaining, unreadable
+receipts and damaged bundles (`purge_problems`), so it agrees with the Problems page.
+Status stays cheap: it reads `/data/state/purge-problems.json`, the few receipts that
+can still be unfinished and one bounded query on the ids an abandoned purge left, and
+never walks a source bundle or a finished receipt. The full scan that rewrites that file
+runs only at store startup and after a completed preview, confirm or abandon; a failed
+confirm leaves it as it was. Between scans, work that actually observes a bundle updates
+the file: a preview that finds a bundle unreadable or readable again, and a metadata
+rebuild whose source recovery fails to verify, or later verifies, a bundle. Each record
+keeps what found it: an unreadable manifest is cleared when purge reads it again, and a
+bundle recovery could not verify (a missing file, a mismatch) is cleared only when a
+rebuild verifies it or a confirmed purge removes it. Purge planning never clears the latter. Reconciliation
+does not read source bundles or finished receipts, so it records nothing. An item an
+abandoned purge left drops out of the Problem as soon as its note is live again or a live
+note cites its source; that never makes it eligible for removal.

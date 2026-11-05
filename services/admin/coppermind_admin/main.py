@@ -40,6 +40,7 @@ from coppermind_admin.pages import (
     note_history,
     problems,
     properties,
+    purge,
     search_index,
     sync,
     workflow,
@@ -228,6 +229,7 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
     app.include_router(search_index.router(settings))
     app.include_router(field_index.router(settings))
     app.include_router(note_history.router(settings))
+    app.include_router(purge.router(settings))
     app.include_router(context.router(settings))
     app.include_router(workflow.router(settings))
     app.include_router(properties.router)

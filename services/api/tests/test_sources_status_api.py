@@ -331,6 +331,7 @@ def test_status_returns_every_counter(api):
             "known_unreadable": 0,
             "calendar_import_failures": 0,
             "active_problems": None,
+            "purge_problems": 0,
         }
     }
 
