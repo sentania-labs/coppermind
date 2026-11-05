@@ -149,10 +149,13 @@ Reads follow a moved note's identity when its recorded path is stale. An `ok`
 listing omits files that have disappeared or cannot be parsed until the next
 reconciliation records their state. Problems includes missing notes with their
 `state_reason` and durable path notices naming the observed and indexed paths.
-Filing journals retain hash-checked note copies. When a note vanishes between
-paths, recovery uses those copies only with Git evidence of removal of a
-journaled origin; otherwise the missing reason names the last known hash and
-why recovery is waiting.
+While filing is in flight, its journal holds hash-checked note copies; they are
+dropped once filing settles, and a retention purge removes a purged note's
+journal. When a note vanishes between paths, recovery uses those copies only
+with Git evidence of removal of a journaled origin; otherwise the missing
+reason names the last known hash and why recovery is waiting. A path notice
+reports a disagreement that is still open and clears when the index and the file
+agree again or the note is gone.
 
 ## Sources (read-only by design)
 
