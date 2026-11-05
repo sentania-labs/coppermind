@@ -122,8 +122,7 @@ class Dropbox:
         digest = hashlib.sha256(data).hexdigest()
         records = self.records()
         existing = records["items"].get(digest)
-        replaceable = COMPLETED | {"failed"} | ({"unsupported"} if kind else set())
-        if existing and existing["state"] not in replaceable:
+        if existing and existing["state"] not in COMPLETED | {"failed", "unsupported"}:
             return existing
         history = records["history"].get(digest, {})
         imported = next(
@@ -276,6 +275,12 @@ class Dropbox:
             if item["state"] == "failed":
                 for part in item["parts"]:
                     await asyncio.to_thread(self.context.archive.dismiss, part["import_id"])
+            if item["state"] == "unsupported":
+                records["observations"] = {
+                    key: value
+                    for key, value in records["observations"].items()
+                    if Path(key).name != item["filename"]
+                }
             records["history"][identity] = item
             del records["items"][identity]
             self.save(records)

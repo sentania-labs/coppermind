@@ -189,6 +189,32 @@ async def test_a_kind_sidecar_added_after_the_file_was_parked_rescues_it(store):
     assert [item.filename for item in stored.items] == ["design.bin"]
 
 
+async def test_dismissing_a_parked_drop_lets_the_file_be_read_again(store):
+    context = await configure(store)
+    folder = store.notes_root / "Dropbox"
+    folder.mkdir(parents=True)
+    (folder / "design.bin").write_bytes(b"not a calendar, no marker")
+
+    async def settle():
+        await context.dropbox.scan()
+        context.dropbox.seen = {
+            key: (value[0], value[1] - 31) for key, value in context.dropbox.seen.items()
+        }
+        await context.dropbox.scan()
+        await context.dropbox.process()
+
+    await settle()
+    (parked,) = [item for item in context.dropbox.snapshot()["items"] if item["id"]]
+    await context.dropbox.dismiss({"id": parked["id"]})
+    assert [item for item in context.dropbox.snapshot()["items"] if item["id"]] == []
+
+    (folder / "design.bin.kind").write_text("artifact\n")
+    await settle()
+
+    states = [item["state"] for item in context.dropbox.snapshot()["items"] if item["id"]]
+    assert states == ["succeeded"]
+
+
 async def test_calendar_invitation_cannot_become_attendance_without_note_evidence(store):
     from coppermind_store.enrichment_models import Suggestions
 
