@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
-from coppermind_store import purge
+from coppermind_store import artifacts, purge
 from coppermind_store.artifacts import manifest_path
 
 from coppermind.db.models import Artifact
@@ -52,6 +52,7 @@ async def test_a_removed_artifact_past_the_window_is_previewed_and_purged(store)
 
     assert [(c.kind, c.id) for c in preview.candidates] == [("artifact", old.id)]
     assert preview.counts.artifacts == 1 and preview.counts.notes == 0
+    assert [c.reason for c in preview.candidates] == ["removed in Admin"]
     assert preview.counts.by_provider == {"Artifacts": PurgeBreakdown(artifacts=1)}
     assert preview.kept.artifacts_within_retention == 1
     assert (store.artifacts_root / old.id / "r0001" / "old.txt").exists()
@@ -130,3 +131,20 @@ async def test_an_interrupted_artifact_purge_can_be_retried_or_abandoned(store, 
     assert not (store.artifacts_root / gone.id).exists()
     async with store.session_factory() as session:
         assert await session.scalar(sa.select(sa.func.count()).select_from(Artifact)) == 0
+
+
+async def test_a_device_side_removal_never_makes_the_archive_purgeable(store):
+    retention(store, 0)
+    deleted = await store.create_artifact(upload("device.txt", b"deleted on a device\n"))
+    (store.notes_root / deleted.path).unlink()
+    assert (await artifacts.sweep(store))["artifacts_removed"] == 1
+    assert "device" in json.loads(manifest_path(store, deleted.id).read_text())["removed_reason"]
+    age_removal(store, deleted.id, 400)
+    admin = await removed(store, "admin.txt", b"removed by the owner\n", 1)
+
+    preview = await store.preview_purge()
+
+    assert [(c.id, c.reason) for c in preview.candidates] == [(admin.id, "removed in Admin")]
+    await store.confirm_purge(confirmation(preview))
+    assert (store.artifacts_root / deleted.id / "r0001" / "device.txt").exists()
+    assert not (store.artifacts_root / admin.id).exists()

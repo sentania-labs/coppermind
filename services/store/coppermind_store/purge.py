@@ -43,6 +43,7 @@ from coppermind.store_protocol import (
     ValidationFailed,
 )
 from coppermind_store import indexer, note_history
+from coppermind_store.artifacts import REMOVED_IN_ADMIN
 from coppermind_store.fs import resolve as filesystem_path
 from coppermind_store.sources import _external_id_claim_path, _manifest_document
 
@@ -464,6 +465,8 @@ def _removed_archives(
             or removed_at.utcoffset() is None
         ):
             continue
+        if manifest.get("removed_reason") != REMOVED_IN_ADMIN:
+            continue
         if removed_at > cutoff:
             within += 1
             continue
@@ -479,6 +482,7 @@ def _removed_archives(
             origins=[origin],
             providers=["Artifacts"],
             deleted_at=removed_at,
+            reason=REMOVED_IN_ADMIN,
         )
         items.append(
             {

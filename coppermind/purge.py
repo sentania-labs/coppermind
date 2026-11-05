@@ -15,6 +15,7 @@ class PurgeCandidate(BaseModel):
     providers: list[str]
     deleted_at: datetime | None = None
     leftover: bool = False
+    reason: str | None = None
 
 
 class PurgeBreakdown(BaseModel):

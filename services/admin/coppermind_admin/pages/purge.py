@@ -86,6 +86,8 @@ def listing(value: PurgeResult, request: Request) -> str:
         if c.leftover:
             label += " (leftover from an interrupted purge)"
         where = c.origins if c.origins == c.providers else [*c.origins, *c.providers]
+        if c.reason:
+            where = [*where, c.reason]
         rows += f"""<tr><td>{label}<br><strong>{name}</strong><br>{escape(c.path)}</td>
 <td>{"<br>".join(escape(v) for v in where)}</td><td>{when}</td></tr>"""
     return f"""<div class="metrics"><div class="metric">Deleted notes

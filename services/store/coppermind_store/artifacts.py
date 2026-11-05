@@ -93,6 +93,7 @@ RECORD_SCHEMA = 1
 REEXTRACT_PER_PASS = 10
 # Legacy attachments one pass moves into the artifacts folder.
 MIGRATE_PER_PASS = 50
+REMOVED_IN_ADMIN = "removed in Admin"
 
 _LEGACY_ATTACHMENT = re.compile(
     r"^(?P<source>[0-7][0-9A-HJKMNP-TV-Z]{25})-r(?P<rev>\d{4})-(?P<name>.+)$"
@@ -1166,7 +1167,7 @@ async def remove_artifact(store: LocalStore, artifact_id: str) -> None:
         manifest = await asyncio.to_thread(read_manifest, store, artifact_id)
         if manifest.get("removed_at"):
             raise ArtifactMissing(artifact_id)
-        await _retire(store, manifest, reason="removed in Admin")
+        await _retire(store, manifest, reason=REMOVED_IN_ADMIN)
 
 
 async def _retire(store: LocalStore, manifest: dict[str, Any], *, reason: str) -> None:

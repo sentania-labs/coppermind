@@ -389,7 +389,7 @@ The public API service accepts API keys explicitly holding `admin:purge`:
 | `POST /v1/admin/purge/abandon` | `{"token":"<token of an unfinished or unreadable receipt>"}` | The receipt with `state: abandoned`; `completed` counts listed items now gone and `remaining` lists the ids that are not |
 
 Candidates include `kind` (note, source or artifact), `id`, `title`, `path`, `origins`,
-`providers`, and `deleted_at` for notes and for artifacts (when they were removed). Counts
+`providers`, `deleted_at` for notes and for artifacts (when they were removed), and `reason` for artifacts (`removed in Admin`). Counts
 contain `notes`, `sources`, `artifacts`, `by_origin`, and `by_provider`; each origin and
 provider carries its own `notes`, `sources` and `artifacts` counts, so a deleted note is never
 mistaken for a removed source. `kept` reports what the dry run left alone:
