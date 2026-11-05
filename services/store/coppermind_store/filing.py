@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -35,6 +36,25 @@ def _copy(path: Path, data: bytes) -> None:
     except FileExistsError:
         if path.is_symlink() or path.read_bytes() != data:
             raise ValueError("filing destination is occupied") from None
+
+
+_FILED_MONTH = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")
+
+
+def filed_source_path(sources_folder: str, manifest: dict, source_id: str, month: str) -> str:
+    """Where a source's filed page belongs: nested by year under the sources root.
+
+    A page already filed keeps its month, so a date correction never moves it;
+    one filed flat as `{sources}/{yyyy-mm}/` is carried into its year folder.
+    """
+    filed = manifest.get("filed_projection_path")
+    if not filed:
+        return f"{sources_folder}/{month[:4]}/{month}/{source_id}.md"
+    parent, _, name = filed.rpartition("/")
+    folder, _, filed_month = parent.rpartition("/")
+    if folder == sources_folder and _FILED_MONTH.fullmatch(filed_month):
+        return f"{sources_folder}/{filed_month[:4]}/{filed_month}/{name}"
+    return filed
 
 
 class SourceRevisionNeedsReview(ValueError):
@@ -146,7 +166,10 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         and set(note.sources) == {item["id"] for item in plan["sources"]}
         and all(
             item["revision"] == manifests[item["id"]]["current_revision"]
-            and item["to"] == manifests[item["id"]]["projection_path"]
+            and filed_source_path(
+                settings.notes.sources_folder, manifests[item["id"]], item["id"], month
+            )
+            == manifests[item["id"]]["projection_path"]
             for item in plan["sources"]
         )
     ):
@@ -172,8 +195,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
                 "id": source_id,
                 "from": old_path,
                 "link_from": link_from,
-                "to": manifest.get("filed_projection_path")
-                or f"{settings.notes.sources_folder}/{month}/{source_id}.md",
+                "to": filed_source_path(settings.notes.sources_folder, manifest, source_id, month),
                 "revision": manifest["current_revision"],
             }
         )

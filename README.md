@@ -192,7 +192,7 @@ of the notes history.
 
 Ingest creates an unreviewed draft. Mark it reviewed in Obsidian or through the
 frontmatter API. Reconciliation then files the note under `Notes/YYYY/YYYY-MM/` and its
-source page under `_Sources/YYYY-MM/`; search includes them only after filing
+source page under `_Sources/YYYY/YYYY-MM/`; search includes them only after filing
 succeeds. PDFs and other non-text, non-audio attachments are copied into
 `_Attachments/YYYY-MM/`, and image embeds in the note that name an artifact are
 rewritten to those copies. Immutable originals stay under `/data/sources`, and

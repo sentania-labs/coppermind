@@ -9,19 +9,33 @@ the file, which is small, and always reflect what Admin last wrote.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from coppermind.api_keys import ApiKeySet
 from coppermind.logging import get_logger
 from coppermind.schema import FrontmatterSchema, default_schema, shipped_key_upgrades
 from coppermind.settings import ProductSettings, default_settings, read_settings
-from coppermind.statefiles import StateStore
+from coppermind.statefiles import RevisionConflict, StateStore
 from coppermind.store_protocol import SchemaDocument
 
 log = get_logger("coppermind-store")
 
 RECONCILER_NOTICE_KEYS = frozenset({"note_id", "title", "from_path", "path", "reason", "at"})
+_NOTICE_WRITE_ATTEMPTS = 5
+
+
+def _valid_notices(body: dict[str, Any]) -> dict[str, dict[str, str]]:
+    raw = body.get("notices", {})
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(note_id): {str(k): str(v) for k, v in entry.items()}
+        for note_id, entry in raw.items()
+        if isinstance(entry, dict) and entry.keys() >= RECONCILER_NOTICE_KEYS
+    }
 
 
 class ControlState:
@@ -122,32 +136,49 @@ class ControlState:
         at: datetime,
     ) -> None:
         """Record why a hand-moved reviewed note was returned to its filed folder."""
-        notices = self.read_reconciler_notices()
-        notices[note_id] = {
-            "note_id": note_id,
-            "title": title,
-            "from_path": from_path,
-            "path": path,
-            "folder": folder,
-            "reason": reason,
-            "at": at.isoformat(),
-        }
-        try:
-            revision = self.store.read("reconciler_notices").revision
-        except FileNotFoundError:
-            revision = None
-        self.store.write("reconciler_notices", {"notices": notices}, if_revision=revision)
+
+        def add(notices: dict[str, dict[str, str]]) -> bool:
+            notices[note_id] = {
+                "note_id": note_id,
+                "title": title,
+                "from_path": from_path,
+                "path": path,
+                "folder": folder,
+                "reason": reason,
+                "at": at.isoformat(),
+            }
+            return True
+
+        self._change_reconciler_notices(add)
 
     def clear_reconciler_notice(self, note_id: str) -> None:
-        notices = self.read_reconciler_notices()
-        if note_id not in notices:
+        self._change_reconciler_notices(lambda notices: notices.pop(note_id, None) is not None)
+
+    def _change_reconciler_notices(
+        self, change: Callable[[dict[str, dict[str, str]]], bool]
+    ) -> None:
+        """Apply `change` to the notices it read and write back against that same revision.
+
+        `change` returns False when it left nothing to write. A writer that
+        landed in between moves the revision on, so the change is applied again
+        to what that writer left rather than over it.
+        """
+        for attempt in range(_NOTICE_WRITE_ATTEMPTS):
+            try:
+                state = self.store.read("reconciler_notices")
+                revision: int | None = state.revision
+                notices = _valid_notices(state.body)
+            except FileNotFoundError:
+                revision, notices = None, {}
+            if not change(notices):
+                return
+            try:
+                self.store.write("reconciler_notices", {"notices": notices}, if_revision=revision)
+            except RevisionConflict:
+                if attempt == _NOTICE_WRITE_ATTEMPTS - 1:
+                    raise
+                continue
             return
-        notices.pop(note_id, None)
-        try:
-            revision = self.store.read("reconciler_notices").revision
-        except FileNotFoundError:
-            return
-        self.store.write("reconciler_notices", {"notices": notices}, if_revision=revision)
 
     def read_reconciler_notices(self) -> dict[str, dict[str, str]]:
         """Notices recorded when hand-moved reviewed notes were returned to their filed folders."""
@@ -155,11 +186,4 @@ class ControlState:
             body = self.store.read("reconciler_notices").body
         except (FileNotFoundError, ValueError):
             return {}
-        raw = body.get("notices", {})
-        if not isinstance(raw, dict):
-            return {}
-        return {
-            str(note_id): {str(k): str(v) for k, v in entry.items()}
-            for note_id, entry in raw.items()
-            if isinstance(entry, dict) and entry.keys() >= RECONCILER_NOTICE_KEYS
-        }
+        return _valid_notices(body)

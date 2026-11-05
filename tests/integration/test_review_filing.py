@@ -10,7 +10,13 @@ from coppermind_store.eligibility import reviewed_note
 from coppermind_store.reconciler import reconcile_once
 
 from coppermind.db.models import Note, NoteSource, SearchDocument, Source
-from coppermind.store_protocol import IngestArtifact, MoveNote, PatchFrontmatter, SearchQuery
+from coppermind.store_protocol import (
+    IngestArtifact,
+    MoveNote,
+    PatchFrontmatter,
+    ReplaceNote,
+    SearchQuery,
+)
 from tests.integration.test_search_index import ingest_request
 
 
@@ -37,7 +43,7 @@ async def test_review_files_monthly_then_publishes_and_human_edit_stays_reviewed
     note = await store.get_note(result.note.id)
     source = await store.get_source(result.source.id)
     assert note.path.startswith("Notes/2026/2026-09/")
-    assert source.projection_path.startswith("_Sources/2026-09/")
+    assert source.projection_path.startswith("_Sources/2026/2026-09/")
     assert source.projection_path.removesuffix(".md") in note.body
     assert not (store.notes_root / result.projection_path).exists()
     assert (await store.search(SearchQuery(q="kerfuffle"))).items[0].id == result.source.id
@@ -84,7 +90,7 @@ async def test_failed_filing_retries_without_indexing_or_losing_originals(store,
     assert not any(p.kind == "filing" for p in await store.get_problems())
     assert (await store.get_note(result.note.id)).path.startswith("Notes/2026/2026-10/")
     assert (await store.get_source(result.source.id)).projection_path.startswith(
-        "_Sources/2026-10/"
+        "_Sources/2026/2026-10/"
     )
     assert (store.sources_root / result.source.id / "r0001/transcript.txt").read_bytes() == original
     assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 0}
@@ -175,7 +181,7 @@ async def test_added_source_requires_filing_before_publication(store):
     await indexer.catch_up(store)
     assert len((await store.search(SearchQuery(q="kerfuffle"))).items) == 2
     assert (await store.get_source(second.source.id)).projection_path.startswith(
-        "_Sources/2026-09/"
+        "_Sources/2026/2026-09/"
     )
 
 
@@ -193,7 +199,7 @@ async def test_date_correction_preserves_canonical_source_path(store):
     await indexer.catch_up(store)
     hits = (await store.search(SearchQuery(q="kerfuffle"))).items
     assert len(hits) == 1
-    assert hits[0].path.startswith("_Sources/2026-09/")
+    assert hits[0].path.startswith("_Sources/2026/2026-09/")
     assert (await store.get_note(note.id)).path.startswith("Notes/2026/2026-10/")
     assert hits[0].path.removesuffix(".md") in (await store.get_note(note.id)).body
 
@@ -460,6 +466,45 @@ async def test_a_reviewed_note_files_under_the_notes_root_by_year_and_month(stor
     status = await store.get_status()
     assert status.counters.notes_folder == "Notes"
     assert status.counters.notes_to_refile == 0
+
+
+async def test_upgrade_carries_flat_filed_source_pages_into_their_year_folder(store):
+    result = await store.ingest(ingest_request())
+    await approve(store, result.note.id)
+    await indexer.catch_up(store)
+    nested = (await store.get_source(result.source.id)).projection_path
+    assert nested.startswith("_Sources/2026/2026-09/")
+    flat = nested.replace("_Sources/2026/", "_Sources/")
+    (store.notes_root / flat).parent.mkdir(parents=True)
+    (store.notes_root / nested).rename(store.notes_root / flat)
+    manifest_path = store.sources_root / result.source.id / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["projection_path"] = manifest["filed_projection_path"] = flat
+    manifest_path.write_text(json.dumps(manifest))
+    note = await store.get_note(result.note.id)
+    link = nested.removesuffix(".md")
+    assert link in note.body
+    await store.replace_note(
+        note.id,
+        ReplaceNote(
+            frontmatter=note.frontmatter,
+            body=note.body.replace(link, flat.removesuffix(".md")),
+        ),
+        note.content_hash,
+    )
+    assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+    await indexer.catch_up(store)
+    moved = await store.get_source(result.source.id)
+    assert moved.projection_path == nested
+    assert (store.notes_root / nested).exists()
+    assert not (store.notes_root / flat).exists()
+    body = (await store.get_note(note.id)).body
+    assert link in body
+    assert flat.removesuffix(".md") not in body
+    hits = (await store.search(SearchQuery(q="kerfuffle"))).items
+    assert [hit.id for hit in hits] == [result.source.id]
+    assert hits[0].path == nested
+    assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 0}
 
 
 async def test_a_configured_notes_root_governs_filing_search_and_indexing(store):
