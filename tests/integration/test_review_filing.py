@@ -438,7 +438,8 @@ async def test_new_revision_repoints_embeds_to_the_current_attachments(store):
 
 async def _eligible_ids(store):
     async with store.session_factory() as session:
-        return set((await session.scalars(sa.select(Note.id).where(reviewed_note()))).all())
+        root = store.control.settings().notes.notes_folder
+        return set((await session.scalars(sa.select(Note.id).where(reviewed_note(root)))).all())
 
 
 async def test_a_reviewed_note_files_under_the_notes_root_by_year_and_month(store):
@@ -458,6 +459,23 @@ async def test_a_reviewed_note_files_under_the_notes_root_by_year_and_month(stor
     status = await store.get_status()
     assert status.counters.notes_folder == "Notes"
     assert status.counters.notes_to_refile == 0
+
+
+async def test_a_configured_notes_root_governs_filing_search_and_indexing(store):
+    state = store.control.store
+    settings = store.control.settings()
+    settings.notes.notes_folder = "Filed"
+    state.write("settings", settings.model_dump(), if_revision=state.read("settings").revision)
+    request = ingest_request()
+    request.note.frontmatter["date"] = "2026-04-13"
+    result = await store.ingest(request)
+    await approve(store, result.note.id)
+    await indexer.catch_up(store)
+    note = await store.get_note(result.note.id)
+    assert note.path == "Filed/2026/2026-04/2026-04-13 Warehouse call.md"
+    assert note.id in await _eligible_ids(store)
+    assert (await store.search(SearchQuery(q="kerfuffle"))).items
+    assert (await store.get_status()).counters.notes_folder == "Filed"
 
 
 async def test_upgrade_refiles_legacy_notes_and_search_never_empties(store):

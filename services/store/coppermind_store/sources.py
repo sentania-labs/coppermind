@@ -1196,6 +1196,7 @@ PURGE_PROBLEM_KINDS = frozenset({"purge", "purge_unfinished", "purge_receipt", "
 async def get_status(store: LocalStore) -> StatusResponse:
     """Counters computed from the mirror and the recorded rejections."""
     prefix = _review_prefix(store)
+    notes_folder = store.control.settings().notes.notes_folder
     awaiting = (
         sa.select(sa.func.count())
         .select_from(Note)
@@ -1217,7 +1218,9 @@ async def get_status(store: LocalStore) -> StatusResponse:
             notes_awaiting_review = await session.scalar(awaiting) or 0
             notes_to_refile = (
                 await session.scalar(
-                    sa.select(sa.func.count()).select_from(Note).where(awaiting_refile())
+                    sa.select(sa.func.count())
+                    .select_from(Note)
+                    .where(awaiting_refile(notes_folder))
                 )
                 or 0
             )
@@ -1256,7 +1259,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
             name_collisions=name_collisions,
             unparseable_files=notes_by_state.get("unparsed", 0),
             excluded_count=excluded_count,
-            notes_folder=store.control.settings().notes.notes_folder,
+            notes_folder=notes_folder,
             notes_to_refile=notes_to_refile,
             notes_returned=len(store.control.read_reconciler_notices()),
             filing_failures=sum(p.kind == "filing" for p in problems),

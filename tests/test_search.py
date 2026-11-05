@@ -57,7 +57,7 @@ def _query(**values: Any) -> SearchQuery:
 
 
 def _sql(query: SearchQuery, after: SearchCursor | None = None) -> tuple[str, dict[str, Any]]:
-    compiled = build_search(query, after).compile(dialect=postgresql.dialect())
+    compiled = build_search(query, "Notes", after).compile(dialect=postgresql.dialect())
     return str(compiled), dict(compiled.params)
 
 

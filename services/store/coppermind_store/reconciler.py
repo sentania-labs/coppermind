@@ -590,7 +590,9 @@ async def reconcile_once(
                         from coppermind_store.filing import record_review
 
                         record_review(store, row.id, observed.frontmatter)
-                    await _follow_in_index(session, row.id, observed, now)
+                    await _follow_in_index(
+                        session, row.id, observed, now, settings.notes.notes_folder
+                    )
                     if observed is None:
                         counts["deleted" if receipt is not None else "missing"] += 1
                     elif observed.state in {"unparsed", "unreadable"}:
@@ -606,7 +608,11 @@ async def reconcile_once(
 
 
 async def _follow_in_index(
-    session: AsyncSession, note_id: str, observed: Observation | None, now: datetime
+    session: AsyncSession,
+    note_id: str,
+    observed: Observation | None,
+    now: datetime,
+    notes_folder: str,
 ) -> None:
     """Make the search index say what the mirror row now says, in its transaction.
 
@@ -627,6 +633,7 @@ async def _follow_in_index(
             body=observed.body,
             version=observed.content_hash,
             now=now,
+            notes_folder=notes_folder,
         )
     else:
         await indexer.follow_note_path(session, note_id, observed.path)

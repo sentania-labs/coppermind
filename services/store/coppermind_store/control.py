@@ -66,11 +66,7 @@ class ControlState:
             )
 
     def settings(self) -> ProductSettings:
-        from coppermind_store.eligibility import set_notes_folder
-
-        loaded = read_settings(self.store)
-        set_notes_folder(loaded.notes.notes_folder)
-        return loaded
+        return read_settings(self.store)
 
     def schema(self) -> FrontmatterSchema:
         return self.schema_document().frontmatter_schema

@@ -13,27 +13,15 @@ from coppermind.naming import sanitize_folder
 MONTH_PATH = r"^[0-9]{4}-(0[1-9]|1[0-2])/"
 NOTES_FOLDER_DEFAULT = "Notes"
 
-_notes_folder: str = NOTES_FOLDER_DEFAULT
-
-
-def set_notes_folder(notes_folder: str) -> None:
-    global _notes_folder
-    _notes_folder = sanitize_folder(notes_folder) or NOTES_FOLDER_DEFAULT
-
-
-def get_notes_folder() -> str:
-    return _notes_folder
-
 
 def rendered_note_folder(notes_folder: str, day: date) -> str:
     root = sanitize_folder(notes_folder) or NOTES_FOLDER_DEFAULT
     return f"{root}/{day:%Y}/{day:%Y-%m}"
 
 
-def awaiting_refile(notes_folder: str | None = None):
+def awaiting_refile(notes_folder: str):
     """Reviewed notes whose path is not under the folder their date renders to."""
-    root = sanitize_folder(notes_folder) if notes_folder is not None else _notes_folder
-    root = root or NOTES_FOLDER_DEFAULT
+    root = sanitize_folder(notes_folder) or NOTES_FOLDER_DEFAULT
     prefix = sa.literal(f"{root}/") + sa.func.to_char(Note.date, "YYYY/YYYY-MM") + "/"
     return sa.and_(
         Note.reviewed.is_(True),
@@ -43,9 +31,8 @@ def awaiting_refile(notes_folder: str | None = None):
     )
 
 
-def reviewed_note(notes_folder: str | None = None):
-    root = sanitize_folder(notes_folder) if notes_folder is not None else _notes_folder
-    root = root or NOTES_FOLDER_DEFAULT
+def reviewed_note(notes_folder: str):
+    root = sanitize_folder(notes_folder) or NOTES_FOLDER_DEFAULT
     new_path_pattern = rf"^{re.escape(root)}/[0-9]{{4}}/[0-9]{{4}}-(0[1-9]|1[0-2])/"
     new_prefix = sa.literal(f"{root}/") + sa.func.to_char(Note.date, "YYYY/YYYY-MM") + "/"
     new_shape = sa.and_(
@@ -65,7 +52,7 @@ def reviewed_note(notes_folder: str | None = None):
     )
 
 
-def eligible(kind, ref_id, notes_folder: str | None = None):
+def eligible(kind, ref_id, notes_folder: str):
     notes = sa.exists(
         sa.select(Note.id).where(Note.id == ref_id, reviewed_note(notes_folder))
     ).correlate_except(Note)

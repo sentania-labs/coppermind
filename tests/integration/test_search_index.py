@@ -374,6 +374,7 @@ async def test_a_rebuild_recreates_the_index_from_the_files(store: LocalStore):
             body="heron ghost",
             version="none",
             now=first.updated_at,
+            notes_folder="Notes",
         )
 
     counts = await indexer.rebuild(store)
