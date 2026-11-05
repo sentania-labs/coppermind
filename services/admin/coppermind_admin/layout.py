@@ -98,6 +98,7 @@ summary {cursor:pointer;font-weight:650;line-height:1.5}
 LINKS = (
     ("/admin", "Overview"),
     ("/admin/problems", "Problems"),
+    ("/admin/artifacts", "Artifacts"),
     ("/admin/properties", "Note properties"),
     ("/admin/settings", "Settings"),
     ("/admin/keys", "API Keys"),

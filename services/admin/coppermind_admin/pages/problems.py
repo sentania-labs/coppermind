@@ -70,6 +70,7 @@ KIND_LABELS = {
     "returned_note": "Hand-moved note returned",
     "folder_kept": "Old month folder kept",
     "unreadable_note": "Unreadable note",
+    "artifact": "Artifact",
 }
 
 
@@ -85,6 +86,8 @@ def _link(problem: ProblemInfo) -> str:
         )
     if problem.kind in {"purge", "purge_unfinished"}:
         return '<a href="/admin/purge">Retention purge</a>'
+    if problem.kind == "artifact" or problem.artifact_id:
+        return '<a href="/admin/artifacts">Artifacts</a>'
     if problem.kind == "dropbox":
         return '<a href="/admin/workflow?tab=intake">Dropbox receipts</a>'
     if problem.kind in {"calendar_import", "calendar_conflict"}:
@@ -221,11 +224,15 @@ Notes awaiting review<strong>{counters.notes_awaiting_review}</strong>
 <span class="muted">Review in Obsidian.</span></div>
 <div class="metric" aria-label="Sources: {counters.sources}">
 Preserved sources<strong>{counters.sources}</strong></div>
+<div class="metric" aria-label="Artifacts: {counters.artifacts}">
+Artifacts<strong>{counters.artifacts}</strong>
+<a href="/admin/artifacts">Artifacts</a></div>
 <div class="metric">Problems<strong>{problems}</strong>
 <a href="/admin/problems">Problems ({problems})</a></div></div>
 <ul>
 <li>Notes by state: {states or "none"}</li>
 <li>Sources: {counters.sources}</li>
+<li>Artifacts: {counters.artifacts}</li>
 <li>Rejected ingests: {counters.rejected_ingests}</li>
 <li>Name collisions: {counters.name_collisions}</li>
 <li>Unparseable files: {counters.unparseable_files}</li>

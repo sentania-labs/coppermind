@@ -26,6 +26,7 @@ from coppermind.settings import Wiring
 from coppermind.store_client import HttpStoreClient
 from coppermind_api import __version__
 from coppermind_api.auth import ApiKeyAuthenticator, AuthenticationUnavailable
+from coppermind_api.v1.artifacts import router as artifacts_router
 from coppermind_api.v1.calendars import router as calendars_router
 from coppermind_api.v1.folders import router as folders_router
 from coppermind_api.v1.ingest import router as ingest_router
@@ -44,9 +45,10 @@ log = get_logger(SERVICE)
 DESCRIPTION = """
 The Coppermind public contract.
 
-Notes live as Markdown files in the notes filesystem. This service has only a
-five-minute authentication cache: every note operation is a call to the
-store, which is the only process that writes those files.
+Notes live as Markdown files in the notes filesystem, and artifacts (files and
+links handed in beside them) live as bytes under the artifacts folder. This
+service has only a five-minute authentication cache: every operation is a
+call to the store, which is the only process that writes those files.
 """.strip()
 
 
@@ -159,6 +161,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
     app.include_router(search_router)
 
     app.include_router(sources_router)
+    app.include_router(artifacts_router)
     app.include_router(schema_router)
     return app
 

@@ -132,3 +132,13 @@ def test_balanced_parentheses_in_unbracketed_destinations():
     assert rewrite("![](a(b(c)).jpg) tail", deep).endswith(".jpg) tail")
     assert "SRC1-r0001" in rewrite("![](a(b(c)).jpg) tail", deep)
     assert rewrite("![](a(b.jpg)", deep) == "![](a(b.jpg)"
+
+
+def test_a_legacy_attachment_link_repoints_to_the_filed_artifact_and_stays_there():
+    """`_Attachments/YYYY-MM/<source>-rNNNN-<name>` was the old home; `Artifacts/` is the new."""
+    filed = "Artifacts/2026/2026-09/x-image-01.jpg"
+    images = [("SRC1", "x-image-01.jpg", filed)]
+    body = f"![[{FILED}]] ![]({FILED}) ![[x-image-01.jpg]]"
+    once = rewrite(body, images)
+    assert once == f"![[{filed}]] ![]({filed}) ![[{filed}]]"
+    assert rewrite(once, images) == once

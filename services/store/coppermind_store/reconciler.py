@@ -326,11 +326,26 @@ async def _index_after_pass(store: LocalStore) -> None:
         from coppermind_store.filing import file_reviewed
 
         await file_reviewed(store)
+    except Exception as exc:  # noqa: BLE001 - filing must not stop the reconciler
+        log.warning("filing deferred", reason=type(exc).__name__)
+    try:
+        from coppermind_store.artifacts import sweep
+
+        swept = await sweep(store)
+    except Exception as exc:  # noqa: BLE001 - the sweep must not stop the reconciler
+        log.warning("artifact sweep deferred", reason=type(exc).__name__)
+    else:
+        if any(swept.values()):
+            log.info("artifacts swept", **swept)
+    try:
         counts = await indexer.after_pass(store)
     except Exception as exc:  # noqa: BLE001 - the index must not stop the reconciler
         log.warning("search index catch-up deferred", reason=type(exc).__name__)
         return
-    if any(counts.get(key) for key in ("indexed", "removed", "unreadable", "notes", "sources")):
+    if any(
+        counts.get(key)
+        for key in ("indexed", "removed", "unreadable", "notes", "sources", "artifacts")
+    ):
         log.info("search index caught up", **counts)
 
 
@@ -905,15 +920,18 @@ def _path_exclusion(path: Path, folders: list[str], patterns: list[str]) -> str 
 def _unadoptable_folders(settings: ProductSettings) -> frozenset[tuple[str, ...]]:
     """The folders the store writes, so adoption never writes there.
 
-    Deleted notes, generated source projections and attachments. Their names
-    are the operator's, read from the same settings the rest of the system lays
-    the notes filesystem out by, and each is split into its segments because a
+    Deleted notes, generated source projections, artifacts and the legacy
+    attachments folder. An artifact is never a note, so a Markdown file placed
+    under the artifacts folder is never adopted. Their names are the
+    operator's, read from the same settings the rest of the system lays the
+    notes filesystem out by, and each is split into its segments because a
     name may nest: `Archive/Trash` has to exclude what is under it, not every
     path that merely starts with `Archive`.
     """
     named = (
         settings.notes.trash_folder,
         settings.notes.sources_folder,
+        settings.notes.artifacts_folder,
         settings.notes.attachments_folder,
     )
     return frozenset(

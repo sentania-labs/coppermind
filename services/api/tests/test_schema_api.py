@@ -21,7 +21,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from coppermind.api_keys import ApiKeySet
-from coppermind.schema import default_schema
+from coppermind.schema import REFERENCE_TAG_MEANING, default_schema
 from coppermind.settings import Wiring
 from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import SchemaDocument, StoreError, StoreUnavailable
@@ -174,7 +174,11 @@ def test_an_admin_edit_to_the_schema_file_reaches_api_callers(tmp_path):
         before = test_client.get("/v1/schema", headers=headers)
         assert before.status_code == 200
         assert before.json()["revision"] == 1
-        assert before.json()["tags"] == {"mode": "open", "listed": [], "aliases": {}}
+        assert before.json()["tags"] == {
+            "mode": "open",
+            "listed": [{"tag": "reference", "meaning": REFERENCE_TAG_MEANING, "aliases": []}],
+            "aliases": {},
+        }
 
         state = control.store.read("schema")
         body = dict(state.body)

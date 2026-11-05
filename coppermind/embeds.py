@@ -1,4 +1,4 @@
-"""Rewrite note image embeds that name a source artifact to its filed attachment path."""
+"""Rewrite note image embeds that name a source artifact to its filed artifact path."""
 
 from __future__ import annotations
 
@@ -108,13 +108,14 @@ def rewrite_embeds(
     *,
     attachments_folder: str,
 ) -> str:
-    """Point `![[name]]` and `![alt](name)` at the filed attachment for `name`.
+    """Point `![[name]]` and `![alt](name)` at the filed artifact for `name`.
 
     `attachments` holds `(source_id, artifact name, filed path)` for the current
     revision of each cited source. Only a target that is exactly an artifact
-    name, or the filed path of an earlier revision of that same artifact, is
-    changed, so refiling never rewrites twice and every other link stays as
-    authored.
+    name, or the legacy `_Attachments/YYYY-MM/<source>-rNNNN-<name>` path an
+    earlier release filed that same artifact at, is changed, so refiling never
+    rewrites twice and every other link stays as authored. The filed path is
+    stable across revisions now, so a link already pointing at it is left.
     """
     exact = {name: filed for _, name, filed in attachments}
     earlier = [

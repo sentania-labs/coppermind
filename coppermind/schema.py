@@ -48,6 +48,20 @@ ROLE_NAMES = (
     "schema_version_key",
 )
 
+# Roles added after the first schema files were written. A saved schema that
+# does not name one plays the shipped key, so an older file keeps loading.
+OPTIONAL_ROLES = {"kind_key": "kind", "artifacts_key": "artifacts"}
+
+NOTE_KIND = "note"
+ARTIFACT_KIND = "artifact"
+KINDS = (NOTE_KIND, ARTIFACT_KIND)
+# The one listed tag the product documents: reference material of either kind.
+REFERENCE_TAG = "reference"
+REFERENCE_TAG_MEANING = (
+    "Reference material: a how-to you wrote, an upgrade deck, a paper. A note or an "
+    "artifact can carry it; it changes nothing about storage or filing."
+)
+
 
 class KeyDefinition(BaseModel):
     """One frontmatter key."""
@@ -135,6 +149,28 @@ class FrontmatterSchema(BaseModel):
             return self.roles[role]
         except KeyError as exc:  # pragma: no cover - a malformed schema file
             raise KeyError(f"schema has no key for role {role!r}") from exc
+
+    def optional_role(self, role: str) -> str:
+        """The key playing a role a saved schema may predate, else the shipped key."""
+        return self.roles.get(role, OPTIONAL_ROLES[role])
+
+    def kind_problem(self, frontmatter: dict[str, Any]) -> str | None:
+        """Why this frontmatter cannot be a note's, judged by its declared kind.
+
+        A note is the only kind a note file may carry. `artifact` names the
+        other first-class kind, stored through its own route, and no write
+        path re-kinds a note into one or the other way round.
+        """
+        key = self.optional_role("kind_key")
+        value = frontmatter.get(key)
+        if value is None or value == NOTE_KIND:
+            return None
+        if value == ARTIFACT_KIND:
+            return (
+                f"{key}: an artifact is never a note; store the file or link through "
+                "POST /v1/artifacts and cite it from the note instead"
+            )
+        return None
 
     def defaults(self) -> dict[str, Any]:
         """Frontmatter defaults for a newly created note."""
@@ -230,6 +266,9 @@ class FrontmatterSchema(BaseModel):
             problems.extend(
                 (definition.name, problem) for problem in _check_value(definition, value)
             )
+        kind_problem = self.kind_problem(frontmatter)
+        if kind_problem is not None:
+            problems.append((self.optional_role("kind_key"), kind_problem))
         return problems
 
     def edit_problems(self) -> list[str]:
@@ -721,8 +760,10 @@ def default_schema() -> FrontmatterSchema:
                 kind="list",
                 required=False,
                 default=[],
-                description="Free tags.",
+                description="Free tags. `reference` marks reference material of either kind.",
             ),
+            kind_key_definition(),
+            artifacts_key_definition(),
         ],
         roles={
             "schema_version_key": "schema_version",
@@ -734,5 +775,37 @@ def default_schema() -> FrontmatterSchema:
             "reviewed_key": "reviewed",
             "sources_key": "sources",
             "tags_key": "tags",
+            **OPTIONAL_ROLES,
         },
+        tags={REFERENCE_TAG: REFERENCE_TAG_MEANING},
+    )
+
+
+def kind_key_definition() -> KeyDefinition:
+    """The declared kind of a file. Every note is `note`; `artifact` is refused on one."""
+    return KeyDefinition(
+        name=OPTIONAL_ROLES["kind_key"],
+        kind="enum",
+        required=False,
+        default=NOTE_KIND,
+        vocabulary=list(KINDS),
+        vocabulary_meanings={
+            NOTE_KIND: "Something you wrote, by hand or through a recorder: editable Markdown.",
+            ARTIFACT_KIND: (
+                "A static file or link stored byte for byte through POST /v1/artifacts. "
+                "Never a note; a note cites it."
+            ),
+        },
+        description="What kind of thing this file is. Notes are always note.",
+    )
+
+
+def artifacts_key_definition() -> KeyDefinition:
+    # No default: the key is written only when a note cites something, so an
+    # ordinary note gains no empty list.
+    return KeyDefinition(
+        name=OPTIONAL_ROLES["artifacts_key"],
+        kind="list",
+        required=False,
+        description="Identifiers of the artifacts this note cites.",
     )

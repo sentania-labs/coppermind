@@ -83,6 +83,7 @@ from coppermind.store_protocol import (
     artifact_text,
 )
 from coppermind_store.eligibility import awaiting_refile
+from coppermind_store.artifacts import artifact_problems, count_artifacts
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
 from coppermind_store.notes import (
     _build_frontmatter,
@@ -1277,6 +1278,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
             )
             filing_queue_depth = len(filing_pending_ids)
             sources = await session.scalar(sa.select(sa.func.count()).select_from(Source)) or 0
+            artifacts = await count_artifacts(session)
             rejected_ingests = (
                 await session.scalar(
                     sa.select(sa.func.count())
@@ -1336,6 +1338,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
             filing_last_progress_at=last_progress,
             filing_stalled=stalled,
             filing_estimated_drain_s=estimated_drain,
+            artifacts=artifacts,
             known_unreadable=known_unreadable,
             notes_awaiting_review=notes_awaiting_review,
             notes_by_state=notes_by_state,
@@ -1671,6 +1674,7 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         for item in store.context.dropbox.snapshot()["items"]
         if item["state"] in {"failed", "unsupported"} and not item["parts"]
     )
+    problems.extend(await artifact_problems(store))
     problems.extend(
         ProblemInfo(
             kind="calendar_conflict",

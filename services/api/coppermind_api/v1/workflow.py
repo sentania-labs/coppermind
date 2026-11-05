@@ -91,9 +91,11 @@ async def dismiss_drop(
 async def drop(
     request: Request,
     filename: str = Query(min_length=1, max_length=255),
+    kind: str | None = Query(default=None, min_length=1, max_length=40),
     client: HttpStoreClient = Depends(store),
     _: Principal = Depends(require_scopes("sources:write")),
 ) -> Response:
+    """Drop a file. Calendars route themselves; anything else needs `kind=artifact`."""
     data = bytearray()
     async for chunk in request.stream():
         data.extend(chunk)
@@ -101,11 +103,13 @@ async def drop(
             return JSONResponse(
                 {"error": "payload_too_large", "message": "Dropbox limit: 200,000,000 bytes"}, 413
             )
-    result = await call(
-        client,
-        "upload-drop",
-        {"filename": filename, "content_base64": base64.b64encode(data).decode()},
-    )
+    payload: dict[str, Any] = {
+        "filename": filename,
+        "content_base64": base64.b64encode(data).decode(),
+    }
+    if kind is not None:
+        payload["kind"] = kind
+    result = await call(client, "upload-drop", payload)
     if result.status_code == 200:
         result.status_code = 202
     return result

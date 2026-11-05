@@ -1,4 +1,11 @@
-"""Retryable monthly filing. Originals never move; the note moves last."""
+"""Retryable monthly filing. Originals never move; the note moves last.
+
+A source's non-text artifacts (a PDF, an image) are filed as artifacts: the
+bytes join the artifact archive under their own identity, a browsable copy
+lands under the artifacts folder keyed on the source's ingest date, and the
+note cites it. The old `_Attachments/` copy is retired; filing never writes
+there again.
+"""
 
 from __future__ import annotations
 
@@ -149,10 +156,12 @@ def record_review(store: LocalStore, note_id: str, frontmatter: dict) -> None:
 
 
 async def file_note(store: LocalStore, note_id: str) -> bool:
+    from coppermind_store.artifacts import file_source_artifact
     from coppermind_store.sources import (
         _external_id_claim_path,
         _manifest_document,
         _manifest_revision,
+        _manifest_time,
         _verify_revision_artifacts,
     )
 
@@ -299,6 +308,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         )
     _save(journal, plan)
     filed_images: list[tuple[str, str, str]] = []
+    filed_artifact_ids: list[str] = []
     for item in plan["sources"]:
         source_id = item["id"]
         manifest_path = store.sources_root / source_id / "manifest.json"
@@ -335,17 +345,22 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
                 name = artifact["name"]
                 if Path(name).name != name or "\\" in name:
                     raise ValueError("invalid artifact filename")
-                source_month = Path(item["to"]).parent.name
-                attachment = (
-                    f"{settings.notes.attachments_folder}/{source_month}/"
-                    f"{source_id}-r{item['revision']:04d}-{name}"
-                )
                 data = resolve(
                     store.sources_root / source_id / f"r{item['revision']:04d}", name
                 ).read_bytes()
-                _copy(resolve(store.notes_root, attachment), data)
-                links.append(f"[[{attachment}]]")
-                filed_images.append((source_id, name, attachment))
+                artifact_id, filed_path = await file_source_artifact(
+                    store,
+                    source_id=source_id,
+                    source_name=name,
+                    provider=str(manifest.get("provider", "")),
+                    mime_type=mime,
+                    data=data,
+                    received_at=_manifest_time(revision.get("ingested_at"), "ingested_at"),
+                )
+                links.append(f"[[{filed_path}]]")
+                filed_images.append((source_id, name, filed_path))
+                if artifact_id not in filed_artifact_ids:
+                    filed_artifact_ids.append(artifact_id)
             if links:
                 section = "\n\n## Filed attachments\n\n" + "\n".join(links) + "\n"
                 if section not in body:
@@ -385,9 +400,18 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
                 f"[[{old_link.removesuffix('.md')}]]", f"[[{item['to'].removesuffix('.md')}]]"
             )
     body = rewrite_embeds(body, filed_images, attachments_folder=settings.notes.attachments_folder)
-    if body != note.body:
+    frontmatter = dict(note.frontmatter)
+    artifacts_key = schema.optional_role("artifacts_key")
+    cited = frontmatter.get(artifacts_key)
+    current_citations = (
+        [value for value in cited if isinstance(value, str)] if isinstance(cited, list) else []
+    )
+    added = [value for value in filed_artifact_ids if value not in current_citations]
+    if added:
+        frontmatter[artifacts_key] = current_citations + added
+    if body != note.body or frontmatter != note.frontmatter:
         note = await store.replace_note(
-            note_id, ReplaceNote(frontmatter=note.frontmatter, body=body), note.content_hash
+            note_id, ReplaceNote(frontmatter=frontmatter, body=body), note.content_hash
         )
     remember_note(store, plan, note)
     if not note.path.startswith(folder + "/"):

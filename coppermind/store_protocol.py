@@ -19,6 +19,7 @@ from datetime import date as date_type
 from datetime import datetime
 from pathlib import PurePath
 from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -31,6 +32,7 @@ from coppermind.schema import FrontmatterSchema
 ETag = str
 NoteId = str
 SourceId = str
+ArtifactId = str
 
 
 def artifact_text(data: bytes, mime_type: str) -> str | None:
@@ -115,6 +117,18 @@ class ArtifactNotFound(StoreError):
         self.source_id = source_id
         self.revision = revision
         self.name = name
+
+
+class ArtifactMissing(StoreError):
+    """No artifact carries this identifier, or it was removed."""
+
+    def __init__(self, artifact_id: str) -> None:
+        super().__init__(f"no artifact with id {artifact_id}")
+        self.artifact_id = artifact_id
+
+
+class ArtifactsFilesystemUnavailable(StoreError):
+    """The artifact archive or its state records could not be read or written."""
 
 
 class ProjectionNotPlaced(StoreError):
@@ -415,6 +429,215 @@ class SourceArtifactDocument(SourceArtifact):
     content: str | None = None
 
 
+ARTIFACT_KIND_MISSING = (
+    "kind: a declared kind is required; send kind: artifact (a note goes through POST /v1/notes)"
+)
+ARTIFACT_KIND_WRONG = (
+    "kind: only artifact can be stored here; a note is created through POST /v1/notes "
+    "and is never re-kinded"
+)
+
+
+def safe_filename(value: str) -> str:
+    """A filename and nothing else: no directory, no NUL, no path separators."""
+    name = value.strip()
+    if (
+        not name
+        or name in {".", ".."}
+        or PurePath(name).name != name
+        or "\\" in name
+        or "/" in name
+        or "\0" in name
+        or any(ord(char) < 32 for char in name)
+    ):
+        raise ValueError("must be a filename, not a path")
+    return name
+
+
+class CreateArtifact(BaseModel):
+    """Store a static file or a link as an artifact, the second first-class kind.
+
+    `kind` is declared, never inferred: a request without it is refused with a
+    reason, and so is one that declares anything but `artifact`. Exactly one of
+    `url` or `content_base64` is given. `date` is when the artifact was received
+    or saved and keys the folder it files under; it defaults to today. `note_id`
+    names a note that cites the artifact; the citation is written into that
+    note's frontmatter and a link to the file into its body. `artifact_id`
+    makes the upload a new revision of an existing artifact rather than a new
+    one; earlier revisions stay in the archive.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str | None = None
+    title: str | None = Field(default=None, max_length=500)
+    date: date_type | None = None
+    tags: list[str] = Field(default_factory=list)
+    note_id: str | None = None
+    origin: str = Field(default="api", max_length=200)
+    artifact_id: str | None = None
+    url: str | None = Field(default=None, max_length=2048)
+    filename: str | None = Field(default=None, max_length=255)
+    mime_type: str | None = Field(default=None, max_length=255)
+    content_base64: str | None = None
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def normalize_title(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            collapsed = " ".join(value.split())
+            return collapsed or None
+        return value
+
+    @field_validator("filename")
+    @classmethod
+    def filename_is_a_name(cls, value: str | None) -> str | None:
+        return safe_filename(value) if value is not None else None
+
+    @field_validator("tags")
+    @classmethod
+    def tags_are_words(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for tag in value:
+            if not isinstance(tag, str) or not tag.strip() or any(c in tag for c in " ,#\t\n"):
+                raise ValueError("each tag is one word without spaces, commas or a leading #")
+            if tag not in cleaned:
+                cleaned.append(tag)
+        return cleaned
+
+    @field_validator("mime_type")
+    @classmethod
+    def mime_type_is_a_token(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        token = value.strip()
+        if not token or "/" not in token or any(ord(c) < 33 or ord(c) > 126 for c in token):
+            raise ValueError("must be a media type such as application/pdf")
+        return token.lower()
+
+    @field_validator("url")
+    @classmethod
+    def url_is_web(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parts = urlsplit(value.strip())
+        if parts.scheme not in {"http", "https"} or not parts.netloc:
+            raise ValueError("must be an http or https URL")
+        if any(ord(c) < 33 for c in value.strip()):
+            raise ValueError("must not contain whitespace or control characters")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def declared_kind_and_one_body(self) -> CreateArtifact:
+        if self.kind is None:
+            raise ValueError(ARTIFACT_KIND_MISSING)
+        if self.kind != "artifact":
+            raise ValueError(ARTIFACT_KIND_WRONG)
+        if (self.url is None) == (self.content_base64 is None):
+            raise ValueError("exactly one of url or content_base64 is required")
+        if self.content_base64 is not None:
+            if self.filename is None:
+                raise ValueError("filename: required when content_base64 is sent")
+            try:
+                base64.b64decode(self.content_base64, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ValueError("content_base64 is not valid base64") from exc
+        if self.url is not None and self.filename is not None:
+            raise ValueError("filename: a link has no file; send one or the other")
+        return self
+
+    def bytes(self) -> bytes:
+        return base64.b64decode(self.content_base64 or "", validate=True)
+
+
+ArtifactTextStatus = Literal["extracted", "no_extractable_text", "unsupported", "failed", "link"]
+"""What text extraction produced for the stored bytes."""
+
+ArtifactState = Literal["ok", "modified"]
+"""`modified` means the browsable copy no longer hashes to the archived bytes."""
+
+
+class ArtifactRevision(BaseModel):
+    revision: int = Field(ge=1)
+    stored_at: datetime
+    filename: str | None = None
+    mime_type: str | None = None
+    sha256: str | None = None
+    size_bytes: int = Field(default=0, ge=0)
+    url: str | None = None
+
+
+class ArtifactSummary(BaseModel):
+    """One artifact as a listing shows it: provenance first, never a note."""
+
+    id: ArtifactId
+    kind: Literal["artifact"] = "artifact"
+    title: str
+    origin: str
+    received_at: datetime
+    filename: str | None = None
+    mime_type: str | None = None
+    sha256: str | None = None
+    size_bytes: int = Field(default=0, ge=0)
+    url: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    path: str | None = None
+    revision: int = Field(default=1, ge=1)
+    citing_note_ids: list[str] = Field(default_factory=list)
+    text_status: ArtifactTextStatus = "unsupported"
+    state: ArtifactState = "ok"
+    created_at: datetime
+    updated_at: datetime
+
+
+class ArtifactRecord(ArtifactSummary):
+    """The disposable extracted record, read from `/data/state/artifacts/<id>.json`.
+
+    `text` is everything the extractor read out of the current revision, so an
+    agent can use it without fetching the bytes. It is derived only from the
+    artifact and is regenerated when the extractor changes; nothing here is a
+    page in the notes filesystem.
+    """
+
+    text: str = ""
+    extractor_version: str = ""
+    revisions: list[ArtifactRevision] = Field(default_factory=list)
+
+
+class CreatedArtifact(BaseModel):
+    id: ArtifactId
+    kind: Literal["artifact"] = "artifact"
+    revision: int = Field(ge=1)
+    created: bool
+    path: str | None = None
+    title: str
+    note_id: str | None = None
+
+
+class ArtifactBytes(BaseModel):
+    """One revision's bytes, with what the archive recorded about them."""
+
+    id: ArtifactId
+    revision: int = Field(ge=1)
+    filename: str
+    mime_type: str
+    sha256: str
+    size_bytes: int = Field(ge=0)
+    content: bytes
+
+
+class ArtifactQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cursor: str | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+    tag: str | None = Field(default=None, min_length=1)
+    note_id: str | None = Field(default=None, min_length=1)
+    origin: str | None = Field(default=None, min_length=1)
+    from_date: date_type | None = Field(default=None, alias="from")
+    to_date: date_type | None = Field(default=None, alias="to")
+
+
 class ReplaceNote(BaseModel):
     """Replace a note's frontmatter and body, keeping its identifier and path.
 
@@ -600,6 +823,10 @@ class Page[T](BaseModel):
     next_cursor: str | None = None
 
 
+SearchKind = Literal["note", "source", "artifact"]
+"""A note a person owns, a generated page projecting a source, or an artifact."""
+
+
 class SearchQuery(NoteQuery):
     """A full-text question, with the same filters and paging as listing.
 
@@ -611,6 +838,10 @@ class SearchQuery(NoteQuery):
     """
 
     q: str = Field(min_length=1, max_length=500)
+    kind: SearchKind | None = None
+    """Only hits of this kind. `tag` narrows notes and artifacts alike."""
+    citing_note: str | None = Field(default=None, min_length=1)
+    """Only artifacts this note cites in its frontmatter."""
 
     @field_validator("q")
     @classmethod
@@ -620,16 +851,15 @@ class SearchQuery(NoteQuery):
         return value
 
 
-SearchKind = Literal["note", "source"]
-"""A note a person owns, or a generated page projecting a source."""
-
-
 class SearchHit(BaseModel):
     """One matching note or source projection, best match first.
 
     `kind` says which: for a `source` the `id` is the source identifier, and
-    the page at `path` is the generated projection under the sources folder.
-    `excerpt` is a short passage with every matched word between `**` markers.
+    the page at `path` is the generated projection under the sources folder;
+    for an `artifact` the `id` is the artifact identifier and `path` is the
+    file under the artifacts folder, or empty for a link. `excerpt` is a short
+    passage with every matched word between `**` markers, taken from the
+    artifact's extracted text when the hit is one.
     `rank` orders the results; it compares hits within one answer and means
     nothing on its own.
     """
@@ -654,6 +884,7 @@ class SearchIndexStatus(BaseModel):
     known_unreadable: int = 0
     notes: int
     sources: int
+    artifacts: int = 0
     last_updated_at: datetime | None = None
     rebuild_running: bool = False
     rebuild_started_at: datetime | None = None
@@ -713,6 +944,7 @@ class StatusCounters(BaseModel):
     filing_stalled: bool = False
     known_unreadable: int = 0
     calendar_import_failures: int = 0
+    artifacts: int = 0
     active_problems: int | None = None
     purge_problems: int = 0
 
@@ -823,6 +1055,20 @@ class Store(Protocol):
 
     async def rebuild_search_index(self) -> RebuildSearchIndexResult: ...
 
+    async def create_artifact(
+        self, request: CreateArtifact, *, payload_size_bytes: int | None = None
+    ) -> CreatedArtifact: ...
+
+    async def get_artifact(self, artifact_id: ArtifactId) -> ArtifactRecord: ...
+
+    async def get_artifact_bytes(
+        self, artifact_id: ArtifactId, revision: int | None = None
+    ) -> ArtifactBytes: ...
+
+    async def list_artifacts(self, query: ArtifactQuery) -> Page[ArtifactSummary]: ...
+
+    async def remove_artifact(self, artifact_id: ArtifactId) -> None: ...
+
 
 def etag_from_if_match(header: str | None) -> ETag:
     """The ETag an `If-Match` header names, or `PreconditionRequired` if none.
@@ -855,7 +1101,8 @@ class ProblemInfo(BaseModel):
     and the file disagree on a path), `returned_note` (a hand-moved reviewed note was
     returned to its filed folder), `folder_kept` (an old month folder still holds
     files), `unreadable_note` (a listed note whose file
-    cannot be read) or `excluded`.
+    cannot be read), `artifact` (an artifact whose browsable copy no longer matches
+    the archived bytes, or whose text could not be extracted) or `excluded`.
     `note_id` and `source_id` name what the problem is about when it exists.
     """
 
@@ -865,6 +1112,7 @@ class ProblemInfo(BaseModel):
     note_id: str | None = None
     source_id: str | None = None
     filing_attempts: int | None = None
+    artifact_id: str | None = None
 
 
 class HistoryStatus(BaseModel):

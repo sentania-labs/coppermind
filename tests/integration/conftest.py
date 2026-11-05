@@ -88,7 +88,7 @@ async def session_factory(wiring: Wiring) -> AsyncIterator[async_sessionmaker[As
     async with engine.begin() as connection:
         await connection.execute(
             sa.text(
-                "TRUNCATE TABLE notes, sources, recorded_rejections, outbox_events, "
+                "TRUNCATE TABLE notes, sources, artifacts, recorded_rejections, outbox_events, "
                 "search_documents, search_unreadable, field_index_generations CASCADE"
             )
         )

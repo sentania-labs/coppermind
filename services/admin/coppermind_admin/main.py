@@ -34,6 +34,7 @@ from coppermind_admin.auth import (
     SignedSessions,
 )
 from coppermind_admin.pages import (
+    artifacts,
     context,
     field_index,
     fields,
@@ -226,6 +227,7 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
     app.state.tag_counts = fields.store_tag_counter(settings)
     app.include_router(sync.router(settings))
     app.include_router(problems.router(settings))
+    app.include_router(artifacts.router(settings))
     app.include_router(search_index.router(settings))
     app.include_router(field_index.router(settings))
     app.include_router(note_history.router(settings))

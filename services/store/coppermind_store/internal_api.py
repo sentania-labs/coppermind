@@ -8,6 +8,7 @@ process and `HttpStoreClient` in the API are interchangeable.
 from __future__ import annotations
 
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from fastapi.responses import JSONResponse
@@ -16,6 +17,11 @@ from coppermind.api_keys import ApiKeySet
 from coppermind.errors import to_http
 from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
 from coppermind.store_protocol import (
+    ArtifactQuery,
+    ArtifactRecord,
+    ArtifactSummary,
+    CreateArtifact,
+    CreatedArtifact,
     CreateNote,
     FolderTree,
     HistoryStatus,
@@ -311,6 +317,80 @@ async def rebuild_search_index(request: Request) -> Response:
     except StoreError as error:
         return _failure(error)
     return JSONResponse(status_code=202, content=result.model_dump(mode="json"))
+
+
+@router.post(
+    "/artifacts",
+    status_code=201,
+    response_model=CreatedArtifact,
+    responses={200: {"model": CreatedArtifact, "description": "Artifact replayed"}},
+)
+async def create_artifact(
+    payload: CreateArtifact,
+    request: Request,
+    payload_size_bytes: Annotated[int | None, Header(alias="X-Coppermind-Payload-Bytes")] = None,
+) -> Response:
+    try:
+        result = await _store(request).create_artifact(
+            payload, payload_size_bytes=payload_size_bytes
+        )
+    except StoreError as error:
+        return _failure(error)
+    return JSONResponse(
+        status_code=201 if result.created else 200, content=result.model_dump(mode="json")
+    )
+
+
+@router.get("/artifacts", response_model=Page[ArtifactSummary])
+async def list_artifacts(
+    request: Request, query: Annotated[ArtifactQuery, Query()]
+) -> Page[ArtifactSummary] | JSONResponse:
+    try:
+        return await _store(request).list_artifacts(query)
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.get("/artifacts/{artifact_id}", response_model=ArtifactRecord)
+async def get_artifact(artifact_id: str, request: Request) -> ArtifactRecord | JSONResponse:
+    try:
+        return await _store(request).get_artifact(artifact_id)
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.get("/artifacts/{artifact_id}/bytes")
+async def get_artifact_bytes(
+    artifact_id: str,
+    request: Request,
+    revision: Annotated[int | None, Query(ge=1)] = None,
+) -> Response:
+    """The archived bytes of one revision, raw, described by headers."""
+    try:
+        artifact = await _store(request).get_artifact_bytes(artifact_id, revision)
+    except StoreError as error:
+        return _failure(error)
+    return Response(
+        content=artifact.content,
+        media_type="application/octet-stream",
+        headers={
+            "X-Coppermind-Artifact-Id": artifact.id,
+            "X-Coppermind-Revision": str(artifact.revision),
+            "X-Coppermind-Filename": quote(artifact.filename, safe=""),
+            "X-Coppermind-Mime-Type": quote(artifact.mime_type, safe="/+.-"),
+            "X-Coppermind-SHA256": artifact.sha256,
+            "X-Coppermind-Size-Bytes": str(artifact.size_bytes),
+        },
+    )
+
+
+@router.delete("/artifacts/{artifact_id}", status_code=204)
+async def remove_artifact(artifact_id: str, request: Request) -> Response:
+    try:
+        await _store(request).remove_artifact(artifact_id)
+    except StoreError as error:
+        return _failure(error)
+    return Response(status_code=204)
 
 
 @router.get("/note-history", response_model=HistoryStatus)

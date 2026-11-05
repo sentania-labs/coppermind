@@ -4,8 +4,8 @@ This runs once per `docker compose up` as a one-shot container and exits 0. It
 is the reason a clean checkout needs no hand populated setting and no
 pre-created secret:
 
-- `/data` gains its notes, sources and state trees, owned by uid 1000, which
-  every Coppermind image runs as.
+- `/data` gains its notes, sources, artifacts and state trees, owned by uid
+  1000, which every Coppermind image runs as.
 - Separate credential directories gain an internal bearer token and a
   PostgreSQL password, plus a default public API key in its own restricted
   volume. They are never printed, committed or passed as environment values.
@@ -73,7 +73,9 @@ def run(wiring: Wiring | None = None) -> int:
     _ensure_dir(settings.data_dir, uid, gid, 0o755)
     _ensure_dir(settings.notes_dir, uid, gid, 0o755)
     _ensure_dir(settings.sources_dir, uid, gid, 0o755)
+    _ensure_dir(settings.artifacts_dir, uid, gid, 0o755)
     _ensure_dir(settings.state_dir, uid, gid, 0o755)
+    _ensure_dir(settings.state_dir / "artifacts", uid, gid, 0o755)
     _ensure_dir(settings.state_dir / "internal", uid, gid, 0o700)
     _ensure_dir(settings.internal_token_file.parent, uid, gid, 0o755)
     _ensure_dir(settings.db_password_file.parent, uid, gid, 0o755)

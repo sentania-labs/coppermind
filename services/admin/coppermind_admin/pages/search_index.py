@@ -71,6 +71,7 @@ def status_html(status: SearchIndexStatus, zone: ZoneInfo) -> str:
     return f"""<ul>
 <li>Notes indexed: {status.notes}</li>
 <li>Source pages indexed: {status.sources}</li>
+<li>Artifacts indexed: {status.artifacts}</li>
 <li>Known unreadable entries: {status.known_unreadable}</li>
 <li>Last updated: {escape(local_time(status.last_updated_at, zone))}</li>
 <li>Rebuild: {rebuild}</li>
@@ -96,9 +97,10 @@ def router(wiring: Wiring) -> APIRouter:
         notice = f"<p>{escape(message)}</p>" if message else ""
         return page(
             f"""{heading}{notice}
-<p>Full-text search over note bodies and titles, and over the generated source
-pages. The index is rebuilt from the notes filesystem, never the other way
-round, so rebuilding it loses nothing.</p>
+<p>Full-text search over note bodies and titles, over the generated source
+pages, and over the text extracted from artifacts. The index is rebuilt from the
+notes filesystem and the artifact records, never the other way round, so
+rebuilding it loses nothing.</p>
 {status_html(status, _zone(request))}
 <form method="post" action="/v1/admin/search-index/rebuild"><button>Rebuild index</button></form>"""
         )

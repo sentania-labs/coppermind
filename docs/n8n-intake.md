@@ -6,7 +6,7 @@ are not deployed yet. Validate the released version before connecting production
 
 ## Where to send material
 
-Send to the Coppermind API, not directly to `_Sources`, `_Attachments`, or
+Send to the Coppermind API, not directly to `_Sources`, `Artifacts`, or
 its internal archive. Coppermind owns those files. Use an n8n credential
 holding an API key with `sources:write` and `notes:write`. Keep credentials
 out of workflow exports and request bodies.
@@ -87,13 +87,15 @@ artifact name and let filing resolve it:
 
 When the note is filed, an embed in the body of a note that cites the source,
 whose target is exactly an artifact name, is rewritten to the filed copy, for
-example `![[_Attachments/2026-09/<source_id>-r0001-meeting-image-01.jpg]]`.
-`![[name|300]]` keeps its size suffix. Links that match no artifact, text
-inside code (fenced or indented blocks and inline code spans), and all other
-prose are left as authored. When a later revision adds or changes an image,
-the next filing points the embeds at that revision's copies; earlier copies
-stay in `_Attachments/`. Refiling never rewrites a link twice, and a replay
-with identical image bytes creates no new revision.
+example `![[Artifacts/2026/2026-09/meeting-image-01.jpg]]`: the image becomes
+an artifact of its own, keyed on the source's ingest date, and the note gains
+it in `artifacts`. `![[name|300]]` keeps its size suffix. Links that match no
+artifact, text inside code (fenced or indented blocks and inline code spans),
+and all other prose are left as authored. When a later revision changes an
+image, the next filing stores it as a new revision of the same artifact: the
+browsable copy at that path shows the approved revision, earlier revisions
+stay in the archive, and the link does not move. Refiling never rewrites a
+link twice, and a replay with identical image bytes creates no new revision.
 
 Known limitations of the code detection, both rare: a fenced code block opened
 inside a list item or blockquote ends only at a matching closing fence, not
@@ -102,10 +104,9 @@ an indented line directly after a heading, or inside a blockquote, is not
 treated as indented code, so an embed there is rewritten.
 
 Images appear in Obsidian after review. While the note sits in `Review/`, its
-embeds still carry the artifact name and show as unresolved, because
-attachments are copied to `_Attachments/YYYY-MM/` only at filing: the final
-month is not fixed until review, and unreviewed binaries are not synced to
-devices. Do not send a path or guess the filed name.
+embeds still carry the artifact name and show as unresolved, because source
+material is filed under `Artifacts/` only at review: unreviewed binaries are
+not synced to devices. Do not send a path or guess the filed name.
 
 A first creation returns 201; a replay or source revision returns 200. Save
 `source.id`, `source.revision`, `note.id`, `note.path`, and `projection_path`
@@ -153,11 +154,12 @@ Ingest always creates an unreviewed draft, even if automation supplies
 `_Sources/_Pending/YYYY/YYYY-MM/`. Mark the note reviewed in Obsidian or through the
 frontmatter API. The next reconciliation pass files the note and source page
 under their respective year and month folders (`Notes/YYYY/YYYY-MM/` and
-`_Sources/YYYY/YYYY-MM/`), copies non-text, non-audio attachments
-under `_Attachments/YYYY-MM/`, and permits indexing only after successful filing.
-A source keeps the month chosen when it was first filed, including when another
-note cites it or a note's date is later corrected. All citing notes retain the
-same source link. Revision-specific attachment filenames preserve earlier copies.
+`_Sources/YYYY/YYYY-MM/`), files non-text, non-audio source
+material as artifacts under `Artifacts/YYYY/YYYY-MM/`, and permits indexing
+only after successful filing. A source keeps the month chosen when it was first
+filed, including when another note cites it or a note's date is later
+corrected. All citing notes retain the same source link. Earlier revisions of a
+filed artifact stay in the artifact archive.
 Audio stays in the immutable archive. Filing errors appear in Admin Problems
 and retry automatically. Human edits of a filed note retain review and update search.
 
@@ -219,7 +221,7 @@ There is no automatic deletion of accepted pending material.
 Draft notes and browsable source material stay in a durable review area
 until review. The final month is selected from explicit note date, otherwise
 first received date in the configured local timezone. Retries preserve that
-received date. After review, notes, source pages, and browsable attachments
+received date. After review, notes, source pages, and browsable artifacts
 are filed by month. Original archive paths remain stable. Audio stays in the
 archive by default rather than being copied to every Obsidian device.
 

@@ -8,7 +8,7 @@ from html.parser import HTMLParser
 
 import pytest
 
-from coppermind.schema import FrontmatterSchema, default_schema
+from coppermind.schema import REFERENCE_TAG_MEANING, FrontmatterSchema, default_schema
 from coppermind.statefiles import StateStore
 from coppermind.store_protocol import StoreUnavailable, TagCount
 from services.admin.tests.browser import admin_browser as admin_browser
@@ -196,7 +196,11 @@ def test_a_save_writes_the_next_revision_and_keeps_the_role_map(page):
     assert project.required_when == "context"
     assert project.required_when_values == ["customer", "internal"]
     assert project.default == "alpha"
-    assert saved.tags == {"work": "The day job.", "home": "Life outside work."}
+    assert saved.tags == {
+        "reference": REFERENCE_TAG_MEANING,
+        "work": "The day job.",
+        "home": "Life outside work.",
+    }
     assert saved.tag_aliases == {"job": "work", "office": "work"}
     assert saved.tag_mode == "closed"
     # Every key the form did not touch is exactly what it was.
@@ -364,14 +368,14 @@ def test_unticking_a_listed_tag_unlists_it(page):
         data=values | {f"tag-{work}-listed": "on", f"tag-{work}-meaning": "The day job."},
     )
     assert saved.status_code == 200, errors(saved.text)
-    assert schema_of(store).tags == {"work": "The day job."}
+    assert schema_of(store).tags == {"reference": REFERENCE_TAG_MEANING, "work": "The day job."}
 
     values = Form(saved.text).values
     work = index_of(values, "tag", "work")
     cleared = unchecked(values | {f"tag-{work}-meaning": ""}, f"tag-{work}-listed")
     response = client.post("/v1/admin/fields", data=cleared)
     assert response.status_code == 200, errors(response.text)
-    assert schema_of(store).tags == {}
+    assert schema_of(store).tags == {"reference": REFERENCE_TAG_MEANING}
     # Still in use, so it stays on the page with its count.
     assert "Notes: 3" in response.text
 
@@ -386,7 +390,10 @@ def test_markup_in_a_meaning_is_shown_as_text(page):
     )
     assert response.status_code == 200, errors(response.text)
     assert "<script>x</script>" not in response.text
-    assert schema_of(store).tags == {"work": "<script>x</script>"}
+    assert schema_of(store).tags == {
+        "reference": REFERENCE_TAG_MEANING,
+        "work": "<script>x</script>",
+    }
 
 
 def test_the_form_needs_a_session(tmp_path):

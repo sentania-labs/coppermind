@@ -11,9 +11,10 @@ identifier, which never change, so no hit is skipped or repeated between
 pages while the index stands still.
 
 Every filter listing takes narrows the answer the same way, read from the
-metadata mirror row of the note. A source projection has no such row, so a
-frontmatter filter matches notes only, while `folder` and `state` apply to
-both kinds.
+metadata mirror row of the note. A source projection or an artifact has no
+such row, so a frontmatter filter matches notes only, while `folder` and
+`state` apply to every kind, `tag` to notes and artifacts, and `kind` and
+`citing_note` pick out one kind directly.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import REGCONFIG
 from sqlalchemy.exc import SQLAlchemyError
 
-from coppermind.db.models import Note, SearchDocument
+from coppermind.db.models import Artifact, Note, SearchDocument
 from coppermind.store_protocol import (
     FilterCursorConflict,
     MetadataUnavailable,
@@ -100,7 +101,7 @@ def decode_cursor(value: str, q: str) -> SearchCursor:
             or isinstance(rank, bool)
             or not isinstance(rank, int | float)
             or not math.isfinite(rank)
-            or kind not in ("note", "source")
+            or kind not in ("note", "source", "artifact")
             or not isinstance(ref_id, str)
         ):
             raise ValueError
@@ -180,9 +181,24 @@ def filter_conditions(query: SearchQuery) -> list[sa.ColumnElement[bool]]:
     if query.to_date is not None:
         conditions.append(Note.date <= query.to_date)
     if query.tag is not None:
-        conditions.append(sa.literal(query.tag) == sa.func.any(Note.tags))
+        conditions.append(
+            sa.or_(
+                sa.literal(query.tag) == sa.func.any(Note.tags),
+                sa.literal(query.tag) == sa.func.any(Artifact.tags),
+            )
+        )
     if query.state is not None:
         conditions.append(note_state() == query.state)
+    if query.kind is not None:
+        conditions.append(SearchDocument.kind == query.kind)
+    if query.citing_note is not None:
+        cites = sa.exists(
+            sa.select(Note.id).where(
+                Note.id == query.citing_note,
+                SearchDocument.ref_id == sa.func.any(Note.artifact_ids),
+            )
+        ).correlate_except(Note)
+        conditions.append(sa.and_(SearchDocument.kind == "artifact", cites))
     return conditions
 
 
@@ -211,17 +227,21 @@ def build_search(
         )
         .select_from(SearchDocument)
         .outerjoin(Note, sa.and_(SearchDocument.kind == "note", Note.id == SearchDocument.ref_id))
+        .outerjoin(
+            Artifact,
+            sa.and_(SearchDocument.kind == "artifact", Artifact.id == SearchDocument.ref_id),
+        )
         .where(*match_conditions(query.q))
         .where(eligible(SearchDocument.kind, SearchDocument.ref_id, notes_folder))
         .where(
             sa.or_(
-                SearchDocument.kind == "note",
+                SearchDocument.kind != "source",
                 current_source(SearchDocument.ref_id, SearchDocument.version),
             )
         )
         # A note entry the mirror no longer holds as present is never a hit,
         # whatever a catch-up step has not yet removed.
-        .where(sa.or_(SearchDocument.kind == "source", Note.id.is_not(None)))
+        .where(sa.or_(SearchDocument.kind != "note", Note.id.is_not(None)))
         .where(state.not_in(("missing", "deleted")))
         .where(*filter_conditions(query))
         .where(*(extra or []))

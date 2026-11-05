@@ -8,6 +8,38 @@ vertical path proved end to end, then widened.
 
 ## Working
 
+- **Artifacts (issue 77).** A second first-class kind beside notes. `POST
+  /v1/artifacts` (`artifacts:write`) takes a file (multipart or base64 JSON)
+  or a URL with a declared `kind: artifact`; a submission without a kind, or
+  with any other kind, is refused with the reason, and a note declaring `kind:
+  artifact` is refused on every write path and never adopted. The bytes are
+  archived immutably under `/data/artifacts/<id>/rNNNN/`, a browsable copy
+  lands under `Artifacts/{yyyy}/{yyyy-mm}/<original filename>` in the notes
+  filesystem keyed on the received date, and the extracted text and
+  provenance live in `/data/state/artifacts/<id>.json`, mirrored into
+  PostgreSQL and the search index, never as a page Obsidian shows. PDF, PPTX,
+  DOCX and text are extracted in a bounded subprocess; images, audio and
+  video are stored and searchable by title and filename only. Search hits
+  carry `kind: artifact` with the matching extracted text, and take `kind`,
+  `tag` and `citing_note` filters. `GET /v1/artifacts/{id}` returns the
+  record with the full text and `GET /v1/artifacts/{id}/bytes` the file. A
+  note cites an artifact in its `artifacts` frontmatter; filing never moves an
+  artifact. Re-upload with `artifact_id` is a new revision whose bytes replace
+  the browsable copy at its stable path while earlier revisions stay in the
+  archive. A browsable copy deleted on a device takes its record and search
+  entry away on the next reconciler pass; one edited on a device is reported
+  under Problems and never rewritten. Admin's Artifacts page lists every
+  artifact with its kind, origin, size and citing notes and removes one after
+  confirmation, keeping the archived bytes. `rebuild_metadata` recreates every
+  record, row and search entry from `/data` alone. `_Attachments/` is retired:
+  filing lands source material under `Artifacts/` as artifacts the note
+  cites, and legacy attachment files are moved there by the reconciler with
+  every link repointed. Dropbox takes an artifact only beside a
+  `<filename>.kind` sidecar saying `artifact`, or with `kind=artifact` on the
+  upload route. The schema gains `kind` (default `note`), `artifacts` and the
+  listed `reference` tag; saved schema files gain them on the next start.
+  Proven by `tests/integration/test_artifacts.py` against PostgreSQL and the
+  unit suites under the store, API and Admin.
 - Admin is a separate service and image on loopback port 8082. A fresh install
   opens on a server-rendered Claim page. Bootstrap creates the one-time code
   at `/data/state/internal/claim-code`, records that location in its log, and
@@ -187,8 +219,9 @@ vertical path proved end to end, then widened.
   time are product settings with working defaults; their graphical controls
   arrive with Admin's later settings page.
 - **What adoption will and will not write into.** Adoption skips `.git`,
-  `.obsidian` and `.trash`, everything below the configured trash, sources and
-  attachments folders (`_Trash`, `_Sources` and `_Attachments` by default), and
+  `.obsidian` and `.trash`, everything below the configured trash, sources,
+  artifacts and legacy attachments folders (`_Trash`, `_Sources`, `Artifacts`
+  and `_Attachments` by default), and
   any file whose frontmatter already carries source associations, because
   ingest wrote that and generated output is not a note a person made. Those
   files are still read, so a known note moved into one of those folders is

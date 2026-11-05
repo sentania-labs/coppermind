@@ -14,11 +14,13 @@ The story behind these decisions is [architecture.md](architecture.md).
   leaked key on sight. Keys are hashed (argon2) and shown exactly once, at
   creation.
 - Every route needs a scope: `sources:read`, `sources:write`, `notes:read`,
-  `notes:write`, `notes:move`, `notes:delete`, `journal:read`,
-  `journal:write`, `search:read`, `admin:read`, `admin:write`, `admin:purge`. A key missing
-  the right scope gets 403, not a filtered response. The bootstrap default key
-  and a key created with no `--scope` hold every scope except `admin:purge`,
-  which is granted only when named.
+  `notes:write`, `notes:move`, `notes:delete`, `artifacts:read`,
+  `artifacts:write`, `journal:read`, `journal:write`, `search:read`,
+  `admin:read`, `admin:write`, `admin:purge`. A key missing the right scope
+  gets 403, not a filtered response. The bootstrap default key and a key
+  created with no `--scope` hold every scope except `admin:purge`, which is
+  granted only when named. Keys minted before the artifact scopes existed do
+  not gain them; mint a key that holds them.
 - Admin's own pages use a signed session cookie; its `/v1/admin/*` API
   endpoints accept either that cookie or a key holding an `admin:*` scope.
 - Every non-2xx response is the same shape: `{"error": "<code>", "message":
@@ -190,14 +192,51 @@ restores missing rejection rows without duplicating them. Recording is best
 effort when the state filesystem itself is unavailable; the original refusal
 is still returned. Dashboard reads never write into notes.
 
-## Search, attachments, and status
+## Artifacts
+
+An artifact is the second first-class kind beside the note: a static file or a
+link that was handed in or produced, stored byte for byte. It is never a note,
+and no route turns one into the other. Every submission declares `kind:
+artifact`; a submission with no kind, or any other kind, is refused with the
+reason. The bytes live immutably in the archive under the artifact identity
+(`/data/artifacts/<id>/rNNNN/<filename>`), a browsable copy lands under
+`Artifacts/{yyyy}/{yyyy-mm}/<filename>` in the notes filesystem keyed on the
+received date, and the extracted text and provenance live in a record under
+`/data/state/artifacts/<id>.json`, mirrored into PostgreSQL and the search
+index. Nothing generated sits beside the file in Obsidian. A note cites an
+artifact in its `artifacts` frontmatter list; filing a note never moves an
+artifact, and deleting a note leaves the artifact uncited.
 
 | Method and path | Scope | What it does | Success | Failure |
 |---|---|---|---|---|
-| `GET /v1/search` | `notes:read` | Full-text search over reviewed, successfully filed note bodies and titles and their approved generated source pages under the sources folder. `q` (1 to 500 characters) is read the way a search box is: words, `"quoted phrases"`, `or`, and `-word` to exclude. English stemming applies, so `runs` also finds `running`, and an excluded word is excluded in every form: `budget -runs` finds no note that says `running`. Takes every listing filter (`folder, reviewed, type, context, account, from, to, tag, state`) with listing's meaning (`account` matches any entry of a note's list, `from` and `to` take the day from `date`), and pages the same way, by `cursor` and `limit` | 200, page of `{id, kind, title, path, folder, excerpt, rank, state}`, best match first. `kind` is `note`, or `source` for a generated source page, whose `id` is then the source identifier. `excerpt` is a short passage with every matched word between `**` markers. `rank` orders one answer and means nothing across answers | 422 `validation_error` for an empty `q`, a bad filter, or a cursor from a different `q`; 503 `metadata_unavailable`, never an empty page |
-| `POST /v1/attachments` | `notes:write` | Upload a file (multipart); name comes from the filename | 201, `{path, embed: "![[name.png]]", size_bytes}` | 413 over the plan's file-size limit; 409 |
-| `GET /v1/attachments/{name}` | `notes:read` | Download an attachment | 200 | 404 |
-| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, rejected_ingests, name_collisions, unparseable_files, excluded_count, notes_folder, notes_to_refile, notes_returned, folders_kept, filing_failures, filing_queue_depth, filing_ready_depth, filing_estimated_drain_s, filing_last_progress_at, filing_stalled, calendar_import_failures, known_unreadable, purge_problems, active_problems}`, computed from the metadata mirror, recorded rejections and import receipts; `active_problems` counts every Problems row except intentional exclusions and returned-note notices, including calendar, Dropbox and retention purge problems; `purge_problems` counts the retention purge ones; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false`; `notes_folder` is the configured reviewed-notes root, `notes_to_refile` counts reviewed notes still awaiting the move into its `{yyyy}/{yyyy-mm}/` layout, and `notes_returned` and `folders_kept` count the current `returned_note` and `folder_kept` notices | 200 | 503 `metadata_unavailable` or `store_unavailable` |
+| `POST /v1/artifacts` | `artifacts:write` | Store a file or a link. `multipart/form-data` with a `file` part plus text fields, or JSON `{kind, url}` or `{kind, filename, content_base64}`. Fields: `kind` (required, `artifact`), `title` (defaults to the filename stem or the URL), `date` (received, `YYYY-MM-DD`, defaults to today), `tags`, `origin`, `note_id` (a note that cites it: the citation is written into its frontmatter and a link into its body), `artifact_id` (store the upload as a new revision of that artifact; earlier revisions stay), `mime_type`. Bounded at 200,000,000 bytes on the way in and at `limits.artifact_max_bytes` in the store. Identical bytes under the same filename, or the same URL, replay | 201, `{id, kind, revision, created, path, title, note_id}`; 200 `created: false` on a replay | 422 `validation_error` (no or wrong kind, bad URL, a filename that is a path, an unknown `note_id` or `artifact_id`); 413 `payload_too_large`; 503 |
+| `GET /v1/artifacts` | `artifacts:read` | List artifacts newest received first, filtered by `tag`, `origin`, citing `note_id`, and `from`, `to` on the received date; paged by `cursor` and `limit` | 200, page of summaries, each with `kind: artifact`, `title`, `origin`, `received_at`, `filename`, `mime_type`, `sha256`, `size_bytes`, `url`, `tags`, `path`, `revision`, `citing_note_ids`, `text_status`, `state` | 422; 503 `metadata_unavailable` |
+| `GET /v1/artifacts/{id}` | `artifacts:read` | The metadata record: everything the summary carries plus every revision and the full extracted `text`. This is the only way to read the record; it is never a page in the notes filesystem | 200 | 404 |
+| `GET /v1/artifacts/{id}/bytes` | `artifacts:read` | The archived bytes of the current revision, or of `?revision=n`, with the recorded media type when it is a plain token, `Content-Disposition: attachment`, and `X-Coppermind-SHA256` | 200 | 404; 422 for a link, which has no bytes |
+| `PUT`, `PATCH`, `DELETE` on `/v1/artifacts/**` | | Always refused: the archive is immutable and removal is an Admin action | | 405 `method_not_allowed` |
+
+`text_status` says what extraction produced: `extracted`, `no_extractable_text`
+(a readable type with nothing in it, such as an image-only PDF), `unsupported`
+(no parser for the type; images, video and audio), `failed` (the parser failed
+or exceeded its budget, listed under Problems) or `link`. PDF, PPTX, DOCX and
+text types are extracted, in a subprocess with a memory and CPU budget; OCR is
+out of scope. A record carries the extractor version and is regenerated by the
+reconciler when that version changes. `state` is `ok`, or `modified` when the
+browsable copy no longer hashes to the archived bytes, which Problems reports
+and nothing rewrites.
+
+Dropbox takes an artifact only with a kind marker: a sidecar named
+`<filename>.kind` beside the dropped file containing the word `artifact` (or
+JSON with `kind: artifact` and optional `title`, `tags`, `date`), or
+`kind=artifact` on `POST /v1/dropbox`. Without one a non-calendar drop is
+parked as unsupported with that instruction, never guessed at.
+
+## Search and status
+
+| Method and path | Scope | What it does | Success | Failure |
+|---|---|---|---|---|
+| `GET /v1/search` | `notes:read` | Full-text search over reviewed, successfully filed note bodies and titles, their approved generated source pages under the sources folder, and the extracted text of every stored artifact (indexed when stored, with no review gate, because nothing about an artifact is a person's unreviewed draft). `q` (1 to 500 characters) is read the way a search box is: words, `"quoted phrases"`, `or`, and `-word` to exclude. English stemming applies, so `runs` also finds `running`, and an excluded word is excluded in every form: `budget -runs` finds no note that says `running`. Takes every listing filter (`folder, reviewed, type, context, account, from, to, tag, state`) with listing's meaning (`account` matches any entry of a note's list, `from` and `to` take the day from `date`; a frontmatter filter matches notes only, while `tag` matches notes and artifacts), plus `kind` (`note`, `source` or `artifact`) and `citing_note` (only artifacts that note cites), and pages the same way, by `cursor` and `limit` | 200, page of `{id, kind, title, path, folder, excerpt, rank, state}`, best match first. `kind` is `note`, `source` for a generated source page (whose `id` is the source identifier), or `artifact` (whose `id` is the artifact identifier and whose `excerpt` comes from the extracted text, so an agent can use the hit without fetching the file). `excerpt` is a short passage with every matched word between `**` markers. `rank` orders one answer and means nothing across answers | 422 `validation_error` for an empty `q`, a bad filter, or a cursor from a different `q`; 503 `metadata_unavailable`, never an empty page |
+| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, artifacts, rejected_ingests, name_collisions, unparseable_files, excluded_count, notes_folder, notes_to_refile, notes_returned, folders_kept, filing_failures, filing_queue_depth, filing_ready_depth, filing_estimated_drain_s, filing_last_progress_at, filing_stalled, calendar_import_failures, known_unreadable, purge_problems, active_problems}`, computed from the metadata mirror, recorded rejections and import receipts; `active_problems` counts every Problems row except intentional exclusions and returned-note notices, including calendar, Dropbox and retention purge and artifact problems; `purge_problems` counts the retention purge ones; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false`; `notes_folder` is the configured reviewed-notes root, `notes_to_refile` counts reviewed notes still awaiting the move into its `{yyyy}/{yyyy-mm}/` layout, and `notes_returned` and `folders_kept` count the current `returned_note` and `folder_kept` notices | 200 | 503 `metadata_unavailable` or `store_unavailable` |
 | `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /openapi.json` | none | Process liveness, real readiness (checks PostgreSQL and the notes filesystem), Prometheus metrics, the generated API contract | 200 | 503 on `/readyz` when a real dependency is down |
 
 ## Admin: pages and their endpoints
@@ -212,14 +251,15 @@ requiring hand-populated configuration.
 | Claim (first boot) | `POST /v1/admin/claim {code, password}` | Set the admin password using the one-time code the store logged and wrote to `/data/state/internal/claim-code` |
 | Login, logout | `POST /v1/admin/login`, `POST /v1/admin/logout` | Password-backed session |
 | Overview | `GET /v1/admin/status` | Counters, helper status and ages, last reconcile, last commit, last sync, failed jobs, and a filing summary (Filing in progress, Filing needs attention or Filing complete, with counts and last progress) |
-| Problems | `GET /v1/admin/notes/problems` | Every refused ingest, name collision (several files carrying one note identity) and unparseable file, each linked to the note or source it is about. Also lists failed calendar imports, unsupported or failed Dropbox receipts and calendar conflicts, plus unfinished or abandoned retention purges, unreadable purge receipts and damaged source bundles, and per-note filing errors (`filing`), missing notes (`missing`), path disagreements (`path_notice`), unreadable notes (`unreadable_note`), hand-moved reviewed notes returned to their filed folder (`returned_note`) and old month folders left because they still hold files (`folder_kept`). The Admin page opens with the same filing summary as Overview, built from `GET /v1/status`. Each row has a snake_case `kind` slug; the calendar and Dropbox rows use `calendar_import` (a failed import receipt), `dropbox` (a failed or unsupported Dropbox file) and `calendar_conflict` (two sources disagree on one event at the same revision). Computed from the mirror, recorded rejections and import receipts; nothing is ever written into a note |
+| Problems | `GET /v1/admin/notes/problems` | Every refused ingest, name collision (several files carrying one note identity) and unparseable file, each linked to the note or source it is about. Also lists failed calendar imports, unsupported or failed Dropbox receipts and calendar conflicts, plus unfinished or abandoned retention purges, unreadable purge receipts and damaged source bundles, artifacts whose browsable copy changed on a device or whose text could not be extracted (`artifact`), and per-note filing errors (`filing`), missing notes (`missing`), path disagreements (`path_notice`), unreadable notes (`unreadable_note`), hand-moved reviewed notes returned to their filed folder (`returned_note`) and old month folders left because they still hold files (`folder_kept`). The Admin page opens with the same filing summary as Overview, built from `GET /v1/status`. Each row has a snake_case `kind` slug; the calendar and Dropbox rows use `calendar_import` (a failed import receipt), `dropbox` (a failed or unsupported Dropbox file) and `calendar_conflict` (two sources disagree on one event at the same revision). Computed from the mirror, recorded rejections and import receipts; nothing is ever written into a note |
+| Artifacts (`/admin/artifacts`) | `POST /v1/admin/artifacts/{id}/remove` | Every stored artifact with its kind, title, origin, received date, size, browsable path or link, citing notes, text status and revision. Remove, after a confirmation page, takes the browsable copy, the record and the search entry away; the archived bytes stay under the artifact identity subject to the retention purge rules |
 | API keys | `GET/POST /v1/admin/keys`, `DELETE /v1/admin/keys/{key_id}` | Create (secret shown once), list, and revoke keys graphically instead of through the store's command line |
 | Obsidian Sync | `GET /v1/admin/sync`, `POST /v1/admin/sync/connect`, `POST /v1/admin/sync/token`, `POST /v1/admin/sync/pause`, `/resume`, `/disconnect` | Connect with email, password, optional MFA, and a vault name or a pasted token; reveal a token once, with a hint for sealing it into GitOps; pause and resume around bulk operations |
 | Settings | `GET/PUT /v1/admin/settings {if_revision, body}` | Every key in the settings table below, grouped by section |
 | Frontmatter schema | `GET/PUT /v1/admin/schema`, `POST /v1/admin/schema/rename-key {from, to}` | Keys, kinds, and vocabularies; renaming a key runs the migration job that rewrites every note through the store |
 | Fields and tags (`/admin/fields`) | `POST /v1/admin/fields {revision, ...}` | Add, edit and retire keys (kind, required and required when, allowed values each with a one-line meaning, default, guidance); every tag in use with its note count from the mirror, a meaning and aliases per listed tag, and open or closed tags. Saves with the same revision check Settings uses; the role map is carried over untouched, and nothing here rewrites a note |
 | Filing rules | `GET/PUT /v1/admin/rules`, `POST /v1/admin/rules/preview {note_id}` | The ordered rules a note is filed by, with a dry run ("what would this note file as") before committing to a change |
-| Search index (`/admin/search-index`) | `POST /v1/admin/search-index/rebuild` | The number of notes and source pages indexed, the known unreadable count, when the index last changed and when it was last rebuilt, in the operator's timezone, and a Rebuild index button. A rebuild runs in the store's background, throws every entry away, except the last indexed text of a note that is currently unparsed, and reads the notes filesystem again; search keeps answering from the old entries until the new ones commit |
+| Search index (`/admin/search-index`) | `POST /v1/admin/search-index/rebuild` | The number of notes, source pages and artifacts indexed, the known unreadable count, when the index last changed and when it was last rebuilt, in the operator's timezone, and a Rebuild index button. A rebuild runs in the store's background, throws every entry away, except the last indexed text of a note that is currently unparsed, and reads the notes filesystem again; search keeps answering from the old entries until the new ones commit |
 | Retention purge (`/admin/purge`) | `POST /v1/admin/purge/preview`, `/confirm`, `/abandon`, `/settings` | Edit the retention window, preview what a manual purge would remove, confirm it, retry or abandon an unfinished one. See [Retention purge](#retention-purge-implemented) |
 | Jobs | `GET /v1/admin/jobs`, `POST /v1/admin/jobs {kind}`, `GET /v1/admin/jobs/{id}` | Run reconcile, a full rehash, rebuild metadata from disk, reindex, or rebuild projections, and see the history of each |
 | Sources | `GET /v1/admin/sources`, `GET /v1/admin/notes/problems` | Browse sources; see notes the reconciler could not parse or file |
@@ -240,7 +280,9 @@ The calls it exposes, grouped by what they touch:
   (to trash), list folders.
 - **Sources:** ingest (idempotent), get one, list, open one artifact,
   list the sources a note cites.
-- **Attachments:** store one, open one.
+- **Artifacts:** store one (file or link, declared kind), get its record, open
+  its bytes for a revision, list with filters, remove its projection
+  (`DELETE /internal/v1/artifacts/{id}`; the archived bytes stay).
 - **Schema and tags:** read the frontmatter schema the store enforces, with
   its file revision (`GET /internal/v1/schema`), and count notes per tag in
   the mirror, a note counting once per tag (`GET /internal/v1/tags`).
