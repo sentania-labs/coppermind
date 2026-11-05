@@ -411,3 +411,88 @@ async def test_drain_estimate_is_available_before_first_pass_finishes(store, mon
     finally:
         release.set()
         await task
+
+
+async def test_missing_filing_copy_can_be_restored_without_claiming_git_removal(store, monkeypatch):
+    from coppermind.store_protocol import RestoreNote, ValidationFailed
+
+    note = await store.create_note(
+        CreateNote(
+            title="Uncommitted seam",
+            body="Keep these bytes",
+            frontmatter={"date": "2003-06-02", "type": "reference", "reviewed": True},
+        )
+    )
+    original = store.move_note
+
+    async def vanish(*args):
+        moved = await original(*args)
+        (store.notes_root / moved.path).unlink()
+        return moved
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "move_note", vanish)
+        await filing.file_reviewed(store)
+    await reconcile_once(store)
+    assert [n.id for n in (await store.list_notes(NoteQuery(state="missing"))).items] == [note.id]
+    recovery = await store.preview_note_restore(note.id)
+    assert recovery.evidence_pending and not recovery.removal_commit
+    assert "Keep these bytes" in recovery.content
+    # Damaged saved bytes must never become a restore option.
+    path = store.control.store.state_dir / "filing" / f"{note.id}.json"
+    original_plan = path.read_bytes()
+    plan = json.loads(original_plan)
+    for copy in plan["copies"]:
+        copy["content"] = "dGFtcGVyZWQ="
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValidationFailed, match="No verified saved filing copy"):
+        await store.preview_note_restore(note.id)
+    path.write_bytes(original_plan)
+    await store.restore_note(
+        note.id, RestoreNote(token=recovery.token, confirmation=f"Restore {note.id}")
+    )
+    assert (await store.get_note(note.id)).content_hash == recovery.content_hash
+    assert not (await store.list_notes(NoteQuery(state="deleted"))).items
+
+
+async def test_status_separates_failed_and_stalled_filing_from_drainable_work(store):
+    from datetime import UTC, datetime, timedelta
+
+    failed = await store.create_note(
+        CreateNote(
+            title="Failing",
+            frontmatter={"date": "2004-01-01", "type": "reference", "reviewed": True},
+        )
+    )
+    await store.create_note(
+        CreateNote(
+            title="Ready", frontmatter={"date": "2005-01-01", "type": "reference", "reviewed": True}
+        )
+    )
+    directory = store.control.store.state_dir
+    (directory / "filing").mkdir(exist_ok=True)
+    (directory / "filing" / f"{failed.id}.json").write_text(
+        json.dumps({"error": "NotesFilesystemUnavailable", "attempts": 2})
+    )
+    now = datetime.now(UTC)
+    (directory / "filing-rate.json").write_text(
+        json.dumps({"seconds_per_note": 60, "last_progress_at": now.isoformat()})
+    )
+    counters = (await store.get_status()).counters
+    assert (counters.filing_queue_depth, counters.filing_ready_depth, counters.filing_failures) == (
+        2,
+        1,
+        1,
+    )
+    assert counters.filing_estimated_drain_s == 60
+    problem = next(p for p in await store.get_problems() if p.kind == "filing")
+    assert problem.filing_attempts == 2 and problem.reference == failed.path
+    assert "NotesFilesystemUnavailable" not in problem.reason
+    assert "destination folder" in problem.reason
+    (directory / "filing-rate.json").write_text(
+        json.dumps(
+            {"seconds_per_note": 60, "last_progress_at": (now - timedelta(hours=1)).isoformat()}
+        )
+    )
+    counters = (await store.get_status()).counters
+    assert counters.filing_stalled and counters.filing_estimated_drain_s is None

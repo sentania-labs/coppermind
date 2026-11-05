@@ -1217,14 +1217,16 @@ async def get_status(store: LocalStore) -> StatusResponse:
             by_state = (
                 await session.execute(sa.select(Note.state, sa.func.count()).group_by(Note.state))
             ).all()
-            filing_queue_depth = (
-                await session.scalar(
-                    sa.select(sa.func.count())
-                    .select_from(Note)
-                    .where(Note.state == "ok", Note.reviewed.is_(True), Note.filed.is_(False))
-                )
-                or 0
+            filing_pending_ids = set(
+                (
+                    await session.scalars(
+                        sa.select(Note.id).where(
+                            Note.state == "ok", Note.reviewed.is_(True), Note.filed.is_(False)
+                        )
+                    )
+                ).all()
             )
+            filing_queue_depth = len(filing_pending_ids)
             sources = await session.scalar(sa.select(sa.func.count()).select_from(Source)) or 0
             rejected_ingests = (
                 await session.scalar(
@@ -1247,14 +1249,31 @@ async def get_status(store: LocalStore) -> StatusResponse:
     notes_by_state = {state: count for state, count in by_state}
     excluded_count = store.control.read_reconciler_excluded_count()
     problems = await get_problems(store)
+    failing_ids = {p.note_id for p in problems if p.kind == "filing"}
+    ready_depth = len(filing_pending_ids - failing_ids)
+    last_progress = None
+    stalled = False
+    estimated_drain = None
     try:
         rate = json.loads((store.control.store.state_dir / "filing-rate.json").read_bytes())
-        estimated_drain = int(rate["seconds_per_note"] * filing_queue_depth)
-    except (OSError, ValueError, KeyError, TypeError):
+        last_progress = datetime.fromisoformat(rate["last_progress_at"])
+        if last_progress.tzinfo is None:
+            raise ValueError("progress time has no timezone")
+        seconds_per_note = float(rate["seconds_per_note"])
+        age = (datetime.now(UTC) - last_progress).total_seconds()
+        stalled = bool(ready_depth and age > max(120, seconds_per_note * 3))
+        if not stalled and seconds_per_note >= 0:
+            estimated_drain = int(seconds_per_note * ready_depth)
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        estimated_drain = None
+    if not ready_depth and filing_queue_depth:
         estimated_drain = None
     return StatusResponse(
         counters=StatusCounters(
             filing_queue_depth=filing_queue_depth,
+            filing_ready_depth=ready_depth,
+            filing_last_progress_at=last_progress,
+            filing_stalled=stalled,
             filing_estimated_drain_s=estimated_drain,
             known_unreadable=known_unreadable,
             notes_awaiting_review=notes_awaiting_review,
@@ -1283,13 +1302,24 @@ def filing_problems(store: LocalStore, active_ids: set[str] | None = None) -> li
                 problems.append(
                     ProblemInfo(
                         kind="filing",
-                        reference=path.stem,
+                        reference=filing.get("note_path") or filing.get("target_path") or path.stem,
+                        filing_attempts=filing.get("attempts", 0),
                         reason=(
                             "Source material changed. Review it, then mark the note unreviewed "
-                            "and reviewed again."
+                            "and reviewed again. Filing retries automatically."
                             if filing["error"] == "SourceRevisionNeedsReview"
-                            else "Monthly filing is pending; it will retry automatically: "
-                            + filing["error"]
+                            else "The notes folder could not be accessed. Check that the notes "
+                            "filesystem is mounted, has free space, and that the store can read "
+                            "the note and write to its destination folder. "
+                            "Filing retries automatically."
+                            if filing["error"]
+                            in {"NotesFilesystemUnavailable", "PermissionError", "OSError"}
+                            else "The destination is already occupied. Check for duplicate files "
+                            "and move the conflicting file aside. Filing retries automatically."
+                            if filing["error"] == "PathCollision"
+                            else "The note could not be filed. Check its date and source files, "
+                            "then check store logs if the problem continues. "
+                            "Filing retries automatically."
                         ),
                         note_id=path.stem,
                     )
@@ -1299,7 +1329,10 @@ def filing_problems(store: LocalStore, active_ids: set[str] | None = None) -> li
                 ProblemInfo(
                     kind="filing",
                     reference=path.stem,
-                    reason="Filing receipt is unreadable",
+                    reason=(
+                        "The saved filing information cannot be read. "
+                        "Check state folder access and store logs."
+                    ),
                     note_id=path.stem,
                 )
             )
@@ -1478,7 +1511,11 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         )
         for row in unreadable
     )
-    problems.extend(filing_problems(store, {row.id for row in ok_notes if row.reviewed}))
+    filing_items = filing_problems(store, {row.id for row in ok_notes if row.reviewed})
+    paths = {row.id: row.path for row in ok_notes}
+    for item in filing_items:
+        item.reference = paths.get(item.note_id, item.reference)
+    problems.extend(filing_items)
     problems.extend(await purge_problems(store))
     problems.extend(
         ProblemInfo(

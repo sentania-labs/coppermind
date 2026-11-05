@@ -20,6 +20,7 @@ from coppermind.store_protocol import (
     Page,
     RestoreNote,
     StoreError,
+    ValidationFailed,
 )
 from coppermind_admin.pages.problems import store_client
 from coppermind_admin.pages.search_index import _zone, local_time
@@ -69,11 +70,21 @@ def router(wiring: Wiring) -> APIRouter:
             action = (
                 f'<a href="/admin/note-history/{quote(note.id, safe="")}">Preview restore</a>'
                 if state == "deleted"
-                else "Waiting for matching committed removal"
+                else (
+                    f'<a href="/admin/note-history/{quote(note.id, safe="")}">'
+                    "Check recovery options</a>"
+                )
             )
             rows.append(
                 f"<tr><td>{escape(note.path)}<br><small>{escape(note.id)}</small></td>"
-                f"<td>{escape(note.state_reason or note.state)}</td><td>{action}</td></tr>"
+                f"<td>{escape(note.state_reason or note.state)}"
+                + (
+                    "<br>The file is missing. Check for a saved copy "
+                    "or restore it from a device or backup."
+                    if state == "missing"
+                    else ""
+                )
+                + f"</td><td>{action}</td></tr>"
             )
         next_link = ""
         if notes.next_cursor:
@@ -84,12 +95,21 @@ def router(wiring: Wiring) -> APIRouter:
             if request.query_params.get("restored")
             else ""
         )
+        history_reason = (
+            escape(status.reason)
+            if status.available
+            else "Check Git settings and the store's access to the notes history. "
+            "A running helper can still have unreadable history."
+        )
         return page(f"""<h1>Note recovery</h1>{notice}
-<p>{escape(status.reason)}</p>
+<p>Saved Git history: {"readable" if status.available else "not readable"}.
+{history_reason}</p>
 <p>Git helper: {escape(status.helper_status)}. Pending files: {status.dirty_files}.<br>
 Last commit: {escape(local_time(status.last_commit_at, _zone(request)))}</p>
 <p>Git records removals; it cannot establish intent. Deleted notes return automatically
-when their ID reappears. Missing notes await a recoverable, matching Git version.
+when their ID reappears. For a missing note, check recovery options: a verified saved
+filing copy can be restored even while Git removal evidence is unavailable.
+When no saved copy is available, restore the file from a device or backup with its original ID.
 Restoring does not remove source bundles.
 Git history is local history, not an off-device backup.</p>
 <p><a href="/admin/note-history?state=deleted">Deleted</a> ·
@@ -103,11 +123,24 @@ Git history is local history, not an off-device backup.</p>
     async def preview(note_id: str, request: Request) -> Response:
         try:
             result = await client(request).preview_note_restore(note_id)
+        except ValidationFailed as error:
+            return page(
+                f"<h1>Recovery options</h1><p>Note {escape(note_id)}</p><p>"
+                + escape(str(error))
+                + '</p><p><a href="/admin/note-history?state=missing">Missing notes</a> · '
+                '<a href="/admin/settings?section=git">Check Git settings</a></p>'
+            )
         except StoreError as error:
             return failure(error)
-        return page(f'''<h1>Restore deleted note</h1>
+        evidence = (
+            "A verified copy saved during filing is available. Git removal evidence is still "
+            "unavailable; this note has not been recorded as deleted."
+            if result.evidence_pending
+            else f"Removal commit: <code>{escape(result.removal_commit)}</code>"
+        )
+        return page(f'''<h1>Restore saved note</h1>
 <p>Destination: {escape(result.path)}</p>
-<p>Removal commit: <code>{escape(result.removal_commit)}</code><br>
+<p>{evidence}<br>
 Recovery copy retained: {escape(local_time(result.recorded_at, _zone(request)))}</p>
 <p class="notice">Restoring makes this note available to Obsidian Sync again.
 The original ID and exact saved contents are preserved.

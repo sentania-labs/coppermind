@@ -140,10 +140,12 @@ Note documents and list items include `filed`, `filing_error` (the last error,
 otherwise null), and `filing_attempts` (completed or failed filing attempts,
 excluding checks of already-filed notes). Filing errors count only reviewed
 notes still present; successful retries clear them. Status includes
-`filing_queue_depth` for reviewed, present notes awaiting filing, and
-`filing_estimated_drain_s`, based on the current or last successful pass (null until a
-measurement exists). An estimate includes failing notes and cannot predict
-when an operator will resolve their errors.
+`filing_queue_depth` for reviewed, present notes awaiting filing, including errors.
+`filing_ready_depth` excludes notes currently failing. `filing_estimated_drain_s`
+applies only to that ready work and is null when progress has stalled or no
+measurement exists. `filing_last_progress_at` records the latest successful filing;
+`filing_stalled` signals a ready queue with no recent progress. Problems names each
+failed note, its attempt count, and a plain explanation with a suggested remedy.
 
 Reads follow a moved note's identity when its recorded path is stale. An `ok`
 listing omits files that have disappeared or cannot be parsed until the next
@@ -151,9 +153,14 @@ reconciliation records their state. Problems includes missing notes with their
 `state_reason` and durable path notices naming the observed and indexed paths.
 While filing is in flight, its journal holds hash-checked note copies; they are
 dropped once filing settles, and a retention purge removes a purged note's
-journal. When a note vanishes between paths, recovery uses those copies only
-with Git evidence of removal of a journaled origin; otherwise the missing
-reason names the last known hash and why recovery is waiting. A path notice
+journal. When a note vanishes between paths, marking it deleted requires Git
+evidence of removal of a journaled origin; otherwise the missing reason names
+the last known hash and why evidence is unavailable. Recovery can preview and
+explicitly restore a missing note from its verified matching filing copy without
+claiming a committed removal (`evidence_pending: true`, empty `removal_commit`).
+Confirmation is bound to the note ID, destination and content hash, and restore
+never overwrites a file. When no matching copy exists, Admin explains how to
+restore the original file and ID from a device or backup. A path notice
 reports a disagreement that is still open and clears when the index and the file
 agree again or the note is gone.
 
@@ -185,7 +192,7 @@ is still returned. Dashboard reads never write into notes.
 | `GET /v1/search` | `notes:read` | Full-text search over reviewed, successfully filed note bodies and titles and their approved generated source pages under the sources folder. `q` (1 to 500 characters) is read the way a search box is: words, `"quoted phrases"`, `or`, and `-word` to exclude. English stemming applies, so `runs` also finds `running`, and an excluded word is excluded in every form: `budget -runs` finds no note that says `running`. Takes every listing filter (`folder, reviewed, type, context, account, from, to, tag, state`) with listing's meaning (`account` matches any entry of a note's list, `from` and `to` take the day from `date`), and pages the same way, by `cursor` and `limit` | 200, page of `{id, kind, title, path, folder, excerpt, rank, state}`, best match first. `kind` is `note`, or `source` for a generated source page, whose `id` is then the source identifier. `excerpt` is a short passage with every matched word between `**` markers. `rank` orders one answer and means nothing across answers | 422 `validation_error` for an empty `q`, a bad filter, or a cursor from a different `q`; 503 `metadata_unavailable`, never an empty page |
 | `POST /v1/attachments` | `notes:write` | Upload a file (multipart); name comes from the filename | 201, `{path, embed: "![[name.png]]", size_bytes}` | 413 over the plan's file-size limit; 409 |
 | `GET /v1/attachments/{name}` | `notes:read` | Download an attachment | 200 | 404 |
-| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, rejected_ingests, name_collisions, unparseable_files, excluded_count, filing_failures, filing_queue_depth, filing_estimated_drain_s, calendar_import_failures, known_unreadable, purge_problems, active_problems}`, computed from the metadata mirror, recorded rejections and import receipts; `active_problems` counts every Problems row except intentional exclusions, including calendar, Dropbox and retention purge problems; `purge_problems` counts the retention purge ones; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false` | 200 | 503 `metadata_unavailable` or `store_unavailable` |
+| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, rejected_ingests, name_collisions, unparseable_files, excluded_count, filing_failures, filing_queue_depth, filing_ready_depth, filing_estimated_drain_s, filing_last_progress_at, filing_stalled, calendar_import_failures, known_unreadable, purge_problems, active_problems}`, computed from the metadata mirror, recorded rejections and import receipts; `active_problems` counts every Problems row except intentional exclusions, including calendar, Dropbox and retention purge problems; `purge_problems` counts the retention purge ones; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false` | 200 | 503 `metadata_unavailable` or `store_unavailable` |
 | `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /openapi.json` | none | Process liveness, real readiness (checks PostgreSQL and the notes filesystem), Prometheus metrics, the generated API contract | 200 | 503 on `/readyz` when a real dependency is down |
 
 ## Admin: pages and their endpoints

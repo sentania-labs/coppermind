@@ -704,6 +704,9 @@ class StatusCounters(BaseModel):
     filing_failures: int = 0
     filing_queue_depth: int = 0
     filing_estimated_drain_s: int | None = None
+    filing_ready_depth: int = 0
+    filing_last_progress_at: datetime | None = None
+    filing_stalled: bool = False
     known_unreadable: int = 0
     calendar_import_failures: int = 0
     active_problems: int | None = None
@@ -839,6 +842,7 @@ class ProblemInfo(BaseModel):
     reason: str
     note_id: str | None = None
     source_id: str | None = None
+    filing_attempts: int | None = None
 
 
 class HistoryStatus(BaseModel):
@@ -851,6 +855,7 @@ class HistoryStatus(BaseModel):
 
 
 class NoteRecovery(BaseModel):
+    evidence_pending: bool = False
     note_id: str
     path: str
     content: str

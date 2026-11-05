@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -432,7 +432,10 @@ async def _file_reviewed(store: LocalStore) -> dict[str, int]:
                 try:
                     _save(
                         store.control.store.state_dir / "filing-rate.json",
-                        {"seconds_per_note": (time.monotonic() - started) / counts["filed"]},
+                        {
+                            "seconds_per_note": (time.monotonic() - started) / counts["filed"],
+                            "last_progress_at": datetime.now(UTC).isoformat(),
+                        },
                     )
                 except OSError:
                     from coppermind_store.reconciler import log

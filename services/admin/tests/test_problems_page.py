@@ -287,8 +287,8 @@ def test_calendar_and_dropbox_failures_count_and_link_to_dismissal(signed_in):
     page = client.get("/admin/problems")
     assert 'href="/admin/context?tab=calendar"' in page.text
     assert 'href="/admin/workflow?tab=intake"' in page.text
-    assert "<td>Calendar import</td>" in page.text
-    assert "<td>Dropbox</td>" in page.text
+    assert "<small>Calendar import</small>" in page.text
+    assert "<small>Dropbox</small>" in page.text
     assert "No excluded files." in page.text
     assert "No problems found." not in page.text
 
@@ -343,3 +343,54 @@ def test_a_damaged_source_bundle_is_plain_and_has_no_dead_link(signed_in):
     assert "Damaged source bundle" in page and "Preserved source copy" in page
     assert "damaged_source" not in page and SOURCE_ID not in page
     assert "/admin/sources/" not in page
+
+
+def test_filing_errors_are_actionable_and_missing_links_to_recovery(signed_in):
+    client, _ = signed_in
+    fake = _install(client, ReadOnlyStore())
+    fake.problems = [
+        ProblemInfo(
+            kind="filing",
+            reference="Review/note.md",
+            note_id=NOTE_ID,
+            reason="Check folder access. Filing retries automatically.",
+            filing_attempts=2,
+        ),
+        ProblemInfo(
+            kind="missing",
+            reference="Review/lost.md",
+            note_id=SOURCE_ID,
+            reason="not observed during reconciliation",
+        ),
+    ]
+    text = client.get("/admin/problems").text
+    assert "Filing error" in text and "Filing attempts: 2" in text
+    assert "Check folder access" in text
+    assert f'href="/admin/note-history/{SOURCE_ID}"' in text
+    assert "metadata mirror" not in text and "during reconciliation" not in text
+    assert "Filing attempts: 2" in client.get(f"/admin/notes/{NOTE_ID}").text
+
+
+def test_filing_estimate_excludes_errors_and_shows_stalled_work():
+    from coppermind_admin.pages.problems import counters_html
+
+    counters = StatusCounters(
+        notes_awaiting_review=0,
+        notes_by_state={},
+        sources=0,
+        rejected_ingests=0,
+        name_collisions=0,
+        unparseable_files=0,
+        filing_queue_depth=2,
+        filing_failures=2,
+        filing_estimated_drain_s=60,
+    )
+    text = counters_html(StatusResponse(counters=counters))
+    assert "Filing needs attention" in text
+    assert "about 1" not in text
+    counters.filing_ready_depth = 1
+    text = counters_html(StatusResponse(counters=counters))
+    assert "about 1 minute for notes without errors" in text
+    assert "1 minutes" not in text
+    counters.filing_stalled = True
+    assert "No recent filing progress" in counters_html(StatusResponse(counters=counters))
