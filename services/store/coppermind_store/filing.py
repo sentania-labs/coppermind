@@ -206,8 +206,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         )
     ):
         await _publish(store, note)
-        if plan.pop("error", None) is not None:
-            _save(journal, plan)
+        _settle(journal, plan)
         return False
     # Rebuild a stale plan from current durable manifests. Files already copied
     # remain preserved; the new plan can resume from their recorded paths.
@@ -352,6 +351,14 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     _save(journal, plan)
     await _publish(store, note)
     return True
+
+
+def _settle(journal: Path, plan: dict) -> None:
+    """A later pass found the published note in place, so no filing is in flight."""
+    changed = plan.pop("error", None) is not None
+    changed = plan.pop("copies", None) is not None or changed
+    if changed:
+        _save(journal, plan)
 
 
 async def _publish(store, note):

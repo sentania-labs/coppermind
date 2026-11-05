@@ -1456,7 +1456,7 @@ class LocalStore:
         return relative, path
 
     async def _repair_location(self, note_id: str, previous: str, observed: str) -> None:
-        from coppermind_store.notices import record_path_notice
+        from coppermind_store.notices import clear_path_notice, record_path_notice
 
         try:
             async with transaction(self.session_factory) as session:
@@ -1475,7 +1475,8 @@ class LocalStore:
                     .values(path=observed, mtime=None, updated_at=datetime.now(UTC))
                     .returning(Note.id)
                 )
-                if updated.scalar_one_or_none() is not None:
+                adopted = updated.scalar_one_or_none() is not None
+                if adopted:
                     await session.execute(
                         sa.update(SearchDocument)
                         .where(SearchDocument.kind == "note", SearchDocument.ref_id == note_id)
@@ -1483,7 +1484,10 @@ class LocalStore:
                     )
         except (SQLAlchemyError, OSError) as exc:
             raise MetadataUnavailable(str(exc)) from exc
-        record_path_notice(self, note_id, previous, observed)
+        if adopted:
+            clear_path_notice(self, note_id)
+        else:
+            record_path_notice(self, note_id, previous, observed)
 
     def _find_identity(self, note_id: str) -> list[Path]:
         from coppermind_store.reconciler import _IGNORED_DIRECTORIES, _path_exclusion, _walk

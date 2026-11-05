@@ -75,7 +75,7 @@ async def test_500_reviewed_notes_remain_readable_while_filing(store, monkeypatc
     assert status.counters.filing_failures == 0
 
 
-async def test_identity_follows_move_before_mirror_and_notice(store):
+async def test_identity_follows_move_before_mirror(store):
     note = await store.create_note(CreateNote(title="Moved", frontmatter={"type": "reference"}))
     destination = store.notes_root / "elsewhere" / Path(note.path).name
     destination.parent.mkdir()
@@ -85,10 +85,31 @@ async def test_identity_follows_move_before_mirror_and_notice(store):
     ).as_posix()
     assert [n.id for n in (await store.list_notes(NoteQuery(state="ok"))).items] == [note.id]
     await reconcile_once(store)
-    notice = next(p for p in await store.get_problems() if p.kind == "path_notice")
-    assert notice.note_id == note.id
-    assert note.path in notice.reason
-    assert "elsewhere/" in notice.reason
+    assert not [p for p in await store.get_problems() if p.kind == "path_notice"]
+    assert (await store.get_status()).counters.active_problems == 0
+
+
+async def test_path_notice_lasts_only_while_the_disagreement_is_open(store):
+    kept = await store.create_note(CreateNote(title="Kept", frontmatter={"type": "reference"}))
+    moved = await store.create_note(CreateNote(title="Moved", frontmatter={"type": "reference"}))
+    away = store.notes_root / "elsewhere" / Path(kept.path).name
+    away.parent.mkdir()
+    (store.notes_root / kept.path).rename(away)
+    (store.notes_root / moved.path).rename(store.notes_root / kept.path)
+    assert (await store.get_note(moved.id)).path == kept.path
+
+    open_notices = [p for p in await store.get_problems() if p.kind == "path_notice"]
+    assert [p.note_id for p in open_notices] == [moved.id]
+    assert (await store.get_status()).counters.active_problems == 1
+    notice = store.control.store.state_dir / "path-notices" / f"{moved.id}.json"
+    written = notice.stat().st_mtime_ns
+    await store.get_note(moved.id)
+    await store.get_note(moved.id)
+    assert notice.stat().st_mtime_ns == written
+    await reconcile_once(store)
+    assert not notice.exists()
+    assert not [p for p in await store.get_problems() if p.kind == "path_notice"]
+    assert (await store.get_status()).counters.active_problems == 0
 
 
 async def test_failure_count_drains_and_error_is_visible_by_id(store, monkeypatch):
@@ -172,7 +193,7 @@ async def test_filing_link_rewrite_does_not_restart_stability_wait(store, monkey
     record = store.context.read("finalized", {})[note.id]
     assert (record["path"], record["note_hash"]) == (filed.path, filed.content_hash)
     plan = json.loads((store.control.store.state_dir / "filing" / f"{note.id}.json").read_bytes())
-    assert len(plan["copies"]) >= 2
+    assert "copies" not in plan
     journal = store.control.store.state_dir / "filing" / f"{note.id}.json"
     assert journal.stat().st_mode & 0o777 == 0o600
 

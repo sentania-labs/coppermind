@@ -1505,9 +1505,15 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     note_id=row.id,
                 )
             )
+    open_paths = {row.id: row.path for row in ok_notes}
     for path in sorted((store.control.store.state_dir / "path-notices").glob("*.json")):
         try:
             notice = json.loads(path.read_bytes())
+            if (
+                open_paths.get(notice["note_id"], notice["observed_path"])
+                == notice["observed_path"]
+            ):
+                continue
             problems.append(
                 ProblemInfo(
                     kind="path_notice",

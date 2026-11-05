@@ -483,6 +483,9 @@ def _plan(
         observation = note_history.directory(store) / "observed" / f"{note.id}.json"
         if observation.exists():
             paths.append(observation)
+        journal = store.control.store.state_dir / "filing" / f"{note.id}.json"
+        if journal.exists():
+            paths.append(journal)
         items.append(
             {
                 "candidate": candidate.model_dump(mode="json"),

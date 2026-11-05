@@ -55,6 +55,7 @@ from coppermind_store import indexer
 from coppermind_store.fs import content_hash, resolve
 from coppermind_store.maintenance import writer
 from coppermind_store.notes import _jsonable, _mirror_columns, _title_of
+from coppermind_store.notices import clear_path_notice
 from coppermind_store.rejections import reconcile_rejections
 
 if TYPE_CHECKING:
@@ -584,6 +585,7 @@ async def reconcile_once(
                     )
                     if result.scalar_one_or_none() is None:
                         continue
+                    clear_path_notice(store, row.id)
                     if receipt is not None:
                         await asyncio.to_thread(note_history.save, store, receipt)
                     elif observed is not None:
@@ -602,9 +604,6 @@ async def reconcile_once(
                     elif observed.state in {"unparsed", "unreadable"}:
                         counts["unparsed"] += 1
                     elif previous_path != observed.path:
-                        from coppermind_store.notices import record_path_notice
-
-                        record_path_notice(store, row.id, previous_path, observed.path)
                         counts["moved"] += 1
                     else:
                         counts["changed"] += 1
