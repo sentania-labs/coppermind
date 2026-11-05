@@ -508,6 +508,42 @@ async def test_upgrade_carries_flat_filed_source_pages_into_their_year_folder(st
     assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 0}
 
 
+async def test_a_retried_migration_rewrites_the_link_an_interrupted_attempt_left(store):
+    result = await store.ingest(ingest_request())
+    await approve(store, result.note.id)
+    nested = (await store.get_source(result.source.id)).projection_path
+    flat = nested.replace("_Sources/2026/", "_Sources/")
+    note = await store.get_note(result.note.id)
+    # The interrupted attempt moved the page and its manifest to the nested path
+    # but died before rewriting the note, which still links the flat page.
+    await store.replace_note(
+        note.id,
+        ReplaceNote(
+            frontmatter=note.frontmatter,
+            body=note.body.replace(nested.removesuffix(".md"), flat.removesuffix(".md")),
+        ),
+        note.content_hash,
+    )
+    journal = store.control.store.state_dir / "filing" / f"{note.id}.json"
+    receipt = json.loads(journal.read_bytes())
+    receipt["complete"] = False
+    receipt["sources"] = [
+        {
+            "id": result.source.id,
+            "from": flat,
+            "link_from": "_Sources/_Pending/2026/2026-09/original",
+            "to": nested,
+            "revision": 1,
+        }
+    ]
+    journal.write_text(json.dumps(receipt))
+    assert flat.removesuffix(".md") in (await store.get_note(note.id)).body
+    assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+    body = (await store.get_note(note.id)).body
+    assert nested.removesuffix(".md") in body
+    assert flat.removesuffix(".md") not in body
+
+
 async def test_a_configured_notes_root_governs_filing_search_and_indexing(store):
     state = store.control.store
     settings = store.control.settings()

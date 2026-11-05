@@ -192,11 +192,17 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         old_path = manifest["projection_path"]
         # Keep the original link target after a partial source move.
         link_from = previous.get("link_from", previous["from"]) if previous else old_path
+        # Every path the note body may still link to stays outstanding until the
+        # note rewrite succeeds, including a page an interrupted attempt moved.
+        link_froms = {link_from, old_path}
+        if previous:
+            link_froms |= {previous["from"], *previous.get("link_froms", [])}
         sources.append(
             {
                 "id": source_id,
                 "from": old_path,
                 "link_from": link_from,
+                "link_froms": sorted(link_froms),
                 "to": filed_source_path(settings.notes.sources_folder, manifest, source_id, month),
                 "revision": manifest["current_revision"],
             }
@@ -301,7 +307,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         raise ValueError("note source associations changed during filing")
     body = note.body
     for item in plan["sources"]:
-        for old_link in {item["link_from"], item["from"]}:
+        for old_link in {item["link_from"], item["from"], *item.get("link_froms", [])}:
             body = body.replace(
                 f"[[{old_link.removesuffix('.md')}]]", f"[[{item['to'].removesuffix('.md')}]]"
             )
