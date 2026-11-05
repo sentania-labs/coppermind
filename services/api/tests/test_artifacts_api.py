@@ -334,7 +334,7 @@ def test_the_ceiling_follows_the_store_setting_and_refuses_before_buffering(api)
         headers={
             **_as(fake, "write"),
             "Content-Type": "application/json",
-            "Content-Length": str(2048 + 1025),
+            "Content-Length": str(1_000_000),
         },
     )
     assert response.status_code == 413
@@ -349,3 +349,76 @@ def test_the_ceiling_follows_the_store_setting_and_refuses_before_buffering(api)
     )
     assert larger.status_code == 201
     assert len(fake.created) == 1
+
+
+def test_a_file_sent_as_base64_is_measured_on_its_decoded_bytes(api):
+    client, fake = api
+    fake.limit = 3000
+    inside = base64.b64encode(b"x" * 3000).decode()
+    response = client.post(
+        "/v1/artifacts",
+        json={"kind": "artifact", "filename": "a.bin", "content_base64": inside},
+        headers=_as(fake, "write"),
+    )
+    assert response.status_code == 201, response.text
+    assert fake.sizes == [None]
+    outside = base64.b64encode(b"x" * 100_000).decode()
+    refused = client.post(
+        "/v1/artifacts",
+        json={"kind": "artifact", "filename": "b.bin", "content_base64": outside},
+        headers=_as(fake, "write"),
+    )
+    assert refused.status_code == 413
+    assert len(fake.created) == 1
+
+
+def test_a_multipart_upload_without_a_content_length_stops_being_read_at_the_ceiling(api):
+    import asyncio
+
+    client, fake = api
+    fake.limit = 1024 * 1024
+    boundary = "bound"
+    head = (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="kind"\r\n\r\nartifact\r\n'
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+        'filename="big.bin"\r\nContent-Type: application/octet-stream\r\n\r\n'
+    ).encode()
+    delivered = 0
+    chunk = b"x" * (1024 * 1024)
+
+    async def receive():
+        nonlocal delivered
+        delivered += 1
+        body = head if delivered == 1 else chunk
+        return {"type": "http.request", "body": body, "more_body": delivered < 200}
+
+    sent: list[dict] = []
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/artifacts",
+        "raw_path": b"/v1/artifacts",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"authorization", _as(fake, "write")["Authorization"].encode()),
+            (b"content-type", f"multipart/form-data; boundary={boundary}".encode()),
+        ],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+        "state": {},
+        "app": client.app,
+    }
+    asyncio.run(client.app(scope, receive, send))
+
+    assert next(m for m in sent if m["type"] == "http.response.start")["status"] == 413
+    assert delivered <= 4
+    assert fake.created == []

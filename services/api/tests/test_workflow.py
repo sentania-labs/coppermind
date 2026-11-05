@@ -16,6 +16,9 @@ class Store:
         self.calls.append((action, payload))
         return {"ok": True}
 
+    async def get_artifact_limit(self):
+        return 1024
+
 
 @pytest.mark.parametrize(
     "scopes,expected", [(["notes:read"], 403), (["notes:read", "sources:read"], 200)]
@@ -68,3 +71,24 @@ def test_a_drop_that_declares_a_kind_needs_the_artifact_write_scope(scopes, kind
         result = client.post("/v1/dropbox", params=params, content=b"PK")
     assert result.status_code == expected
     assert [action for action, _ in fake.calls] == (["upload-drop"] if expected == 202 else [])
+
+
+def test_a_declared_drop_is_bounded_by_the_artifact_limit_before_it_is_buffered():
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal(
+        "test", frozenset({"sources:write", "artifacts:write"})
+    )
+    with TestClient(app) as client:
+        refused = client.post(
+            "/v1/dropbox", params={"filename": "deck.pptx", "kind": "artifact"}, content=b"x" * 1025
+        )
+        accepted = client.post(
+            "/v1/dropbox", params={"filename": "deck.pptx", "kind": "artifact"}, content=b"x" * 1024
+        )
+    assert refused.status_code == 413
+    assert refused.json()["limit_bytes"] == 1024
+    assert accepted.status_code == 202
+    assert [action for action, _ in fake.calls] == ["upload-drop"]

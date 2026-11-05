@@ -275,12 +275,6 @@ class Dropbox:
             if item["state"] == "failed":
                 for part in item["parts"]:
                     await asyncio.to_thread(self.context.archive.dismiss, part["import_id"])
-            if item["state"] == "unsupported":
-                records["observations"] = {
-                    key: value
-                    for key, value in records["observations"].items()
-                    if Path(key).name != item["filename"]
-                }
             records["history"][identity] = item
             del records["items"][identity]
             self.save(records)

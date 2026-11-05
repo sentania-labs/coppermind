@@ -44,6 +44,8 @@ from coppermind_api.errors import failure
 
 router = APIRouter(prefix="/v1/artifacts", tags=["artifacts"])
 
+# Room for multipart framing and the text fields beside the file.
+FRAMING_BYTES = 64 * 1024
 # Text fields a multipart submission may carry beside the file.
 TEXT_FIELDS = (
     "kind",
@@ -61,7 +63,7 @@ TEXT_FIELDS = (
 _MEDIA_TYPE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$")
 
 
-def _too_large(limit: int) -> JSONResponse:
+def too_large(limit: int) -> JSONResponse:
     return JSONResponse(
         status_code=413,
         content=envelope(
@@ -91,28 +93,67 @@ def _messages(error: ValidationError) -> list[str]:
     return problems
 
 
-def _declared_too_large(request: Request, limit: int) -> bool:
-    """Whether the request announces a body no artifact could fit in.
+class _BodyTooLarge(Exception):
+    pass
 
-    Multipart framing and base64 add to the file's own size, so the ceiling
-    here leaves room for them; the exact check is on the decoded bytes.
+
+def _body_ceiling(limit: int, *, encoded: bool) -> int:
+    """The most a request body may carry for a file of `limit` bytes.
+
+    Multipart framing, text fields and base64 add to the file's own size, so
+    the transport bound leaves room for them; the exact check is on the
+    decoded file bytes.
     """
+    return ((limit + 2) // 3 * 4 if encoded else limit) + FRAMING_BYTES
+
+
+def _declared_too_large(request: Request, ceiling: int) -> bool:
     declared = request.headers.get("content-length", "")
-    return declared.isdigit() and int(declared) > limit + limit // 2
+    return declared.isdigit() and int(declared) > ceiling
+
+
+def _bounded(request: Request, ceiling: int) -> Request:
+    """The same request, whose body raises `_BodyTooLarge` the moment it passes `ceiling`."""
+    seen = 0
+
+    async def receive() -> Any:
+        nonlocal seen
+        message = await request.receive()
+        if message["type"] == "http.request":
+            seen += len(message.get("body", b""))
+            if seen > ceiling:
+                raise _BodyTooLarge
+        return message
+
+    return Request(request.scope, receive)
 
 
 async def _from_multipart(
     request: Request, limit: int
-) -> tuple[dict[str, Any], int] | JSONResponse:
-    """The declared fields and the file of a multipart upload, bounded."""
-    if _declared_too_large(request, limit):
-        return _too_large(limit)
+) -> tuple[dict[str, Any], int | None] | JSONResponse:
+    """The declared fields and the file of a multipart upload, bounded as it streams in."""
+    ceiling = _body_ceiling(limit, encoded=False)
+    if _declared_too_large(request, ceiling):
+        return too_large(limit)
     try:
-        form = await request.form(max_files=2, max_fields=32, max_part_size=limit)
+        form = await _bounded(request, ceiling).form(
+            max_files=2, max_fields=32, max_part_size=limit
+        )
+    except _BodyTooLarge:
+        return too_large(limit)
     except HTTPException as exc:
         if exc.status_code == 413:
-            return _too_large(limit)
+            return too_large(limit)
         return _validation([f"multipart body could not be read: {exc.detail}"])
+    try:
+        return await _multipart_payload(form, limit)
+    finally:
+        await form.close()
+
+
+async def _multipart_payload(
+    form: Any, limit: int
+) -> tuple[dict[str, Any], int | None] | JSONResponse:
     payload: dict[str, Any] = {}
     for field in TEXT_FIELDS:
         value = form.get(field)
@@ -127,33 +168,34 @@ async def _from_multipart(
         while chunk := await upload.read(1 << 20):
             size += len(chunk)
             if size > limit:
-                await upload.close()
-                return _too_large(limit)
+                return too_large(limit)
             chunks.append(chunk)
         data = b"".join(chunks)
         payload["content_base64"] = base64.b64encode(data).decode()
         payload.setdefault("filename", upload.filename or "")
         if upload.content_type and "mime_type" not in payload:
             payload["mime_type"] = upload.content_type
-        await upload.close()
     return payload, size
 
 
-async def _from_json(request: Request, limit: int) -> tuple[dict[str, Any], int] | JSONResponse:
-    if _declared_too_large(request, limit):
-        return _too_large(limit)
+async def _from_json(
+    request: Request, limit: int
+) -> tuple[dict[str, Any], int | None] | JSONResponse:
+    ceiling = _body_ceiling(limit, encoded=True)
+    if _declared_too_large(request, ceiling):
+        return too_large(limit)
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
-        if len(body) > limit + limit // 2:
-            return _too_large(limit)
+        if len(body) > ceiling:
+            return too_large(limit)
     try:
         payload = json.loads(bytes(body) or b"{}")
     except ValueError:
         return _validation(["body: must be JSON or multipart/form-data"])
     if not isinstance(payload, dict):
         return _validation(["body: must be a JSON object"])
-    return payload, len(body)
+    return payload, None
 
 
 @router.post(

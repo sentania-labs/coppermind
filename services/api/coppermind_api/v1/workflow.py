@@ -14,6 +14,7 @@ from coppermind.store_protocol import StoreError
 from coppermind_api.auth import Principal
 from coppermind_api.deps import require_scopes, store
 from coppermind_api.errors import failure
+from coppermind_api.v1.artifacts import too_large
 
 router = APIRouter(prefix="/v1", tags=["workflow"])
 
@@ -107,10 +108,18 @@ async def drop(
             },
             403,
         )
+    ceiling = 200_000_000
+    if kind is not None:
+        try:
+            ceiling = await client.get_artifact_limit()
+        except StoreError as exc:
+            return failure(exc)
     data = bytearray()
     async for chunk in request.stream():
         data.extend(chunk)
-        if len(data) > 200_000_000:
+        if len(data) > ceiling:
+            if kind is not None:
+                return too_large(ceiling)
             return JSONResponse(
                 {"error": "payload_too_large", "message": "Dropbox limit: 200,000,000 bytes"}, 413
             )

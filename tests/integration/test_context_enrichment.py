@@ -189,30 +189,78 @@ async def test_a_kind_sidecar_added_after_the_file_was_parked_rescues_it(store):
     assert [item.filename for item in stored.items] == ["design.bin"]
 
 
-async def test_dismissing_a_parked_drop_lets_the_file_be_read_again(store):
+def receipts(context):
+    return [item for item in context.dropbox.snapshot()["items"] if item["id"]]
+
+
+async def settle(context):
+    await context.dropbox.scan()
+    context.dropbox.seen = {
+        key: (value[0], value[1] - 31) for key, value in context.dropbox.seen.items()
+    }
+    await context.dropbox.scan()
+    await context.dropbox.process()
+    await context.dropbox.process()
+
+
+async def test_a_dismissed_parked_drop_stays_dismissed_while_the_file_is_unchanged(store):
+    context = await configure(store)
+    folder = store.notes_root / "Dropbox"
+    (folder / "other").mkdir(parents=True)
+    (folder / "design.bin").write_bytes(b"not a calendar, no marker")
+    (folder / "other" / "design.bin").write_bytes(b"a different file, no marker")
+    await settle(context)
+    assert sorted(item["state"] for item in receipts(context)) == ["unsupported", "unsupported"]
+    parked = next(
+        item
+        for item in receipts(context)
+        if context.dropbox.original(item["id"]) == b"not a calendar, no marker"
+    )
+    await context.dropbox.dismiss({"id": parked["id"]})
+
+    for _ in range(3):
+        await settle(context)
+    remaining = receipts(context)
+    assert parked["id"] not in {item["id"] for item in remaining}
+    assert [item["state"] for item in remaining] == ["unsupported"]
+
+
+async def test_a_dismissed_parked_drop_returns_when_a_sidecar_is_added(store):
     context = await configure(store)
     folder = store.notes_root / "Dropbox"
     folder.mkdir(parents=True)
     (folder / "design.bin").write_bytes(b"not a calendar, no marker")
-
-    async def settle():
-        await context.dropbox.scan()
-        context.dropbox.seen = {
-            key: (value[0], value[1] - 31) for key, value in context.dropbox.seen.items()
-        }
-        await context.dropbox.scan()
-        await context.dropbox.process()
-
-    await settle()
-    (parked,) = [item for item in context.dropbox.snapshot()["items"] if item["id"]]
+    await settle(context)
+    (parked,) = receipts(context)
     await context.dropbox.dismiss({"id": parked["id"]})
-    assert [item for item in context.dropbox.snapshot()["items"] if item["id"]] == []
+    await settle(context)
+    assert receipts(context) == []
 
     (folder / "design.bin.kind").write_text("artifact\n")
-    await settle()
+    await settle(context)
 
-    states = [item["state"] for item in context.dropbox.snapshot()["items"] if item["id"]]
-    assert states == ["succeeded"]
+    assert [item["state"] for item in receipts(context)] == ["succeeded"]
+    assert [i.filename for i in (await store.list_artifacts(ArtifactQuery())).items] == [
+        "design.bin"
+    ]
+
+
+async def test_a_dismissed_parked_drop_returns_when_the_file_changes(store):
+    context = await configure(store)
+    folder = store.notes_root / "Dropbox"
+    folder.mkdir(parents=True)
+    (folder / "design.bin").write_bytes(b"not a calendar, no marker")
+    await settle(context)
+    (parked,) = receipts(context)
+    await context.dropbox.dismiss({"id": parked["id"]})
+    await settle(context)
+    assert receipts(context) == []
+
+    (folder / "design.bin").write_bytes(b"not a calendar, no marker, edited")
+    await settle(context)
+
+    (again,) = receipts(context)
+    assert again["state"] == "unsupported" and again["id"] != parked["id"]
 
 
 async def test_calendar_invitation_cannot_become_attendance_without_note_evidence(store):
