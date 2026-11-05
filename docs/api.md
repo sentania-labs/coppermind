@@ -209,7 +209,7 @@ artifact, and deleting a note leaves the artifact uncited.
 
 | Method and path | Scope | What it does | Success | Failure |
 |---|---|---|---|---|
-| `POST /v1/artifacts` | `artifacts:write` | Store a file or a link. `multipart/form-data` with a `file` part plus text fields, or JSON `{kind, url}` or `{kind, filename, content_base64}`. Fields: `kind` (required, `artifact`), `title` (defaults to the filename stem or the URL), `date` (received, `YYYY-MM-DD`, defaults to today), `tags`, `origin`, `note_id` (a note that cites it: the citation is written into its frontmatter and a link into its body), `artifact_id` (store the upload as a new revision of that artifact; earlier revisions stay), `mime_type`. Bounded at `limits.artifact_max_bytes` (10 MiB by default), read from the store and enforced before the body is buffered; a larger file is refused with 413 and needs the staged upload path, which is not built yet. Identical bytes under the same filename, or the same URL, replay | 201, `{id, kind, revision, created, path, title, note_id}`; 200 `created: false` on a replay | 422 `validation_error` (no or wrong kind, bad URL, a filename that is a path, an unknown `note_id` or `artifact_id`); 413 `payload_too_large`; 503 |
+| `POST /v1/artifacts` | `artifacts:write` | Store a file or a link. `multipart/form-data` with a `file` part plus text fields, or JSON `{kind, url}` or `{kind, filename, content_base64}`. Fields: `kind` (required, `artifact`), `title` (defaults to the filename stem or the URL), `date` (received, `YYYY-MM-DD`, defaults to today), `tags`, `origin`, `note_id` (a note that cites it: the citation is written into its frontmatter and a link into its body), `artifact_id` (store the upload as a new revision of that artifact; earlier revisions stay), `mime_type`. Bounded at `limits.artifact_max_bytes` (10 MiB by default), read from the store, measured on the decoded file bytes (base64 and multipart framing do not count) and enforced while the body streams in, so an oversize upload is stopped before it is buffered or spooled, with or without `Content-Length`; a larger file is refused with 413 and needs the staged upload path, which is not built yet. Identical bytes under the same filename, or the same URL, replay | 201, `{id, kind, revision, created, path, title, note_id}`; 200 `created: false` on a replay | 422 `validation_error` (no or wrong kind, bad URL, a filename that is a path, an unknown `note_id` or `artifact_id`); 413 `payload_too_large`; 503 |
 | `GET /v1/artifacts` | `artifacts:read` | List artifacts newest received first, filtered by `tag`, `origin`, citing `note_id`, and `from`, `to` on the received date; paged by `cursor` and `limit` | 200, page of summaries, each with `kind: artifact`, `title`, `origin`, `received_at`, `filename`, `mime_type`, `sha256`, `size_bytes`, `url`, `tags`, `path`, `revision`, `citing_note_ids`, `text_status`, `state` | 422; 503 `metadata_unavailable` |
 | `GET /v1/artifacts/{id}` | `artifacts:read` | The metadata record: everything the summary carries plus every revision and the full extracted `text`. This is the only way to read the record; it is never a page in the notes filesystem | 200 | 404 |
 | `GET /v1/artifacts/{id}/bytes` | `artifacts:read` | The archived bytes of the current revision, or of `?revision=n`, with the recorded media type when it is a plain token, `Content-Disposition: attachment`, and `X-Coppermind-SHA256` | 200 | 404; 422 for a link, which has no bytes |
@@ -356,7 +356,7 @@ separate calendars. Calendar UID binding and identity claiming are removed.
 
 | Route | Scope | Result |
 |---|---|---|
-| `POST /v1/dropbox?filename=export.zip` | `sources:write`; `kind=artifact` also needs `artifacts:write` | Binary ICS or ZIP, 202 after durable intake; 413 above 200,000,000 bytes |
+| `POST /v1/dropbox?filename=export.zip` | `sources:write`; `kind=artifact` also needs `artifacts:write` | Binary ICS or ZIP, 202 after durable intake; 413 above 200,000,000 bytes, or above `limits.artifact_max_bytes` when `kind=artifact` |
 | `GET /v1/dropbox` | `sources:read` | `{folder, items}`; each receipt has `id`, `filename`, `state`, `error`, `event_count`, `first_imported_at`, and import references in `parts`; files still being copied have state `stabilizing` and an empty `id` until accepted |
 | `POST /v1/dropbox/{id}/dismiss` | `sources:write` | Dismiss a completed, failed or unsupported receipt; 422 for pending/importing or unknown receipts |
 | `GET /v1/calendars?offset=0` | `sources:read` | Compatible `{calendar, events, contacts, offset, next_offset, totals}` response; calendar now also has `id: calendar`, `name: My calendar` |
@@ -366,7 +366,9 @@ separate calendars. Calendar UID binding and identity claiming are removed.
 Dropbox states are `pending`, `importing`, `succeeded`, `already_imported`,
 `failed`, and `unsupported`. Completed receipts expire after seven days; failed receipts remain until dismissed.
 Dismissal never deletes original exports or calendar import history. An identical
-re-drop is `already_imported` and does not create another import.
+re-drop is `already_imported` and does not create another import. A dismissed
+unsupported file stays dismissed while it sits unchanged in the folder; changing
+the file or adding a `.kind` sidecar to it brings it back.
 
 Events retain their existing fields and add `provenance`, a list of
 `{source_id, filename, entry, imported_at, legacy_calendar}` witnesses. The last
