@@ -7,6 +7,8 @@
 # conditional on a stale ETag cannot overwrite an edit made on the volume
 # while one carrying the current ETag lands, a note moved, renamed or deleted
 # on the volume converges in the scheduled scan while the API keeps answering,
+# a PDF uploaded as an artifact lands as a file under Artifacts/ and is found
+# by its text as an artifact rather than a note,
 # the operator claims Admin with the code bootstrap left on the state volume
 # and signs in and out of the protected page,
 # readiness fails honestly when PostgreSQL is stopped, and everything recovers

@@ -51,6 +51,10 @@ LABELS = {
     "git.debounce_s": "Wait after an edit before recording history (seconds)",
     "git.poll_interval_s": "Check for missed changes every (seconds)",
     "admin.session_hours": "Sign in again after (hours)",
+    "notes.artifacts_folder": "Artifacts folder (holds {yyyy}/{yyyy-mm}/ by received date)",
+    "notes.attachments_folder": "Legacy attachments folder (migrated into artifacts)",
+    "limits.artifact_max_bytes": "Maximum artifact file (bytes)",
+    "limits.attachment_max_bytes": "Legacy attachment ceiling (superseded)",
 }
 
 

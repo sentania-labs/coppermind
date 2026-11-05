@@ -277,3 +277,44 @@ def test_mutating_verbs_on_an_artifact_are_refused(api):
         )
         assert response.status_code == 405, method
         assert response.json()["error"] == "method_not_allowed"
+
+
+def test_an_upload_that_announces_an_impossible_size_is_refused_before_parsing(api):
+    client, fake = api
+    response = client.post(
+        "/v1/artifacts",
+        content=b"{}",
+        headers={
+            **_as(fake, "write"),
+            "Content-Type": "application/json",
+            "Content-Length": str(400_000_000),
+        },
+    )
+    assert response.status_code == 413
+    assert response.json()["error"] == "payload_too_large"
+    assert response.json()["limit_bytes"] == 200_000_000
+    assert fake.created == []
+
+
+def test_a_file_part_over_the_ceiling_is_refused(api, monkeypatch):
+    import coppermind_api.v1.artifacts as module
+
+    client, fake = api
+    # The ceiling leaves room for multipart framing, so the exact check is on the
+    # decoded bytes: one byte over is refused, the ceiling itself is accepted.
+    monkeypatch.setattr(module, "MAX_UPLOAD_BYTES", 1024)
+    response = client.post(
+        "/v1/artifacts",
+        files={"file": ("big.bin", b"x" * 1025)},
+        data={"kind": "artifact"},
+        headers=_as(fake, "write"),
+    )
+    assert response.status_code == 413
+    assert fake.created == []
+    small = client.post(
+        "/v1/artifacts",
+        files={"file": ("small.bin", b"x" * 1024)},
+        data={"kind": "artifact"},
+        headers=_as(fake, "write"),
+    )
+    assert small.status_code == 201

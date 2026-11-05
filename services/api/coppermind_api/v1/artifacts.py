@@ -90,8 +90,20 @@ def _messages(error: ValidationError) -> list[str]:
     return problems
 
 
+def _declared_too_large(request: Request) -> bool:
+    """Whether the request announces a body no artifact could fit in.
+
+    Multipart framing and base64 add to the file's own size, so the ceiling
+    here leaves room for them; the exact check is on the decoded bytes.
+    """
+    declared = request.headers.get("content-length", "")
+    return declared.isdigit() and int(declared) > MAX_UPLOAD_BYTES + MAX_UPLOAD_BYTES // 2
+
+
 async def _from_multipart(request: Request) -> tuple[dict[str, Any], int] | JSONResponse:
     """The declared fields and the file of a multipart upload, bounded."""
+    if _declared_too_large(request):
+        return _too_large()
     try:
         form = await request.form(max_files=2, max_fields=32, max_part_size=MAX_UPLOAD_BYTES)
     except HTTPException as exc:
@@ -108,10 +120,14 @@ async def _from_multipart(request: Request) -> tuple[dict[str, Any], int] | JSON
     size = 0
     upload = form.get("file")
     if isinstance(upload, UploadFile):
-        data = await upload.read()
-        size = len(data)
-        if size > MAX_UPLOAD_BYTES:
-            return _too_large()
+        chunks: list[bytes] = []
+        while chunk := await upload.read(1 << 20):
+            size += len(chunk)
+            if size > MAX_UPLOAD_BYTES:
+                await upload.close()
+                return _too_large()
+            chunks.append(chunk)
+        data = b"".join(chunks)
         payload["content_base64"] = base64.b64encode(data).decode()
         payload.setdefault("filename", upload.filename or "")
         if upload.content_type and "mime_type" not in payload:
@@ -121,6 +137,8 @@ async def _from_multipart(request: Request) -> tuple[dict[str, Any], int] | JSON
 
 
 async def _from_json(request: Request) -> tuple[dict[str, Any], int] | JSONResponse:
+    if _declared_too_large(request):
+        return _too_large()
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
