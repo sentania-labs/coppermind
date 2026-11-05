@@ -255,6 +255,38 @@ class GitHistory:
                     break
         self.removed = removed
 
+    def removal_commit(self, path: str, enabled: bool) -> str | None:
+        """The commit that removed `path` from the notes filesystem, if history records one.
+
+        Artifact files carry no identity in their bytes, so the question is
+        about the path alone: the newest first-parent commit that deleted it,
+        provided HEAD no longer holds that path. Unreadable or disabled history
+        answers None, which callers read as no evidence rather than as absence.
+        """
+        if not enabled:
+            return None
+        try:
+            held = self.git("ls-tree", "-z", "HEAD", "--", path)
+            if held.strip(b"\0"):
+                return None
+            commit = (
+                self.git(
+                    "log",
+                    "--first-parent",
+                    "-1",
+                    "--format=%H",
+                    "--diff-filter=D",
+                    "HEAD",
+                    "--",
+                    path,
+                )
+                .decode()
+                .strip()
+            )
+        except (HistoryUnavailable, UnicodeError):
+            return None
+        return commit if re.fullmatch(r"[0-9a-f]{40,64}", commit) else None
+
     @staticmethod
     def identity(data: bytes, key: str) -> str | None:
         try:

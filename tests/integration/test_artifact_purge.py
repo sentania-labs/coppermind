@@ -133,18 +133,44 @@ async def test_an_interrupted_artifact_purge_can_be_retried_or_abandoned(store, 
         assert await session.scalar(sa.select(sa.func.count()).select_from(Artifact)) == 0
 
 
-async def test_a_device_side_removal_never_makes_the_archive_purgeable(store):
+async def test_an_absent_copy_without_a_committed_deletion_is_never_purgeable(store):
+    """Not synced yet is not deleted: the archive stays until Git records the deletion."""
     retention(store, 0)
-    deleted = await store.create_artifact(upload("device.txt", b"deleted on a device\n"))
-    (store.notes_root / deleted.path).unlink()
-    assert (await artifacts.sweep(store))["artifacts_removed"] == 1
-    assert "device" in json.loads(manifest_path(store, deleted.id).read_text())["removed_reason"]
-    age_removal(store, deleted.id, 400)
+    absent = await store.create_artifact(upload("device.txt", b"gone from a device\n"))
+    (store.notes_root / absent.path).unlink()
+    assert (await artifacts.sweep(store))["artifacts_missing"] == 1
+    assert "removed_at" not in json.loads(manifest_path(store, absent.id).read_text())
     admin = await removed(store, "admin.txt", b"removed by the owner\n", 1)
 
     preview = await store.preview_purge()
 
     assert [(c.id, c.reason) for c in preview.candidates] == [(admin.id, "removed in Admin")]
     await store.confirm_purge(confirmation(preview))
-    assert (store.artifacts_root / deleted.id / "r0001" / "device.txt").exists()
+    assert (store.artifacts_root / absent.id / "r0001" / "device.txt").exists()
     assert not (store.artifacts_root / admin.id).exists()
+
+
+async def test_a_deletion_in_obsidian_and_an_api_removal_are_purged_with_their_reasons(store):
+    from tests.integration.test_note_recovery import commit, git
+
+    retention(store, 0)
+    obsidian = await store.create_artifact(upload("deck.txt", b"deleted in obsidian\n"))
+    git(store.notes_root, "init", "-q")
+    commit(store.notes_root)
+    (store.notes_root / obsidian.path).unlink()
+    commit(store.notes_root)
+    assert (await artifacts.sweep(store))["artifacts_removed"] == 1
+    age_removal(store, obsidian.id, 1)
+    agent = await store.create_artifact(upload("agent.txt", b"removed by an agent\n"))
+    await store.remove_artifact(agent.id, "api")
+    age_removal(store, agent.id, 1)
+
+    preview = await store.preview_purge()
+
+    assert sorted((c.id, c.reason) for c in preview.candidates) == sorted(
+        [(obsidian.id, "deleted in Obsidian"), (agent.id, "removed through the API")]
+    )
+    await store.confirm_purge(confirmation(preview))
+    assert not (store.artifacts_root / obsidian.id).exists()
+    assert not (store.artifacts_root / agent.id).exists()
+    assert not (await store.preview_purge()).candidates

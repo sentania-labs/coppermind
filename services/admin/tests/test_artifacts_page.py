@@ -102,8 +102,9 @@ class ArtifactStore:
                 return item
         raise ArtifactMissing(artifact_id)
 
-    async def remove_artifact(self, artifact_id: str) -> None:
+    async def remove_artifact(self, artifact_id: str, removal: str = "admin") -> None:
         self._check("remove_artifact")
+        assert removal == "admin"
         if artifact_id not in {item.id for item in self.records}:
             raise ArtifactMissing(artifact_id)
         self.removed.append(artifact_id)

@@ -112,10 +112,10 @@ class ArtifactStore:
             next_cursor="more",
         )
 
-    async def remove_artifact(self, artifact_id: str) -> None:
+    async def remove_artifact(self, artifact_id: str, removal: str = "admin") -> None:
         if artifact_id != ARTIFACT_ID:
             raise ArtifactMissing(artifact_id)
-        self.removed.append(artifact_id)
+        self.removed.append(f"{artifact_id}:{removal}")
 
 
 def connected(store: ArtifactStore) -> HttpStoreClient:
@@ -170,7 +170,8 @@ async def test_create_list_get_bytes_and_remove_cross_the_internal_contract():
             await client.get_artifact_bytes(ARTIFACT_ID, revision=9)
 
         await client.remove_artifact(ARTIFACT_ID)
-        assert store.removed == [ARTIFACT_ID]
+        await client.remove_artifact(ARTIFACT_ID, "api")
+        assert store.removed == [f"{ARTIFACT_ID}:admin", f"{ARTIFACT_ID}:api"]
         with pytest.raises(ArtifactMissing):
             await client.remove_artifact("gone")
     finally:

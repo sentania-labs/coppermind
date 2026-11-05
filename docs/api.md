@@ -213,7 +213,19 @@ artifact, and deleting a note leaves the artifact uncited.
 | `GET /v1/artifacts` | `artifacts:read` | List artifacts newest received first, filtered by `tag`, `origin`, citing `note_id`, and `from`, `to` on the received date; paged by `cursor` and `limit` | 200, page of summaries, each with `kind: artifact`, `title`, `origin`, `received_at`, `filename`, `mime_type`, `sha256`, `size_bytes`, `url`, `tags`, `path`, `revision`, `citing_note_ids`, `text_status`, `state` | 422; 503 `metadata_unavailable` |
 | `GET /v1/artifacts/{id}` | `artifacts:read` | The metadata record: everything the summary carries plus every revision and the full extracted `text`. This is the only way to read the record; it is never a page in the notes filesystem | 200 | 404 |
 | `GET /v1/artifacts/{id}/bytes` | `artifacts:read` | The archived bytes of the current revision, or of `?revision=n`, with the recorded media type when it is a plain token, `Content-Disposition: attachment`, and `X-Coppermind-SHA256` | 200 | 404; 422 for a link, which has no bytes |
-| `PUT`, `PATCH`, `DELETE` on `/v1/artifacts/**` | | Always refused: the archive is immutable and removal is an Admin action | | 405 `method_not_allowed` |
+| `DELETE /v1/artifacts/{id}` | `artifacts:write` | Remove an artifact the way the Admin page does, for an agent acting for the owner: the browsable copy, the record, the mirror row and the search entry go at once; the archived bytes stay under the artifact identity, marked `removed through the API`, until the retention purge removes them after its window. Citing notes keep their citation | 204 | 404 for an unknown or already removed artifact; 403 without the scope |
+| `PUT`, `PATCH` on `/v1/artifacts/**` | | Always refused: the archive is immutable; a changed file is a new revision through `POST` with `artifact_id` | | 405 `method_not_allowed` |
+
+Obsidian and the API an agent uses are the everyday interfaces; Admin is for
+oversight and repair. Deleting an artifact's file in Obsidian removes the
+artifact: once the Git helper commits that deletion, the next reconciler pass
+retires the record and the search entry, marks the archive `deleted in
+Obsidian`, and the retention purge removes the bytes after its window, the same
+as a removal from Admin or the API. A copy that is merely absent, because a
+device has not synced yet or at a rebuild from disk, is reported `missing`
+under Problems and nothing is lost: the archive stays until the copy comes back
+or the deletion is committed. Editing the file in Obsidian never changes the
+stored original; the edit is reported `modified`.
 
 `text_status` says what extraction produced: `extracted`, `no_extractable_text`
 (a readable type with nothing in it, such as an image-only PDF), `unsupported`
@@ -281,8 +293,9 @@ The calls it exposes, grouped by what they touch:
 - **Sources:** ingest (idempotent), get one, list, open one artifact,
   list the sources a note cites.
 - **Artifacts:** store one (file or link, declared kind), get its record, open
-  its bytes for a revision, list with filters, remove its projection
-  (`DELETE /internal/v1/artifacts/{id}`; the archived bytes stay).
+  its bytes for a revision, list with filters, read the inline upload limit,
+  remove its projection (`DELETE /internal/v1/artifacts/{id}?removal=admin|api`;
+  the archived bytes stay, marked with the reason).
 - **Schema and tags:** read the frontmatter schema the store enforces, with
   its file revision (`GET /internal/v1/schema`), and count notes per tag in
   the mirror, a note counting once per tag (`GET /internal/v1/tags`).

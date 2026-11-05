@@ -26,11 +26,16 @@ vertical path proved end to end, then widened.
   note cites an artifact in its `artifacts` frontmatter; filing never moves an
   artifact. Re-upload with `artifact_id` is a new revision whose bytes replace
   the browsable copy at its stable path while earlier revisions stay in the
-  archive. A browsable copy deleted on a device takes its record and search
-  entry away on the next reconciler pass; one edited on a device is reported
-  under Problems and never rewritten. Admin's Artifacts page lists every
-  artifact with its kind, origin, size and citing notes and removes one after
-  confirmation, keeping the archived bytes. `rebuild_metadata` recreates every
+  archive. Deleting the file in Obsidian removes the artifact once the Git
+  helper commits the deletion: the next reconciler pass retires the record and
+  search entry and the archive becomes eligible for the retention purge as
+  `deleted in Obsidian`; a copy merely absent (not synced yet, or at a rebuild)
+  is reported `missing` and the archive stays. One edited on a device is
+  reported under Problems and never rewritten. `DELETE /v1/artifacts/{id}`
+  (`artifacts:write`) removes one for an agent; Admin's Artifacts page lists
+  every artifact with its kind, origin, size and citing notes and removes one
+  after confirmation. Removed archives are purged through the retention
+  purge's dry run and confirm flow, each candidate showing its reason. `rebuild_metadata` recreates every
   record, row and search entry from `/data` alone. `_Attachments/` is retired:
   filing lands source material under `Artifacts/` as artifacts the note
   cites, and legacy attachment files are moved there by the reconciler with

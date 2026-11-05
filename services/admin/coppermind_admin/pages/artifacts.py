@@ -50,7 +50,7 @@ class ArtifactControl(Protocol):
 
     async def get_artifact(self, artifact_id: str) -> ArtifactRecord: ...
 
-    async def remove_artifact(self, artifact_id: str) -> None: ...
+    async def remove_artifact(self, artifact_id: str, removal: str = "admin") -> None: ...
 
 
 def _client(request: Request, wiring: Wiring) -> ArtifactControl:
@@ -102,11 +102,12 @@ def rows_html(items: list[ArtifactSummary], zone: ZoneInfo) -> str:
         return "<p>No artifacts stored yet. Upload one with <code>POST /v1/artifacts</code>.</p>"
     rows = []
     for item in items:
-        state = (
-            ' <span class="notice">browsable copy changed on a device</span>'
-            if item.state == "modified"
-            else ""
-        )
+        state = {
+            "modified": ' <span class="notice">browsable copy changed on a device</span>',
+            "missing": (
+                ' <span class="notice">browsable copy missing; deletion not in Git yet</span>'
+            ),
+        }.get(item.state, "")
         rows.append(
             "<tr>"
             f"<td><strong>{escape(item.kind)}</strong></td>"

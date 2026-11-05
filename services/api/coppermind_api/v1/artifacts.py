@@ -273,6 +273,26 @@ async def get_artifact(
         return failure(error)
 
 
+@router.delete("/{artifact_id}", status_code=204)
+async def remove_artifact(
+    artifact_id: str,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("artifacts:write")),
+) -> Response:
+    """Remove an artifact the way the Admin page does, for an agent acting for the owner.
+
+    The browsable copy, the record, the mirror row and the search entry go at
+    once; the archived bytes stay under the artifact identity, marked removed
+    through the API, until the retention purge removes them after its window.
+    Notes that cite it keep their citation.
+    """
+    try:
+        await client.remove_artifact(artifact_id, "api")
+    except StoreError as error:
+        return failure(error)
+    return Response(status_code=204)
+
+
 @router.get("/{artifact_id}/bytes")
 async def get_artifact_bytes(
     artifact_id: str,

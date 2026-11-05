@@ -93,7 +93,14 @@ RECORD_SCHEMA = 1
 REEXTRACT_PER_PASS = 10
 # Legacy attachments one pass moves into the artifacts folder.
 MIGRATE_PER_PASS = 50
+# Why an archive is marked removed. The owner's own removals, from Admin, from
+# an agent through the API, or by deleting the file in Obsidian, make the
+# archive eligible for the retention purge; nothing else does.
 REMOVED_IN_ADMIN = "removed in Admin"
+REMOVED_THROUGH_API = "removed through the API"
+DELETED_IN_OBSIDIAN = "deleted in Obsidian"
+OWNER_REMOVAL_REASONS = frozenset({REMOVED_IN_ADMIN, REMOVED_THROUGH_API, DELETED_IN_OBSIDIAN})
+REMOVAL_REASONS = {"admin": REMOVED_IN_ADMIN, "api": REMOVED_THROUGH_API}
 
 _LEGACY_ATTACHMENT = re.compile(
     r"^(?P<source>[0-7][0-9A-HJKMNP-TV-Z]{25})-r(?P<rev>\d{4})-(?P<name>.+)$"
@@ -307,6 +314,19 @@ def read_record(store: LocalStore, artifact_id: str) -> dict[str, Any] | None:
         return _read_json(record_path(store, artifact_id), "record")
     except FileNotFoundError:
         return None
+
+
+def record_is_current(document: dict[str, Any] | None, manifest: dict[str, Any]) -> bool:
+    """Whether a cached record describes this manifest's revision under this extractor.
+
+    A revision write interrupted between the manifest and the record leaves a
+    record naming the previous revision; it is regenerated, never reused.
+    """
+    return (
+        document is not None
+        and document.get("extractor_version") == EXTRACTOR_VERSION
+        and document.get("revision") == manifest.get("current_revision")
+    )
 
 
 def _extract_record(
@@ -656,7 +676,7 @@ async def _store_revision(
                 )
                 if same:
                     record = read_record(store, str(manifest["artifact_id"]))
-                    if record is None:
+                    if record is None or not record_is_current(record, manifest):
                         record = await asyncio.to_thread(_extract_record, store, manifest)
                         write_record(store, record)
                     await mirror_record(session, record, now)
@@ -830,15 +850,19 @@ async def _add_revision(
     previous = _current_revision(manifest)
     revision_dir = store.artifacts_root / artifact_id / f"r{number:04d}"
     replacement_started = False
+    created_dir = False
     try:
         if data is not None and filename is not None:
             try:
                 revision_dir.mkdir(parents=False, exist_ok=False)
             except FileExistsError as exc:
+                # Bytes an earlier interrupted write left behind are the
+                # operator's to inspect; this attempt created nothing there.
                 raise ArtifactsFilesystemUnavailable(
                     f"the artifact archive holds {revision_dir.name}, which its manifest does not "
                     "record; inspect that directory, remove it, then retry"
                 ) from exc
+            created_dir = True
             create_exclusive_bytes(revision_dir / filename, data)
             manifest["path"] = _bring_browse_current(
                 store, settings, manifest, previous, filename, data
@@ -866,7 +890,7 @@ async def _add_revision(
     except OSError as exc:
         raise ArtifactsFilesystemUnavailable(str(exc)) from exc
     finally:
-        if not replacement_started:
+        if created_dir and not replacement_started:
             shutil.rmtree(revision_dir, ignore_errors=True)
     return CreatedArtifact(
         id=artifact_id,
@@ -1115,7 +1139,12 @@ async def artifact_problems(store: LocalStore) -> list[ProblemInfo]:
                         Artifact.state,
                         Artifact.text_status,
                     )
-                    .where(sa.or_(Artifact.state == "modified", Artifact.text_status == "failed"))
+                    .where(
+                        sa.or_(
+                            Artifact.state.in_(("modified", "missing")),
+                            Artifact.text_status == "failed",
+                        )
+                    )
                     .order_by(Artifact.received_at.desc())
                 )
             ).all()
@@ -1123,6 +1152,21 @@ async def artifact_problems(store: LocalStore) -> list[ProblemInfo]:
         raise MetadataUnavailable(str(exc)) from exc
     problems = []
     for row in rows:
+        if row.state == "missing":
+            problems.append(
+                ProblemInfo(
+                    kind="artifact",
+                    reference=row.path or row.title,
+                    reason=(
+                        "The browsable copy is absent from the notes filesystem and Git has not "
+                        "recorded its deletion yet. The archive is kept. Once the Git helper "
+                        "commits the deletion the artifact is retired as deleted in Obsidian and "
+                        "becomes eligible for the retention purge; a copy that comes back clears "
+                        "this."
+                    ),
+                    artifact_id=row.id,
+                )
+            )
         if row.state == "modified":
             problems.append(
                 ProblemInfo(
@@ -1155,22 +1199,30 @@ async def artifact_problems(store: LocalStore) -> list[ProblemInfo]:
 # Removal, sweep and recovery
 
 
-async def remove_artifact(store: LocalStore, artifact_id: str) -> None:
+async def remove_artifact(
+    store: LocalStore, artifact_id: str, *, reason: str = REMOVED_IN_ADMIN
+) -> None:
     """Take the projection away: the browsable copy, the record, the row and the index.
 
     The archived bytes stay under their identity, marked removed in the
-    manifest, until the retention purge rules decide otherwise. A browsable
-    copy a device changed is left where it is, because it is no longer the
-    bytes this store put there.
+    manifest with the reason, until the retention purge removes them. A
+    browsable copy a device changed is left where it is, because it is no
+    longer the bytes this store put there.
     """
     async with store._artifact_lock:
         manifest = await asyncio.to_thread(read_manifest, store, artifact_id)
         if manifest.get("removed_at"):
             raise ArtifactMissing(artifact_id)
-        await _retire(store, manifest, reason=REMOVED_IN_ADMIN)
+        await _retire(store, manifest, reason=reason)
 
 
-async def _retire(store: LocalStore, manifest: dict[str, Any], *, reason: str) -> None:
+async def _retire(
+    store: LocalStore,
+    manifest: dict[str, Any],
+    *,
+    reason: str,
+    removal_commit: str | None = None,
+) -> None:
     artifact_id = str(manifest["artifact_id"])
     current = _current_revision(manifest)
     now = datetime.now(tz=UTC)
@@ -1192,6 +1244,8 @@ async def _retire(store: LocalStore, manifest: dict[str, Any], *, reason: str) -
                     raise NotesFilesystemUnavailable(str(exc)) from exc
             manifest["removed_at"] = now.isoformat()
             manifest["removed_reason"] = reason
+            if removal_commit is not None:
+                manifest["removal_commit"] = removal_commit
             try:
                 _write_manifest(store, manifest, new=False)
                 record_path(store, artifact_id).unlink(missing_ok=True)
@@ -1210,13 +1264,24 @@ async def _retire(store: LocalStore, manifest: dict[str, Any], *, reason: str) -
 async def sweep(store: LocalStore, *, full: bool = False) -> dict[str, int]:
     """What one reconciler pass does for artifacts, after the notes converged.
 
-    A browsable copy observed gone takes its record and search entry with it
-    on this pass. A copy whose size or mtime moved is hashed: one that no
-    longer matches the archive is reported `modified`, never rewritten. A
-    record carrying an older extractor version is regenerated, a bounded
-    number per pass. Legacy attachments are moved into the artifacts folder.
+    A browsable copy observed gone is read as the owner deleting the artifact
+    in Obsidian only once Git records that deletion: the artifact is then
+    retired, record and search entry with it, and its archive becomes eligible
+    for the retention purge. A copy that is merely absent, because a device
+    has not synced yet or the deletion is not committed, is reported `missing`
+    and nothing else changes, so the original is never lost to a late sync.
+    A copy whose size or mtime moved is hashed: one that no longer matches the
+    archive is reported `modified`, never rewritten. A record carrying an
+    older extractor version, or describing an older revision than the
+    manifest, is regenerated, a bounded number per pass. Legacy attachments
+    are moved into the artifacts folder.
     """
-    counts = {"artifacts_removed": 0, "artifacts_modified": 0, "artifacts_reextracted": 0}
+    counts = {
+        "artifacts_removed": 0,
+        "artifacts_missing": 0,
+        "artifacts_modified": 0,
+        "artifacts_reextracted": 0,
+    }
     settings = store.control.settings()
     try:
         async with store.session_factory() as session:
@@ -1253,7 +1318,7 @@ async def sweep(store: LocalStore, *, full: bool = False) -> dict[str, int]:
                 counts["artifacts_removed"] += 1
                 continue
             document = read_record(store, row.id)
-            if document is None or document.get("extractor_version") != EXTRACTOR_VERSION:
+            if not record_is_current(document, manifest):
                 if document is not None and reextracted >= REEXTRACT_PER_PASS:
                     continue
                 document = await asyncio.to_thread(
@@ -1264,18 +1329,33 @@ async def sweep(store: LocalStore, *, full: bool = False) -> dict[str, int]:
                     await mirror_record(session, document, datetime.now(tz=UTC))
                 reextracted += 1
                 counts["artifacts_reextracted"] += 1
+            assert document is not None
             if row.path:
                 outcome = await asyncio.to_thread(_observe_browse, store, manifest, document, full)
                 if outcome == "gone":
-                    await _retire(store, manifest, reason="browsable copy removed on a device")
-                    counts["artifacts_removed"] += 1
-                elif outcome in {"modified", "ok"} and outcome != document.get("state", "ok"):
+                    commit = await asyncio.to_thread(
+                        store.note_history.removal_commit,
+                        str(manifest["path"]),
+                        settings.git.enabled,
+                    )
+                    if commit is not None:
+                        await _retire(
+                            store, manifest, reason=DELETED_IN_OBSIDIAN, removal_commit=commit
+                        )
+                        counts["artifacts_removed"] += 1
+                        continue
+                    outcome = "missing"
+                if outcome in {"missing", "modified", "ok"} and outcome != document.get(
+                    "state", "ok"
+                ):
                     document["state"] = outcome
                     write_record(store, document)
                     async with transaction(store.session_factory) as session:
                         await mirror_record(session, document, datetime.now(tz=UTC))
                     if outcome == "modified":
                         counts["artifacts_modified"] += 1
+                    elif outcome == "missing":
+                        counts["artifacts_missing"] += 1
     if (store.notes_root / sanitize_folder(settings.notes.attachments_folder)).is_dir():
         counts.update(await migrate_attachments(store))
     return counts
@@ -1308,9 +1388,11 @@ async def recover_artifacts(store: LocalStore) -> dict[str, int]:
     """Rebuild every record and row from the archive, for `rebuild_metadata`.
 
     Every archive is verified before any row is written; a damaged archive is an
-    error, not something to mirror. An artifact whose browsable copy is gone is
-    retired, because a person removed it; one whose record is missing or stale
-    is re-extracted. The search entries follow from the records in the index
+    error, not something to mirror. An artifact whose browsable copy is absent
+    comes back as `missing`, never retired: a rebuild cannot tell a deletion
+    from a volume that has not synced yet, and the next sweep retires it only
+    once Git records the deletion. A record that is missing or stale is
+    re-extracted. The search entries follow from the records in the index
     rebuild that runs after this.
     """
     verified: list[dict[str, Any]] = []
@@ -1334,7 +1416,7 @@ async def recover_artifacts(store: LocalStore) -> dict[str, int]:
         verified.append(manifest)
     now = datetime.now(tz=UTC)
     recovered = 0
-    removed = 0
+    missing = 0
     async with store._artifact_lock:
         for manifest in verified:
             artifact_id = str(manifest["artifact_id"])
@@ -1344,20 +1426,24 @@ async def recover_artifacts(store: LocalStore) -> dict[str, int]:
                 record_path(store, artifact_id).unlink(missing_ok=True)
                 continue
             document = read_record(store, artifact_id)
+            state = str((document or {}).get("state", "ok"))
             if manifest.get("path"):
                 try:
                     present = resolve(store.notes_root, str(manifest["path"])).is_file()
                 except ValueError:
                     present = False
                 if not present:
-                    await _retire(store, manifest, reason="browsable copy absent at rebuild")
-                    removed += 1
-                    continue
-            if document is None or document.get("extractor_version") != EXTRACTOR_VERSION:
-                document = await asyncio.to_thread(
-                    _extract_record, store, manifest, state=str((document or {}).get("state", "ok"))
-                )
+                    state = "missing"
+                    missing += 1
+                elif state == "missing":
+                    state = "ok"
+            if not record_is_current(document, manifest):
+                document = await asyncio.to_thread(_extract_record, store, manifest, state=state)
                 write_record(store, document)
+            elif document is not None and document.get("state") != state:
+                document["state"] = state
+                write_record(store, document)
+            assert document is not None
             async with transaction(store.session_factory) as session:
                 await mirror_record(session, document, now)
             recovered += 1
@@ -1369,7 +1455,7 @@ async def recover_artifacts(store: LocalStore) -> dict[str, int]:
                 statement = statement.where(Artifact.id.not_in(known))
             for artifact_id in (await session.scalars(statement)).all():
                 await _remove_rows(session, artifact_id, now)
-    return {"recovered_artifacts": recovered, "retired_artifacts": removed}
+    return {"recovered_artifacts": recovered, "missing_artifact_copies": missing}
 
 
 async def migrate_attachments(store: LocalStore) -> dict[str, int]:
@@ -1391,6 +1477,7 @@ async def migrate_attachments(store: LocalStore) -> dict[str, int]:
     except OSError as exc:
         raise NotesFilesystemUnavailable(str(exc)) from exc
     legacy = [(p, m) for p in files if (m := _LEGACY_ATTACHMENT.match(p.name)) is not None]
+    registered: list[Path] = []
     for path, match in legacy[:MIGRATE_PER_PASS]:
         source_id = match.group("source")
         revision_number = int(match.group("rev"))
@@ -1420,15 +1507,23 @@ async def migrate_attachments(store: LocalStore) -> dict[str, int]:
         )
         old_relative = path.relative_to(store.notes_root).as_posix()
         repointed.append((source_id, name, new_path, old_relative))
+        registered.append(path)
+    # Every reference moves before any input goes: a repoint that fails leaves
+    # the legacy files for the next pass, which registers the same artifacts
+    # again as replays and tries the references again.
+    if repointed:
+        await _repoint_notes(store, repointed, settings)
+    for path in registered:
         try:
             path.unlink()
             sync_directory(path.parent)
         except OSError as exc:
             raise NotesFilesystemUnavailable(str(exc)) from exc
         moved += 1
-        log.info("legacy attachment moved into the artifacts folder", path=old_relative)
-    if repointed:
-        await _repoint_notes(store, repointed, settings)
+        log.info(
+            "legacy attachment moved into the artifacts folder",
+            path=path.relative_to(store.notes_root).as_posix(),
+        )
     for folder in sorted((p for p in legacy_root.rglob("*") if p.is_dir()), reverse=True):
         with contextlib.suppress(OSError):
             folder.rmdir()

@@ -67,6 +67,7 @@ from coppermind.store_protocol import (
     ArtifactId,
     ArtifactQuery,
     ArtifactRecord,
+    ArtifactRemoval,
     ArtifactSummary,
     CreateArtifact,
     CreatedArtifact,
@@ -415,10 +416,12 @@ class LocalStore:
     async def get_artifact_limit(self) -> int:
         return self.control.settings().limits.artifact_max_bytes
 
-    async def remove_artifact(self, artifact_id: ArtifactId) -> None:
-        from coppermind_store.artifacts import remove_artifact
+    async def remove_artifact(
+        self, artifact_id: ArtifactId, removal: ArtifactRemoval = "admin"
+    ) -> None:
+        from coppermind_store.artifacts import REMOVAL_REASONS, remove_artifact
 
-        await remove_artifact(self, artifact_id)
+        await remove_artifact(self, artifact_id, reason=REMOVAL_REASONS[removal])
 
     async def _artifact_links(
         self, frontmatter: dict[str, Any], current: dict[str, Any] | None = None

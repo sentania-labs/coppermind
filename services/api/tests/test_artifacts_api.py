@@ -49,6 +49,7 @@ class FakeStore:
     def __init__(self) -> None:
         self.created: list[CreateArtifact] = []
         self.sizes: list[int | None] = []
+        self.removed: list[tuple[str, str]] = []
         self.limit = 10 * 1024 * 1024
         created = datetime(2026, 9, 8, tzinfo=UTC)
         self.write_record, self.write_key = create_key(
@@ -97,6 +98,11 @@ class FakeStore:
             size_bytes=4,
             content=b"PK\x03\x04",
         )
+
+    async def remove_artifact(self, artifact_id: str, removal: str = "admin") -> None:
+        if artifact_id != ARTIFACT_ID:
+            raise ArtifactMissing(artifact_id)
+        self.removed.append((artifact_id, removal))
 
     async def list_artifacts(self, query: ArtifactQuery) -> Page[ArtifactSummary]:
         self.query = query
@@ -273,14 +279,33 @@ def test_a_recorded_type_never_reaches_a_response_header(api):
     )
 
 
-def test_mutating_verbs_on_an_artifact_are_refused(api):
+def test_put_and_patch_on_an_artifact_are_refused(api):
+    """The archive is immutable: a changed file is a new revision through POST."""
     client, fake = api
-    for method in ("put", "patch", "delete"):
+    for method in ("put", "patch"):
         response = getattr(client, method)(
             f"/v1/artifacts/{ARTIFACT_ID}", headers=_as(fake, "write")
         )
         assert response.status_code == 405, method
         assert response.json()["error"] == "method_not_allowed"
+    assert fake.removed == []
+
+
+def test_an_agent_removes_an_artifact_through_the_api_with_the_write_scope(api):
+    """Admin is break glass; everyday removal goes through the API an agent uses."""
+    client, fake = api
+    for which in ("read", "notes"):
+        refused = client.delete(f"/v1/artifacts/{ARTIFACT_ID}", headers=_as(fake, which))
+        assert refused.status_code == 403, which
+    assert client.delete(f"/v1/artifacts/{ARTIFACT_ID}").status_code == 401
+    assert fake.removed == []
+    removed = client.delete(f"/v1/artifacts/{ARTIFACT_ID}", headers=_as(fake, "write"))
+    assert removed.status_code == 204
+    assert removed.content == b""
+    assert fake.removed == [(ARTIFACT_ID, "api")]
+    missing = client.delete("/v1/artifacts/nope", headers=_as(fake, "write"))
+    assert missing.status_code == 404
+    assert missing.json()["error"] == "not_found"
 
 
 def test_an_upload_that_announces_an_impossible_size_is_refused_before_parsing(api):

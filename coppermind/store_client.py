@@ -24,6 +24,7 @@ from coppermind.store_protocol import (
     ArtifactNotFound,
     ArtifactQuery,
     ArtifactRecord,
+    ArtifactRemoval,
     ArtifactsFilesystemUnavailable,
     ArtifactSummary,
     CreateArtifact,
@@ -372,8 +373,14 @@ class HttpStoreClient:
         )
         return Page[ArtifactSummary].model_validate(response.json())
 
-    async def remove_artifact(self, artifact_id: ArtifactId) -> None:
-        await self._send("DELETE", f"{INTERNAL_PREFIX}/artifacts/{_segment(artifact_id)}")
+    async def remove_artifact(
+        self, artifact_id: ArtifactId, removal: ArtifactRemoval = "admin"
+    ) -> None:
+        await self._send(
+            "DELETE",
+            f"{INTERNAL_PREFIX}/artifacts/{_segment(artifact_id)}",
+            params={"removal": removal},
+        )
 
     async def get_artifact_limit(self) -> int:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/artifacts/limit")

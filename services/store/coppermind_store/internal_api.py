@@ -19,6 +19,7 @@ from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
 from coppermind.store_protocol import (
     ArtifactQuery,
     ArtifactRecord,
+    ArtifactRemoval,
     ArtifactSummary,
     CreateArtifact,
     CreatedArtifact,
@@ -394,9 +395,13 @@ async def get_artifact_bytes(
 
 
 @router.delete("/artifacts/{artifact_id}", status_code=204)
-async def remove_artifact(artifact_id: str, request: Request) -> Response:
+async def remove_artifact(
+    artifact_id: str,
+    request: Request,
+    removal: Annotated[ArtifactRemoval, Query()] = "admin",
+) -> Response:
     try:
-        await _store(request).remove_artifact(artifact_id)
+        await _store(request).remove_artifact(artifact_id, removal)
     except StoreError as error:
         return _failure(error)
     return Response(status_code=204)

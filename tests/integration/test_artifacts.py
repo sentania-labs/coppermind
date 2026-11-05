@@ -27,6 +27,7 @@ from coppermind.store_protocol import (
     CreateArtifact,
     CreateNote,
     IngestArtifact,
+    MetadataUnavailable,
     PatchFrontmatter,
     ReplaceNote,
     SearchQuery,
@@ -124,30 +125,110 @@ async def test_search_can_leave_artifact_hits_out(store):
     assert await hits(store, "quokka", kind="artifact", include_artifacts=False) == []
 
 
-async def test_deleting_the_browsable_copy_takes_the_record_and_search_on_the_next_pass(
+async def test_deleting_the_file_in_obsidian_retires_the_artifact_once_git_records_it(
     store, tmp_path
 ):
+    """The owner's delete in Obsidian is the deletion the Git helper commits, nothing less."""
+    from tests.integration.test_note_recovery import commit, git
+
     data = pptx_bytes(tmp_path, "Enablement deck", "Platypus enablement")
     created = await store.create_artifact(upload("enablement.pptx", data))
     await store.create_artifact(
         CreateArtifact(kind="artifact", url="https://example.test/wombat", title="Wombat paper")
     )
+    git(store.notes_root, "init", "-q")
+    commit(store.notes_root)
     assert await hits(store, "platypus")
     (store.notes_root / created.path).unlink()
 
+    # Absent but not committed: a device may simply not have synced yet.
     swept = await artifacts.sweep(store)
+    assert swept["artifacts_missing"] == 1 and swept["artifacts_removed"] == 0
+    assert record_path(store, created.id).exists()
+    assert (await store.get_artifact(created.id)).state == "missing"
+    problems = [p for p in await store.get_problems() if p.artifact_id == created.id]
+    assert problems and "Git has not recorded its deletion" in problems[0].reason
+    assert "removed_at" not in json.loads(
+        (store.artifacts_root / created.id / "manifest.json").read_text()
+    )
+    assert await hits(store, "platypus")
 
+    # Committed: the artifact is gone on the next pass, the archive marked for purge.
+    removal = commit(store.notes_root)
+    swept = await artifacts.sweep(store)
     assert swept["artifacts_removed"] == 1
     assert not record_path(store, created.id).exists()
     assert await hits(store, "platypus") == []
     with pytest.raises(ArtifactMissing):
         await store.get_artifact(created.id)
+    manifest = json.loads((store.artifacts_root / created.id / "manifest.json").read_text())
+    assert manifest["removed_reason"] == artifacts.DELETED_IN_OBSIDIAN
+    assert manifest["removal_commit"] == removal
     # Nothing else changed: the other artifact, and the archived bytes, are still there.
     assert await hits(store, "wombat")
     assert (store.artifacts_root / created.id / "r0001" / "enablement.pptx").read_bytes() == data
-    manifest = json.loads((store.artifacts_root / created.id / "manifest.json").read_text())
-    assert manifest["removed_at"] and "device" in manifest["removed_reason"]
     assert (await store.get_status()).counters.artifacts == 1
+
+
+async def test_a_copy_that_comes_back_clears_missing_and_a_rebuild_never_retires(store, tmp_path):
+    data = pptx_bytes(tmp_path, "Deck", "Returning quoll")
+    created = await store.create_artifact(upload("deck.pptx", data))
+    (store.notes_root / created.path).unlink()
+    assert (await artifacts.sweep(store))["artifacts_missing"] == 1
+
+    counts = (await store.rebuild_metadata()).counts
+    assert counts["recovered_artifacts"] == 1 and counts["missing_artifact_copies"] == 1
+    assert (await store.get_artifact(created.id)).state == "missing"
+    assert (store.artifacts_root / created.id / "r0001" / "deck.pptx").read_bytes() == data
+
+    (store.notes_root / created.path).write_bytes(data)
+    await artifacts.sweep(store)
+    assert (await store.get_artifact(created.id)).state == "ok"
+    assert not [p for p in await store.get_problems() if p.artifact_id == created.id]
+
+
+async def test_a_refused_revision_never_deletes_an_unrecorded_revision_directory(store, tmp_path):
+    """Bytes an interrupted write left behind are the operator's to inspect, not ours to erase."""
+    from coppermind.store_protocol import ArtifactsFilesystemUnavailable
+
+    created = await store.create_artifact(upload("deck.pptx", pptx_bytes(tmp_path, "D", "one")))
+    stray = store.artifacts_root / created.id / "r0002"
+    stray.mkdir()
+    (stray / "leftover.pptx").write_bytes(b"left behind")
+
+    with pytest.raises(ArtifactsFilesystemUnavailable, match="r0002"):
+        await store.create_artifact(
+            upload("deck.pptx", pptx_bytes(tmp_path, "D", "two"), artifact_id=created.id)
+        )
+
+    assert (stray / "leftover.pptx").read_bytes() == b"left behind"
+    assert (await store.get_artifact(created.id)).revision == 1
+
+
+async def test_a_record_describing_an_older_revision_is_regenerated(store, tmp_path):
+    """A revision write interrupted between the manifest and the record leaves a stale record."""
+    one = pptx_bytes(tmp_path, "Deck", "Version one numbat")
+    two = pptx_bytes(tmp_path, "Deck", "Version two numbat")
+    created = await store.create_artifact(upload("deck.pptx", one))
+    await store.create_artifact(upload("deck.pptx", two, artifact_id=created.id))
+    path = record_path(store, created.id)
+    stale = json.loads(path.read_text())
+    stale["revision"] = 1
+    stale["text"] = "Version one numbat"
+    path.write_text(json.dumps(stale))
+
+    replay = await store.create_artifact(upload("deck.pptx", two, artifact_id=created.id))
+    assert replay.created is False and replay.revision == 2
+    refreshed = json.loads(path.read_text())
+    assert refreshed["revision"] == 2 and "two" in refreshed["text"]
+
+    path.write_text(json.dumps(stale))
+    assert (await artifacts.sweep(store))["artifacts_reextracted"] == 1
+    assert json.loads(path.read_text())["revision"] == 2
+    path.write_text(json.dumps(stale))
+    await store.rebuild_metadata()
+    assert json.loads(path.read_text())["revision"] == 2
+    assert (await store.get_artifact(created.id)).text.count("two") >= 1
 
 
 async def test_a_note_that_cites_an_artifact_links_it_files_by_month_and_lists_as_citing(
@@ -339,7 +420,9 @@ async def test_filing_a_source_pdf_lands_it_under_artifacts_and_cites_it(store):
     assert (await store.list_artifacts(ArtifactQuery())).items[0].id == artifact.id
 
 
-async def test_legacy_attachments_move_into_the_artifacts_folder_and_notes_follow(store):
+async def test_legacy_attachments_move_into_the_artifacts_folder_and_notes_follow(
+    store, monkeypatch
+):
     request = ingest_request("legacy")
     request.source.artifacts.append(
         IngestArtifact(
@@ -359,6 +442,17 @@ async def test_legacy_attachments_move_into_the_artifacts_folder_and_notes_follo
         )
     )
 
+    def repoint_fails(*args, **kwargs):
+        raise MetadataUnavailable("simulated outage during repointing")
+
+    monkeypatch.setattr(artifacts, "_repoint_notes", repoint_fails)
+    with pytest.raises(MetadataUnavailable):
+        await artifacts.migrate_attachments(store)
+    # Nothing was deleted before every reference moved, so the next pass can finish.
+    assert (store.notes_root / legacy).read_bytes() == b"jpeg"
+    assert f"![[{legacy}]]" in (await store.get_note(note.id)).body
+    monkeypatch.undo()
+
     counts = await artifacts.migrate_attachments(store)
 
     assert counts == {"attachments_migrated": 1}
@@ -375,6 +469,7 @@ async def test_legacy_attachments_move_into_the_artifacts_folder_and_notes_follo
     # A second pass has nothing left to do.
     assert await artifacts.sweep(store) == {
         "artifacts_removed": 0,
+        "artifacts_missing": 0,
         "artifacts_modified": 0,
         "artifacts_reextracted": 0,
     }

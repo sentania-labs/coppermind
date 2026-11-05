@@ -553,8 +553,12 @@ class CreateArtifact(BaseModel):
 ArtifactTextStatus = Literal["extracted", "no_extractable_text", "unsupported", "failed", "link"]
 """What text extraction produced for the stored bytes."""
 
-ArtifactState = Literal["ok", "modified"]
-"""`modified` means the browsable copy no longer hashes to the archived bytes."""
+ArtifactState = Literal["ok", "modified", "missing"]
+"""`modified` means the browsable copy no longer hashes to the archived bytes; `missing`
+means it is absent from the notes filesystem without a committed deletion in Git yet."""
+
+ArtifactRemoval = Literal["admin", "api"]
+"""Who removed an artifact through Coppermind: the Admin page, or an agent through the API."""
 
 
 class ArtifactRevision(BaseModel):
@@ -1069,7 +1073,9 @@ class Store(Protocol):
 
     async def list_artifacts(self, query: ArtifactQuery) -> Page[ArtifactSummary]: ...
 
-    async def remove_artifact(self, artifact_id: ArtifactId) -> None: ...
+    async def remove_artifact(
+        self, artifact_id: ArtifactId, removal: ArtifactRemoval = "admin"
+    ) -> None: ...
 
     async def get_artifact_limit(self) -> int: ...
 
