@@ -535,7 +535,14 @@ async def reconcile_once(
 
                             receipt, reason = vanished_receipt(store, row)
                             if receipt is None and reason:
-                                values = {"state": "missing", "state_reason": reason}
+                                values = {
+                                    key: value
+                                    for key, value in {
+                                        "state": "missing",
+                                        "state_reason": reason,
+                                    }.items()
+                                    if getattr(row, key) != value
+                                }
                         if receipt is not None:
                             values = {
                                 "state": "deleted",

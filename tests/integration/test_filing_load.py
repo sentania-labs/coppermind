@@ -171,7 +171,70 @@ async def test_removal_in_filing_has_receipt_or_explained_missing(store, monkeyp
         assert "vanished between filing paths" in row.state_reason
         assert row.content_hash in row.state_reason
         assert any(p.kind == "missing" and p.note_id == row.id for p in await store.get_problems())
+        assert (await reconcile_once(store))["missing"] == 0
+        assert (await store.list_notes(NoteQuery(state=state))).items[0].state_reason == (
+            row.state_reason
+        )
     assert (await store.get_status()).counters.filing_failures == 0
+
+
+async def test_settled_note_deleted_before_git_is_missing_without_a_filing_claim(store):
+    note = await store.create_note(
+        CreateNote(
+            title="Settled",
+            frontmatter={"date": "2026-09-01", "type": "reference", "reviewed": True},
+        )
+    )
+    assert (await filing.file_reviewed(store))["filed"] == 1
+    assert (await filing.file_reviewed(store))["filed"] == 0
+    (store.notes_root / (await store.get_note(note.id)).path).unlink()
+    assert (await reconcile_once(store))["missing"] == 1
+    row = (await store.list_notes(NoteQuery(state="missing"))).items[0]
+    assert row.id == note.id
+    assert "between filing paths" not in row.state_reason
+    assert (await reconcile_once(store))["missing"] == 0
+
+
+async def test_listing_stale_rows_walks_the_tree_once(store, monkeypatch):
+    ids = [
+        (
+            await store.create_note(
+                CreateNote(title=f"Gone {i}", frontmatter={"type": "reference"})
+            )
+        ).id
+        for i in range(5)
+    ]
+    for note_id in ids:
+        (store.notes_root / (await store.get_note(note_id)).path).unlink()
+    scans = 0
+    original = type(store)._scan_identities
+
+    def counted(self):
+        nonlocal scans
+        scans += 1
+        return original(self)
+
+    monkeypatch.setattr(type(store), "_scan_identities", counted)
+    assert (await store.list_notes(NoteQuery(state="ok"))).items == []
+    assert scans == 1
+
+
+async def test_finalize_runs_even_when_filing_cannot_proceed(store, monkeypatch):
+    from coppermind_store import note_lifecycle
+
+    await store.context.setup_lifecycle({"revision": 0})
+    result = await store.ingest(ingest_request())
+    note = await store.get_note(result.note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
+    )
+    for source_id in note.sources:
+        (store.sources_root / source_id / "manifest.json").unlink()
+    assert (await filing.file_reviewed(store))["filing_failed"] == 1
+    later = note_lifecycle.clock.monotonic() + 31
+    monkeypatch.setattr(note_lifecycle.clock, "monotonic", lambda: later)
+    assert (await filing.file_reviewed(store))["filing_failed"] == 1
+    assert note.id in store.context.read("finalized", {})
 
 
 async def test_filing_link_rewrite_does_not_restart_stability_wait(store, monkeypatch):

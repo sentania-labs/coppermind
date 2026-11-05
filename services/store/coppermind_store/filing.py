@@ -69,6 +69,8 @@ def vanished_receipt(store, row):
     try:
         plan = json.loads(path.read_bytes())
         copies = plan.get("copies", [])
+        if plan.get("complete") and not copies:
+            return None, None
         current = next((c for c in reversed(copies) if c["hash"] == row.content_hash), None)
         if current is None:
             return None, reason + "; no matching filing copy is available"
@@ -137,6 +139,14 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     note = await store.get_note(note_id)
     if note.frontmatter.get(schema.role("reviewed_key")) is not True:
         return False
+    journal = store.control.store.state_dir / "filing" / f"{note_id}.json"
+    plan = json.loads(journal.read_bytes()) if journal.exists() else None
+    if store.context.config().lifecycle_enabled and (
+        not plan
+        or plan.get("content_hash") != note.content_hash
+        or not await store.context.lifecycle.follow(note)
+    ):
+        await store.context.lifecycle.finalize(note)
     problem = date_field_problem(note.frontmatter, schema)
     if problem:
         raise ValueError(problem)
@@ -151,8 +161,6 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     if day is None:
         raise ValueError("a note date is required in date")
     folder = day.strftime("%Y-%m")
-    journal = store.control.store.state_dir / "filing" / f"{note_id}.json"
-    plan = json.loads(journal.read_bytes()) if journal.exists() else None
     manifests = {}
     for source_id in sorted(set(note.sources)):
         if not is_valid_id(source_id):
@@ -171,12 +179,6 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         )
         review = {"reviewed": True, "sources": approved}
         _save(review_path, review)
-    if store.context.config().lifecycle_enabled and (
-        not plan
-        or plan.get("content_hash") != note.content_hash
-        or not await store.context.lifecycle.follow(note)
-    ):
-        await store.context.lifecycle.finalize(note)
     same_filing = (
         plan
         and plan.get("complete")

@@ -513,15 +513,18 @@ class LocalStore:
     async def get_note(self, note_id: NoteId) -> NoteDocument:
         return await self._with_filing_state(await self._read_current(note_id))
 
-    async def _read_current(self, note_id: NoteId) -> NoteDocument:
+    async def _read_current(
+        self, note_id: NoteId, identities: _Identities | None = None
+    ) -> NoteDocument:
+        identities = identities or _Identities(self)
         async with self._lock_for(note_id):
-            relative, path = await self._locate(note_id)
+            relative, path = await self._locate(note_id, identities)
             data, mtime = _read(note_id, path)
             schema = self.control.schema()
             try:
                 frontmatter, body = _parse(note_id, relative, data, schema)
             except NotFound:
-                matches = await asyncio.to_thread(self._find_identity, note_id)
+                matches = await identities.of(note_id)
                 if len(matches) != 1:
                     raise
                 path = matches[0]
@@ -567,6 +570,7 @@ class LocalStore:
                         sa.text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                     )
                 predicates = await conditions(self, query, session)
+                identities = _Identities(self)
                 while len(matched) < wanted:
                     statement = (
                         sa.select(Note).where(*predicates).order_by(Note.id).limit(batch_size)
@@ -585,7 +589,7 @@ class LocalStore:
                             continue
                         if row.state == "ok":
                             try:
-                                await self._read_current(row.id)
+                                await self._read_current(row.id, identities)
                             except (NotFound, NoteUnparseable):
                                 continue
                         for key, value in filing_state(self, summary.id).items():
@@ -1417,7 +1421,9 @@ class LocalStore:
             raise MetadataUnavailable(str(exc)) from exc
         return document.model_copy(update={"filed": bool(filed), **filing_state(self, document.id)})
 
-    async def _locate(self, note_id: NoteId) -> tuple[str, Path]:
+    async def _locate(
+        self, note_id: NoteId, identities: _Identities | None = None
+    ) -> tuple[str, Path]:
         """Return the note's relative path and its absolute path.
 
         The path lives in PostgreSQL, so this is one of the reads that a
@@ -1446,7 +1452,7 @@ class LocalStore:
         if not is_note_file(path):
             # A move can become visible before its mirror transaction commits.
             # Follow the identity, never a filename alone or a different note.
-            matches = await asyncio.to_thread(self._find_identity, note_id)
+            matches = await (identities or _Identities(self)).of(note_id)
             if len(matches) != 1:
                 raise NotFound(note_id)
             path = matches[0]
@@ -1489,10 +1495,10 @@ class LocalStore:
         else:
             record_path_notice(self, note_id, previous, observed)
 
-    def _find_identity(self, note_id: str) -> list[Path]:
+    def _scan_identities(self) -> dict[str, list[Path]]:
         from coppermind_store.reconciler import _IGNORED_DIRECTORIES, _path_exclusion, _walk
 
-        matches = []
+        found: dict[str, list[Path]] = {}
         key = self.control.schema().role("id_key")
         settings = self.control.settings()
         for candidate in _walk(self.notes_root):
@@ -1507,14 +1513,27 @@ class LocalStore:
                 continue
             try:
                 safe = resolve(self.notes_root, relative.as_posix())
-                if (
-                    is_note_file(safe)
-                    and self.note_history.identity(safe.read_bytes(), key) == note_id
-                ):
-                    matches.append(safe)
+                if not is_note_file(safe):
+                    continue
+                identity = self.note_history.identity(safe.read_bytes(), key)
             except (OSError, ValueError):
                 continue
-        return matches
+            if identity is not None:
+                found.setdefault(identity, []).append(safe)
+        return found
+
+
+class _Identities:
+    """Where each note identity currently sits, read from the tree at most once."""
+
+    def __init__(self, store: LocalStore) -> None:
+        self._store = store
+        self._found: dict[str, list[Path]] | None = None
+
+    async def of(self, note_id: str) -> list[Path]:
+        if self._found is None:
+            self._found = await asyncio.to_thread(self._store._scan_identities)
+        return self._found.get(note_id, [])
 
 
 def _parse(
