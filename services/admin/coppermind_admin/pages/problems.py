@@ -199,8 +199,8 @@ Preserved sources<strong>{counters.sources}</strong></div>
 async def overview_counters(request: Request, wiring: Wiring) -> str:
     from coppermind_admin.pages.search_index import _zone
 
-    client = store_client(request, wiring)
     try:
+        client = store_client(request, wiring)
         status = await client.get_status()
         counters = status.counters
         notices = (
