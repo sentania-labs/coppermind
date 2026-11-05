@@ -68,6 +68,7 @@ from coppermind.store_protocol import (
     PayloadTooLarge,
     ProblemInfo,
     ProjectionNotPlaced,
+    ReconcilerNotice,
     SourceArtifactDocument,
     SourceClaimMissing,
     SourceManifest,
@@ -1193,6 +1194,33 @@ def _review_prefix(store: LocalStore) -> str:
 PURGE_PROBLEM_KINDS = frozenset({"purge", "purge_unfinished", "purge_receipt", "damaged_source"})
 
 
+async def list_reconciler_notices(store: LocalStore) -> list[ReconcilerNotice]:
+    """Notices for notes the mirror still holds; a deleted or vanished note's notice is dropped."""
+    notices = store.control.read_reconciler_notices()
+    if not notices:
+        return []
+    try:
+        async with store.session_factory() as session:
+            present = set(
+                (
+                    await session.scalars(
+                        sa.select(Note.id).where(
+                            Note.id.in_(list(notices)), Note.state.not_in(("missing", "deleted"))
+                        )
+                    )
+                ).all()
+            )
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
+    for note_id in notices.keys() - present:
+        store.control.clear_reconciler_notice(note_id)
+    return sorted(
+        (ReconcilerNotice.model_validate(notices[note_id]) for note_id in present),
+        key=lambda notice: notice.at,
+        reverse=True,
+    )
+
+
 async def get_status(store: LocalStore) -> StatusResponse:
     """Counters computed from the mirror and the recorded rejections."""
     prefix = _review_prefix(store)
@@ -1261,7 +1289,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
             excluded_count=excluded_count,
             notes_folder=notes_folder,
             notes_to_refile=notes_to_refile,
-            notes_returned=len(store.control.read_reconciler_notices()),
+            notes_returned=len(await list_reconciler_notices(store)),
             filing_failures=sum(p.kind == "filing" for p in problems),
             calendar_import_failures=sum(p.kind == "calendar_import" for p in problems),
             purge_problems=sum(p.kind in PURGE_PROBLEM_KINDS for p in problems),

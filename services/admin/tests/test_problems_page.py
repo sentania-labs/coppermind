@@ -14,6 +14,7 @@ from coppermind.store_protocol import (
     NoteSourceInfo,
     NotFound,
     ProblemInfo,
+    ReconcilerNotice,
     SourceManifest,
     SourceRevision,
     StatusCounters,
@@ -21,6 +22,7 @@ from coppermind.store_protocol import (
     StoreUnavailable,
 )
 from services.admin.tests.browser import admin_browser as admin_browser
+from services.admin.tests.test_admin import form_token
 
 NOTE_ID = "01K4Q8Z3N7V2X9M1B5C6D8E0F2"
 SOURCE_ID = "01K4Q8Z2A0P1Q2R3S4T5U6V7W8"
@@ -366,3 +368,79 @@ def test_counters_show_the_notes_root_and_the_pending_move_count():
     assert "Notes root: Notes/" in html
     assert "next filing pass will move: 7" in html
     assert "returned to their filed folder: 2" in html
+
+
+class NoticeStore(ReadOnlyStore):
+    """A store whose status reports returned notes and lists their notices."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.notices = [
+            ReconcilerNotice(
+                note_id=NOTE_ID,
+                title="Warehouse <call>",
+                from_path="Elsewhere/call.md",
+                path="Notes/2026/2026-04/call.md",
+                reason="Moved back to Notes/2026/2026-04/ because notes are filed by date.",
+                at=datetime(2026, 11, 5, 15, 30, tzinfo=UTC),
+            )
+        ]
+
+    async def get_status(self) -> StatusResponse:
+        status = await super().get_status()
+        status.counters.notes_returned = len(self.notices)
+        return status
+
+    async def list_reconciler_notices(self) -> list[ReconcilerNotice]:
+        self._check("list_reconciler_notices")
+        return list(self.notices)
+
+    async def dismiss_reconciler_notice(self, note_id: str) -> None:
+        self._check("dismiss_reconciler_notice")
+        self.notices = [notice for notice in self.notices if notice.note_id != note_id]
+
+
+def test_the_overview_lists_each_returned_note_with_where_when_and_why(signed_in):
+    client, _ = signed_in
+    _install(client, NoticeStore())
+
+    text = client.get("/admin").text
+
+    assert "returned to their filed folder: 1" in text
+    assert "<strong>Warehouse &lt;call&gt;</strong>" in text
+    assert "<code>Elsewhere/call.md</code>" in text
+    assert "<code>Notes/2026/2026-04/call.md</code>" in text
+    assert "November 5, 2026, 9:30 AM CST" in text
+    assert "because notes are filed by date." in text
+    assert f'action="/v1/admin/notices/{NOTE_ID}/dismiss"' in text
+
+
+def test_the_overview_asks_for_no_notices_when_none_were_returned(signed_in):
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+
+    assert client.get("/admin").status_code == 200
+    assert "list_reconciler_notices" not in store.calls
+
+
+def test_dismissing_a_notice_removes_it_from_the_overview(signed_in):
+    client, _ = signed_in
+    store = _install(client, NoticeStore())
+    token = form_token(client, "/admin")
+
+    response = client.post(
+        f"/v1/admin/notices/{NOTE_ID}/dismiss", data={"csrf": token}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin"
+    assert store.notices == []
+    assert "returned to their filed folder: 0" in client.get("/admin").text
+
+
+def test_dismissing_needs_the_form_token(signed_in):
+    client, _ = signed_in
+    store = _install(client, NoticeStore())
+
+    assert client.post(f"/v1/admin/notices/{NOTE_ID}/dismiss", data={}).status_code == 403
+    assert len(store.notices) == 1

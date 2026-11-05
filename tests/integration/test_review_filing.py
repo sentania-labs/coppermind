@@ -2,6 +2,7 @@
 
 import base64
 import json
+from datetime import UTC, datetime
 
 import sqlalchemy as sa
 from coppermind_store import filing, indexer
@@ -525,10 +526,53 @@ async def test_a_hand_moved_note_returns_with_a_reconciler_notice(store):
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
     returned = await store.get_note(note.id)
     assert returned.path == note.path
-    notices = store.control.read_reconciler_notices()
-    assert notices[note.id]["from_path"] == f"Elsewhere/{source.name}"
-    assert "Notes/2026/2026-09" in notices[note.id]["reason"]
+    [notice] = await store.list_reconciler_notices()
+    assert notice.note_id == note.id
+    assert notice.title == note.title
+    assert notice.from_path == f"Elsewhere/{source.name}"
+    assert notice.path == note.path
+    assert "Notes/2026/2026-09" in notice.reason
     assert (await store.get_status()).counters.notes_returned == 1
+
+
+async def _hand_move_and_return(store):
+    result = await store.ingest(ingest_request())
+    await approve(store, result.note.id)
+    note = await store.get_note(result.note.id)
+    source = store.notes_root / note.path
+    (store.notes_root / "Elsewhere").mkdir()
+    source.rename(store.notes_root / "Elsewhere" / source.name)
+    await reconcile_once(store)
+    assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+    return note
+
+
+async def test_a_notice_is_dropped_when_its_note_no_longer_exists(store):
+    note = await _hand_move_and_return(store)
+    assert (await store.get_status()).counters.notes_returned == 1
+    (store.notes_root / (await store.get_note(note.id)).path).unlink()
+    await reconcile_once(store)
+    assert await store.list_reconciler_notices() == []
+    assert (await store.get_status()).counters.notes_returned == 0
+    assert store.control.read_reconciler_notices() == {}
+
+
+async def test_dismissing_a_notice_clears_it_and_only_it(store):
+    note = await _hand_move_and_return(store)
+    other = store.control
+    other.record_reconciler_notice(
+        note_id="01K4Q8Z3N7V2X9M1B5C6D8E0F9",
+        title="Other",
+        from_path="A/other.md",
+        path="Notes/other.md",
+        folder="Notes",
+        reason="because",
+        at=datetime.now(tz=UTC),
+    )
+    await store.dismiss_reconciler_notice(note.id)
+    assert set(store.control.read_reconciler_notices()) == {"01K4Q8Z3N7V2X9M1B5C6D8E0F9"}
+    await store.dismiss_reconciler_notice(note.id)
+    assert (await store.get_status()).counters.notes_returned == 0
 
 
 async def test_a_rebuild_from_disk_yields_the_same_eligibility_set(store):

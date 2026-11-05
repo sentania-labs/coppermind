@@ -3,17 +3,20 @@
 Every number and every problem is computed by the store from its metadata
 mirror and the rejections it recorded. Admin only reads: nothing here asks the
 store to change a note, and nothing is ever written into one (operator
-decision of 2026-10-01).
+decision of 2026-10-01). The one thing the overview lets the operator do is
+dismiss the notice that a hand-moved note was returned, which changes no note.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from html import escape
 from typing import Protocol
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from coppermind.errors import to_http
 from coppermind.settings import Wiring
@@ -21,6 +24,7 @@ from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import (
     NoteSourceInfo,
     ProblemInfo,
+    ReconcilerNotice,
     SourceManifest,
     StatusResponse,
     StoreError,
@@ -35,6 +39,10 @@ class StatusReader(Protocol):
     async def get_status(self) -> StatusResponse: ...
 
     async def get_problems(self) -> list[ProblemInfo]: ...
+
+    async def list_reconciler_notices(self) -> list[ReconcilerNotice]: ...
+
+    async def dismiss_reconciler_notice(self, note_id: str) -> None: ...
 
     async def get_note_sources(self, note_id: str) -> list[NoteSourceInfo]: ...
 
@@ -111,7 +119,28 @@ def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems fo
     )
 
 
-def counters_html(status: StatusResponse) -> str:
+def _returned_notes_html(notices: Sequence[ReconcilerNotice], zone: ZoneInfo) -> str:
+    from coppermind_admin.pages.search_index import local_time
+
+    if not notices:
+        return ""
+    items = "".join(
+        f"<li><strong>{escape(notice.title)}</strong> "
+        f'<span class="muted">found at <code>{escape(notice.from_path)}</code>, returned to '
+        f"<code>{escape(notice.path)}</code>, {escape(local_time(notice.at, zone))}</span>"
+        f"<br>{escape(notice.reason)}"
+        f'<form method="post" action="/v1/admin/notices/{quote(notice.note_id, safe="")}/dismiss">'
+        "<button>Dismiss</button></form></li>"
+        for notice in notices
+    )
+    return f"<ul>{items}</ul>"
+
+
+def counters_html(
+    status: StatusResponse,
+    notices: Sequence[ReconcilerNotice] = (),
+    zone: ZoneInfo = ZoneInfo("America/Chicago"),
+) -> str:
     counters = status.counters
     problems = (
         counters.rejected_ingests
@@ -149,17 +178,22 @@ Preserved sources<strong>{counters.sources}</strong></div>
 <li>Excluded (skipped by exclusion rules): {counters.excluded_count}</li>
 <li>Notes root: {escape(counters.notes_folder or "Notes")}/</li>
 <li>Notes the next filing pass will move: {counters.notes_to_refile}</li>
-<li>Hand-moved notes returned to their filed folder: {counters.notes_returned}</li>
+<li>Hand-moved notes returned to their filed folder: {counters.notes_returned}
+{_returned_notes_html(notices, zone)}</li>
 </ul>
 <p><a href="/admin/problems">Problems ({problems})</a></p>"""
 
 
 async def overview_counters(request: Request, wiring: Wiring) -> str:
+    from coppermind_admin.pages.search_index import _zone
+
+    client = store_client(request, wiring)
     try:
-        status = await store_client(request, wiring).get_status()
+        status = await client.get_status()
+        notices = await client.list_reconciler_notices() if status.counters.notes_returned else []
     except (StoreError, OSError):
         return f'<p class="error">{UNREACHABLE}</p>'
-    return counters_html(status)
+    return counters_html(status, notices, _zone(request))
 
 
 def router(wiring: Wiring) -> APIRouter:
@@ -172,6 +206,14 @@ def router(wiring: Wiring) -> APIRouter:
 
     def unreachable(title: str) -> HTMLResponse:
         return page(title, f'<h1>{escape(title)}</h1><p class="error">{UNREACHABLE}</p>', 503)
+
+    @routes.post("/v1/admin/notices/{note_id}/dismiss", include_in_schema=False)
+    async def dismiss_notice(note_id: str, request: Request) -> Response:
+        try:
+            await store_client(request, wiring).dismiss_reconciler_notice(note_id)
+        except (StoreError, OSError):
+            return unreachable("Overview")
+        return RedirectResponse("/admin", status_code=303)
 
     @routes.get("/admin/problems", response_class=HTMLResponse, include_in_schema=False)
     async def problems_page(request: Request) -> Response:

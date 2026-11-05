@@ -89,6 +89,7 @@ from coppermind.store_protocol import (
     ProblemInfo,
     RebuildMetadataResult,
     RebuildSearchIndexResult,
+    ReconcilerNotice,
     RenameNote,
     ReplaceNote,
     RestoreNote,
@@ -370,6 +371,14 @@ class LocalStore:
         from coppermind_store.sources import get_problems
 
         return await get_problems(self)
+
+    async def list_reconciler_notices(self) -> list[ReconcilerNotice]:
+        from coppermind_store.sources import list_reconciler_notices
+
+        return await list_reconciler_notices(self)
+
+    async def dismiss_reconciler_notice(self, note_id: NoteId) -> None:
+        self.control.clear_reconciler_notice(note_id)
 
     async def get_status(self) -> StatusResponse:
         from coppermind_store.sources import get_status

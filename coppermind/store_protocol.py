@@ -705,6 +705,17 @@ class StatusCounters(BaseModel):
     purge_problems: int = 0
 
 
+class ReconcilerNotice(BaseModel):
+    """Why a hand-moved reviewed note was returned to its filed folder."""
+
+    note_id: NoteId
+    title: str
+    from_path: str
+    path: str
+    reason: str
+    at: datetime
+
+
 class StatusResponse(BaseModel):
     counters: StatusCounters
 
@@ -770,6 +781,10 @@ class Store(Protocol):
     async def abandon_purge(self, request: AbandonPurge) -> PurgeResult: ...
 
     async def get_problems(self) -> list[ProblemInfo]: ...
+
+    async def list_reconciler_notices(self) -> list[ReconcilerNotice]: ...
+
+    async def dismiss_reconciler_notice(self, note_id: NoteId) -> None: ...
 
     async def get_note_history_status(self) -> HistoryStatus: ...
 

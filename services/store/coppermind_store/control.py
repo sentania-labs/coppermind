@@ -9,6 +9,7 @@ the file, which is small, and always reflect what Admin last wrote.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from coppermind.api_keys import ApiKeySet
@@ -19,6 +20,8 @@ from coppermind.statefiles import StateStore
 from coppermind.store_protocol import SchemaDocument
 
 log = get_logger("coppermind-store")
+
+RECONCILER_NOTICE_KEYS = frozenset({"note_id", "title", "from_path", "path", "reason", "at"})
 
 
 class ControlState:
@@ -111,19 +114,23 @@ class ControlState:
         self,
         *,
         note_id: str,
+        title: str,
         from_path: str,
         path: str,
         folder: str,
         reason: str,
+        at: datetime,
     ) -> None:
         """Record why a hand-moved reviewed note was returned to its filed folder."""
         notices = self.read_reconciler_notices()
         notices[note_id] = {
             "note_id": note_id,
+            "title": title,
             "from_path": from_path,
             "path": path,
             "folder": folder,
             "reason": reason,
+            "at": at.isoformat(),
         }
         try:
             revision = self.store.read("reconciler_notices").revision
@@ -154,5 +161,5 @@ class ControlState:
         return {
             str(note_id): {str(k): str(v) for k, v in entry.items()}
             for note_id, entry in raw.items()
-            if isinstance(entry, dict) and isinstance(entry.get("reason"), str)
+            if isinstance(entry, dict) and entry.keys() >= RECONCILER_NOTICE_KEYS
         }

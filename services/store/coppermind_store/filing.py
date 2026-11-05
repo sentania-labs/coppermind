@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -289,6 +289,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         if hand_moved_from is not None:
             store.control.record_reconciler_notice(
                 note_id=note_id,
+                title=note.title,
                 from_path=hand_moved_from,
                 path=note.path,
                 folder=folder,
@@ -296,6 +297,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
                     f"Moved back to {folder}/ because reviewed notes are filed by "
                     "note date; a hand move outside that folder is not kept."
                 ),
+                at=datetime.now(tz=UTC),
             )
     plan["complete"] = True
     plan.pop("error", None)
