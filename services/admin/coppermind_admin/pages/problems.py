@@ -121,7 +121,7 @@ def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems fo
 
 def _dismiss_form(notice: ReconcilerNotice) -> str:
     action = f"/v1/admin/notices/{quote(notice.note_id, safe='')}/dismiss"
-    return f'<form method="post" action="{action}"><button>Dismiss</button></form>'
+    return f'<form method="post" action="{action}"><button>Dismiss notice</button></form>'
 
 
 def _notices_html(notices: Sequence[ReconcilerNotice], zone: ZoneInfo) -> str:
@@ -143,7 +143,14 @@ def _notices_html(notices: Sequence[ReconcilerNotice], zone: ZoneInfo) -> str:
             f"<br>{escape(notice.reason)}"
             f"{_dismiss_form(notice) if notice.kind == 'note' else ''}</li>"
         )
-    return f"<ul>{items}</ul>"
+    guidance = ""
+    if any(notice.kind == "note" for notice in notices):
+        guidance = (
+            '<p class="muted">No action needed. To file a note under a different month, '
+            "change its date in Obsidian. Dismiss notice only hides the notice; "
+            "the note stays where it is.</p>"
+        )
+    return f"{guidance}<ul>{items}</ul>"
 
 
 def counters_html(
@@ -166,7 +173,21 @@ def counters_html(
     states = ", ".join(
         f"{escape(state)}: {count}" for state, count in sorted(counters.notes_by_state.items())
     )
+    root = escape(counters.notes_folder or "Notes")
+    if counters.notes_to_refile:
+        upgrade = (
+            f"<strong>{counters.notes_to_refile} notes still to move.</strong> "
+            "The next filing pass, which runs after the next check for file changes, "
+            "moves them."
+        )
+    else:
+        upgrade = (
+            "<strong>Upgrade complete.</strong> Every reviewed note is filed by year and month."
+        )
     return f"""<h2>Store Status</h2>
+<h3>Notes filing</h3>
+<p>Notes are organized by year and month under <code>{root}/</code>, for example
+<code>{root}/2026/2026-04/</code>. {upgrade}</p>
 <div class="metrics">
 <div class="metric" aria-label="Notes awaiting review: {counters.notes_awaiting_review}">
 Notes awaiting review<strong>{counters.notes_awaiting_review}</strong>
@@ -186,8 +207,6 @@ Preserved sources<strong>{counters.sources}</strong></div>
 <li>Failed calendar imports: {counters.calendar_import_failures}</li>
 <li>Retention purge items needing attention: {counters.purge_problems}</li>
 <li>Excluded (skipped by exclusion rules): {counters.excluded_count}</li>
-<li>Notes root: {escape(counters.notes_folder or "Notes")}/</li>
-<li>Notes the next filing pass will move: {counters.notes_to_refile}</li>
 <li>Hand-moved notes returned to their filed folder: {counters.notes_returned}
 {_notices_html([n for n in notices if n.kind == "note"], zone)}</li>
 <li>Old month folders left in place because they are not empty: {counters.folders_kept}

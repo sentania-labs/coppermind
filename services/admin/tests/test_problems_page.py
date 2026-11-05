@@ -365,8 +365,10 @@ def test_counters_show_the_notes_root_and_the_pending_move_count():
             )
         )
     )
-    assert "Notes root: Notes/" in html
-    assert "next filing pass will move: 7" in html
+    assert "organized by year and month under <code>Notes/</code>" in html
+    assert "<code>Notes/2026/2026-04/</code>" in html
+    assert "7 notes still to move." in html
+    assert "Upgrade complete" not in html
     assert "returned to their filed folder: 2" in html
 
 
@@ -480,3 +482,55 @@ def test_the_overview_lists_old_folders_kept_with_why():
     assert "2026-08/ still holds files." in html
     assert "Dismiss" not in html
     assert "<form" not in html
+
+
+def test_counters_say_plainly_when_the_upgrade_is_complete():
+    from coppermind_admin.pages.problems import counters_html
+
+    html = counters_html(
+        StatusResponse(
+            counters=StatusCounters(
+                notes_awaiting_review=0,
+                notes_by_state={},
+                sources=0,
+                rejected_ingests=0,
+                name_collisions=0,
+                unparseable_files=0,
+                notes_folder="Filed",
+                notes_to_refile=0,
+            )
+        )
+    )
+    assert "Upgrade complete." in html
+    assert "<code>Filed/2026/2026-04/</code>" in html
+    assert "still to move" not in html
+    # The filing explanation leads, ahead of the operational counters.
+    assert html.index("Notes filing") < html.index("Rejected ingests")
+
+
+def test_a_returned_note_notice_says_no_action_is_needed_and_what_dismiss_does():
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from coppermind_admin.pages.problems import _notices_html
+
+    from coppermind.store_protocol import ReconcilerNotice
+
+    html = _notices_html(
+        [
+            ReconcilerNotice(
+                note_id="n1",
+                kind="note",
+                title="Oak meeting",
+                from_path="Elsewhere/Oak.md",
+                path="Notes/2025/2025-03/Oak.md",
+                reason="Moved back.",
+                at=datetime(2026, 11, 5, tzinfo=UTC),
+            )
+        ],
+        ZoneInfo("America/Chicago"),
+    )
+    assert "No action needed" in html
+    assert "change its date in Obsidian" in html
+    assert "only hides the notice" in html
+    assert "Dismiss notice</button>" in html

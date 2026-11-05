@@ -41,6 +41,7 @@ LABELS = {
     "limits.calendar_max_events": "Maximum retained calendar events",
     "limits.calendar_import_memory_mib": "Calendar import memory budget (MiB)",
     "general.timezone": "Local timezone",
+    "notes.notes_folder": "Folder for reviewed notes",
     "retention.days": "Keep deleted notes for (days)",
     "reconcile.scan_interval_s": "Check for file changes every (seconds)",
     "reconcile.quiet_period_s": "Wait for new files to settle (seconds)",
@@ -163,11 +164,21 @@ def render(
                 help_text = "Leave blank to use the default limit. "
             if path == "limits.attachment_max_bytes":
                 help_text += "The attachment upload route is not implemented yet. "
+            if path == "notes.notes_folder":
+                help_text = (
+                    "Reviewed notes are filed by year and month, like "
+                    f"{text or 'Notes'}/2026/2026-04/. "
+                )
+                description = ""
+                key_note = ""
+            else:
+                description = field.description or field.title or path
+                key_note = f'<span class="muted">Setting: <code>{path}</code></span>'
             body += f'''<div><label for="{path}">{title}</label>
 {control(path, field, defaults[path], text, disabled)}
-<p class="setting-help">{escape(help_text)}{escape(field.description or field.title or path)}<br>
+<p class="setting-help">{escape(help_text)}{escape(description)}<br>
 Default: <code>{escape(displayed(defaults[path]))}</code>.
-<span class="muted">Setting: <code>{path}</code></span></p></div>'''
+{key_note}</p></div>'''
         body += '</div><div class="form-footer">'
         if not unavailable:
             body += "<button>Save this section</button>"
