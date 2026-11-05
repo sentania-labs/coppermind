@@ -46,7 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from coppermind import frontmatter as fm
 from coppermind.api_keys import ApiKeySet
 from coppermind.atomicio import commit_staged, create_exclusive_bytes, stage_bytes, sync_directory
-from coppermind.db.models import Note, OutboxEvent
+from coppermind.db.models import Note, OutboxEvent, SearchDocument
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
 from coppermind.logging import get_logger
@@ -511,22 +511,38 @@ class LocalStore:
         )
 
     async def get_note(self, note_id: NoteId) -> NoteDocument:
-        relative, path = await self._locate(note_id)
-        data, mtime = _read(note_id, path)
-        schema = self.control.schema()
-        frontmatter, body = _parse(note_id, relative, data, schema)
-        sources = frontmatter.get(schema.role("sources_key"), [])
-        return NoteDocument(
-            id=note_id,
-            path=relative,
-            title=_title_of(body, path),
-            frontmatter=_jsonable(frontmatter),
-            body=body,
-            content_hash=content_hash(data),
-            size_bytes=len(data),
-            updated_at=datetime.fromtimestamp(mtime, tz=UTC),
-            sources=[str(source) for source in sources] if isinstance(sources, list) else [],
-        )
+        async with self._lock_for(note_id):
+            relative, path = await self._locate(note_id)
+            data, mtime = _read(note_id, path)
+            schema = self.control.schema()
+            try:
+                frontmatter, body = _parse(note_id, relative, data, schema)
+            except NotFound:
+                matches = await asyncio.to_thread(self._find_identity, note_id)
+                if len(matches) != 1:
+                    raise
+                path = matches[0]
+                previous = relative
+                relative = path.relative_to(self.notes_root).as_posix()
+                await self._repair_location(note_id, previous, relative)
+                data, mtime = _read(note_id, path)
+                frontmatter, body = _parse(note_id, relative, data, schema)
+            sources = frontmatter.get(schema.role("sources_key"), [])
+            return await self._with_filing_state(
+                NoteDocument(
+                    id=note_id,
+                    path=relative,
+                    title=_title_of(body, path),
+                    frontmatter=_jsonable(frontmatter),
+                    body=body,
+                    content_hash=content_hash(data),
+                    size_bytes=len(data),
+                    updated_at=datetime.fromtimestamp(mtime, tz=UTC),
+                    sources=[str(source) for source in sources]
+                    if isinstance(sources, list)
+                    else [],
+                )
+            )
 
     async def list_notes(self, query: NoteQuery) -> Page[NoteSummary]:
         """List the most recent reconciled state for known note identities.
@@ -562,7 +578,21 @@ class LocalStore:
                     if not rows:
                         break
                     after = rows[-1].id
-                    matched.extend(_scan_rows(rows, query, wanted - len(matched)))
+                    visible = []
+                    for row in rows:
+                        if row.state == "ok":
+                            try:
+                                await self.get_note(row.id)
+                            except (NotFound, NoteUnparseable):
+                                continue
+                        visible.append(row)
+                    from coppermind_store.filing import filing_state
+
+                    summaries = _scan_rows(visible, query, wanted - len(matched))
+                    for summary in summaries:
+                        for key, value in filing_state(self, summary.id).items():
+                            setattr(summary, key, value)
+                    matched.extend(summaries)
                     if len(rows) < batch_size:
                         break
         except (SQLAlchemyError, OSError) as exc:
@@ -680,16 +710,18 @@ class LocalStore:
                     raise
                 raise typed from exc
 
-        return NoteDocument(
-            id=note_id,
-            path=relative,
-            title=_title_of(body, path),
-            frontmatter=_jsonable(frontmatter),
-            body=body,
-            content_hash=digest,
-            size_bytes=len(data),
-            updated_at=now,
-            sources=[str(source) for source in sources] if isinstance(sources, list) else [],
+        return await self._with_filing_state(
+            NoteDocument(
+                id=note_id,
+                path=relative,
+                title=_title_of(body, path),
+                frontmatter=_jsonable(frontmatter),
+                body=body,
+                content_hash=digest,
+                size_bytes=len(data),
+                updated_at=now,
+                sources=[str(source) for source in sources] if isinstance(sources, list) else [],
+            )
         )
 
     @writer
@@ -782,16 +814,18 @@ class LocalStore:
                     raise
                 raise typed from exc
 
-        return NoteDocument(
-            id=note_id,
-            path=relative,
-            title=_title_of(body, path),
-            frontmatter=_jsonable(frontmatter),
-            body=body,
-            content_hash=digest,
-            size_bytes=len(data),
-            updated_at=file_mtime,
-            sources=[str(source) for source in sources] if isinstance(sources, list) else [],
+        return await self._with_filing_state(
+            NoteDocument(
+                id=note_id,
+                path=relative,
+                title=_title_of(body, path),
+                frontmatter=_jsonable(frontmatter),
+                body=body,
+                content_hash=digest,
+                size_bytes=len(data),
+                updated_at=file_mtime,
+                sources=[str(source) for source in sources] if isinstance(sources, list) else [],
+            )
         )
 
     @writer
@@ -853,15 +887,17 @@ class LocalStore:
 
             if new_target == path:
                 _, body = fm.parse(current_data.decode("utf-8"))
-                return _document(
-                    note_id,
-                    relative,
-                    _title_of(body, path),
-                    frontmatter,
-                    body,
-                    current_data,
-                    datetime.fromtimestamp(current_mtime, tz=UTC),
-                    schema,
+                return await self._with_filing_state(
+                    _document(
+                        note_id,
+                        relative,
+                        _title_of(body, path),
+                        frontmatter,
+                        body,
+                        current_data,
+                        datetime.fromtimestamp(current_mtime, tz=UTC),
+                        schema,
+                    )
                 )
 
             if path.stem.casefold() in {name.casefold() for name in existing_stems(folder_path)}:
@@ -940,7 +976,9 @@ class LocalStore:
                     raise
                 raise typed from exc
 
-        return _document(note_id, new_relative, title, frontmatter, body, current_data, now, schema)
+        return await self._with_filing_state(
+            _document(note_id, new_relative, title, frontmatter, body, current_data, now, schema)
+        )
 
     @writer
     async def rename_note(
@@ -1055,8 +1093,8 @@ class LocalStore:
                     raise
                 raise typed from exc
 
-        return _document(
-            note_id, new_relative, mirror_title, frontmatter, new_body, data, now, schema
+        return await self._with_filing_state(
+            _document(note_id, new_relative, mirror_title, frontmatter, new_body, data, now, schema)
         )
 
     async def list_folders(self) -> FolderTree:
@@ -1356,7 +1394,7 @@ class LocalStore:
         return "adopted", "identity written into the file"
 
     def _lock_for(self, note_id: NoteId) -> asyncio.Lock:
-        """The lock serialising writes to one note. Only asked for a located note."""
+        """The lock serialising reads and writes to one note identity."""
         lock = self._locks.get(note_id)
         if lock is None:
             lock = self._locks[note_id] = asyncio.Lock()
@@ -1368,6 +1406,16 @@ class LocalStore:
         if lock is None:
             lock = self._source_locks[claim_name] = asyncio.Lock()
         return lock
+
+    async def _with_filing_state(self, document: NoteDocument) -> NoteDocument:
+        from coppermind_store.filing import filing_state
+
+        try:
+            async with self.session_factory() as session:
+                filed = await session.scalar(sa.select(Note.filed).where(Note.id == document.id))
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
+        return document.model_copy(update={"filed": bool(filed), **filing_state(self, document.id)})
 
     async def _locate(self, note_id: NoteId) -> tuple[str, Path]:
         """Return the note's relative path and its absolute path.
@@ -1396,11 +1444,73 @@ class LocalStore:
             # refuses to follow it. Nothing servable is there.
             raise NotFound(note_id) from exc
         if not is_note_file(path):
-            # The row outlived the file, which happens when a note is deleted
-            # on a device. Reconciliation clears the row; until then, this is
-            # honestly a miss rather than a server error.
-            raise NotFound(note_id)
+            # A move can become visible before its mirror transaction commits.
+            # Follow the identity, never a filename alone or a different note.
+            matches = await asyncio.to_thread(self._find_identity, note_id)
+            if len(matches) != 1:
+                raise NotFound(note_id)
+            path = matches[0]
+            previous = relative
+            relative = path.relative_to(self.notes_root).as_posix()
+            await self._repair_location(note_id, previous, relative)
         return relative, path
+
+    async def _repair_location(self, note_id: str, previous: str, observed: str) -> None:
+        from coppermind_store.notices import record_path_notice
+
+        try:
+            async with transaction(self.session_factory) as session:
+                # A settling file can have replaced another still-live row's
+                # path. Follow its identity for this read, but leave ownership
+                # decisions to reconciliation until that ambiguity settles.
+                other = Note.__table__.alias("other_note")
+                occupied = sa.exists().where(
+                    other.c.id != note_id,
+                    other.c.path == observed,
+                    other.c.state.not_in(("missing", "deleted")),
+                )
+                updated = await session.execute(
+                    sa.update(Note)
+                    .where(Note.id == note_id, Note.path == previous, Note.state == "ok", ~occupied)
+                    .values(path=observed, mtime=None, updated_at=datetime.now(UTC))
+                    .returning(Note.id)
+                )
+                if updated.scalar_one_or_none() is not None:
+                    await session.execute(
+                        sa.update(SearchDocument)
+                        .where(SearchDocument.kind == "note", SearchDocument.ref_id == note_id)
+                        .values(path=observed)
+                    )
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
+        record_path_notice(self, note_id, previous, observed)
+
+    def _find_identity(self, note_id: str) -> list[Path]:
+        from coppermind_store.reconciler import _IGNORED_DIRECTORIES, _path_exclusion, _walk
+
+        matches = []
+        key = self.control.schema().role("id_key")
+        settings = self.control.settings()
+        for candidate in _walk(self.notes_root):
+            relative = candidate.relative_to(self.notes_root)
+            if candidate.suffix != ".md" or any(
+                part in _IGNORED_DIRECTORIES for part in relative.parts
+            ):
+                continue
+            if _path_exclusion(
+                relative, settings.reconcile.excluded_folders, settings.reconcile.excluded_patterns
+            ):
+                continue
+            try:
+                safe = resolve(self.notes_root, relative.as_posix())
+                if (
+                    is_note_file(safe)
+                    and self.note_history.identity(safe.read_bytes(), key) == note_id
+                ):
+                    matches.append(safe)
+            except (OSError, ValueError):
+                continue
+        return matches
 
 
 def _parse(
@@ -1477,6 +1587,7 @@ def _mirrored_summary(row: Note, state: NoteState) -> NoteSummary:
         context=row.context,
         account=list(row.account),
         reviewed=row.reviewed,
+        filed=row.filed,
         tags=list(row.tags),
         content_hash=row.content_hash,
         updated_at=row.mtime or row.updated_at,

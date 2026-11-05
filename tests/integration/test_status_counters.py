@@ -93,6 +93,8 @@ async def test_a_fresh_store_counts_nothing(store: LocalStore):
         "unparseable_files": 0,
         "excluded_count": 0,
         "filing_failures": 0,
+        "filing_queue_depth": 0,
+        "filing_estimated_drain_s": None,
         "known_unreadable": 0,
         "calendar_import_failures": 0,
         "active_problems": 0,

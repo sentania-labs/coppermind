@@ -510,6 +510,9 @@ class NoteDocument(BaseModel):
     size_bytes: int
     updated_at: datetime
     sources: list[str] = Field(default_factory=list)
+    filed: bool = False
+    filing_error: str | None = None
+    filing_attempts: int = 0
 
 
 NoteState = Literal["ok", "unparsed", "missing", "deleted"]
@@ -576,6 +579,9 @@ class NoteSummary(BaseModel):
     context: str | None = None
     account: list[str] = Field(default_factory=list)
     reviewed: bool
+    filed: bool = False
+    filing_error: str | None = None
+    filing_attempts: int = 0
     tags: list[str] = Field(default_factory=list)
     content_hash: ETag
     updated_at: datetime
@@ -696,6 +702,8 @@ class StatusCounters(BaseModel):
     unparseable_files: int
     excluded_count: int = 0
     filing_failures: int = 0
+    filing_queue_depth: int = 0
+    filing_estimated_drain_s: int | None = None
     known_unreadable: int = 0
     calendar_import_failures: int = 0
     active_problems: int | None = None

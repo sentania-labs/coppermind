@@ -60,6 +60,8 @@ KIND_LABELS = {
     "purge_unfinished": "Retention purge",
     "purge_receipt": "Retention purge receipt",
     "damaged_source": "Damaged source bundle",
+    "missing": "Missing note",
+    "path_notice": "Note path changed",
 }
 
 
@@ -127,6 +129,13 @@ def counters_html(status: StatusResponse) -> str:
     states = ", ".join(
         f"{escape(state)}: {count}" for state, count in sorted(counters.notes_by_state.items())
     )
+    drain = (
+        f"about {max(1, (counters.filing_estimated_drain_s + 59) // 60)} minutes"
+        if counters.filing_queue_depth and counters.filing_estimated_drain_s is not None
+        else "estimating after the next filing pass"
+        if counters.filing_queue_depth
+        else "complete"
+    )
     return f"""<h2>Store Status</h2>
 <div class="metrics">
 <div class="metric" aria-label="Notes awaiting review: {counters.notes_awaiting_review}">
@@ -143,7 +152,8 @@ Preserved sources<strong>{counters.sources}</strong></div>
 <li>Name collisions: {counters.name_collisions}</li>
 <li>Unparseable files: {counters.unparseable_files}</li>
 <li>Known unreadable search entries: {counters.known_unreadable}</li>
-<li>Pending filing failures: {counters.filing_failures}</li>
+<li>Notes waiting to file: {counters.filing_queue_depth} ({drain})</li>
+<li>Notes with filing errors: {counters.filing_failures}</li>
 <li>Failed calendar imports: {counters.calendar_import_failures}</li>
 <li>Retention purge items needing attention: {counters.purge_problems}</li>
 <li>Excluded (skipped by exclusion rules): {counters.excluded_count}</li>

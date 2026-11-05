@@ -1217,6 +1217,14 @@ async def get_status(store: LocalStore) -> StatusResponse:
             by_state = (
                 await session.execute(sa.select(Note.state, sa.func.count()).group_by(Note.state))
             ).all()
+            filing_queue_depth = (
+                await session.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(Note)
+                    .where(Note.state == "ok", Note.reviewed.is_(True), Note.filed.is_(False))
+                )
+                or 0
+            )
             sources = await session.scalar(sa.select(sa.func.count()).select_from(Source)) or 0
             rejected_ingests = (
                 await session.scalar(
@@ -1239,8 +1247,15 @@ async def get_status(store: LocalStore) -> StatusResponse:
     notes_by_state = {state: count for state, count in by_state}
     excluded_count = store.control.read_reconciler_excluded_count()
     problems = await get_problems(store)
+    try:
+        rate = json.loads((store.control.store.state_dir / "filing-rate.json").read_bytes())
+        estimated_drain = int(rate["seconds_per_note"] * filing_queue_depth)
+    except (OSError, ValueError, KeyError, TypeError):
+        estimated_drain = None
     return StatusResponse(
         counters=StatusCounters(
+            filing_queue_depth=filing_queue_depth,
+            filing_estimated_drain_s=estimated_drain,
             known_unreadable=known_unreadable,
             notes_awaiting_review=notes_awaiting_review,
             notes_by_state=notes_by_state,
@@ -1257,9 +1272,11 @@ async def get_status(store: LocalStore) -> StatusResponse:
     )
 
 
-def filing_problems(store: LocalStore) -> list[ProblemInfo]:
+def filing_problems(store: LocalStore, active_ids: set[str] | None = None) -> list[ProblemInfo]:
     problems: list[ProblemInfo] = []
     for path in sorted((store.control.store.state_dir / "filing").glob("*.json")):
+        if active_ids is not None and path.stem not in active_ids:
+            continue
         try:
             filing = json.loads(path.read_bytes())
             if filing.get("error"):
@@ -1416,7 +1433,9 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
             unparsed = list(
                 (
                     await session.scalars(
-                        sa.select(Note).where(Note.state == "unparsed").order_by(Note.path)
+                        sa.select(Note)
+                        .where(Note.state.in_(["unparsed", "missing"]))
+                        .order_by(Note.path)
                     )
                 ).all()
             )
@@ -1459,11 +1478,11 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         )
         for row in unreadable
     )
-    problems.extend(filing_problems(store))
+    problems.extend(filing_problems(store, {row.id for row in ok_notes if row.reviewed}))
     problems.extend(await purge_problems(store))
     problems.extend(
         ProblemInfo(
-            kind="unparsed",
+            kind=row.state,
             reference=row.path,
             reason=row.state_reason or "unparsed",
             note_id=row.id,
@@ -1486,6 +1505,19 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     note_id=row.id,
                 )
             )
+    for path in sorted((store.control.store.state_dir / "path-notices").glob("*.json")):
+        try:
+            notice = json.loads(path.read_bytes())
+            problems.append(
+                ProblemInfo(
+                    kind="path_notice",
+                    reference=notice["observed_path"],
+                    note_id=notice["note_id"],
+                    reason=notice["reason"],
+                )
+            )
+        except (OSError, ValueError, KeyError):
+            continue
     exclusions = store.control.read_reconciler_exclusions()
     problems.extend(
         ProblemInfo(

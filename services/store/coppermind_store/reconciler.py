@@ -529,6 +529,12 @@ async def reconcile_once(
                     receipt = None
                     if observed is None:
                         receipt = store.note_history.evidence(row.id, row.path, row.content_hash)
+                        if receipt is None:
+                            from coppermind_store.filing import vanished_receipt
+
+                            receipt, reason = vanished_receipt(store, row)
+                            if receipt is None and reason:
+                                values = {"state": "missing", "state_reason": reason}
                         if receipt is not None:
                             values = {
                                 "state": "deleted",
@@ -596,6 +602,9 @@ async def reconcile_once(
                     elif observed.state in {"unparsed", "unreadable"}:
                         counts["unparsed"] += 1
                     elif previous_path != observed.path:
+                        from coppermind_store.notices import record_path_notice
+
+                        record_path_notice(store, row.id, previous_path, observed.path)
                         counts["moved"] += 1
                     else:
                         counts["changed"] += 1

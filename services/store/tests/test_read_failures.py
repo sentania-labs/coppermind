@@ -7,18 +7,31 @@ from coppermind_store.notes import LocalStore
 from structlog.testing import capture_logs
 
 from coppermind.settings import Wiring
-from coppermind.store_protocol import NotesFilesystemUnavailable, NoteUnparseable, NotFound
+from coppermind.store_protocol import (
+    NoteDocument,
+    NotesFilesystemUnavailable,
+    NoteUnparseable,
+    NotFound,
+)
 
 NOTE_ID = "01K4Q8Z3N7V2X9M1B5C6D8E0F2"
 OTHER_ID = "01K4Q8Z3N7V2X9M1B5C6D8E0F3"
 NOTE_BYTES = b"---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\nsources: []\n---\n# Runbook\n"
 
 
+class ReadOnlyStore(LocalStore):
+    """Filesystem read tests replace location and filing metadata lookup."""
+
+    async def _with_filing_state(self, document: NoteDocument) -> NoteDocument:
+        return document
+
+
 def local_store(tmp_path: Path) -> LocalStore:
     wiring = Wiring(data_dir=tmp_path / "data")
     control = ControlState(wiring.state_dir)
     control.ensure_defaults()
-    return LocalStore(wiring.notes_dir, control, cast(Any, object()), wiring.sources_dir)
+    wiring.notes_dir.mkdir(parents=True, exist_ok=True)
+    return ReadOnlyStore(wiring.notes_dir, control, cast(Any, object()), wiring.sources_dir)
 
 
 async def test_a_file_that_vanishes_after_location_is_not_found(

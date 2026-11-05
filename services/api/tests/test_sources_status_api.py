@@ -328,6 +328,8 @@ def test_status_returns_every_counter(api):
             "unparseable_files": 0,
             "excluded_count": 0,
             "filing_failures": 0,
+            "filing_queue_depth": 0,
+            "filing_estimated_drain_s": None,
             "known_unreadable": 0,
             "calendar_import_failures": 0,
             "active_problems": None,
