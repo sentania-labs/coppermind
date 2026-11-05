@@ -32,6 +32,7 @@ STATE_FILES: dict[str, str] = {
     "keys": "json",
     "admin": "json",
     "reconciler_exclusions": "json",
+    "reconciler_notices": "json",
 }
 
 

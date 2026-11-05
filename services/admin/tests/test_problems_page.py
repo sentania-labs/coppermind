@@ -343,3 +343,26 @@ def test_a_damaged_source_bundle_is_plain_and_has_no_dead_link(signed_in):
     assert "Damaged source bundle" in page and "Preserved source copy" in page
     assert "damaged_source" not in page and SOURCE_ID not in page
     assert "/admin/sources/" not in page
+
+
+def test_counters_show_the_notes_root_and_the_pending_move_count():
+    from coppermind_admin.pages.problems import counters_html
+
+    html = counters_html(
+        StatusResponse(
+            counters=StatusCounters(
+                notes_awaiting_review=0,
+                notes_by_state={},
+                sources=0,
+                rejected_ingests=0,
+                name_collisions=0,
+                unparseable_files=0,
+                notes_folder="Notes",
+                notes_to_refile=7,
+                notes_returned=2,
+            )
+        )
+    )
+    assert "Notes root: Notes/" in html
+    assert "next filing pass will move: 7" in html
+    assert "returned to their filed folder: 2" in html

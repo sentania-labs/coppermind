@@ -66,7 +66,11 @@ class ControlState:
             )
 
     def settings(self) -> ProductSettings:
-        return read_settings(self.store)
+        from coppermind_store.eligibility import set_notes_folder
+
+        loaded = read_settings(self.store)
+        set_notes_folder(loaded.notes.notes_folder)
+        return loaded
 
     def schema(self) -> FrontmatterSchema:
         return self.schema_document().frontmatter_schema
@@ -106,3 +110,53 @@ class ControlState:
 
     def read_reconciler_excluded_count(self) -> int:
         return len(self.read_reconciler_exclusions())
+
+    def record_reconciler_notice(
+        self,
+        *,
+        note_id: str,
+        from_path: str,
+        path: str,
+        folder: str,
+        reason: str,
+    ) -> None:
+        """Record why a hand-moved reviewed note was returned to its filed folder."""
+        notices = self.read_reconciler_notices()
+        notices[note_id] = {
+            "note_id": note_id,
+            "from_path": from_path,
+            "path": path,
+            "folder": folder,
+            "reason": reason,
+        }
+        try:
+            revision = self.store.read("reconciler_notices").revision
+        except FileNotFoundError:
+            revision = None
+        self.store.write("reconciler_notices", {"notices": notices}, if_revision=revision)
+
+    def clear_reconciler_notice(self, note_id: str) -> None:
+        notices = self.read_reconciler_notices()
+        if note_id not in notices:
+            return
+        notices.pop(note_id, None)
+        try:
+            revision = self.store.read("reconciler_notices").revision
+        except FileNotFoundError:
+            return
+        self.store.write("reconciler_notices", {"notices": notices}, if_revision=revision)
+
+    def read_reconciler_notices(self) -> dict[str, dict[str, str]]:
+        """Notices recorded when hand-moved reviewed notes were returned to their filed folders."""
+        try:
+            body = self.store.read("reconciler_notices").body
+        except (FileNotFoundError, ValueError):
+            return {}
+        raw = body.get("notices", {})
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            str(note_id): {str(k): str(v) for k, v in entry.items()}
+            for note_id, entry in raw.items()
+            if isinstance(entry, dict) and isinstance(entry.get("reason"), str)
+        }

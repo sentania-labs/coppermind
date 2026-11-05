@@ -1,9 +1,11 @@
 """Review gates publication; monthly filing and restore preserve evidence."""
 
 import base64
+import json
 
 import sqlalchemy as sa
 from coppermind_store import filing, indexer
+from coppermind_store.eligibility import reviewed_note
 from coppermind_store.reconciler import reconcile_once
 
 from coppermind.db.models import Note, NoteSource, SearchDocument, Source
@@ -23,7 +25,7 @@ async def test_review_files_monthly_then_publishes_and_human_edit_stays_reviewed
     request = ingest_request()
     request.note.frontmatter["reviewed"] = True
     result = await store.ingest(request)
-    assert result.projection_path.startswith("_Sources/_Pending/2026-09/")
+    assert result.projection_path.startswith("_Sources/_Pending/2026/2026-09/")
     assert (await store.get_note(result.note.id)).frontmatter["reviewed"] is False
     await indexer.rebuild(store)
     assert not (await store.search(SearchQuery(q="kerfuffle"))).items
@@ -33,7 +35,7 @@ async def test_review_files_monthly_then_publishes_and_human_edit_stays_reviewed
     await indexer.catch_up(store)
     note = await store.get_note(result.note.id)
     source = await store.get_source(result.source.id)
-    assert note.path.startswith("2026-09/")
+    assert note.path.startswith("Notes/2026/2026-09/")
     assert source.projection_path.startswith("_Sources/2026-09/")
     assert source.projection_path.removesuffix(".md") in note.body
     assert not (store.notes_root / result.projection_path).exists()
@@ -67,7 +69,9 @@ async def test_failed_filing_retries_without_indexing_or_losing_originals(store,
     assert any(p.kind == "filing" for p in await store.get_problems())
     await indexer.rebuild(store)
     assert not (await store.search(SearchQuery(q="lease"))).items
-    moved = await store.move_note(result.note.id, MoveNote(target_folder="2026-09"), None)
+    moved = await store.move_note(
+        result.note.id, MoveNote(target_folder="Notes/2026/2026-09"), None
+    )
     assert not (await store.search(SearchQuery(q="lease"))).items
     await store.patch_frontmatter(
         moved.id,
@@ -77,7 +81,7 @@ async def test_failed_filing_retries_without_indexing_or_losing_originals(store,
     monkeypatch.setattr(filing, "_copy", copy)
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
     assert not any(p.kind == "filing" for p in await store.get_problems())
-    assert (await store.get_note(result.note.id)).path.startswith("2026-10/")
+    assert (await store.get_note(result.note.id)).path.startswith("Notes/2026/2026-10/")
     assert (await store.get_source(result.source.id)).projection_path.startswith(
         "_Sources/2026-10/"
     )
@@ -189,7 +193,7 @@ async def test_date_correction_preserves_canonical_source_path(store):
     hits = (await store.search(SearchQuery(q="kerfuffle"))).items
     assert len(hits) == 1
     assert hits[0].path.startswith("_Sources/2026-09/")
-    assert (await store.get_note(note.id)).path.startswith("2026-10/")
+    assert (await store.get_note(note.id)).path.startswith("Notes/2026/2026-10/")
     assert hits[0].path.removesuffix(".md") in (await store.get_note(note.id)).body
 
 
@@ -430,3 +434,99 @@ async def test_new_revision_repoints_embeds_to_the_current_attachments(store):
     assert f"![[{old}]]" not in body
     assert (store.notes_root / old).read_bytes() == b"synthetic jpeg one"
     assert (store.notes_root / current).read_bytes() == b"synthetic jpeg two"
+
+
+async def _eligible_ids(store):
+    async with store.session_factory() as session:
+        return set((await session.scalars(sa.select(Note.id).where(reviewed_note()))).all())
+
+
+async def test_a_reviewed_note_files_under_the_notes_root_by_year_and_month(store):
+    request = ingest_request()
+    request.note.frontmatter["date"] = "2026-04-13"
+    result = await store.ingest(request)
+    assert result.projection_path.startswith("_Sources/_Pending/2026/2026-04/")
+    await approve(store, result.note.id)
+    await indexer.catch_up(store)
+    note = await store.get_note(result.note.id)
+    assert note.path == "Notes/2026/2026-04/2026-04-13 Warehouse call.md"
+    receipt = json.loads(
+        (store.control.store.state_dir / "filing" / f"{note.id}.json").read_bytes()
+    )
+    assert receipt["folder"] == "Notes/2026/2026-04"
+    assert (await store.search(SearchQuery(q="kerfuffle"))).items
+    status = await store.get_status()
+    assert status.counters.notes_folder == "Notes"
+    assert status.counters.notes_to_refile == 0
+
+
+async def test_upgrade_refiles_legacy_notes_and_search_never_empties(store):
+    result = await store.ingest(ingest_request())
+    await approve(store, result.note.id)
+    await indexer.catch_up(store)
+    note = await store.get_note(result.note.id)
+    # Recreate the pre-upgrade shape: a flat month folder and a receipt without a folder.
+    legacy = await store.move_note(note.id, MoveNote(target_folder="2026-09"), None)
+    assert legacy.path.startswith("2026-09/")
+    journal = store.control.store.state_dir / "filing" / f"{note.id}.json"
+    receipt = json.loads(journal.read_bytes())
+    receipt.pop("folder")
+    journal.write_text(json.dumps(receipt))
+    await reconcile_once(store)
+    async with store.session_factory() as session:
+        await session.execute(sa.update(Note).where(Note.id == note.id).values(filed=True))
+    # Before the pass the legacy shape is still eligible, and the Admin counts the move.
+    assert note.id in await _eligible_ids(store)
+    assert (await store.get_status()).counters.notes_to_refile == 1
+    assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+    moved = await store.get_note(note.id)
+    assert moved.path.startswith("Notes/2026/2026-09/")
+    assert note.id in await _eligible_ids(store)
+    assert moved.sources == note.sources
+    assert (await store.get_status()).counters.notes_to_refile == 0
+    assert not (store.notes_root / "2026-09").exists() or not any(
+        (store.notes_root / "2026-09").glob("*.md")
+    )
+    await indexer.catch_up(store)
+    assert (await store.search(SearchQuery(q="kerfuffle"))).items
+    # A second pass has nothing left to move and records no notice.
+    assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 0}
+    assert store.control.read_reconciler_notices() == {}
+
+
+async def test_a_hand_moved_note_returns_with_a_reconciler_notice(store):
+    result = await store.ingest(ingest_request())
+    await approve(store, result.note.id)
+    note = await store.get_note(result.note.id)
+    source = store.notes_root / note.path
+    elsewhere = store.notes_root / "Elsewhere"
+    elsewhere.mkdir()
+    source.rename(elsewhere / source.name)
+    await reconcile_once(store)
+    assert (await store.get_note(note.id)).path == f"Elsewhere/{source.name}"
+    assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+    returned = await store.get_note(note.id)
+    assert returned.path == note.path
+    notices = store.control.read_reconciler_notices()
+    assert notices[note.id]["from_path"] == f"Elsewhere/{source.name}"
+    assert "Notes/2026/2026-09" in notices[note.id]["reason"]
+    assert (await store.get_status()).counters.notes_returned == 1
+
+
+async def test_a_rebuild_from_disk_yields_the_same_eligibility_set(store):
+    first = await store.ingest(ingest_request("rec-1"))
+    second_request = ingest_request("rec-2")
+    second_request.note.frontmatter["date"] = "2026-04-13"
+    second = await store.ingest(second_request)
+    for result in (first, second):
+        await approve(store, result.note.id)
+    before = await _eligible_ids(store)
+    assert before == {first.note.id, second.note.id}
+    paths_before = {(await store.get_note(r.note.id)).path for r in (first, second)}
+    async with store.session_factory() as session:
+        await session.execute(sa.text("TRUNCATE notes, sources, search_documents CASCADE"))
+        await session.commit()
+    await store.rebuild_metadata()
+    assert await _eligible_ids(store) == before
+    assert {(await store.get_note(r.note.id)).path for r in (first, second)} == paths_before
+    assert all(path.startswith("Notes/") for path in paths_before)

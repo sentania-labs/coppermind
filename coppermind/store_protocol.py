@@ -695,6 +695,9 @@ class StatusCounters(BaseModel):
     name_collisions: int
     unparseable_files: int
     excluded_count: int = 0
+    notes_folder: str | None = None
+    notes_to_refile: int = 0
+    notes_returned: int = 0
     filing_failures: int = 0
     known_unreadable: int = 0
     calendar_import_failures: int = 0

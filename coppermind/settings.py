@@ -18,7 +18,14 @@ from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
@@ -52,6 +59,10 @@ class NotesSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    notes_folder: str = Field(
+        default="Notes",
+        description="Folder for reviewed notes, filed under {notes_folder}/{yyyy}/{yyyy-mm}/.",
+    )
     review_folder: str = Field(default="Review", description="Folder for notes awaiting review.")
     trash_folder: str = Field(default="_Trash", description="Folder for deleted notes.")
     sources_folder: str = Field(
@@ -69,6 +80,48 @@ class NotesSettings(BaseModel):
         default_factory=lambda: ["work", "journal"],
         description="Note types whose filenames start with a date.",
     )
+
+    @field_validator("notes_folder")
+    @classmethod
+    def validate_notes_folder(cls, value: str) -> str:
+        """Refuse a notes root the Store would rewrite or hide."""
+        portable = sanitize_folder(value)
+        if not portable or any(part.startswith(".") for part in portable.split("/")):
+            raise ValueError(
+                f"{value!r} names no usable folder; give a portable relative folder name"
+            )
+        if portable != value:
+            raise ValueError(
+                f"{value!r} is written to the notes filesystem as {portable!r}; "
+                f"configure {portable!r} directly"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def validate_notes_folder_does_not_collide(self) -> NotesSettings:
+        notes_root = sanitize_folder(self.notes_folder).casefold()
+        reserved = (
+            ("review_folder", self.review_folder),
+            ("trash_folder", self.trash_folder),
+            ("sources_folder", self.sources_folder),
+            ("attachments_folder", self.attachments_folder),
+            ("journal_folder", self.journal_folder),
+            ("Dropbox", "Dropbox"),
+        )
+        for label, candidate in reserved:
+            other = sanitize_folder(candidate).casefold()
+            if not other:
+                continue
+            if (
+                notes_root == other
+                or notes_root.startswith(f"{other}/")
+                or other.startswith(f"{notes_root}/")
+            ):
+                raise ValueError(
+                    f"notes.notes_folder ({self.notes_folder!r}) must not collide with "
+                    f"reserved root {candidate!r} ({label})"
+                )
+        return self
 
     @field_validator("sources_folder")
     @classmethod

@@ -147,6 +147,9 @@ Preserved sources<strong>{counters.sources}</strong></div>
 <li>Failed calendar imports: {counters.calendar_import_failures}</li>
 <li>Retention purge items needing attention: {counters.purge_problems}</li>
 <li>Excluded (skipped by exclusion rules): {counters.excluded_count}</li>
+<li>Notes root: {escape(counters.notes_folder or "Notes")}/</li>
+<li>Notes the next filing pass will move: {counters.notes_to_refile}</li>
+<li>Hand-moved notes returned to their filed folder: {counters.notes_returned}</li>
 </ul>
 <p><a href="/admin/problems">Problems ({problems})</a></p>"""
 

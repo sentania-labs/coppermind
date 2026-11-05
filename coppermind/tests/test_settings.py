@@ -130,3 +130,40 @@ def test_sync_plan_resolves_limits_and_preserves_explicit_overrides():
     assert (plus.file_limit_bytes, plus.total_limit_bytes) == (200 * MIB, 10 * 1024 * MIB)
     overridden = SyncSettings(plan="plus", max_file_bytes=7, max_total_bytes=19)
     assert (overridden.file_limit_bytes, overridden.total_limit_bytes) == (7, 19)
+
+
+def test_notes_folder_defaults_to_notes():
+    assert ProductSettings.model_validate({}).notes.notes_folder == "Notes"
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        "",
+        "../Notes",
+        "/Notes",
+        "Notes/../x",
+        ".Notes",
+        "Review",
+        "review",
+        "_Sources",
+        "Dropbox",
+        "_Trash",
+        "_Attachments",
+        "Journal",
+        "Review/Notes",
+        "Notes:2026",
+    ],
+)
+def test_a_notes_folder_that_collides_or_escapes_is_refused(configured: str):
+    with pytest.raises(ValidationError) as raised:
+        ProductSettings.model_validate({"notes": {"notes_folder": configured}})
+
+    assert "notes_folder" in str(raised.value) or "notes.notes_folder" in str(raised.value)
+
+
+def test_a_portable_notes_folder_is_accepted():
+    assert (
+        ProductSettings.model_validate({"notes": {"notes_folder": "Filed"}}).notes.notes_folder
+        == "Filed"
+    )

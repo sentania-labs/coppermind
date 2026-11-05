@@ -81,6 +81,7 @@ from coppermind.store_protocol import (
     ValidationFailed,
     artifact_text,
 )
+from coppermind_store.eligibility import awaiting_refile
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
 from coppermind_store.notes import (
     _build_frontmatter,
@@ -1214,6 +1215,12 @@ async def get_status(store: LocalStore) -> StatusResponse:
                 await session.scalar(sa.select(sa.func.count()).select_from(SearchUnreadable)) or 0
             )
             notes_awaiting_review = await session.scalar(awaiting) or 0
+            notes_to_refile = (
+                await session.scalar(
+                    sa.select(sa.func.count()).select_from(Note).where(awaiting_refile())
+                )
+                or 0
+            )
             by_state = (
                 await session.execute(sa.select(Note.state, sa.func.count()).group_by(Note.state))
             ).all()
@@ -1249,6 +1256,9 @@ async def get_status(store: LocalStore) -> StatusResponse:
             name_collisions=name_collisions,
             unparseable_files=notes_by_state.get("unparsed", 0),
             excluded_count=excluded_count,
+            notes_folder=store.control.settings().notes.notes_folder,
+            notes_to_refile=notes_to_refile,
+            notes_returned=len(store.control.read_reconciler_notices()),
             filing_failures=sum(p.kind == "filing" for p in problems),
             calendar_import_failures=sum(p.kind == "calendar_import" for p in problems),
             purge_problems=sum(p.kind in PURGE_PROBLEM_KINDS for p in problems),

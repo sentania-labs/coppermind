@@ -91,7 +91,7 @@ async def test_ingest_writes_an_immutable_bundle_linked_to_one_review_note(
     assert result.source.created is True
     assert result.note.created is True
     assert result.projection_path == (
-        "_Sources/_Pending/2026-09/2026-09-08 Acme Architecture Sync.md"
+        "_Sources/_Pending/2026/2026-09/2026-09-08 Acme Architecture Sync.md"
     )
 
     source_root = store.sources_root / result.source.id
@@ -509,7 +509,8 @@ async def test_the_note_and_its_projection_take_their_date_from_one_rule(store: 
 
     assert ingested.note.path == "Review/2026-09-08 Acme Architecture Sync.md"
     assert (
-        ingested.projection_path == "_Sources/_Pending/2026-09/2026-09-08 Acme Architecture Sync.md"
+        ingested.projection_path
+        == "_Sources/_Pending/2026/2026-09/2026-09-08 Acme Architecture Sync.md"
     )
 
 

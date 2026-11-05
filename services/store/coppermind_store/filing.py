@@ -17,6 +17,7 @@ from coppermind.embeds import rewrite_embeds
 from coppermind.ids import is_valid_id
 from coppermind.schema import date_field_problem, note_date, parse_note_time
 from coppermind.store_protocol import MoveNote, ReplaceNote, StoreError
+from coppermind_store.eligibility import rendered_note_folder
 from coppermind_store.fs import resolve
 from coppermind_store.maintenance import writer
 
@@ -88,7 +89,8 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     day = note_date(note.frontmatter, schema)
     if day is None:
         raise ValueError("a note date is required in date")
-    folder = day.strftime("%Y-%m")
+    month = day.strftime("%Y-%m")
+    folder = rendered_note_folder(settings.notes.notes_folder, day)
     journal = store.control.store.state_dir / "filing" / f"{note_id}.json"
     plan = json.loads(journal.read_bytes()) if journal.exists() else None
     manifests = {}
@@ -109,10 +111,21 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         )
         review = {"reviewed": True, "sources": approved}
         _save(review_path, review)
+    # A completed receipt for this very folder means the note sits elsewhere
+    # because someone moved it. A receipt for another folder is an upgrade or a
+    # date edit, which is a re-file and not drift.
+    hand_moved_from = (
+        note.path
+        if plan
+        and plan.get("complete")
+        and plan.get("folder") == folder
+        and not note.path.startswith(folder + "/")
+        else None
+    )
     same_filing = (
         plan
         and plan.get("complete")
-        and plan.get("month") == folder
+        and plan.get("folder") == folder
         and note.path.startswith(folder + "/")
         and set(note.sources) == {item["id"] for item in plan["sources"]}
     )
@@ -128,7 +141,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     if (
         plan
         and plan.get("complete")
-        and plan.get("month") == folder
+        and plan.get("folder") == folder
         and note.path.startswith(folder + "/")
         and set(note.sources) == {item["id"] for item in plan["sources"]}
         and all(
@@ -160,11 +173,17 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
                 "from": old_path,
                 "link_from": link_from,
                 "to": manifest.get("filed_projection_path")
-                or f"{settings.notes.sources_folder}/{folder}/{source_id}.md",
+                or f"{settings.notes.sources_folder}/{month}/{source_id}.md",
                 "revision": manifest["current_revision"],
             }
         )
-    plan = {"note_id": note_id, "month": folder, "sources": sources, "complete": False}
+    plan = {
+        "note_id": note_id,
+        "month": month,
+        "folder": folder,
+        "sources": sources,
+        "complete": False,
+    }
     async with transaction(store.session_factory) as session:
         await session.execute(sa.update(Note).where(Note.id == note_id).values(filed=False))
         # A move changes the projection path without changing its archive revision.
@@ -249,7 +268,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     if (
         note.frontmatter.get(schema.role("reviewed_key")) is not True
         or refreshed_day is None
-        or refreshed_day.strftime("%Y-%m") != folder
+        or refreshed_day.strftime("%Y-%m") != month
     ):
         raise ValueError("note review or date changed during filing")
     if set(note.sources) != {item["id"] for item in plan["sources"]}:
@@ -267,6 +286,17 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         )
     if not note.path.startswith(folder + "/"):
         note = await store.move_note(note_id, MoveNote(target_folder=folder), note.content_hash)
+        if hand_moved_from is not None:
+            store.control.record_reconciler_notice(
+                note_id=note_id,
+                from_path=hand_moved_from,
+                path=note.path,
+                folder=folder,
+                reason=(
+                    f"Moved back to {folder}/ because reviewed notes are filed by "
+                    "note date; a hand move outside that folder is not kept."
+                ),
+            )
     plan["complete"] = True
     plan.pop("error", None)
     _save(journal, plan)
