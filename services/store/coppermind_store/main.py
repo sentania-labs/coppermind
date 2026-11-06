@@ -60,6 +60,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             factory,
             sources_root=settings.sources_dir,
             calendar_database_url=settings.database_url_for("psycopg"),
+            artifacts_root=settings.artifacts_dir,
         )
         app.state.reconcile_status = ReconcilerStatus()
         reconcile_task = asyncio.create_task(
@@ -165,6 +166,10 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         checks = [Check(name="notes_filesystem", ok=writable, detail=detail)]
         sources_writable, sources_detail = is_writable(request.app.state.wiring.sources_dir)
         checks.append(Check(name="sources_filesystem", ok=sources_writable, detail=sources_detail))
+        artifacts_writable, artifacts_detail = is_writable(request.app.state.wiring.artifacts_dir)
+        checks.append(
+            Check(name="artifacts_filesystem", ok=artifacts_writable, detail=artifacts_detail)
+        )
         control_detail = _control_state_problem(request.app.state.store.control)
         checks.append(Check(name="control_state", ok=not control_detail, detail=control_detail))
         # Listings answer from the reconciler's mirror, so a reconciler that

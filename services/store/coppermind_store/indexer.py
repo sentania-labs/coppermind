@@ -3,7 +3,9 @@
 Human edits update published notes in the mirror transaction. Catch-up and
 rebuild apply the same publication gate. Source text additionally requires a
 reviewed projection for the current archive revision. Originals remain outside
-the search filesystem.
+the search filesystem. An artifact's extracted text is indexed when the
+artifact is stored, with no review gate, because nothing about it is a
+person's unreviewed draft.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from coppermind import frontmatter as fm
 from coppermind.db.models import (
+    Artifact,
     Note,
     NoteSource,
     SearchDocument,
@@ -38,7 +41,12 @@ from coppermind.store_protocol import (
     SearchIndexStatus,
     StoreError,
 )
-from coppermind_store.eligibility import current_source, eligible, reviewed_note
+from coppermind_store.eligibility import (
+    NOTES_FOLDER_DEFAULT,
+    current_source,
+    eligible,
+    reviewed_note,
+)
 from coppermind_store.fs import content_hash, resolve
 from coppermind_store.maintenance import writer
 
@@ -110,6 +118,39 @@ async def index_source(
     await _upsert(
         session, "source", source_id, path, title, body, source_version(revision), now, notes_folder
     )
+
+
+async def index_artifact(
+    session: AsyncSession,
+    *,
+    artifact_id: str,
+    path: str,
+    title: str,
+    body: str,
+    version: str,
+    now: datetime,
+) -> None:
+    """Write one artifact's entry, its body the extracted text, in the caller's transaction."""
+    # An artifact's eligibility never reads the notes root, so the default stands in.
+    await _upsert(
+        session, "artifact", artifact_id, path, title, body, version, now, NOTES_FOLDER_DEFAULT
+    )
+
+
+async def drop_entry(session: AsyncSession, kind: str, ref_id: str, now: datetime) -> None:
+    """Remove one entry of any kind, and its unreadable mark, recording the change."""
+    await session.execute(
+        sa.delete(SearchUnreadable).where(
+            SearchUnreadable.kind == kind, SearchUnreadable.ref_id == ref_id
+        )
+    )
+    result = await session.execute(
+        sa.delete(SearchDocument)
+        .where(SearchDocument.kind == kind, SearchDocument.ref_id == ref_id)
+        .returning(SearchDocument.ref_id)
+    )
+    if result.first() is not None:
+        await _changed(session, now)
 
 
 async def follow_note_path(session: AsyncSession, note_id: str, path: str) -> None:
@@ -228,6 +269,7 @@ async def status(store: LocalStore) -> SearchIndexStatus:
         known_unreadable=known_unreadable,
         notes=int(counts.get("note", 0)),
         sources=int(counts.get("source", 0)),
+        artifacts=int(counts.get("artifact", 0)),
         last_updated_at=max(known) if known else None,
         rebuild_running=store.search_rebuild_running(),
         rebuild_started_at=state.rebuild_started_at if state else None,
@@ -421,6 +463,10 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                                 ~eligible(SearchDocument.kind, SearchDocument.ref_id, notes_folder),
                                 ~current_source(SearchDocument.ref_id, SearchDocument.version),
                             ),
+                        ),
+                        sa.and_(
+                            SearchDocument.kind == "artifact",
+                            ~eligible(SearchDocument.kind, SearchDocument.ref_id, notes_folder),
                         ),
                     )
                 )
@@ -651,7 +697,63 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                 or str(store.sources_root / failure["ref_id"] / "manifest.json"),
             },
         )
+    counts["indexed"] += await _catch_up_artifacts(store, now)
     return counts
+
+
+async def _catch_up_artifacts(store: LocalStore, now: datetime) -> int:
+    """Index artifacts whose entry is missing or describes another revision or extractor.
+
+    The text comes from the record under the state directory, never from the
+    bytes themselves; a record that is not there yet is the sweep's to make.
+    """
+    from coppermind_store.artifacts import index_body, read_record, search_version
+
+    expected = sa.func.concat("r", Artifact.current_revision, ":", Artifact.extractor_version)
+    try:
+        async with store.session_factory() as session:
+            stale = (
+                await session.execute(
+                    sa.select(Artifact.id, Artifact.current_revision, Artifact.extractor_version)
+                    .outerjoin(
+                        SearchDocument,
+                        sa.and_(
+                            SearchDocument.kind == "artifact",
+                            SearchDocument.ref_id == Artifact.id,
+                        ),
+                    )
+                    .where(
+                        sa.or_(SearchDocument.ref_id.is_(None), SearchDocument.version != expected)
+                    )
+                    .order_by(Artifact.id)
+                    .limit(CATCH_UP_BATCH)
+                )
+            ).all()
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
+    indexed = 0
+    for row in stale:
+        document = await asyncio.to_thread(read_record, store, row.id)
+        if document is None:
+            continue
+        version = search_version(int(document["revision"]), str(document["extractor_version"]))
+        if version != search_version(row.current_revision, row.extractor_version):
+            continue
+        try:
+            async with transaction(store.session_factory) as session:
+                await index_artifact(
+                    session,
+                    artifact_id=row.id,
+                    path=document.get("path") or "",
+                    title=str(document["title"]),
+                    body=index_body(document),
+                    version=version,
+                    now=now,
+                )
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
+        indexed += 1
+    return indexed
 
 
 def _walk(
@@ -760,6 +862,7 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
             )
         )
     )
+    entries.extend(await _artifact_entries(store))
     now = datetime.now(tz=UTC)
     try:
         async with transaction(store.session_factory) as session:
@@ -793,7 +896,38 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
     # replaced by the older bytes the walk saw; the mirror knows better.
     await catch_up(store)
     current = await status(store)
-    return {"notes": current.notes, "sources": current.sources}
+    return {"notes": current.notes, "sources": current.sources, "artifacts": current.artifacts}
+
+
+async def _artifact_entries(store: LocalStore) -> list[Entry]:
+    """One entry per mirrored artifact, read from its record under the state directory."""
+    from coppermind_store.artifacts import index_body, read_record, search_version
+
+    try:
+        async with store.session_factory() as session:
+            ids = (await session.scalars(sa.select(Artifact.id).order_by(Artifact.id))).all()
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
+
+    def read() -> list[Entry]:
+        entries = []
+        for artifact_id in ids:
+            document = read_record(store, artifact_id)
+            if document is None:
+                continue
+            entries.append(
+                Entry(
+                    "artifact",
+                    artifact_id,
+                    document.get("path") or "",
+                    str(document["title"]),
+                    index_body(document),
+                    search_version(int(document["revision"]), str(document["extractor_version"])),
+                )
+            )
+        return entries
+
+    return await asyncio.to_thread(read)
 
 
 def _row(entry: Entry, now: datetime) -> dict[str, Any]:

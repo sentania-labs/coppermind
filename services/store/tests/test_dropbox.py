@@ -747,3 +747,106 @@ async def test_unsupported_receipt_can_be_dismissed(tmp_path):
     assert await dropbox.dismiss({"id": item["id"]}) == {"dismissed": item["id"]}
     assert dropbox.snapshot()["items"] == []
     assert dropbox.records()["history"][item["id"]]["state"] == "unsupported"
+
+
+async def test_a_kind_marker_routes_a_drop_to_the_artifact_store(tmp_path):
+    """A `.kind` sidecar saying artifact is the only way a non-calendar drop is taken."""
+    from coppermind.store_protocol import CreatedArtifact
+
+    store = local_store(tmp_path)
+    requests = []
+
+    async def create_artifact(request, *, payload_size_bytes=None):
+        requests.append(request)
+        return CreatedArtifact(
+            id="01K4Q8Z2A0P1Q2R3S4T5U6V7W8",
+            revision=1,
+            created=True,
+            path="Artifacts/2026/2026-11/deck.pptx",
+            title="Deck",
+        )
+
+    store.create_artifact = create_artifact
+    marked = store.context.dropbox.submit(
+        "deck.pptx", b"PK\x03\x04deck", {"kind": "artifact", "title": "Deck", "tags": ["reference"]}
+    )
+    assert marked["state"] == "pending" and marked["kind"]["kind"] == "artifact"
+    await store.context.dropbox.process()
+    item = store.context.dropbox.snapshot()["items"][0]
+    assert item["state"] == "succeeded"
+    assert item["parts"] == [{"artifact_id": "01K4Q8Z2A0P1Q2R3S4T5U6V7W8"}]
+    assert requests[0].kind == "artifact"
+    assert requests[0].filename == "deck.pptx"
+    assert requests[0].origin == "dropbox"
+    assert requests[0].title == "Deck"
+    assert requests[0].tags == ["reference"]
+    assert requests[0].bytes() == b"PK\x03\x04deck"
+
+
+async def test_an_unmarked_non_calendar_drop_is_parked_with_the_kind_instruction(tmp_path):
+    store = local_store(tmp_path)
+    store.context.dropbox.submit("deck.pptx", b"PK\x03\x04deck")
+    await store.context.dropbox.process()
+    item = store.context.dropbox.snapshot()["items"][0]
+    assert item["state"] == "unsupported"
+    assert "No kind marker" in item["error"]
+    assert ".kind" in item["error"] and "POST /v1/artifacts" in item["error"]
+    assert (store.context.root / "dropbox-originals" / item["id"]).exists()
+
+
+def test_submit_refuses_a_marker_that_is_not_artifact(tmp_path):
+    store = local_store(tmp_path)
+    with pytest.raises(ValueError, match="only artifact"):
+        store.context.dropbox.submit("x.pptx", b"PK", {"kind": "note"})
+
+
+async def test_the_folder_scan_pairs_a_sidecar_with_its_file(tmp_path, monkeypatch):
+    """The sidecar itself is never a drop, and the file beside it carries the marker."""
+    store = local_store(tmp_path)
+    folder = store.notes_root / store.context.config().dropbox_folder
+    folder.mkdir(parents=True)
+    (folder / "deck.pptx").write_bytes(b"PK\x03\x04deck")
+    (folder / "deck.pptx.kind").write_text("artifact\n", encoding="utf-8")
+    submitted = []
+
+    def submit(filename, data, kind=None):
+        submitted.append((filename, data, kind))
+        return {"id": "x", "state": "pending", "parts": [], "error": "", "filename": filename}
+
+    monkeypatch.setattr(store.context.dropbox, "submit", submit)
+    clock = iter([0.0, 100.0, 100.0, 100.0, 200.0, 200.0, 200.0, 200.0])
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: next(clock, 300.0))
+    await store.context.dropbox.scan()
+    await store.context.dropbox.scan()
+    assert submitted == [("deck.pptx", b"PK\x03\x04deck", {"kind": "artifact"})]
+
+
+async def test_a_marked_redrop_is_stored_again_after_the_artifact_was_removed(tmp_path):
+    from coppermind.store_protocol import CreatedArtifact
+
+    store = local_store(tmp_path)
+    stored = []
+
+    async def create_artifact(request, *, payload_size_bytes=None):
+        stored.append(request)
+        return CreatedArtifact(
+            id=f"01K4Q8Z2A0P1Q2R3S4T5U6V7W{len(stored)}",
+            revision=1,
+            created=True,
+            path="Artifacts/2026/2026-11/deck.pptx",
+            title="Deck",
+        )
+
+    store.create_artifact = create_artifact
+    dropbox = store.context.dropbox
+    marker = {"kind": "artifact"}
+    first = dropbox.submit("deck.pptx", b"PK\x03\x04deck", marker)
+    await dropbox.process()
+    assert dropbox.snapshot()["items"][0]["state"] == "succeeded"
+    assert dropbox.records()["history"][first["id"]]["state"] == "succeeded"
+    again = dropbox.submit("deck.pptx", b"PK\x03\x04deck", marker)
+    assert again["state"] == "pending"
+    await dropbox.process()
+    assert len(stored) == 2
+    assert dropbox.snapshot()["items"][0]["state"] == "succeeded"
+    assert dropbox.submit("deck.pptx", b"PK\x03\x04deck")["state"] == "already_imported"

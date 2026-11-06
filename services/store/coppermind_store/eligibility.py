@@ -7,7 +7,7 @@ from datetime import date
 
 import sqlalchemy as sa
 
-from coppermind.db.models import Note, NoteSource, Source
+from coppermind.db.models import Artifact, Note, NoteSource, Source
 from coppermind.naming import sanitize_folder
 
 MONTH_PATH = r"^[0-9]{4}-(0[1-9]|1[0-2])/"
@@ -66,7 +66,16 @@ def eligible(kind, ref_id, notes_folder: str):
             reviewed_note(notes_folder),
         )
     ).correlate_except(Note, NoteSource, Source)
-    return sa.or_(sa.and_(kind == "note", notes), sa.and_(kind == "source", sources))
+    # An artifact is indexed when it is stored: nothing about it is a human's
+    # unreviewed draft, so the only gate is that its mirror row still exists.
+    artifacts = sa.exists(sa.select(Artifact.id).where(Artifact.id == ref_id)).correlate_except(
+        Artifact
+    )
+    return sa.or_(
+        sa.and_(kind == "note", notes),
+        sa.and_(kind == "source", sources),
+        sa.and_(kind == "artifact", artifacts),
+    )
 
 
 def current_source(ref_id, version):

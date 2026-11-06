@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 import sqlalchemy as sa
 from coppermind_store import filing, indexer
+from coppermind_store.artifacts import browse_folder
 from coppermind_store.eligibility import reviewed_note
 from coppermind_store.reconciler import reconcile_once
 
@@ -26,6 +27,11 @@ async def approve(store, note_id):
         note_id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
     )
     return await filing.file_reviewed(store)
+
+
+def artifacts_month(store) -> str:
+    """Filed source artifacts are keyed on the source's ingest date: now, in these tests."""
+    return browse_folder(datetime.now(tz=UTC), store.control.settings())
 
 
 async def test_review_files_monthly_then_publishes_and_human_edit_stays_reviewed(store):
@@ -108,19 +114,23 @@ async def test_pdf_is_browsable_audio_stays_archived_and_database_loss_recovers(
         )
     result = await store.ingest(request)
     await approve(store, result.note.id)
-    paths = list((store.notes_root / "_Attachments").rglob("*"))
+    paths = list((store.notes_root / "Artifacts").rglob("*"))
     assert any(p.suffix == ".pdf" for p in paths)
     assert not any(p.suffix == ".wav" for p in paths)
+    assert not (store.notes_root / "_Attachments").exists()
     snapshot = {
         p.relative_to(store.sources_root): p.read_bytes()
         for p in store.sources_root.rglob("*")
         if p.is_file()
     }
     async with store.session_factory() as session:
-        await session.execute(sa.text("TRUNCATE notes, sources, search_documents CASCADE"))
+        await session.execute(
+            sa.text("TRUNCATE notes, sources, artifacts, search_documents CASCADE")
+        )
         await session.commit()
     recovered = await store.rebuild_metadata()
     assert recovered.counts["recovered_sources"] == 1
+    assert recovered.counts["recovered_artifacts"] == 1
     async with store.session_factory() as session:
         for model in (Note, Source, NoteSource):
             assert await session.scalar(sa.select(sa.func.count()).select_from(model)) == 1
@@ -289,7 +299,7 @@ async def test_device_rereview_approves_revised_pdf_without_overwriting_old_copy
     )
     result = await store.ingest(request)
     await approve(store, result.note.id)
-    original_pdf = next((store.notes_root / "_Attachments").rglob("*.pdf"))
+    browsable_pdf = next((store.notes_root / "Artifacts").rglob("*.pdf"))
     request.source.artifacts[0].content = "Revised aardvark transcript"
     request.source.artifacts[1].content = "version two"
     await store.ingest(request)
@@ -302,11 +312,16 @@ async def test_device_rereview_approves_revised_pdf_without_overwriting_old_copy
     assert (await filing.file_reviewed(store))["filing_failed"] == 0
     await indexer.catch_up(store)
     assert (await store.search(SearchQuery(q="aardvark"))).items
-    assert original_pdf.read_bytes() == b"version one"
-    assert {p.read_bytes() for p in (store.notes_root / "_Attachments").rglob("*.pdf")} == {
-        b"version one",
-        b"version two",
-    }
+    # The browsable copy follows the approved revision at its stable path, so the
+    # note's link keeps working; the archive keeps version one under revision 1.
+    assert browsable_pdf.read_bytes() == b"version two"
+    assert [p.name for p in (store.notes_root / "Artifacts").rglob("*.pdf")] == ["slides.pdf"]
+    from coppermind.store_protocol import ArtifactQuery
+
+    artifact = (await store.list_artifacts(ArtifactQuery())).items[0]
+    assert artifact.revision == 2
+    assert (await store.get_artifact_bytes(artifact.id, revision=1)).content == b"version one"
+    assert (await store.get_artifact_bytes(artifact.id, revision=2)).content == b"version two"
 
 
 async def test_approval_does_not_cover_a_revision_arriving_before_filing(store):
@@ -389,11 +404,12 @@ async def test_filing_rewrites_embeds_to_the_filed_attachment(store):
     before = await store.get_note(result.note.id)
     assert "![[x-image-01.jpg]]" in before.body
     await approve(store, result.note.id)
-    filed = f"_Attachments/2026-09/{result.source.id}-r0001-x-image-01.jpg"
+    filed = f"{artifacts_month(store)}/x-image-01.jpg"
     note = await store.get_note(result.note.id)
     assert f"![[{filed}]]" in note.body
     assert "![](unrelated.jpg)" in note.body
     assert (store.notes_root / filed).read_bytes() == b"synthetic jpeg one"
+    assert len(note.frontmatter["artifacts"]) == 1
     assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 0}
     assert (await store.get_note(result.note.id)).body == note.body
 
@@ -402,7 +418,7 @@ async def test_markdown_embed_is_rewritten_and_unmatched_note_is_unchanged(store
     request = image_request("md-embed", embed="![](x-image-01.jpg)")
     result = await store.ingest(request)
     await approve(store, result.note.id)
-    filed = f"_Attachments/2026-09/{result.source.id}-r0001-x-image-01.jpg"
+    filed = f"{artifacts_month(store)}/x-image-01.jpg"
     assert f"![]({filed})" in (await store.get_note(result.note.id)).body
     plain = await store.ingest(ingest_request("no-images"))
     body = (await store.get_note(plain.note.id)).body
@@ -434,13 +450,19 @@ async def test_new_revision_repoints_embeds_to_the_current_attachments(store):
     path.write_text(path.read_text().replace("reviewed: false", "reviewed: true"))
     await reconcile_once(store)
     assert (await filing.file_reviewed(store))["filing_failed"] == 0
-    current = f"_Attachments/2026-09/{result.source.id}-r0002-x-image-01.jpg"
-    old = f"_Attachments/2026-09/{result.source.id}-r0001-x-image-01.jpg"
+    # One stable browsable path per source artifact: the link never has to move
+    # again, the copy shows the approved revision, and the archive keeps both.
+    filed = f"{artifacts_month(store)}/x-image-01.jpg"
     body = (await store.get_note(result.note.id)).body
-    assert f"![[{current}]]" in body
-    assert f"![[{old}]]" not in body
-    assert (store.notes_root / old).read_bytes() == b"synthetic jpeg one"
-    assert (store.notes_root / current).read_bytes() == b"synthetic jpeg two"
+    assert body.count(f"![[{filed}]]") == 1
+    assert (store.notes_root / filed).read_bytes() == b"synthetic jpeg two"
+    from coppermind.store_protocol import ArtifactQuery
+
+    artifact = (await store.list_artifacts(ArtifactQuery())).items[0]
+    assert artifact.revision == 2 and artifact.path == filed
+    assert (
+        await store.get_artifact_bytes(artifact.id, revision=1)
+    ).content == b"synthetic jpeg one"
 
 
 async def _eligible_ids(store):

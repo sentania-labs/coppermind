@@ -76,3 +76,48 @@ def test_a_current_schema_is_not_rewritten(tmp_path):
     revision = control.store.read("schema").revision
     control.ensure_defaults()
     assert control.store.read("schema").revision == revision
+
+
+def test_a_saved_schema_gains_the_artifact_kind_keys_roles_and_reference_tag_once(tmp_path):
+    """Schema files written before artifacts existed get what the kind needs, and nothing else."""
+    from coppermind.schema import OPTIONAL_ROLES, REFERENCE_TAG
+
+    control = ControlState(tmp_path)
+    control.ensure_defaults()
+    state = control.store.read("schema")
+    body = dict(state.body)
+    body["keys"] = [key for key in body["keys"] if key["name"] not in {"kind", "artifacts"}]
+    body["roles"] = {k: v for k, v in body["roles"].items() if k not in OPTIONAL_ROLES}
+    body["tags"] = {"work": "The day job."}
+    control.store.write("schema", body, if_revision=state.revision)
+
+    control.ensure_defaults()
+
+    schema = control.schema()
+    keys = saved_keys(control)
+    assert keys["kind"].vocabulary == ["note", "artifact"]
+    assert keys["artifacts"].kind == "list"
+    assert schema.roles["kind_key"] == "kind"
+    assert schema.roles["artifacts_key"] == "artifacts"
+    assert schema.tags == {"work": "The day job.", REFERENCE_TAG: schema.tags[REFERENCE_TAG]}
+    revision = control.store.read("schema").revision
+    control.ensure_defaults()
+    assert control.store.read("schema").revision == revision
+
+
+def test_an_operator_who_renamed_the_citation_key_keeps_it(tmp_path):
+    control = ControlState(tmp_path)
+    control.ensure_defaults()
+    state = control.store.read("schema")
+    body = dict(state.body)
+    for key in body["keys"]:
+        if key["name"] == "artifacts":
+            key["name"] = "cites"
+    body["roles"]["artifacts_key"] = "cites"
+    control.store.write("schema", body, if_revision=state.revision)
+
+    control.ensure_defaults()
+
+    keys = saved_keys(control)
+    assert "cites" in keys and "artifacts" not in keys
+    assert control.schema().optional_role("artifacts_key") == "cites"

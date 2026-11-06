@@ -379,7 +379,7 @@ async def test_a_rebuild_recreates_the_index_from_the_files(store: LocalStore):
 
     counts = await indexer.rebuild(store)
 
-    assert counts == {"notes": 3, "sources": 1}
+    assert counts == {"notes": 3, "sources": 1, "artifacts": 0}
     assert await ids(store, "heron") == [first.id]
     assert await ids(store, "egret") == [second.id]
     assert await ids(store, "kerfuffle") == [result.source.id]
@@ -414,7 +414,7 @@ async def test_the_first_pass_after_the_upgrade_builds_the_index(store: LocalSto
 
     counts = await indexer.after_pass(store)
 
-    assert counts == {"notes": 1, "sources": 0}
+    assert counts == {"notes": 1, "sources": 0, "artifacts": 0}
     assert await ids(store, "kestrel") == [created.id]
     assert not await indexer.never_built(store)
 

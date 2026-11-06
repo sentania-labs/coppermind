@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class PurgeCandidate(BaseModel):
-    kind: Literal["note", "source"]
+    kind: Literal["note", "source", "artifact"]
     id: str
     title: str
     path: str
@@ -15,16 +15,19 @@ class PurgeCandidate(BaseModel):
     providers: list[str]
     deleted_at: datetime | None = None
     leftover: bool = False
+    reason: str | None = None
 
 
 class PurgeBreakdown(BaseModel):
     notes: int = 0
     sources: int = 0
+    artifacts: int = 0
 
 
 class PurgeCounts(BaseModel):
     notes: int = 0
     sources: int = 0
+    artifacts: int = 0
     by_origin: dict[str, PurgeBreakdown] = Field(default_factory=dict)
     by_provider: dict[str, PurgeBreakdown] = Field(default_factory=dict)
 
@@ -34,6 +37,7 @@ class PurgeKept(BaseModel):
 
     notes_within_retention: int = 0
     sources_in_use: int = 0
+    artifacts_within_retention: int = 0
 
 
 class PurgeResult(BaseModel):

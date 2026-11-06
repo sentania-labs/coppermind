@@ -193,11 +193,30 @@ of the notes history.
 Ingest creates an unreviewed draft. Mark it reviewed in Obsidian or through the
 frontmatter API. Reconciliation then files the note under `Notes/YYYY/YYYY-MM/`
 and its source page under `_Sources/YYYY/YYYY-MM/`; search includes them only after filing
-succeeds. PDFs and other non-text, non-audio attachments are copied into
-`_Attachments/YYYY-MM/`, and image embeds in the note that name an artifact are
-rewritten to those copies. Immutable originals stay under `/data/sources`, and
-audio remains archive-only. See [the n8n contract](docs/n8n-intake.md) for retry
-rules and the current upload-size limit.
+succeeds. PDFs and other non-text, non-audio source material are filed as
+artifacts: the bytes join the artifact archive, a browsable copy lands under
+`Artifacts/YYYY/YYYY-MM/`, the note cites it, and image embeds in the note
+that name the file are rewritten to that copy. Immutable originals stay under
+`/data/sources`, and audio remains archive-only. See
+[the n8n contract](docs/n8n-intake.md) for retry rules and the current
+upload-size limit.
+
+Hand in a deck, a PDF or a link as an **artifact**, the second kind of thing
+Coppermind holds beside notes. The kind is declared, never guessed:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/v1/artifacts \
+  -H "Authorization: Bearer $COPPERMIND_KEY" \
+  -F kind=artifact -F 'title=VCDX design package' -F tags=reference \
+  -F 'file=@design-package.pptx'
+```
+
+The file appears under `Artifacts/YYYY/YYYY-MM/` by its own name and nothing
+else appears in Obsidian; its bytes are kept immutable in the archive, its
+slide text is searchable at once with `kind: artifact` on the hit, and `GET
+/v1/artifacts/<id>` returns the record with the full extracted text. A note
+cites it with `artifacts: [<id>]` in its frontmatter. The key needs
+`artifacts:write` to store and `artifacts:read` to read.
 
 Read a source through the API as well, with a key holding `sources:read`. The
 manifest comes back as JSON, an artifact that decodes as text comes back as

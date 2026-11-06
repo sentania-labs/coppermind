@@ -24,6 +24,8 @@ API_SCOPES = (
     "notes:write",
     "notes:move",
     "notes:delete",
+    "artifacts:read",
+    "artifacts:write",
     "journal:read",
     "journal:write",
     "search:read",

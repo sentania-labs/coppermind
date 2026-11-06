@@ -60,12 +60,14 @@ def listing(value: PurgeResult, request: Request) -> str:
         ("provider", value.counts.by_provider),
     ]:
         rows = "".join(
-            f"<tr><td>{escape(k)}</td><td>{n.notes}</td><td>{n.sources}</td></tr>"
+            f"<tr><td>{escape(k)}</td><td>{n.notes}</td><td>{n.sources}</td>"
+            f"<td>{n.artifacts}</td></tr>"
             for k, n in sorted(values.items())
         )
         groups += (
             f"<section><h2>By {label}</h2><table><thead><tr><th>{label.capitalize()}</th>"
-            f"<th>Deleted notes</th><th>Orphaned sources</th></tr></thead>"
+            f"<th>Deleted notes</th><th>Orphaned sources</th>"
+            f"<th>Removed artifacts</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></section>"
         )
     rows = ""
@@ -76,15 +78,22 @@ def listing(value: PurgeResult, request: Request) -> str:
             if c.deleted_at
             else "Opening note removed"
         )
-        label = "Deleted note" if c.kind == "note" else "Orphaned source"
+        label = {
+            "note": "Deleted note",
+            "source": "Orphaned source",
+            "artifact": "Removed artifact",
+        }[c.kind]
         if c.leftover:
             label += " (leftover from an interrupted purge)"
         where = c.origins if c.origins == c.providers else [*c.origins, *c.providers]
+        if c.reason:
+            where = [*where, c.reason]
         rows += f"""<tr><td>{label}<br><strong>{name}</strong><br>{escape(c.path)}</td>
 <td>{"<br>".join(escape(v) for v in where)}</td><td>{when}</td></tr>"""
     return f"""<div class="metrics"><div class="metric">Deleted notes
 <strong>{value.counts.notes}</strong></div>
-<div class="metric">Orphaned sources<strong>{value.counts.sources}</strong></div></div>
+<div class="metric">Orphaned sources<strong>{value.counts.sources}</strong></div>
+<div class="metric">Removed artifacts<strong>{value.counts.artifacts}</strong></div></div>
 <div class="review-grid">{groups}</div>
 <p class="muted">An item associated with several origins or providers counts once in each group.</p>
 <h2>Items in this list</h2><table><thead><tr><th>Item</th><th>Origin / provider</th>
@@ -97,7 +106,8 @@ def kept_line(value: PurgeResult) -> str:
         '<p class="muted">Kept: '
         f"{plural(kept.notes_within_retention, 'deleted note')} still inside the "
         f"{value.retention_days}-day retention window and "
-        f"{plural(kept.sources_in_use, 'source')} still used by live notes. "
+        f"{plural(kept.sources_in_use, 'source')} still used by live notes, and "
+        f"{plural(kept.artifacts_within_retention, 'removed artifact')} still inside the window. "
         "Git history is never rewritten.</p>"
     )
 
@@ -182,8 +192,8 @@ def router(wiring: Wiring) -> APIRouter:
         days, revision = escape(days, quote=True), escape(revision, quote=True)
         return page(
             f'''{notice}{await attention(request)}
-<p>Remove deleted-note recovery copies and unused source material.
-First preview the list. Nothing is removed until you confirm it.</p>
+<p>Remove deleted-note recovery copies, the stored files of removed artifacts, and unused
+source material. First preview the list. Nothing is removed until you confirm it.</p>
 <p>Git history and its removal commits stay intact.
 Live notes and sources they reference are protected.
 Orphaned sources are eligible as soon as their opening note is deleted or purged
@@ -191,9 +201,11 @@ and no live note cites them.
 Notes still present in Trash are protected.</p>
 <form method="post" action="/v1/admin/purge/preview">
 <input type="hidden" name="revision" value="{revision}">
-<label for="days">Keep deleted notes for (days)</label>
+<label for="days">Keep deleted notes and removed artifacts for (days)</label>
 <input id="days" name="days" type="number" min="0" max="36500" required value="{days}">
-<p class="field-help">Default: 30 days from the recorded deletion. Zero permits immediate removal.
+<p class="field-help">Default: 30 days from the recorded deletion or removal. Zero permits immediate
+removal. The same window covers a deleted note and an artifact removed here, through the API or by
+deleting its file in Obsidian.
 Save a changed value before previewing. Saving does not start a purge.</p>
 <button>Preview what will be removed</button>
 <button class="secondary" formaction="/v1/admin/purge/settings">Save retention</button>
@@ -273,6 +285,11 @@ Save a changed value before previewing. Saving does not start a purge.</p>
                         if value.counts.sources == 1
                         else "their original bundles and generated pages"
                     )
+                )
+            if value.counts.artifacts:
+                parts.append(
+                    f"{plural(value.counts.artifacts, 'removed artifact')} "
+                    "with their archived bytes"
                 )
             action = (
                 "Retry removal of listed items" if unfinished else "Permanently remove listed items"

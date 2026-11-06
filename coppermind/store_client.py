@@ -10,7 +10,7 @@ network.
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import httpx
 from pydantic import TypeAdapter
@@ -18,7 +18,17 @@ from pydantic import TypeAdapter
 from coppermind.api_keys import ApiKeySet
 from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
 from coppermind.store_protocol import (
+    ArtifactBytes,
+    ArtifactId,
+    ArtifactMissing,
     ArtifactNotFound,
+    ArtifactQuery,
+    ArtifactRecord,
+    ArtifactRemoval,
+    ArtifactsFilesystemUnavailable,
+    ArtifactSummary,
+    CreateArtifact,
+    CreatedArtifact,
     CreateNote,
     ETag,
     FieldIndexNotReady,
@@ -49,6 +59,7 @@ from coppermind.store_protocol import (
     PurgeConflict,
     RebuildMetadataResult,
     RebuildSearchIndexResult,
+    ReconcilerNotice,
     RenameNote,
     ReplaceNote,
     RestoreNote,
@@ -76,6 +87,7 @@ INTERNAL_PREFIX = "/internal/v1"
 PURGE_TIMEOUT_S = 600.0
 _NOTE_SOURCES = TypeAdapter(list[NoteSourceInfo])
 _PROBLEMS = TypeAdapter(list[ProblemInfo])
+_RECONCILER_NOTICES = TypeAdapter(list[ReconcilerNotice])
 
 
 def _segment(value: str) -> str:
@@ -259,6 +271,10 @@ class HttpStoreClient:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/problems")
         return _PROBLEMS.validate_python(response.json())
 
+    async def list_reconciler_notices(self) -> list[ReconcilerNotice]:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/reconciler_notices")
+        return _RECONCILER_NOTICES.validate_python(response.json())
+
     async def dismiss_reconciler_notice(self, note_id: NoteId) -> None:
         await self._send(
             "POST", f"{INTERNAL_PREFIX}/reconciler_notices/{_segment(note_id)}/dismiss"
@@ -315,6 +331,67 @@ class HttpStoreClient:
         response = await self._send("POST", f"{INTERNAL_PREFIX}/jobs/rebuild_search_index")
         return RebuildSearchIndexResult.model_validate(response.json())
 
+    async def create_artifact(
+        self, request: CreateArtifact, *, payload_size_bytes: int | None = None
+    ) -> CreatedArtifact:
+        headers = (
+            {"X-Coppermind-Payload-Bytes": str(payload_size_bytes)}
+            if payload_size_bytes is not None
+            else None
+        )
+        response = await self._send(
+            "POST",
+            f"{INTERNAL_PREFIX}/artifacts",
+            json=request.model_dump(mode="json", exclude_none=True),
+            headers=headers,
+        )
+        return CreatedArtifact.model_validate(response.json())
+
+    async def get_artifact(self, artifact_id: ArtifactId) -> ArtifactRecord:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/artifacts/{_segment(artifact_id)}")
+        return ArtifactRecord.model_validate(response.json())
+
+    async def get_artifact_bytes(
+        self, artifact_id: ArtifactId, revision: int | None = None
+    ) -> ArtifactBytes:
+        response = await self._send(
+            "GET",
+            f"{INTERNAL_PREFIX}/artifacts/{_segment(artifact_id)}/bytes",
+            params={"revision": revision} if revision is not None else None,
+        )
+        return ArtifactBytes(
+            id=response.headers.get("X-Coppermind-Artifact-Id", artifact_id),
+            revision=int(response.headers.get("X-Coppermind-Revision", revision or 1)),
+            filename=unquote(response.headers.get("X-Coppermind-Filename", "")),
+            mime_type=unquote(
+                response.headers.get("X-Coppermind-Mime-Type", "application/octet-stream")
+            ),
+            sha256=response.headers.get("X-Coppermind-SHA256", ""),
+            size_bytes=int(response.headers.get("X-Coppermind-Size-Bytes", len(response.content))),
+            content=response.content,
+        )
+
+    async def list_artifacts(self, query: ArtifactQuery) -> Page[ArtifactSummary]:
+        response = await self._send(
+            "GET",
+            f"{INTERNAL_PREFIX}/artifacts",
+            params=query.model_dump(mode="json", by_alias=True, exclude_none=True),
+        )
+        return Page[ArtifactSummary].model_validate(response.json())
+
+    async def remove_artifact(
+        self, artifact_id: ArtifactId, removal: ArtifactRemoval = "admin"
+    ) -> None:
+        await self._send(
+            "DELETE",
+            f"{INTERNAL_PREFIX}/artifacts/{_segment(artifact_id)}",
+            params={"removal": removal},
+        )
+
+    async def get_artifact_limit(self) -> int:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/artifacts/limit")
+        return int(response.json()["limit_bytes"])
+
     async def is_ready(self) -> bool:
         """True when the store reports itself ready. Never raises."""
         try:
@@ -346,6 +423,8 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         )
     if response.status_code == 404 and "source_id" in payload:
         return SourceNotFound(payload.get("source_id", ""))
+    if response.status_code == 404 and "artifact_id" in payload:
+        return ArtifactMissing(payload.get("artifact_id", ""))
     if response.status_code == 404:
         return NotFound(payload.get("note_id", message))
     if code == "field_index_not_ready":
@@ -370,6 +449,8 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         return PayloadTooLarge(payload.get("limit_bytes", 0))
     if code == "sources_filesystem_unavailable":
         return SourcesFilesystemUnavailable(payload.get("detail", message))
+    if code == "artifacts_filesystem_unavailable":
+        return ArtifactsFilesystemUnavailable(payload.get("detail", message))
     if code == "version_conflict":
         return VersionConflict(payload.get("current_version", ""))
     if code == "precondition_required":

@@ -72,8 +72,20 @@ class NotesSettings(BaseModel):
             "strands existing projections; move them deliberately before changing it."
         ),
     )
+    artifacts_folder: str = Field(
+        default="Artifacts",
+        description=(
+            "Folder for artifacts, the files and links handed in beside notes, filed by "
+            "year and month of the day they were received. The file itself sits here; its "
+            "extracted record never does."
+        ),
+    )
     attachments_folder: str = Field(
-        default="_Attachments", description="Folder for note attachments."
+        default="_Attachments",
+        description=(
+            "Legacy folder for filed attachments. Files found here are moved into the "
+            "artifacts folder and registered as artifacts; nothing new is written here."
+        ),
     )
     journal_folder: str = Field(default="Journal", description="Folder for journal notes.")
     dated_types: list[str] = Field(
@@ -105,6 +117,7 @@ class NotesSettings(BaseModel):
             ("trash_folder", self.trash_folder),
             ("sources_folder", self.sources_folder),
             ("attachments_folder", self.attachments_folder),
+            ("artifacts_folder", self.artifacts_folder),
             ("journal_folder", self.journal_folder),
             ("Dropbox", "Dropbox"),
         )
@@ -122,6 +135,19 @@ class NotesSettings(BaseModel):
                     f"reserved root {candidate!r} ({label})"
                 )
         return self
+
+    @field_validator("artifacts_folder")
+    @classmethod
+    def validate_artifacts_folder(cls, value: str) -> str:
+        """A portable folder name, spelled the way the notes filesystem will hold it."""
+        portable = sanitize_folder(value)
+        if not portable:
+            raise ValueError(f"{value!r} names no folder; give the artifacts folder a name")
+        if portable != value:
+            raise ValueError(
+                f"{value!r} is written to the notes filesystem as {portable!r}; configure that"
+            )
+        return value
 
     @field_validator("sources_folder")
     @classmethod
@@ -338,8 +364,9 @@ class RetentionSettings(BaseModel):
         le=36500,
         strict=True,
         description=(
-            "Days to keep deleted-note recovery copies before a manual purge. "
-            "Zero allows immediate purge. Git history is retained."
+            "Days to keep deleted-note recovery copies and the stored files of removed "
+            "artifacts before a manual purge. Zero allows immediate purge. Git history is "
+            "retained."
         ),
     )
 
@@ -372,10 +399,19 @@ class LimitSettings(BaseModel):
     ingest_max_bytes: int = Field(
         default=25 * MIB, gt=0, description="Maximum ingest payload in bytes."
     )
-    # Null marks this override as unset. Attachment ingest derives the sync
-    # file ceiling when its consumer lands.
+    artifact_max_bytes: int = Field(
+        default=10 * MIB,
+        ge=1,
+        description=(
+            "Maximum artifact file in bytes accepted inline. A larger upload is refused "
+            "with 413; files above this need the staged upload path, which is not built yet."
+        ),
+    )
+    # Null marks this override as unset. Kept so a settings file written before
+    # artifacts existed still loads; artifact_max_bytes is the live ceiling.
     attachment_max_bytes: int | None = Field(
-        default=None, description="Attachment ceiling in bytes; null uses the sync file limit."
+        default=None,
+        description="Legacy attachment ceiling; superseded by artifact_max_bytes.",
     )
 
 
@@ -479,6 +515,11 @@ class Wiring(BaseSettings):
     @property
     def sources_dir(self) -> Path:
         return self.data_dir / "sources"
+
+    @property
+    def artifacts_dir(self) -> Path:
+        """The immutable artifact archive, beside the source bundles."""
+        return self.data_dir / "artifacts"
 
     @property
     def state_dir(self) -> Path:

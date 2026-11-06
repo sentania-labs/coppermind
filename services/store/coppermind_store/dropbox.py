@@ -1,18 +1,31 @@
-"""Transient intake receipts backed by durable original exports and import history."""
+"""Transient intake receipts backed by durable original exports and import history.
+
+Calendar exports route themselves by their bytes. Anything else needs a kind
+marker to be taken at all: a sidecar `<filename>.kind` beside the dropped file
+(the word `artifact`, or JSON with `kind` and optional `title`, `tags` and
+`date`), or `kind=artifact` on the upload route. Without one the file is
+parked as unsupported rather than guessed at, because a guess is how a design
+package ends up filed as a meeting.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import json
 import logging
 import os
 import stat
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from coppermind.atomicio import atomic_write_bytes
+from coppermind.store_protocol import CreateArtifact, CreatedArtifact, StoreError
 from coppermind_store.calendar_import import CALENDAR_ID, MAX_UPLOAD
 
 if TYPE_CHECKING:
@@ -21,20 +34,63 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 COMPLETED = {"succeeded", "already_imported"}
 RECEIPT_RETENTION_S = 7 * 86400
+KIND_SUFFIX = ".kind"
+OFFICE_SUFFIXES = {".pptx", ".docx", ".xlsx", ".odt", ".odp", ".ods", ".epub"}
+NO_KIND = (
+    "No kind marker. Drop a sidecar named <filename>.kind containing the word artifact, "
+    "or upload through POST /v1/artifacts with kind: artifact. Original preserved."
+)
+
+
+def read_kind_marker(data: bytes) -> dict[str, Any] | None:
+    """What a `.kind` sidecar declares, or None when it declares nothing usable.
+
+    Plain text `artifact` is enough. JSON may add `title`, `tags` and `date`,
+    the same declared metadata the upload route takes.
+    """
+    try:
+        text = data.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None
+    if not text or len(text) > 4096:
+        return None
+    if text.startswith("{"):
+        try:
+            loaded = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(loaded, dict) or loaded.get("kind") != "artifact":
+            return None
+        marker: dict[str, Any] = {"kind": "artifact"}
+        if isinstance(loaded.get("title"), str) and loaded["title"].strip():
+            marker["title"] = loaded["title"].strip()
+        if isinstance(loaded.get("tags"), list):
+            marker["tags"] = [tag for tag in loaded["tags"] if isinstance(tag, str)]
+        if isinstance(loaded.get("date"), str):
+            marker["date"] = loaded["date"]
+        return marker
+    return {"kind": "artifact"} if text.split()[0].lower() == "artifact" else None
 
 
 class Dropbox:
     def __init__(self, context: ContextService) -> None:
         self.context = context
-        self.seen: dict[str, tuple[tuple[int, int], float]] = {}
+        self.seen: dict[str, tuple[tuple[int, int, int, int], float]] = {}
 
     @staticmethod
     def handler(data: bytes, filename: str) -> str | None:
+        """The calendar handler for these bytes, or None when they are not a calendar.
+
+        Office documents are ZIP containers too, so a deck or a document named
+        as one is never mistaken for a zipped calendar export.
+        """
+        suffix = Path(filename).suffix.lower()
+        if suffix in OFFICE_SUFFIXES:
+            return None
         if data.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"BEGIN:VCALENDAR"):
             return ".ics"
         if data.startswith(b"PK\x03\x04"):
             return ".zip"
-        suffix = Path(filename).suffix.lower()
         return suffix if suffix in {".ics", ".zip"} else None
 
     def records(self) -> dict[str, Any]:
@@ -54,30 +110,37 @@ class Dropbox:
             if item["state"] not in COMPLETED or item.get("completed_at", time.time()) > cutoff
         }
 
-    def submit(self, filename: str, data: bytes) -> dict[str, Any]:
+    def submit(
+        self, filename: str, data: bytes, kind: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         if not filename or len(filename) > 255 or any(ord(c) < 32 for c in filename):
             raise ValueError("invalid filename")
         if len(data) > MAX_UPLOAD:
             raise ValueError("Dropbox intake limit is 200 MB; file remains in the vault")
+        if kind is not None and kind.get("kind") != "artifact":
+            raise ValueError("kind: only artifact is accepted; calendars route themselves")
         digest = hashlib.sha256(data).hexdigest()
         records = self.records()
         existing = records["items"].get(digest)
-        if existing and existing["state"] not in COMPLETED | {"failed"}:
+        if existing and existing["state"] not in COMPLETED | {"failed", "unsupported"}:
             return existing
-        history = records["history"].get(digest, {})
-        imported = next(
-            (
-                r
-                for r in self.context.archive.receipts()
-                if r.content_hash == digest and r.state == "succeeded"
-            ),
-            None,
-        )
-        if imported is not None:
-            history = {"state": "succeeded", "parts": [{"import_id": imported.id}]}
-        duplicate = history.get("state") in COMPLETED or (
-            existing and existing["state"] in COMPLETED
-        )
+        history: dict[str, Any] = {}
+        duplicate = False
+        if kind is None:
+            history = records["history"].get(digest, {})
+            imported = next(
+                (
+                    r
+                    for r in self.context.archive.receipts()
+                    if r.content_hash == digest and r.state == "succeeded"
+                ),
+                None,
+            )
+            if imported is not None:
+                history = {"state": "succeeded", "parts": [{"import_id": imported.id}]}
+            duplicate = history.get("state") in COMPLETED or bool(
+                existing and existing["state"] in COMPLETED
+            )
         atomic_write_bytes(self.context.root / "dropbox-originals" / digest, data, mode=0o600)
         item = {
             "id": digest,
@@ -86,6 +149,7 @@ class Dropbox:
             "parts": history.get("parts", []) if duplicate else [],
             "error": "",
             "received_at": datetime.now(UTC).isoformat(),
+            "kind": kind or {},
         }
         if duplicate:
             item["completed_at"] = time.time()
@@ -114,6 +178,14 @@ class Dropbox:
             return None
         return data
 
+    @staticmethod
+    def sidecar_signature(path: Path) -> tuple[int, int]:
+        try:
+            info = path.lstat()
+        except OSError:
+            return (0, -1)
+        return (info.st_mtime_ns, info.st_size)
+
     async def process(self) -> None:
         records = self.records()
         self.expire(records)
@@ -122,12 +194,17 @@ class Dropbox:
                 try:
                     data = await asyncio.to_thread(self.original, item["id"])
                     handler = self.handler(data, item["filename"])
-                    if handler is None:
+                    marker = item.get("kind") or {}
+                    if marker.get("kind") == "artifact":
+                        stored = await self._store_artifact(item, data, marker)
+                        item["parts"] = [{"artifact_id": stored.id}]
+                        item["state"] = "succeeded"
+                        item["completed_at"] = time.time()
+                        log.info("Dropbox adopt artifact %s", item["id"])
+                    elif handler is None:
                         item["state"] = "unsupported"
-                        item["error"] = (
-                            "Unsupported file type. Original preserved; dismiss this receipt."
-                        )
-                        log.info("Dropbox park export %s: unsupported file type", item["id"])
+                        item["error"] = NO_KIND
+                        log.info("Dropbox park export %s: no kind marker", item["id"])
                     else:
                         name = item["filename"]
                         if Path(name).suffix.lower() != handler:
@@ -141,14 +218,18 @@ class Dropbox:
                         )
                         item["parts"] = [{"import_id": receipt.id}]
                         item["state"] = "importing"
-                except (ValueError, OSError) as exc:
+                except (ValueError, OSError, StoreError) as exc:
                     item["state"], item["error"] = "failed", str(exc)
                     log.info("Dropbox fail export %s", item["id"])
                 self.save(records)
                 break
         receipts = {r.id: r for r in await asyncio.to_thread(self.context.archive.receipts)}
         for item in records["items"].values():
-            if item["state"] in {"importing", "failed"} and item["parts"]:
+            if (
+                item["state"] in {"importing", "failed"}
+                and item["parts"]
+                and all("import_id" in part for part in item["parts"])
+            ):
                 imports = [receipts[p["import_id"]] for p in item["parts"]]
                 if all(r.state == "succeeded" for r in imports):
                     item["state"] = "succeeded"
@@ -162,6 +243,30 @@ class Dropbox:
             if item["state"] not in {"pending", "importing"}:
                 records["history"][item["id"]] = dict(item)
         self.save(records)
+
+    async def _store_artifact(
+        self, item: dict[str, Any], data: bytes, marker: dict[str, Any]
+    ) -> CreatedArtifact:
+        """Hand a marked drop to the artifact store, declared kind and all."""
+        received: date | None = None
+        if isinstance(marker.get("date"), str):
+            try:
+                received = date.fromisoformat(marker["date"])
+            except ValueError:
+                raise ValueError("kind marker: date must be YYYY-MM-DD") from None
+        try:
+            request = CreateArtifact(
+                kind="artifact",
+                title=marker.get("title"),
+                date=received,
+                tags=list(marker.get("tags", [])),
+                origin="dropbox",
+                filename=item["filename"],
+                content_base64=base64.b64encode(data).decode(),
+            )
+        except ValidationError as exc:
+            raise ValueError("; ".join(error["msg"] for error in exc.errors())) from exc
+        return await self.context.store.create_artifact(request)
 
     async def dismiss(self, payload: dict[str, Any]) -> dict[str, Any]:
         async with self.context.lock:
@@ -185,7 +290,7 @@ class Dropbox:
         items = []
         for item in records["items"].values():
             imports = [
-                receipts[p["import_id"]] for p in item["parts"] if p["import_id"] in receipts
+                receipts[p["import_id"]] for p in item["parts"] if p.get("import_id") in receipts
             ]
             items.append(
                 dict(
@@ -224,9 +329,10 @@ class Dropbox:
             dirs[:] = [
                 d for d in dirs if not d.startswith(".") and not (Path(directory) / d).is_symlink()
             ]
+            markers = {name for name in files if name.endswith(KIND_SUFFIX)}
             for name in files:
                 path = Path(directory) / name
-                if name.startswith(".") or path.suffix.lower() == ".md":
+                if name.startswith(".") or path.suffix.lower() == ".md" or name in markers:
                     continue
                 count += 1
                 if count > 1000:
@@ -239,12 +345,13 @@ class Dropbox:
                 key = str(path.relative_to(root))
                 present.add(key)
                 signature = (info.st_mtime_ns, info.st_size)
+                observed = signature + self.sidecar_signature(path.parent / (name + KIND_SUFFIX))
                 records = self.records()
-                if records["observations"].get(key) == list(signature):
+                if records["observations"].get(key) == list(observed):
                     continue
                 old = self.seen.get(key)
-                if old is None or old[0] != signature:
-                    self.seen[key] = (signature, time.monotonic())
+                if old is None or old[0] != observed:
+                    self.seen[key] = (observed, time.monotonic())
                     log.info("Dropbox park file: waiting for stable bytes")
                     continue
                 if time.monotonic() - old[1] < 30:
@@ -259,7 +366,17 @@ class Dropbox:
                             data = await asyncio.to_thread(self.read_stable, path, signature)
                             if data is None:
                                 continue
-                            await asyncio.to_thread(self.submit, name, data)
+                            marker = None
+                            if name + KIND_SUFFIX in markers:
+                                marker = read_kind_marker(
+                                    (path.parent / (name + KIND_SUFFIX)).read_bytes()
+                                )
+                                if marker is None:
+                                    raise ValueError(
+                                        "The .kind sidecar does not declare artifact; "
+                                        "nothing was stored."
+                                    )
+                            await asyncio.to_thread(self.submit, name, data, marker)
                             records = self.records()
                         except ValueError as exc:
                             error = str(exc)
@@ -275,7 +392,7 @@ class Dropbox:
                             "error": error,
                         }
                         log.info("Dropbox fail file: intake rejected")
-                    records["observations"][key] = list(signature)
+                    records["observations"][key] = list(observed)
                     self.save(records)
         async with self.context.lock:
             self.seen = {key: value for key, value in self.seen.items() if key in present}

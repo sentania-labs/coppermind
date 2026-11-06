@@ -1,8 +1,9 @@
 """`/v1/search`: full-text search over note bodies and titles.
 
-Needs `notes:read`. The store answers from its PostgreSQL full-text index,
-which it keeps current from the metadata mirror and can rebuild from the notes
-filesystem at any time; nothing here reads or writes a file.
+Needs `notes:read`, and `artifacts:read` to see artifact hits. The store answers
+from its PostgreSQL full-text index, which it keeps current from the metadata
+mirror and can rebuild from the notes filesystem at any time; nothing here
+reads or writes a file.
 """
 
 from __future__ import annotations
@@ -25,15 +26,19 @@ router = APIRouter(prefix="/v1", tags=["search"])
 async def search(
     query: Annotated[SearchQuery, Query()],
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("notes:read")),
+    principal: Principal = Depends(require_scopes("notes:read")),
 ) -> Page[SearchHit] | JSONResponse:
     """Notes and source projections matching `q`, best match first.
 
     Takes every filter `GET /v1/notes` takes and pages the same way, by an
     opaque `cursor` and a `limit` of 1 through 200 (50 by default). A hit
     under the sources folder that the store generated says `kind: "source"`
-    and carries the source identifier as its `id`.
+    and carries the source identifier as its `id`. Artifact hits carry extracted
+    text, so they are returned only to a key that holds `artifacts:read`; for any
+    other key they are left out and the search still succeeds.
     """
+    if not principal.has("artifacts:read"):
+        query = query.model_copy(update={"include_artifacts": False})
     try:
         return await client.search(query)
     except StoreError as error:

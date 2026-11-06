@@ -42,7 +42,7 @@ LABELS = {
     "limits.calendar_import_memory_mib": "Calendar import memory budget (MiB)",
     "general.timezone": "Local timezone",
     "notes.notes_folder": "Folder for reviewed notes",
-    "retention.days": "Keep deleted notes for (days)",
+    "retention.days": "Keep deleted notes and removed artifacts for (days)",
     "reconcile.scan_interval_s": "Check for file changes every (seconds)",
     "reconcile.quiet_period_s": "Wait for new files to settle (seconds)",
     "reconcile.full_rehash_daily_at": "Full daily scan at (local time)",
@@ -51,6 +51,10 @@ LABELS = {
     "git.debounce_s": "Wait after an edit before recording history (seconds)",
     "git.poll_interval_s": "Check for missed changes every (seconds)",
     "admin.session_hours": "Sign in again after (hours)",
+    "notes.artifacts_folder": "Folder for artifacts (filed by the year and month received)",
+    "notes.attachments_folder": "Legacy attachments folder (migrated into artifacts)",
+    "limits.artifact_max_bytes": "Maximum artifact file (bytes)",
+    "limits.attachment_max_bytes": "Legacy attachment ceiling (superseded)",
 }
 
 

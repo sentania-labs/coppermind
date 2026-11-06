@@ -251,6 +251,17 @@ def test_a_failed_confirmation_names_the_volume_and_the_way_back(signed_in):
     assert "the notes filesystem" not in notes.text
 
 
+def test_retention_says_it_covers_removed_artifacts(signed_in):
+    client, _ = signed_in
+    client.app.state.store = PurgeStore()
+    text = " ".join(client.get("/admin/purge").text.split())
+    assert "Keep deleted notes and removed artifacts for (days)" in text
+    assert "the stored files of removed artifacts" in text
+    assert "an artifact removed here, through the API or by deleting its file in Obsidian" in text
+    settings = client.get("/admin/settings?section=retention").text
+    assert "Keep deleted notes and removed artifacts for (days)" in settings
+
+
 def test_retention_has_one_home(signed_in):
     client, _ = signed_in
     moved = client.get("/admin/settings?section=retention", follow_redirects=False)

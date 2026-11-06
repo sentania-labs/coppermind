@@ -14,6 +14,7 @@ from coppermind.store_protocol import StoreError
 from coppermind_api.auth import Principal
 from coppermind_api.deps import require_scopes, store
 from coppermind_api.errors import failure
+from coppermind_api.v1.artifacts import too_large
 
 router = APIRouter(prefix="/v1", tags=["workflow"])
 
@@ -91,21 +92,44 @@ async def dismiss_drop(
 async def drop(
     request: Request,
     filename: str = Query(min_length=1, max_length=255),
+    kind: str | None = Query(default=None, min_length=1, max_length=40),
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("sources:write")),
+    principal: Principal = Depends(require_scopes("sources:write")),
 ) -> Response:
+    """Drop a file. Calendars route themselves; anything else needs `kind=artifact`.
+
+    A drop that declares a kind stores an artifact, so it also needs `artifacts:write`.
+    """
+    if kind is not None and not principal.has("artifacts:write"):
+        return JSONResponse(
+            {
+                "error": "forbidden",
+                "message": "the API key does not grant the required scope",
+            },
+            403,
+        )
+    ceiling = 200_000_000
+    if kind is not None:
+        try:
+            ceiling = await client.get_artifact_limit()
+        except StoreError as exc:
+            return failure(exc)
     data = bytearray()
     async for chunk in request.stream():
         data.extend(chunk)
-        if len(data) > 200_000_000:
+        if len(data) > ceiling:
+            if kind is not None:
+                return too_large(ceiling)
             return JSONResponse(
                 {"error": "payload_too_large", "message": "Dropbox limit: 200,000,000 bytes"}, 413
             )
-    result = await call(
-        client,
-        "upload-drop",
-        {"filename": filename, "content_base64": base64.b64encode(data).decode()},
-    )
+    payload: dict[str, Any] = {
+        "filename": filename,
+        "content_base64": base64.b64encode(data).decode(),
+    }
+    if kind is not None:
+        payload["kind"] = kind
+    result = await call(client, "upload-drop", payload)
     if result.status_code == 200:
         result.status_code = 202
     return result

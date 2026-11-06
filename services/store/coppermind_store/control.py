@@ -16,7 +16,16 @@ from typing import Any
 
 from coppermind.api_keys import ApiKeySet
 from coppermind.logging import get_logger
-from coppermind.schema import FrontmatterSchema, default_schema, shipped_key_upgrades
+from coppermind.schema import (
+    OPTIONAL_ROLES,
+    REFERENCE_TAG,
+    REFERENCE_TAG_MEANING,
+    FrontmatterSchema,
+    artifacts_key_definition,
+    default_schema,
+    kind_key_definition,
+    shipped_key_upgrades,
+)
 from coppermind.settings import ProductSettings, default_settings, read_settings
 from coppermind.statefiles import RevisionConflict, StateStore
 from coppermind.store_protocol import SchemaDocument
@@ -75,10 +84,29 @@ class ControlState:
                 else:
                     log.info("saved_schema_key_customised", key=definition.name)
             keys.append(definition)
-        if keys != saved.keys:
+        # The artifact kind arrived after the first schema files were written:
+        # a saved schema gains the two keys it needs, the roles that name them
+        # and the documented `reference` tag, each only when absent, so an
+        # operator's own definition of either is left alone.
+        names = {definition.name for definition in keys}
+        roles = dict(saved.roles)
+        for role, shipped in (
+            ("kind_key", kind_key_definition()),
+            ("artifacts_key", artifacts_key_definition()),
+        ):
+            key = roles.get(role, OPTIONAL_ROLES[role])
+            if key not in names:
+                keys.append(shipped.model_copy(update={"name": key}))
+                names.add(key)
+            roles.setdefault(role, key)
+        tags = dict(saved.tags)
+        tags.setdefault(REFERENCE_TAG, REFERENCE_TAG_MEANING)
+        if keys != saved.keys or roles != saved.roles or tags != saved.tags:
             self.store.write(
                 "schema",
-                saved.model_copy(update={"keys": keys}).model_dump(mode="json"),
+                saved.model_copy(update={"keys": keys, "roles": roles, "tags": tags}).model_dump(
+                    mode="json"
+                ),
                 if_revision=state.revision,
             )
 

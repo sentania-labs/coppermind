@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import hashlib
 import json
 import logging
@@ -50,6 +51,7 @@ from coppermind.ids import is_valid_id, new_id
 from coppermind.naming import sanitize_folder, unique_stem
 from coppermind.schema import FrontmatterSchema, note_date, note_date_mismatch
 from coppermind.settings import ProductSettings
+from coppermind.statefiles import RevisionConflict
 from coppermind.store_protocol import (
     ArtifactNotFound,
     CreatedNote,
@@ -82,6 +84,7 @@ from coppermind.store_protocol import (
     ValidationFailed,
     artifact_text,
 )
+from coppermind_store.artifacts import artifact_problems, count_artifacts
 from coppermind_store.eligibility import awaiting_refile
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
 from coppermind_store.notes import (
@@ -1195,15 +1198,18 @@ PURGE_PROBLEM_KINDS = frozenset({"purge", "purge_unfinished", "purge_receipt", "
 
 
 async def list_reconciler_notices(store: LocalStore) -> list[ReconcilerNotice]:
-    """Notices still true: a gone note's, or a folder that no longer exists, is dropped."""
+    """Notices still true: one about a gone note, a gone artifact or a gone folder is dropped."""
+    from coppermind.db.models import Artifact
+
     notices = store.control.read_reconciler_notices()
     if not notices:
         return []
     note_ids = [key for key, notice in notices.items() if notice.get("kind", "note") == "note"]
+    artifact_ids = [key for key, notice in notices.items() if notice.get("kind") == "artifact"]
     present: set[str] = set()
-    if note_ids:
-        try:
-            async with store.session_factory() as session:
+    try:
+        async with store.session_factory() as session:
+            if note_ids:
                 # A returned note that has since moved again (a date edit re-files it)
                 # no longer needs its notice, the same way a path notice ends with
                 # its disagreement.
@@ -1215,15 +1221,24 @@ async def list_reconciler_notices(store: LocalStore) -> list[ReconcilerNotice]:
                     )
                 ).all()
                 present = {row.id for row in rows if row.path == notices[row.id]["path"]}
-        except (SQLAlchemyError, OSError) as exc:
-            raise MetadataUnavailable(str(exc)) from exc
+            if artifact_ids:
+                present |= set(
+                    (
+                        await session.scalars(
+                            sa.select(Artifact.id).where(Artifact.id.in_(artifact_ids))
+                        )
+                    ).all()
+                )
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
     present |= {
         key
         for key, notice in notices.items()
         if notice.get("kind") == "folder" and (store.notes_root / notice["from_path"]).is_dir()
     }
     for key in notices.keys() - present:
-        store.control.clear_reconciler_notice(key)
+        with contextlib.suppress(RevisionConflict):
+            store.control.clear_reconciler_notice(key)
     return sorted(
         (ReconcilerNotice.model_validate(notices[key]) for key in present),
         key=lambda notice: notice.at,
@@ -1277,6 +1292,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
             )
             filing_queue_depth = len(filing_pending_ids)
             sources = await session.scalar(sa.select(sa.func.count()).select_from(Source)) or 0
+            artifacts = await count_artifacts(session)
             rejected_ingests = (
                 await session.scalar(
                     sa.select(sa.func.count())
@@ -1336,6 +1352,8 @@ async def get_status(store: LocalStore) -> StatusResponse:
             filing_last_progress_at=last_progress,
             filing_stalled=stalled,
             filing_estimated_drain_s=estimated_drain,
+            artifacts=artifacts,
+            artifacts_returned=sum(n.kind == "artifact" for n in notices),
             known_unreadable=known_unreadable,
             notes_awaiting_review=notes_awaiting_review,
             notes_by_state=notes_by_state,
@@ -1649,6 +1667,7 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
             ),
         )
         for notice in await list_reconciler_notices(store)
+        if notice.kind != "artifact"
     )
     exclusions = store.control.read_reconciler_exclusions()
     problems.extend(
@@ -1671,6 +1690,7 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         for item in store.context.dropbox.snapshot()["items"]
         if item["state"] in {"failed", "unsupported"} and not item["parts"]
     )
+    problems.extend(await artifact_problems(store))
     problems.extend(
         ProblemInfo(
             kind="calendar_conflict",

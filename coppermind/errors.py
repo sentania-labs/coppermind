@@ -15,7 +15,9 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from coppermind.store_protocol import (
+    ArtifactMissing,
     ArtifactNotFound,
+    ArtifactsFilesystemUnavailable,
     FieldIndexNotReady,
     FilterCursorConflict,
     IncompleteRevision,
@@ -50,6 +52,11 @@ NOTES_FILESYSTEM_UNAVAILABLE_MESSAGE = (
 SOURCES_FILESYSTEM_UNAVAILABLE_MESSAGE = (
     "the source bundle filesystem could not be read or written; this source operation can be "
     "retried once the volume is healthy"
+)
+
+ARTIFACTS_FILESYSTEM_UNAVAILABLE_MESSAGE = (
+    "the artifact archive or its records could not be read or written; this artifact operation "
+    "can be retried once the volume is healthy"
 )
 
 STORE_UNAVAILABLE_MESSAGE = (
@@ -100,6 +107,8 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
             revision=error.revision,
             name=error.name,
         )
+    if isinstance(error, ArtifactMissing):
+        return 404, envelope("not_found", str(error), artifact_id=error.artifact_id)
     if isinstance(error, ValidationFailed):
         return 422, envelope("validation_error", str(error), errors=error.errors)
     if isinstance(error, PathCollision):
@@ -142,6 +151,10 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
     if isinstance(error, SourcesFilesystemUnavailable):
         return 503, envelope(
             "sources_filesystem_unavailable", SOURCES_FILESYSTEM_UNAVAILABLE_MESSAGE, **cause
+        )
+    if isinstance(error, ArtifactsFilesystemUnavailable):
+        return 503, envelope(
+            "artifacts_filesystem_unavailable", ARTIFACTS_FILESYSTEM_UNAVAILABLE_MESSAGE, **cause
         )
     if isinstance(error, StoreUnavailable):
         return 503, envelope("store_unavailable", STORE_UNAVAILABLE_MESSAGE, **cause)

@@ -11,6 +11,7 @@ license = { text = "MIT" }
 dependencies = [
     "coppermind",
     "fastapi>=0.115",
+    "python-multipart>=0.0.18",
     "uvicorn[standard]>=0.30",
 ]
 

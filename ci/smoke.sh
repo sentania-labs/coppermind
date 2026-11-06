@@ -7,6 +7,8 @@
 # conditional on a stale ETag cannot overwrite an edit made on the volume
 # while one carrying the current ETag lands, a note moved, renamed or deleted
 # on the volume converges in the scheduled scan while the API keeps answering,
+# a PDF uploaded as an artifact lands as a file under Artifacts/ and is found
+# by its text as an artifact rather than a note,
 # the operator claims Admin with the code bootstrap left on the state volume
 # and signs in and out of the protected page,
 # readiness fails honestly when PostgreSQL is stopped, and everything recovers
@@ -208,7 +210,8 @@ has_session_cookie && fail "a refused password issued a session cookie"
     = "$ADMIN/admin" ] \
     || fail "the admin password chosen at claim did not sign in"
 has_session_cookie || fail "signing in did not issue a session cookie"
-admin_page "$ADMIN/admin" | grep -Fq 'You are signed in' \
+overview_page="$(admin_page "$ADMIN/admin")"
+printf '%s' "$overview_page" | grep -Fq 'You are signed in' \
     || fail "the protected overview did not render for a signed in operator"
 
 admin_csrf="$(admin_page -f "$ADMIN/admin" | form_value csrf)"
@@ -475,6 +478,97 @@ code="$(curl -sS -o "$refused" -w '%{http_code}' -X PUT "${AUTH[@]}" \
 [ "$(field "$refused" error)" = "method_not_allowed" ] \
     || fail "source mutation did not carry the method_not_allowed refusal"
 ok "the latest source and text artifact are readable, and T-SRC-1 returns 405"
+
+step "store a PDF as an artifact: a browsable file, searchable at once, never a note"
+artifact_pdf="$(mktemp --suffix=.pdf)"
+python3 - "$artifact_pdf" <<'PY'
+import sys
+text = "Coppermind smoke artifact wombat"
+stream = f"BT /F1 18 Tf 20 100 Td ({text}) Tj ET".encode()
+objects = [
+    b"<< /Type /Catalog /Pages 2 0 R >>",
+    b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R "
+    b"/Resources << /Font << /F1 5 0 R >> >> >>",
+    b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+    b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+]
+out = bytearray(b"%PDF-1.4\n")
+offsets = []
+for number, body in enumerate(objects, 1):
+    offsets.append(len(out))
+    out += f"{number} 0 obj\n".encode() + body + b"\nendobj\n"
+xref = len(out)
+out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+for offset in offsets:
+    out += f"{offset:010d} 00000 n \n".encode()
+out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+open(sys.argv[1], "wb").write(bytes(out))
+PY
+unkinded="$(mktemp)"
+code="$(curl -sS -o "$unkinded" -w '%{http_code}' -X POST "$API/v1/artifacts" "${AUTH[@]}" \
+    -F "file=@$artifact_pdf;filename=Smoke deck.pdf")"
+[ "$code" = "422" ] || { cat "$unkinded"; fail "an upload without a declared kind returned $code, expected 422"; }
+grep -Fq 'a declared kind is required' "$unkinded" \
+    || fail "the refusal did not say that a kind is required"
+stored="$(mktemp)"
+code="$(curl -sS -o "$stored" -w '%{http_code}' -X POST "$API/v1/artifacts" "${AUTH[@]}" \
+    -F kind=artifact -F 'title=Smoke deck' -F tags=reference \
+    -F "file=@$artifact_pdf;filename=Smoke deck.pdf;type=application/pdf")"
+[ "$code" = "201" ] || { cat "$stored"; fail "the artifact upload returned $code, expected 201"; }
+cat "$stored"; echo
+artifact_id="$(field "$stored" id)"
+artifact_path="$(field "$stored" path)"
+[ "$(field "$stored" kind)" = "artifact" ] || fail "the stored artifact does not say its kind"
+case "$artifact_path" in
+    Artifacts/[0-9][0-9][0-9][0-9]/[0-9][0-9][0-9][0-9]-[0-9][0-9]/Smoke\ deck.pdf) ;;
+    *) fail "the artifact did not land under Artifacts/{yyyy}/{yyyy-mm}/: $artifact_path" ;;
+esac
+[ "$(compose exec -T store sha256sum "/data/notes/$artifact_path" | cut -c1-64)" \
+    = "$(sha256sum "$artifact_pdf" | cut -c1-64)" ] \
+    || fail "the browsable copy on the volume differs from the uploaded bytes"
+[ "$(compose exec -T store sh -c 'find /data/notes/Artifacts -name "*.md" | wc -l' | tr -d '[:space:]')" = "0" ] \
+    || fail "generated Markdown appeared beside the artifact"
+[ "$(compose exec -T store sh -c 'ls /data/artifacts/'"$artifact_id"'/r0001' | tr -d '[:space:]')" = "Smokedeck.pdf" ] \
+    || fail "the archive does not hold revision 1 under the artifact identity"
+compose exec -T store test -f "/data/state/artifacts/$artifact_id.json" \
+    || fail "the extracted record is not in the state volume"
+found="$(mktemp)"
+code="$(curl -sS -o "$found" -w '%{http_code}' -G "${AUTH[@]}" "$API/v1/search" \
+    --data-urlencode 'q=wombat' --data-urlencode 'kind=artifact')"
+[ "$code" = "200" ] || { cat "$found"; fail "artifact search returned $code"; }
+python3 -c 'import json,sys
+hits = json.load(open(sys.argv[1]))["items"]
+assert [h["id"] for h in hits] == [sys.argv[2]], hits
+assert hits[0]["kind"] == "artifact", hits
+assert "**wombat**" in hits[0]["excerpt"], hits
+assert hits[0]["path"] == sys.argv[3], hits' "$found" "$artifact_id" "$artifact_path"
+record="$(mktemp)"
+code="$(curl -sS -o "$record" -w '%{http_code}' "${AUTH[@]}" "$API/v1/artifacts/$artifact_id")"
+[ "$code" = "200" ] || { cat "$record"; fail "the artifact record returned $code"; }
+grep -Fq 'Coppermind smoke artifact wombat' "$record" \
+    || fail "the record does not carry the extracted text"
+[ "$(field "$record" text_status)" = "extracted" ] || fail "the PDF text was not extracted"
+served="$(mktemp)"
+code="$(curl -sS -o "$served" -w '%{http_code}' "${AUTH[@]}" "$API/v1/artifacts/$artifact_id/bytes")"
+[ "$code" = "200" ] || fail "the artifact bytes returned $code"
+cmp -s "$served" "$artifact_pdf" || fail "the served bytes differ from the uploaded file"
+[ "$(status_of "${AUTH[@]}" "$API/v1/notes?folder=Artifacts")" = "200" ] || fail "listing notes under Artifacts failed"
+[ "$(curl -sS -G "${AUTH[@]}" "$API/v1/notes" --data-urlencode 'folder=Artifacts' | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["items"]))')" = "0" ] \
+    || fail "the artifact was listed as a note"
+# The operator signed out earlier in the storyline, so sign in again to read the page.
+admin_csrf="$(admin_page -f "$ADMIN/admin/login" | form_value csrf | head -1)"
+[ "$(admin -X POST "$ADMIN/v1/admin/login" --data-urlencode "password=$admin_password")" \
+    = "$ADMIN/admin" ] \
+    || fail "the admin password did not sign in before reading the artifacts page"
+artifacts_page="$(admin_page -f "$ADMIN/admin/artifacts")"
+printf '%s' "$artifacts_page" | grep -Fq "/admin/artifacts/$artifact_id/remove" \
+    || fail "Admin's artifacts page does not list the artifact with a remove action"
+printf '%s' "$artifacts_page" | grep -Fq 'Smoke deck' \
+    || fail "Admin's artifacts page does not show the artifact's title"
+admin_csrf="$(admin_page -f "$ADMIN/admin" | form_value csrf | head -1)"
+admin -X POST "$ADMIN/v1/admin/logout" >/dev/null
+ok "the PDF is a browsable file under Artifacts/, archived, searchable by its text as an artifact, and not a note"
 
 step "create a note through the API"
 created="$(mktemp)"

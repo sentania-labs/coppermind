@@ -60,6 +60,8 @@ class Note(Base):
     filed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     source_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     filed_source_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    # The artifacts the note cites in its frontmatter, mirrored like `source_ids`.
+    artifact_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     tags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     # ok, unparsed, missing or deleted. Unparseable files are recorded, never
     # rewritten, so a person's own file is never damaged by the system.
@@ -73,6 +75,52 @@ class Note(Base):
         Index("ix_notes_type", "type"),
         Index("ix_notes_account", "account", postgresql_using="gin"),
         Index("ix_notes_date", "date"),
+        Index("ix_notes_artifact_ids", "artifact_ids", postgresql_using="gin"),
+    )
+
+
+class Artifact(Base):
+    """One artifact, mirrored from its archive manifest and extracted record.
+
+    The archive under `/data/artifacts/<id>` holds the immutable bytes of every
+    revision, the record under `/data/state/artifacts/<id>.json` holds the
+    disposable extracted text, and this row is a mirror of both that
+    `rebuild_metadata` recreates from `/data` alone. `path` is the browsable
+    copy under the artifacts folder of the notes filesystem, relative to its
+    root, and is null for a link.
+    """
+
+    __tablename__ = "artifacts"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    origin: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    filename: Mapped[str | None] = mapped_column(Text)
+    mime_type: Mapped[str | None] = mapped_column(Text)
+    sha256: Mapped[str | None] = mapped_column(Text)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    url: Mapped[str | None] = mapped_column(Text)
+    tags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    path: Mapped[str | None] = mapped_column(Text)
+    current_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Set when filing copied a source's artifact out of its bundle, so the
+    # same source artifact always resolves to the same artifact identity.
+    source_id: Mapped[str | None] = mapped_column(Text)
+    source_name: Mapped[str | None] = mapped_column(Text)
+    text_status: Mapped[str] = mapped_column(Text, nullable=False, default="unsupported")
+    extractor_version: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # ok, or modified when the browsable copy no longer hashes to the archive.
+    state: Mapped[str] = mapped_column(Text, nullable=False, default="ok")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("ix_artifacts_received_at", "received_at"),
+        Index("ix_artifacts_sha256", "sha256"),
+        Index("ix_artifacts_url", "url"),
+        Index("ix_artifacts_source", "source_id", "source_name"),
+        Index("ix_artifacts_tags", "tags", postgresql_using="gin"),
     )
 
 
@@ -182,14 +230,16 @@ SEARCH_VECTOR = (
 
 
 class SearchDocument(Base):
-    """The full-text index entry for one note or one source projection.
+    """The full-text index entry for one note, source projection or artifact.
 
     Derived, never authoritative: the indexer rebuilds every row from the notes
-    filesystem. `kind` is `note` (keyed by the note identifier) or `source`
-    (a generated page under the sources folder, keyed by the source
-    identifier). `version` is what the row was indexed from, the note's content
-    hash or the source revision, so a pass can tell a stale row from a current
-    one without reading the file.
+    filesystem and the artifact records. `kind` is `note` (keyed by the note
+    identifier), `source` (a generated page under the sources folder, keyed by
+    the source identifier) or `artifact` (keyed by the artifact identifier,
+    its body the extracted text). `version` is what the row was indexed from,
+    the note's content hash, the source revision, or the artifact revision and
+    extractor version, so a pass can tell a stale row from a current one
+    without reading the file.
     """
 
     __tablename__ = "search_documents"
@@ -206,7 +256,7 @@ class SearchDocument(Base):
     )
 
     __table_args__ = (
-        CheckConstraint("kind IN ('note', 'source')", name="ck_search_documents_kind"),
+        CheckConstraint("kind IN ('note', 'source', 'artifact')", name="ck_search_documents_kind"),
         Index("ix_search_documents_vector", "search_vector", postgresql_using="gin"),
     )
 

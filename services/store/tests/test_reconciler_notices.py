@@ -74,3 +74,19 @@ def test_dismissing_a_notice_that_is_not_there_writes_nothing(tmp_path: Path):
     revision = control.store.read("reconciler_notices").revision
     control.clear_reconciler_notice(NOTE_B)
     assert control.store.read("reconciler_notices").revision == revision
+
+
+def test_a_move_back_notice_that_keeps_colliding_does_not_abort_the_sweep():
+    from types import SimpleNamespace
+
+    from coppermind_store.artifacts import _record_move_back
+
+    from coppermind.statefiles import RevisionConflict
+
+    def collide(**_kwargs):
+        raise RevisionConflict(7)
+
+    store = SimpleNamespace(control=SimpleNamespace(record_reconciler_notice=collide))
+    manifest = {"artifact_id": NOTE_A, "title": "Deck", "path": "Artifacts/2026/2026-11/deck.pdf"}
+
+    _record_move_back(store, manifest, "Elsewhere/deck.pdf")

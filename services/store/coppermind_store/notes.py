@@ -62,7 +62,16 @@ from coppermind.schema import (
     parse_note_time,
 )
 from coppermind.settings import ProductSettings
+from coppermind.statefiles import RevisionConflict
 from coppermind.store_protocol import (
+    ArtifactBytes,
+    ArtifactId,
+    ArtifactQuery,
+    ArtifactRecord,
+    ArtifactRemoval,
+    ArtifactSummary,
+    CreateArtifact,
+    CreatedArtifact,
     CreateNote,
     ETag,
     FilterCursorConflict,
@@ -90,6 +99,7 @@ from coppermind.store_protocol import (
     ProblemInfo,
     RebuildMetadataResult,
     RebuildSearchIndexResult,
+    ReconcilerNotice,
     RenameNote,
     ReplaceNote,
     RestoreNote,
@@ -235,9 +245,12 @@ class LocalStore:
         session_factory: async_sessionmaker[AsyncSession],
         sources_root: Path,
         calendar_database_url: str | None = None,
+        artifacts_root: Path | None = None,
     ) -> None:
         self.notes_root = notes_root
         self.sources_root = sources_root
+        # The immutable artifact archive sits beside the source bundles.
+        self.artifacts_root = artifacts_root or sources_root.parent / "artifacts"
         self.control = control
         self.session_factory = session_factory
         # One lock per note that has been written through this process. The
@@ -251,6 +264,9 @@ class LocalStore:
         self._filing_lock = asyncio.Lock()
         self._reconcile_lock = asyncio.Lock()
         self._identity_index = _IdentityIndex(self)
+        # Every artifact write, whatever its origin, goes through this one lock,
+        # which is what makes a replay check and the write it guards one step.
+        self._artifact_lock = asyncio.Lock()
         from coppermind_store.note_history import GitHistory
 
         self.note_history = GitHistory(notes_root)
@@ -373,8 +389,81 @@ class LocalStore:
 
         return await get_problems(self)
 
+    async def create_artifact(
+        self, request: CreateArtifact, *, payload_size_bytes: int | None = None
+    ) -> CreatedArtifact:
+        from coppermind_store.artifacts import create_artifact
+
+        return await create_artifact(self, request, payload_size_bytes=payload_size_bytes)
+
+    async def get_artifact(self, artifact_id: ArtifactId) -> ArtifactRecord:
+        from coppermind_store.artifacts import get_artifact
+
+        return await get_artifact(self, artifact_id)
+
+    async def get_artifact_bytes(
+        self, artifact_id: ArtifactId, revision: int | None = None
+    ) -> ArtifactBytes:
+        from coppermind_store.artifacts import get_artifact_bytes
+
+        return await get_artifact_bytes(self, artifact_id, revision)
+
+    async def list_artifacts(self, query: ArtifactQuery) -> Page[ArtifactSummary]:
+        from coppermind_store.artifacts import list_artifacts
+
+        return await list_artifacts(self, query)
+
+    async def get_artifact_limit(self) -> int:
+        return self.control.settings().limits.artifact_max_bytes
+
+    async def remove_artifact(
+        self, artifact_id: ArtifactId, removal: ArtifactRemoval = "admin"
+    ) -> None:
+        from coppermind_store.artifacts import REMOVAL_REASONS, remove_artifact
+
+        await remove_artifact(self, artifact_id, reason=REMOVAL_REASONS[removal])
+
+    async def _artifact_links(
+        self, frontmatter: dict[str, Any], current: dict[str, Any] | None = None
+    ) -> list[str]:
+        """The links a note should carry for the artifacts its frontmatter cites.
+
+        Every newly cited identifier must name a stored artifact; an unknown one
+        is a validation failure, so a note never gains a citation to something
+        that is not there. An identifier the note already cites is left alone,
+        so a note keeps its citation of an artifact that was since removed.
+        """
+        from coppermind_store.artifacts import known_paths, link_for, read_manifest
+
+        cited = frontmatter.get(self.control.schema().optional_role("artifacts_key"))
+        if not isinstance(cited, list) or not cited:
+            return []
+        held = (
+            current.get(self.control.schema().optional_role("artifacts_key")) if current else None
+        )
+        held_ids = (
+            {value for value in held if isinstance(value, str)} if isinstance(held, list) else set()
+        )
+        ids = [value for value in cited if isinstance(value, str) and value not in held_ids]
+        paths = await known_paths(self, ids)
+        links = []
+        for artifact_id in ids:
+            manifest = await asyncio.to_thread(read_manifest, self, artifact_id)
+            links.append(
+                link_for(paths.get(artifact_id), str(manifest["title"]), manifest.get("url"))
+            )
+        return links
+
+    async def list_reconciler_notices(self) -> list[ReconcilerNotice]:
+        from coppermind_store.sources import list_reconciler_notices
+
+        return await list_reconciler_notices(self)
+
     async def dismiss_reconciler_notice(self, note_id: NoteId) -> None:
-        self.control.clear_reconciler_notice(note_id)
+        try:
+            self.control.clear_reconciler_notice(note_id)
+        except RevisionConflict as exc:
+            raise MetadataUnavailable(str(exc)) from exc
 
     async def get_status(self) -> StatusResponse:
         from coppermind_store.sources import get_status
@@ -392,6 +481,12 @@ class LocalStore:
         if problems:
             raise ValidationFailed(problems)
         sources = frontmatter.get(schema.role("sources_key"), [])
+        from coppermind_store.artifacts import body_with_links
+
+        composed_body = body_with_links(
+            _body_with_heading(request.title, request.body),
+            await self._artifact_links(frontmatter),
+        )
 
         if request.folder is not None:
             for seg in request.folder.split("/"):
@@ -416,7 +511,7 @@ class LocalStore:
         relative = f"{folder}/{stem}{NOTE_SUFFIX}" if folder else f"{stem}{NOTE_SUFFIX}"
         target = folder_path / f"{stem}{NOTE_SUFFIX}"
 
-        text = fm.compose(frontmatter, _body_with_heading(request.title, request.body))
+        text = fm.compose(frontmatter, composed_body)
         data = text.encode("utf-8")
 
         created = False
@@ -491,7 +586,7 @@ class LocalStore:
                     note_id=note_id,
                     path=relative,
                     title=request.title,
-                    body=_body_with_heading(request.title, request.body),
+                    body=composed_body,
                     version=digest,
                     now=now,
                     notes_folder=settings.notes.notes_folder,
@@ -509,7 +604,7 @@ class LocalStore:
             path=relative,
             title=request.title,
             frontmatter=_jsonable(frontmatter),
-            body=_body_with_heading(request.title, request.body),
+            body=composed_body,
             content_hash=digest,
             size_bytes=len(data),
             updated_at=now,
@@ -686,6 +781,7 @@ class LocalStore:
         relative, path = await self._locate(note_id)
         async with self._lock_for(note_id):
             _, current, _ = _bytes_at(note_id, relative, path, schema, if_match)
+            await self._artifact_links(sent, current)
             problems = schema.tag_problems(sent, current)
             if problems:
                 raise ValidationFailed(problems)
@@ -791,6 +887,8 @@ class LocalStore:
             problems += schema.tag_problems(frontmatter, current_frontmatter)
             if problems:
                 raise ValidationFailed(problems)
+            if schema.optional_role("artifacts_key") in request.set:
+                await self._artifact_links(frontmatter, current_frontmatter)
 
             sources = frontmatter.get(schema.role("sources_key"), [])
             now = datetime.now(tz=UTC)
@@ -886,16 +984,12 @@ class LocalStore:
         target_folder = sanitize_folder(request.target_folder)
         if not target_folder:
             raise ValidationFailed(["target_folder: must be a non-empty folder name"])
-        sources_folder = sanitize_folder(settings.notes.sources_folder)
-        if (
-            target_folder.casefold() == sources_folder.casefold()
-            or target_folder.casefold().startswith(sources_folder.casefold() + "/")
-        ):
-            raise ValidationFailed(
-                [
-                    f"target_folder: cannot move notes into {settings.notes.sources_folder}",
-                ]
-            )
+        for reserved in (settings.notes.sources_folder, settings.notes.artifacts_folder):
+            reserved_folder = sanitize_folder(reserved).casefold()
+            if target_folder.casefold() == reserved_folder or target_folder.casefold().startswith(
+                reserved_folder + "/"
+            ):
+                raise ValidationFailed([f"target_folder: cannot move notes into {reserved}"])
         target_folder = _existing_folder(self.notes_root, target_folder)
         try:
             folder_path = resolve(self.notes_root, target_folder)
@@ -1212,11 +1306,13 @@ class LocalStore:
     async def rebuild_metadata(self) -> RebuildMetadataResult:
         """Re-read every note file and rebuild its mirrored metadata."""
         from coppermind_store import indexer
+        from coppermind_store.artifacts import recover_artifacts
         from coppermind_store.filing import file_reviewed
         from coppermind_store.reconciler import reconcile_once
         from coppermind_store.recovery import recover_sources
 
         counts = await recover_sources(self)
+        counts.update(await recover_artifacts(self))
         counts.update(await reconcile_once(self, full=True))
         counts.update(await file_reviewed(self))
         await indexer.rebuild(self)
@@ -2079,30 +2175,34 @@ def _patch_problems(request: PatchFrontmatter, schema: FrontmatterSchema) -> lis
 
 
 def _check_folder_safe(folder: str, settings: ProductSettings) -> None:
-    """Refuse a folder that would place notes inside _Sources.
+    """Refuse a folder that would place notes inside _Sources or the artifacts folder.
 
     Compared casefolded, since a notes filesystem that is case-insensitive
     (or an Obsidian device that treats "_sources" and "_Sources" as the same
     entry) would otherwise let a differently-cased folder name through the
-    check but collide with the real _Sources folder on disk.
+    check but collide with the real _Sources folder on disk. Nothing but the
+    artifact files themselves ever appears under the artifacts folder.
     """
-    sources_folder = sanitize_folder(settings.notes.sources_folder).casefold()
     parts = [p for p in folder.split("/") if p]
-    for i in range(1, len(parts) + 1):
-        prefix = "/".join(parts[:i]).casefold()
-        if prefix == sources_folder or prefix.startswith(f"{sources_folder}/"):
-            raise ValidationFailed(
-                [f"folder: cannot place a note inside {settings.notes.sources_folder}"]
-            )
+    for reserved in (settings.notes.sources_folder, settings.notes.artifacts_folder):
+        reserved_folder = sanitize_folder(reserved).casefold()
+        for i in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:i]).casefold()
+            if prefix == reserved_folder or prefix.startswith(f"{reserved_folder}/"):
+                raise ValidationFailed([f"folder: cannot place a note inside {reserved}"])
 
 
 def _mirror_columns(frontmatter: dict[str, Any], schema: FrontmatterSchema) -> dict[str, Any]:
     """The columns of the mirror row that project individual frontmatter keys."""
     tags = frontmatter.get(schema.role("tags_key"), [])
     sources = frontmatter.get(schema.role("sources_key"), [])
+    artifacts = frontmatter.get(schema.optional_role("artifacts_key"), [])
     return {
         "source_ids": sorted({s for s in sources if isinstance(s, str)})
         if isinstance(sources, list)
+        else [],
+        "artifact_ids": sorted({a for a in artifacts if isinstance(a, str)})
+        if isinstance(artifacts, list)
         else [],
         "schema_version": _as_int(frontmatter.get(schema.role("schema_version_key"), 1)),
         "type": _text(frontmatter.get(schema.role("type_key"))),

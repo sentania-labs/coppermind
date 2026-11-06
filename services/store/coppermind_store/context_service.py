@@ -127,7 +127,7 @@ class ContextService:
         self.dropbox = Dropbox(self)
         self.provider = ModelProvider()
         self.lock = asyncio.Lock()
-        self.seen: dict[str, tuple[tuple[int, int], float]] = {}
+        self.seen: dict[str, tuple[tuple[int, int, int, int], float]] = {}
         self.watch_status: dict[str, str] = {}
         self.worker_error = ""
         self.eligibility_errors: dict[str, str] = {}
@@ -279,10 +279,16 @@ class ContextService:
         return self.dropbox.snapshot()
 
     async def upload_drop(self, payload: dict[str, Any]) -> dict[str, Any]:
+        kind = payload.get("kind")
+        if kind is not None and kind != "artifact":
+            raise ValueError("kind: only artifact is accepted; calendars route themselves")
+        marker = {"kind": "artifact"} if kind == "artifact" else None
         async with self.lock:
             return await asyncio.to_thread(
                 lambda: self.dropbox.submit(
-                    payload["filename"], base64.b64decode(payload["content_base64"], validate=True)
+                    payload["filename"],
+                    base64.b64decode(payload["content_base64"], validate=True),
+                    marker,
                 )
             )
 
