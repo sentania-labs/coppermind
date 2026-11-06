@@ -182,7 +182,7 @@ a phone and it reads with Coppermind stopped:
 ```bash
 docker compose exec store ls -R "/data/sources/<source_id>"
 docker compose exec store cat \
-  "/data/notes/_Sources/_Pending/2026-09/2026-09-08 Acme Architecture Sync.md"
+  "/data/notes/_Sources/_Pending/2026/2026-09/2026-09-08 Acme Architecture Sync.md"
 ```
 
 That page is generated, not yours: a new source revision rewrites it in place,
@@ -191,8 +191,8 @@ so edit the Review note instead. The folder it lands in is the
 of the notes history.
 
 Ingest creates an unreviewed draft. Mark it reviewed in Obsidian or through the
-frontmatter API. Reconciliation then files the note under `YYYY-MM/` and its
-source page under `_Sources/YYYY-MM/`; search includes them only after filing
+frontmatter API. Reconciliation then files the note under `Notes/YYYY/YYYY-MM/`
+and its source page under `_Sources/YYYY/YYYY-MM/`; search includes them only after filing
 succeeds. PDFs and other non-text, non-audio attachments are copied into
 `_Attachments/YYYY-MM/`, and image embeds in the note that name an artifact are
 rewritten to those copies. Immutable originals stay under `/data/sources`, and

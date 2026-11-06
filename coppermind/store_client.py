@@ -259,6 +259,11 @@ class HttpStoreClient:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/problems")
         return _PROBLEMS.validate_python(response.json())
 
+    async def dismiss_reconciler_notice(self, note_id: NoteId) -> None:
+        await self._send(
+            "POST", f"{INTERNAL_PREFIX}/reconciler_notices/{_segment(note_id)}/dismiss"
+        )
+
     async def get_status(self) -> StatusResponse:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/status")
         return StatusResponse.model_validate(response.json())

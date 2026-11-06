@@ -68,6 +68,7 @@ from coppermind.store_protocol import (
     PayloadTooLarge,
     ProblemInfo,
     ProjectionNotPlaced,
+    ReconcilerNotice,
     SourceArtifactDocument,
     SourceClaimMissing,
     SourceManifest,
@@ -81,6 +82,7 @@ from coppermind.store_protocol import (
     ValidationFailed,
     artifact_text,
 )
+from coppermind_store.eligibility import awaiting_refile
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
 from coppermind_store.notes import (
     _build_frontmatter,
@@ -1192,9 +1194,48 @@ def _review_prefix(store: LocalStore) -> str:
 PURGE_PROBLEM_KINDS = frozenset({"purge", "purge_unfinished", "purge_receipt", "damaged_source"})
 
 
+async def list_reconciler_notices(store: LocalStore) -> list[ReconcilerNotice]:
+    """Notices still true: a gone note's, or a folder that no longer exists, is dropped."""
+    notices = store.control.read_reconciler_notices()
+    if not notices:
+        return []
+    note_ids = [key for key, notice in notices.items() if notice.get("kind", "note") == "note"]
+    present: set[str] = set()
+    if note_ids:
+        try:
+            async with store.session_factory() as session:
+                # A returned note that has since moved again (a date edit re-files it)
+                # no longer needs its notice, the same way a path notice ends with
+                # its disagreement.
+                rows = (
+                    await session.execute(
+                        sa.select(Note.id, Note.path).where(
+                            Note.id.in_(note_ids), Note.state.not_in(("missing", "deleted"))
+                        )
+                    )
+                ).all()
+                present = {row.id for row in rows if row.path == notices[row.id]["path"]}
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
+    present |= {
+        key
+        for key, notice in notices.items()
+        if notice.get("kind") == "folder" and (store.notes_root / notice["from_path"]).is_dir()
+    }
+    for key in notices.keys() - present:
+        store.control.clear_reconciler_notice(key)
+    return sorted(
+        (ReconcilerNotice.model_validate(notices[key]) for key in present),
+        key=lambda notice: notice.at,
+        reverse=True,
+    )
+
+
 async def get_status(store: LocalStore) -> StatusResponse:
     """Counters computed from the mirror and the recorded rejections."""
     prefix = _review_prefix(store)
+    notes_folder = store.control.settings().notes.notes_folder
+    notices = await list_reconciler_notices(store)
     awaiting = (
         sa.select(sa.func.count())
         .select_from(Note)
@@ -1214,6 +1255,14 @@ async def get_status(store: LocalStore) -> StatusResponse:
                 await session.scalar(sa.select(sa.func.count()).select_from(SearchUnreadable)) or 0
             )
             notes_awaiting_review = await session.scalar(awaiting) or 0
+            notes_to_refile = (
+                await session.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(Note)
+                    .where(awaiting_refile(notes_folder))
+                )
+                or 0
+            )
             by_state = (
                 await session.execute(sa.select(Note.state, sa.func.count()).group_by(Note.state))
             ).all()
@@ -1295,10 +1344,14 @@ async def get_status(store: LocalStore) -> StatusResponse:
             name_collisions=name_collisions,
             unparseable_files=notes_by_state.get("unparsed", 0),
             excluded_count=excluded_count,
+            notes_folder=notes_folder,
+            notes_to_refile=notes_to_refile,
+            notes_returned=sum(n.kind == "note" for n in notices),
+            folders_kept=sum(n.kind == "folder" for n in notices),
             filing_failures=sum(p.kind == "filing" for p in problems),
             calendar_import_failures=sum(p.kind == "calendar_import" for p in problems),
             purge_problems=sum(p.kind in PURGE_PROBLEM_KINDS for p in problems),
-            active_problems=sum(p.kind != "excluded" for p in problems),
+            active_problems=sum(p.kind not in {"excluded", "returned_note"} for p in problems),
         )
     )
 
@@ -1581,6 +1634,21 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
             reason=notice["reason"],
         )
         for notice in await open_unreadable_notices(store)
+    )
+    problems.extend(
+        ProblemInfo(
+            kind="returned_note" if notice.kind == "note" else "folder_kept",
+            reference=notice.path,
+            note_id=notice.note_id if notice.kind == "note" else None,
+            reason=(
+                f"{notice.title}: found at {notice.from_path}. {notice.reason} "
+                "No action needed. To file a note under a different month, change its "
+                "date in Obsidian."
+                if notice.kind == "note"
+                else notice.reason
+            ),
+        )
+        for notice in await list_reconciler_notices(store)
     )
     exclusions = store.control.read_reconciler_exclusions()
     problems.extend(

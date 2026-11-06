@@ -152,7 +152,7 @@ def _new_path(
     note_date: date,
 ) -> str:
     folder = settings.notes.sources_folder
-    parent_relative = f"{folder}/_Pending/{note_date:%Y-%m}"
+    parent_relative = f"{folder}/_Pending/{note_date:%Y}/{note_date:%Y-%m}"
     parent = resolve(notes_root, parent_relative)
     stem = unique_stem(note_stem(title, note_date=note_date, dated=True), _taken_stems(parent))
     return f"{parent_relative}/{stem}{NOTE_SUFFIX}"

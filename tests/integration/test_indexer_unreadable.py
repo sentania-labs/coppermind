@@ -239,7 +239,9 @@ async def test_note_path_hash_and_file_repairs_retry(store):
         await session.execute(
             sa.update(Note).where(Note.id == created.id).values(content_hash=version)
         )
-    (store.notes_root / "2026-09/moved.md").write_bytes(original)
+    moved = store.notes_root / "2026-09/moved.md"
+    moved.parent.mkdir(parents=True, exist_ok=True)
+    moved.write_bytes(original)
     assert (await indexer.catch_up(store))["indexed"] == 1
     async with store.session_factory() as session:
         assert await session.get(SearchUnreadable, ("note", created.id)) is None

@@ -701,6 +701,10 @@ class StatusCounters(BaseModel):
     name_collisions: int
     unparseable_files: int
     excluded_count: int = 0
+    notes_folder: str | None = None
+    notes_to_refile: int = 0
+    notes_returned: int = 0
+    folders_kept: int = 0
     filing_failures: int = 0
     filing_queue_depth: int = 0
     filing_estimated_drain_s: int | None = None
@@ -711,6 +715,18 @@ class StatusCounters(BaseModel):
     calendar_import_failures: int = 0
     active_problems: int | None = None
     purge_problems: int = 0
+
+
+class ReconcilerNotice(BaseModel):
+    """Why a hand-moved reviewed note was returned to its filed folder."""
+
+    note_id: NoteId
+    title: str
+    from_path: str
+    path: str
+    reason: str
+    at: datetime
+    kind: Literal["note", "folder"] = "note"
 
 
 class StatusResponse(BaseModel):
@@ -779,6 +795,8 @@ class Store(Protocol):
 
     async def get_problems(self) -> list[ProblemInfo]: ...
 
+    async def dismiss_reconciler_notice(self, note_id: NoteId) -> None: ...
+
     async def get_note_history_status(self) -> HistoryStatus: ...
 
     async def preview_note_restore(self, note_id: str) -> NoteRecovery: ...
@@ -834,7 +852,9 @@ class ProblemInfo(BaseModel):
     file that is unsupported or failed), `calendar_conflict` (legacy exports that
     disagreed), `date_mismatch` (both `date` and
     `time` are present and disagree, with `date` winning), `path_notice` (the index
-    and the file disagree on a path), `unreadable_note` (a listed note whose file
+    and the file disagree on a path), `returned_note` (a hand-moved reviewed note was
+    returned to its filed folder), `folder_kept` (an old month folder still holds
+    files), `unreadable_note` (a listed note whose file
     cannot be read) or `excluded`.
     `note_id` and `source_id` name what the problem is about when it exists.
     """

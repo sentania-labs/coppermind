@@ -23,6 +23,7 @@ from coppermind.store_protocol import (
     StoreUnavailable,
 )
 from services.admin.tests.browser import admin_browser as admin_browser
+from services.admin.tests.test_admin import form_token
 
 NOTE_ID = "01K4Q8Z3N7V2X9M1B5C6D8E0F2"
 SOURCE_ID = "01K4Q8Z2A0P1Q2R3S4T5U6V7W8"
@@ -435,3 +436,124 @@ def test_problems_and_overview_share_filing_status(signed_in, queue, errors, rea
     assert f"Notes with filing errors: {errors}" in summary
     assert "Last filing progress: November 5, 2026" in summary
     assert problems.text.index(heading) < problems.text.index("No problems found.")
+
+
+def test_counters_show_the_notes_root_and_the_pending_move_count():
+    from coppermind_admin.pages.problems import counters_html
+
+    html = counters_html(
+        StatusResponse(
+            counters=StatusCounters(
+                notes_awaiting_review=0,
+                notes_by_state={},
+                sources=0,
+                rejected_ingests=0,
+                name_collisions=0,
+                unparseable_files=0,
+                notes_folder="Notes",
+                notes_to_refile=7,
+                notes_returned=2,
+            )
+        )
+    )
+    assert "organized by year and month under <code>Notes/</code>" in html
+    assert "<code>Notes/2026/2026-04/</code>" in html
+    assert "7 notes still to move." in html
+    assert "Upgrade complete" not in html
+    assert "returned to their filed folder: 2" in html
+
+
+class NoticeStore(ReadOnlyStore):
+    """A store whose Problems list holds a returned-note notice and a kept folder."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.problems.extend(
+            [
+                ProblemInfo(
+                    kind="returned_note",
+                    reference="Notes/2026/2026-04/call.md",
+                    note_id=NOTE_ID,
+                    reason=(
+                        "Warehouse <call>: found at Elsewhere/call.md. Moved back to "
+                        "Notes/2026/2026-04/ because notes are filed by date. "
+                        "No action needed. To file a note under a different month, change "
+                        "its date in Obsidian."
+                    ),
+                ),
+                ProblemInfo(
+                    kind="folder_kept",
+                    reference="2026-08",
+                    reason="2026-08/ still holds files, so it was left in place.",
+                ),
+            ]
+        )
+
+    async def dismiss_reconciler_notice(self, note_id: str) -> None:
+        self._check("dismiss_reconciler_notice")
+        self.problems = [p for p in self.problems if p.note_id != note_id]
+
+
+def test_returned_notes_and_kept_folders_share_the_one_problems_list(signed_in):
+    client, _ = signed_in
+    _install(client, NoticeStore())
+
+    text = client.get("/admin/problems").text
+
+    assert "Hand-moved note returned" in text and "Old month folder kept" in text
+    assert "Warehouse &lt;call&gt;: found at Elsewhere/call.md." in text
+    assert "No action needed" in text and "change its date in Obsidian" in text
+    assert "2026-08/ still holds files" in text
+    # Only a returned note can be dismissed, and only from this list.
+    assert text.count(f'action="/v1/admin/notices/{NOTE_ID}/dismiss"') == 1
+    assert "Dismiss notice</button>" in text
+    assert text.count("Dismiss notice</button>") == 1
+    assert "Warehouse" not in client.get("/admin").text
+
+
+def test_dismissing_a_notice_removes_it_from_the_problems_list(signed_in):
+    client, _ = signed_in
+    store = _install(client, NoticeStore())
+    token = form_token(client, "/admin")
+
+    response = client.post(
+        f"/v1/admin/notices/{NOTE_ID}/dismiss", data={"csrf": token}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/problems"
+    assert all(p.note_id != NOTE_ID for p in store.problems)
+    assert "Hand-moved note returned" not in client.get("/admin/problems").text
+
+
+def test_dismissing_needs_the_form_token(signed_in):
+    client, _ = signed_in
+    store = _install(client, NoticeStore())
+    before = len(store.problems)
+
+    assert client.post(f"/v1/admin/notices/{NOTE_ID}/dismiss", data={}).status_code == 403
+    assert len(store.problems) == before
+
+
+def test_counters_say_plainly_when_the_upgrade_is_complete():
+    from coppermind_admin.pages.problems import counters_html
+
+    html = counters_html(
+        StatusResponse(
+            counters=StatusCounters(
+                notes_awaiting_review=0,
+                notes_by_state={},
+                sources=0,
+                rejected_ingests=0,
+                name_collisions=0,
+                unparseable_files=0,
+                notes_folder="Filed",
+                notes_to_refile=0,
+            )
+        )
+    )
+    assert "Upgrade complete." in html
+    assert "<code>Filed/2026/2026-04/</code>" in html
+    assert "still to move" not in html
+    # The filing explanation leads, ahead of the operational counters.
+    assert html.index("Notes filing") < html.index("Rejected ingests")

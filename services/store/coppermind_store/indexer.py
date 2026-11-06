@@ -89,9 +89,10 @@ async def index_note(
     body: str,
     version: str,
     now: datetime,
+    notes_folder: str,
 ) -> None:
     """Write one note's entry inside the caller's transaction."""
-    await _upsert(session, "note", note_id, path, title, body, version, now)
+    await _upsert(session, "note", note_id, path, title, body, version, now, notes_folder)
 
 
 async def index_source(
@@ -103,9 +104,12 @@ async def index_source(
     body: str,
     revision: int,
     now: datetime,
+    notes_folder: str,
 ) -> None:
     """Write one source projection's entry inside the caller's transaction."""
-    await _upsert(session, "source", source_id, path, title, body, source_version(revision), now)
+    await _upsert(
+        session, "source", source_id, path, title, body, source_version(revision), now, notes_folder
+    )
 
 
 async def follow_note_path(session: AsyncSession, note_id: str, path: str) -> None:
@@ -152,6 +156,7 @@ async def _upsert(
     body: str,
     version: str,
     now: datetime,
+    notes_folder: str,
 ) -> None:
     values = {
         "kind": kind,
@@ -167,7 +172,7 @@ async def _upsert(
             SearchUnreadable.kind == kind, SearchUnreadable.ref_id == ref_id
         )
     )
-    allowed = eligible(sa.literal(kind), sa.literal(ref_id))
+    allowed = eligible(sa.literal(kind), sa.literal(ref_id), notes_folder)
     await session.execute(
         sa.delete(SearchDocument).where(
             SearchDocument.kind == kind, SearchDocument.ref_id == ref_id, ~allowed
@@ -347,13 +352,23 @@ async def index_projection(store: LocalStore, source_id: str, revision: int, pat
     if entry is None:
         return False
     async with transaction(store.session_factory) as session:
-        await _write(session, entry, datetime.now(tz=UTC))
+        await _write(
+            session, entry, datetime.now(tz=UTC), store.control.settings().notes.notes_folder
+        )
     return True
 
 
-async def _write(session: AsyncSession, entry: Entry, now: datetime) -> None:
+async def _write(session: AsyncSession, entry: Entry, now: datetime, notes_folder: str) -> None:
     await _upsert(
-        session, entry.kind, entry.ref_id, entry.path, entry.title, entry.body, entry.version, now
+        session,
+        entry.kind,
+        entry.ref_id,
+        entry.path,
+        entry.title,
+        entry.body,
+        entry.version,
+        now,
+        notes_folder,
     )
 
 
@@ -390,8 +405,9 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
     """
     counts = {"indexed": 0, "removed": 0, "unreadable": 0, "skipped_known_unreadable": 0}
     id_key = store.control.schema().role("id_key")
+    notes_folder = store.control.settings().notes.notes_folder
     now = datetime.now(tz=UTC)
-    live = sa.select(Note.id).where(Note.id == SearchDocument.ref_id, reviewed_note())
+    live = sa.select(Note.id).where(Note.id == SearchDocument.ref_id, reviewed_note(notes_folder))
     try:
         async with transaction(store.session_factory) as session:
             removed = await session.execute(
@@ -402,7 +418,7 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                         sa.and_(
                             SearchDocument.kind == "source",
                             sa.or_(
-                                ~eligible(SearchDocument.kind, SearchDocument.ref_id),
+                                ~eligible(SearchDocument.kind, SearchDocument.ref_id, notes_folder),
                                 ~current_source(SearchDocument.ref_id, SearchDocument.version),
                             ),
                         ),
@@ -436,7 +452,7 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                     )
                     .where(
                         Note.state == "ok",
-                        reviewed_note(),
+                        reviewed_note(notes_folder),
                         sa.or_(
                             SearchDocument.ref_id.is_(None),
                             SearchDocument.version != Note.content_hash,
@@ -453,7 +469,7 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                 .where(
                     NoteSource.source_id == Source.id,
                     NoteSource.approved_revision == Source.current_revision,
-                    reviewed_note(),
+                    reviewed_note(notes_folder),
                 )
             )
             stale_sources = (
@@ -574,7 +590,7 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                             Note.id == ref_id,
                             Note.path == failure["path"],
                             Note.content_hash == failure["version"],
-                            reviewed_note(),
+                            reviewed_note(notes_folder),
                         )
                     )
                     if kind == "note"
@@ -622,7 +638,7 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                     )
                     if current != entry.version:
                         continue
-                await _write(session, entry, now)
+                await _write(session, entry, now, notes_folder)
                 counts["indexed"] += 1
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
@@ -708,6 +724,8 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
     its file cannot be read again, so its last indexed text is all there is.
     """
     started = datetime.now(tz=UTC)
+    settings = store.control.settings()
+    notes_folder = settings.notes.notes_folder
     try:
         async with transaction(store.session_factory) as session:
             await session.execute(sa.delete(SearchUnreadable))
@@ -720,12 +738,13 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
             live_notes = {
                 row.id: row.path
                 for row in (
-                    await session.execute(sa.select(Note.id, Note.path).where(reviewed_note()))
+                    await session.execute(
+                        sa.select(Note.id, Note.path).where(reviewed_note(notes_folder))
+                    )
                 ).all()
             }
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
-    settings = store.control.settings()
     sources_folder = tuple(
         part for part in sanitize_folder(settings.notes.sources_folder).split("/") if part
     )
@@ -748,7 +767,7 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
             # it was last indexed with, which the walk could not read again.
             walked = [entry.ref_id for entry in entries if entry.kind == "note"]
             unparsed = sa.select(Note.id).where(
-                Note.state == "unparsed", reviewed_note(), Note.id.not_in(walked)
+                Note.state == "unparsed", reviewed_note(notes_folder), Note.id.not_in(walked)
             )
             await session.execute(
                 sa.delete(SearchDocument).where(
@@ -762,7 +781,7 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
                 # A store write that commits while this runs has indexed newer
                 # bytes than the walk read, so its entry is kept, not replaced.
                 for entry in batch:
-                    await _write(session, entry, now)
+                    await _write(session, entry, now, notes_folder)
             await session.execute(
                 sa.update(SearchIndexState)
                 .where(SearchIndexState.id == 1)

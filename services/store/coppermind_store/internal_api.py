@@ -230,6 +230,15 @@ async def get_problems(request: Request) -> list[ProblemInfo] | JSONResponse:
         return _failure(error)
 
 
+@router.post("/reconciler_notices/{note_id}/dismiss", status_code=204)
+async def dismiss_reconciler_notice(note_id: str, request: Request) -> Response:
+    try:
+        await _store(request).dismiss_reconciler_notice(note_id)
+    except StoreError as error:
+        return _failure(error)
+    return Response(status_code=204)
+
+
 @router.post("/notes/{note_id}/move", response_model=NoteDocument)
 async def move_note(
     note_id: str,

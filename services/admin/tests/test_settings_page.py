@@ -230,3 +230,13 @@ def test_legacy_sync_form_cannot_enable_mirror(signed_in):
     assert response.status_code == 303
     assert response.headers["location"] == "/admin/sync?result=legacy"
     assert state.read("settings").revision == before.revision
+
+
+def test_the_notes_folder_is_described_in_plain_words_without_its_internal_key(signed_in):
+    client, _ = signed_in
+    text = client.get("/admin/settings?section=notes").text
+
+    assert "Folder for reviewed notes" in text
+    assert "Reviewed notes are filed by year and month, like Notes/2026/2026-04/." in text
+    assert "{notes_folder}" not in text and "{yyyy" not in text
+    assert "notes.notes_folder</code>" not in text

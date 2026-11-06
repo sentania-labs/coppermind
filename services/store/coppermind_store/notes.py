@@ -373,6 +373,9 @@ class LocalStore:
 
         return await get_problems(self)
 
+    async def dismiss_reconciler_notice(self, note_id: NoteId) -> None:
+        self.control.clear_reconciler_notice(note_id)
+
     async def get_status(self) -> StatusResponse:
         from coppermind_store.sources import get_status
 
@@ -491,6 +494,7 @@ class LocalStore:
                     body=_body_with_heading(request.title, request.body),
                     version=digest,
                     now=now,
+                    notes_folder=settings.notes.notes_folder,
                 )
         except BaseException as exc:
             typed = _metadata_failure(exc)
@@ -715,6 +719,7 @@ class LocalStore:
                         body=body,
                         version=digest,
                         now=now,
+                        notes_folder=self.control.settings().notes.notes_folder,
                     )
                     _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
                     if current.get(schema.role("reviewed_key")) != frontmatter.get(
@@ -817,6 +822,7 @@ class LocalStore:
                         body=body,
                         version=digest,
                         now=now,
+                        notes_folder=self.control.settings().notes.notes_folder,
                     )
                     if writes_file:
                         _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
@@ -973,6 +979,7 @@ class LocalStore:
                         body=body,
                         version=content_hash(current_data),
                         now=now,
+                        notes_folder=settings.notes.notes_folder,
                     )
                     session.add(
                         OutboxEvent(
@@ -1091,6 +1098,7 @@ class LocalStore:
                         body=new_body,
                         version=digest,
                         now=now,
+                        notes_folder=settings.notes.notes_folder,
                     )
                     session.add(
                         OutboxEvent(
@@ -1406,6 +1414,7 @@ class LocalStore:
                     body=adopted_body,
                     version=content_hash(data),
                     now=now,
+                    notes_folder=self.control.settings().notes.notes_folder,
                 )
         except BaseException as exc:
             typed = _metadata_failure(exc)

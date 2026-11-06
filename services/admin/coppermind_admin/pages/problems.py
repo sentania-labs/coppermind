@@ -3,7 +3,8 @@
 Every number and every problem is computed by the store from its metadata
 mirror and the rejections it recorded. Admin only reads: nothing here asks the
 store to change a note, and nothing is ever written into one (operator
-decision of 2026-10-01).
+decision of 2026-10-01). The one thing these pages let the operator do is
+dismiss the notice that a hand-moved note was returned, which changes no note.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from coppermind.errors import to_http
 from coppermind.settings import Wiring
@@ -36,6 +37,8 @@ class StatusReader(Protocol):
     async def get_status(self) -> StatusResponse: ...
 
     async def get_problems(self) -> list[ProblemInfo]: ...
+
+    async def dismiss_reconciler_notice(self, note_id: str) -> None: ...
 
     async def get_note_sources(self, note_id: str) -> list[NoteSourceInfo]: ...
 
@@ -64,11 +67,16 @@ KIND_LABELS = {
     "missing": "Missing note",
     "filing": "Filing error",
     "path_notice": "Note path changed",
+    "returned_note": "Hand-moved note returned",
+    "folder_kept": "Old month folder kept",
     "unreadable_note": "Unreadable note",
 }
 
 
 def _link(problem: ProblemInfo) -> str:
+    if problem.kind == "returned_note" and problem.note_id:
+        action = f"/v1/admin/notices/{quote(problem.note_id, safe='')}/dismiss"
+        return f'<form method="post" action="{action}"><button>Dismiss notice</button></form>'
     if problem.kind == "purge_receipt":
         return (
             '<form method="post" action="/v1/admin/purge/abandon">'
@@ -191,8 +199,22 @@ def counters_html(status: StatusResponse, zone: ZoneInfo | None = None) -> str:
     states = ", ".join(
         f"{escape(state)}: {count}" for state, count in sorted(counters.notes_by_state.items())
     )
+    root = escape(counters.notes_folder or "Notes")
+    if counters.notes_to_refile:
+        upgrade = (
+            f"<strong>{counters.notes_to_refile} notes still to move.</strong> "
+            "The next filing pass, which runs after the next check for file changes, "
+            "moves them."
+        )
+    else:
+        upgrade = (
+            "<strong>Upgrade complete.</strong> Every reviewed note is filed by year and month."
+        )
     return f"""<h2>Store Status</h2>
 {filing_status_html(status, zone)}
+<h3>Notes filing</h3>
+<p>Notes are organized by year and month under <code>{root}/</code>, for example
+<code>{root}/2026/2026-04/</code>. {upgrade}</p>
 <div class="metrics">
 <div class="metric" aria-label="Notes awaiting review: {counters.notes_awaiting_review}">
 Notes awaiting review<strong>{counters.notes_awaiting_review}</strong>
@@ -213,17 +235,22 @@ Preserved sources<strong>{counters.sources}</strong></div>
 <li>Failed calendar imports: {counters.calendar_import_failures}</li>
 <li>Retention purge items needing attention: {counters.purge_problems}</li>
 <li>Excluded (skipped by exclusion rules): {counters.excluded_count}</li>
+<li>Hand-moved notes returned to their filed folder: {counters.notes_returned}
+(listed with their reasons under Problems)</li>
+<li>Old month folders left in place because they are not empty: {counters.folders_kept}
+(listed with their reasons under Problems)</li>
 </ul>
 <p><a href="/admin/problems">Problems ({problems})</a></p>"""
 
 
 async def overview_counters(request: Request, wiring: Wiring) -> str:
-    try:
-        status = await store_client(request, wiring).get_status()
-    except (StoreError, OSError):
-        return f'<p class="error">{UNREACHABLE}</p>'
     from coppermind_admin.pages.search_index import _zone
 
+    try:
+        client = store_client(request, wiring)
+        status = await client.get_status()
+    except (StoreError, OSError):
+        return f'<p class="error">{UNREACHABLE}</p>'
     return counters_html(status, _zone(request))
 
 
@@ -237,6 +264,14 @@ def router(wiring: Wiring) -> APIRouter:
 
     def unreachable(title: str) -> HTMLResponse:
         return page(title, f'<h1>{escape(title)}</h1><p class="error">{UNREACHABLE}</p>', 503)
+
+    @routes.post("/v1/admin/notices/{note_id}/dismiss", include_in_schema=False)
+    async def dismiss_notice(note_id: str, request: Request) -> Response:
+        try:
+            await store_client(request, wiring).dismiss_reconciler_notice(note_id)
+        except (StoreError, OSError):
+            return unreachable("Overview")
+        return RedirectResponse("/admin/problems", status_code=303)
 
     @routes.get("/admin/problems", response_class=HTMLResponse, include_in_schema=False)
     async def problems_page(request: Request) -> Response:

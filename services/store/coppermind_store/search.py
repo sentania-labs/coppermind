@@ -187,7 +187,10 @@ def filter_conditions(query: SearchQuery) -> list[sa.ColumnElement[bool]]:
 
 
 def build_search(
-    query: SearchQuery, after: SearchCursor | None = None, extra: list[Any] | None = None
+    query: SearchQuery,
+    notes_folder: str,
+    after: SearchCursor | None = None,
+    extra: list[Any] | None = None,
 ) -> sa.Select[Any]:
     """One page of hits plus one, so the caller knows whether another follows.
 
@@ -209,7 +212,7 @@ def build_search(
         .select_from(SearchDocument)
         .outerjoin(Note, sa.and_(SearchDocument.kind == "note", Note.id == SearchDocument.ref_id))
         .where(*match_conditions(query.q))
-        .where(eligible(SearchDocument.kind, SearchDocument.ref_id))
+        .where(eligible(SearchDocument.kind, SearchDocument.ref_id, notes_folder))
         .where(
             sa.or_(
                 SearchDocument.kind == "note",
@@ -315,7 +318,9 @@ async def search(store: LocalStore, query: SearchQuery) -> Page[SearchHit]:
                     sa.text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 )
             predicates = await conditions(store, query, session)
-            statement = build_search(query, after, predicates)
+            statement = build_search(
+                query, store.control.settings().notes.notes_folder, after, predicates
+            )
             rows = list((await session.execute(statement)).all())
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc

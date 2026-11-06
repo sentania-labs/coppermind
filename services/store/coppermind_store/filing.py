@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ from coppermind.embeds import rewrite_embeds
 from coppermind.ids import is_valid_id
 from coppermind.schema import date_field_problem, note_date, parse_note_time
 from coppermind.store_protocol import MoveNote, ReplaceNote, StoreError
+from coppermind_store.eligibility import rendered_note_folder
 from coppermind_store.fs import content_hash, resolve
 from coppermind_store.maintenance import writer
 
@@ -102,6 +104,25 @@ def _copy(path: Path, data: bytes) -> None:
             raise ValueError("filing destination is occupied") from None
 
 
+_FILED_MONTH = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")
+
+
+def filed_source_path(sources_folder: str, manifest: dict, source_id: str, month: str) -> str:
+    """Where a source's filed page belongs: nested by year under the sources root.
+
+    A page already filed keeps its month, so a date correction never moves it;
+    one filed flat as `{sources}/{yyyy-mm}/` is carried into its year folder.
+    """
+    filed = manifest.get("filed_projection_path")
+    if not filed:
+        return f"{sources_folder}/{month[:4]}/{month}/{source_id}.md"
+    parent, _, name = filed.rpartition("/")
+    folder, _, filed_month = parent.rpartition("/")
+    if folder == sources_folder and _FILED_MONTH.fullmatch(filed_month):
+        return f"{sources_folder}/{filed_month[:4]}/{filed_month}/{name}"
+    return filed
+
+
 class SourceRevisionNeedsReview(ValueError):
     """The current archive revision was not part of this note's approval."""
 
@@ -160,7 +181,8 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     day = note_date(note.frontmatter, schema)
     if day is None:
         raise ValueError("a note date is required in date")
-    folder = day.strftime("%Y-%m")
+    month = day.strftime("%Y-%m")
+    folder = rendered_note_folder(settings.notes.notes_folder, day)
     manifests = {}
     for source_id in sorted(set(note.sources)):
         if not is_valid_id(source_id):
@@ -179,10 +201,23 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         )
         review = {"reviewed": True, "sources": approved}
         _save(review_path, review)
+    # A completed receipt for this very folder means the note sits elsewhere
+    # because someone moved it. A receipt for another folder is an upgrade or a
+    # date edit, which is a re-file and not drift.
+    hand_moved_from = (
+        note.path
+        if plan
+        and plan.get("complete")
+        and plan.get("folder") == folder
+        and not note.path.startswith(folder + "/")
+        else (plan or {}).get("hand_moved_from")
+        if plan and plan.get("folder") == folder
+        else None
+    )
     same_filing = (
         plan
         and plan.get("complete")
-        and plan.get("month") == folder
+        and plan.get("folder") == folder
         and note.path.startswith(folder + "/")
         and set(note.sources) == {item["id"] for item in plan["sources"]}
     )
@@ -198,12 +233,16 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     if (
         plan
         and plan.get("complete")
-        and plan.get("month") == folder
+        and plan.get("folder") == folder
         and note.path.startswith(folder + "/")
         and set(note.sources) == {item["id"] for item in plan["sources"]}
         and all(
             item["revision"] == manifests[item["id"]]["current_revision"]
             and item["to"] == manifests[item["id"]]["projection_path"]
+            and filed_source_path(
+                settings.notes.sources_folder, manifests[item["id"]], item["id"], month
+            )
+            == manifests[item["id"]]["projection_path"]
             for item in plan["sources"]
         )
     ):
@@ -223,24 +262,32 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         old_path = manifest["projection_path"]
         # Keep the original link target after a partial source move.
         link_from = previous.get("link_from", previous["from"]) if previous else old_path
+        # Every path the note body may still link to stays outstanding until the
+        # note rewrite succeeds, including a page an interrupted attempt moved.
+        link_froms = {link_from, old_path}
+        if previous:
+            link_froms |= {previous["from"], previous["to"], *previous.get("link_froms", [])}
         sources.append(
             {
                 "id": source_id,
                 "from": old_path,
                 "link_from": link_from,
-                "to": manifest.get("filed_projection_path")
-                or f"{settings.notes.sources_folder}/{folder}/{source_id}.md",
+                "link_froms": sorted(link_froms),
+                "to": filed_source_path(settings.notes.sources_folder, manifest, source_id, month),
                 "revision": manifest["current_revision"],
             }
         )
     plan = {
         "note_id": note_id,
-        "month": folder,
+        "month": month,
+        "folder": folder,
         "sources": sources,
         "complete": False,
         "attempts": (plan or {}).get("attempts", 0),
         "copies": (plan or {}).get("copies", []),
     }
+    if hand_moved_from is not None:
+        plan["hand_moved_from"] = hand_moved_from
     remember_note(store, plan, note)
     async with transaction(store.session_factory) as session:
         await session.execute(sa.update(Note).where(Note.id == note_id).values(filed=False))
@@ -326,14 +373,14 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     if (
         note.frontmatter.get(schema.role("reviewed_key")) is not True
         or refreshed_day is None
-        or refreshed_day.strftime("%Y-%m") != folder
+        or refreshed_day.strftime("%Y-%m") != month
     ):
         raise ValueError("note review or date changed during filing")
     if set(note.sources) != {item["id"] for item in plan["sources"]}:
         raise ValueError("note source associations changed during filing")
     body = note.body
     for item in plan["sources"]:
-        for old_link in {item["link_from"], item["from"]}:
+        for old_link in {item["link_from"], item["from"], *item.get("link_froms", [])}:
             body = body.replace(
                 f"[[{old_link.removesuffix('.md')}]]", f"[[{item['to'].removesuffix('.md')}]]"
             )
@@ -347,6 +394,20 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         plan["target_folder"] = folder
         _save(journal, plan)
         note = await store.move_note(note_id, MoveNote(target_folder=folder), note.content_hash)
+    if hand_moved_from is not None:
+        store.control.record_reconciler_notice(
+            note_id=note_id,
+            title=note.title,
+            from_path=hand_moved_from,
+            path=note.path,
+            folder=folder,
+            reason=(
+                f"Moved back to {folder}/ because reviewed notes are filed by "
+                "note date; a hand move outside that folder is not kept."
+            ),
+            at=datetime.now(tz=UTC),
+        )
+        plan.pop("hand_moved_from", None)
     plan["complete"] = True
     plan["content_hash"] = note.content_hash
     plan.pop("error", None)
@@ -402,6 +463,47 @@ async def _publish(store, note):
 async def file_reviewed(store: LocalStore) -> dict[str, int]:
     async with store._filing_lock:
         return await _file_reviewed(store)
+
+
+def _tidy_legacy_month_folders(store: LocalStore) -> None:
+    """Remove emptied flat `YYYY-MM/` folders; one that still holds anything is reported."""
+    sources_folder = store.control.settings().notes.sources_folder.strip("/")
+    for prefix in ("", sources_folder):
+        root = resolve(store.notes_root, prefix) if prefix else store.notes_root
+        try:
+            folders = [
+                entry
+                for entry in root.iterdir()
+                if _FILED_MONTH.fullmatch(entry.name) and entry.is_dir() and not entry.is_symlink()
+            ]
+        except OSError:
+            continue
+        for entry in folders:
+            relative = f"{prefix}/{entry.name}" if prefix else entry.name
+            key = f"folder:{relative}"
+            try:
+                if any(entry.iterdir()):
+                    if key not in store.control.read_reconciler_notices():
+                        store.control.record_reconciler_notice(
+                            note_id=key,
+                            title=f"{relative}/ was kept",
+                            from_path=relative,
+                            path=relative,
+                            folder=relative,
+                            reason=(
+                                f"{relative}/ is an old flat month folder, but it still holds "
+                                "files, so it was left in place. Move or delete what is in it; "
+                                "an empty one is removed on the next filing pass."
+                            ),
+                            at=datetime.now(tz=UTC),
+                            kind="folder",
+                        )
+                else:
+                    entry.rmdir()
+                    sync_directory(root)
+                    store.control.clear_reconciler_notice(key)
+            except OSError:
+                continue
 
 
 async def _file_reviewed(store: LocalStore) -> dict[str, int]:
@@ -473,6 +575,7 @@ async def _file_reviewed(store: LocalStore) -> dict[str, int]:
     else:
         stuck = False
     _record_rate(store, {"stuck": stuck, "last_pass_at": datetime.now(UTC).isoformat()})
+    _tidy_legacy_month_folders(store)
     return counts
 
 

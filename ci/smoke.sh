@@ -359,7 +359,7 @@ compose exec -T store test -f "/data/sources/$source_id/manifest.json" \
     || fail "the source manifest is missing"
 compose exec -T store test -f "/data/sources/$source_id/r0001/transcript.txt" \
     || fail "the transcript artifact is missing"
-expected_projection="_Sources/_Pending/2026-09/2026-09-08 Acme Architecture Sync.md"
+expected_projection="_Sources/_Pending/2026/2026-09/2026-09-08 Acme Architecture Sync.md"
 [ "$projection_path" = "$expected_projection" ] \
     || fail "the projection landed at $projection_path, expected $expected_projection"
 projection="$(compose exec -T store cat "/data/notes/$projection_path")"
@@ -410,10 +410,10 @@ step "edit the Review note, revise the source, and prove the note stays his"
 compose exec -T store python3 -c \
     'import sys; p = sys.argv[1]; t = open(p).read(); t = t.replace("reviewed: false", "reviewed: true", 1); open(p, "w").write(t.replace("Target architecture agreed", "Captain corrected the note", 1))' \
     "/data/notes/$ingest_note_path"
-ingest_month_path="2026-09/${ingest_note_path##*/}"
+ingest_month_path="Notes/2026/2026-09/${ingest_note_path##*/}"
 wait_for_note_path "$ingest_note_id" "$ingest_month_path"
 ingest_note_path="$ingest_month_path"
-projection_path="_Sources/2026-09/$source_id.md"
+projection_path="_Sources/2026/2026-09/$source_id.md"
 reviewed_note="$(compose exec -T store cat "/data/notes/$ingest_note_path")"
 reviewed_hash="$(hash_on_volume "$ingest_note_path")"
 compose exec -T store sh -c 'echo "Person edit" >> "$1"' sh "/data/notes/$projection_path"
@@ -530,7 +530,7 @@ step "edit the file on the volume behind the store's back, as a device would"
 compose exec -T editor python3 -c \
     'import sys; p = sys.argv[1]; t = open(p).read(); open(p, "w").write(t.replace("reviewed: false", "reviewed: true", 1))' \
     "/data/notes/$note_path"
-month_path="2026-09/${note_path##*/}"
+month_path="Notes/2026/2026-09/${note_path##*/}"
 wait_for_note_path "$note_id" "$month_path"
 note_path="$month_path"
 device_edit="$(compose exec -T editor cat "/data/notes/$note_path")"

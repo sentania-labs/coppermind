@@ -108,6 +108,7 @@ notification is a delay, never data loss.
 ```
 /data/notes/            the notes filesystem itself, and what Obsidian Sync carries to devices
   Review/                inbox for anything not yet reviewed
+  Notes/<yyyy>/<yyyy-mm>/ reviewed notes, filed by note date
   Work/, Personal/, Reference/, Journal/     filed locations, by rule once curator exists
   _Sources/               generated, read-only pages describing what came in from where
   _Trash/                 where a delete goes, not a separate archive state
