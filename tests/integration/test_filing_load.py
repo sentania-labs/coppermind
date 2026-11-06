@@ -202,6 +202,46 @@ async def test_listing_fails_clearly_when_the_whole_notes_filesystem_is_unreadab
     assert not [p for p in await store.get_problems() if p.kind == "unreadable_note"]
 
 
+async def test_http_listing_pages_past_an_unreadable_note_and_reports_a_storage_outage(store):
+    notes_made = [
+        await store.create_note(CreateNote(title=f"Http {i}", frontmatter={"type": "reference"}))
+        for i in range(3)
+    ]
+    blocked = min(notes_made, key=lambda n: n.id)
+    app, headers = authorized_api(store)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://api", headers=headers
+    ) as client:
+        target = store.notes_root / blocked.path
+        target.chmod(0)
+        try:
+            listed, cursor = [], None
+            while True:
+                params = {"state": "ok", "limit": "1"}
+                if cursor:
+                    params["cursor"] = cursor
+                response = await client.get("/v1/notes", params=params)
+                assert response.status_code == 200, response.text
+                listed += [item["id"] for item in response.json()["items"]]
+                cursor = response.json()["next_cursor"]
+                if cursor is None:
+                    break
+            assert sorted(listed) == sorted(n.id for n in notes_made if n.id != blocked.id)
+            assert [
+                p.note_id for p in await store.get_problems() if p.kind == "unreadable_note"
+            ] == [blocked.id]
+        finally:
+            target.chmod(0o644)
+        store.notes_root.chmod(0)
+        try:
+            response = await client.get("/v1/notes", params={"state": "ok"})
+            assert response.status_code == 503
+            assert response.json()["error"] == "notes_filesystem_unavailable"
+        finally:
+            store.notes_root.chmod(0o755)
+        assert (await client.get("/v1/notes", params={"state": "ok"})).status_code == 200
+
+
 async def test_failure_count_drains_and_error_is_visible_by_id(store, monkeypatch):
     note = await store.create_note(
         CreateNote(

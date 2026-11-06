@@ -152,8 +152,8 @@ listing omits files that have disappeared or cannot be parsed until the next
 reconciliation records their state. A file that exists but cannot be read is also
 left out, paging continues past it, and Problems names the note (`unreadable_note`)
 until it can be read again. If the notes filesystem as a whole cannot be read, the
-listing fails with `notes storage unavailable, retry shortly` instead of returning
-a partial page. Problems includes missing notes with their
+listing fails with the standard `503` `notes_filesystem_unavailable` error, which
+can be retried once the volume is healthy, instead of returning a partial page. Problems includes missing notes with their
 `state_reason` and durable path notices naming the observed and indexed paths.
 While filing is in flight, its journal holds hash-checked note copies; they are
 dropped once filing settles, and a retention purge removes a purged note's
