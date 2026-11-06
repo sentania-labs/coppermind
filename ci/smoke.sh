@@ -561,10 +561,10 @@ admin_csrf="$(admin_page -f "$ADMIN/admin/login" | form_value csrf | head -1)"
     = "$ADMIN/admin" ] \
     || fail "the admin password did not sign in before reading the artifacts page"
 artifacts_page="$(admin_page -f "$ADMIN/admin/artifacts")"
-printf '%s' "$artifacts_page" | grep -Fq "$artifact_id" \
-    || fail "Admin's artifacts page does not list the artifact"
-printf '%s' "$artifacts_page" | grep -Fq '<strong>artifact</strong>' \
-    || fail "Admin's artifacts page does not say the kind"
+printf '%s' "$artifacts_page" | grep -Fq "/admin/artifacts/$artifact_id/remove" \
+    || fail "Admin's artifacts page does not list the artifact with a remove action"
+printf '%s' "$artifacts_page" | grep -Fq 'Smoke deck' \
+    || fail "Admin's artifacts page does not show the artifact's title"
 admin_csrf="$(admin_page -f "$ADMIN/admin" | form_value csrf | head -1)"
 admin -X POST "$ADMIN/v1/admin/logout" >/dev/null
 ok "the PDF is a browsable file under Artifacts/, archived, searchable by its text as an artifact, and not a note"
