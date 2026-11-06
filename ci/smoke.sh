@@ -210,7 +210,8 @@ has_session_cookie && fail "a refused password issued a session cookie"
     = "$ADMIN/admin" ] \
     || fail "the admin password chosen at claim did not sign in"
 has_session_cookie || fail "signing in did not issue a session cookie"
-admin_page "$ADMIN/admin" | grep -Fq 'You are signed in' \
+overview_page="$(admin_page "$ADMIN/admin")"
+printf '%s' "$overview_page" | grep -Fq 'You are signed in' \
     || fail "the protected overview did not render for a signed in operator"
 
 admin_csrf="$(admin_page -f "$ADMIN/admin" | form_value csrf)"
