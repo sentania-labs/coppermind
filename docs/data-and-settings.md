@@ -331,10 +331,11 @@ bundle so a later ingest can create a new source normally.
 
 A removed artifact's archive under `/data/artifacts/<id>` is a candidate once its
 manifest's `removed_at` is older than the same window (inclusive boundary) and its
-`removed_reason` is `removed in Admin`: an archive retired because its browsable copy was
-deleted on a device or was absent at a rebuild is never a candidate, so a device-side
-delete never loses the original. Each such candidate carries that `reason`. Only an
-archive marked removed and held by no mirror row is listed; a live artifact is never a
+`removed_reason` is one of the owner's own removals: `removed in Admin`, `removed through
+the API` or `deleted in Obsidian`. An archive retired for any other cause, such as a
+browsable copy absent at a rebuild, is never a candidate, so a device-side loss never
+discards the original. Each candidate carries that `reason`. Only an archive marked removed
+and held by no mirror row is listed; a live artifact is never a
 candidate. Confirmation deletes the archive's files and directories after rechecking their
 hashes, through the same dry run, confirm and abandon flow as notes and sources. A note that
 still cites the artifact keeps its citation.

@@ -224,7 +224,12 @@ Obsidian`, and the retention purge removes the bytes after its window, the same
 as a removal from Admin or the API. A copy that is merely absent, because a
 device has not synced yet or at a rebuild from disk, is reported `missing`
 under Problems and nothing is lost: the archive stays until the copy comes back
-or the deletion is committed. Editing the file in Obsidian never changes the
+or the deletion is committed. Moving or renaming the file in Obsidian is not a
+delete: the reconciler finds the stored bytes at the new path, puts the file back at
+its filed `Artifacts/{yyyy}/{yyyy-mm}/` location, logs why, and never retires the
+artifact. A deletion only counts when it was committed after the artifact was
+stored, and the Git lookup treats the path literally, so a name with `[`, `*` or `?`
+cannot match another file's deletion. Editing the file in Obsidian never changes the
 stored original; the edit is reported `modified`.
 
 `text_status` says what extraction produced: `extracted`, `no_extractable_text`
@@ -404,7 +409,7 @@ The public API service accepts API keys explicitly holding `admin:purge`:
 | `POST /v1/admin/purge/abandon` | `{"token":"<token of an unfinished or unreadable receipt>"}` | The receipt with `state: abandoned`; `completed` counts listed items now gone and `remaining` lists the ids that are not |
 
 Candidates include `kind` (note, source or artifact), `id`, `title`, `path`, `origins`,
-`providers`, `deleted_at` for notes and for artifacts (when they were removed), and `reason` for artifacts (`removed in Admin`). Counts
+`providers`, `deleted_at` for notes and for artifacts (when they were removed), and `reason` for artifacts (`removed in Admin`, `removed through the API` or `deleted in Obsidian`). Counts
 contain `notes`, `sources`, `artifacts`, `by_origin`, and `by_provider`; each origin and
 provider carries its own `notes`, `sources` and `artifacts` counts, so a deleted note is never
 mistaken for a removed source. `kept` reports what the dry run left alone:
