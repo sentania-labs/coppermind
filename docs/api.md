@@ -246,7 +246,9 @@ Dropbox takes an artifact only with a kind marker: a sidecar named
 `<filename>.kind` beside the dropped file containing the word `artifact` (or
 JSON with `kind: artifact` and optional `title`, `tags`, `date`), or
 `kind=artifact` on `POST /v1/dropbox`. Without one a non-calendar drop is
-parked as unsupported with that instruction, never guessed at.
+parked as unsupported with that instruction, never guessed at. A marked drop skips
+Dropbox import history: the same file dropped again after its artifact was removed
+is stored again, and identical bytes under the same filename replay as for the API.
 
 ## Search and status
 
