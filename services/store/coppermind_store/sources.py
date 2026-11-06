@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import hashlib
 import json
 import logging
@@ -50,6 +51,7 @@ from coppermind.ids import is_valid_id, new_id
 from coppermind.naming import sanitize_folder, unique_stem
 from coppermind.schema import FrontmatterSchema, note_date, note_date_mismatch
 from coppermind.settings import ProductSettings
+from coppermind.statefiles import RevisionConflict
 from coppermind.store_protocol import (
     ArtifactNotFound,
     CreatedNote,
@@ -1235,7 +1237,8 @@ async def list_reconciler_notices(store: LocalStore) -> list[ReconcilerNotice]:
         if notice.get("kind") == "folder" and (store.notes_root / notice["from_path"]).is_dir()
     }
     for key in notices.keys() - present:
-        store.control.clear_reconciler_notice(key)
+        with contextlib.suppress(RevisionConflict):
+            store.control.clear_reconciler_notice(key)
     return sorted(
         (ReconcilerNotice.model_validate(notices[key]) for key in present),
         key=lambda notice: notice.at,

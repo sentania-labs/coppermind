@@ -62,6 +62,7 @@ from coppermind.schema import (
     parse_note_time,
 )
 from coppermind.settings import ProductSettings
+from coppermind.statefiles import RevisionConflict
 from coppermind.store_protocol import (
     ArtifactBytes,
     ArtifactId,
@@ -461,7 +462,10 @@ class LocalStore:
         return await list_reconciler_notices(self)
 
     async def dismiss_reconciler_notice(self, note_id: NoteId) -> None:
-        self.control.clear_reconciler_notice(note_id)
+        try:
+            self.control.clear_reconciler_notice(note_id)
+        except RevisionConflict as exc:
+            raise MetadataUnavailable(str(exc)) from exc
 
     async def get_status(self) -> StatusResponse:
         from coppermind_store.sources import get_status

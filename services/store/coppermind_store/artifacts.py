@@ -57,6 +57,7 @@ from coppermind.ids import is_valid_id, new_id
 from coppermind.logging import get_logger
 from coppermind.naming import MAX_STEM_LENGTH, sanitize_folder, sanitize_stem
 from coppermind.settings import ProductSettings
+from coppermind.statefiles import RevisionConflict
 from coppermind.store_protocol import (
     ArtifactBytes,
     ArtifactMissing,
@@ -1467,7 +1468,7 @@ def _record_move_back(store: LocalStore, manifest: dict[str, Any], from_path: st
             at=datetime.now(tz=UTC),
             kind="artifact",
         )
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RevisionConflict) as exc:
         log.warning("artifact move notice could not be recorded", reason=type(exc).__name__)
 
 
