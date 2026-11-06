@@ -226,7 +226,9 @@ Reviewed notes are filed under `{notes.notes_folder}/{yyyy}/{yyyy-mm}/` by note
 date, and filed source pages under `{notes.sources_folder}/{yyyy}/{yyyy-mm}/`;
 pending source pages wait under `{sources_folder}/_Pending/{yyyy}/{yyyy-mm}/`.
 `notes_folder` must be a portable relative folder that does not collide with
-another reserved root. `_Attachments/YYYY-MM/` stays flat. Notes and source
+another reserved root. Artifacts are filed under the artifacts folder by the
+same `{yyyy}/{yyyy-mm}` shape (see above); the retired `_Attachments/` folder is
+migrated into it. Notes and source
 pages filed in the old flat `YYYY-MM/` layout are moved on the next filing pass
 through the same recoverable journal; an emptied old `YYYY-MM/` folder (at the
 root or under `_Sources`) is removed, and one that still holds files is left
