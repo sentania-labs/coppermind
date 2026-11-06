@@ -1204,15 +1204,17 @@ async def list_reconciler_notices(store: LocalStore) -> list[ReconcilerNotice]:
     if note_ids:
         try:
             async with store.session_factory() as session:
-                present = set(
-                    (
-                        await session.scalars(
-                            sa.select(Note.id).where(
-                                Note.id.in_(note_ids), Note.state.not_in(("missing", "deleted"))
-                            )
+                # A returned note that has since moved again (a date edit re-files it)
+                # no longer needs its notice, the same way a path notice ends with
+                # its disagreement.
+                rows = (
+                    await session.execute(
+                        sa.select(Note.id, Note.path).where(
+                            Note.id.in_(note_ids), Note.state.not_in(("missing", "deleted"))
                         )
-                    ).all()
-                )
+                    )
+                ).all()
+                present = {row.id for row in rows if row.path == notices[row.id]["path"]}
         except (SQLAlchemyError, OSError) as exc:
             raise MetadataUnavailable(str(exc)) from exc
     present |= {
@@ -1264,6 +1266,16 @@ async def get_status(store: LocalStore) -> StatusResponse:
             by_state = (
                 await session.execute(sa.select(Note.state, sa.func.count()).group_by(Note.state))
             ).all()
+            filing_pending_ids = set(
+                (
+                    await session.scalars(
+                        sa.select(Note.id).where(
+                            Note.state == "ok", Note.reviewed.is_(True), Note.filed.is_(False)
+                        )
+                    )
+                ).all()
+            )
+            filing_queue_depth = len(filing_pending_ids)
             sources = await session.scalar(sa.select(sa.func.count()).select_from(Source)) or 0
             rejected_ingests = (
                 await session.scalar(
@@ -1286,8 +1298,44 @@ async def get_status(store: LocalStore) -> StatusResponse:
     notes_by_state = {state: count for state, count in by_state}
     excluded_count = store.control.read_reconciler_excluded_count()
     problems = await get_problems(store)
+    failing_ids = {p.note_id for p in problems if p.kind == "filing"}
+    ready_depth = len(filing_pending_ids - failing_ids)
+    last_progress = None
+    stalled = False
+    estimated_drain = None
+    try:
+        rate = json.loads((store.control.store.state_dir / "filing-rate.json").read_bytes())
+        now = datetime.now(UTC)
+        seconds_per_note = float(rate.get("seconds_per_note", 0))
+        seen: list[datetime] = []
+        for key in ("last_progress_at", "last_pass_at"):
+            moment = datetime.fromisoformat(rate[key]) if key in rate else None
+            if moment is not None and moment.tzinfo is not None:
+                seen.append(moment)
+                if key == "last_progress_at":
+                    last_progress = moment
+        quiet = max(
+            300.0,
+            5 * store.control.settings().reconcile.scan_interval_s,
+            3 * seconds_per_note,
+        )
+        stalled = bool(
+            ready_depth
+            and (rate.get("stuck") is True or (seen and (now - max(seen)).total_seconds() > quiet))
+        )
+        if not stalled and "seconds_per_note" in rate and seconds_per_note >= 0:
+            estimated_drain = int(seconds_per_note * ready_depth)
+    except (OSError, ValueError, KeyError, TypeError, OverflowError, AttributeError):
+        estimated_drain = None
+    if not ready_depth and filing_queue_depth:
+        estimated_drain = None
     return StatusResponse(
         counters=StatusCounters(
+            filing_queue_depth=filing_queue_depth,
+            filing_ready_depth=ready_depth,
+            filing_last_progress_at=last_progress,
+            filing_stalled=stalled,
+            filing_estimated_drain_s=estimated_drain,
             known_unreadable=known_unreadable,
             notes_awaiting_review=notes_awaiting_review,
             notes_by_state=notes_by_state,
@@ -1303,14 +1351,40 @@ async def get_status(store: LocalStore) -> StatusResponse:
             filing_failures=sum(p.kind == "filing" for p in problems),
             calendar_import_failures=sum(p.kind == "calendar_import" for p in problems),
             purge_problems=sum(p.kind in PURGE_PROBLEM_KINDS for p in problems),
-            active_problems=sum(p.kind != "excluded" for p in problems),
+            active_problems=sum(p.kind not in {"excluded", "returned_note"} for p in problems),
         )
     )
 
 
-def filing_problems(store: LocalStore) -> list[ProblemInfo]:
+def _filing_reason(error: str) -> str:
+    retry = "Filing retries automatically."
+    if error == "SourceRevisionNeedsReview":
+        return (
+            "Source material changed. Review it, then mark the note unreviewed "
+            f"and reviewed again. {retry}"
+        )
+    if error in {"NotesFilesystemUnavailable", "PermissionError", "OSError"}:
+        return (
+            "The notes folder could not be accessed. Check that the notes filesystem is "
+            "mounted, has free space, and that the store can read the note and write to "
+            f"its destination folder. {retry}"
+        )
+    if error == "PathCollision":
+        return (
+            "The destination is already occupied. Check for duplicate files and move the "
+            f"conflicting file aside. {retry}"
+        )
+    detail = error.removeprefix("ValueError: ") if error.startswith("ValueError: ") else None
+    if detail:
+        return f"The note could not be filed: {detail}. Fix that, or check store logs. {retry}"
+    return f"The note could not be filed. Check store logs if the problem continues. {retry}"
+
+
+def filing_problems(store: LocalStore, active_ids: set[str] | None = None) -> list[ProblemInfo]:
     problems: list[ProblemInfo] = []
     for path in sorted((store.control.store.state_dir / "filing").glob("*.json")):
+        if active_ids is not None and path.stem not in active_ids:
+            continue
         try:
             filing = json.loads(path.read_bytes())
             if filing.get("error"):
@@ -1318,13 +1392,8 @@ def filing_problems(store: LocalStore) -> list[ProblemInfo]:
                     ProblemInfo(
                         kind="filing",
                         reference=path.stem,
-                        reason=(
-                            "Source material changed. Review it, then mark the note unreviewed "
-                            "and reviewed again."
-                            if filing["error"] == "SourceRevisionNeedsReview"
-                            else "Monthly filing is pending; it will retry automatically: "
-                            + filing["error"]
-                        ),
+                        filing_attempts=filing.get("attempts", 0),
+                        reason=_filing_reason(filing["error"]),
                         note_id=path.stem,
                     )
                 )
@@ -1333,7 +1402,10 @@ def filing_problems(store: LocalStore) -> list[ProblemInfo]:
                 ProblemInfo(
                     kind="filing",
                     reference=path.stem,
-                    reason="Filing receipt is unreadable",
+                    reason=(
+                        "The saved filing information cannot be read. "
+                        "Check state folder access and store logs."
+                    ),
                     note_id=path.stem,
                 )
             )
@@ -1467,7 +1539,9 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
             unparsed = list(
                 (
                     await session.scalars(
-                        sa.select(Note).where(Note.state == "unparsed").order_by(Note.path)
+                        sa.select(Note)
+                        .where(Note.state.in_(["unparsed", "missing"]))
+                        .order_by(Note.path)
                     )
                 ).all()
             )
@@ -1510,11 +1584,15 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         )
         for row in unreadable
     )
-    problems.extend(filing_problems(store))
+    filing_items = filing_problems(store, {row.id for row in ok_notes if row.reviewed})
+    paths = {row.id: row.path for row in ok_notes}
+    for item in filing_items:
+        item.reference = paths.get(item.note_id, item.reference)
+    problems.extend(filing_items)
     problems.extend(await purge_problems(store))
     problems.extend(
         ProblemInfo(
-            kind="unparsed",
+            kind=row.state,
             reference=row.path,
             reason=row.state_reason or "unparsed",
             note_id=row.id,
@@ -1537,6 +1615,41 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     note_id=row.id,
                 )
             )
+    from coppermind_store.notices import open_path_notices, open_unreadable_notices
+
+    problems.extend(
+        ProblemInfo(
+            kind="path_notice",
+            reference=notice["observed_path"],
+            note_id=notice["note_id"],
+            reason=notice["reason"],
+        )
+        for notice in open_path_notices(store, {row.id: row.path for row in ok_notes})
+    )
+    problems.extend(
+        ProblemInfo(
+            kind="unreadable_note",
+            reference=notice["path"],
+            note_id=notice["note_id"],
+            reason=notice["reason"],
+        )
+        for notice in await open_unreadable_notices(store)
+    )
+    problems.extend(
+        ProblemInfo(
+            kind="returned_note" if notice.kind == "note" else "folder_kept",
+            reference=notice.path,
+            note_id=notice.note_id if notice.kind == "note" else None,
+            reason=(
+                f"{notice.title}: found at {notice.from_path}. {notice.reason} "
+                "No action needed. To file a note under a different month, change its "
+                "date in Obsidian."
+                if notice.kind == "note"
+                else notice.reason
+            ),
+        )
+        for notice in await list_reconciler_notices(store)
+    )
     exclusions = store.control.read_reconciler_exclusions()
     problems.extend(
         ProblemInfo(

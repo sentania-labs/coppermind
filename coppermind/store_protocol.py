@@ -510,6 +510,9 @@ class NoteDocument(BaseModel):
     size_bytes: int
     updated_at: datetime
     sources: list[str] = Field(default_factory=list)
+    filed: bool = False
+    filing_error: str | None = None
+    filing_attempts: int = 0
 
 
 NoteState = Literal["ok", "unparsed", "missing", "deleted"]
@@ -576,6 +579,9 @@ class NoteSummary(BaseModel):
     context: str | None = None
     account: list[str] = Field(default_factory=list)
     reviewed: bool
+    filed: bool = False
+    filing_error: str | None = None
+    filing_attempts: int = 0
     tags: list[str] = Field(default_factory=list)
     content_hash: ETag
     updated_at: datetime
@@ -700,6 +706,11 @@ class StatusCounters(BaseModel):
     notes_returned: int = 0
     folders_kept: int = 0
     filing_failures: int = 0
+    filing_queue_depth: int = 0
+    filing_estimated_drain_s: int | None = None
+    filing_ready_depth: int = 0
+    filing_last_progress_at: datetime | None = None
+    filing_stalled: bool = False
     known_unreadable: int = 0
     calendar_import_failures: int = 0
     active_problems: int | None = None
@@ -784,8 +795,6 @@ class Store(Protocol):
 
     async def get_problems(self) -> list[ProblemInfo]: ...
 
-    async def list_reconciler_notices(self) -> list[ReconcilerNotice]: ...
-
     async def dismiss_reconciler_notice(self, note_id: NoteId) -> None: ...
 
     async def get_note_history_status(self) -> HistoryStatus: ...
@@ -842,7 +851,11 @@ class ProblemInfo(BaseModel):
     import failed validation or exceeded its configured budget), `dropbox` (a Dropbox
     file that is unsupported or failed), `calendar_conflict` (legacy exports that
     disagreed), `date_mismatch` (both `date` and
-    `time` are present and disagree, with `date` winning) or `excluded`.
+    `time` are present and disagree, with `date` winning), `path_notice` (the index
+    and the file disagree on a path), `returned_note` (a hand-moved reviewed note was
+    returned to its filed folder), `folder_kept` (an old month folder still holds
+    files), `unreadable_note` (a listed note whose file
+    cannot be read) or `excluded`.
     `note_id` and `source_id` name what the problem is about when it exists.
     """
 
@@ -851,6 +864,7 @@ class ProblemInfo(BaseModel):
     reason: str
     note_id: str | None = None
     source_id: str | None = None
+    filing_attempts: int | None = None
 
 
 class HistoryStatus(BaseModel):
@@ -863,6 +877,7 @@ class HistoryStatus(BaseModel):
 
 
 class NoteRecovery(BaseModel):
+    evidence_pending: bool = False
     note_id: str
     path: str
     content: str

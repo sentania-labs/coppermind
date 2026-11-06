@@ -3,13 +3,12 @@
 Every number and every problem is computed by the store from its metadata
 mirror and the rejections it recorded. Admin only reads: nothing here asks the
 store to change a note, and nothing is ever written into one (operator
-decision of 2026-10-01). The one thing the overview lets the operator do is
+decision of 2026-10-01). The one thing these pages let the operator do is
 dismiss the notice that a hand-moved note was returned, which changes no note.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from html import escape
 from typing import Protocol
 from urllib.parse import quote
@@ -24,7 +23,6 @@ from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import (
     NoteSourceInfo,
     ProblemInfo,
-    ReconcilerNotice,
     SourceManifest,
     StatusResponse,
     StoreError,
@@ -39,8 +37,6 @@ class StatusReader(Protocol):
     async def get_status(self) -> StatusResponse: ...
 
     async def get_problems(self) -> list[ProblemInfo]: ...
-
-    async def list_reconciler_notices(self) -> list[ReconcilerNotice]: ...
 
     async def dismiss_reconciler_notice(self, note_id: str) -> None: ...
 
@@ -68,10 +64,19 @@ KIND_LABELS = {
     "purge_unfinished": "Retention purge",
     "purge_receipt": "Retention purge receipt",
     "damaged_source": "Damaged source bundle",
+    "missing": "Missing note",
+    "filing": "Filing error",
+    "path_notice": "Note path changed",
+    "returned_note": "Hand-moved note returned",
+    "folder_kept": "Old month folder kept",
+    "unreadable_note": "Unreadable note",
 }
 
 
 def _link(problem: ProblemInfo) -> str:
+    if problem.kind == "returned_note" and problem.note_id:
+        action = f"/v1/admin/notices/{quote(problem.note_id, safe='')}/dismiss"
+        return f'<form method="post" action="{action}"><button>Dismiss notice</button></form>'
     if problem.kind == "purge_receipt":
         return (
             '<form method="post" action="/v1/admin/purge/abandon">'
@@ -86,6 +91,9 @@ def _link(problem: ProblemInfo) -> str:
         return '<a href="/admin/context?tab=calendar">Calendar import history</a>'
     if problem.kind == "damaged_source":
         return ""
+    if problem.kind == "missing" and problem.note_id:
+        target = f"/admin/note-history/{quote(problem.note_id, safe='')}"
+        return f'<a href="{escape(target)}">Check recovery options</a>'
     if problem.note_id:
         target = f"/admin/notes/{quote(problem.note_id, safe='')}"
         return f'<a href="{escape(target)}">note {escape(problem.note_id)}</a>'
@@ -104,60 +112,78 @@ def _what(item: ProblemInfo) -> str:
     return "Saved cleanup attempt" if item.kind in PURGE_KINDS else escape(item.reference)
 
 
+def _reason(item: ProblemInfo) -> str:
+    if item.kind == "missing":
+        if "vanished between filing paths" in item.reason.lower():
+            return (
+                "The file disappeared while filing was moving it. "
+                + item.reason
+                + ". Check recovery options for a saved copy."
+            )
+        return (
+            "The file is no longer at its last known path. Check recovery options "
+            "for a saved copy or restore it from a device or backup."
+        )
+    return item.reason
+
+
 def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems found.") -> str:
     if not problems:
         return "<p>" + escape(empty_text) + "</p>"
     rows = "".join(
-        f"<tr><td>{escape(KIND_LABELS.get(item.kind, item.kind))}</td>"
-        f"<td>{_what(item)}</td>"
-        f"<td>{escape(item.reason)}</td><td>{_link(item)}</td></tr>"
+        f"<tr><td>{_what(item)}<br>"
+        f"<small>{escape(KIND_LABELS.get(item.kind, item.kind))}</small></td>"
+        f"<td>{escape(_reason(item))}"
+        + (
+            f"<br>Filing attempts: {item.filing_attempts}"
+            if item.filing_attempts is not None
+            else ""
+        )
+        + f"</td><td>{_link(item)}</td></tr>"
         for item in problems
     )
     return (
-        "<table><thead><tr><th>Kind</th><th>Reference</th><th>Reason</th><th>Open</th></tr>"
+        "<table><thead><tr><th>Affected note or source</th><th>What to do</th><th>Action</th></tr>"
         f"</thead><tbody>{rows}</tbody></table>"
     )
 
 
-def _dismiss_form(notice: ReconcilerNotice) -> str:
-    action = f"/v1/admin/notices/{quote(notice.note_id, safe='')}/dismiss"
-    return f'<form method="post" action="{action}"><button>Dismiss notice</button></form>'
-
-
-def _notices_html(notices: Sequence[ReconcilerNotice], zone: ZoneInfo) -> str:
+def filing_status_html(status: StatusResponse, zone: ZoneInfo | None = None) -> str:
+    """One filing summary shared by Overview and Problems."""
     from coppermind_admin.pages.search_index import local_time
 
-    if not notices:
-        return ""
-    items = ""
-    for notice in notices:
-        where = (
-            f"found at <code>{escape(notice.from_path)}</code>, returned to "
-            f"<code>{escape(notice.path)}</code>, {escape(local_time(notice.at, zone))}"
-            if notice.kind == "note"
-            else f"<code>{escape(notice.from_path)}</code>, {escape(local_time(notice.at, zone))}"
+    counters = status.counters
+    ready = counters.filing_ready_depth
+    if counters.filing_stalled:
+        drain = "No recent filing progress. Check Problems and store logs."
+    elif ready and counters.filing_estimated_drain_s is not None:
+        minutes = max(1, (counters.filing_estimated_drain_s + 59) // 60)
+        drain = (
+            f"about {minutes} {'minute' if minutes == 1 else 'minutes'} for notes without errors"
         )
-        items += (
-            f"<li><strong>{escape(notice.title)}</strong> "
-            f'<span class="muted">{where}</span>'
-            f"<br>{escape(notice.reason)}"
-            f"{_dismiss_form(notice) if notice.kind == 'note' else ''}</li>"
-        )
-    guidance = ""
-    if any(notice.kind == "note" for notice in notices):
-        guidance = (
-            '<p class="muted">No action needed. To file a note under a different month, '
-            "change its date in Obsidian. Dismiss notice only hides the notice; "
-            "the note stays where it is.</p>"
-        )
-    return f"{guidance}<ul>{items}</ul>"
+    elif ready:
+        drain = "Estimating after filing makes progress."
+    else:
+        drain = "No notes waiting without errors."
+    health = (
+        "Filing needs attention"
+        if counters.filing_failures or counters.filing_stalled
+        else "Filing in progress"
+        if counters.filing_queue_depth
+        else "Filing complete"
+    )
+    progress = (
+        escape(local_time(counters.filing_last_progress_at, zone or ZoneInfo("America/Chicago")))
+        if counters.filing_last_progress_at
+        else "No successful filing recorded yet"
+    )
+    return f"""<section aria-label="Filing status"><h3>{health}</h3>
+<p>Ready to file: {ready}. Notes with filing errors: {counters.filing_failures}.
+{drain}</p><p>Last filing progress: {progress}</p>
+<p><a href="/admin/problems">Check filing problems and recovery options</a></p></section>"""
 
 
-def counters_html(
-    status: StatusResponse,
-    notices: Sequence[ReconcilerNotice] = (),
-    zone: ZoneInfo = ZoneInfo("America/Chicago"),
-) -> str:
+def counters_html(status: StatusResponse, zone: ZoneInfo | None = None) -> str:
     counters = status.counters
     problems = (
         counters.rejected_ingests
@@ -185,6 +211,7 @@ def counters_html(
             "<strong>Upgrade complete.</strong> Every reviewed note is filed by year and month."
         )
     return f"""<h2>Store Status</h2>
+{filing_status_html(status, zone)}
 <h3>Notes filing</h3>
 <p>Notes are organized by year and month under <code>{root}/</code>, for example
 <code>{root}/2026/2026-04/</code>. {upgrade}</p>
@@ -203,14 +230,15 @@ Preserved sources<strong>{counters.sources}</strong></div>
 <li>Name collisions: {counters.name_collisions}</li>
 <li>Unparseable files: {counters.unparseable_files}</li>
 <li>Known unreadable search entries: {counters.known_unreadable}</li>
-<li>Pending filing failures: {counters.filing_failures}</li>
+<li>Notes waiting to file (including errors): {counters.filing_queue_depth}</li>
+<li>Notes with filing errors: {counters.filing_failures}</li>
 <li>Failed calendar imports: {counters.calendar_import_failures}</li>
 <li>Retention purge items needing attention: {counters.purge_problems}</li>
 <li>Excluded (skipped by exclusion rules): {counters.excluded_count}</li>
 <li>Hand-moved notes returned to their filed folder: {counters.notes_returned}
-{_notices_html([n for n in notices if n.kind == "note"], zone)}</li>
+(listed with their reasons under Problems)</li>
 <li>Old month folders left in place because they are not empty: {counters.folders_kept}
-{_notices_html([n for n in notices if n.kind == "folder"], zone)}</li>
+(listed with their reasons under Problems)</li>
 </ul>
 <p><a href="/admin/problems">Problems ({problems})</a></p>"""
 
@@ -221,15 +249,9 @@ async def overview_counters(request: Request, wiring: Wiring) -> str:
     try:
         client = store_client(request, wiring)
         status = await client.get_status()
-        counters = status.counters
-        notices = (
-            await client.list_reconciler_notices()
-            if counters.notes_returned or counters.folders_kept
-            else []
-        )
     except (StoreError, OSError):
         return f'<p class="error">{UNREACHABLE}</p>'
-    return counters_html(status, notices, _zone(request))
+    return counters_html(status, _zone(request))
 
 
 def router(wiring: Wiring) -> APIRouter:
@@ -249,19 +271,24 @@ def router(wiring: Wiring) -> APIRouter:
             await store_client(request, wiring).dismiss_reconciler_notice(note_id)
         except (StoreError, OSError):
             return unreachable("Overview")
-        return RedirectResponse("/admin", status_code=303)
+        return RedirectResponse("/admin/problems", status_code=303)
 
     @routes.get("/admin/problems", response_class=HTMLResponse, include_in_schema=False)
     async def problems_page(request: Request) -> Response:
         try:
-            problems = await store_client(request, wiring).get_problems()
+            client = store_client(request, wiring)
+            problems = await client.get_problems()
+            status = await client.get_status()
         except (StoreError, OSError):
             return unreachable("Problems")
+        from coppermind_admin.pages.search_index import _zone
+
         return page(
             "Problems",
             '<h1>Problems</h1><p><a href="/admin">Overview</a></p>'
-            "<p>Computed from the metadata mirror and recorded rejections. "
-            "Nothing is written into a note.</p>"
+            + filing_status_html(status, _zone(request))
+            + "<p>Start with the affected note and the action below. "
+            "Filing retries automatically after the cause is fixed.</p>"
             "<p>Known unreadable search entries: "
             f"{sum(p.kind == 'search_unreadable' for p in problems)}</p>"
             f"<p>Files skipped by exclusion: {sum(p.kind == 'excluded' for p in problems)}</p>"

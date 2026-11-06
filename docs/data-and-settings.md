@@ -213,10 +213,11 @@ alone. A reviewed note moved by hand out of its filed folder is moved back on
 the next pass.
 
 `/data/state/reconciler_notices.json` records these returns and kept folders.
-Admin's Overview lists each current notice with the reason and lets the
-operator dismiss a returned-note notice. A notice is dropped when its note is
-gone or its folder no longer exists; a kept-folder notice clears itself when the
-folder empties.
+Problems lists each current notice, beside the path notices, with the reason
+(`returned_note`, `folder_kept`); the operator can dismiss a returned-note
+notice. The list holds only what is current: a notice is dropped when its note
+is gone or has moved on from the returned path, and a kept-folder notice clears
+itself when the folder empties or goes away. Overview shows the counts.
 
 ## The PostgreSQL mirror
 

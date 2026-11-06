@@ -150,6 +150,9 @@ async def test_rename_keeps_requested_title_in_response_and_heading(
     monkeypatch.setattr(store, "_locate", AsyncMock(return_value=("Old.md", path)))
     session = AsyncMock(spec=AsyncSession)
     session.add = MagicMock()
+    session.__aenter__.return_value = session
+    session.scalar.return_value = False
+    monkeypatch.setattr(store, "session_factory", lambda: session)
 
     @asynccontextmanager
     async def transaction(_factory):

@@ -7,18 +7,31 @@ from coppermind_store.notes import LocalStore
 from structlog.testing import capture_logs
 
 from coppermind.settings import Wiring
-from coppermind.store_protocol import NotesFilesystemUnavailable, NoteUnparseable, NotFound
+from coppermind.store_protocol import (
+    NoteDocument,
+    NotesFilesystemUnavailable,
+    NoteUnparseable,
+    NotFound,
+)
 
 NOTE_ID = "01K4Q8Z3N7V2X9M1B5C6D8E0F2"
 OTHER_ID = "01K4Q8Z3N7V2X9M1B5C6D8E0F3"
 NOTE_BYTES = b"---\nid: 01K4Q8Z3N7V2X9M1B5C6D8E0F2\nsources: []\n---\n# Runbook\n"
 
 
+class ReadOnlyStore(LocalStore):
+    """Filesystem read tests replace location and filing metadata lookup."""
+
+    async def _with_filing_state(self, document: NoteDocument) -> NoteDocument:
+        return document
+
+
 def local_store(tmp_path: Path) -> LocalStore:
     wiring = Wiring(data_dir=tmp_path / "data")
     control = ControlState(wiring.state_dir)
     control.ensure_defaults()
-    return LocalStore(wiring.notes_dir, control, cast(Any, object()), wiring.sources_dir)
+    wiring.notes_dir.mkdir(parents=True, exist_ok=True)
+    return ReadOnlyStore(wiring.notes_dir, control, cast(Any, object()), wiring.sources_dir)
 
 
 async def test_a_file_that_vanishes_after_location_is_not_found(
@@ -27,7 +40,7 @@ async def test_a_file_that_vanishes_after_location_is_not_found(
     store = local_store(tmp_path)
     missing = tmp_path / "vanished.md"
 
-    async def locate(_: str) -> tuple[str, Path]:
+    async def locate(_: str, __: object = None) -> tuple[str, Path]:
         return "Review/vanished.md", missing
 
     monkeypatch.setattr(store, "_locate", locate)
@@ -49,7 +62,7 @@ async def test_a_file_metadata_read_failure_reports_the_notes_filesystem(
         def stat(self):
             raise PermissionError("metadata read denied")
 
-    async def locate(_: str) -> tuple[str, Path]:
+    async def locate(_: str, __: object = None) -> tuple[str, Path]:
         return "Review/Runbook.md", cast(Path, StatFailurePath())
 
     monkeypatch.setattr(store, "_locate", locate)
@@ -72,7 +85,7 @@ async def test_a_file_carrying_another_identifier_is_never_served(
     renamed = tmp_path / "Runbook.md"
     renamed.write_bytes(NOTE_BYTES.replace(NOTE_ID.encode(), OTHER_ID.encode()))
 
-    async def locate(_: str) -> tuple[str, Path]:
+    async def locate(_: str, __: object = None) -> tuple[str, Path]:
         return "Review/Runbook.md", renamed
 
     monkeypatch.setattr(store, "_locate", locate)
@@ -90,7 +103,7 @@ async def test_a_file_without_an_identifier_still_reads_back(
     hand_written = tmp_path / "Runbook.md"
     hand_written.write_bytes(b"---\nsources: []\n---\n# Runbook\n")
 
-    async def locate(_: str) -> tuple[str, Path]:
+    async def locate(_: str, __: object = None) -> tuple[str, Path]:
         return "Review/Runbook.md", hand_written
 
     monkeypatch.setattr(store, "_locate", locate)
@@ -134,7 +147,7 @@ async def test_a_broken_note_never_puts_its_own_text_in_the_log(
     broken = tmp_path / "Runbook.md"
     broken.write_text(text, encoding="utf-8")
 
-    async def locate(_: str) -> tuple[str, Path]:
+    async def locate(_: str, __: object = None) -> tuple[str, Path]:
         return "Review/Runbook.md", broken
 
     monkeypatch.setattr(store, "_locate", locate)
@@ -175,7 +188,7 @@ async def test_broken_frontmatter_carrying_another_id_raises_not_found(
         encoding="utf-8",
     )
 
-    async def locate(_: str) -> tuple[str, Path]:
+    async def locate(_: str, __: object = None) -> tuple[str, Path]:
         return "Review/Runbook.md", broken
 
     monkeypatch.setattr(store, "_locate", locate)
@@ -203,7 +216,7 @@ async def test_broken_frontmatter_carrying_its_own_id_raises_unparseable(
         encoding="utf-8",
     )
 
-    async def locate(_: str) -> tuple[str, Path]:
+    async def locate(_: str, __: object = None) -> tuple[str, Path]:
         return "Review/Runbook.md", broken
 
     monkeypatch.setattr(store, "_locate", locate)
@@ -228,7 +241,7 @@ async def test_broken_frontmatter_with_no_recoverable_id_raises_unparseable(
         encoding="utf-8",
     )
 
-    async def locate(_: str) -> tuple[str, Path]:
+    async def locate(_: str, __: object = None) -> tuple[str, Path]:
         return "Review/Runbook.md", broken
 
     monkeypatch.setattr(store, "_locate", locate)
@@ -252,7 +265,7 @@ async def test_undecodable_bytes_still_answer_unparseable(
     broken = tmp_path / "Runbook.md"
     broken.write_bytes(b"---\nid: x\n---\n\xff\xfe")
 
-    async def locate(_: str) -> tuple[str, Path]:
+    async def locate(_: str, __: object = None) -> tuple[str, Path]:
         return "Review/Runbook.md", broken
 
     monkeypatch.setattr(store, "_locate", locate)
@@ -284,7 +297,7 @@ async def test_unterminated_block_still_answers_unparseable(
         encoding="utf-8",
     )
 
-    async def locate(_: str) -> tuple[str, Path]:
+    async def locate(_: str, __: object = None) -> tuple[str, Path]:
         return "Review/Runbook.md", broken
 
     monkeypatch.setattr(store, "_locate", locate)

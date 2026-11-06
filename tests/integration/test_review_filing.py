@@ -649,6 +649,11 @@ async def test_upgrade_refiles_legacy_notes_and_search_never_empties(store):
     assert store.control.read_reconciler_notices() == {}
 
 
+async def _notices(store):
+    """The returned-note and kept-folder entries of the one Problems list."""
+    return [p for p in await store.get_problems() if p.kind in {"returned_note", "folder_kept"}]
+
+
 async def test_a_hand_moved_note_returns_with_a_reconciler_notice(store):
     result = await store.ingest(ingest_request())
     await approve(store, result.note.id)
@@ -662,11 +667,12 @@ async def test_a_hand_moved_note_returns_with_a_reconciler_notice(store):
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
     returned = await store.get_note(note.id)
     assert returned.path == note.path
-    [notice] = await store.list_reconciler_notices()
+    [notice] = await _notices(store)
+    assert notice.kind == "returned_note"
     assert notice.note_id == note.id
-    assert notice.title == note.title
-    assert notice.from_path == f"Elsewhere/{source.name}"
-    assert notice.path == note.path
+    assert notice.reference == note.path
+    assert note.title in notice.reason
+    assert f"found at Elsewhere/{source.name}" in notice.reason
     assert "Notes/2026/2026-09" in notice.reason
     assert (await store.get_status()).counters.notes_returned == 1
 
@@ -690,10 +696,10 @@ async def test_a_hand_move_notice_survives_a_failed_first_return(store, monkeypa
 
     monkeypatch.setattr(store, "move_note", failing_once)
     assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 1}
-    assert await store.list_reconciler_notices() == []
+    assert await _notices(store) == []
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
-    [notice] = await store.list_reconciler_notices()
-    assert notice.from_path == f"Elsewhere/{source.name}"
+    [notice] = await _notices(store)
+    assert f"found at Elsewhere/{source.name}" in notice.reason
     assert (await store.get_note(note.id)).path == note.path
     assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 0}
 
@@ -708,19 +714,19 @@ async def test_old_month_folders_are_removed_when_empty_and_reported_when_not(st
     await filing.file_reviewed(store)
     assert not any(folder.exists() for folder in empty)
     assert all((folder / "keep.txt").read_text() == "mine" for folder in kept)
-    notices = {n.note_id: n for n in await store.list_reconciler_notices()}
-    assert set(notices) == {"folder:2026-08", "folder:_Sources/2026-08"}
-    assert {n.kind for n in notices.values()} == {"folder"}
-    assert "still holds files" in notices["folder:2026-08"].reason
+    notices = {n.reference: n for n in await _notices(store)}
+    assert set(notices) == {"2026-08", "_Sources/2026-08"}
+    assert {n.kind for n in notices.values()} == {"folder_kept"}
+    assert "still holds files" in notices["2026-08"].reason
     counters = (await store.get_status()).counters
     assert (counters.folders_kept, counters.notes_returned) == (2, 0)
     await filing.file_reviewed(store)
-    assert len(await store.list_reconciler_notices()) == 2
+    assert len(await _notices(store)) == 2
     for folder in kept:
         (folder / "keep.txt").unlink()
     await filing.file_reviewed(store)
     assert not any(folder.exists() for folder in kept)
-    assert await store.list_reconciler_notices() == []
+    assert await _notices(store) == []
     assert (await store.get_status()).counters.folders_kept == 0
 
 
@@ -729,10 +735,10 @@ async def test_a_folder_notice_is_dropped_once_the_folder_is_gone(store):
     folder.mkdir()
     (folder / "keep.txt").write_text("mine")
     await filing.file_reviewed(store)
-    assert len(await store.list_reconciler_notices()) == 1
+    assert len(await _notices(store)) == 1
     (folder / "keep.txt").unlink()
     folder.rmdir()
-    assert await store.list_reconciler_notices() == []
+    assert await _notices(store) == []
     assert store.control.read_reconciler_notices() == {}
 
 
@@ -753,8 +759,21 @@ async def test_a_notice_is_dropped_when_its_note_no_longer_exists(store):
     assert (await store.get_status()).counters.notes_returned == 1
     (store.notes_root / (await store.get_note(note.id)).path).unlink()
     await reconcile_once(store)
-    assert await store.list_reconciler_notices() == []
+    assert await _notices(store) == []
     assert (await store.get_status()).counters.notes_returned == 0
+    assert store.control.read_reconciler_notices() == {}
+
+
+async def test_a_returned_note_notice_ends_when_the_note_moves_on(store):
+    note = await _hand_move_and_return(store)
+    assert len(await _notices(store)) == 1
+    current = store.notes_root / (await store.get_note(note.id)).path
+    (store.notes_root / "Later").mkdir()
+    current.rename(store.notes_root / "Later" / current.name)
+    await reconcile_once(store)
+    # The notice described a note sitting in its filed folder; it no longer is,
+    # so the list, which holds only what is current, drops it.
+    assert await _notices(store) == []
     assert store.control.read_reconciler_notices() == {}
 
 

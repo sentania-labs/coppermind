@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from coppermind.store_protocol import (
     NoteSourceInfo,
     NotFound,
     ProblemInfo,
-    ReconcilerNotice,
     SourceManifest,
     SourceRevision,
     StatusCounters,
@@ -151,7 +152,7 @@ def test_the_problems_page_lists_each_problem_with_a_link(signed_in):
     assert f'<a href="/admin/notes/{NOTE_ID}">' in response.text
     assert "payload_too_large" in response.text
     assert f'<a href="/admin/sources/{SOURCE_ID}">' in response.text
-    assert store.calls == ["get_problems"]
+    assert store.calls == ["get_problems", "get_status"]
 
 
 def test_the_problem_links_open_the_note_and_the_source(signed_in):
@@ -289,8 +290,8 @@ def test_calendar_and_dropbox_failures_count_and_link_to_dismissal(signed_in):
     page = client.get("/admin/problems")
     assert 'href="/admin/context?tab=calendar"' in page.text
     assert 'href="/admin/workflow?tab=intake"' in page.text
-    assert "<td>Calendar import</td>" in page.text
-    assert "<td>Dropbox</td>" in page.text
+    assert "<small>Calendar import</small>" in page.text
+    assert "<small>Dropbox</small>" in page.text
     assert "No excluded files." in page.text
     assert "No problems found." not in page.text
 
@@ -347,6 +348,96 @@ def test_a_damaged_source_bundle_is_plain_and_has_no_dead_link(signed_in):
     assert "/admin/sources/" not in page
 
 
+def test_filing_errors_are_actionable_and_missing_links_to_recovery(signed_in):
+    client, _ = signed_in
+    fake = _install(client, ReadOnlyStore())
+    fake.problems = [
+        ProblemInfo(
+            kind="filing",
+            reference="Review/note.md",
+            note_id=NOTE_ID,
+            reason="Check folder access. Filing retries automatically.",
+            filing_attempts=2,
+        ),
+        ProblemInfo(
+            kind="missing",
+            reference="Review/lost.md",
+            note_id=SOURCE_ID,
+            reason="not observed during reconciliation",
+        ),
+    ]
+    text = client.get("/admin/problems").text
+    assert "Filing error" in text and "Filing attempts: 2" in text
+    assert "Check folder access" in text
+    assert f'href="/admin/note-history/{SOURCE_ID}"' in text
+    assert "metadata mirror" not in text and "during reconciliation" not in text
+    assert "Filing attempts: 2" in client.get(f"/admin/notes/{NOTE_ID}").text
+
+
+def test_filing_estimate_excludes_errors_and_shows_stalled_work():
+    from coppermind_admin.pages.problems import counters_html
+
+    counters = StatusCounters(
+        notes_awaiting_review=0,
+        notes_by_state={},
+        sources=0,
+        rejected_ingests=0,
+        name_collisions=0,
+        unparseable_files=0,
+        filing_queue_depth=2,
+        filing_failures=2,
+        filing_estimated_drain_s=60,
+    )
+    text = counters_html(StatusResponse(counters=counters))
+    assert "Filing needs attention" in text
+    assert "about 1" not in text
+    counters.filing_ready_depth = 1
+    text = counters_html(StatusResponse(counters=counters))
+    assert "about 1 minute for notes without errors" in text
+    assert "1 minutes" not in text
+    counters.filing_stalled = True
+    assert "No recent filing progress" in counters_html(StatusResponse(counters=counters))
+
+
+@pytest.mark.parametrize(
+    ("queue", "errors", "ready", "heading"),
+    [
+        (2, 0, 2, "Filing in progress"),
+        (1, 1, 0, "Filing needs attention"),
+        (0, 0, 0, "Filing complete"),
+    ],
+)
+def test_problems_and_overview_share_filing_status(signed_in, queue, errors, ready, heading):
+    import re
+
+    class FilingStore(ReadOnlyStore):
+        async def get_status(self):
+            status = await super().get_status()
+            status.counters.filing_queue_depth = queue
+            status.counters.filing_failures = errors
+            status.counters.filing_ready_depth = ready
+            status.counters.filing_last_progress_at = datetime(2026, 11, 5, 18, tzinfo=UTC)
+            return status
+
+    client, _ = signed_in
+    store = _install(client, FilingStore())
+    store.problems = []
+    problems = client.get("/admin/problems")
+    overview = client.get("/admin")
+    assert problems.status_code == overview.status_code == 200
+    pattern = r'<section aria-label="Filing status">.*?</section>'
+    problems_summary = re.search(pattern, problems.text, re.DOTALL)
+    overview_summary = re.search(pattern, overview.text, re.DOTALL)
+    assert problems_summary is not None and overview_summary is not None
+    summary = problems_summary.group()
+    assert summary == overview_summary.group()
+    assert heading in summary
+    assert f"Ready to file: {ready}" in summary
+    assert f"Notes with filing errors: {errors}" in summary
+    assert "Last filing progress: November 5, 2026" in summary
+    assert problems.text.index(heading) < problems.text.index("No problems found.")
+
+
 def test_counters_show_the_notes_root_and_the_pending_move_count():
     from coppermind_admin.pages.problems import counters_html
 
@@ -373,59 +464,54 @@ def test_counters_show_the_notes_root_and_the_pending_move_count():
 
 
 class NoticeStore(ReadOnlyStore):
-    """A store whose status reports returned notes and lists their notices."""
+    """A store whose Problems list holds a returned-note notice and a kept folder."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.notices = [
-            ReconcilerNotice(
-                note_id=NOTE_ID,
-                title="Warehouse <call>",
-                from_path="Elsewhere/call.md",
-                path="Notes/2026/2026-04/call.md",
-                reason="Moved back to Notes/2026/2026-04/ because notes are filed by date.",
-                at=datetime(2026, 11, 5, 15, 30, tzinfo=UTC),
-            )
-        ]
-
-    async def get_status(self) -> StatusResponse:
-        status = await super().get_status()
-        status.counters.notes_returned = len(self.notices)
-        return status
-
-    async def list_reconciler_notices(self) -> list[ReconcilerNotice]:
-        self._check("list_reconciler_notices")
-        return list(self.notices)
+        self.problems.extend(
+            [
+                ProblemInfo(
+                    kind="returned_note",
+                    reference="Notes/2026/2026-04/call.md",
+                    note_id=NOTE_ID,
+                    reason=(
+                        "Warehouse <call>: found at Elsewhere/call.md. Moved back to "
+                        "Notes/2026/2026-04/ because notes are filed by date. "
+                        "No action needed. To file a note under a different month, change "
+                        "its date in Obsidian."
+                    ),
+                ),
+                ProblemInfo(
+                    kind="folder_kept",
+                    reference="2026-08",
+                    reason="2026-08/ still holds files, so it was left in place.",
+                ),
+            ]
+        )
 
     async def dismiss_reconciler_notice(self, note_id: str) -> None:
         self._check("dismiss_reconciler_notice")
-        self.notices = [notice for notice in self.notices if notice.note_id != note_id]
+        self.problems = [p for p in self.problems if p.note_id != note_id]
 
 
-def test_the_overview_lists_each_returned_note_with_where_when_and_why(signed_in):
+def test_returned_notes_and_kept_folders_share_the_one_problems_list(signed_in):
     client, _ = signed_in
     _install(client, NoticeStore())
 
-    text = client.get("/admin").text
+    text = client.get("/admin/problems").text
 
-    assert "returned to their filed folder: 1" in text
-    assert "<strong>Warehouse &lt;call&gt;</strong>" in text
-    assert "<code>Elsewhere/call.md</code>" in text
-    assert "<code>Notes/2026/2026-04/call.md</code>" in text
-    assert "November 5, 2026, 9:30 AM CST" in text
-    assert "because notes are filed by date." in text
-    assert f'action="/v1/admin/notices/{NOTE_ID}/dismiss"' in text
-
-
-def test_the_overview_asks_for_no_notices_when_none_were_returned(signed_in):
-    client, _ = signed_in
-    store = _install(client, ReadOnlyStore())
-
-    assert client.get("/admin").status_code == 200
-    assert "list_reconciler_notices" not in store.calls
+    assert "Hand-moved note returned" in text and "Old month folder kept" in text
+    assert "Warehouse &lt;call&gt;: found at Elsewhere/call.md." in text
+    assert "No action needed" in text and "change its date in Obsidian" in text
+    assert "2026-08/ still holds files" in text
+    # Only a returned note can be dismissed, and only from this list.
+    assert text.count(f'action="/v1/admin/notices/{NOTE_ID}/dismiss"') == 1
+    assert "Dismiss notice</button>" in text
+    assert text.count("Dismiss notice</button>") == 1
+    assert "Warehouse" not in client.get("/admin").text
 
 
-def test_dismissing_a_notice_removes_it_from_the_overview(signed_in):
+def test_dismissing_a_notice_removes_it_from_the_problems_list(signed_in):
     client, _ = signed_in
     store = _install(client, NoticeStore())
     token = form_token(client, "/admin")
@@ -435,53 +521,18 @@ def test_dismissing_a_notice_removes_it_from_the_overview(signed_in):
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/admin"
-    assert store.notices == []
-    assert "returned to their filed folder: 0" in client.get("/admin").text
+    assert response.headers["location"] == "/admin/problems"
+    assert all(p.note_id != NOTE_ID for p in store.problems)
+    assert "Hand-moved note returned" not in client.get("/admin/problems").text
 
 
 def test_dismissing_needs_the_form_token(signed_in):
     client, _ = signed_in
     store = _install(client, NoticeStore())
+    before = len(store.problems)
 
     assert client.post(f"/v1/admin/notices/{NOTE_ID}/dismiss", data={}).status_code == 403
-    assert len(store.notices) == 1
-
-
-def test_the_overview_lists_old_folders_kept_with_why():
-    from coppermind_admin.pages.problems import counters_html
-
-    html = counters_html(
-        StatusResponse(
-            counters=StatusCounters(
-                notes_awaiting_review=0,
-                notes_by_state={},
-                sources=0,
-                rejected_ingests=0,
-                name_collisions=0,
-                unparseable_files=0,
-                folders_kept=1,
-            )
-        ),
-        [
-            ReconcilerNotice(
-                note_id="folder:2026-08",
-                title="2026-08/ was kept",
-                from_path="2026-08",
-                path="2026-08",
-                reason="2026-08/ still holds files.",
-                at=datetime(2026, 11, 5, 15, 30, tzinfo=UTC),
-                kind="folder",
-            )
-        ],
-    )
-
-    assert "left in place because they are not empty: 1" in html
-    assert "<strong>2026-08/ was kept</strong>" in html
-    assert "<code>2026-08</code>" in html
-    assert "2026-08/ still holds files." in html
-    assert "Dismiss" not in html
-    assert "<form" not in html
+    assert len(store.problems) == before
 
 
 def test_counters_say_plainly_when_the_upgrade_is_complete():
@@ -506,31 +557,3 @@ def test_counters_say_plainly_when_the_upgrade_is_complete():
     assert "still to move" not in html
     # The filing explanation leads, ahead of the operational counters.
     assert html.index("Notes filing") < html.index("Rejected ingests")
-
-
-def test_a_returned_note_notice_says_no_action_is_needed_and_what_dismiss_does():
-    from datetime import UTC, datetime
-    from zoneinfo import ZoneInfo
-
-    from coppermind_admin.pages.problems import _notices_html
-
-    from coppermind.store_protocol import ReconcilerNotice
-
-    html = _notices_html(
-        [
-            ReconcilerNotice(
-                note_id="n1",
-                kind="note",
-                title="Oak meeting",
-                from_path="Elsewhere/Oak.md",
-                path="Notes/2025/2025-03/Oak.md",
-                reason="Moved back.",
-                at=datetime(2026, 11, 5, tzinfo=UTC),
-            )
-        ],
-        ZoneInfo("America/Chicago"),
-    )
-    assert "No action needed" in html
-    assert "change its date in Obsidian" in html
-    assert "only hides the notice" in html
-    assert "Dismiss notice</button>" in html

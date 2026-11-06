@@ -80,5 +80,31 @@ def test_git_failure_is_visible(signed_in):
     client, _ = signed_in
     client.app.state.store = RecoveryStore()
     text = client.get("/admin/note-history?state=missing").text
-    assert "Git unavailable" in text
+    assert "Saved Git history: not readable" in text
+    assert "running helper can still have unreadable history" in text
     assert "Git helper: stale" in text
+
+
+def test_missing_copy_preview_and_no_copy_offer_honest_actions(signed_in):
+    from coppermind.store_protocol import ValidationFailed
+
+    class MissingStore(RecoveryStore):
+        no_copy = False
+
+        async def preview_note_restore(self, note_id):
+            if self.no_copy:
+                raise ValidationFailed(
+                    ["No verified saved filing copy is available. Restore from a device or backup."]
+                )
+            result = await super().preview_note_restore(note_id)
+            return result.model_copy(update={"evidence_pending": True, "removal_commit": ""})
+
+    client, _ = signed_in
+    fake = MissingStore()
+    client.app.state.store = fake
+    text = client.get(f"/admin/note-history/{NOTE_ID}").text
+    assert "verified copy saved during filing is available" in text
+    assert "not been recorded as deleted" in text and "Restore note" in text
+    fake.no_copy = True
+    text = client.get(f"/admin/note-history/{NOTE_ID}").text
+    assert "device or backup" in text and "Restore note</button>" not in text

@@ -412,8 +412,48 @@ async def preview(store: LocalStore, note_id: str) -> NoteRecovery:
         note = await session.get(Note, note_id)
         if note is None:
             raise NotFound(note_id)
-        if note.state != "deleted":
-            raise ValidationFailed(["Only a deleted note can be restored; reconcile and retry"])
+        if note.state not in {"deleted", "missing"}:
+            raise ValidationFailed(["Only a missing or deleted note can be restored"])
+    if note.state == "missing":
+        # A verified filing copy can restore a file without asserting a Git removal.
+        # Bind confirmation to this identity, path and hash, and create exclusively.
+        try:
+            journal = store.control.store.state_dir / "filing" / f"{note_id}.json"
+            plan = json.loads(journal.read_bytes())
+            copy = next(
+                c for c in reversed(plan.get("copies", [])) if c["hash"] == note.content_hash
+            )
+            data = base64.b64decode(copy["content"], validate=True)
+            if (
+                content_hash(data) != note.content_hash
+                or store.note_history.identity(data, store.control.schema().role("id_key"))
+                != note_id
+            ):
+                raise ValueError("filing copy does not match note")
+            resolve(store.notes_root, note.path)
+        except (OSError, ValueError, KeyError, TypeError, StopIteration) as exc:
+            raise ValidationFailed(
+                [
+                    f"No verified saved filing copy is available for {note.path}. "
+                    "Restore this note from a device "
+                    "or backup to its previous path with the same note ID. If Git history has a "
+                    "matching version, check Git settings and folder access, "
+                    "then allow another scan."
+                ]
+            ) from exc
+        token = hashlib.sha256(
+            f"filing-restore:{note_id}:{note.path}:{note.content_hash}".encode()
+        ).hexdigest()
+        return NoteRecovery(
+            note_id=note_id,
+            path=note.path,
+            content=data.decode(),
+            content_hash=note.content_hash,
+            removal_commit="",
+            token=token,
+            recorded_at=note.updated_at,
+            evidence_pending=True,
+        )
     receipt = (await asyncio.to_thread(receipts, store)).get(note_id)
     if receipt is None or receipt.content_hash != note.content_hash or receipt.path != note.path:
         raise NotesFilesystemUnavailable("matching recovery evidence unavailable")

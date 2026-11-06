@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,7 +21,7 @@ from coppermind.ids import is_valid_id
 from coppermind.schema import date_field_problem, note_date, parse_note_time
 from coppermind.store_protocol import MoveNote, ReplaceNote, StoreError
 from coppermind_store.eligibility import rendered_note_folder
-from coppermind_store.fs import resolve
+from coppermind_store.fs import content_hash, resolve
 from coppermind_store.maintenance import writer
 
 if TYPE_CHECKING:
@@ -27,7 +29,71 @@ if TYPE_CHECKING:
 
 
 def _save(path: Path, value: dict) -> None:
-    atomic_write_bytes(path, json.dumps(value, sort_keys=True).encode())
+    atomic_write_bytes(
+        path,
+        json.dumps(value, sort_keys=True).encode(),
+        mode=0o600 if path.parent.name == "filing" else 0o644,
+    )
+
+
+def filing_state(store, note_id: str) -> dict:
+    path = store.control.store.state_dir / "filing" / f"{note_id}.json"
+    try:
+        plan = json.loads(path.read_bytes()) if path.exists() else {}
+        return {"filing_error": plan.get("error"), "filing_attempts": plan.get("attempts", 0)}
+    except (OSError, ValueError):
+        return {"filing_error": "Filing receipt is unreadable", "filing_attempts": 0}
+
+
+def remember_note(store, plan: dict, note) -> None:
+    data = resolve(store.notes_root, note.path).read_bytes()
+    if content_hash(data) != note.content_hash:
+        raise ValueError("note changed before filing snapshot")
+    snapshot = {
+        "path": note.path,
+        "hash": note.content_hash,
+        "content": base64.b64encode(data).decode(),
+    }
+    copies = plan.setdefault("copies", [])
+    if not copies or copies[-1] != snapshot:
+        copies.append(snapshot)
+    _save(store.control.store.state_dir / "filing" / f"{note.id}.json", plan)
+
+
+def vanished_receipt(store, row):
+    """A committed removal of a journaled origin proves a vanished move's removal."""
+    from coppermind_store.note_history import Receipt
+
+    path = store.control.store.state_dir / "filing" / f"{row.id}.json"
+    if not path.exists():
+        return None, None
+    reason = f"File vanished between filing paths; last known hash {row.content_hash}"
+    try:
+        plan = json.loads(path.read_bytes())
+        copies = plan.get("copies", [])
+        if not copies and plan.get("complete") is not False:
+            return None, None
+        current = next((c for c in reversed(copies) if c["hash"] == row.content_hash), None)
+        if current is None:
+            return None, reason + "; no matching filing copy is available"
+        data = base64.b64decode(current["content"], validate=True)
+        if content_hash(data) != row.content_hash:
+            return None, reason + "; filing copy failed hash verification"
+        for copy in copies:
+            evidence = store.note_history.evidence(row.id, copy["path"], copy["hash"])
+            if evidence is not None:
+                return Receipt(
+                    note_id=row.id,
+                    path=row.path,
+                    content_hash=row.content_hash,
+                    removal_commit=evidence.removal_commit,
+                    blob=evidence.blob,
+                    content=current["content"],
+                    recorded_at=evidence.recorded_at,
+                ), None
+        return None, reason + "; awaiting Git evidence of removal"
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, reason + "; filing receipt is unreadable"
 
 
 def _copy(path: Path, data: bytes) -> None:
@@ -94,7 +160,13 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     note = await store.get_note(note_id)
     if note.frontmatter.get(schema.role("reviewed_key")) is not True:
         return False
-    if store.context.config().lifecycle_enabled:
+    journal = store.control.store.state_dir / "filing" / f"{note_id}.json"
+    plan = json.loads(journal.read_bytes()) if journal.exists() else None
+    if store.context.config().lifecycle_enabled and (
+        not plan
+        or plan.get("content_hash") != note.content_hash
+        or not await store.context.lifecycle.follow(note)
+    ):
         await store.context.lifecycle.finalize(note)
     problem = date_field_problem(note.frontmatter, schema)
     if problem:
@@ -111,8 +183,6 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         raise ValueError("a note date is required in date")
     month = day.strftime("%Y-%m")
     folder = rendered_note_folder(settings.notes.notes_folder, day)
-    journal = store.control.store.state_dir / "filing" / f"{note_id}.json"
-    plan = json.loads(journal.read_bytes()) if journal.exists() else None
     manifests = {}
     for source_id in sorted(set(note.sources)):
         if not is_valid_id(source_id):
@@ -126,7 +196,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         # their approval from a newer manifest during restore or a date edit.
         approved = (
             {item["id"]: item["revision"] for item in plan.get("sources", [])}
-            if plan
+            if plan and "sources" in plan
             else {key: value["current_revision"] for key, value in manifests.items()}
         )
         review = {"reviewed": True, "sources": approved}
@@ -177,8 +247,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         )
     ):
         await _publish(store, note)
-        if plan.pop("error", None) is not None:
-            _save(journal, plan)
+        _settle(journal, plan)
         return False
     # Rebuild a stale plan from current durable manifests. Files already copied
     # remain preserved; the new plan can resume from their recorded paths.
@@ -214,9 +283,12 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         "folder": folder,
         "sources": sources,
         "complete": False,
+        "attempts": (plan or {}).get("attempts", 0),
+        "copies": (plan or {}).get("copies", []),
     }
     if hand_moved_from is not None:
         plan["hand_moved_from"] = hand_moved_from
+    remember_note(store, plan, note)
     async with transaction(store.session_factory) as session:
         await session.execute(sa.update(Note).where(Note.id == note_id).values(filed=False))
         # A move changes the projection path without changing its archive revision.
@@ -317,7 +389,10 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         note = await store.replace_note(
             note_id, ReplaceNote(frontmatter=note.frontmatter, body=body), note.content_hash
         )
+    remember_note(store, plan, note)
     if not note.path.startswith(folder + "/"):
+        plan["target_folder"] = folder
+        _save(journal, plan)
         note = await store.move_note(note_id, MoveNote(target_folder=folder), note.content_hash)
     if hand_moved_from is not None:
         store.control.record_reconciler_notice(
@@ -334,10 +409,19 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         )
         plan.pop("hand_moved_from", None)
     plan["complete"] = True
+    plan["content_hash"] = note.content_hash
     plan.pop("error", None)
     _save(journal, plan)
     await _publish(store, note)
     return True
+
+
+def _settle(journal: Path, plan: dict) -> None:
+    """A later pass found the published note in place, so no filing is in flight."""
+    changed = plan.pop("error", None) is not None
+    changed = plan.pop("copies", None) is not None or changed
+    if changed:
+        _save(journal, plan)
 
 
 async def _publish(store, note):
@@ -433,11 +517,32 @@ async def _file_reviewed(store: LocalStore) -> dict[str, int]:
             )
         ).all()
     counts = {"filed": 0, "filing_failed": 0}
+    failed_ids: set[str] = set()
+    started = time.monotonic()
     for note_id in ids:
+        path = store.control.store.state_dir / "filing" / f"{note_id}.json"
         try:
-            counts["filed"] += int(await file_note(store, note_id))
+            retrying = filing_state(store, note_id)["filing_error"] is not None
+            changed = await file_note(store, note_id)
+            counts["filed"] += int(changed)
+            if changed or retrying:
+                state = json.loads(path.read_bytes())
+                state["attempts"] = state.get("attempts", 0) + 1
+                _save(path, state)
+            if changed:
+                # Make the estimate useful during the first large pass, rather
+                # than waiting until its entire queue has already drained.
+                _record_rate(
+                    store,
+                    {
+                        "seconds_per_note": (time.monotonic() - started) / counts["filed"],
+                        "last_progress_at": datetime.now(UTC).isoformat(),
+                        "stuck": False,
+                    },
+                )
         except Exception as exc:
             counts["filing_failed"] += 1
+            failed_ids.add(note_id)
             if not isinstance(exc, SourceRevisionNeedsReview):
                 async with transaction(store.session_factory) as session:
                     await session.execute(
@@ -446,6 +551,7 @@ async def _file_reviewed(store: LocalStore) -> dict[str, int]:
             path = store.control.store.state_dir / "filing" / f"{note_id}.json"
             try:
                 state = json.loads(path.read_bytes()) if path.exists() else {"note_id": note_id}
+                state["attempts"] = state.get("attempts", 0) + 1
                 state["error"] = (
                     f"{type(exc).__name__}: {exc}"
                     if type(exc) is ValueError and str(exc)
@@ -456,5 +562,35 @@ async def _file_reviewed(store: LocalStore) -> dict[str, int]:
                 from coppermind_store.reconciler import log
 
                 log.warning("filing failure could not be recorded", note_id=note_id)
+    if ids and not counts["filed"]:
+        async with store.session_factory() as session:
+            unfiled = set(
+                (
+                    await session.scalars(
+                        sa.select(Note.id).where(Note.id.in_(ids), Note.filed.is_(False))
+                    )
+                ).all()
+            )
+        stuck = bool(unfiled - failed_ids)
+    else:
+        stuck = False
+    _record_rate(store, {"stuck": stuck, "last_pass_at": datetime.now(UTC).isoformat()})
     _tidy_legacy_month_folders(store)
     return counts
+
+
+def _record_rate(store: LocalStore, update: dict) -> None:
+    """Keep the drain estimate, and whether the last pass left drainable work unfiled."""
+    path = store.control.store.state_dir / "filing-rate.json"
+    try:
+        try:
+            rate = json.loads(path.read_bytes())
+        except (OSError, ValueError):
+            rate = {}
+        if all(rate.get(key) == value for key, value in update.items()):
+            return
+        _save(path, {**rate, **update})
+    except OSError:
+        from coppermind_store.reconciler import log
+
+        log.warning("filing drain estimate could not be recorded")

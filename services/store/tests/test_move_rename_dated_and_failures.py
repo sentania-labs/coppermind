@@ -115,6 +115,13 @@ class Session:
                 )
         return Result([])
 
+    async def scalar(self, statement: Any) -> Any:
+        params = statement.compile().params
+        columns = [column.name for column in statement.selected_columns]
+        if columns == ["filed"]:
+            return self.mirror.rows.get(params["id_1"], {}).get("filed", False)
+        raise AssertionError(f"unexpected scalar query: {statement}")
+
     def add(self, row: Any) -> None:
         self.added.append(row)
 
