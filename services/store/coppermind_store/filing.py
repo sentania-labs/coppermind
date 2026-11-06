@@ -415,6 +415,7 @@ async def _file_reviewed(store: LocalStore) -> dict[str, int]:
             )
         ).all()
     counts = {"filed": 0, "filing_failed": 0}
+    failed_ids: set[str] = set()
     started = time.monotonic()
     for note_id in ids:
         path = store.control.store.state_dir / "filing" / f"{note_id}.json"
@@ -429,20 +430,17 @@ async def _file_reviewed(store: LocalStore) -> dict[str, int]:
             if changed:
                 # Make the estimate useful during the first large pass, rather
                 # than waiting until its entire queue has already drained.
-                try:
-                    _save(
-                        store.control.store.state_dir / "filing-rate.json",
-                        {
-                            "seconds_per_note": (time.monotonic() - started) / counts["filed"],
-                            "last_progress_at": datetime.now(UTC).isoformat(),
-                        },
-                    )
-                except OSError:
-                    from coppermind_store.reconciler import log
-
-                    log.warning("filing drain estimate could not be recorded")
+                _record_rate(
+                    store,
+                    {
+                        "seconds_per_note": (time.monotonic() - started) / counts["filed"],
+                        "last_progress_at": datetime.now(UTC).isoformat(),
+                        "stuck": False,
+                    },
+                )
         except Exception as exc:
             counts["filing_failed"] += 1
+            failed_ids.add(note_id)
             if not isinstance(exc, SourceRevisionNeedsReview):
                 async with transaction(store.session_factory) as session:
                     await session.execute(
@@ -462,4 +460,34 @@ async def _file_reviewed(store: LocalStore) -> dict[str, int]:
                 from coppermind_store.reconciler import log
 
                 log.warning("filing failure could not be recorded", note_id=note_id)
+    if ids and not counts["filed"]:
+        async with store.session_factory() as session:
+            unfiled = set(
+                (
+                    await session.scalars(
+                        sa.select(Note.id).where(Note.id.in_(ids), Note.filed.is_(False))
+                    )
+                ).all()
+            )
+        stuck = bool(unfiled - failed_ids)
+    else:
+        stuck = False
+    _record_rate(store, {"stuck": stuck})
     return counts
+
+
+def _record_rate(store: LocalStore, update: dict) -> None:
+    """Keep the drain estimate, and whether the last pass left drainable work unfiled."""
+    path = store.control.store.state_dir / "filing-rate.json"
+    try:
+        try:
+            rate = json.loads(path.read_bytes())
+        except (OSError, ValueError):
+            rate = {}
+        if all(rate.get(key) == value for key, value in update.items()):
+            return
+        _save(path, {**rate, **update})
+    except OSError:
+        from coppermind_store.reconciler import log
+
+        log.warning("filing drain estimate could not be recorded")

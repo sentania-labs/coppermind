@@ -1256,12 +1256,12 @@ async def get_status(store: LocalStore) -> StatusResponse:
     estimated_drain = None
     try:
         rate = json.loads((store.control.store.state_dir / "filing-rate.json").read_bytes())
+        stalled = bool(ready_depth and rate.get("stuck") is True)
         last_progress = datetime.fromisoformat(rate["last_progress_at"])
         if last_progress.tzinfo is None:
+            last_progress = None
             raise ValueError("progress time has no timezone")
         seconds_per_note = float(rate["seconds_per_note"])
-        age = (datetime.now(UTC) - last_progress).total_seconds()
-        stalled = bool(ready_depth and age > max(120, seconds_per_note * 3))
         if not stalled and seconds_per_note >= 0:
             estimated_drain = int(seconds_per_note * ready_depth)
     except (OSError, ValueError, KeyError, TypeError, OverflowError):
@@ -1291,6 +1291,30 @@ async def get_status(store: LocalStore) -> StatusResponse:
     )
 
 
+def _filing_reason(error: str) -> str:
+    retry = "Filing retries automatically."
+    if error == "SourceRevisionNeedsReview":
+        return (
+            "Source material changed. Review it, then mark the note unreviewed "
+            f"and reviewed again. {retry}"
+        )
+    if error in {"NotesFilesystemUnavailable", "PermissionError", "OSError"}:
+        return (
+            "The notes folder could not be accessed. Check that the notes filesystem is "
+            "mounted, has free space, and that the store can read the note and write to "
+            f"its destination folder. {retry}"
+        )
+    if error == "PathCollision":
+        return (
+            "The destination is already occupied. Check for duplicate files and move the "
+            f"conflicting file aside. {retry}"
+        )
+    detail = error.removeprefix("ValueError: ") if error.startswith("ValueError: ") else None
+    if detail:
+        return f"The note could not be filed: {detail}. Fix that, or check store logs. {retry}"
+    return f"The note could not be filed. Check store logs if the problem continues. {retry}"
+
+
 def filing_problems(store: LocalStore, active_ids: set[str] | None = None) -> list[ProblemInfo]:
     problems: list[ProblemInfo] = []
     for path in sorted((store.control.store.state_dir / "filing").glob("*.json")):
@@ -1302,25 +1326,9 @@ def filing_problems(store: LocalStore, active_ids: set[str] | None = None) -> li
                 problems.append(
                     ProblemInfo(
                         kind="filing",
-                        reference=filing.get("note_path") or filing.get("target_path") or path.stem,
+                        reference=path.stem,
                         filing_attempts=filing.get("attempts", 0),
-                        reason=(
-                            "Source material changed. Review it, then mark the note unreviewed "
-                            "and reviewed again. Filing retries automatically."
-                            if filing["error"] == "SourceRevisionNeedsReview"
-                            else "The notes folder could not be accessed. Check that the notes "
-                            "filesystem is mounted, has free space, and that the store can read "
-                            "the note and write to its destination folder. "
-                            "Filing retries automatically."
-                            if filing["error"]
-                            in {"NotesFilesystemUnavailable", "PermissionError", "OSError"}
-                            else "The destination is already occupied. Check for duplicate files "
-                            "and move the conflicting file aside. Filing retries automatically."
-                            if filing["error"] == "PathCollision"
-                            else "The note could not be filed. Check its date and source files, "
-                            "then check store logs if the problem continues. "
-                            "Filing retries automatically."
-                        ),
+                        reason=_filing_reason(filing["error"]),
                         note_id=path.stem,
                     )
                 )

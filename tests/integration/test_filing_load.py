@@ -495,4 +495,55 @@ async def test_status_separates_failed_and_stalled_filing_from_drainable_work(st
         )
     )
     counters = (await store.get_status()).counters
+    assert not counters.filing_stalled and counters.filing_estimated_drain_s == 60
+    (directory / "filing-rate.json").write_text(
+        json.dumps(
+            {
+                "seconds_per_note": 60,
+                "last_progress_at": (now - timedelta(hours=1)).isoformat(),
+                "stuck": True,
+            }
+        )
+    )
+    counters = (await store.get_status()).counters
     assert counters.filing_stalled and counters.filing_estimated_drain_s is None
+    (directory / "filing-rate.json").write_text(json.dumps({"stuck": True}))
+    counters = (await store.get_status()).counters
+    assert counters.filing_stalled and counters.filing_last_progress_at is None
+
+
+async def test_filing_problem_names_what_is_wrong_with_the_note(store):
+    note = await store.create_note(
+        CreateNote(
+            title="Meeting",
+            frontmatter={"type": "reference", "reviewed": True, "date": "2005-01-01"},
+        )
+    )
+    directory = store.control.store.state_dir / "filing"
+    directory.mkdir(exist_ok=True)
+    (directory / f"{note.id}.json").write_text(
+        json.dumps({"error": "ValueError: enter a valid local meeting time", "attempts": 3})
+    )
+    problem = next(p for p in await store.get_problems() if p.kind == "filing")
+    assert problem.note_id == note.id and problem.reference == note.path
+    assert "enter a valid local meeting time" in problem.reason
+    (directory / f"{note.id}.json").write_text(
+        json.dumps({"error": "FileNotFoundError", "attempts": 1})
+    )
+    problem = next(p for p in await store.get_problems() if p.kind == "filing")
+    assert "date" not in problem.reason and "FileNotFoundError" not in problem.reason
+
+
+async def test_idle_pass_with_nothing_filed_is_not_stuck_but_unfileable_work_is(store):
+    from coppermind_store.filing import file_reviewed
+
+    await store.create_note(
+        CreateNote(
+            title="Ready", frontmatter={"date": "2005-01-01", "type": "reference", "reviewed": True}
+        )
+    )
+    await file_reviewed(store)
+    rate = json.loads((store.control.store.state_dir / "filing-rate.json").read_bytes())
+    assert rate["stuck"] is False and "last_progress_at" in rate
+    counters = (await store.get_status()).counters
+    assert not counters.filing_stalled and counters.filing_queue_depth == 0
