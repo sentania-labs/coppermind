@@ -140,24 +140,11 @@ def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems fo
     )
 
 
-def counters_html(status: StatusResponse, zone: ZoneInfo | None = None) -> str:
+def filing_status_html(status: StatusResponse, zone: ZoneInfo | None = None) -> str:
+    """One filing summary shared by Overview and Problems."""
     from coppermind_admin.pages.search_index import local_time
 
     counters = status.counters
-    problems = (
-        counters.rejected_ingests
-        + counters.name_collisions
-        + counters.unparseable_files
-        + counters.filing_failures
-        + counters.known_unreadable
-        + counters.calendar_import_failures
-        + counters.purge_problems
-    )
-    if counters.active_problems is not None:
-        problems = counters.active_problems
-    states = ", ".join(
-        f"{escape(state)}: {count}" for state, count in sorted(counters.notes_by_state.items())
-    )
     ready = counters.filing_ready_depth
     if counters.filing_stalled:
         drain = "No recent filing progress. Check Problems and store logs."
@@ -182,11 +169,30 @@ def counters_html(status: StatusResponse, zone: ZoneInfo | None = None) -> str:
         if counters.filing_last_progress_at
         else "No successful filing recorded yet"
     )
-    return f"""<h2>Store Status</h2>
-<section aria-label="Filing status"><h3>{health}</h3>
+    return f"""<section aria-label="Filing status"><h3>{health}</h3>
 <p>Ready to file: {ready}. Notes with filing errors: {counters.filing_failures}.
 {drain}</p><p>Last filing progress: {progress}</p>
-<p><a href="/admin/problems">Check filing problems and recovery options</a></p></section>
+<p><a href="/admin/problems">Check filing problems and recovery options</a></p></section>"""
+
+
+def counters_html(status: StatusResponse, zone: ZoneInfo | None = None) -> str:
+    counters = status.counters
+    problems = (
+        counters.rejected_ingests
+        + counters.name_collisions
+        + counters.unparseable_files
+        + counters.filing_failures
+        + counters.known_unreadable
+        + counters.calendar_import_failures
+        + counters.purge_problems
+    )
+    if counters.active_problems is not None:
+        problems = counters.active_problems
+    states = ", ".join(
+        f"{escape(state)}: {count}" for state, count in sorted(counters.notes_by_state.items())
+    )
+    return f"""<h2>Store Status</h2>
+{filing_status_html(status, zone)}
 <div class="metrics">
 <div class="metric" aria-label="Notes awaiting review: {counters.notes_awaiting_review}">
 Notes awaiting review<strong>{counters.notes_awaiting_review}</strong>
@@ -235,13 +241,18 @@ def router(wiring: Wiring) -> APIRouter:
     @routes.get("/admin/problems", response_class=HTMLResponse, include_in_schema=False)
     async def problems_page(request: Request) -> Response:
         try:
-            problems = await store_client(request, wiring).get_problems()
+            client = store_client(request, wiring)
+            problems = await client.get_problems()
+            status = await client.get_status()
         except (StoreError, OSError):
             return unreachable("Problems")
+        from coppermind_admin.pages.search_index import _zone
+
         return page(
             "Problems",
             '<h1>Problems</h1><p><a href="/admin">Overview</a></p>'
-            "<p>Start with the affected note and the action below. "
+            + filing_status_html(status, _zone(request))
+            + "<p>Start with the affected note and the action below. "
             "Filing retries automatically after the cause is fixed.</p>"
             "<p>Known unreadable search entries: "
             f"{sum(p.kind == 'search_unreadable' for p in problems)}</p>"

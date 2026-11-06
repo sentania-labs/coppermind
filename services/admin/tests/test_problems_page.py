@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from coppermind.store_protocol import (
     NoteSourceInfo,
     NotFound,
@@ -149,7 +151,7 @@ def test_the_problems_page_lists_each_problem_with_a_link(signed_in):
     assert f'<a href="/admin/notes/{NOTE_ID}">' in response.text
     assert "payload_too_large" in response.text
     assert f'<a href="/admin/sources/{SOURCE_ID}">' in response.text
-    assert store.calls == ["get_problems"]
+    assert store.calls == ["get_problems", "get_status"]
 
 
 def test_the_problem_links_open_the_note_and_the_source(signed_in):
@@ -394,3 +396,42 @@ def test_filing_estimate_excludes_errors_and_shows_stalled_work():
     assert "1 minutes" not in text
     counters.filing_stalled = True
     assert "No recent filing progress" in counters_html(StatusResponse(counters=counters))
+
+
+@pytest.mark.parametrize(
+    ("queue", "errors", "ready", "heading"),
+    [
+        (2, 0, 2, "Filing in progress"),
+        (1, 1, 0, "Filing needs attention"),
+        (0, 0, 0, "Filing complete"),
+    ],
+)
+def test_problems_and_overview_share_filing_status(signed_in, queue, errors, ready, heading):
+    import re
+
+    class FilingStore(ReadOnlyStore):
+        async def get_status(self):
+            status = await super().get_status()
+            status.counters.filing_queue_depth = queue
+            status.counters.filing_failures = errors
+            status.counters.filing_ready_depth = ready
+            status.counters.filing_last_progress_at = datetime(2026, 11, 5, 18, tzinfo=UTC)
+            return status
+
+    client, _ = signed_in
+    store = _install(client, FilingStore())
+    store.problems = []
+    problems = client.get("/admin/problems")
+    overview = client.get("/admin")
+    assert problems.status_code == overview.status_code == 200
+    pattern = r'<section aria-label="Filing status">.*?</section>'
+    problems_summary = re.search(pattern, problems.text, re.DOTALL)
+    overview_summary = re.search(pattern, overview.text, re.DOTALL)
+    assert problems_summary is not None and overview_summary is not None
+    summary = problems_summary.group()
+    assert summary == overview_summary.group()
+    assert heading in summary
+    assert f"Ready to file: {ready}" in summary
+    assert f"Notes with filing errors: {errors}" in summary
+    assert "Last filing progress: November 5, 2026" in summary
+    assert problems.text.index(heading) < problems.text.index("No problems found.")
