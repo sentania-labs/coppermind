@@ -398,6 +398,39 @@ async def test_moved_files_are_followed_from_one_shared_scan(store, monkeypatch)
     assert len(scans) == 1
 
 
+async def test_a_move_during_an_identity_scan_is_still_followed(store, monkeypatch):
+    import threading
+
+    gone = await store.create_note(CreateNote(title="Gone", frontmatter={"type": "reference"}))
+    moving = await store.create_note(CreateNote(title="Moving", frontmatter={"type": "reference"}))
+    (store.notes_root / gone.path).unlink()
+    snapshot_taken, release = threading.Event(), threading.Event()
+    calls = []
+    original = type(store)._scan_identities
+
+    def slow_first_scan(self):
+        calls.append(1)
+        found = original(self)
+        if len(calls) == 1:
+            snapshot_taken.set()
+            release.wait(10)
+        return found
+
+    monkeypatch.setattr(type(store), "_scan_identities", slow_first_scan)
+    first = asyncio.create_task(store.get_note(gone.id))
+    await asyncio.to_thread(snapshot_taken.wait, 10)
+    elsewhere = store.notes_root / "elsewhere"
+    elsewhere.mkdir()
+    (store.notes_root / moving.path).rename(elsewhere / Path(moving.path).name)
+    second = asyncio.create_task(store.get_note(moving.id))
+    await asyncio.sleep(0.3)
+    release.set()
+    with pytest.raises(NotFound):
+        await first
+    assert (await second).path == f"elsewhere/{Path(moving.path).name}"
+    assert len(calls) == 2
+
+
 async def test_filing_loop_over_stale_rows_scans_once(store, monkeypatch):
     for i in range(5):
         note = await store.create_note(

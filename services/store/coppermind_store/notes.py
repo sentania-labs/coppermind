@@ -1581,7 +1581,6 @@ class _IdentityIndex:
         self._store = store
         self._found: dict[str, list[Path]] | None = None
         self._built = 0.0
-        self._completed = 0.0
         self._lock = asyncio.Lock()
 
     def lookup(self, note_id: str) -> list[Path] | None:
@@ -1604,11 +1603,11 @@ class _IdentityIndex:
     async def refresh(self) -> None:
         requested = time.monotonic()
         async with self._lock:
-            if self._completed >= requested:
+            if self._built >= requested:
                 return
             started = time.monotonic()
             found = await asyncio.to_thread(self._store._scan_identities)
-            self._found, self._built, self._completed = found, started, time.monotonic()
+            self._found, self._built = found, started
 
 
 def _parse(
