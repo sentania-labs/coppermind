@@ -42,8 +42,9 @@ INTRO = (
     "<p>Files and links kept beside your notes. Each file is stored exactly as it arrived and "
     "shown in Obsidian under the artifacts folder, in the folder for the month it came in; a "
     "link is kept by its address. A note that uses one names it, and shows here under "
-    "<em>Cited by</em>. Removing one takes it out of Obsidian and search; the stored file is "
-    "kept until the retention purge removes it.</p>"
+    "<em>Cited by</em>. Removing a file takes it out of Obsidian and search, and the stored file "
+    "is kept until the retention purge removes it; removing a link only takes it out of this list "
+    "and search.</p>"
 )
 TEXT_LABELS = {
     "extracted": "extracted",

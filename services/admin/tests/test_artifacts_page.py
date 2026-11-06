@@ -166,6 +166,9 @@ def test_the_list_names_citing_notes_by_title_and_keeps_dates_and_buttons_on_one
     for word in ("database", "state volume", "frontmatter", "byte for byte"):
         assert word not in text
     assert "shown in Obsidian under the artifacts folder" in text
+    assert "Removing a file takes it out of Obsidian and search" in text
+    assert "removing a link only takes it out of this list and search" in text
+    assert "Removing one takes it out of Obsidian" not in text
     assert store.calls == ["list_artifacts", "list_reconciler_notices"]
 
 
