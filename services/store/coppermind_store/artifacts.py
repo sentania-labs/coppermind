@@ -33,6 +33,7 @@ import json
 import os
 import re
 import shutil
+import stat
 from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -1398,17 +1399,25 @@ def _restore_moved_copy(store: LocalStore, manifest: dict[str, Any], others: set
     try:
         filed = resolve(store.notes_root, str(manifest["path"]))
         size = int(current["size_bytes"])
+        placed = _time(current["stored_at"], "stored_at").timestamp()
+        dropbox = sanitize_folder(store.context.config().dropbox_folder)
     except (ValueError, KeyError):
         return "unknown"
     for directory, subdirs, names in os.walk(store.notes_root, onerror=unreadable.append):
-        subdirs[:] = [name for name in subdirs if not name.startswith(".")]
+        subdirs[:] = [
+            name
+            for name in subdirs
+            if not name.startswith(".")
+            and (Path(directory) / name).relative_to(store.notes_root).as_posix() != dropbox
+        ]
         for name in names:
             found = Path(directory) / name
             relative = found.relative_to(store.notes_root).as_posix()
             if relative in others:
                 continue
             try:
-                if found.is_symlink() or found.stat().st_size != size:
+                info = found.lstat()
+                if stat.S_ISLNK(info.st_mode) or info.st_size != size or info.st_ctime < placed:
                     continue
                 data = found.read_bytes()
             except OSError:

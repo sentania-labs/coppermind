@@ -832,3 +832,50 @@ async def test_a_note_cannot_be_created_or_moved_into_the_artifacts_folder(store
 
     with pytest.raises(ValidationFailed, match="Artifacts"):
         await store.move_note(note.id, MoveNote(target_folder="artifacts/2026/2026-11"), None)
+
+
+async def test_a_dropbox_original_never_undoes_the_delete_of_its_browsable_copy(store, tmp_path):
+    from tests.integration.test_note_recovery import commit, git
+
+    data = pptx_bytes(tmp_path, "Dropped deck", "Platypus dropbox")
+    created = await store.create_artifact(upload("deck.pptx", data, origin="dropbox"))
+    dropped = store.notes_root / store.context.config().dropbox_folder / "deck.pptx"
+    dropped.parent.mkdir(parents=True)
+    dropped.write_bytes(data)
+    git(store.notes_root, "init", "-q")
+    commit(store.notes_root)
+    (store.notes_root / created.path).unlink()
+    removal = commit(store.notes_root)
+
+    swept = await artifacts.sweep(store)
+
+    assert swept["artifacts_removed"] == 1
+    assert dropped.read_bytes() == data
+    assert not (store.notes_root / created.path).exists()
+    assert await store.list_reconciler_notices() == []
+    manifest = json.loads((store.artifacts_root / created.id / "manifest.json").read_text())
+    assert manifest["removed_reason"] == artifacts.DELETED_IN_OBSIDIAN
+    assert manifest["removal_commit"] == removal
+
+
+async def test_an_identical_file_that_predates_the_artifact_is_never_taken_as_its_move(
+    store, tmp_path
+):
+    from tests.integration.test_note_recovery import commit, git
+
+    data = pptx_bytes(tmp_path, "Twin", "Platypus predates")
+    keeper = store.notes_root / "Reference" / "my own copy.pptx"
+    keeper.parent.mkdir(parents=True)
+    keeper.write_bytes(data)
+    created = await store.create_artifact(upload("deck.pptx", data))
+    git(store.notes_root, "init", "-q")
+    commit(store.notes_root)
+    (store.notes_root / created.path).unlink()
+    commit(store.notes_root)
+
+    swept = await artifacts.sweep(store)
+
+    assert swept["artifacts_removed"] == 1
+    assert keeper.read_bytes() == data
+    assert not (store.notes_root / created.path).exists()
+    assert await store.list_reconciler_notices() == []
