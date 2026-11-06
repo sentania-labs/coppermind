@@ -1256,15 +1256,27 @@ async def get_status(store: LocalStore) -> StatusResponse:
     estimated_drain = None
     try:
         rate = json.loads((store.control.store.state_dir / "filing-rate.json").read_bytes())
-        stalled = bool(ready_depth and rate.get("stuck") is True)
-        last_progress = datetime.fromisoformat(rate["last_progress_at"])
-        if last_progress.tzinfo is None:
-            last_progress = None
-            raise ValueError("progress time has no timezone")
-        seconds_per_note = float(rate["seconds_per_note"])
-        if not stalled and seconds_per_note >= 0:
+        now = datetime.now(UTC)
+        seconds_per_note = float(rate.get("seconds_per_note", 0))
+        seen: list[datetime] = []
+        for key in ("last_progress_at", "last_pass_at"):
+            moment = datetime.fromisoformat(rate[key]) if key in rate else None
+            if moment is not None and moment.tzinfo is not None:
+                seen.append(moment)
+                if key == "last_progress_at":
+                    last_progress = moment
+        quiet = max(
+            300.0,
+            5 * store.control.settings().reconcile.scan_interval_s,
+            3 * seconds_per_note,
+        )
+        stalled = bool(
+            ready_depth
+            and (rate.get("stuck") is True or (seen and (now - max(seen)).total_seconds() > quiet))
+        )
+        if not stalled and "seconds_per_note" in rate and seconds_per_note >= 0:
             estimated_drain = int(seconds_per_note * ready_depth)
-    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+    except (OSError, ValueError, KeyError, TypeError, OverflowError, AttributeError):
         estimated_drain = None
     if not ready_depth and filing_queue_depth:
         estimated_drain = None
@@ -1550,25 +1562,26 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
                     note_id=row.id,
                 )
             )
-    open_paths = {row.id: row.path for row in ok_notes}
-    for path in sorted((store.control.store.state_dir / "path-notices").glob("*.json")):
-        try:
-            notice = json.loads(path.read_bytes())
-            if (
-                open_paths.get(notice["note_id"], notice["observed_path"])
-                == notice["observed_path"]
-            ):
-                continue
-            problems.append(
-                ProblemInfo(
-                    kind="path_notice",
-                    reference=notice["observed_path"],
-                    note_id=notice["note_id"],
-                    reason=notice["reason"],
-                )
-            )
-        except (OSError, ValueError, KeyError):
-            continue
+    from coppermind_store.notices import open_path_notices, open_unreadable_notices
+
+    problems.extend(
+        ProblemInfo(
+            kind="path_notice",
+            reference=notice["observed_path"],
+            note_id=notice["note_id"],
+            reason=notice["reason"],
+        )
+        for notice in open_path_notices(store, {row.id: row.path for row in ok_notes})
+    )
+    problems.extend(
+        ProblemInfo(
+            kind="unreadable_note",
+            reference=notice["path"],
+            note_id=notice["note_id"],
+            reason=notice["reason"],
+        )
+        for notice in await open_unreadable_notices(store)
+    )
     exclusions = store.control.read_reconciler_exclusions()
     problems.extend(
         ProblemInfo(

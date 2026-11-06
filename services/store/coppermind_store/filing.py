@@ -472,7 +472,7 @@ async def _file_reviewed(store: LocalStore) -> dict[str, int]:
         stuck = bool(unfiled - failed_ids)
     else:
         stuck = False
-    _record_rate(store, {"stuck": stuck})
+    _record_rate(store, {"stuck": stuck, "last_pass_at": datetime.now(UTC).isoformat()})
     return counts
 
 

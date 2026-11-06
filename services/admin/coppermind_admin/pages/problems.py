@@ -64,6 +64,7 @@ KIND_LABELS = {
     "missing": "Missing note",
     "filing": "Filing error",
     "path_notice": "Note path changed",
+    "unreadable_note": "Unreadable note",
 }
 
 

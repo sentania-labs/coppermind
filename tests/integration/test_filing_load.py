@@ -10,7 +10,14 @@ import pytest
 from coppermind_store import filing, notes
 from coppermind_store.reconciler import reconcile_once
 
-from coppermind.store_protocol import CreateNote, NoteQuery, NoteState, PatchFrontmatter
+from coppermind.store_protocol import (
+    CreateNote,
+    MoveNote,
+    NoteQuery,
+    NotesFilesystemUnavailable,
+    NoteState,
+    PatchFrontmatter,
+)
 from tests.integration.test_note_recovery import commit, git
 from tests.integration.test_search_index import ingest_request
 from tests.integration.test_store_write_protocol import authorized_api
@@ -110,6 +117,89 @@ async def test_path_notice_lasts_only_while_the_disagreement_is_open(store):
     assert not notice.exists()
     assert not [p for p in await store.get_problems() if p.kind == "path_notice"]
     assert (await store.get_status()).counters.active_problems == 0
+
+
+async def _noted_disagreement(store):
+    kept = await store.create_note(CreateNote(title="Kept", frontmatter={"type": "reference"}))
+    moved = await store.create_note(CreateNote(title="Moved", frontmatter={"type": "reference"}))
+    away = store.notes_root / "elsewhere" / Path(kept.path).name
+    away.parent.mkdir()
+    (store.notes_root / kept.path).rename(away)
+    (store.notes_root / moved.path).rename(store.notes_root / kept.path)
+    await store.get_note(moved.id)
+    notice = store.control.store.state_dir / "path-notices" / f"{moved.id}.json"
+    assert notice.exists()
+    return kept, moved, notice
+
+
+async def test_path_notice_clears_when_the_file_returns_to_the_recorded_path(store):
+    kept, moved, notice = await _noted_disagreement(store)
+    (store.notes_root / kept.path).rename(store.notes_root / moved.path)
+    assert not [p for p in await store.get_problems() if p.kind == "path_notice"]
+    assert not notice.exists()
+    assert (await store.get_status()).counters.active_problems == 0
+
+
+async def test_path_notice_clears_when_the_note_is_moved_through_the_api(store):
+    kept, moved, notice = await _noted_disagreement(store)
+    await store.move_note(moved.id, MoveNote(target_folder="archive"), None)
+    assert not [p for p in await store.get_problems() if p.kind == "path_notice"]
+    assert not notice.exists()
+    assert (await store.get_status()).counters.active_problems == 0
+
+
+async def test_losing_a_repair_race_records_no_notice(store):
+    note = await store.create_note(CreateNote(title="Raced", frontmatter={"type": "reference"}))
+    away = store.notes_root / "elsewhere" / Path(note.path).name
+    away.parent.mkdir()
+    (store.notes_root / note.path).rename(away)
+    observed = away.relative_to(store.notes_root).as_posix()
+    await store.get_note(note.id)
+    await store._repair_location(note.id, note.path, observed)
+    notice = store.control.store.state_dir / "path-notices" / f"{note.id}.json"
+    assert not notice.exists()
+    assert not [p for p in await store.get_problems() if p.kind == "path_notice"]
+
+
+async def test_unreadable_file_is_skipped_by_listing_and_named_as_a_problem(store):
+    notes = [
+        await store.create_note(CreateNote(title=f"Note {i}", frontmatter={"type": "reference"}))
+        for i in range(3)
+    ]
+    blocked = min(notes, key=lambda n: n.id)
+    target = store.notes_root / blocked.path
+    target.chmod(0)
+    try:
+        listed = []
+        cursor = None
+        while True:
+            page = await store.list_notes(NoteQuery(state="ok", limit=1, cursor=cursor))
+            listed += [item.id for item in page.items]
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        assert sorted(listed) == sorted(n.id for n in notes if n.id != blocked.id)
+        problems = [p for p in await store.get_problems() if p.kind == "unreadable_note"]
+        assert [(p.note_id, p.reference) for p in problems] == [(blocked.id, blocked.path)]
+        assert "could not be read" in problems[0].reason
+        assert (await store.get_status()).counters.active_problems == 1
+    finally:
+        target.chmod(0o644)
+    assert not [p for p in await store.get_problems() if p.kind == "unreadable_note"]
+    assert blocked.id in [i.id for i in (await store.list_notes(NoteQuery(state="ok"))).items]
+    assert (await store.get_status()).counters.active_problems == 0
+
+
+async def test_listing_fails_clearly_when_the_whole_notes_filesystem_is_unreadable(store):
+    await store.create_note(CreateNote(title="Only", frontmatter={"type": "reference"}))
+    store.notes_root.chmod(0)
+    try:
+        with pytest.raises(NotesFilesystemUnavailable, match="retry shortly"):
+            await store.list_notes(NoteQuery(state="ok"))
+    finally:
+        store.notes_root.chmod(0o755)
+    assert len((await store.list_notes(NoteQuery(state="ok"))).items) == 1
+    assert not [p for p in await store.get_problems() if p.kind == "unreadable_note"]
 
 
 async def test_failure_count_drains_and_error_is_visible_by_id(store, monkeypatch):
@@ -489,9 +579,19 @@ async def test_status_separates_failed_and_stalled_filing_from_drainable_work(st
     assert problem.filing_attempts == 2 and problem.reference == failed.path
     assert "NotesFilesystemUnavailable" not in problem.reason
     assert "destination folder" in problem.reason
+    long_ago = (now - timedelta(hours=1)).isoformat()
+    (directory / "filing-rate.json").write_text(
+        json.dumps({"seconds_per_note": 60, "last_progress_at": long_ago})
+    )
+    counters = (await store.get_status()).counters
+    assert counters.filing_stalled and counters.filing_estimated_drain_s is None
     (directory / "filing-rate.json").write_text(
         json.dumps(
-            {"seconds_per_note": 60, "last_progress_at": (now - timedelta(hours=1)).isoformat()}
+            {
+                "seconds_per_note": 60,
+                "last_progress_at": long_ago,
+                "last_pass_at": now.isoformat(),
+            }
         )
     )
     counters = (await store.get_status()).counters
@@ -534,7 +634,32 @@ async def test_filing_problem_names_what_is_wrong_with_the_note(store):
     assert "date" not in problem.reason and "FileNotFoundError" not in problem.reason
 
 
-async def test_idle_pass_with_nothing_filed_is_not_stuck_but_unfileable_work_is(store):
+async def test_a_pass_that_cannot_file_ready_work_marks_it_stalled_until_progress(
+    store, monkeypatch
+):
+    from coppermind_store.filing import file_reviewed
+
+    await store.create_note(
+        CreateNote(
+            title="Ready", frontmatter={"date": "2005-01-01", "type": "reference", "reviewed": True}
+        )
+    )
+
+    async def decline(*args):
+        return False
+
+    real = filing.file_note
+    monkeypatch.setattr(filing, "file_note", decline)
+    await file_reviewed(store)
+    counters = (await store.get_status()).counters
+    assert counters.filing_stalled and counters.filing_estimated_drain_s is None
+    monkeypatch.setattr(filing, "file_note", real)
+    await file_reviewed(store)
+    counters = (await store.get_status()).counters
+    assert not counters.filing_stalled and counters.filing_queue_depth == 0
+
+
+async def test_a_pass_that_files_the_ready_work_leaves_nothing_stalled(store):
     from coppermind_store.filing import file_reviewed
 
     await store.create_note(

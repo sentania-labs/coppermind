@@ -594,12 +594,17 @@ class LocalStore:
                                 exhausted = True
                                 break
                 from coppermind_store.filing import filing_state
+                from coppermind_store.notices import record_unreadable_notice
 
                 for state, summary in candidates:
                     if state == "ok":
                         try:
                             await self._read_current(summary.id, identities)
                         except (NotFound, NoteUnparseable):
+                            continue
+                        except NotesFilesystemUnavailable:
+                            await asyncio.to_thread(self._require_notes_root)
+                            record_unreadable_notice(self, summary.id, summary.path)
                             continue
                     for key, value in filing_state(self, summary.id).items():
                         setattr(summary, key, value)
@@ -1493,12 +1498,20 @@ class LocalStore:
                         .where(SearchDocument.kind == "note", SearchDocument.ref_id == note_id)
                         .values(path=observed)
                     )
+                current = await session.scalar(sa.select(Note.path).where(Note.id == note_id))
         except (SQLAlchemyError, OSError) as exc:
             raise MetadataUnavailable(str(exc)) from exc
-        if adopted:
+        if adopted or current == observed:
             clear_path_notice(self, note_id)
-        else:
+        elif current == previous:
             record_path_notice(self, note_id, previous, observed)
+
+    def _require_notes_root(self) -> None:
+        try:
+            with os.scandir(self.notes_root):
+                pass
+        except OSError as exc:
+            raise NotesFilesystemUnavailable("notes storage unavailable, retry shortly") from exc
 
     def _scan_identities(self) -> dict[str, list[Path]]:
         from coppermind_store.reconciler import _IGNORED_DIRECTORIES, _path_exclusion, _walk

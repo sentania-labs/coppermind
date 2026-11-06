@@ -833,7 +833,9 @@ class ProblemInfo(BaseModel):
     import failed validation or exceeded its configured budget), `dropbox` (a Dropbox
     file that is unsupported or failed), `calendar_conflict` (legacy exports that
     disagreed), `date_mismatch` (both `date` and
-    `time` are present and disagree, with `date` winning) or `excluded`.
+    `time` are present and disagree, with `date` winning), `path_notice` (the index
+    and the file disagree on a path), `unreadable_note` (a listed note whose file
+    cannot be read) or `excluded`.
     `note_id` and `source_id` name what the problem is about when it exists.
     """
 
