@@ -33,6 +33,7 @@ import binascii
 import json
 import os
 import re
+import time
 from datetime import UTC, date, datetime
 from math import isfinite
 from pathlib import Path
@@ -46,7 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from coppermind import frontmatter as fm
 from coppermind.api_keys import ApiKeySet
 from coppermind.atomicio import commit_staged, create_exclusive_bytes, stage_bytes, sync_directory
-from coppermind.db.models import Note, OutboxEvent
+from coppermind.db.models import Note, OutboxEvent, SearchDocument
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
 from coppermind.logging import get_logger
@@ -249,6 +250,7 @@ class LocalStore:
         self.maintenance = MaintenanceGate()
         self._filing_lock = asyncio.Lock()
         self._reconcile_lock = asyncio.Lock()
+        self._identity_index = _IdentityIndex(self)
         from coppermind_store.note_history import GitHistory
 
         self.note_history = GitHistory(notes_root)
@@ -511,22 +513,44 @@ class LocalStore:
         )
 
     async def get_note(self, note_id: NoteId) -> NoteDocument:
-        relative, path = await self._locate(note_id)
-        data, mtime = _read(note_id, path)
-        schema = self.control.schema()
-        frontmatter, body = _parse(note_id, relative, data, schema)
-        sources = frontmatter.get(schema.role("sources_key"), [])
-        return NoteDocument(
-            id=note_id,
-            path=relative,
-            title=_title_of(body, path),
-            frontmatter=_jsonable(frontmatter),
-            body=body,
-            content_hash=content_hash(data),
-            size_bytes=len(data),
-            updated_at=datetime.fromtimestamp(mtime, tz=UTC),
-            sources=[str(source) for source in sources] if isinstance(sources, list) else [],
-        )
+        return await self._with_filing_state(await self._read_current(note_id))
+
+    async def _read_current(self, note_id: NoteId) -> NoteDocument:
+        try:
+            return await self._read_located(note_id, inline=False)
+        except _IdentityStale:
+            await self._identity_index.refresh()
+        return await self._read_located(note_id, inline=True)
+
+    async def _read_located(self, note_id: NoteId, *, inline: bool) -> NoteDocument:
+        async with self._lock_for(note_id):
+            relative, path = await self._locate(note_id, inline)
+            data, mtime = _read(note_id, path)
+            schema = self.control.schema()
+            try:
+                frontmatter, body = _parse(note_id, relative, data, schema)
+            except NotFound:
+                matches = await self._followed(note_id, inline)
+                if len(matches) != 1:
+                    raise
+                path = matches[0]
+                previous = relative
+                relative = path.relative_to(self.notes_root).as_posix()
+                await self._repair_location(note_id, previous, relative)
+                data, mtime = _read(note_id, path)
+                frontmatter, body = _parse(note_id, relative, data, schema)
+            sources = frontmatter.get(schema.role("sources_key"), [])
+            return NoteDocument(
+                id=note_id,
+                path=relative,
+                title=_title_of(body, path),
+                frontmatter=_jsonable(frontmatter),
+                body=body,
+                content_hash=content_hash(data),
+                size_bytes=len(data),
+                updated_at=datetime.fromtimestamp(mtime, tz=UTC),
+                sources=[str(source) for source in sources] if isinstance(sources, list) else [],
+            )
 
     async def list_notes(self, query: NoteQuery) -> Page[NoteSummary]:
         """List the most recent reconciled state for known note identities.
@@ -545,26 +569,51 @@ class LocalStore:
         wanted = query.limit + 1
         batch_size = max(wanted, _SCAN_BATCH)
         matched: list[NoteSummary] = []
+        exhausted = False
         try:
-            async with self.session_factory() as session, session.begin():
-                if query.filter:
-                    await session.execute(
-                        sa.text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-                    )
-                predicates = await conditions(self, query, session)
-                while len(matched) < wanted:
-                    statement = (
-                        sa.select(Note).where(*predicates).order_by(Note.id).limit(batch_size)
-                    )
-                    if after is not None:
-                        statement = statement.where(Note.id > after)
-                    rows = list((await session.scalars(statement)).all())
-                    if not rows:
-                        break
-                    after = rows[-1].id
-                    matched.extend(_scan_rows(rows, query, wanted - len(matched)))
-                    if len(rows) < batch_size:
-                        break
+            while len(matched) < wanted and not exhausted:
+                needed = wanted - len(matched)
+                candidates: list[tuple[str, NoteSummary]] = []
+                async with self.session_factory() as session, session.begin():
+                    if query.filter:
+                        await session.execute(
+                            sa.text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                        )
+                    predicates = await conditions(self, query, session)
+                    while len(candidates) < needed:
+                        statement = (
+                            sa.select(Note).where(*predicates).order_by(Note.id).limit(batch_size)
+                        )
+                        if after is not None:
+                            statement = statement.where(Note.id > after)
+                        rows = list((await session.scalars(statement)).all())
+                        for row in rows:
+                            after = row.id
+                            summary = _mirrored_summary(row, cast(NoteState, row.state))
+                            if _matches_query(summary, query):
+                                candidates.append((row.state, summary))
+                                if len(candidates) == needed:
+                                    break
+                        else:
+                            if len(rows) < batch_size:
+                                exhausted = True
+                                break
+                from coppermind_store.filing import filing_state
+                from coppermind_store.notices import record_unreadable_notice
+
+                for state, summary in candidates:
+                    if state == "ok":
+                        try:
+                            await self._read_current(summary.id)
+                        except (NotFound, NoteUnparseable):
+                            continue
+                        except NotesFilesystemUnavailable:
+                            await asyncio.to_thread(self._require_notes_root)
+                            record_unreadable_notice(self, summary.id, summary.path)
+                            continue
+                    for key, value in filing_state(self, summary.id).items():
+                        setattr(summary, key, value)
+                    matched.append(summary)
         except (SQLAlchemyError, OSError) as exc:
             raise MetadataUnavailable(str(exc)) from exc
         if query.filter and self.control.schema_document().revision != revision:
@@ -680,16 +729,18 @@ class LocalStore:
                     raise
                 raise typed from exc
 
-        return NoteDocument(
-            id=note_id,
-            path=relative,
-            title=_title_of(body, path),
-            frontmatter=_jsonable(frontmatter),
-            body=body,
-            content_hash=digest,
-            size_bytes=len(data),
-            updated_at=now,
-            sources=[str(source) for source in sources] if isinstance(sources, list) else [],
+        return await self._with_filing_state(
+            NoteDocument(
+                id=note_id,
+                path=relative,
+                title=_title_of(body, path),
+                frontmatter=_jsonable(frontmatter),
+                body=body,
+                content_hash=digest,
+                size_bytes=len(data),
+                updated_at=now,
+                sources=[str(source) for source in sources] if isinstance(sources, list) else [],
+            )
         )
 
     @writer
@@ -782,16 +833,18 @@ class LocalStore:
                     raise
                 raise typed from exc
 
-        return NoteDocument(
-            id=note_id,
-            path=relative,
-            title=_title_of(body, path),
-            frontmatter=_jsonable(frontmatter),
-            body=body,
-            content_hash=digest,
-            size_bytes=len(data),
-            updated_at=file_mtime,
-            sources=[str(source) for source in sources] if isinstance(sources, list) else [],
+        return await self._with_filing_state(
+            NoteDocument(
+                id=note_id,
+                path=relative,
+                title=_title_of(body, path),
+                frontmatter=_jsonable(frontmatter),
+                body=body,
+                content_hash=digest,
+                size_bytes=len(data),
+                updated_at=file_mtime,
+                sources=[str(source) for source in sources] if isinstance(sources, list) else [],
+            )
         )
 
     @writer
@@ -853,15 +906,17 @@ class LocalStore:
 
             if new_target == path:
                 _, body = fm.parse(current_data.decode("utf-8"))
-                return _document(
-                    note_id,
-                    relative,
-                    _title_of(body, path),
-                    frontmatter,
-                    body,
-                    current_data,
-                    datetime.fromtimestamp(current_mtime, tz=UTC),
-                    schema,
+                return await self._with_filing_state(
+                    _document(
+                        note_id,
+                        relative,
+                        _title_of(body, path),
+                        frontmatter,
+                        body,
+                        current_data,
+                        datetime.fromtimestamp(current_mtime, tz=UTC),
+                        schema,
+                    )
                 )
 
             if path.stem.casefold() in {name.casefold() for name in existing_stems(folder_path)}:
@@ -934,13 +989,16 @@ class LocalStore:
                         raise PathCollision(new_relative) from exc
                     except OSError as exc:
                         raise NotesFilesystemUnavailable(str(exc)) from exc
+                    self._identity_index.moved(note_id, new_target)
             except BaseException as exc:
                 typed = _metadata_failure(exc)
                 if typed is None:
                     raise
                 raise typed from exc
 
-        return _document(note_id, new_relative, title, frontmatter, body, current_data, now, schema)
+        return await self._with_filing_state(
+            _document(note_id, new_relative, title, frontmatter, body, current_data, now, schema)
+        )
 
     @writer
     async def rename_note(
@@ -1049,14 +1107,15 @@ class LocalStore:
                         _rename_file(
                             note_id, relative, path, new_path, new_relative, data, schema, if_match
                         )
+                        self._identity_index.moved(note_id, new_path)
             except BaseException as exc:
                 typed = _metadata_failure(exc)
                 if typed is None:
                     raise
                 raise typed from exc
 
-        return _document(
-            note_id, new_relative, mirror_title, frontmatter, new_body, data, now, schema
+        return await self._with_filing_state(
+            _document(note_id, new_relative, mirror_title, frontmatter, new_body, data, now, schema)
         )
 
     async def list_folders(self) -> FolderTree:
@@ -1356,7 +1415,7 @@ class LocalStore:
         return "adopted", "identity written into the file"
 
     def _lock_for(self, note_id: NoteId) -> asyncio.Lock:
-        """The lock serialising writes to one note. Only asked for a located note."""
+        """The lock serialising reads and writes to one note identity."""
         lock = self._locks.get(note_id)
         if lock is None:
             lock = self._locks[note_id] = asyncio.Lock()
@@ -1369,7 +1428,32 @@ class LocalStore:
             lock = self._source_locks[claim_name] = asyncio.Lock()
         return lock
 
-    async def _locate(self, note_id: NoteId) -> tuple[str, Path]:
+    async def _with_filing_state(self, document: NoteDocument) -> NoteDocument:
+        from coppermind_store.filing import filing_state
+
+        try:
+            async with self.session_factory() as session:
+                filed = await session.scalar(sa.select(Note.filed).where(Note.id == document.id))
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
+        return document.model_copy(update={"filed": bool(filed), **filing_state(self, document.id)})
+
+    async def _followed(self, note_id: NoteId, inline: bool) -> list[Path]:
+        """Where a note identity sits now, from the store-wide index.
+
+        Callers holding a note lock pass `inline=False`: a stale index raises
+        `_IdentityStale` so they can refresh it after releasing the lock.
+        """
+        index = self._identity_index
+        matches = index.lookup(note_id)
+        if matches is None:
+            if not inline:
+                raise _IdentityStale
+            await index.refresh()
+            matches = index.lookup(note_id) or []
+        return matches
+
+    async def _locate(self, note_id: NoteId, inline: bool = True) -> tuple[str, Path]:
         """Return the note's relative path and its absolute path.
 
         The path lives in PostgreSQL, so this is one of the reads that a
@@ -1396,11 +1480,134 @@ class LocalStore:
             # refuses to follow it. Nothing servable is there.
             raise NotFound(note_id) from exc
         if not is_note_file(path):
-            # The row outlived the file, which happens when a note is deleted
-            # on a device. Reconciliation clears the row; until then, this is
-            # honestly a miss rather than a server error.
-            raise NotFound(note_id)
+            # A move can become visible before its mirror transaction commits.
+            # Follow the identity, never a filename alone or a different note.
+            matches = await self._followed(note_id, inline)
+            if len(matches) != 1:
+                raise NotFound(note_id)
+            path = matches[0]
+            previous = relative
+            relative = path.relative_to(self.notes_root).as_posix()
+            await self._repair_location(note_id, previous, relative)
         return relative, path
+
+    async def _repair_location(self, note_id: str, previous: str, observed: str) -> None:
+        from coppermind_store.notices import clear_path_notice, record_path_notice
+
+        try:
+            async with transaction(self.session_factory) as session:
+                # A settling file can have replaced another still-live row's
+                # path. Follow its identity for this read, but leave ownership
+                # decisions to reconciliation until that ambiguity settles.
+                other = Note.__table__.alias("other_note")
+                occupied = sa.exists().where(
+                    other.c.id != note_id,
+                    other.c.path == observed,
+                    other.c.state.not_in(("missing", "deleted")),
+                )
+                updated = await session.execute(
+                    sa.update(Note)
+                    .where(Note.id == note_id, Note.path == previous, Note.state == "ok", ~occupied)
+                    .values(path=observed, mtime=None, updated_at=datetime.now(UTC))
+                    .returning(Note.id)
+                )
+                adopted = updated.scalar_one_or_none() is not None
+                if adopted:
+                    await session.execute(
+                        sa.update(SearchDocument)
+                        .where(SearchDocument.kind == "note", SearchDocument.ref_id == note_id)
+                        .values(path=observed)
+                    )
+                current = await session.scalar(sa.select(Note.path).where(Note.id == note_id))
+        except (SQLAlchemyError, OSError) as exc:
+            raise MetadataUnavailable(str(exc)) from exc
+        if adopted or current == observed:
+            clear_path_notice(self, note_id)
+        elif current == previous:
+            record_path_notice(self, note_id, previous, observed)
+
+    def _require_notes_root(self) -> None:
+        try:
+            with os.scandir(self.notes_root):
+                pass
+        except OSError as exc:
+            raise NotesFilesystemUnavailable("notes storage unavailable, retry shortly") from exc
+
+    def _scan_identities(self) -> dict[str, list[Path]]:
+        from coppermind_store.reconciler import _IGNORED_DIRECTORIES, _path_exclusion, _walk
+
+        found: dict[str, list[Path]] = {}
+        key = self.control.schema().role("id_key")
+        settings = self.control.settings()
+        for candidate in _walk(self.notes_root):
+            relative = candidate.relative_to(self.notes_root)
+            if candidate.suffix != ".md" or any(
+                part in _IGNORED_DIRECTORIES for part in relative.parts
+            ):
+                continue
+            if _path_exclusion(
+                relative, settings.reconcile.excluded_folders, settings.reconcile.excluded_patterns
+            ):
+                continue
+            try:
+                safe = resolve(self.notes_root, relative.as_posix())
+                if not is_note_file(safe):
+                    continue
+                identity = self.note_history.identity(safe.read_bytes(), key)
+            except (OSError, ValueError):
+                continue
+            if identity is not None:
+                found.setdefault(identity, []).append(safe)
+        return found
+
+
+class _IdentityStale(Exception):
+    """The identity index must be refreshed, outside any note lock, before this read."""
+
+
+class _IdentityIndex:
+    """One store-wide map from note identity to file path, shared by every reader.
+
+    It is rebuilt only when a read of a stale row finds it missing, expired
+    (older than one reconciler interval) or unable to answer after the few
+    seconds a fresh scan stays authoritative. Within that window an identity
+    the scan did not find is not found, so a burst of reads of rows whose
+    files are gone costs one tree walk, not one each.
+    """
+
+    MISS_WINDOW_S = 5.0
+
+    def __init__(self, store: LocalStore) -> None:
+        self._store = store
+        self._found: dict[str, list[Path]] | None = None
+        self._built = 0.0
+        self._lock = asyncio.Lock()
+
+    def lookup(self, note_id: str) -> list[Path] | None:
+        """The paths carrying this identity, or None when the index must be rebuilt."""
+        if self._found is None:
+            return None
+        age = time.monotonic() - self._built
+        interval = self._store.control.settings().reconcile.scan_interval_s
+        live = [path for path in self._found.get(note_id, []) if is_note_file(path)]
+        if live and age <= interval:
+            return live
+        if age > self.MISS_WINDOW_S:
+            return None
+        return live
+
+    def moved(self, note_id: str, path: Path) -> None:
+        if self._found is not None:
+            self._found[note_id] = [path]
+
+    async def refresh(self) -> None:
+        requested = time.monotonic()
+        async with self._lock:
+            if self._built >= requested:
+                return
+            started = time.monotonic()
+            found = await asyncio.to_thread(self._store._scan_identities)
+            self._found, self._built = found, started
 
 
 def _parse(
@@ -1451,19 +1658,6 @@ def _parse(
     return frontmatter, body
 
 
-def _scan_rows(rows: list[Note], query: NoteQuery, needed: int) -> list[NoteSummary]:
-    """Filter one mirror batch, stopping once `needed` rows match."""
-    found: list[NoteSummary] = []
-    for row in rows:
-        summary = _mirrored_summary(row, cast(NoteState, row.state))
-        if not _matches_query(summary, query):
-            continue
-        found.append(summary)
-        if len(found) == needed:
-            break
-    return found
-
-
 def _mirrored_summary(row: Note, state: NoteState) -> NoteSummary:
     """The latest reconciled metadata and state for a known identity."""
     return NoteSummary(
@@ -1477,6 +1671,7 @@ def _mirrored_summary(row: Note, state: NoteState) -> NoteSummary:
         context=row.context,
         account=list(row.account),
         reviewed=row.reviewed,
+        filed=row.filed,
         tags=list(row.tags),
         content_hash=row.content_hash,
         updated_at=row.mtime or row.updated_at,

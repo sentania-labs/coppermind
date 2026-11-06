@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
-from coppermind_store import indexer, note_history, purge
+from coppermind_store import filing, indexer, note_history, purge
 from coppermind_store.reconciler import reconcile_once
 from coppermind_store.sources import _external_id_claim_path
 
@@ -102,6 +102,29 @@ async def test_zero_day_exact_list_index_and_git_preserved(store):
     async with store.session_factory() as session:
         assert await session.get(Note, note.id) is None
     assert (await store.confirm_purge(confirmation(preview))).state == "complete"
+
+
+async def test_purge_removes_the_filing_journal_with_the_note(store):
+    retention(store, 0)
+    note = await store.create_note(
+        CreateNote(
+            title="Filed",
+            frontmatter={"date": "2026-09-01", "type": "reference", "reviewed": True},
+        )
+    )
+    git(store.notes_root, "init", "-q")
+    assert (await filing.file_reviewed(store))["filed"] == 1
+    journal = store.control.store.state_dir / "filing" / f"{note.id}.json"
+    assert journal.exists()
+    commit(store.notes_root)
+    (store.notes_root / (await store.get_note(note.id)).path).unlink()
+    await reconcile_once(store)
+    commit(store.notes_root)
+    assert (await reconcile_once(store))["deleted"] == 1
+    preview = await store.preview_purge()
+    assert [c.id for c in preview.candidates] == [note.id]
+    assert (await store.confirm_purge(confirmation(preview))).state == "complete"
+    assert not journal.exists()
 
 
 async def test_orphan_bundle_projection_claim_and_search_removed(store):

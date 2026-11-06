@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
-from coppermind_store import notes as notes_module
 from coppermind_store.notes import LocalStore
 from coppermind_store.reconciler import reconcile_once
 
@@ -200,7 +199,7 @@ async def test_cursor_pages_four_notes_two_at_a_time_without_gaps(store: LocalSt
     assert len(returned) == len(set(returned))
 
 
-async def test_a_page_reads_the_reconciled_mirror_not_note_files(store: LocalStore, monkeypatch):
+async def test_a_page_keeps_mirrored_metadata_while_checking_readability(store: LocalStore):
     for number, title in enumerate(("Alpha", "Bravo", "Charlie", "Delta", "Echo"), start=1):
         await _create(
             store,
@@ -210,14 +209,17 @@ async def test_a_page_reads_the_reconciled_mirror_not_note_files(store: LocalSto
             context="internal",
         )
 
-    def refused(*_args, **_kwargs):
-        raise AssertionError("listing opened a note file")
-
-    monkeypatch.setattr(notes_module, "_read", refused)
+    # Listing metadata remains a mirror, but an ok row must still be readable.
+    before = await store.list_notes(NoteQuery(limit=2))
+    first = before.items[0]
+    path = store.notes_root / first.path
+    path.write_bytes(path.read_bytes().replace(b"# Alpha", b"# Changed on disk"))
     page = await store.list_notes(NoteQuery(limit=2))
 
     assert len(page.items) == 2
     assert page.next_cursor is not None
+    assert page.items[0].title == first.title == "Alpha"
+    assert (await store.get_note(first.id)).title == "Changed on disk"
 
 
 async def test_rename_between_pages_does_not_change_where_the_cursor_resumes(

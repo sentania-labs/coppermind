@@ -334,6 +334,25 @@ class NoteLifecycle:
             self.context.write("finalized", records)
             self.rebuild_dossiers(records)
 
+    async def follow(self, note: NoteDocument) -> bool:
+        """Carry a confirmed record to the hash and path filing itself produced.
+
+        Filing rewrites links and moves the note after it was confirmed, so the
+        record and the dossier contribution would otherwise keep the pre-filing
+        hash and path. That is not a new edit by the person, so no stability wait.
+        """
+        async with self.context.lock:
+            records = self.context.read("finalized", {})
+            record = records.get(note.id)
+            if not record or record.get("state") != "confirmed":
+                return False
+            if record["note_hash"] != note.content_hash or record.get("path") != note.path:
+                record["note_hash"] = note.content_hash
+                record["path"] = note.path
+                self.context.write("finalized", records)
+                self.rebuild_dossiers(records)
+            return True
+
     def rebuild_dossiers(self, records: dict[str, Any]) -> None:
         from coppermind_store.context_service import fingerprint
 

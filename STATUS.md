@@ -669,7 +669,10 @@ health, pending files, and last commit in local time. Deleted notes have an
 escaped content preview and an explicit restore confirmation. Restore creates
 the original path exclusively, preserves the ID and bytes, and refuses an
 occupied destination or a returned identity. It warns that the restored file
-will sync to devices. The misleading sidebar tagline has been removed.
+will sync to devices. The misleading sidebar tagline has been removed. A
+missing note whose filing journal holds a verified matching copy can also be
+restored from Admin without a committed removal; see [the API
+reference](docs/api.md) for the contract.
 
 `GET /v1/notes/{id}/recovery` requires `notes:read` and returns the saved text,
 path, removal commit, and preview token. `POST /v1/notes/{id}/restore` requires
@@ -690,6 +693,8 @@ orphaned sources, see [data and settings](docs/data-and-settings.md#retention-pu
 Git history alone cannot prove intent. Here `deleted` means absent with a
 recoverable committed removal. If the last observed edit never reached Git,
 the note stays missing rather than pretending that an older version is exact.
+A note that vanished while filing was moving it keeps `missing` with a
+`state_reason` naming the last known hash, and Problems lists it.
 Git lookups use bounded object batches and cache only requested absent
 identities per HEAD and schema identity key, not one history process per note.
 Automatic recovery refuses Markdown blobs above 32 MiB rather than exhaust

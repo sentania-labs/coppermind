@@ -55,6 +55,7 @@ from coppermind_store import indexer
 from coppermind_store.fs import content_hash, resolve
 from coppermind_store.maintenance import writer
 from coppermind_store.notes import _jsonable, _mirror_columns, _title_of
+from coppermind_store.notices import clear_path_notice
 from coppermind_store.rejections import reconcile_rejections
 
 if TYPE_CHECKING:
@@ -529,6 +530,19 @@ async def reconcile_once(
                     receipt = None
                     if observed is None:
                         receipt = store.note_history.evidence(row.id, row.path, row.content_hash)
+                        if receipt is None:
+                            from coppermind_store.filing import vanished_receipt
+
+                            receipt, reason = vanished_receipt(store, row)
+                            if receipt is None and reason:
+                                values = {
+                                    key: value
+                                    for key, value in {
+                                        "state": "missing",
+                                        "state_reason": reason,
+                                    }.items()
+                                    if getattr(row, key) != value
+                                }
                         if receipt is not None:
                             values = {
                                 "state": "deleted",
@@ -578,6 +592,7 @@ async def reconcile_once(
                     )
                     if result.scalar_one_or_none() is None:
                         continue
+                    clear_path_notice(store, row.id)
                     if receipt is not None:
                         await asyncio.to_thread(note_history.save, store, receipt)
                     elif observed is not None:
