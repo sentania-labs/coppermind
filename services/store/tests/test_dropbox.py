@@ -819,3 +819,34 @@ async def test_the_folder_scan_pairs_a_sidecar_with_its_file(tmp_path, monkeypat
     await store.context.dropbox.scan()
     await store.context.dropbox.scan()
     assert submitted == [("deck.pptx", b"PK\x03\x04deck", {"kind": "artifact"})]
+
+
+async def test_a_marked_redrop_is_stored_again_after_the_artifact_was_removed(tmp_path):
+    from coppermind.store_protocol import CreatedArtifact
+
+    store = local_store(tmp_path)
+    stored = []
+
+    async def create_artifact(request, *, payload_size_bytes=None):
+        stored.append(request)
+        return CreatedArtifact(
+            id=f"01K4Q8Z2A0P1Q2R3S4T5U6V7W{len(stored)}",
+            revision=1,
+            created=True,
+            path="Artifacts/2026/2026-11/deck.pptx",
+            title="Deck",
+        )
+
+    store.create_artifact = create_artifact
+    dropbox = store.context.dropbox
+    marker = {"kind": "artifact"}
+    first = dropbox.submit("deck.pptx", b"PK\x03\x04deck", marker)
+    await dropbox.process()
+    assert dropbox.snapshot()["items"][0]["state"] == "succeeded"
+    assert dropbox.records()["history"][first["id"]]["state"] == "succeeded"
+    again = dropbox.submit("deck.pptx", b"PK\x03\x04deck", marker)
+    assert again["state"] == "pending"
+    await dropbox.process()
+    assert len(stored) == 2
+    assert dropbox.snapshot()["items"][0]["state"] == "succeeded"
+    assert dropbox.submit("deck.pptx", b"PK\x03\x04deck")["state"] == "already_imported"

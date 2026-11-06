@@ -124,20 +124,23 @@ class Dropbox:
         existing = records["items"].get(digest)
         if existing and existing["state"] not in COMPLETED | {"failed", "unsupported"}:
             return existing
-        history = records["history"].get(digest, {})
-        imported = next(
-            (
-                r
-                for r in self.context.archive.receipts()
-                if r.content_hash == digest and r.state == "succeeded"
-            ),
-            None,
-        )
-        if imported is not None:
-            history = {"state": "succeeded", "parts": [{"import_id": imported.id}]}
-        duplicate = history.get("state") in COMPLETED or (
-            existing and existing["state"] in COMPLETED
-        )
+        history: dict[str, Any] = {}
+        duplicate = False
+        if kind is None:
+            history = records["history"].get(digest, {})
+            imported = next(
+                (
+                    r
+                    for r in self.context.archive.receipts()
+                    if r.content_hash == digest and r.state == "succeeded"
+                ),
+                None,
+            )
+            if imported is not None:
+                history = {"state": "succeeded", "parts": [{"import_id": imported.id}]}
+            duplicate = history.get("state") in COMPLETED or bool(
+                existing and existing["state"] in COMPLETED
+            )
         atomic_write_bytes(self.context.root / "dropbox-originals" / digest, data, mode=0o600)
         item = {
             "id": digest,
