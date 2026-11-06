@@ -33,6 +33,7 @@ import binascii
 import json
 import os
 import re
+import time
 from datetime import UTC, date, datetime
 from math import isfinite
 from pathlib import Path
@@ -249,6 +250,7 @@ class LocalStore:
         self.maintenance = MaintenanceGate()
         self._filing_lock = asyncio.Lock()
         self._reconcile_lock = asyncio.Lock()
+        self._identity_index = _IdentityIndex(self)
         from coppermind_store.note_history import GitHistory
 
         self.note_history = GitHistory(notes_root)
@@ -513,18 +515,22 @@ class LocalStore:
     async def get_note(self, note_id: NoteId) -> NoteDocument:
         return await self._with_filing_state(await self._read_current(note_id))
 
-    async def _read_current(
-        self, note_id: NoteId, identities: _Identities | None = None
-    ) -> NoteDocument:
-        identities = identities or _Identities(self)
+    async def _read_current(self, note_id: NoteId) -> NoteDocument:
+        try:
+            return await self._read_located(note_id, inline=False)
+        except _IdentityStale:
+            await self._identity_index.refresh()
+        return await self._read_located(note_id, inline=True)
+
+    async def _read_located(self, note_id: NoteId, *, inline: bool) -> NoteDocument:
         async with self._lock_for(note_id):
-            relative, path = await self._locate(note_id, identities)
+            relative, path = await self._locate(note_id, inline)
             data, mtime = _read(note_id, path)
             schema = self.control.schema()
             try:
                 frontmatter, body = _parse(note_id, relative, data, schema)
             except NotFound:
-                matches = await identities.of(note_id)
+                matches = await self._followed(note_id, inline)
                 if len(matches) != 1:
                     raise
                 path = matches[0]
@@ -563,7 +569,6 @@ class LocalStore:
         wanted = query.limit + 1
         batch_size = max(wanted, _SCAN_BATCH)
         matched: list[NoteSummary] = []
-        identities = _Identities(self)
         exhausted = False
         try:
             while len(matched) < wanted and not exhausted:
@@ -599,7 +604,7 @@ class LocalStore:
                 for state, summary in candidates:
                     if state == "ok":
                         try:
-                            await self._read_current(summary.id, identities)
+                            await self._read_current(summary.id)
                         except (NotFound, NoteUnparseable):
                             continue
                         except NotesFilesystemUnavailable:
@@ -984,6 +989,7 @@ class LocalStore:
                         raise PathCollision(new_relative) from exc
                     except OSError as exc:
                         raise NotesFilesystemUnavailable(str(exc)) from exc
+                    self._identity_index.moved(note_id, new_target)
             except BaseException as exc:
                 typed = _metadata_failure(exc)
                 if typed is None:
@@ -1101,6 +1107,7 @@ class LocalStore:
                         _rename_file(
                             note_id, relative, path, new_path, new_relative, data, schema, if_match
                         )
+                        self._identity_index.moved(note_id, new_path)
             except BaseException as exc:
                 typed = _metadata_failure(exc)
                 if typed is None:
@@ -1431,9 +1438,22 @@ class LocalStore:
             raise MetadataUnavailable(str(exc)) from exc
         return document.model_copy(update={"filed": bool(filed), **filing_state(self, document.id)})
 
-    async def _locate(
-        self, note_id: NoteId, identities: _Identities | None = None
-    ) -> tuple[str, Path]:
+    async def _followed(self, note_id: NoteId, inline: bool) -> list[Path]:
+        """Where a note identity sits now, from the store-wide index.
+
+        Callers holding a note lock pass `inline=False`: a stale index raises
+        `_IdentityStale` so they can refresh it after releasing the lock.
+        """
+        index = self._identity_index
+        matches = index.lookup(note_id)
+        if matches is None:
+            if not inline:
+                raise _IdentityStale
+            await index.refresh()
+            matches = index.lookup(note_id) or []
+        return matches
+
+    async def _locate(self, note_id: NoteId, inline: bool = True) -> tuple[str, Path]:
         """Return the note's relative path and its absolute path.
 
         The path lives in PostgreSQL, so this is one of the reads that a
@@ -1462,7 +1482,7 @@ class LocalStore:
         if not is_note_file(path):
             # A move can become visible before its mirror transaction commits.
             # Follow the identity, never a filename alone or a different note.
-            matches = await (identities or _Identities(self)).of(note_id)
+            matches = await self._followed(note_id, inline)
             if len(matches) != 1:
                 raise NotFound(note_id)
             path = matches[0]
@@ -1541,17 +1561,54 @@ class LocalStore:
         return found
 
 
-class _Identities:
-    """Where each note identity currently sits, read from the tree at most once."""
+class _IdentityStale(Exception):
+    """The identity index must be refreshed, outside any note lock, before this read."""
+
+
+class _IdentityIndex:
+    """One store-wide map from note identity to file path, shared by every reader.
+
+    It is rebuilt only when a read of a stale row finds it missing, expired
+    (older than one reconciler interval) or unable to answer after the few
+    seconds a fresh scan stays authoritative. Within that window an identity
+    the scan did not find is not found, so a burst of reads of rows whose
+    files are gone costs one tree walk, not one each.
+    """
+
+    MISS_WINDOW_S = 5.0
 
     def __init__(self, store: LocalStore) -> None:
         self._store = store
         self._found: dict[str, list[Path]] | None = None
+        self._built = 0.0
+        self._completed = 0.0
+        self._lock = asyncio.Lock()
 
-    async def of(self, note_id: str) -> list[Path]:
+    def lookup(self, note_id: str) -> list[Path] | None:
+        """The paths carrying this identity, or None when the index must be rebuilt."""
         if self._found is None:
-            self._found = await asyncio.to_thread(self._store._scan_identities)
-        return self._found.get(note_id, [])
+            return None
+        age = time.monotonic() - self._built
+        interval = self._store.control.settings().reconcile.scan_interval_s
+        live = [path for path in self._found.get(note_id, []) if is_note_file(path)]
+        if live and age <= interval:
+            return live
+        if age > self.MISS_WINDOW_S:
+            return None
+        return live
+
+    def moved(self, note_id: str, path: Path) -> None:
+        if self._found is not None:
+            self._found[note_id] = [path]
+
+    async def refresh(self) -> None:
+        requested = time.monotonic()
+        async with self._lock:
+            if self._completed >= requested:
+                return
+            started = time.monotonic()
+            found = await asyncio.to_thread(self._store._scan_identities)
+            self._found, self._built, self._completed = found, started, time.monotonic()
 
 
 def _parse(

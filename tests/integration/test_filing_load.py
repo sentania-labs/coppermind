@@ -16,6 +16,7 @@ from coppermind.store_protocol import (
     NoteQuery,
     NotesFilesystemUnavailable,
     NoteState,
+    NotFound,
     PatchFrontmatter,
 )
 from tests.integration.test_note_recovery import commit, git
@@ -347,6 +348,69 @@ async def test_listing_stale_rows_walks_the_tree_once(store, monkeypatch):
     monkeypatch.setattr(type(store), "_scan_identities", counted)
     assert (await store.list_notes(NoteQuery(state="ok"))).items == []
     assert scans == 1
+
+
+def _count_identity_scans(store, monkeypatch):
+    scans = []
+    original = type(store)._scan_identities
+
+    def counted(self):
+        scans.append(1)
+        return original(self)
+
+    monkeypatch.setattr(type(store), "_scan_identities", counted)
+    return scans
+
+
+async def test_repeated_reads_of_stale_rows_cost_one_identity_scan(store, monkeypatch):
+    gone = [
+        await store.create_note(CreateNote(title=f"Gone {i}", frontmatter={"type": "reference"}))
+        for i in range(6)
+    ]
+    for note in gone:
+        (store.notes_root / note.path).unlink()
+    scans = _count_identity_scans(store, monkeypatch)
+    for note in gone:
+        with pytest.raises(NotFound):
+            await store.get_note(note.id)
+    assert (await store.list_notes(NoteQuery(state="ok"))).items == []
+    assert len(scans) == 1
+    for note in gone:
+        with pytest.raises(NotFound):
+            await store.get_note(note.id)
+    await store.get_status()
+    await store.get_problems()
+    assert len(scans) == 1
+
+
+async def test_moved_files_are_followed_from_one_shared_scan(store, monkeypatch):
+    made = [
+        await store.create_note(CreateNote(title=f"Moved {i}", frontmatter={"type": "reference"}))
+        for i in range(4)
+    ]
+    elsewhere = store.notes_root / "elsewhere"
+    elsewhere.mkdir()
+    for note in made:
+        (store.notes_root / note.path).rename(elsewhere / Path(note.path).name)
+    scans = _count_identity_scans(store, monkeypatch)
+    for note in made:
+        assert (await store.get_note(note.id)).path == f"elsewhere/{Path(note.path).name}"
+    assert len(scans) == 1
+
+
+async def test_filing_loop_over_stale_rows_scans_once(store, monkeypatch):
+    for i in range(5):
+        note = await store.create_note(
+            CreateNote(
+                title=f"Vanished {i}",
+                frontmatter={"date": "2005-01-01", "type": "reference", "reviewed": True},
+            )
+        )
+        (store.notes_root / note.path).unlink()
+    scans = _count_identity_scans(store, monkeypatch)
+    counts = await filing.file_reviewed(store)
+    assert counts["filing_failed"] == 5
+    assert len(scans) == 1
 
 
 async def test_listing_waits_on_a_note_lock_without_holding_a_pooled_connection(store):
