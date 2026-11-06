@@ -23,6 +23,7 @@ from coppermind.store_protocol import (
     CreateArtifact,
     CreatedArtifact,
     Page,
+    PayloadTooLarge,
 )
 
 ARTIFACT_ID = "01K4Q8Z2A0P1Q2R3S4T5U6V7W8"
@@ -68,6 +69,8 @@ class FakeStore:
     async def create_artifact(
         self, request: CreateArtifact, *, payload_size_bytes: int | None = None
     ) -> CreatedArtifact:
+        if request.content_base64 and len(request.bytes()) > self.limit:
+            raise PayloadTooLarge(self.limit)
         self.created.append(request)
         self.sizes.append(payload_size_bytes)
         return CreatedArtifact(
@@ -323,8 +326,58 @@ def test_an_upload_that_announces_an_impossible_size_is_refused_before_parsing(a
     body = response.json()
     assert body["error"] == "payload_too_large"
     assert body["limit_bytes"] == 10 * 1024 * 1024
-    assert "staged upload path" in body["message"]
+    assert body["message"] == OVER_LIMIT
     assert fake.created == []
+
+
+OVER_LIMIT = (
+    "This file is larger than the 10 MiB limit. Files over 10 MiB can't be added yet; "
+    "split or compress it, or add a link to it instead."
+)
+
+
+def test_an_oversize_file_gets_the_same_plain_refusal_as_multipart_and_as_json(api):
+    """One message, whichever shape the upload came in, and whichever check caught it."""
+    client, fake = api
+    multipart = client.post(
+        "/v1/artifacts",
+        files={"file": ("big.bin", b"x" * (10 * 1024 * 1024 + 1))},
+        data={"kind": "artifact"},
+        headers=_as(fake, "write"),
+    )
+    assert multipart.status_code == 413
+    assert multipart.json()["message"] == OVER_LIMIT
+    # A JSON body small enough to pass the transport ceiling but over the limit once
+    # decoded is caught by the store; the person still reads the same sentence.
+    fake.limit = 2048
+    body = base64.b64encode(b"x" * 2100).decode()
+    through_store = client.post(
+        "/v1/artifacts",
+        json={"kind": "artifact", "filename": "a.bin", "content_base64": body},
+        headers=_as(fake, "write"),
+    )
+    assert through_store.status_code == 413
+    assert through_store.json()["error"] == "payload_too_large"
+    assert through_store.json()["limit_bytes"] == 2048
+    assert through_store.json()["message"] == OVER_LIMIT.replace("10 MiB", "2 KiB")
+    assert "exceeds" not in through_store.json()["message"]
+    assert fake.created == []
+
+
+@pytest.mark.parametrize(
+    ("limit", "said"),
+    [
+        (10 * 1024 * 1024, "10 MiB"),
+        (10_000_000, "9.5 MiB"),
+        (2048, "2 KiB"),
+        (1536, "1.5 KiB"),
+        (900, "900 bytes"),
+    ],
+)
+def test_the_limit_is_said_the_way_a_person_reads_it(limit: int, said: str):
+    from coppermind_api.v1.artifacts import human_limit
+
+    assert human_limit(limit) == said
 
 
 def test_a_file_part_over_the_ceiling_is_refused(api):

@@ -59,6 +59,7 @@ from coppermind.store_protocol import (
     PurgeConflict,
     RebuildMetadataResult,
     RebuildSearchIndexResult,
+    ReconcilerNotice,
     RenameNote,
     ReplaceNote,
     RestoreNote,
@@ -86,6 +87,7 @@ INTERNAL_PREFIX = "/internal/v1"
 PURGE_TIMEOUT_S = 600.0
 _NOTE_SOURCES = TypeAdapter(list[NoteSourceInfo])
 _PROBLEMS = TypeAdapter(list[ProblemInfo])
+_RECONCILER_NOTICES = TypeAdapter(list[ReconcilerNotice])
 
 
 def _segment(value: str) -> str:
@@ -268,6 +270,10 @@ class HttpStoreClient:
     async def get_problems(self) -> list[ProblemInfo]:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/problems")
         return _PROBLEMS.validate_python(response.json())
+
+    async def list_reconciler_notices(self) -> list[ReconcilerNotice]:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/reconciler_notices")
+        return _RECONCILER_NOTICES.validate_python(response.json())
 
     async def dismiss_reconciler_notice(self, note_id: NoteId) -> None:
         await self._send(

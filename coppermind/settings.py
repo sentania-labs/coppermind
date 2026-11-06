@@ -364,8 +364,9 @@ class RetentionSettings(BaseModel):
         le=36500,
         strict=True,
         description=(
-            "Days to keep deleted-note recovery copies before a manual purge. "
-            "Zero allows immediate purge. Git history is retained."
+            "Days to keep deleted-note recovery copies and the stored files of removed "
+            "artifacts before a manual purge. Zero allows immediate purge. Git history is "
+            "retained."
         ),
     )
 

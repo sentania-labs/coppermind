@@ -39,6 +39,7 @@ from coppermind.store_protocol import (
     ProblemInfo,
     RebuildMetadataResult,
     RebuildSearchIndexResult,
+    ReconcilerNotice,
     RenameNote,
     ReplaceNote,
     RestoreNote,
@@ -233,6 +234,14 @@ async def get_status(request: Request) -> StatusResponse | JSONResponse:
 async def get_problems(request: Request) -> list[ProblemInfo] | JSONResponse:
     try:
         return await _store(request).get_problems()
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.get("/reconciler_notices", response_model=list[ReconcilerNotice])
+async def list_reconciler_notices(request: Request) -> list[ReconcilerNotice] | JSONResponse:
+    try:
+        return await _store(request).list_reconciler_notices()
     except StoreError as error:
         return _failure(error)
 

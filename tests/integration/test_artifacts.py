@@ -200,6 +200,39 @@ async def test_moving_or_renaming_the_file_in_obsidian_is_not_a_delete(
     manifest = json.loads((store.artifacts_root / created.id / "manifest.json").read_text())
     assert "removed_at" not in manifest
 
+    # The owner sees why it moved back: the same current-notice list a hand-moved note uses.
+    [notice] = await store.list_reconciler_notices()
+    assert notice.kind == "artifact" and notice.note_id == created.id
+    assert notice.title == "deck"
+    assert notice.from_path == target.relative_to(store.notes_root).as_posix()
+    assert notice.path == created.path
+    folder = created.path.rpartition("/")[0]
+    assert notice.reason.startswith(f"Moved back to {folder}/ because artifacts are filed")
+    assert "nothing needs doing" in notice.reason
+    assert (await store.get_status()).counters.artifacts_returned == 1
+    await store.dismiss_reconciler_notice(created.id)
+    assert await store.list_reconciler_notices() == []
+    assert (await store.get_status()).counters.artifacts_returned == 0
+
+
+async def test_a_notice_about_an_artifact_that_is_gone_is_dropped(store, tmp_path):
+    from tests.integration.test_note_recovery import commit, git
+
+    data = pptx_bytes(tmp_path, "Enablement deck", "Platypus enablement")
+    created = await store.create_artifact(upload("deck.pptx", data))
+    git(store.notes_root, "init", "-q")
+    commit(store.notes_root)
+    original = store.notes_root / created.path
+    original.rename(original.parent / "renamed.pptx")
+    commit(store.notes_root)
+    await artifacts.sweep(store)
+    assert len(await store.list_reconciler_notices()) == 1
+
+    await store.remove_artifact(created.id)
+
+    assert await store.list_reconciler_notices() == []
+    assert store.control.read_reconciler_notices() == {}
+
 
 async def test_a_moved_copy_is_never_taken_from_another_artifact(store, tmp_path):
     from tests.integration.test_note_recovery import commit, git

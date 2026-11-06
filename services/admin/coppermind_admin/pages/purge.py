@@ -192,8 +192,8 @@ def router(wiring: Wiring) -> APIRouter:
         days, revision = escape(days, quote=True), escape(revision, quote=True)
         return page(
             f'''{notice}{await attention(request)}
-<p>Remove deleted-note recovery copies and unused source material.
-First preview the list. Nothing is removed until you confirm it.</p>
+<p>Remove deleted-note recovery copies, the stored files of removed artifacts, and unused
+source material. First preview the list. Nothing is removed until you confirm it.</p>
 <p>Git history and its removal commits stay intact.
 Live notes and sources they reference are protected.
 Orphaned sources are eligible as soon as their opening note is deleted or purged
@@ -201,9 +201,11 @@ and no live note cites them.
 Notes still present in Trash are protected.</p>
 <form method="post" action="/v1/admin/purge/preview">
 <input type="hidden" name="revision" value="{revision}">
-<label for="days">Keep deleted notes for (days)</label>
+<label for="days">Keep deleted notes and removed artifacts for (days)</label>
 <input id="days" name="days" type="number" min="0" max="36500" required value="{days}">
-<p class="field-help">Default: 30 days from the recorded deletion. Zero permits immediate removal.
+<p class="field-help">Default: 30 days from the recorded deletion or removal. Zero permits immediate
+removal. The same window covers a deleted note and an artifact removed here, through the API or by
+deleting its file in Obsidian.
 Save a changed value before previewing. Saving does not start a purge.</p>
 <button>Preview what will be removed</button>
 <button class="secondary" formaction="/v1/admin/purge/settings">Save retention</button>

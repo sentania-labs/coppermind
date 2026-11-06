@@ -10,7 +10,9 @@ touches a file: the store does all of it.
 `POST` takes either `multipart/form-data` (a `file` part plus text fields) or
 JSON (`url`, or `filename` with `content_base64`). The upload is bounded at
 `limits.artifact_max_bytes`, which the store reports and this API enforces before
-it buffers the body; a larger file needs the staged upload path, not built yet.
+it buffers the body. A larger file is refused with one message, whichever shape
+it came in, that says the limit and what to do now: files over it cannot be
+added yet, so split or compress the file, or add a link to it instead.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from coppermind.store_protocol import (
     CreateArtifact,
     CreatedArtifact,
     Page,
+    PayloadTooLarge,
     StoreError,
 )
 from coppermind_api.auth import Principal
@@ -63,13 +66,25 @@ TEXT_FIELDS = (
 _MEDIA_TYPE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$")
 
 
+def human_limit(limit: int) -> str:
+    """A byte limit as a person says it: `10 MiB`, `512 KiB`, `2.5 MiB`."""
+    mib, kib = 1024 * 1024, 1024
+    if limit >= mib:
+        return f"{limit // mib} MiB" if limit % mib == 0 else f"{limit / mib:.1f} MiB"
+    if limit >= kib:
+        return f"{limit // kib} KiB" if limit % kib == 0 else f"{limit / kib:.1f} KiB"
+    return f"{limit} bytes"
+
+
 def too_large(limit: int) -> JSONResponse:
+    """The one refusal for a file over the limit, for multipart and JSON alike."""
+    size = human_limit(limit)
     return JSONResponse(
         status_code=413,
         content=envelope(
             "payload_too_large",
-            f"the artifact upload exceeds {limit:,} bytes; larger files need the staged "
-            "upload path, which is not built yet",
+            f"This file is larger than the {size} limit. Files over {size} can't be added "
+            "yet; split or compress it, or add a link to it instead.",
             limit_bytes=limit,
         ),
     )
@@ -238,6 +253,8 @@ async def create_artifact(
         return _validation(_messages(error))
     try:
         result = await client.create_artifact(create, payload_size_bytes=size)
+    except PayloadTooLarge as error:
+        return too_large(error.limit_bytes)
     except StoreError as error:
         return failure(error)
     return JSONResponse(

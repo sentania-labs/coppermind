@@ -31,6 +31,7 @@ from coppermind_api.v1.calendars import router as calendars_router
 from coppermind_api.v1.folders import router as folders_router
 from coppermind_api.v1.ingest import router as ingest_router
 from coppermind_api.v1.notes import router as notes_router
+from coppermind_api.v1.notices import router as notices_router
 from coppermind_api.v1.purge import router as purge_router
 from coppermind_api.v1.schema import router as schema_router
 from coppermind_api.v1.search import router as search_router
@@ -162,6 +163,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
 
     app.include_router(sources_router)
     app.include_router(artifacts_router)
+    app.include_router(notices_router)
     app.include_router(schema_router)
     return app
 

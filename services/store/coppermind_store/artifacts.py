@@ -66,6 +66,7 @@ from coppermind.store_protocol import (
     ArtifactsFilesystemUnavailable,
     ArtifactSummary,
     ArtifactTextStatus,
+    CitedNote,
     CreateArtifact,
     CreatedArtifact,
     MetadataUnavailable,
@@ -353,7 +354,7 @@ def _extract_record(
 
 
 def _record(
-    document: dict[str, Any], manifest: dict[str, Any], citing: list[str]
+    document: dict[str, Any], manifest: dict[str, Any], citing: list[CitedNote]
 ) -> ArtifactRecord:
     revisions = [
         ArtifactRevision.model_validate(
@@ -370,7 +371,12 @@ def _record(
         for item in manifest.get("revisions", [])
     ]
     return ArtifactRecord.model_validate(
-        {**document, "citing_note_ids": citing, "revisions": revisions}
+        {
+            **document,
+            "citing_note_ids": [note.id for note in citing],
+            "citing_notes": citing,
+            "revisions": revisions,
+        }
     )
 
 
@@ -446,23 +452,27 @@ async def _remove_rows(session: AsyncSession, artifact_id: str, now: datetime) -
     await drop_entry(session, "artifact", artifact_id, now)
 
 
-async def citing_notes(session: AsyncSession, artifact_ids: list[str]) -> dict[str, list[str]]:
-    """Which live notes cite each of `artifact_ids`, from the mirrored frontmatter."""
+async def citing_notes(
+    session: AsyncSession, artifact_ids: list[str]
+) -> dict[str, list[CitedNote]]:
+    """Which live notes cite each of `artifact_ids`, with their titles, from the mirror."""
     if not artifact_ids:
         return {}
     cited = sa.func.unnest(Note.artifact_ids).label("artifact_id")
     statement = (
-        sa.select(Note.id, cited)
+        sa.select(Note.id, Note.title, Note.path, cited)
         .where(
             Note.artifact_ids.overlap(artifact_ids),
             Note.state.not_in(("missing", "deleted")),
         )
         .order_by(Note.id)
     )
-    by_artifact: dict[str, list[str]] = {artifact_id: [] for artifact_id in artifact_ids}
-    for note_id, artifact_id in (await session.execute(statement)).all():
-        if artifact_id in by_artifact and note_id not in by_artifact[artifact_id]:
-            by_artifact[artifact_id].append(note_id)
+    by_artifact: dict[str, list[CitedNote]] = {artifact_id: [] for artifact_id in artifact_ids}
+    for note_id, title, path, artifact_id in (await session.execute(statement)).all():
+        if artifact_id in by_artifact and all(n.id != note_id for n in by_artifact[artifact_id]):
+            by_artifact[artifact_id].append(
+                CitedNote(id=note_id, title=title or Path(path).stem, path=path)
+            )
     return by_artifact
 
 
@@ -1107,7 +1117,8 @@ async def list_artifacts(store: LocalStore, query: ArtifactQuery) -> Page[Artifa
             tags=list(row.tags),
             path=row.path,
             revision=row.current_revision,
-            citing_note_ids=citing.get(row.id, []),
+            citing_note_ids=[note.id for note in citing.get(row.id, [])],
+            citing_notes=citing.get(row.id, []),
             text_status=cast(ArtifactTextStatus, row.text_status),
             state=cast(Any, row.state),
             created_at=row.created_at,
@@ -1415,19 +1426,49 @@ def _restore_moved_copy(store: LocalStore, manifest: dict[str, Any], others: set
                 sync_directory(found.parent)
             except OSError:
                 log.warning(
-                    "artifact %s is restored but %s could not be removed",
-                    manifest["artifact_id"],
-                    relative,
+                    "artifact restored but the moved copy could not be removed",
+                    artifact_id=str(manifest["artifact_id"]),
+                    path=relative,
                 )
-            log.warning(
-                "artifact %s was moved in the vault from %s to %s; "
-                "it is back at its filed location and stays stored",
-                manifest["artifact_id"],
-                manifest["path"],
-                relative,
-            )
+            _record_move_back(store, manifest, relative)
             return "restored"
     return "absent" if complete and not unreadable else "unknown"
+
+
+def _record_move_back(store: LocalStore, manifest: dict[str, Any], from_path: str) -> None:
+    """Leave the owner a visible notice that a move or rename in the vault was undone.
+
+    The notice sits in the same current-notice list a hand-moved reviewed note
+    uses, so Admin's Overview, the Artifacts page and `GET /v1/notices` all
+    show what moved, from where, where it went back and why. Nothing needs
+    doing about it; dismissing it only hides it.
+    """
+    filed = str(manifest["path"])
+    folder = filed.rpartition("/")[0]
+    log.warning(
+        "artifact moved in the vault and returned to its filed location",
+        artifact_id=str(manifest["artifact_id"]),
+        from_path=from_path,
+        path=filed,
+    )
+    try:
+        store.control.record_reconciler_notice(
+            note_id=str(manifest["artifact_id"]),
+            title=str(manifest.get("title") or Path(filed).name),
+            from_path=from_path,
+            path=filed,
+            folder=folder,
+            reason=(
+                f"Moved back to {folder}/ because artifacts are filed by the month they "
+                "arrived; a move or rename in Obsidian is not kept. Nothing else changed "
+                "and nothing needs doing. To take it out of your notes, delete the file "
+                "in Obsidian or remove the artifact."
+            ),
+            at=datetime.now(tz=UTC),
+            kind="artifact",
+        )
+    except (OSError, ValueError) as exc:
+        log.warning("artifact move notice could not be recorded", reason=type(exc).__name__)
 
 
 def _observe_browse(

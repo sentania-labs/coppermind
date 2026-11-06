@@ -16,6 +16,7 @@ from coppermind.store_protocol import (
     NoteSourceInfo,
     NotFound,
     ProblemInfo,
+    ReconcilerNotice,
     SourceManifest,
     SourceRevision,
     StatusCounters,
@@ -35,6 +36,8 @@ class ReadOnlyStore:
     def __init__(self, *, reachable: bool = True) -> None:
         self.reachable = reachable
         self.calls: list[str] = []
+        self.notices: list[ReconcilerNotice] = []
+        self.dismissed: list[str] = []
         self.problems = [
             ProblemInfo(
                 kind="unparsed",
@@ -66,8 +69,18 @@ class ReadOnlyStore:
                 name_collisions=3,
                 unparseable_files=1,
                 known_unreadable=sum(p.kind == "search_unreadable" for p in self.problems),
+                artifacts_returned=sum(n.kind == "artifact" for n in self.notices),
             )
         )
+
+    async def list_reconciler_notices(self) -> list[ReconcilerNotice]:
+        self._check("list_reconciler_notices")
+        return list(self.notices)
+
+    async def dismiss_reconciler_notice(self, note_id: str) -> None:
+        self._check("dismiss_reconciler_notice")
+        self.dismissed.append(note_id)
+        self.notices = [n for n in self.notices if n.note_id != note_id]
 
     async def get_problems(self) -> list[ProblemInfo]:
         self._check("get_problems")
@@ -126,6 +139,48 @@ def test_the_overview_shows_the_stores_counters(signed_in):
         '<a href="/admin/problems">Problems (6)</a>',
     ):
         assert line in response.text
+
+
+def test_the_overview_shows_a_returned_artifact_and_dismiss_only_hides_it(signed_in):
+    from services.admin.tests.test_admin import form_token
+
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    quiet = client.get("/admin")
+    assert "Artifacts moved in Obsidian and returned to their folder: 0" in quiet.text
+    assert store.calls == ["get_status"], "no notice, no second call to the store"
+
+    artifact_id = "01K4Q8Z2A0P1Q2R3S4T5U6V7W8"
+    store.notices = [
+        ReconcilerNotice(
+            note_id=artifact_id,
+            title="Enablement deck",
+            from_path="Projects/deck.pptx",
+            path="Artifacts/2026/2026-11/deck.pptx",
+            reason="Moved back to Artifacts/2026/2026-11/ because artifacts are filed by the "
+            "month they arrived; a move or rename in Obsidian is not kept.",
+            at=datetime(2026, 11, 5, 20, 5, tzinfo=UTC),
+            kind="artifact",
+        )
+    ]
+    shown = client.get("/admin").text
+    assert "Artifacts moved in Obsidian and returned to their folder: 1" in shown
+    assert "<strong>Enablement deck</strong>" in shown
+    assert "found at <code>Projects/deck.pptx</code>" in shown
+    assert "returned to <code>Artifacts/2026/2026-11/deck.pptx</code>" in shown
+    assert "November 5, 2026, 2:05 PM CST" in shown
+    assert "a move or rename in Obsidian is not kept" in shown
+    assert "Nothing needs doing" in shown
+    assert f'action="/v1/admin/notices/{artifact_id}/dismiss"' in shown
+
+    dismissed = client.post(
+        f"/v1/admin/notices/{artifact_id}/dismiss",
+        data={"csrf": form_token(client, "/admin")},
+        follow_redirects=False,
+    )
+    assert dismissed.status_code == 303 and dismissed.headers["location"] == "/admin"
+    assert store.dismissed == [artifact_id]
+    assert "Enablement deck" not in client.get("/admin").text
 
 
 def test_the_overview_still_renders_when_the_store_is_down(signed_in):

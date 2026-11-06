@@ -3,12 +3,14 @@
 Every number and every problem is computed by the store from its metadata
 mirror and the rejections it recorded. Admin only reads: nothing here asks the
 store to change a note, and nothing is ever written into one (operator
-decision of 2026-10-01). The one thing these pages let the operator do is
-dismiss the notice that a hand-moved note was returned, which changes no note.
+decision of 2026-10-01). The one thing these pages let a person do is dismiss
+the notice that a hand-moved note or artifact file was returned, which changes
+no file.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from html import escape
 from typing import Protocol
 from urllib.parse import quote
@@ -23,12 +25,15 @@ from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import (
     NoteSourceInfo,
     ProblemInfo,
+    ReconcilerNotice,
     SourceManifest,
     StatusResponse,
     StoreError,
 )
 
 UNREACHABLE = "The store could not answer. Check that the store and PostgreSQL are running."
+# Where a Dismiss form may send the person back; anything else lands on the overview.
+DISMISS_RETURNS = frozenset({"/admin", "/admin/artifacts", "/admin/problems"})
 
 
 class StatusReader(Protocol):
@@ -37,6 +42,8 @@ class StatusReader(Protocol):
     async def get_status(self) -> StatusResponse: ...
 
     async def get_problems(self) -> list[ProblemInfo]: ...
+
+    async def list_reconciler_notices(self) -> list[ReconcilerNotice]: ...
 
     async def dismiss_reconciler_notice(self, note_id: str) -> None: ...
 
@@ -77,7 +84,11 @@ KIND_LABELS = {
 def _link(problem: ProblemInfo) -> str:
     if problem.kind == "returned_note" and problem.note_id:
         action = f"/v1/admin/notices/{quote(problem.note_id, safe='')}/dismiss"
-        return f'<form method="post" action="{action}"><button>Dismiss notice</button></form>'
+        return (
+            f'<form method="post" action="{action}">'
+            '<input type="hidden" name="back" value="/admin/problems">'
+            "<button>Dismiss notice</button></form>"
+        )
     if problem.kind == "purge_receipt":
         return (
             '<form method="post" action="/v1/admin/purge/abandon">'
@@ -186,7 +197,50 @@ def filing_status_html(status: StatusResponse, zone: ZoneInfo | None = None) -> 
 <p><a href="/admin/problems">Check filing problems and recovery options</a></p></section>"""
 
 
-def counters_html(status: StatusResponse, zone: ZoneInfo | None = None) -> str:
+def _dismiss_form(notice: ReconcilerNotice, back: str = "/admin") -> str:
+    action = f"/v1/admin/notices/{quote(notice.note_id, safe='')}/dismiss"
+    return (
+        f'<form method="post" action="{action}">'
+        f'<input type="hidden" name="back" value="{escape(back, quote=True)}">'
+        "<button>Dismiss notice</button></form>"
+    )
+
+
+def _notices_html(notices: Sequence[ReconcilerNotice], zone: ZoneInfo, back: str = "/admin") -> str:
+    """What moved, from where, where it went back and why, with a Dismiss that only hides it."""
+    from coppermind_admin.pages.search_index import local_time
+
+    if not notices:
+        return ""
+    items = ""
+    for notice in notices:
+        where = (
+            f"found at <code>{escape(notice.from_path)}</code>, returned to "
+            f"<code>{escape(notice.path)}</code>, {escape(local_time(notice.at, zone))}"
+            if notice.kind != "folder"
+            else f"<code>{escape(notice.from_path)}</code>, {escape(local_time(notice.at, zone))}"
+        )
+        items += (
+            f"<li><strong>{escape(notice.title)}</strong> "
+            f'<span class="muted">{where}</span>'
+            f"<br>{escape(notice.reason)}"
+            f"{_dismiss_form(notice, back) if notice.kind != 'folder' else ''}</li>"
+        )
+    guidance = ""
+    if any(notice.kind == "artifact" for notice in notices):
+        guidance = (
+            '<p class="muted">Nothing needs doing. An artifact is filed by the month it arrived '
+            "and stays there; to take one out of your notes, delete the file in Obsidian or "
+            "remove it here. Dismiss notice only hides the notice.</p>"
+        )
+    return f"{guidance}<ul>{items}</ul>"
+
+
+def counters_html(
+    status: StatusResponse,
+    notices: Sequence[ReconcilerNotice] = (),
+    zone: ZoneInfo = ZoneInfo("America/Chicago"),
+) -> str:
     counters = status.counters
     problems = (
         counters.rejected_ingests
@@ -246,6 +300,8 @@ Artifacts<strong>{counters.artifacts}</strong>
 (listed with their reasons under Problems)</li>
 <li>Old month folders left in place because they are not empty: {counters.folders_kept}
 (listed with their reasons under Problems)</li>
+<li>Artifacts moved in Obsidian and returned to their folder: {counters.artifacts_returned}
+{_notices_html([n for n in notices if n.kind == "artifact"], zone)}</li>
 </ul>
 <p><a href="/admin/problems">Problems ({problems})</a></p>"""
 
@@ -256,9 +312,12 @@ async def overview_counters(request: Request, wiring: Wiring) -> str:
     try:
         client = store_client(request, wiring)
         status = await client.get_status()
+        notices = (
+            await client.list_reconciler_notices() if status.counters.artifacts_returned else []
+        )
     except (StoreError, OSError):
         return f'<p class="error">{UNREACHABLE}</p>'
-    return counters_html(status, _zone(request))
+    return counters_html(status, notices, _zone(request))
 
 
 def router(wiring: Wiring) -> APIRouter:
@@ -274,11 +333,14 @@ def router(wiring: Wiring) -> APIRouter:
 
     @routes.post("/v1/admin/notices/{note_id}/dismiss", include_in_schema=False)
     async def dismiss_notice(note_id: str, request: Request) -> Response:
+        from coppermind_admin.main import submitted
+
+        back = str((await submitted(request)).get("back", "/admin"))
         try:
             await store_client(request, wiring).dismiss_reconciler_notice(note_id)
         except (StoreError, OSError):
             return unreachable("Overview")
-        return RedirectResponse("/admin/problems", status_code=303)
+        return RedirectResponse(back if back in DISMISS_RETURNS else "/admin", status_code=303)
 
     @routes.get("/admin/problems", response_class=HTMLResponse, include_in_schema=False)
     async def problems_page(request: Request) -> Response:

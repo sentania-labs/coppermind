@@ -571,6 +571,14 @@ class ArtifactRevision(BaseModel):
     url: str | None = None
 
 
+class CitedNote(BaseModel):
+    """A note that cites an artifact, named the way a person knows it."""
+
+    id: NoteId
+    title: str
+    path: str
+
+
 class ArtifactSummary(BaseModel):
     """One artifact as a listing shows it: provenance first, never a note."""
 
@@ -588,6 +596,7 @@ class ArtifactSummary(BaseModel):
     path: str | None = None
     revision: int = Field(default=1, ge=1)
     citing_note_ids: list[str] = Field(default_factory=list)
+    citing_notes: list[CitedNote] = Field(default_factory=list)
     text_status: ArtifactTextStatus = "unsupported"
     state: ArtifactState = "ok"
     created_at: datetime
@@ -951,12 +960,19 @@ class StatusCounters(BaseModel):
     known_unreadable: int = 0
     calendar_import_failures: int = 0
     artifacts: int = 0
+    artifacts_returned: int = 0
     active_problems: int | None = None
     purge_problems: int = 0
 
 
 class ReconcilerNotice(BaseModel):
-    """Why a hand-moved reviewed note was returned to its filed folder."""
+    """Why a hand-moved reviewed note, or a hand-moved artifact file, was returned to its folder.
+
+    `note_id` is the identity the notice is about: a note's, or an artifact's
+    when `kind` is `artifact`. `from_path` is where the file was found and
+    `path` where it was put back. Nothing needs doing about one; dismissing it
+    only hides it.
+    """
 
     note_id: NoteId
     title: str
@@ -964,7 +980,7 @@ class ReconcilerNotice(BaseModel):
     path: str
     reason: str
     at: datetime
-    kind: Literal["note", "folder"] = "note"
+    kind: Literal["note", "folder", "artifact"] = "note"
 
 
 class StatusResponse(BaseModel):
@@ -1032,6 +1048,8 @@ class Store(Protocol):
     async def abandon_purge(self, request: AbandonPurge) -> PurgeResult: ...
 
     async def get_problems(self) -> list[ProblemInfo]: ...
+
+    async def list_reconciler_notices(self) -> list[ReconcilerNotice]: ...
 
     async def dismiss_reconciler_notice(self, note_id: NoteId) -> None: ...
 

@@ -30,11 +30,18 @@ vertical path proved end to end, then widened.
   helper commits the deletion: the next reconciler pass retires the record and
   search entry and the archive becomes eligible for the retention purge as
   `deleted in Obsidian`; a copy merely absent (not synced yet, or at a rebuild)
-  is reported `missing` and the archive stays. One edited on a device is
-  reported under Problems and never rewritten. `DELETE /v1/artifacts/{id}`
-  (`artifacts:write`) removes one for an agent; Admin's Artifacts page lists
-  every artifact with its kind, origin, size and citing notes and removes one
-  after confirmation. Removed archives are purged through the retention
+  is reported `missing` and the archive stays. Moving or renaming the file in
+  Obsidian returns it to its filed place and leaves a notice (what moved, from
+  where, where it went back, why, and that nothing needs doing) on Admin's
+  overview and Artifacts page and at `GET /v1/notices` for the companion
+  plugin or an agent, dismissable without moving anything. One edited on a
+  device is reported under Problems and never rewritten. `DELETE
+  /v1/artifacts/{id}` (`artifacts:write`) removes one for an agent; Admin's
+  Artifacts page lists every artifact with its received date, size, place in
+  Obsidian and the citing notes by title, readable at 1280 pixels wide, and
+  removes one after a confirmation that says what happens to a file or to a
+  link. A file over the 10 MiB limit is refused with the limit and what to do
+  now, the same for multipart and JSON. Removed archives are purged through the retention
   purge's dry run and confirm flow, each candidate showing its reason. `rebuild_metadata` recreates every
   record, row and search entry from `/data` alone. `_Attachments/` is retired:
   filing lands source material under `Artifacts/` as artifacts the note

@@ -1196,15 +1196,18 @@ PURGE_PROBLEM_KINDS = frozenset({"purge", "purge_unfinished", "purge_receipt", "
 
 
 async def list_reconciler_notices(store: LocalStore) -> list[ReconcilerNotice]:
-    """Notices still true: a gone note's, or a folder that no longer exists, is dropped."""
+    """Notices still true: one about a gone note, a gone artifact or a gone folder is dropped."""
+    from coppermind.db.models import Artifact
+
     notices = store.control.read_reconciler_notices()
     if not notices:
         return []
     note_ids = [key for key, notice in notices.items() if notice.get("kind", "note") == "note"]
+    artifact_ids = [key for key, notice in notices.items() if notice.get("kind") == "artifact"]
     present: set[str] = set()
-    if note_ids:
-        try:
-            async with store.session_factory() as session:
+    try:
+        async with store.session_factory() as session:
+            if note_ids:
                 # A returned note that has since moved again (a date edit re-files it)
                 # no longer needs its notice, the same way a path notice ends with
                 # its disagreement.
@@ -1216,8 +1219,16 @@ async def list_reconciler_notices(store: LocalStore) -> list[ReconcilerNotice]:
                     )
                 ).all()
                 present = {row.id for row in rows if row.path == notices[row.id]["path"]}
-        except (SQLAlchemyError, OSError) as exc:
-            raise MetadataUnavailable(str(exc)) from exc
+            if artifact_ids:
+                present |= set(
+                    (
+                        await session.scalars(
+                            sa.select(Artifact.id).where(Artifact.id.in_(artifact_ids))
+                        )
+                    ).all()
+                )
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
     present |= {
         key
         for key, notice in notices.items()
@@ -1339,6 +1350,7 @@ async def get_status(store: LocalStore) -> StatusResponse:
             filing_stalled=stalled,
             filing_estimated_drain_s=estimated_drain,
             artifacts=artifacts,
+            artifacts_returned=sum(n.kind == "artifact" for n in notices),
             known_unreadable=known_unreadable,
             notes_awaiting_review=notes_awaiting_review,
             notes_by_state=notes_by_state,
@@ -1652,6 +1664,7 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
             ),
         )
         for notice in await list_reconciler_notices(store)
+        if notice.kind != "artifact"
     )
     exclusions = store.control.read_reconciler_exclusions()
     problems.extend(

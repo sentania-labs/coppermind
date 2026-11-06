@@ -42,7 +42,7 @@ LABELS = {
     "limits.calendar_import_memory_mib": "Calendar import memory budget (MiB)",
     "general.timezone": "Local timezone",
     "notes.notes_folder": "Folder for reviewed notes",
-    "retention.days": "Keep deleted notes for (days)",
+    "retention.days": "Keep deleted notes and removed artifacts for (days)",
     "reconcile.scan_interval_s": "Check for file changes every (seconds)",
     "reconcile.quiet_period_s": "Wait for new files to settle (seconds)",
     "reconcile.full_rehash_daily_at": "Full daily scan at (local time)",

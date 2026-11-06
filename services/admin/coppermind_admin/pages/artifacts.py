@@ -23,24 +23,46 @@ from coppermind.store_protocol import (
     ArtifactQuery,
     ArtifactRecord,
     ArtifactSummary,
+    CitedNote,
     Page,
+    ReconcilerNotice,
     StoreError,
 )
-from coppermind_admin.pages.problems import UNREACHABLE, store_client
+from coppermind_admin.pages.problems import UNREACHABLE, _notices_html, store_client
 
 DEFAULT_TIMEZONE = "America/Chicago"
 NOTICES = {
-    "removed": "The artifact was removed: its browsable copy, record and search entry are gone. "
-    "The archived bytes stay until retention purges them.",
+    "removed": "The artifact was removed. It is gone from Obsidian and from search; "
+    "the stored file is kept until the retention purge.",
+    "removed_link": "The link was removed. It is no longer listed or found in search; "
+    "notes that mention it keep their address.",
     "missing": "No such artifact; it may already have been removed.",
 }
+INTRO = (
+    "<p>Files and links kept beside your notes. Each file is stored exactly as it arrived and "
+    "shown in Obsidian under the artifacts folder, in the folder for the month it came in; a "
+    "link is kept by its address. A note that uses one names it, and shows here under "
+    "<em>Cited by</em>. Removing one takes it out of Obsidian and search; the stored file is "
+    "kept until the retention purge removes it.</p>"
+)
 TEXT_LABELS = {
-    "extracted": "text extracted",
-    "no_extractable_text": "no extractable text",
+    "extracted": "extracted",
+    "no_extractable_text": "no text found",
     "unsupported": "not a text type",
     "failed": "extraction failed",
     "link": "link",
 }
+# Column widths that keep the table inside a 1280 pixel window with the sidebar open:
+# dates, sizes and the Remove button on one line, paths wrapping only after a slash.
+COLUMNS = (
+    ("Title", 21),
+    ("Received", 12),
+    ("Size", 9),
+    ("Where", 22),
+    ("Cited by", 14),
+    ("Text", 11),
+    ("", 11),
+)
 
 
 class ArtifactControl(Protocol):
@@ -51,6 +73,8 @@ class ArtifactControl(Protocol):
     async def get_artifact(self, artifact_id: str) -> ArtifactRecord: ...
 
     async def remove_artifact(self, artifact_id: str, removal: str = "admin") -> None: ...
+
+    async def list_reconciler_notices(self) -> list[ReconcilerNotice]: ...
 
 
 def _client(request: Request, wiring: Wiring) -> ArtifactControl:
@@ -65,87 +89,123 @@ def _zone(request: Request) -> ZoneInfo:
 
 
 def local_day(moment: datetime, zone: ZoneInfo) -> str:
+    """A received date short enough to sit on one line in a table: `Nov 4, 2026`."""
     local = moment.astimezone(zone)
-    return f"{local:%B} {local.day}, {local:%Y}"
+    return f"{local:%b} {local.day}, {local:%Y}"
 
 
 def human_size(size: int) -> str:
+    """`812 B`, `793 KiB`, `3.0 MiB`: one decimal only while it says something."""
     if size < 1024:
         return f"{size} B"
     for unit in ("KiB", "MiB", "GiB"):
         size_f = size / 1024
         if size_f < 1024 or unit == "GiB":
-            return f"{size_f:.1f} {unit}"
+            return f"{size_f:.1f} {unit}" if size_f < 10 else f"{size_f:.0f} {unit}"
         size = int(size_f)
     return f"{size} B"
 
 
 def _citing(item: ArtifactSummary) -> str:
-    if not item.citing_note_ids:
-        return '<span class="muted">uncited</span>'
-    return ", ".join(
-        f'<a href="/admin/notes/{quote(note_id, safe="")}">{escape(note_id)}</a>'
-        for note_id in item.citing_note_ids
+    """The citing notes by title, the way the person knows them, not by identifier."""
+    if not item.citing_notes and not item.citing_note_ids:
+        return '<span class="muted">no note yet</span>'
+    notes = item.citing_notes or [
+        CitedNote(id=note_id, title=note_id, path="") for note_id in item.citing_note_ids
+    ]
+    return "<br>".join(
+        f'<a href="/admin/notes/{quote(note.id, safe="")}">{escape(note.title)}</a>'
+        for note in notes
     )
+
+
+def _breakable(path: str) -> str:
+    """A path that wraps only after a slash, never in the middle of a name."""
+    return "/<wbr>".join(escape(part) for part in path.split("/"))
 
 
 def _where(item: ArtifactSummary) -> str:
     if item.path:
-        return f"<code>{escape(item.path)}</code>"
+        return f'<code class="path">{_breakable(item.path)}</code>'
     if item.url:
-        return f'<a href="{escape(item.url, quote=True)}" rel="noreferrer">{escape(item.url)}</a>'
+        return (
+            f'<a class="path" href="{escape(item.url, quote=True)}" rel="noreferrer">'
+            f"{escape(item.url)}</a>"
+        )
     return ""
+
+
+def _origin(item: ArtifactSummary) -> str:
+    """Where it came from, said only when that is worth knowing; `api` is the ordinary case."""
+    if item.origin == "api":
+        return ""
+    if item.origin.startswith("source:"):
+        came = f"from a {escape(item.origin.removeprefix('source:'))} source"
+    else:
+        came = f"from {escape(item.origin)}"
+    return f'<br><small class="muted">{came}</small>'
 
 
 def rows_html(items: list[ArtifactSummary], zone: ZoneInfo) -> str:
     if not items:
-        return "<p>No artifacts stored yet. Upload one with <code>POST /v1/artifacts</code>.</p>"
+        return (
+            "<p>Nothing here yet. An artifact arrives through the companion plugin, an agent "
+            "or the Dropbox folder.</p>"
+        )
     rows = []
     for item in items:
         state = {
-            "modified": ' <span class="notice">browsable copy changed on a device</span>',
-            "missing": (
-                ' <span class="notice">browsable copy missing; deletion not in Git yet</span>'
-            ),
+            "modified": '<br><small class="state">the copy in Obsidian was changed</small>',
+            "missing": '<br><small class="state">the copy in Obsidian is missing</small>',
         }.get(item.state, "")
+        size = human_size(item.size_bytes) if item.filename else "link"
         rows.append(
             "<tr>"
-            f"<td><strong>{escape(item.kind)}</strong></td>"
-            f'<td>{escape(item.title)}<br><small class="muted">{escape(item.id)}</small></td>'
-            f"<td>{escape(item.origin)}</td>"
-            f"<td>{escape(local_day(item.received_at, zone))}</td>"
-            f"<td>{escape(human_size(item.size_bytes)) if item.filename else 'link'}</td>"
+            f"<td>{escape(item.title)}{_origin(item)}</td>"
+            f'<td class="nowrap">{escape(local_day(item.received_at, zone))}</td>'
+            f'<td class="nowrap">{escape(size)}</td>'
             f"<td>{_where(item)}{state}</td>"
             f"<td>{_citing(item)}</td>"
             f"<td>{escape(TEXT_LABELS.get(item.text_status, item.text_status))}"
             f'<br><small class="muted">revision {item.revision}</small></td>'
-            f'<td><a class="button" href="/admin/artifacts/{quote(item.id, safe="")}/remove">'
-            "Remove</a></td>"
+            f'<td class="nowrap"><a class="button" '
+            f'href="/admin/artifacts/{quote(item.id, safe="")}/remove">Remove</a></td>'
             "</tr>"
         )
+    columns = "".join(f'<col style="width:{width}%">' for _, width in COLUMNS)
+    headings = "".join(f"<th>{escape(name)}</th>" for name, _ in COLUMNS)
     return (
-        "<table><thead><tr><th>Kind</th><th>Title</th><th>Origin</th><th>Received</th>"
-        "<th>Size</th><th>Where</th><th>Cited by</th><th>Text</th><th></th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table>"
+        f'<table class="artifacts"><colgroup>{columns}</colgroup>'
+        f"<thead><tr>{headings}</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
+def notices_html(notices: list[ReconcilerNotice], zone: ZoneInfo) -> str:
+    """Artifacts moved in Obsidian and returned, the same notices the overview shows."""
+    moved = [notice for notice in notices if notice.kind == "artifact"]
+    if not moved:
+        return ""
+    return f"<h2>Moved back ({len(moved)})</h2>" + _notices_html(
+        moved, zone, back="/admin/artifacts"
     )
 
 
 def router(wiring: Wiring) -> APIRouter:
     routes = APIRouter()
 
-    def page(title: str, body: str, status_code: int = 200) -> HTMLResponse:
+    def page(title: str, body: str, status_code: int = 200, *, wide: bool = False) -> HTMLResponse:
         from coppermind_admin.main import page as render
 
-        return HTMLResponse(render(title, body), status_code=status_code)
+        return HTMLResponse(render(title, body, wide=wide), status_code=status_code)
 
     @routes.get("/admin/artifacts", response_class=HTMLResponse, include_in_schema=False)
     async def artifacts_page(request: Request) -> Response:
         heading = '<h1>Artifacts</h1><p><a href="/admin">Overview</a></p>'
         cursor = request.query_params.get("cursor") or None
         try:
-            listed = await _client(request, wiring).list_artifacts(
-                ArtifactQuery(limit=100, cursor=cursor)
-            )
+            client = _client(request, wiring)
+            listed = await client.list_artifacts(ArtifactQuery(limit=100, cursor=cursor))
+            notices = await client.list_reconciler_notices()
         except (StoreError, OSError):
             return page("Artifacts", f'{heading}<p class="error">{UNREACHABLE}</p>', 503)
         message = NOTICES.get(request.query_params.get("notice", ""), "")
@@ -156,14 +216,12 @@ def router(wiring: Wiring) -> APIRouter:
             if listed.next_cursor
             else ""
         )
+        zone = _zone(request)
         return page(
             "Artifacts",
-            f"""{heading}{notice}
-<p>Static files and links handed in beside notes, stored byte for byte under the artifacts folder
-by received date. Every row says its kind, so a design package can never read as a meeting.
-The extracted text lives in the database and the state volume, never as a page in the notes
-filesystem. A note cites an artifact in its <code>artifacts</code> frontmatter.</p>
-{rows_html(listed.items, _zone(request))}{more}""",
+            f"{heading}{notice}{INTRO}{notices_html(notices, zone)}"
+            f"{rows_html(listed.items, zone)}{more}",
+            wide=True,
         )
 
     @routes.get(
@@ -189,26 +247,40 @@ filesystem. A note cites an artifact in its <code>artifacts</code> frontmatter.<
                 f'<h1>Remove artifact</h1><p class="error">{UNREACHABLE}</p>',
                 503,
             )
-        where = (
-            f"<li>File: <code>{escape(record.path)}</code></li>"
-            if record.path
-            else f"<li>Link: {escape(record.url or '')}</li>"
-        )
         cited = (
-            ", ".join(escape(note_id) for note_id in record.citing_note_ids) or "no note cites it"
+            ", ".join(escape(note.title) for note in record.citing_notes)
+            or ", ".join(escape(note_id) for note_id in record.citing_note_ids)
+            or "no note cites it"
         )
+        if record.path:
+            where = f"<li>File in Obsidian: <code>{escape(record.path)}</code></li>"
+            kept = f"<li>Revisions kept in the archive: {len(record.revisions)}</li>"
+            effect = (
+                "<p>Removing deletes the copy under the artifacts folder in Obsidian and takes "
+                "the artifact out of search. Notes that cite it keep their citation and their "
+                "link, which then points at nothing. The stored file itself is kept, marked "
+                "removed, until the retention purge removes it after the retention window.</p>"
+            )
+            confirm = "I understand the file leaves Obsidian"
+        else:
+            where = f"<li>Link: {escape(record.url or '')}</li>"
+            kept = ""
+            effect = (
+                "<p>This is a link, not a file, so nothing in Obsidian changes. Removing takes "
+                "it off this list and out of search. Notes that cite it keep their citation and "
+                "the address they already have. The record is kept, marked removed, until the "
+                "retention purge removes it after the retention window.</p>"
+            )
+            confirm = "I understand the link will no longer be listed or found in search"
         return page(
             "Remove artifact",
             f"""<h1>Remove artifact</h1><p><a href="/admin/artifacts">Artifacts</a></p>
-<ul><li>Kind: <strong>{escape(record.kind)}</strong></li><li>Title: {escape(record.title)}</li>
-<li>Origin: {escape(record.origin)}</li>{where}<li>Cited by: {cited}</li>
-<li>Revisions kept in the archive: {len(record.revisions)}</li></ul>
-<p>Removing takes the browsable copy, the extracted record and the search entry away on this
-request. Notes that cite it keep their citation and their link, which then points at nothing.
-The archived bytes stay under the artifact's identity until the retention purge rules decide.</p>
+<ul><li>Title: {escape(record.title)}</li><li>Identifier: <code>{escape(record.id)}</code></li>
+{where}<li>Cited by: {cited}</li>{kept}</ul>
+{effect}
 <form method="post" action="/v1/admin/artifacts/{quote(artifact_id, safe="")}/remove">
-<label><input type="checkbox" name="confirm" value="yes" required> I understand the file leaves
-the notes filesystem</label><button>Remove artifact</button></form>""",
+<label><input type="checkbox" name="confirm" value="yes" required> {confirm}</label>
+<button>Remove {"link" if record.url and not record.path else "artifact"}</button></form>""",
         )
 
     @routes.post("/v1/admin/artifacts/{artifact_id}/remove", include_in_schema=False)
@@ -221,7 +293,9 @@ the notes filesystem</label><button>Remove artifact</button></form>""",
                 f"/admin/artifacts/{quote(artifact_id, safe='')}/remove", status_code=303
             )
         try:
-            await _client(request, wiring).remove_artifact(artifact_id)
+            client = _client(request, wiring)
+            record = await client.get_artifact(artifact_id)
+            await client.remove_artifact(artifact_id)
         except StoreError as error:
             status_code, _ = to_http(error)
             if status_code == 404:
@@ -237,6 +311,7 @@ the notes filesystem</label><button>Remove artifact</button></form>""",
                 f'<h1>Artifacts</h1><p class="error">{UNREACHABLE} Nothing was removed.</p>',
                 503,
             )
-        return RedirectResponse("/admin/artifacts?notice=removed", status_code=303)
+        outcome = "removed_link" if record.url and not record.path else "removed"
+        return RedirectResponse(f"/admin/artifacts?notice={outcome}", status_code=303)
 
     return routes

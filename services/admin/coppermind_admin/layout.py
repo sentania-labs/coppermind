@@ -65,6 +65,11 @@ button:hover,.button:hover {background:#19442b} button:disabled {opacity:.55;cur
 pre {white-space:pre-wrap;line-height:1.7;padding:1rem;background:#f4f1e8;border-radius:.4rem}
 table {width:100%;border-collapse:collapse;text-align:left;table-layout:fixed}
 th,td {padding:.8rem;border-bottom:1px solid #d3cdbd;overflow-wrap:anywhere;vertical-align:top}
+table.artifacts td.nowrap,table.artifacts th {white-space:nowrap}
+table.artifacts th,table.artifacts td {padding:.6rem .5rem}
+table.artifacts small {font-size:.8rem}
+table.artifacts small.state {color:#8a5a12;font-size:.85rem}
+table.artifacts a.button {display:inline-block;padding:.35rem .6rem;font-size:.85rem}
 th {font-size:.8rem;color:#59655d} dl {display:grid;grid-template-columns:1fr 2fr;gap:.8rem}
 dt {font-weight:650} dd {margin:0;overflow-wrap:anywhere}
 .metrics {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;margin:1.5rem 0}
