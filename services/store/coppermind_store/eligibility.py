@@ -26,7 +26,7 @@ def awaiting_refile(notes_folder: str):
     return sa.and_(
         Note.reviewed.is_(True),
         Note.date.is_not(None),
-        Note.state.not_in(("missing", "deleted")),
+        Note.state == "ok",
         ~sa.func.starts_with(Note.path, prefix),
     )
 

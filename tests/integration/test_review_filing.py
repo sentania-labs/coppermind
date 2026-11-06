@@ -649,6 +649,20 @@ async def test_upgrade_refiles_legacy_notes_and_search_never_empties(store):
     assert store.control.read_reconciler_notices() == {}
 
 
+async def test_a_legacy_note_that_filing_cannot_move_is_not_counted_as_awaiting(store):
+    result = await store.ingest(ingest_request())
+    await approve(store, result.note.id)
+    await indexer.catch_up(store)
+    note = await store.get_note(result.note.id)
+    await store.move_note(note.id, MoveNote(target_folder="2026-09"), None)
+    await reconcile_once(store)
+    assert (await store.get_status()).counters.notes_to_refile == 1
+    async with store.session_factory() as session:
+        await session.execute(sa.update(Note).where(Note.id == note.id).values(state="unparsed"))
+        await session.commit()
+    assert (await store.get_status()).counters.notes_to_refile == 0
+
+
 async def _notices(store):
     """The returned-note and kept-folder entries of the one Problems list."""
     return [p for p in await store.get_problems() if p.kind in {"returned_note", "folder_kept"}]
