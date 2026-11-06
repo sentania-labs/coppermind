@@ -75,9 +75,9 @@ class NotesSettings(BaseModel):
     artifacts_folder: str = Field(
         default="Artifacts",
         description=(
-            "Folder for artifacts, the files and links handed in beside notes, laid out as "
-            "{yyyy}/{yyyy-mm} by received date. The file itself sits here; its extracted "
-            "record never does."
+            "Folder for artifacts, the files and links handed in beside notes, filed by "
+            "year and month of the day they were received. The file itself sits here; its "
+            "extracted record never does."
         ),
     )
     attachments_folder: str = Field(

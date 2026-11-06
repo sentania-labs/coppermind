@@ -175,7 +175,7 @@ def test_the_overview_shows_a_returned_artifact_and_dismiss_only_hides_it(signed
 
     dismissed = client.post(
         f"/v1/admin/notices/{artifact_id}/dismiss",
-        data={"csrf": form_token(client, "/admin")},
+        data={"back": "/admin", "csrf": form_token(client, "/admin")},
         follow_redirects=False,
     )
     assert dismissed.status_code == 303 and dismissed.headers["location"] == "/admin"

@@ -84,8 +84,8 @@ from coppermind.store_protocol import (
     ValidationFailed,
     artifact_text,
 )
-from coppermind_store.eligibility import awaiting_refile
 from coppermind_store.artifacts import artifact_problems, count_artifacts
+from coppermind_store.eligibility import awaiting_refile
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
 from coppermind_store.notes import (
     _build_frontmatter,

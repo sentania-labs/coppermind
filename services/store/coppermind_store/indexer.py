@@ -41,7 +41,12 @@ from coppermind.store_protocol import (
     SearchIndexStatus,
     StoreError,
 )
-from coppermind_store.eligibility import current_source, eligible, reviewed_note
+from coppermind_store.eligibility import (
+    NOTES_FOLDER_DEFAULT,
+    current_source,
+    eligible,
+    reviewed_note,
+)
 from coppermind_store.fs import content_hash, resolve
 from coppermind_store.maintenance import writer
 
@@ -126,7 +131,10 @@ async def index_artifact(
     now: datetime,
 ) -> None:
     """Write one artifact's entry, its body the extracted text, in the caller's transaction."""
-    await _upsert(session, "artifact", artifact_id, path, title, body, version, now)
+    # An artifact's eligibility never reads the notes root, so the default stands in.
+    await _upsert(
+        session, "artifact", artifact_id, path, title, body, version, now, NOTES_FOLDER_DEFAULT
+    )
 
 
 async def drop_entry(session: AsyncSession, kind: str, ref_id: str, now: datetime) -> None:
@@ -458,7 +466,7 @@ async def catch_up(store: LocalStore) -> dict[str, int]:
                         ),
                         sa.and_(
                             SearchDocument.kind == "artifact",
-                            ~eligible(SearchDocument.kind, SearchDocument.ref_id),
+                            ~eligible(SearchDocument.kind, SearchDocument.ref_id, notes_folder),
                         ),
                     )
                 )

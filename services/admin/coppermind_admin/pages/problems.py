@@ -84,11 +84,7 @@ KIND_LABELS = {
 def _link(problem: ProblemInfo) -> str:
     if problem.kind == "returned_note" and problem.note_id:
         action = f"/v1/admin/notices/{quote(problem.note_id, safe='')}/dismiss"
-        return (
-            f'<form method="post" action="{action}">'
-            '<input type="hidden" name="back" value="/admin/problems">'
-            "<button>Dismiss notice</button></form>"
-        )
+        return f'<form method="post" action="{action}"><button>Dismiss notice</button></form>'
     if problem.kind == "purge_receipt":
         return (
             '<form method="post" action="/v1/admin/purge/abandon">'
@@ -335,7 +331,7 @@ def router(wiring: Wiring) -> APIRouter:
     async def dismiss_notice(note_id: str, request: Request) -> Response:
         from coppermind_admin.main import submitted
 
-        back = str((await submitted(request)).get("back", "/admin"))
+        back = str((await submitted(request)).get("back", "/admin/problems"))
         try:
             await store_client(request, wiring).dismiss_reconciler_notice(note_id)
         except (StoreError, OSError):

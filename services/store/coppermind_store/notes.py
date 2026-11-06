@@ -389,8 +389,6 @@ class LocalStore:
 
         return await get_problems(self)
 
-    async def dismiss_reconciler_notice(self, note_id: NoteId) -> None:
-        self.control.clear_reconciler_notice(note_id)
     async def create_artifact(
         self, request: CreateArtifact, *, payload_size_bytes: int | None = None
     ) -> CreatedArtifact:
