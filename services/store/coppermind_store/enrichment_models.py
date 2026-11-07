@@ -54,6 +54,10 @@ class EnrichmentJob(ContextModel):
     decisions: list[dict[str, Any]] = Field(default_factory=list)
     pending_approval: dict[str, Any] | None = None
 
+    @property
+    def decided(self) -> set[int]:
+        return {d["index"] for d in self.decisions if "index" in d}
+
     def set_error(
         self, message: str = "", rule: str = "", size: int | None = None, limit: int | None = None
     ) -> None:

@@ -684,3 +684,93 @@ async def test_unfillable_suggestion_is_skipped_without_failing_the_job_or_later
     await context.tick()
     assert context.load_job(job.id).state == "suggested"
     assert len(seen) == 1
+
+
+async def test_a_suggestion_the_note_cannot_take_is_skipped_once_and_stays_available(
+    store, monkeypatch
+):
+    context = await configure(store)
+    await context.setup_lifecycle({"revision": context.config().revision})
+    config = context.config()
+    config.assignments["enrichment"].attendees_field = "account"
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(
+            title="Planning",
+            folder="Review",
+            body="Casey attended",
+            frontmatter={"date": "2026-10-14", "account": ""},
+        )
+    )
+
+    def answer(evidence):
+        person = evidence["events"][0]["people"][0]["contact_id"]
+        return {
+            "suggestions": [
+                {
+                    "kind": "attendee",
+                    "contact_ids": [person],
+                    "event_ids": [evidence["events"][0]["event_id"]],
+                    "quote": "Casey attended",
+                    "confidence": 0.95,
+                    "reason": "Attended",
+                }
+            ]
+        }
+
+    provider(context, answer)
+    job = context.load_job(await context.queue_note(note.id))
+    await context.run_job(job)
+    saved = context.load_job(job.id)
+    assert saved.state == "suggested" and saved.pending_approval is None, saved.error
+    assert [d["skipped"] for d in saved.decisions] == [0]
+    assert saved.decisions[0]["reason"] == "mapped association field must contain a list"
+    assert saved.decided == set()
+    calls = []
+    original = context.approve
+
+    async def counted(*args, **kwargs):
+        calls.append(args)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(context, "approve", counted)
+    await context.tick()
+    assert calls == []
+    assert context.load_job(job.id).state == "suggested"
+    await context.reject({"id": job.id, "index": 0})
+    assert context.load_job(job.id).state == "rejected"
+
+
+async def test_requeue_asks_for_calendar_suggestions_only_unless_dossiers_changed(store):
+    import base64
+
+    from services.store.tests.test_calendar_import import event, ics
+
+    context = await configure(store)
+    await context.setup_lifecycle({"revision": context.config().revision})
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey Doe attended", frontmatter={"date": "2026-10-14"})
+    )
+    provider(context, {"suggestions": []})
+    await context.tick()
+
+    def newest():
+        return max((j for j in context.jobs() if j.note_id == note.id), key=lambda j: j.created_at)
+
+    first = newest()
+    assert first.result is not None and first.purpose == "initial"
+    receipt = await context.upload(
+        {
+            "calendar_id": "calendar",
+            "filename": "moved.ics",
+            "content_base64": base64.b64encode(ics(event(sequence=1, title="Moved"))).decode(),
+        }
+    )
+    await context.retry_import({"id": receipt["id"]})
+    await context.tick()
+    second = newest()
+    assert second.id != first.id and second.purpose == "calendar"
+    await store.entities.create(EntityInput(kind="person", name="Casey Doe"))
+    await context.tick()
+    third = newest()
+    assert third.id != second.id and third.purpose == "initial"

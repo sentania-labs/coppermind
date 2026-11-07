@@ -1229,7 +1229,9 @@ class ContextService:
         for index, suggestion in enumerate(job.result.suggestions):
             if suggestion.kind == "filename" or suggestion.confidence < CONFIDENCE_THRESHOLD:
                 continue
-            if any(d.get("index") == index for d in job.decisions):
+            if index in job.decided or any(d.get("skipped") == index for d in job.decisions):
+                continue
+            if suggestion.kind == "event" and len(suggestion.event_ids) != 1:
                 continue
             if suggestion.kind == "field":
                 targets = field_suggestion_changes(
@@ -1250,10 +1252,15 @@ class ContextService:
                     {"id": job.id, "index": index, "confirmation": "Apply selected suggestion"},
                     automatic=True,
                 )
-            except ValueError:
-                latest = self.load_job(job.id)
-                if latest.state != "suggested" or latest.pending_approval:
-                    raise
+            except ValueError as exc:
+                async with self.lock:
+                    latest = self.load_job(job.id)
+                    if latest.state != "suggested" or latest.pending_approval:
+                        raise
+                    latest.decisions.append(
+                        {"action": "skipped", "skipped": index, "reason": str(exc), "at": now()}
+                    )
+                    self.save_job(latest)
                 continue
             finally:
                 latest = self.load_job(job.id)
@@ -1318,7 +1325,7 @@ class ContextService:
                 ):
                     raise ValueError("invalid or already decided suggestion")
                 job.decisions.append({"action": "reject", "index": index, "at": now()})
-                if len(job.decisions) == len(job.result.suggestions):
+                if len(job.decided) == len(job.result.suggestions):
                     job.state = (
                         "applied"
                         if any("suggestion" in item for item in job.decisions)
@@ -1540,7 +1547,7 @@ class ContextService:
             for field in job.evidence["allowed_fields"]
             if blank(note.frontmatter.get(field["name"]))
         ]
-        remaining = len(job.result.suggestions) - len(job.decisions) if job.result else 0
+        remaining = len(job.result.suggestions) - len(job.decided) if job.result else 0
         schema = self.store.control.schema()
         changed_date = note_date(approval["before_frontmatter"], schema) != note_date(
             note.frontmatter, schema
@@ -1739,7 +1746,18 @@ class ContextService:
                     if previous[-1].evidence_hash != await self.note_evidence_hash(current):
                         identity = await self.queue_note(note.id)
                         changed = self.load_job(identity)
-                        changed.purpose = "initial"
+                        known = previous[-1]
+                        changed.purpose = (
+                            "calendar"
+                            if known.result is not None
+                            and fingerprint(known.evidence.get("dossiers", []))
+                            == fingerprint(
+                                await relevant(
+                                    self, current, "\n".join(await self.source_text(current.id))
+                                )
+                            )
+                            else "initial"
+                        )
                         self.save_job(changed)
                     continue
                 if note.id not in baseline:
