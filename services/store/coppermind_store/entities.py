@@ -525,6 +525,14 @@ class EntityService:
                         changed = True
             if changed:
                 self.save(ledger)
+            for job in self.store.context.jobs():
+                if (
+                    job.purpose == "dossier"
+                    and job.note_id == note.id
+                    and job.note_hash == before_hash
+                ):
+                    job.note_hash, job.path = note.content_hash, note.path
+                    self.store.context.save_job(job)
 
     def purge_pending(self) -> bool:
         from coppermind_store.purge import records
@@ -949,6 +957,11 @@ class EntityService:
             entity = ledger.entities.pop(identity, None)
             if entity:
                 ledger.suppressed.extend(digest(address) for address in entity.emails)
+                ledger.suppressed.extend(
+                    digest([entity.kind, entity.name, f.evidence.note_id])
+                    for f in entity.facts
+                    if f.evidence.note_id
+                )
         for entity in ledger.entities.values():
             entity.facts = [
                 f
@@ -965,6 +978,7 @@ class EntityService:
             if r.get("entity_id") not in entity_ids
             and r.get("target") not in entity_ids
             and r.get("source") not in entity_ids
+            and r.get("note_id") not in note_ids
         ]
         ledger.suppressed = sorted(set(ledger.suppressed))
         # Remove the legacy mirrors and per-note context records too. Originals
@@ -984,6 +998,21 @@ class EntityService:
         for job in self.store.context.jobs():
             if job.note_id in note_ids:
                 (self.store.context.root / "jobs" / (job.id + ".json")).unlink(missing_ok=True)
+                continue
+            dossiers = job.evidence.get("dossiers", [])
+            if any(
+                d["id"] in entity_ids
+                or any(f["evidence"].get("note_id") in note_ids for f in d.get("facts", []))
+                for d in dossiers
+            ):
+                # Context snapshots must not keep quotations from purged supporting notes.
+                job.evidence.pop("dossiers", None)
+                job.result = None
+                job.pending_approval = None
+                job.decisions = []
+                job.state = "stale"
+                job.set_error("Supporting dossier evidence was purged; regenerate suggestions")
+                self.store.context.save_job(job)
         self.store.context.write("dossiers", {})
         self.save(ledger)
         for entity in ledger.entities.values():

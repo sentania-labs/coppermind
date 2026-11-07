@@ -444,7 +444,8 @@ def router(wiring: Wiring) -> APIRouter:
             schema_fields = data.get("enrichment_fields", [])
             fields += (
                 "<fieldset><legend>2. Suggested metadata</legend><p>Select fields the model "
-                "may suggest changing. You approve each change.</p>"
+                "may fill when blank. Confident suggestions appear in Review notes "
+                "for your review.</p>"
             )
             for item in schema_fields:
                 fields += _check(
@@ -529,11 +530,13 @@ def router(wiring: Wiring) -> APIRouter:
             fields += "</fieldset>"
             body += (
                 '<h2>Enrichment setup</h2><p class="notice">When enabled, '
-                "selected note text, associated transcripts and nearby calendar/contact records "
+                "selected note text, associated transcripts, relevant dossiers and nearby "
+                "calendar/contact records "
                 "are sent to this provider. Existing notes require an explicit backlog selection. "
                 "Calls run one at a time. Keys stay outside the vault and Git.</p>"
                 '<p><a href="/admin/context?tab=review">Select existing notes for enrichment</a>. '
-                "Suggestions require your approval; note bodies stay unchanged.</p>"
+                "Suggestions with confidence of at least 0.8 fill blank fields in Review/. "
+                "Lower confidence stays here; bodies and filenames stay unchanged.</p>"
             )
             body += _form("save-assignment", fields, "Save enrichment settings", revision=revision)
             body += """<script>
@@ -614,6 +617,7 @@ picker.addEventListener('change', () => {
                 body += (
                     "<p>"
                     + e(suggestion["reason"])
+                    + f" (confidence: {suggestion.get('confidence', 0):.2f})"
                     + "</p><blockquote>"
                     + e(suggestion["quote"])
                     + "</blockquote>"

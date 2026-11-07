@@ -84,7 +84,8 @@ Names alone never merge people. Accepted invitations do not prove attendance.
 Cancellation messages without attendees do not erase previously learned
 contacts. Admin can record corrected names and explicitly link aliases to
 another contact ID, or clear that correction. These decisions survive imports
-and database reconstruction. Broader people/company dossiers are not included.
+and database reconstruction. People/company facts now use the broader
+[dossier ledger](dossiers.md).
 
 ## Model connections and feature assignment
 
@@ -123,13 +124,15 @@ only eligible list or string fields. The model dropdown follows the selected
 connection. Advanced numeric limits are collapsed with defaults and explanations. Optional field
 mappings are separate: attendee and invitee lists contain email addresses,
 contact references contain contact IDs, and the event reference is a string
-ID. Mappings must name existing fields of the appropriate kind. System fields,
+ID. Dossier-backed attendee/contact suggestions can also use exact People/
+wikilinks in these list fields, with attendance quotations still required. Mappings must name existing fields of the appropriate kind. System fields,
 including note ID, source associations, and reviewed state, cannot be enriched.
 No production schema keys are created automatically.
 
 Enablement records the existing note population. Those notes require a
 separate explicit backlog selection, up to 50 at a time. New valid unreviewed
-notes become eligible automatically. Calls run serially, with configurable
+notes become eligible automatically. Reviewed notes also contribute dossier facts
+through this worker, without a separate acceptance action. Calls run serially, with configurable
 input/output limits, timeout, and one to three attempts. Each job records its
 attempt limit before processing. Interrupted requests consume an attempt, even
 when their outcome is unknown; restarting the worker never resets the budget.
@@ -141,8 +144,9 @@ or ordinary note work. Usage is shown only when the provider supplies numeric
 usage fields; currency budgets and billing estimates are not provided.
 
 Only the selected note, explicitly associated text sources (maximum five),
-nearby calendar events, relevant contact corrections and selected schema
-guidance are sent. Oversized input fails before transmission; the job states the
+nearby calendar events, relevant contact corrections, matching active dossiers
+and selected field/tag guidance are sent. Dossier selection is bounded and includes
+only direct relationship targets, never the whole corpus. Oversized input fails before transmission; the job states the
 actual size against the limit and links to Maximum note and transcript
 characters under Processing limits. The model has
 no tools, URL fetches, or write access. It returns structured suggestions;
@@ -161,6 +165,13 @@ sanitized field name.
 
 ## Human review and recovery
 
+In `Review/`, validated suggestions with model-reported confidence of at least
+0.8 automatically fill blank configured fields. They never replace existing
+values or change body bytes, filenames or reviewed notes. Lower confidence and
+uncertainties stay in Admin. Review the visible fields in Obsidian, then mark the
+note reviewed; that also accepts its evidenced contributions to dossiers.
+The following manual Admin operations remain available for repair.
+
 Review current values, proposed values, reasons, and source evidence in Admin.
 Approve, edit, or reject a proposal. Filename approval explicitly acknowledges
 that existing filename links may need manual repair; it preserves the original
@@ -176,12 +187,13 @@ requires fresh calendar matching.
 An explicit note review remains separate. Reviewed notes are never eligible
 for automatic enrichment, and human values are not overwritten automatically.
 
-The job binds the note version and path, calendar/contact evidence, schema,
+The job binds the note version and path, calendar/contact and dossier evidence, schema,
 provider configuration, and source revisions. Changed evidence makes a proposal
 stale. Rejections suppress identical inputs; new input versions can be considered
 again. An approval receipt is durable before a file write. An interrupted
 approval can be resumed, but only if the file matches its recorded before or
-after state. It never overwrites a divergent edit.
+after state. Automatic fills resume through the same receipt without another
+model call. It never overwrites a divergent edit.
 
 Back up the complete `/data/state/calendars` and `/data/state/context` trees.
 They contain originals, catalog, receipts, contact corrections, suggestions,

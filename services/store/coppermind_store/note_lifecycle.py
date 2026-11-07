@@ -65,7 +65,7 @@ class NoteLifecycle:
 
         note = await self.context.store.get_note(payload["note_id"])
         jobs = sorted(
-            [j for j in self.context.jobs() if j.note_id == note.id],
+            [j for j in self.context.jobs() if j.note_id == note.id and j.purpose != "dossier"],
             key=lambda j: j.created_at,
             reverse=True,
         )

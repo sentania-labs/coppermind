@@ -167,6 +167,11 @@ class ModelProvider:
             usage = {
                 k: v for k, v in usage.items() if isinstance(v, int) and not isinstance(v, bool)
             }
+            reported = result.get("model")
+            usage["model"] = assignment.model
+            usage["provider_model_version"] = (
+                reported[:200] if isinstance(reported, str) else "not supplied"
+            )
             return parsed, usage
         except (ValueError, TypeError, AttributeError) as exc:
             raise ProviderError("model did not return a JSON object") from exc
