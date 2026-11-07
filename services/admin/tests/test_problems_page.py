@@ -485,12 +485,17 @@ def test_problems_and_overview_share_filing_status(signed_in, queue, errors, rea
     overview_summary = re.search(pattern, overview.text, re.DOTALL)
     assert problems_summary is not None and overview_summary is not None
     summary = problems_summary.group()
-    assert summary == overview_summary.group()
+    assert summary == overview_summary.group().replace(
+        '<p><a href="/admin/problems">Check filing problems and recovery options</a></p>', ""
+    )
     assert heading in summary
     assert f"Ready to file: {ready}" in summary
     assert f"Notes with filing errors: {errors}" in summary
     assert "Last filing progress: November 5, 2026" in summary
     assert problems.text.index(heading) < problems.text.index("No problems found.")
+    # The Problems page drops the link that points at the same page; the Overview keeps it.
+    assert "Check filing problems and recovery options" not in problems.text
+    assert "Check filing problems and recovery options" in overview.text
 
 
 def test_counters_show_the_notes_root_and_the_pending_move_count():

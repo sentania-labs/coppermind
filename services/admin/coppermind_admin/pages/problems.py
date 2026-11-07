@@ -158,8 +158,14 @@ def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems fo
     )
 
 
-def filing_status_html(status: StatusResponse, zone: ZoneInfo | None = None) -> str:
-    """One filing summary shared by Overview and Problems."""
+def filing_status_html(
+    status: StatusResponse, zone: ZoneInfo | None = None, *, self_page: bool = False
+) -> str:
+    """One filing summary shared by Overview and Problems.
+
+    ``self_page`` drops the link to /admin/problems when the summary is rendered
+    on the Problems page itself, where that link points at the same page.
+    """
     from coppermind_admin.pages.search_index import local_time
 
     counters = status.counters
@@ -187,10 +193,15 @@ def filing_status_html(status: StatusResponse, zone: ZoneInfo | None = None) -> 
         if counters.filing_last_progress_at
         else "No successful filing recorded yet"
     )
+    link = (
+        ""
+        if self_page
+        else '<p><a href="/admin/problems">Check filing problems and recovery options</a></p>'
+    )
     return f"""<section aria-label="Filing status"><h3>{health}</h3>
 <p>Ready to file: {ready}. Notes with filing errors: {counters.filing_failures}.
 {drain}</p><p>Last filing progress: {progress}</p>
-<p><a href="/admin/problems">Check filing problems and recovery options</a></p></section>"""
+{link}</section>"""
 
 
 def _dismiss_form(notice: ReconcilerNotice, back: str = "/admin") -> str:
@@ -351,7 +362,7 @@ def router(wiring: Wiring) -> APIRouter:
         return page(
             "Problems",
             '<h1>Problems</h1><p><a href="/admin">Overview</a></p>'
-            + filing_status_html(status, _zone(request))
+            + filing_status_html(status, _zone(request), self_page=True)
             + "<p>Start with the affected note and the action below. "
             "Filing retries automatically after the cause is fixed.</p>"
             "<p>Known unreadable search entries: "
