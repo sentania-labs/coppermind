@@ -290,7 +290,12 @@ class EntityService:
                 else:
                     predicate, sep, value = html.unescape(line).partition(": ")
                     self.correction(
-                        entity, predicate if sep else "note", value if sep else predicate, raw, fact
+                        entity,
+                        predicate if sep else "note",
+                        value if sep else predicate,
+                        raw,
+                        fact,
+                        fact.target,
                     )
             # Changes outside recognized fact lines are also the owner's writing.
             # Record the edited lines, without turning generated evidence into claims.
@@ -365,7 +370,9 @@ class EntityService:
                                 automatic=True,
                             )
                             by_email[address] = entity
-                    if entity and not entity.retired_at and not entity.redirect:
+                    while entity and entity.redirect:
+                        entity = ledger.entities.get(entity.redirect)
+                    if entity and not entity.retired_at:
                         mentions[entity.id] = entity
             for entity in mentions.values():
                 identity = digest([note.id, note.content_hash, entity.id, "metadata-v1"])

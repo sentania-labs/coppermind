@@ -299,3 +299,41 @@ async def test_orphan_purge_preserves_personal_writing_arriving_before_preview(s
     await store.confirm_purge(confirmation(preview))
     assert "Personal reminder" in path.read_text()
     assert "Personal reminder" in (await store.entities.get(p["id"]))["personal_text"]
+
+
+async def test_page_edit_keeps_relationship_target(store):
+    a = await person(store)
+    company = await store.entities.create(EntityInput(kind="company", name="Example"))
+    note = await reviewed_note(store)
+    a = await claim(store, a, note, target=company["id"])
+    path = store.notes_root / a["path"]
+    path.write_text(path.read_text().replace("role: Engineer", "role: Architect"))
+    updated = await store.entities.get(a["id"])
+    edited = next(
+        f for f in updated["facts"] if f["value"] == "Architect" and f["state"] == "confirmed"
+    )
+    assert edited["target"] == company["id"]
+
+
+async def test_note_linking_a_merged_page_contributes_to_the_target(store):
+    keep = await store.entities.create(EntityInput(kind="person", name="Keep"))
+    old = await store.entities.create(EntityInput(kind="person", name="Old"))
+    request = dict(version=old["version"], target=keep["id"])
+    preview = await store.entities.change(
+        old["id"], EntityChange(action="merge-preview", **request)
+    )
+    await store.entities.change(
+        old["id"], EntityChange(action="merge", preview=preview["preview"], **request)
+    )
+    await store.create_note(
+        CreateNote(
+            title="Linked",
+            body="Met them.",
+            frontmatter={
+                "reviewed": True,
+                "attendees": ["[[" + old["path"].removesuffix(".md") + "]]"],
+            },
+        )
+    )
+    current = await store.entities.get(keep["id"])
+    assert any(f["predicate"] == "mentioned" and f["value"] == "Linked" for f in current["facts"])
