@@ -4,6 +4,7 @@ import asyncio
 import json
 from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -878,7 +879,12 @@ async def test_a_fresh_index_answers_a_moved_note_without_walking_again(store):
     elsewhere.mkdir()
     (store.notes_root / note.path).rename(elsewhere / Path(note.path).name)
     await store.get_note(note.id)
-    assert (await store.list_notes(NoteQuery(state="ok"))).items[0].id == note.id
+
+    with patch.object(store, "_scan_identities", wraps=store._scan_identities) as walk:
+        listed = await store.list_notes(NoteQuery(state="ok"))
+
+    assert [item.id for item in listed.items] == [note.id]
+    walk.assert_not_called()
 
 
 async def test_an_unreadable_subfolder_stops_the_listing_on_the_notes_outage(store):

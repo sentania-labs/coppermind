@@ -1923,8 +1923,8 @@ def _read(note_id: NoteId, path: Path) -> tuple[bytes, float]:
     """The bytes and mtime of a located note, with typed filesystem failures.
 
     An absent path is the note being `missing`. Any other operating system error
-    is the notes volume, so it is the cause of the typed failure: a caller that
-    has to tell one file apart from the whole tree reads `__cause__`.
+    is the notes volume, and is raised as the typed notes outage with that error
+    as its cause.
     """
     try:
         return path.read_bytes(), path.stat().st_mtime
