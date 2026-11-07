@@ -866,19 +866,33 @@ async def test_a_missing_notes_root_types_the_identity_walk_on_every_path(store)
     assert (await store.list_notes(NoteQuery(state="ok"))).items[0].id == note.id
 
 
-async def test_a_listing_of_a_note_at_its_recorded_path_does_not_walk_the_tree(store):
-    """Once a read has repaired a moved note's recorded path, listing it needs no walk."""
-    note = await store.create_note(CreateNote(title="Fresh", frontmatter={"type": "reference"}))
-    elsewhere = store.notes_root / "elsewhere"
-    elsewhere.mkdir()
-    (store.notes_root / note.path).rename(elsewhere / Path(note.path).name)
-    await store.get_note(note.id)
+async def test_a_listing_walks_the_tree_once_however_many_notes_it_reads(store):
+    """One walk answers the whole batch rather than one per note read."""
+    for index in range(3):
+        await store.create_note(
+            CreateNote(title=f"Walk {index}", frontmatter={"type": "reference"})
+        )
 
     with patch.object(store, "_scan_identities", wraps=store._scan_identities) as walk:
         listed = await store.list_notes(NoteQuery(state="ok"))
 
-    assert [item.id for item in listed.items] == [note.id]
-    walk.assert_not_called()
+    assert len(listed.items) == 3
+    assert walk.call_count == 1
+
+
+async def test_a_vault_whose_only_note_is_unreadable_still_lists_and_names_the_problem(store):
+    """One unreadable file is that note's problem, not an outage of the whole volume."""
+    note = await store.create_note(CreateNote(title="Alone", frontmatter={"type": "reference"}))
+    target = store.notes_root / note.path
+    target.chmod(0)
+    try:
+        listed = await store.list_notes(NoteQuery(state="ok"))
+        assert listed.items == []
+        problems = [p for p in await store.get_problems() if p.kind == "unreadable_note"]
+        assert [(p.note_id, p.reference) for p in problems] == [(note.id, note.path)]
+    finally:
+        target.chmod(0o644)
+    assert [item.id for item in (await store.list_notes(NoteQuery(state="ok"))).items] == [note.id]
 
 
 async def test_an_unreadable_subfolder_stops_the_listing_on_the_notes_outage(store):

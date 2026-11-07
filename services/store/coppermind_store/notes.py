@@ -703,41 +703,20 @@ class LocalStore:
                 from coppermind_store.filing import filing_state
                 from coppermind_store.notices import record_unreadable_notice
 
-                # The identity walk answers where a note's file sits. It tells a file
-                # that is away now apart from a folder it could not enter: the scan
-                # completes and names the identities it reached, while an unreadable
-                # folder or missing root makes the whole scan fail, and that is the notes
-                # outage. The walk is consulted once a read fails, so a batch whose reads
-                # all answer never pays for it.
-                scan: dict[str, list[Path]] | None = None
-                locations: dict[str, str] = {summary.id: summary.path for _, summary in candidates}
+                await asyncio.to_thread(self._require_notes_root)
+                if not self._identity_index.fresh():
+                    await self._identity_index.refresh()
                 try:
                     for state, summary in candidates:
                         if state == "ok":
                             try:
-                                document = await self._read_current(summary.id)
+                                await self._read_current(summary.id)
                             except (NotFound, NoteUnparseable):
                                 continue
                             except NotesFilesystemUnavailable:
-                                # One file's own failure leaves the root open, so only
-                                # that note is left out and the page goes on. A root or
-                                # folder the walk could not enter fails the scan itself,
-                                # which is the notes outage, and stops the listing.
                                 await asyncio.to_thread(self._require_notes_root)
-                                if scan is None:
-                                    await self._identity_index.refresh()
-                                    scan = self._identity_index._found
-                                if not scan:
-                                    raise
-                                if summary.id not in scan:
-                                    # The walk reached this file, so the note is away on
-                                    # its own: only it is left out and the page goes on.
-                                    record_unreadable_notice(self, summary.id, summary.path)
-                                    continue
-                                raise
-                            locations[summary.id] = document.path
-                        if locations[summary.id] != summary.path:
-                            summary = summary.model_copy(update={"path": locations[summary.id]})
+                                record_unreadable_notice(self, summary.id, summary.path)
+                                continue
                         for key, value in filing_state(self, summary.id).items():
                             setattr(summary, key, value)
                         matched.append(summary)
@@ -1675,11 +1654,6 @@ class LocalStore:
     def _scan_identities(self) -> dict[str, list[Path]]:
         from coppermind_store.reconciler import _IGNORED_DIRECTORIES, _path_exclusion, _walk
 
-        # Every file the walk reached, keyed by the identity it carries. The root
-        # itself is opened first, so an empty map means the tree holds nothing and a
-        # failed open means the volume is away; both answer from the same OSError.
-        with os.scandir(self.notes_root):
-            pass
         found: dict[str, list[Path]] = {}
         key = self.control.schema().role("id_key")
         settings = self.control.settings()
@@ -1739,6 +1713,10 @@ class _IdentityIndex:
         if age > self.MISS_WINDOW_S:
             return None
         return live
+
+    def fresh(self) -> bool:
+        """Whether a scan is recent enough that its answers stand without another walk."""
+        return self._found is not None and time.monotonic() - self._built <= self.MISS_WINDOW_S
 
     def moved(self, note_id: str, path: Path) -> None:
         if self._found is not None:
