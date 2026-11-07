@@ -895,6 +895,10 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
     # A store write that committed while the walk was reading may have been
     # replaced by the older bytes the walk saw; the mirror knows better.
     await catch_up(store)
+    try:
+        await store.entities.refresh()
+    except Exception as exc:  # noqa: BLE001 - dossiers must not fail a finished index rebuild
+        log.warning("dossier refresh deferred", reason=type(exc).__name__)
     current = await status(store)
     return {"notes": current.notes, "sources": current.sources, "artifacts": current.artifacts}
 

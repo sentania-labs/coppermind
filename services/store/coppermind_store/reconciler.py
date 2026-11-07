@@ -634,6 +634,10 @@ async def reconcile_once(
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
     store.control.write_reconciler_exclusions(scan.exclusions)
+    try:
+        await store.entities.refresh()
+    except Exception as exc:  # noqa: BLE001 - dossiers must not stop note reconciliation
+        log.warning("dossier refresh deferred", reason=type(exc).__name__)
     return counts
 
 
@@ -872,7 +876,9 @@ def _scan(
             if isinstance(result, AdoptionCandidate):
                 if settling:
                     deferred += 1
-                elif any(relative_path.parts[: len(folder)] == folder for folder in unadoptable):
+                elif relative_path.parts[0].casefold() in {"people", "companies"} or any(
+                    relative_path.parts[: len(folder)] == folder for folder in unadoptable
+                ):
                     # Read store-owned folders too, to follow known identities.
                     _remember(still_unidentified, relative, stat_seen)
                 else:
@@ -933,6 +939,8 @@ def _unadoptable_folders(settings: ProductSettings) -> frozenset[tuple[str, ...]
         settings.notes.sources_folder,
         settings.notes.artifacts_folder,
         settings.notes.attachments_folder,
+        "People",
+        "Companies",
     )
     return frozenset(
         parts

@@ -126,6 +126,12 @@ class HttpStoreClient:
         )
         return response.json()
 
+    async def entity_action(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        response = await self._send(
+            "POST", f"{INTERNAL_PREFIX}/entities/{_segment(action)}", json=payload
+        )
+        return response.json()
+
     async def field_index_action(self, action: str, offset: int = 0) -> dict[str, Any]:
         response = await self._send(
             "POST", f"{INTERNAL_PREFIX}/field-index/{_segment(action)}", params={"offset": offset}
@@ -315,10 +321,11 @@ class HttpStoreClient:
         response = await self._send("POST", f"{INTERNAL_PREFIX}/jobs/rebuild_metadata")
         return RebuildMetadataResult.model_validate(response.json())
 
-    async def search(self, query: SearchQuery) -> Page[SearchHit]:
+    async def search(self, query: SearchQuery, *, entities: bool = False) -> Page[SearchHit]:
         response = await self._send(
             "GET",
             f"{INTERNAL_PREFIX}/search",
+            headers={"X-Entity-Read": str(entities).lower()},
             params=query.model_dump(mode="json", by_alias=True, exclude_none=True),
         )
         return Page[SearchHit].model_validate(response.json())

@@ -256,7 +256,9 @@ class SearchDocument(Base):
     )
 
     __table_args__ = (
-        CheckConstraint("kind IN ('note', 'source', 'artifact')", name="ck_search_documents_kind"),
+        CheckConstraint(
+            "kind IN ('note', 'source', 'artifact', 'entity')", name="ck_search_documents_kind"
+        ),
         Index("ix_search_documents_vector", "search_vector", postgresql_using="gin"),
     )
 
@@ -327,3 +329,16 @@ class NoteFieldValue(Base):
             postgresql_ops={"value": "jsonb_path_ops"},
         ),
     )
+
+
+class EntityRecord(Base):
+    """Queryable mirror of the file-first entity catalog, including evidenced facts."""
+
+    __tablename__ = "entities"
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    record: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    __table_args__ = (Index("ix_entities_kind_name", "kind", "name"),)

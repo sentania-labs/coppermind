@@ -273,6 +273,9 @@ class LocalStore:
         from coppermind_store.context_service import ContextService
 
         self.context = ContextService(self, calendar_database_url)
+        from coppermind_store.entities import EntityService
+
+        self.entities = EntityService(self)
         from coppermind_store.field_index import FieldIndex
 
         self.field_index = FieldIndex(self)
@@ -997,6 +1000,7 @@ class LocalStore:
         target_folder = sanitize_folder(request.target_folder)
         if not target_folder:
             raise ValidationFailed(["target_folder: must be a non-empty folder name"])
+        _check_folder_safe(target_folder, settings)
         for reserved in (settings.notes.sources_folder, settings.notes.artifacts_folder):
             reserved_folder = sanitize_folder(reserved).casefold()
             if target_folder.casefold() == reserved_folder or target_folder.casefold().startswith(
@@ -1331,11 +1335,11 @@ class LocalStore:
         await indexer.rebuild(self)
         return RebuildMetadataResult(counts=counts)
 
-    async def search(self, query: SearchQuery) -> Page[SearchHit]:
+    async def search(self, query: SearchQuery, *, entities: bool = False) -> Page[SearchHit]:
         """Full-text search over note bodies, titles and source projections."""
         from coppermind_store.search import search
 
-        return await search(self, query)
+        return await search(self, query, entities=entities)
 
     async def get_search_index_status(self) -> SearchIndexStatus:
         from coppermind_store.indexer import status
@@ -2213,6 +2217,8 @@ def _check_folder_safe(folder: str, settings: ProductSettings) -> None:
     check but collide with the real _Sources folder on disk. Nothing but the
     artifact files themselves ever appears under the artifacts folder.
     """
+    if folder.split("/", 1)[0].casefold() in {"people", "companies"}:
+        raise ValidationFailed(["folder: People and Companies are reserved for dossiers"])
     parts = [p for p in folder.split("/") if p]
     for reserved in (settings.notes.sources_folder, settings.notes.artifacts_folder):
         reserved_folder = sanitize_folder(reserved).casefold()

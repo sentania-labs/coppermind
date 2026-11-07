@@ -343,7 +343,7 @@ class SearchingStore:
     async def is_ready(self) -> bool:
         return True
 
-    async def search(self, query: SearchQuery) -> Page[SearchHit]:
+    async def search(self, query: SearchQuery, *, entities: bool = False) -> Page[SearchHit]:
         if self.error:
             raise self.error
         self.queries.append(query)

@@ -58,7 +58,9 @@ def _reveals(secret_file: Path, record: ApiKeyRecord) -> bool:
 
 
 def ensure_default_key(control: ControlState, secret_file: Path) -> str:
-    """Ensure bootstrap's default key (every scope except admin:purge), saying what became of it.
+    """Ensure bootstrap's default key, saying what became of it.
+
+    The key holds every scope except admin:purge and the opt-in entity scopes.
 
     `keys.json` decides, and the record's own `bootstrap_default` mark is what
     it decides by, so a key an operator happens to name the same thing is never
@@ -101,7 +103,10 @@ def parser() -> argparse.ArgumentParser:
         action="append",
         choices=API_SCOPES,
         dest="scopes",
-        help="scope to grant; repeat as needed (default: every scope except admin:purge)",
+        help=(
+            "scope to grant; repeat as needed "
+            "(default: every scope except admin:purge and the entities scopes)"
+        ),
     )
     revoke = commands.add_parser("revoke", help="revoke a key by id")
     revoke.add_argument("key_id")

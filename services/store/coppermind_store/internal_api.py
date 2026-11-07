@@ -303,10 +303,12 @@ async def rebuild_metadata(request: Request) -> RebuildMetadataResult | JSONResp
 
 @router.get("/search", response_model=Page[SearchHit])
 async def search(
-    request: Request, query: Annotated[SearchQuery, Query()]
+    request: Request,
+    query: Annotated[SearchQuery, Query()],
+    entity_read: Annotated[bool, Header(alias="X-Entity-Read")] = False,
 ) -> Page[SearchHit] | JSONResponse:
     try:
-        return await _store(request).search(query)
+        return await _store(request).search(query, entities=entity_read)
     except StoreError as error:
         return _failure(error)
 

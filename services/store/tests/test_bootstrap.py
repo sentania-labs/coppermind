@@ -213,7 +213,11 @@ def test_the_default_key_never_holds_the_purge_scope(tmp_path: Path):
     (default,) = ControlState(wiring.state_dir).api_keys().keys
     assert default.bootstrap_default
     assert "admin:purge" not in default.scopes
-    assert set(default.scopes) == set(API_SCOPES) - {"admin:purge"}
+    assert set(default.scopes) == set(API_SCOPES) - {
+        "admin:purge",
+        "entities:read",
+        "entities:write",
+    }
 
 
 def test_an_operator_key_named_like_the_default_is_not_bootstrap_owned(tmp_path: Path, capsys):

@@ -1702,4 +1702,9 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         )
         for event in store.context.archive.catalog().conflicts
     )
+    problems.extend(
+        ProblemInfo(kind="dossier", reference=e.path, reason=e.problem)
+        for e in store.entities.load().entities.values()
+        if e.problem
+    )
     return problems

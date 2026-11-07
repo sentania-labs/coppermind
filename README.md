@@ -374,3 +374,9 @@ clear after seven days; failures remain until dismissed. Uploads support
 200,000,000 bytes with bounded ZIP expansion. See
 [calendar intake and upgrade](docs/calendar-enrichment.md) and the
 [API](docs/api.md#calendar-exports-and-dropbox-receipts).
+
+People and company dossiers live in `People/` and `Companies/`. Read them and
+correct a fact in Obsidian, or use the scoped entity API. Reviewed notes
+contribute evidence; there is no separate claim-acceptance step. See
+[dossiers and recovery](docs/dossiers.md) for the first slice and the remaining
+enrichment integration.

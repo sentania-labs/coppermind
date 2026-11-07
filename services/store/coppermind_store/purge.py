@@ -238,8 +238,10 @@ def _breakdown(candidates: list[PurgeCandidate], field: str) -> dict[str, PurgeB
                 entry.notes += 1
             elif c.kind == "artifact":
                 entry.artifacts += 1
-            else:
+            elif c.kind == "source":
                 entry.sources += 1
+            else:
+                entry.entities += 1
     return counts
 
 
@@ -255,6 +257,7 @@ def result(record: dict[str, Any]) -> PurgeResult:
             notes=sum(c.kind == "note" for c in candidates),
             sources=sum(c.kind == "source" for c in candidates),
             artifacts=sum(c.kind == "artifact" for c in candidates),
+            entities=sum(c.kind == "entity" for c in candidates),
             by_origin=_breakdown(candidates, "origins"),
             by_provider=_breakdown(candidates, "providers"),
         ),
@@ -425,7 +428,7 @@ async def candidates(
             for item in record["items"]
             if item["candidate"]["kind"] == "note" and item["candidate"]["id"] in removed
         )
-    return await asyncio.to_thread(
+    items, kept = await asyncio.to_thread(
         _plan,
         store,
         cutoff,
@@ -441,6 +444,9 @@ async def candidates(
         abandoned,
         live_artifacts,
     )
+    note_ids = {item["candidate"]["id"] for item in items if item["candidate"]["kind"] == "note"}
+    items.extend(store.entities.purge_items(cutoff, note_ids))
+    return items, kept
 
 
 def _removed_archives(
@@ -656,6 +662,9 @@ def _plan(
             elif c["kind"] == "artifact":
                 if c["id"] in live_artifacts:
                     continue
+            elif c["kind"] == "entity":
+                if c["id"] in store.entities.load().entities:
+                    continue
             else:
                 owner = by_note.get(old["opening"])
                 if (
@@ -779,6 +788,7 @@ async def preview(store: LocalStore) -> PurgeResult:
         unfinished = [r for r in existing if r["state"] in {"applying", "failed"}]
         if unfinished:
             return result(unfinished[0])
+        await store.entities.refresh()
         now = datetime.now(UTC)
         items, kept = await candidates(store, now)
         record = {
@@ -816,6 +826,14 @@ async def _verify_resume(store: LocalStore, record: dict[str, Any]) -> None:
         )
         for item in record["items"]:
             c = item["candidate"]
+            if c["kind"] == "entity":
+                from coppermind_store.entities import digest
+
+                entity = store.entities.load().entities.get(c["id"])
+                if entity is not None and digest(entity.model_dump(mode="json")) != item["row"]:
+                    raise PurgeChanged()
+                await asyncio.to_thread(_verify_files, store, item)
+                continue
             if c["kind"] == "note":
                 row = by_note.get(c["id"])
                 if c["id"] in disk_ids or (row and row.state != "deleted"):
@@ -859,7 +877,7 @@ def _verify_files(store: LocalStore, item: dict[str, Any]) -> None:
                 and ("artifacts", path.relative_to(store.artifacts_root).as_posix()) not in expected
             ):
                 raise PurgeChanged()
-    else:
+    elif c["kind"] == "note":
         for path in note_history.directory(store).glob(f"{c['id']}-*.json"):
             if (
                 "state",
@@ -927,7 +945,9 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
                         if c["candidate"]["kind"] == "note"
                         else c["candidate"]["id"] in live_artifacts
                         if c["candidate"]["kind"] == "artifact"
-                        else c["candidate"]["id"] in cited or c["opening"] in disk_ids
+                        else (c["candidate"]["id"] in cited or c["opening"] in disk_ids)
+                        if c["candidate"]["kind"] == "source"
+                        else False
                     )
                     for c in record["items"]
                 ):
@@ -940,12 +960,33 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
                         await session.execute(sa.delete(Note).where(Note.id == c["id"]))
                     elif c["kind"] == "artifact":
                         continue
+                    elif c["kind"] == "entity":
+                        from coppermind.db.models import EntityRecord, SearchDocument
+
+                        await session.execute(
+                            sa.delete(EntityRecord).where(EntityRecord.id == c["id"])
+                        )
+                        await session.execute(
+                            sa.delete(SearchDocument).where(
+                                SearchDocument.kind == "entity", SearchDocument.ref_id == c["id"]
+                            )
+                        )
                     else:
                         await indexer.drop_source(session, c["id"], now)
                         await session.execute(sa.delete(Source).where(Source.id == c["id"]))
             committed = True
             for item in record["items"]:
                 await asyncio.to_thread(_unlink, store, item)
+            store.entities.purge(
+                {i["candidate"]["id"] for i in record["items"] if i["candidate"]["kind"] == "note"},
+                {
+                    i["candidate"]["id"]
+                    for i in record["items"]
+                    if i["candidate"]["kind"] == "entity"
+                },
+                request.token,
+            )
+            await store.entities.mirror(store.entities.load())
             record.update(
                 state="complete", completed=[i["candidate"]["id"] for i in record["items"]]
             )
@@ -977,8 +1018,11 @@ async def outcome(store: LocalStore, record: dict[str, Any]) -> tuple[list[str],
     async with store.session_factory() as session:
         for item in record["items"]:
             c = item["candidate"]
-            model = {"note": Note, "source": Source, "artifact": Artifact}[c["kind"]]
-            row = await session.get(model, c["id"])
+            if c["kind"] == "entity":
+                row = store.entities.load().entities.get(c["id"])
+            else:
+                model = {"note": Note, "source": Source, "artifact": Artifact}[c["kind"]]
+                row = await session.get(model, c["id"])
             held = row is not None or await asyncio.to_thread(_present, store, item)
             (remaining if held else removed).append(c["id"])
     return removed, remaining

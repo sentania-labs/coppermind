@@ -400,6 +400,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
                 f"[[{old_link.removesuffix('.md')}]]", f"[[{item['to'].removesuffix('.md')}]]"
             )
     body = rewrite_embeds(body, filed_images, attachments_folder=settings.notes.attachments_folder)
+    before_filing_hash = note.content_hash
     frontmatter = dict(note.frontmatter)
     artifacts_key = schema.optional_role("artifacts_key")
     cited = frontmatter.get(artifacts_key)
@@ -437,6 +438,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     plan.pop("error", None)
     _save(journal, plan)
     await _publish(store, note)
+    await store.entities.follow(note, before_filing_hash)
     return True
 
 

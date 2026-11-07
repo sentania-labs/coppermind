@@ -28,7 +28,7 @@ async def test_postgres_stream_rebuild_and_budget_problem(store, wiring, monkeyp
         read_bytes = Path.read_bytes
 
         def bounded_read(path):
-            if path.name == "catalog.json":
+            if path == archive.root / "catalog.json":
                 raise AssertionError("whole-catalog read")
             return read_bytes(path)
 

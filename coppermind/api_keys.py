@@ -18,6 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from coppermind.statefiles import RevisionConflict, StateStore
 
 API_SCOPES = (
+    "entities:read",
+    "entities:write",
     "sources:read",
     "sources:write",
     "notes:read",
@@ -33,7 +35,9 @@ API_SCOPES = (
     "admin:write",
     "admin:purge",
 )
-DEFAULT_SCOPES = tuple(scope for scope in API_SCOPES if scope != "admin:purge")
+DEFAULT_SCOPES = tuple(
+    scope for scope in API_SCOPES if scope not in {"admin:purge", "entities:read", "entities:write"}
+)
 
 KEY_ID_PATTERN = re.compile(r"^[a-z0-9]{16}$")
 KEY_PREFIX = "cm_"
