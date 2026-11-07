@@ -1207,10 +1207,27 @@ class ContextService:
     async def apply_blanks(self, job: EnrichmentJob) -> None:
         if job.result is None or not self.in_review_folder(job.path):
             return
+        note = await self.store.get_note(job.note_id)
+        schema = self.store.control.schema()
+        assignment = self.config().assignments["enrichment"]
         for index, suggestion in enumerate(job.result.suggestions):
             if suggestion.kind == "filename" or suggestion.confidence < CONFIDENCE_THRESHOLD:
                 continue
             if any(d.get("index") == index for d in job.decisions):
+                continue
+            if suggestion.kind == "field":
+                targets = field_suggestion_changes(
+                    note.frontmatter, schema, suggestion.field, suggestion.value
+                )[0]
+            else:
+                mapped = {
+                    "event": assignment.event_field,
+                    "contact": assignment.contacts_field,
+                    "attendee": assignment.attendees_field,
+                    "invitee": assignment.invitees_field,
+                }[suggestion.kind]
+                targets = {mapped: None}
+            if any(not blank(note.frontmatter.get(k)) or not k for k in targets):
                 continue
             try:
                 await self.approve(
@@ -1735,7 +1752,12 @@ class ContextService:
                 and job.pending_approval
                 and job.pending_approval.get("automatic")
             ):
-                await self.resume_approval({"id": job.id})
+                try:
+                    await self.resume_approval({"id": job.id})
+                except (ValueError, StoreError):
+                    job.set_error("Pending automatic write needs inspection")
+                    self.save_job(job)
+                    continue
                 job = self.load_job(job.id)
             if job.state == "suggested":
                 try:
