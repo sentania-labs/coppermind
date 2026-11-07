@@ -50,6 +50,7 @@ The story behind these decisions is [architecture.md](architecture.md).
 | `gone` | 410 | The resource existed but was deliberately removed (a tombstoned source) |
 | `method_not_allowed` | 405 | A mutating verb against a read-only resource, such as any write to `/v1/sources/**` |
 | `metadata_unavailable` | 503 | PostgreSQL is down and the operation needs it. That covers listing, search, and Admin mutations, but also an ordinary note read, create, or replace by ID: resolving a note's path goes through the mirror, so those stop too. Only a file edited directly on the notes filesystem, outside the API, keeps working |
+| `notes_filesystem_unavailable` | 503 | The notes filesystem cannot be read as a whole, such as a missing root or an unreadable subfolder, and the operation needs to walk it. Retry once the volume is healthy |
 | `store_unavailable` | 503 | The store service itself cannot be reached |
 | `already_running` | 409 | A job of the same kind is already in progress |
 
@@ -58,7 +59,7 @@ The story behind these decisions is [architecture.md](architecture.md).
 | Method and path | Scope | What it does | Success | Failure |
 |---|---|---|---|---|
 | `POST /v1/notes` | `notes:write` (also `journal:write` when `type: journal`) | Create a note from `{title, body, frontmatter{}, folder?}` | 201, note document, `ETag` header | 422; 409 `path_collision` |
-| `GET /v1/notes/{id}` | `notes:read` | Read a note. `Accept: application/json` returns the document shape; `text/markdown` returns the raw file | 200, `ETag: "sha256:<bytes hash>"` | 404 |
+| `GET /v1/notes/{id}` | `notes:read` | Read a note. `Accept: application/json` returns the document shape; `text/markdown` returns the raw file | 200, `ETag: "sha256:<bytes hash>"` | 404; 503 `notes_filesystem_unavailable` |
 | `PUT /v1/notes/{id}` | `notes:write` | Replace a note's frontmatter and body. Requires `If-Match` | 200, new `ETag` | 404; 409 `version_conflict`; 428 without `If-Match` |
 | `PATCH /v1/notes/{id}/frontmatter` | `notes:write` | Change named frontmatter fields only, via `{set:{...}, unset:[...]}`. Setting `reviewed: true` is how "mark reviewed" works | 200 | 404; 409; 422 for a value outside the shipped vocabulary |
 | `GET /v1/notes` | `notes:read` | List and filter by `folder, reviewed, type, context, account, from, to, tag, state`. `account` matches a note whose `account` list has that name among its entries. `from` and `to` are inclusive days (`YYYY-MM-DD`) taken from the note's `date`, whether it is a date or a date-and-time | 200, page of summaries | 503 `metadata_unavailable` if PostgreSQL is down, never a silently empty page |
@@ -154,8 +155,10 @@ listing omits files that have disappeared or cannot be parsed until the next
 reconciliation records their state. A file that exists but cannot be read is also
 left out, paging continues past it, and Problems names the note (`unreadable_note`)
 until it can be read again. If the notes filesystem as a whole cannot be read, the
-listing fails with the standard `503` `notes_filesystem_unavailable` error, which
-can be retried once the volume is healthy, instead of returning a partial page.
+listing, a read by ID that has to follow a moved note's identity, the status counters
+and Problems fail with the standard `503` `notes_filesystem_unavailable` error, which
+can be retried once the volume is healthy, instead of returning a partial page or a
+500.
 Problems includes missing notes with their `state_reason` and durable path
 notices naming the observed and indexed paths.
 While filing is in flight, its journal holds hash-checked note copies; they are
