@@ -11,7 +11,7 @@ from coppermind_store.reconciler import reconcile_once
 
 from coppermind.entities import EntityChange, EntityInput
 from coppermind.store_protocol import CreateNote, IngestRequest, PatchFrontmatter
-from tests.integration.test_context_enrichment import configure
+from tests.integration.test_context_enrichment import _fake_transcript, configure
 
 BODY = "Casey Doe (casey@example.test) works at Acme Company as an engineer and enjoys sailing."
 
@@ -774,3 +774,57 @@ async def test_requeue_asks_for_calendar_suggestions_only_unless_dossiers_change
     await context.tick()
     third = newest()
     assert third.id != second.id and third.purpose == "initial"
+
+
+async def test_review_detail_reports_stale_when_source_evidence_goes_over_the_limit(
+    store, monkeypatch
+):
+    context = await configure(store)
+    await context.setup_lifecycle({"revision": context.config().revision})
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job = context.load_job(await context.queue_note(note.id))
+    assert (await context.lifecycle_detail({"note_id": note.id}))["stale"] is False
+    _fake_transcript(store, monkeypatch, "x", size_bytes=10_000_000)
+    detail = await context.lifecycle_detail({"note_id": note.id})
+    assert detail["stale"] is True and detail["job_id"] == job.id
+
+
+async def test_written_fill_is_acknowledged_when_evidence_can_no_longer_be_rebuilt(
+    store, monkeypatch
+):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].fields = ["account", "tags"]
+    context.save_config(config)
+    note = await store.create_note(CreateNote(title="Two fields", folder="Review", body="sailing"))
+    suggestion = {"quote": "sailing", "confidence": 0.95, "reason": "Topic", "kind": "field"}
+    provider(
+        context,
+        {
+            "suggestions": [
+                {**suggestion, "field": "account", "value": ["Sailing"]},
+                {**suggestion, "field": "tags", "value": ["sailing"]},
+            ]
+        },
+    )
+    original = store.patch_frontmatter
+
+    async def interrupted(*args, **kwargs):
+        await original(*args, **kwargs)
+        raise OSError("simulated lost acknowledgement")
+
+    monkeypatch.setattr(store, "patch_frontmatter", interrupted)
+    job = context.load_job(await context.queue_note(note.id))
+    await context.run_job(job)
+    assert context.load_job(job.id).state == "applying"
+    monkeypatch.setattr(store, "patch_frontmatter", original)
+    _fake_transcript(store, monkeypatch, "x", size_bytes=10_000_000)
+    await context.resume_approval({"id": job.id})
+    saved = context.load_job(job.id)
+    assert saved.pending_approval is None and len(saved.decisions) == 1
+    assert saved.state == "stale" and "regenerate" in saved.error
+    current = await store.get_note(note.id)
+    assert current.frontmatter["account"] == ["Sailing"]
+    assert "tags" not in current.frontmatter or not current.frontmatter["tags"]

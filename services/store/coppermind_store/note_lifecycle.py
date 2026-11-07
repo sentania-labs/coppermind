@@ -94,13 +94,12 @@ class NoteLifecycle:
                 if isinstance(value, list)
                 else str(value)
             )
-        stale = bool(
-            job
-            and (
-                job.note_hash != note.content_hash
-                or job.evidence_hash != await self.context.note_evidence_hash(note)
-            )
-        )
+        stale = bool(job and job.note_hash != note.content_hash)
+        if job and not stale:
+            try:
+                stale = job.evidence_hash != await self.context.note_evidence_hash(note)
+            except ValueError:
+                stale = True
         problem = ""
         try:
             validate_review(note, self.context.store.control.schema(), self._default_timezone())

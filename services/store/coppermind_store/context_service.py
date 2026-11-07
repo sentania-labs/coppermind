@@ -1531,7 +1531,14 @@ class ContextService:
         job.decisions.append(approval)
         job.pending_approval = None
         job.note_hash, job.path = note.content_hash, note.path
-        job.evidence_hash = await self.note_evidence_hash(note)
+        try:
+            job.evidence_hash = await self.note_evidence_hash(note)
+            dossiers = await relevant(self, note, "\n".join(await self.source_text(note.id)))
+        except ValueError:
+            job.evidence_hash, dossiers = "", job.evidence.get("dossiers", [])
+            rebuilt = False
+        else:
+            rebuilt = True
         job.evidence["note"] = {
             "id": note.id,
             "path": note.path,
@@ -1539,9 +1546,7 @@ class ContextService:
             "frontmatter": note.frontmatter,
             "body": note.body,
         }
-        job.evidence["dossiers"] = await relevant(
-            self, note, "\n".join(await self.source_text(note.id))
-        )
+        job.evidence["dossiers"] = dossiers
         job.evidence["allowed_fields"] = [
             field
             for field in job.evidence["allowed_fields"]
@@ -1553,10 +1558,18 @@ class ContextService:
             note.frontmatter, schema
         )
         job.state = (
-            "stale" if remaining and changed_date else "suggested" if remaining else "applied"
+            "stale"
+            if remaining and (changed_date or not rebuilt)
+            else "suggested"
+            if remaining
+            else "applied"
         )
         job.set_error(
-            "Date changed; regenerate remaining suggestions" if remaining and changed_date else ""
+            "Date changed; regenerate remaining suggestions"
+            if remaining and changed_date
+            else "Source evidence can no longer be read; regenerate remaining suggestions"
+            if remaining and not rebuilt
+            else ""
         )
         self.save_job(job)
         return {"applied": job.id, "note_id": note.id}
