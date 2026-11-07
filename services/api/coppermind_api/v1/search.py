@@ -1,9 +1,9 @@
 """`/v1/search`: full-text search over note bodies and titles.
 
-Needs `notes:read`, and `artifacts:read` to see artifact hits. The store answers
-from its PostgreSQL full-text index, which it keeps current from the metadata
-mirror and can rebuild from the notes filesystem at any time; nothing here
-reads or writes a file.
+Needs `notes:read`, `artifacts:read` to see artifact hits and `entities:read` to
+see dossier hits. The store answers from its PostgreSQL full-text index, which it
+keeps current from the metadata mirror and can rebuild from the notes filesystem
+at any time; nothing here reads or writes a file.
 """
 
 from __future__ import annotations
