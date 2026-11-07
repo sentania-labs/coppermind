@@ -1672,7 +1672,9 @@ class LocalStore:
                 if not is_note_file(safe):
                     continue
                 identity = self.note_history.identity(safe.read_bytes(), key)
-            except (OSError, ValueError):
+            except (OSError, ValueError, RuntimeError):
+                # RuntimeError is pathlib's report of a symlink loop. Such a file
+                # is that note's own failure, not the tree's.
                 continue
             if identity is not None:
                 found.setdefault(identity, []).append(safe)
