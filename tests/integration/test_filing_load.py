@@ -4,6 +4,7 @@ import asyncio
 import json
 from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -12,6 +13,7 @@ from coppermind_store.reconciler import reconcile_once
 
 from coppermind.store_protocol import (
     CreateNote,
+    MetadataUnavailable,
     MoveNote,
     NoteQuery,
     NotesFilesystemUnavailable,
@@ -809,3 +811,136 @@ async def test_a_pass_that_files_the_ready_work_leaves_nothing_stalled(store):
     assert rate["stuck"] is False and "last_progress_at" in rate
     counters = (await store.get_status()).counters
     assert not counters.filing_stalled and counters.filing_queue_depth == 0
+
+
+async def test_an_unreadable_subfolder_types_the_identity_walk_as_the_notes_outage(store):
+    """The identity walk's ``OSError`` arrives typed rather than as a bare 500.
+
+    A note whose file sits at a path the mirror does not record makes a read
+    follow its identity, and that is the one step which walks the tree. With the
+    folder made unreadable the walk raises an ``OSError`` from inside
+    ``asyncio.to_thread``, so the index boundary has to convert it: the read then
+    answers the documented 503 code instead of a 500.
+    """
+    note = await store.create_note(CreateNote(title="Folded", frontmatter={"type": "reference"}))
+    elsewhere = store.notes_root / "elsewhere"
+    elsewhere.mkdir()
+    (store.notes_root / note.path).rename(elsewhere / Path(note.path).name)
+    elsewhere.chmod(0)
+    try:
+        store._identity_index._found = None
+        store._identity_index._built = 0.0
+        with pytest.raises(NotesFilesystemUnavailable) as raised:
+            await store._identity_index.refresh()
+        assert "Permission denied" in str(raised.value)
+        with pytest.raises(NotesFilesystemUnavailable):
+            await store.get_note(note.id)
+    finally:
+        elsewhere.chmod(0o755)
+    assert (await store.get_note(note.id)).path == f"elsewhere/{Path(note.path).name}"
+
+
+async def test_a_missing_notes_root_types_the_identity_walk_on_every_path(store):
+    """No directory to walk is the same outage for the single read and the listing.
+
+    The mirror's rows survive an unreadable root, so both paths reach the
+    identity index with nothing to scan and must give one and the same code.
+    """
+    note = await store.create_note(CreateNote(title="Rooted", frontmatter={"type": "reference"}))
+    elsewhere = store.notes_root / "elsewhere"
+    elsewhere.mkdir()
+    (store.notes_root / note.path).rename(elsewhere / Path(note.path).name)
+    await store.get_note(note.id)
+
+    root = store.notes_root
+    root.chmod(0)
+    try:
+        store._identity_index._found = None
+        store._identity_index._built = 0.0
+        with pytest.raises(NotesFilesystemUnavailable):
+            await store.list_notes(NoteQuery(state="ok"))
+        with pytest.raises(NotesFilesystemUnavailable):
+            await store.get_note(note.id)
+    finally:
+        root.chmod(0o755)
+    assert (await store.list_notes(NoteQuery(state="ok"))).items[0].id == note.id
+
+
+async def test_a_listing_walks_the_tree_once_however_many_notes_it_reads(store):
+    """One walk answers the whole batch rather than one per note read."""
+    for index in range(3):
+        await store.create_note(
+            CreateNote(title=f"Walk {index}", frontmatter={"type": "reference"})
+        )
+
+    with patch.object(store, "_scan_identities", wraps=store._scan_identities) as walk:
+        listed = await store.list_notes(NoteQuery(state="ok"))
+
+    assert len(listed.items) == 3
+    assert walk.call_count == 1
+
+
+async def test_a_vault_whose_only_note_is_unreadable_still_lists_and_names_the_problem(store):
+    """One unreadable file is that note's problem, not an outage of the whole volume."""
+    note = await store.create_note(CreateNote(title="Alone", frontmatter={"type": "reference"}))
+    target = store.notes_root / note.path
+    target.chmod(0)
+    try:
+        listed = await store.list_notes(NoteQuery(state="ok"))
+        assert listed.items == []
+        problems = [p for p in await store.get_problems() if p.kind == "unreadable_note"]
+        assert [(p.note_id, p.reference) for p in problems] == [(note.id, note.path)]
+    finally:
+        target.chmod(0o644)
+    assert [item.id for item in (await store.list_notes(NoteQuery(state="ok"))).items] == [note.id]
+
+
+async def test_an_unreadable_subfolder_stops_the_listing_on_the_notes_outage(store):
+    """A listing that has to walk answers the outage rather than a short page.
+
+    With the mirror still naming the pre-move path and the only walk made
+    unreadable, the listing cannot say what it found, so it keeps the 503 code
+    the scan reported instead of returning the one row that did resolve.
+    """
+    note = await store.create_note(CreateNote(title="Moving", frontmatter={"type": "reference"}))
+    elsewhere = store.notes_root / "elsewhere"
+    elsewhere.mkdir()
+    (store.notes_root / note.path).rename(elsewhere / Path(note.path).name)
+    await store.get_note(note.id)
+
+    elsewhere.chmod(0)
+    try:
+        store._identity_index._found = None
+        store._identity_index._built = 0.0
+        with pytest.raises(NotesFilesystemUnavailable):
+            await store.list_notes(NoteQuery(state="ok"))
+    finally:
+        elsewhere.chmod(0o755)
+
+    listed = await store.list_notes(NoteQuery(state="ok"))
+    assert [item.id for item in listed.items] == [note.id]
+
+
+async def test_the_notes_outage_keeps_its_code_beside_the_metadata_one(store, unreachable_store):
+    """The two outages stay distinct: one unreadable folder, then a database away.
+
+    The identity walk shares the ``OSError`` shape with the mirror's own failures,
+    so this pins that the walk keeps `notes_filesystem_unavailable` where a
+    database that is not there still answers `metadata_unavailable`.
+    """
+    note = await store.create_note(CreateNote(title="Typed", frontmatter={"type": "reference"}))
+    elsewhere = store.notes_root / "elsewhere"
+    elsewhere.mkdir()
+    (store.notes_root / note.path).rename(elsewhere / Path(note.path).name)
+    await store.get_note(note.id)
+    elsewhere.chmod(0)
+    try:
+        store._identity_index._found = None
+        store._identity_index._built = 0.0
+        with pytest.raises(NotesFilesystemUnavailable):
+            await store.get_note(note.id)
+    finally:
+        elsewhere.chmod(0o755)
+
+    with pytest.raises(MetadataUnavailable):
+        await unreachable_store.list_notes(NoteQuery())

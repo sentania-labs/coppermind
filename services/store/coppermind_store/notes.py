@@ -669,6 +669,9 @@ class LocalStore:
         batch_size = max(wanted, _SCAN_BATCH)
         matched: list[NoteSummary] = []
         exhausted = False
+        # The mirror is the first thing to answer, so its own outage keeps its
+        # own code; the identity index is the notes filesystem, so its failure
+        # keeps the 503 code of that outage instead.
         try:
             while len(matched) < wanted and not exhausted:
                 needed = wanted - len(matched)
@@ -700,19 +703,29 @@ class LocalStore:
                 from coppermind_store.filing import filing_state
                 from coppermind_store.notices import record_unreadable_notice
 
-                for state, summary in candidates:
-                    if state == "ok":
-                        try:
-                            await self._read_current(summary.id)
-                        except (NotFound, NoteUnparseable):
-                            continue
-                        except NotesFilesystemUnavailable:
-                            await asyncio.to_thread(self._require_notes_root)
-                            record_unreadable_notice(self, summary.id, summary.path)
-                            continue
-                    for key, value in filing_state(self, summary.id).items():
-                        setattr(summary, key, value)
-                    matched.append(summary)
+                await asyncio.to_thread(self._require_notes_root)
+                if not self._identity_index.fresh():
+                    await self._identity_index.refresh()
+                try:
+                    for state, summary in candidates:
+                        if state == "ok":
+                            try:
+                                await self._read_current(summary.id)
+                            except (NotFound, NoteUnparseable):
+                                continue
+                            except NotesFilesystemUnavailable:
+                                await asyncio.to_thread(self._require_notes_root)
+                                record_unreadable_notice(self, summary.id, summary.path)
+                                continue
+                        for key, value in filing_state(self, summary.id).items():
+                            setattr(summary, key, value)
+                        matched.append(summary)
+                except NotesFilesystemUnavailable:
+                    raise
+                except (SQLAlchemyError, OSError) as exc:
+                    raise MetadataUnavailable(str(exc)) from exc
+        except NotesFilesystemUnavailable:
+            raise
         except (SQLAlchemyError, OSError) as exc:
             raise MetadataUnavailable(str(exc)) from exc
         if query.filter and self.control.schema_document().revision != revision:
@@ -1659,7 +1672,9 @@ class LocalStore:
                 if not is_note_file(safe):
                     continue
                 identity = self.note_history.identity(safe.read_bytes(), key)
-            except (OSError, ValueError):
+            except (OSError, ValueError, RuntimeError):
+                # RuntimeError is pathlib's report of a symlink loop. Such a file
+                # is that note's own failure, not the tree's.
                 continue
             if identity is not None:
                 found.setdefault(identity, []).append(safe)
@@ -1701,17 +1716,27 @@ class _IdentityIndex:
             return None
         return live
 
+    def fresh(self) -> bool:
+        """Whether a scan is recent enough that its answers stand without another walk."""
+        return self._found is not None and time.monotonic() - self._built <= self.MISS_WINDOW_S
+
     def moved(self, note_id: str, path: Path) -> None:
         if self._found is not None:
             self._found[note_id] = [path]
 
     async def refresh(self) -> None:
+        """Rebuild the index, or carry the notes volume's own error as the cause."""
         requested = time.monotonic()
         async with self._lock:
             if self._built >= requested:
                 return
             started = time.monotonic()
-            found = await asyncio.to_thread(self._store._scan_identities)
+            try:
+                found = await asyncio.to_thread(self._store._scan_identities)
+            except OSError as exc:
+                # The tree walk reports the unreadable subfolder or missing root
+                # by name, so it is carried as the cause of the typed failure.
+                raise NotesFilesystemUnavailable(str(exc)) from exc
             self._found, self._built = found, started
 
 
@@ -1875,7 +1900,12 @@ def _bytes_at(
 
 
 def _read(note_id: NoteId, path: Path) -> tuple[bytes, float]:
-    """The bytes and mtime of a located note, with typed filesystem failures."""
+    """The bytes and mtime of a located note, with typed filesystem failures.
+
+    An absent path is the note being `missing`. Any other operating system error
+    is the notes volume, and is raised as the typed notes outage with that error
+    as its cause.
+    """
     try:
         return path.read_bytes(), path.stat().st_mtime
     except FileNotFoundError as exc:
