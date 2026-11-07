@@ -12,6 +12,7 @@ from coppermind_store.reconciler import reconcile_once
 
 from coppermind.store_protocol import (
     CreateNote,
+    MetadataUnavailable,
     MoveNote,
     NoteQuery,
     NotesFilesystemUnavailable,
@@ -809,3 +810,82 @@ async def test_a_pass_that_files_the_ready_work_leaves_nothing_stalled(store):
     assert rate["stuck"] is False and "last_progress_at" in rate
     counters = (await store.get_status()).counters
     assert not counters.filing_stalled and counters.filing_queue_depth == 0
+
+
+async def test_an_unreadable_subfolder_types_the_identity_walk_as_the_notes_outage(store):
+    """The identity walk's ``OSError`` arrives typed rather than as a bare 500.
+
+    A note whose file sits at a path the mirror does not record makes a read
+    follow its identity, and that is the one step which walks the tree. With the
+    folder made unreadable the walk raises an ``OSError`` from inside
+    ``asyncio.to_thread``, so the index boundary has to convert it: the read then
+    answers the documented 503 code instead of a 500.
+    """
+    note = await store.create_note(CreateNote(title="Folded", frontmatter={"type": "reference"}))
+    elsewhere = store.notes_root / "elsewhere"
+    elsewhere.mkdir()
+    (store.notes_root / note.path).rename(elsewhere / Path(note.path).name)
+    assert (await store.get_note(note.id)).path == f"elsewhere/{Path(note.path).name}"
+    elsewhere.chmod(0)
+    try:
+        store._identity_index._found = None
+        store._identity_index._built = 0.0
+        with pytest.raises(NotesFilesystemUnavailable) as raised:
+            await store._identity_index.refresh()
+        assert "Permission denied" in str(raised.value)
+        with pytest.raises(NotesFilesystemUnavailable):
+            await store.get_note(note.id)
+    finally:
+        elsewhere.chmod(0o755)
+    assert (await store.get_note(note.id)).path == f"elsewhere/{Path(note.path).name}"
+
+
+async def test_a_missing_notes_root_types_the_identity_walk_on_every_path(store):
+    """No directory to walk is the same outage for the single read and the listing.
+
+    The mirror's rows survive an unreadable root, so both paths reach the
+    identity index with nothing to scan and must give one and the same code.
+    """
+    note = await store.create_note(CreateNote(title="Rooted", frontmatter={"type": "reference"}))
+    elsewhere = store.notes_root / "elsewhere"
+    elsewhere.mkdir()
+    (store.notes_root / note.path).rename(elsewhere / Path(note.path).name)
+    await store.get_note(note.id)
+
+    root = store.notes_root
+    root.chmod(0)
+    try:
+        store._identity_index._found = None
+        store._identity_index._built = 0.0
+        with pytest.raises(NotesFilesystemUnavailable):
+            await store.list_notes(NoteQuery(state="ok"))
+        with pytest.raises(NotesFilesystemUnavailable):
+            await store.get_note(note.id)
+    finally:
+        root.chmod(0o755)
+    assert (await store.list_notes(NoteQuery(state="ok"))).items[0].id == note.id
+
+
+async def test_the_notes_outage_keeps_its_code_beside_the_metadata_one(store, unreachable_store):
+    """The two outages stay distinct: one unreadable folder, then a database away.
+
+    The identity walk shares the ``OSError`` shape with the mirror's own failures,
+    so this pins that the walk keeps `notes_filesystem_unavailable` where a
+    database that is not there still answers `metadata_unavailable`.
+    """
+    note = await store.create_note(CreateNote(title="Typed", frontmatter={"type": "reference"}))
+    elsewhere = store.notes_root / "elsewhere"
+    elsewhere.mkdir()
+    (store.notes_root / note.path).rename(elsewhere / Path(note.path).name)
+    await store.get_note(note.id)
+    elsewhere.chmod(0)
+    try:
+        store._identity_index._found = None
+        store._identity_index._built = 0.0
+        with pytest.raises(NotesFilesystemUnavailable):
+            await store.get_note(note.id)
+    finally:
+        elsewhere.chmod(0o755)
+
+    with pytest.raises(MetadataUnavailable):
+        await unreachable_store.list_notes(NoteQuery())

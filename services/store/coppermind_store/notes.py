@@ -669,6 +669,9 @@ class LocalStore:
         batch_size = max(wanted, _SCAN_BATCH)
         matched: list[NoteSummary] = []
         exhausted = False
+        # The mirror is the first thing to answer, so its own outage keeps its
+        # own code; the identity index is the notes filesystem, so its failure
+        # keeps the 503 code of that outage instead.
         try:
             while len(matched) < wanted and not exhausted:
                 needed = wanted - len(matched)
@@ -700,19 +703,26 @@ class LocalStore:
                 from coppermind_store.filing import filing_state
                 from coppermind_store.notices import record_unreadable_notice
 
-                for state, summary in candidates:
-                    if state == "ok":
-                        try:
-                            await self._read_current(summary.id)
-                        except (NotFound, NoteUnparseable):
-                            continue
-                        except NotesFilesystemUnavailable:
-                            await asyncio.to_thread(self._require_notes_root)
-                            record_unreadable_notice(self, summary.id, summary.path)
-                            continue
-                    for key, value in filing_state(self, summary.id).items():
-                        setattr(summary, key, value)
-                    matched.append(summary)
+                try:
+                    for state, summary in candidates:
+                        if state == "ok":
+                            try:
+                                await self._read_current(summary.id)
+                            except (NotFound, NoteUnparseable):
+                                continue
+                            except NotesFilesystemUnavailable:
+                                await asyncio.to_thread(self._require_notes_root)
+                                record_unreadable_notice(self, summary.id, summary.path)
+                                continue
+                        for key, value in filing_state(self, summary.id).items():
+                            setattr(summary, key, value)
+                        matched.append(summary)
+                except NotesFilesystemUnavailable:
+                    raise
+                except (SQLAlchemyError, OSError) as exc:
+                    raise MetadataUnavailable(str(exc)) from exc
+        except NotesFilesystemUnavailable:
+            raise
         except (SQLAlchemyError, OSError) as exc:
             raise MetadataUnavailable(str(exc)) from exc
         if query.filter and self.control.schema_document().revision != revision:
@@ -1711,7 +1721,12 @@ class _IdentityIndex:
             if self._built >= requested:
                 return
             started = time.monotonic()
-            found = await asyncio.to_thread(self._store._scan_identities)
+            try:
+                found = await asyncio.to_thread(self._store._scan_identities)
+            except OSError as exc:
+                # The tree walk reports the unreadable subfolder or missing root
+                # by name, so it is carried as the cause of the typed failure.
+                raise NotesFilesystemUnavailable(str(exc)) from exc
             self._found, self._built = found, started
 
 
