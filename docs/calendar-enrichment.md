@@ -125,7 +125,8 @@ connection. Advanced numeric limits are collapsed with defaults and explanations
 mappings are separate: attendee and invitee lists contain email addresses,
 contact references contain contact IDs, and the event reference is a string
 ID. Dossier-backed attendee/contact suggestions can also use exact People/
-wikilinks in these list fields, with attendance quotations still required. Mappings must name existing fields of the appropriate kind. System fields,
+wikilinks in these list fields, with attendance quotations still required.
+Mappings must name existing fields of the appropriate kind. System fields,
 including note ID, source associations, and reviewed state, cannot be enriched.
 No production schema keys are created automatically.
 
