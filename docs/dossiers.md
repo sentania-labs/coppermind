@@ -8,13 +8,16 @@ A company has its own identity. A name alone or an email domain never creates
 an inferred identity or employer.
 
 Read and correct the pages in Obsidian. Writing above
-`<!-- coppermind:dossier -->` is preserved byte for byte. Below it, edit a fact
+`<!-- coppermind:dossier -->` is preserved byte for byte, except that the
+generated title and frontmatter `aliases` follow the dossier's name and aliases.
+Below the delimiter, edit a fact
 line to correct it or delete the line to withdraw it. The edit becomes a durable
 correction with that page and its hash as evidence. There is no conflict alarm
 for an ordinary edit, and no separate acceptance ceremony. Keep the delimiter
 and `entity_id` intact; malformed or unrelated files are preserved and reported
 in Admin Problems. Generated pages never overwrite an unrelated occupied path.
-Names can be changed through the API without changing page paths or backlinks.
+Names can be changed through the API without changing page paths or backlinks;
+the page title and `aliases` are updated to match.
 
 Reviewed metadata contributes exact attendee emails and explicit dossier
 wikilinks in list fields. The API also accepts evidenced prose claims from a
