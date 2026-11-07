@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+import structlog
 from coppermind_store.control import ControlState
 from coppermind_store.notes import LocalStore
 from sqlalchemy.engine import make_url
@@ -71,6 +72,18 @@ def migrated_database(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]
         capture_output=True,
     )
     yield url
+
+
+@pytest.fixture(autouse=True)
+def loggers_stay_capturable() -> None:
+    """Keep module loggers from caching the processor chain on first use.
+
+    Importing a service's `main` configures logging with a cached chain, and
+    once a module logger has fired under it, `capture_logs` can no longer
+    reach that logger. Which test fires it first depends on test order, so a
+    test asserting on log events would pass alone and fail in the suite.
+    """
+    structlog.configure(cache_logger_on_first_use=False)
 
 
 @pytest.fixture
