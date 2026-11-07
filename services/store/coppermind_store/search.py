@@ -342,10 +342,8 @@ async def search(
 ) -> Page[SearchHit]:
     from coppermind_store.field_index import conditions, query_context
 
-    if entities:
-        await store.entities.refresh()
-        if store.entities.purge_pending():
-            raise ValidationFailed(["Finish or abandon the interrupted retention purge first"])
+    if entities and store.entities.purge_pending():
+        raise ValidationFailed(["Finish or abandon the interrupted retention purge first"])
     revision = store.control.schema_document().revision
     context = query_context(query, revision) if query.filter else None
     try:

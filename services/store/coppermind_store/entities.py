@@ -91,6 +91,33 @@ def header(entity: Entity) -> str:
     )
 
 
+TITLE = re.compile(r"# [^\n]*\n\n?")
+GENERATED_KEYS = {"entity_id", "type", "aliases"}
+
+
+def owner_wrote(head: str) -> bool:
+    fields, body = fm.parse(head)
+    title = TITLE.match(body)
+    rest = body[title.end() :] if title else body
+    return bool(set(fields) - GENERATED_KEYS) or bool(rest.strip())
+
+
+def regenerate(entity: Entity, head: str) -> str:
+    fields, body = fm.parse(head)
+    title = TITLE.match(body)
+    wanted = f"# {label(entity.name)}\n\n"
+    if (
+        fields.get("aliases") == entity.aliases
+        and fields.get("type") == entity.kind
+        and (title is None or title.group(0).strip() == wanted.strip())
+    ):
+        return head
+    patched = fm.patch(head, {"type": entity.kind, "aliases": entity.aliases})
+    _, body = fm.split(patched)
+    front = patched[: len(patched) - len(body)]
+    return front + (wanted + body[title.end() :] if title else body)
+
+
 def active_facts(entity: Entity, ledger: EntityLedger) -> list[Fact]:
     return [
         f
@@ -157,6 +184,7 @@ class EntityService:
         self.store = store
         self.root = store.control.store.state_dir / "entities"
         self.lock = asyncio.Lock()
+        self.mirrored: dict[str, str] = {}
 
     def load(self) -> EntityLedger:
         try:
@@ -271,9 +299,9 @@ class EntityService:
             raise ValueError(
                 "Dossier identity or delimiter changed; restore them to resume projection"
             )
-        prefix, block = text.split(DELIMITER)
-        prefix += DELIMITER
-        entity.personal = prefix != header(entity)
+        head, block = text.split(DELIMITER)
+        entity.personal = owner_wrote(head)
+        prefix = regenerate(entity, head) + DELIMITER
         if block == entity.pending:
             entity.generated, entity.pending = block, None
         if entity.generated is not None and block != entity.generated:
@@ -512,6 +540,7 @@ class EntityService:
             return ""
 
     async def mirror(self, ledger: EntityLedger) -> None:
+        mirrored: dict[str, str] = {}
         async with self.store.session_factory() as session, session.begin():
             await session.execute(
                 sa.delete(EntityRecord).where(EntityRecord.id.not_in(ledger.entities))
@@ -523,19 +552,28 @@ class EntityService:
             )
             for entity in ledger.entities.values():
                 record = public(entity)
+                inactive = bool(entity.retired_at or entity.redirect)
+                body = (
+                    None
+                    if inactive
+                    else self.personal_text(entity) + render(entity, ledger, search=True)
+                )
+                mirrored[entity.id] = digest([record, body])
+                if self.mirrored.get(entity.id) == mirrored[entity.id]:
+                    continue
                 values = dict(
                     id=entity.id,
                     kind=entity.kind,
                     name=entity.name,
                     version=entity.version,
-                    active=not entity.retired_at and not entity.redirect,
+                    active=not inactive,
                     record=record,
                 )
                 stmt = insert(EntityRecord).values(**values)
                 await session.execute(
                     stmt.on_conflict_do_update(index_elements=[EntityRecord.id], set_=values)
                 )
-                if entity.retired_at or entity.redirect:
+                if body is None:
                     await session.execute(
                         sa.delete(SearchDocument).where(
                             SearchDocument.kind == "entity", SearchDocument.ref_id == entity.id
@@ -547,7 +585,7 @@ class EntityService:
                     ref_id=entity.id,
                     path=entity.path,
                     title=entity.name,
-                    body=self.personal_text(entity) + render(entity, ledger, search=True),
+                    body=body,
                     version=str(entity.version),
                     indexed_at=datetime.now(UTC),
                 )
@@ -557,11 +595,13 @@ class EntityService:
                         index_elements=[SearchDocument.kind, SearchDocument.ref_id], set_=values
                     )
                 )
+        self.mirrored = mirrored
 
     async def list(self, query: EntityQuery) -> dict[str, Any]:
         async with self.store.maintenance.shared(), self.lock:
+            if self.purge_pending():
+                raise ValidationFailed(["Finish or abandon the interrupted retention purge first"])
             ledger = self.load()
-            await self.refresh_locked(ledger)
             signature = digest(query.model_dump(exclude={"cursor", "limit"}))[:16]
             after = ""
             if query.cursor:
@@ -597,8 +637,9 @@ class EntityService:
 
     async def get(self, identity: str) -> dict[str, Any]:
         async with self.store.maintenance.shared(), self.lock:
+            if self.purge_pending():
+                raise ValidationFailed(["Finish or abandon the interrupted retention purge first"])
             ledger = self.load()
-            await self.refresh_locked(ledger)
             if identity not in ledger.entities:
                 raise NotFound(identity)
             return public(ledger.entities[identity]) | {
@@ -809,11 +850,12 @@ class EntityService:
                 text = path.read_text()
                 if text.count(DELIMITER) != 1:
                     continue
-                prefix, block = text.split(DELIMITER)
-                if prefix + DELIMITER != header(entity) or block not in {
-                    entity.generated,
-                    entity.pending,
-                }:
+                head, block = text.split(DELIMITER)
+                try:
+                    wrote = owner_wrote(head)
+                except (ValueError, fm.FrontmatterError):
+                    continue
+                if wrote or block not in {entity.generated, entity.pending}:
                     continue  # A fresh device edit is personal work, even before reconciliation.
             files = [_file(self.store, "notes", path)] if path.exists() else []
             candidate = PurgeCandidate(

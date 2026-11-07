@@ -16,7 +16,7 @@ async def person(store, name="Casey", address="casey@example.test"):
 
 
 async def reviewed_note(store, body="Casey is an engineer."):
-    return await store.create_note(
+    note = await store.create_note(
         CreateNote(
             title="Meeting",
             body=body,
@@ -27,6 +27,8 @@ async def reviewed_note(store, body="Casey is an engineer."):
             },
         )
     )
+    await store.entities.refresh()
+    return note
 
 
 async def claim(store, entity, note, **kwargs):
@@ -57,6 +59,7 @@ async def test_identity_claims_correction_projection_and_recovery(store):
     prefix, block = original.split(DELIMITER)
     prefix += "Personal writing stays byte for byte.\n\n"
     path.write_text(prefix + DELIMITER + block.replace("role: Engineer", "role: Architect"))
+    await store.entities.refresh()
     updated = await store.entities.get(a["id"])
     assert not updated["problem"]
     corrections = [f for f in updated["facts"] if f["origin"] == "correction"]
@@ -69,6 +72,7 @@ async def test_identity_claims_correction_projection_and_recovery(store):
         await session.execute(sa.delete(EntityRecord))
         await session.execute(sa.delete(SearchDocument))
     store.entities = EntityService(store)
+    await store.entities.refresh()
     assert (await store.entities.get(a["id"]))["facts"] == updated["facts"]
     assert path.read_text().split(DELIMITER)[0] == prefix
     with pytest.raises(VersionConflict):
@@ -87,6 +91,7 @@ async def test_evidence_withdraws_on_unreview_edit_or_delete(store):
     await store.patch_frontmatter(
         note.id, PatchFrontmatter(set={"reviewed": False}), note.content_hash
     )
+    await store.entities.refresh()
     withdrawn = await store.entities.get(p["id"])
     assert all(f["state"] == "withdrawn" for f in withdrawn["facts"])
     assert "Engineer" not in (store.notes_root / p["path"]).read_text()
@@ -100,6 +105,7 @@ async def test_retired_subject_purges_without_rewriting_git_or_regeneration(stor
     p = await claim(store, p, note)
     path = store.notes_root / p["path"]
     path.unlink()
+    await store.entities.refresh()
     retired = await store.entities.get(p["id"])
     assert retired["retired_at"]
     assert not (await store.entities.list(EntityQuery())).get("items")
@@ -118,6 +124,7 @@ async def test_projection_race_occupied_path_and_reserved_folders(store, monkeyp
     p = await person(store)
     path = store.notes_root / p["path"]
     path.write_text("An unrelated file, never overwrite me.")
+    await store.entities.refresh()
     item = await store.entities.get(p["id"])
     assert item["problem"] and path.read_text() == "An unrelated file, never overwrite me."
     unknown = store.notes_root / "People" / "Handwritten.md"
@@ -194,9 +201,10 @@ async def test_projection_receipt_survives_interrupted_write(store, monkeypatch)
         raise OSError("simulated crash after atomic rename")
 
     monkeypatch.setattr(entities, "commit_staged", interrupt)
-    await store.entities.get(p["id"])
+    await store.entities.refresh()
     monkeypatch.setattr(entities, "commit_staged", original)
     store.entities = EntityService(store)
+    await store.entities.refresh()
     restored = await store.entities.get(p["id"])
     corrections = [f for f in restored["facts"] if f["origin"] == "correction"]
     assert len(corrections) == 1 and corrections[0]["value"] == "Architect"
@@ -228,6 +236,7 @@ async def test_projection_racing_device_edit_is_imported_next_pass(store, monkey
         p["id"], EntityChange(version=p["version"], action="rename", name="Casey New")
     )
     assert "role: Captain" in path.read_text()
+    await store.entities.refresh()
     restored = await store.entities.get(p["id"])
     assert any(f["value"] == "Captain" and f["state"] == "confirmed" for f in restored["facts"])
 
@@ -308,6 +317,7 @@ async def test_page_edit_keeps_relationship_target(store):
     a = await claim(store, a, note, target=company["id"])
     path = store.notes_root / a["path"]
     path.write_text(path.read_text().replace("role: Engineer", "role: Architect"))
+    await store.entities.refresh()
     updated = await store.entities.get(a["id"])
     edited = next(
         f for f in updated["facts"] if f["value"] == "Architect" and f["state"] == "confirmed"
@@ -335,5 +345,62 @@ async def test_note_linking_a_merged_page_contributes_to_the_target(store):
             },
         )
     )
+    await store.entities.refresh()
     current = await store.entities.get(keep["id"])
     assert any(f["predicate"] == "mentioned" and f["value"] == "Linked" for f in current["facts"])
+
+
+async def test_rename_and_aliases_regenerate_the_header_without_marking_personal(store):
+    await reviewed_note(store)
+    p = (await store.entities.list(EntityQuery()))["items"][0]
+    assert p["automatic"] and not p["personal"]
+    path = store.notes_root / p["path"]
+    assert path.read_text().startswith(f"---\nentity_id: {p['id']}")
+    renamed = await store.entities.change(
+        p["id"], EntityChange(version=p["version"], action="rename", name="Casey Smith")
+    )
+    aliased = await store.entities.change(
+        p["id"], EntityChange(version=renamed["version"], action="aliases", aliases=["KC"])
+    )
+    head = path.read_text().split(DELIMITER)[0]
+    assert "# Casey Smith\n" in head
+    assert "- KC" in head or "[KC]" in head
+    assert not (await store.entities.get(p["id"]))["personal"]
+    path.write_text(path.read_text().replace(DELIMITER, "Mine.\n\n" + DELIMITER))
+    await store.entities.refresh()
+    owner = await store.entities.get(p["id"])
+    assert owner["personal"]
+    await store.entities.change(
+        p["id"], EntityChange(version=owner["version"], action="rename", name="Casey Jones")
+    )
+    head = path.read_text().split(DELIMITER)[0]
+    assert "# Casey Jones\n" in head and "Mine.\n" in head
+    assert aliased["aliases"] == ["KC"]
+
+
+async def test_reads_and_search_do_not_rescan_dossiers_and_mirror_skips_unchanged(
+    store, monkeypatch
+):
+    p = await person(store)
+    await reviewed_note(store)
+    await store.entities.refresh()
+
+    async def indexed_at():
+        async with store.session_factory() as session:
+            return (
+                await session.execute(
+                    sa.select(SearchDocument.indexed_at).where(SearchDocument.kind == "entity")
+                )
+            ).all()
+
+    before = await indexed_at()
+    await store.entities.refresh()
+    assert await indexed_at() == before
+
+    def scanned(*args):
+        raise AssertionError("reads must not scan dossier pages")
+
+    monkeypatch.setattr(store.entities, "observe", scanned)
+    assert (await store.entities.list(EntityQuery()))["items"]
+    assert (await store.entities.get(p["id"]))["id"] == p["id"]
+    assert (await store.search(SearchQuery(q="Casey"), entities=True)).items
