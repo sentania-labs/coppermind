@@ -459,3 +459,70 @@ async def test_purge_removes_supporting_quotes_from_other_notes_enrichment_snaps
     assert not saved.evidence.get("dossiers")
     assert not saved.decisions
     assert BODY not in saved.model_dump_json()
+
+
+async def test_notes_reviewed_before_enablement_are_not_swept_to_the_provider(store):
+    old = await store.create_note(
+        CreateNote(title="Old reviewed", body=BODY, frontmatter={"reviewed": True})
+    )
+    context = await configure(store)
+    seen = provider(context, extracted())
+    await context.tick()
+    assert not [j for j in context.jobs() if j.note_id == old.id]
+    assert not seen
+    fresh = await store.create_note(
+        CreateNote(title="New reviewed", body=BODY, frontmatter={"reviewed": True})
+    )
+    await context.tick()
+    assert [j.purpose for j in context.jobs() if j.note_id == fresh.id] == ["dossier"]
+    assert len(seen) == 1
+
+
+async def test_dossier_job_made_stale_by_a_settings_change_is_requeued(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Reviewed", body=BODY, frontmatter={"reviewed": True})
+    )
+    seen = provider(context, extracted())
+    job = context.load_job(await context.queue_reviewed(note.id))
+    await context.save_assignment(
+        {
+            "revision": 2,
+            "assignment": context.config()
+            .assignments["enrichment"]
+            .model_copy(update={"fields": []})
+            .model_dump(),
+        }
+    )
+    await context.tick()
+    assert context.load_job(job.id).state == "stale"
+    assert not seen
+    await context.tick()
+    assert context.load_job(job.id).state == "applied"
+    assert len(seen) == 1
+
+
+async def test_ordinary_note_wikilink_in_an_unmapped_field_is_accepted(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Discussion", folder="Review", body="See [[Projects/Apollo]] for sailing.")
+    )
+    provider(
+        context,
+        {
+            "suggestions": [
+                {
+                    "kind": "field",
+                    "field": "account",
+                    "value": ["[[Projects/Apollo]]"],
+                    "quote": "[[Projects/Apollo]]",
+                    "confidence": 0.5,
+                    "reason": "Linked project",
+                }
+            ],
+            "unresolved": [],
+        },
+    )
+    job = context.load_job(await context.queue_note(note.id))
+    await context.run_job(job)
+    assert job.state == "suggested", job.error

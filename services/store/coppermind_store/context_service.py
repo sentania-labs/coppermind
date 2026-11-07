@@ -1074,7 +1074,15 @@ class ContextService:
                     )
                 links = re.findall(r"\[\[([^\]]+)\]\]", json.dumps(item.value, ensure_ascii=False))
                 permitted = {dossiers[i]["path"].removesuffix(".md") for i in item.entity_ids}
-                if any(
+                if (
+                    item.entity_ids
+                    or item.field
+                    in {
+                        assignment.attendees_field,
+                        assignment.contacts_field,
+                    }
+                    - {""}
+                ) and any(
                     link.split("|", 1)[0].removesuffix(".md") not in permitted for link in links
                 ):
                     raise JobRejected(
@@ -1231,9 +1239,7 @@ class ContextService:
         )
         async with self.lock:
             latest = self.load_job(identity)
-            if latest.state == "failed" or (
-                latest.purpose == "dossier" and latest.state == "stale"
-            ):
+            if latest.state == "failed":
                 latest.config_hash, latest.schema_hash = self.config_hash(), self.schema_hash()
                 latest.state, latest.attempts = "queued", 0
                 latest.set_error()
@@ -1492,6 +1498,9 @@ class ContextService:
             "frontmatter": note.frontmatter,
             "body": note.body,
         }
+        job.evidence["dossiers"] = await relevant(
+            self, note, "\n".join(await self.source_text(note.id))
+        )
         job.evidence["allowed_fields"] = [
             field
             for field in job.evidence["allowed_fields"]
@@ -1621,6 +1630,12 @@ class ContextService:
                 and previous.note_id == identity
                 and previous.note_hash == note.content_hash
             ):
+                if previous.state == "stale":
+                    previous.config_hash = self.config_hash()
+                    previous.schema_hash = self.schema_hash()
+                    previous.state, previous.attempts = "queued", 0
+                    previous.set_error()
+                    self.save_job(previous)
                 return previous.id
         job_id = fingerprint([identity, note.content_hash, EXTRACTION_VERSION])
         if not (self.root / "jobs" / f"{job_id}.json").exists():
@@ -1658,8 +1673,11 @@ class ContextService:
             NoteQuery(reviewed=True, state="ok", cursor=self.reviewed_cursor, limit=50)
         )
         self.reviewed_cursor = reviewed.next_cursor
+        existing = set(self.read("automatic_baseline", {"ids": []})["ids"])
+        enriched = {j.note_id for j in self.jobs() if j.purpose != "dossier"}
         for note in reviewed.items:
-            await self.queue_reviewed(note.id)
+            if note.id not in existing or note.id in enriched:
+                await self.queue_reviewed(note.id)
         page = await self.store.list_notes(
             NoteQuery(
                 reviewed=False,

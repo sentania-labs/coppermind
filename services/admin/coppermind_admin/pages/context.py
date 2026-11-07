@@ -532,7 +532,8 @@ def router(wiring: Wiring) -> APIRouter:
                 '<h2>Enrichment setup</h2><p class="notice">When enabled, '
                 "selected note text, associated transcripts, relevant dossiers and nearby "
                 "calendar/contact records "
-                "are sent to this provider. Existing notes require an explicit backlog selection. "
+                "are sent to this provider. Existing notes require an explicit backlog selection; "
+                "existing notes that were never sent are not swept when reviewed. "
                 "Calls run one at a time. Keys stay outside the vault and Git.</p>"
                 '<p><a href="/admin/context?tab=review">Select existing notes for enrichment</a>. '
                 "Suggestions with confidence of at least 0.8 fill blank fields in Review/. "
