@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import Field
 
 from coppermind.context_config import ContextModel
-from coppermind.entities import Entity, EntityInput, Evidence, Fact
+from coppermind.entities import Entity, EntityInput, EntityLedger, Evidence, Fact
 from coppermind.schema import note_date
 from coppermind_store.entities import active_facts, digest, email
 
@@ -77,10 +77,13 @@ def quoted_frontmatter(note: NoteDocument) -> dict[str, str]:
 
 
 async def relevant(
-    context: ContextService, note: NoteDocument, extra: str = ""
+    context: ContextService,
+    note: NoteDocument,
+    extra: str = "",
+    ledger: EntityLedger | None = None,
 ) -> list[dict[str, Any]]:
     """Select exact links/emails or unique full names; never send the whole catalog."""
-    ledger = context.store.entities.load()
+    ledger = context.store.entities.load() if ledger is None else ledger
     text = (note.body + "\n" + json.dumps(note.frontmatter, default=str) + "\n" + extra).casefold()
     active = [e for e in ledger.entities.values() if not e.retired_at and not e.redirect]
     names: dict[str, int] = {}
@@ -314,4 +317,9 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
         ledger.receipts.append({"extraction_job": job.id, "note_id": note.id})
         service.save(ledger)
         await service.refresh_locked(ledger)
-    job.evidence, job.usage, job.state = evidence, usage, "applied"
+    job.evidence = {
+        "note_id": note.id,
+        "note_hash": note.content_hash,
+        "entity_ids": sorted(entity.id for entity in resolved.values()),
+    }
+    job.usage, job.state = usage, "applied"

@@ -828,3 +828,49 @@ async def test_written_fill_is_acknowledged_when_evidence_can_no_longer_be_rebui
     current = await store.get_note(note.id)
     assert current.frontmatter["account"] == ["Sailing"]
     assert "tags" not in current.frontmatter or not current.frontmatter["tags"]
+
+
+async def test_applied_extraction_job_keeps_identifiers_not_the_note_or_dossier_snapshots(store):
+    context, source, extraction, person, company = await contribute(store)
+    saved = context.load_job(extraction.id)
+    assert saved.state == "applied"
+    assert saved.evidence == {
+        "note_id": source.id,
+        "note_hash": source.content_hash,
+        "entity_ids": sorted([person.id, company.id]),
+    }
+    assert BODY not in saved.model_dump_json()
+
+
+async def test_a_model_filling_every_advertised_field_is_not_rejected(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].fields = ["account"]
+    config.assignments["enrichment"].invitees_field = "tags"
+    config.assignments["enrichment"].event_field = "context"
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Sailing", body="sailing", frontmatter={"date": "2026-10-14"})
+    )
+
+    def answer(evidence):
+        return {
+            "suggestions": [
+                {
+                    "kind": "field",
+                    "field": field["name"],
+                    "value": ["Sailing"],
+                    "quote": "sailing",
+                    "confidence": 0.5,
+                    "reason": "Topic",
+                }
+                for field in evidence["allowed_fields"]
+            ]
+        }
+
+    seen = provider(context, answer)
+    job = context.load_job(await context.queue_note(note.id))
+    await context.run_job(job)
+    assert [f["name"] for f in seen[0]["allowed_fields"]] == ["account"]
+    assert job.state == "suggested", job.error
+    assert [s.field for s in job.result.suggestions] == ["account"]

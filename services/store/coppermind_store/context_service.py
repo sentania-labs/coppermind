@@ -259,11 +259,13 @@ class ContextService:
             occurrences, events, day, self.store.control.settings().general.timezone
         )
 
-    async def note_evidence_hash(self, note: Any) -> str:
+    async def note_evidence_hash(self, note: Any, ledger: Any = None) -> str:
         return fingerprint(
             {
                 "calendar": await self.calendar_evidence_hash(note),
-                "dossiers": await relevant(self, note, "\n".join(await self.source_text(note.id))),
+                "dossiers": await relevant(
+                    self, note, "\n".join(await self.source_text(note.id)), ledger
+                ),
             }
         )
 
@@ -958,9 +960,7 @@ class ContextService:
             *assignment.fields,
             assignment.attendees_field,
             assignment.contacts_field,
-            assignment.invitees_field,
-            assignment.event_field,
-        }
+        } - {assignment.invitees_field, assignment.event_field}
 
     def validate_result(self, result: Suggestions, evidence: dict[str, Any]) -> None:
         schema = self.store.control.schema()
@@ -1731,11 +1731,13 @@ class ContextService:
         self.reviewed_cursor = reviewed.next_cursor
         existing = set(self.read("automatic_baseline", {"ids": []})["ids"])
         prior_jobs = self.jobs()
+        touched: list[str] = []
+        ledger = self.store.entities.load()
         enriched = {j.note_id for j in prior_jobs if j.purpose != "dossier"}
         for note in reviewed.items:
             if note.id not in existing or note.id in enriched:
                 try:
-                    await self.queue_reviewed(note.id, prior_jobs)
+                    touched.append(await self.queue_reviewed(note.id, prior_jobs))
                 except (ValueError, StoreError):
                     log.warning("dossier extraction not queued for note %s", note.id)
         page = await self.store.list_notes(
@@ -1756,8 +1758,9 @@ class ContextService:
                 )
                 if self.config().lifecycle_enabled and previous:
                     current = await self.store.get_note(note.id)
-                    if previous[-1].evidence_hash != await self.note_evidence_hash(current):
+                    if previous[-1].evidence_hash != await self.note_evidence_hash(current, ledger):
                         identity = await self.queue_note(note.id)
+                        touched.append(identity)
                         changed = self.load_job(identity)
                         known = previous[-1]
                         changed.purpose = (
@@ -1766,7 +1769,10 @@ class ContextService:
                             and fingerprint(known.evidence.get("dossiers", []))
                             == fingerprint(
                                 await relevant(
-                                    self, current, "\n".join(await self.source_text(current.id))
+                                    self,
+                                    current,
+                                    "\n".join(await self.source_text(current.id)),
+                                    ledger,
                                 )
                             )
                             else "initial"
@@ -1774,13 +1780,19 @@ class ContextService:
                         self.save_job(changed)
                     continue
                 if note.id not in baseline:
-                    await self.queue_note(note.id)
+                    touched.append(await self.queue_note(note.id))
                     self.eligibility_errors.pop(note.id, None)
             except (ValueError, StoreError):
                 self.eligibility_errors[note.id] = (
                     note.path + ": not eligible; check metadata and associated sources"
                 )
-        for job in self.jobs():
+        current_jobs = {job.id: job for job in prior_jobs}
+        for identity in touched:
+            current_jobs[identity] = self.load_job(identity)
+        for known in sorted(current_jobs.values(), key=lambda item: item.id):
+            if known.state in {"applied", "rejected", "stale"}:
+                continue
+            job = self.load_job(known.id)
             if job.attempt_limit is None:
                 job.attempt_limit = assignment.attempts
                 self.save_job(job)
