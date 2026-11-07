@@ -171,6 +171,9 @@ async def test_note_purge_scrubs_quotes_and_orphan_dossier(store):
     await store.entities.refresh()
     p = (await store.entities.list(EntityQuery()))["items"][0]
     assert p["automatic"]
+    p = await store.entities.change(
+        p["id"], EntityChange(version=p["version"], action="rename", name="Casey Renamed")
+    )
     await claim(store, p, note)
     git(store.notes_root, "init", "-q")
     commit(store.notes_root)
@@ -404,3 +407,16 @@ async def test_reads_and_search_do_not_rescan_dossiers_and_mirror_skips_unchange
     assert (await store.entities.list(EntityQuery()))["items"]
     assert (await store.entities.get(p["id"]))["id"] == p["id"]
     assert (await store.search(SearchQuery(q="Casey"), entities=True)).items
+
+
+async def test_search_finds_dossiers_after_an_index_rebuild(store):
+    from coppermind_store.indexer import rebuild
+
+    p = await person(store)
+    note = await reviewed_note(store)
+    await claim(store, p, note)
+    await store.entities.refresh()
+    assert (await store.search(SearchQuery(q="Engineer"), entities=True)).items
+    await rebuild(store)
+    hits = await store.search(SearchQuery(q="Engineer"), entities=True)
+    assert [h.id for h in hits.items if h.kind == "entity"] == [p["id"]]

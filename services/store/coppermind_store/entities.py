@@ -184,7 +184,6 @@ class EntityService:
         self.store = store
         self.root = store.control.store.state_dir / "entities"
         self.lock = asyncio.Lock()
-        self.mirrored: dict[str, str] = {}
 
     def load(self) -> EntityLedger:
         try:
@@ -540,7 +539,6 @@ class EntityService:
             return ""
 
     async def mirror(self, ledger: EntityLedger) -> None:
-        mirrored: dict[str, str] = {}
         async with self.store.session_factory() as session, session.begin():
             await session.execute(
                 sa.delete(EntityRecord).where(EntityRecord.id.not_in(ledger.entities))
@@ -550,6 +548,18 @@ class EntityService:
                     SearchDocument.kind == "entity", SearchDocument.ref_id.not_in(ledger.entities)
                 )
             )
+            held_records = {
+                row.id: (row.kind, row.name, row.version, row.active, row.record)
+                for row in (await session.execute(sa.select(EntityRecord))).scalars()
+            }
+            held_documents = {
+                row.ref_id: (row.path, row.title, row.body, row.version)
+                for row in (
+                    await session.execute(
+                        sa.select(SearchDocument).where(SearchDocument.kind == "entity")
+                    )
+                ).scalars()
+            }
             for entity in ledger.entities.values():
                 record = public(entity)
                 inactive = bool(entity.retired_at or entity.redirect)
@@ -558,9 +568,6 @@ class EntityService:
                     if inactive
                     else self.personal_text(entity) + render(entity, ledger, search=True)
                 )
-                mirrored[entity.id] = digest([record, body])
-                if self.mirrored.get(entity.id) == mirrored[entity.id]:
-                    continue
                 values = dict(
                     id=entity.id,
                     kind=entity.kind,
@@ -569,16 +576,30 @@ class EntityService:
                     active=not inactive,
                     record=record,
                 )
-                stmt = insert(EntityRecord).values(**values)
-                await session.execute(
-                    stmt.on_conflict_do_update(index_elements=[EntityRecord.id], set_=values)
-                )
+                if held_records.get(entity.id) != (
+                    entity.kind,
+                    entity.name,
+                    entity.version,
+                    not inactive,
+                    record,
+                ):
+                    stmt = insert(EntityRecord).values(**values)
+                    await session.execute(
+                        stmt.on_conflict_do_update(index_elements=[EntityRecord.id], set_=values)
+                    )
                 if body is None:
                     await session.execute(
                         sa.delete(SearchDocument).where(
                             SearchDocument.kind == "entity", SearchDocument.ref_id == entity.id
                         )
                     )
+                    continue
+                if held_documents.get(entity.id) == (
+                    entity.path,
+                    entity.name,
+                    body,
+                    str(entity.version),
+                ):
                     continue
                 values = dict(
                     kind="entity",
@@ -595,7 +616,6 @@ class EntityService:
                         index_elements=[SearchDocument.kind, SearchDocument.ref_id], set_=values
                     )
                 )
-        self.mirrored = mirrored
 
     async def list(self, query: EntityQuery) -> dict[str, Any]:
         async with self.store.maintenance.shared(), self.lock:
