@@ -552,8 +552,9 @@ picker.addEventListener('change', () => {
 </script>"""
         else:
             body = (
-                "<p>Suggestions never edit a note automatically. Applying changes "
-                "leaves it unreviewed.</p>"
+                "<p>Confident suggestions fill blank fields on notes in the review folder "
+                "automatically. Other suggestions need your approval, and applying any "
+                "change leaves the note unreviewed.</p>"
             )
             body += "<h2>Jobs</h2><table><tr><th>Note</th><th>Status</th><th>Open</th></tr>"
             for job in data["jobs"]:

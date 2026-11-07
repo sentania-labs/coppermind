@@ -1154,10 +1154,9 @@ class ContextService:
             job.state = "suggested"
             job.set_error()
             self.save_job(job)
-            await self.apply_blanks(job)
         except (ValueError, StoreError, StopIteration) as exc:
             stale = str(exc).startswith("stale:")
-            job.state = "applying" if job.pending_approval else "stale" if stale else "failed"
+            job.state = "stale" if stale else "failed"
             if isinstance(exc, InputLimitError):
                 job.set_error(
                     _size_error(exc.size, exc.limit, at_least=exc.at_least),
@@ -1193,12 +1192,29 @@ class ContextService:
                 type(exc).__name__ if isinstance(exc, ValidationError) else str(exc),
             )
         except Exception:
-            job.state = "applying" if job.pending_approval else "failed"
+            job.state = "failed"
             job.set_error(
                 "Provider processing failed unexpectedly; the recorded attempt was consumed"
             )
             log.exception("enrichment job %s for note %s failed unexpectedly", job.id, job.path)
         self.save_job(job)
+        if job.state == "suggested":
+            await self.fill_blanks(job)
+
+    async def fill_blanks(self, job: EnrichmentJob) -> None:
+        try:
+            await self.apply_blanks(job)
+        except Exception as exc:
+            latest = self.load_job(job.id)
+            if latest.pending_approval:
+                latest.set_error("Pending automatic write needs inspection")
+            elif isinstance(exc, ValueError | StoreError):
+                latest.state = "stale"
+                latest.set_error("Note or evidence changed; regenerate suggestions")
+            else:
+                raise
+            self.save_job(latest)
+            job.__dict__.update(latest.__dict__)
 
     def in_review_folder(self, path: str) -> bool:
         folder = sanitize_folder(self.store.control.settings().notes.review_folder)
@@ -1234,10 +1250,11 @@ class ContextService:
                     {"id": job.id, "index": index, "confirmation": "Apply selected suggestion"},
                     automatic=True,
                 )
-            except ValueError as exc:
-                if str(exc) == "field is not blank":
-                    continue
-                raise
+            except ValueError:
+                latest = self.load_job(job.id)
+                if latest.state != "suggested" or latest.pending_approval:
+                    raise
+                continue
             finally:
                 latest = self.load_job(job.id)
                 job.__dict__.update(latest.__dict__)
@@ -1760,12 +1777,7 @@ class ContextService:
                     continue
                 job = self.load_job(job.id)
             if job.state == "suggested":
-                try:
-                    await self.apply_blanks(job)
-                except (ValueError, StoreError):
-                    job.state = "stale"
-                    job.set_error("Note or evidence changed; regenerate suggestions")
-                    self.save_job(job)
+                await self.fill_blanks(job)
             if job.state == "queued":
                 await self.run_job(job)
                 break

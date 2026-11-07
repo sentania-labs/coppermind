@@ -638,3 +638,49 @@ async def test_ordinary_note_wikilink_in_an_unmapped_field_is_accepted(store):
     job = context.load_job(await context.queue_note(note.id))
     await context.run_job(job)
     assert job.state == "suggested", job.error
+
+
+async def test_unfillable_suggestion_is_skipped_without_failing_the_job_or_later_fills(store):
+    context = await configure(store)
+    await context.setup_lifecycle({"revision": context.config().revision})
+    config = context.config()
+    config.assignments["enrichment"].fields = ["tags"]
+    config.assignments["enrichment"].event_field = "account"
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(
+            title="Planning",
+            folder="Review",
+            body="Casey attended sailing",
+            frontmatter={"date": "2026-10-14"},
+        )
+    )
+    seen = []
+
+    def answer(evidence):
+        seen.append(evidence)
+        event = evidence["events"][0]["event_id"]
+        return {
+            "suggestions": [
+                {"kind": "event", "event_ids": [event, event], "confidence": 0.95, "reason": "Two"},
+                {
+                    "kind": "field",
+                    "field": "tags",
+                    "value": ["sailing"],
+                    "quote": "sailing",
+                    "confidence": 0.95,
+                    "reason": "Topic",
+                },
+            ]
+        }
+
+    provider(context, answer)
+    job = context.load_job(await context.queue_note(note.id))
+    await context.run_job(job)
+    saved = context.load_job(job.id)
+    assert saved.state == "suggested" and saved.pending_approval is None, saved.error
+    assert [d["index"] for d in saved.decisions] == [1]
+    assert (await store.get_note(note.id)).frontmatter["tags"] == ["sailing"]
+    await context.tick()
+    assert context.load_job(job.id).state == "suggested"
+    assert len(seen) == 1
