@@ -80,7 +80,6 @@ async def relevant(
     context: ContextService, note: NoteDocument, extra: str = ""
 ) -> list[dict[str, Any]]:
     """Select exact links/emails or unique full names; never send the whole catalog."""
-    await context.store.entities.refresh()
     ledger = context.store.entities.load()
     text = (note.body + "\n" + json.dumps(note.frontmatter, default=str) + "\n" + extra).casefold()
     active = [e for e in ledger.entities.values() if not e.retired_at and not e.redirect]

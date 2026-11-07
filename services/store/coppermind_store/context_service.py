@@ -24,6 +24,7 @@ from coppermind.context_config import (
     read_context_config,
 )
 from coppermind.ids import new_id
+from coppermind.naming import sanitize_folder
 from coppermind.schema import (
     field_suggestion_changes,
     format_note_time,
@@ -1191,8 +1192,12 @@ class ContextService:
             log.exception("enrichment job %s for note %s failed unexpectedly", job.id, job.path)
         self.save_job(job)
 
+    def in_review_folder(self, path: str) -> bool:
+        folder = sanitize_folder(self.store.control.settings().notes.review_folder)
+        return bool(folder) and path.startswith(f"{folder}/")
+
     async def apply_blanks(self, job: EnrichmentJob) -> None:
-        if job.result is None or not job.path.startswith("Review/"):
+        if job.result is None or not self.in_review_folder(job.path):
             return
         for index, suggestion in enumerate(job.result.suggestions):
             if suggestion.kind == "filename" or suggestion.confidence < CONFIDENCE_THRESHOLD:
@@ -1376,7 +1381,7 @@ class ContextService:
                     ]
             if automatic:
                 if (
-                    not note.path.startswith("Review/")
+                    not self.in_review_folder(note.path)
                     or suggestion.kind == "filename"
                     or suggestion.confidence < CONFIDENCE_THRESHOLD
                 ):
