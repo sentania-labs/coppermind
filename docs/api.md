@@ -16,11 +16,12 @@ The story behind these decisions is [architecture.md](architecture.md).
 - Every route needs a scope: `sources:read`, `sources:write`, `notes:read`,
   `notes:write`, `notes:move`, `notes:delete`, `artifacts:read`,
   `artifacts:write`, `journal:read`, `journal:write`, `search:read`,
-  `admin:read`, `admin:write`, `admin:purge`. A key missing the right scope
-  gets 403, not a filtered response. The bootstrap default key and a key
-  created with no `--scope` hold every scope except `admin:purge`, which is
-  granted only when named. Keys minted before the artifact scopes existed do
-  not gain them; mint a key that holds them.
+  `admin:read`, `admin:write`, `admin:purge`, `entities:read`,
+  `entities:write`. A key missing the right scope gets 403, not a filtered
+  response. The bootstrap default key and a key created with no `--scope` hold
+  every scope except `admin:purge`, `entities:read` and `entities:write`,
+  which are granted only when named. Keys minted before the artifact scopes
+  existed do not gain them; mint a key that holds them.
 - Admin's own pages use a signed session cookie; its `/v1/admin/*` API
   endpoints accept either that cookie or a key holding an `admin:*` scope.
 - Every non-2xx response is the same shape: `{"error": "<code>", "message":
@@ -52,6 +53,20 @@ The story behind these decisions is [architecture.md](architecture.md).
 | `metadata_unavailable` | 503 | PostgreSQL is down and the operation needs it. That covers listing, search, and Admin mutations, but also an ordinary note read, create, or replace by ID: resolving a note's path goes through the mirror, so those stop too. Only a file edited directly on the notes filesystem, outside the API, keeps working |
 | `store_unavailable` | 503 | The store service itself cannot be reached |
 | `already_running` | 409 | A job of the same kind is already in progress |
+
+## Dossiers
+
+`GET /v1/entities` and `GET /v1/entities/{id}` require `entities:read`.
+`POST /v1/entities` and `POST /v1/entities/{id}` additionally require
+`entities:write`. Changes carry the current integer `version`. See the
+[dossier contract](dossiers.md#agent-api) for filters, corrections, evidenced
+claims, and merge/split previews. No existing API key gains these scopes.
+
+Entity search hits require both `notes:read` and `entities:read`; source hits
+require both `notes:read` and `sources:read`. Unauthorized kinds are excluded
+before retrieval, ranking and pagination. Entity hits have `kind: entity` and
+link to stable `People/` or `Companies/` pages. Dossier permissions never grant
+access to source artifacts.
 
 ## Notes and folders
 

@@ -40,7 +40,11 @@ def test_a_key_created_without_scopes_excludes_purge_unless_named(tmp_path: Path
     assert run(["create", "--name", "purger", "--scope", "admin:purge"], wiring) == 0
 
     flagless, purger = ControlState(wiring.state_dir).api_keys().keys
-    assert set(flagless.scopes) == set(API_SCOPES) - {"admin:purge"}
+    assert set(flagless.scopes) == set(API_SCOPES) - {
+        "admin:purge",
+        "entities:read",
+        "entities:write",
+    }
     assert purger.scopes == ["admin:purge"]
 
 

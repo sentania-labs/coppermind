@@ -40,6 +40,8 @@ async def search(
     if not principal.has("artifacts:read"):
         query = query.model_copy(update={"include_artifacts": False})
     try:
-        return await client.search(query)
+        return await client.search(
+            query, entities=principal.has("entities:read"), sources=principal.has("sources:read")
+        )
     except StoreError as error:
         return failure(error)

@@ -6,6 +6,16 @@ checked against a running compose stack on that date, not against CI alone.
 This is the first slice of the build. The shape is deliberately narrow: one
 vertical path proved end to end, then widened.
 
+## Dossier slice (November 7, 2026)
+
+People and company identities, evidenced facts, interests, relationships,
+versioned agent corrections, identity previews, Obsidian pages and retention
+integration are implemented. See [dossiers](docs/dossiers.md). The API, page
+correction and search were exercised with isolated live services and PostgreSQL;
+Admin was inspected at desktop and mobile widths. Automatic prose extraction
+and dossier-aware enrichment remain the second slice. Phone synchronization
+has not been exercised by this slice.
+
 ## Working
 
 - **Artifacts (issue 77).** A second first-class kind beside notes. `POST
@@ -87,7 +97,7 @@ vertical path proved end to end, then widened.
   manual setup and no hand populated setting. The one-shot `bootstrap`
   container creates `/data`, generates the internal bearer token and the
   PostgreSQL password as files on volumes (never environment values), creates
-  a working default API key (every scope except `admin:purge`) in a separate
+  a working default API key (every scope except `admin:purge` and the opt-in entity scopes) in a separate
   restricted volume, and writes `settings.yaml`, `schema.yaml` and the key's
   Argon2 hash at revision 1. Running it again keeps every existing secret, key and setting. Revoke
   that default and it stays revoked. The revocation takes effect for

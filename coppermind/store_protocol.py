@@ -836,8 +836,8 @@ class Page[T](BaseModel):
     next_cursor: str | None = None
 
 
-SearchKind = Literal["note", "source", "artifact"]
-"""A note a person owns, a generated page projecting a source, or an artifact."""
+SearchKind = Literal["note", "source", "artifact", "entity"]
+"""A note, a generated source page, an artifact, or a dossier."""
 
 
 class SearchQuery(NoteQuery):
@@ -1073,7 +1073,9 @@ class Store(Protocol):
 
     async def rebuild_metadata(self) -> RebuildMetadataResult: ...
 
-    async def search(self, query: SearchQuery) -> Page[SearchHit]: ...
+    async def search(
+        self, query: SearchQuery, *, entities: bool = False, sources: bool = True
+    ) -> Page[SearchHit]: ...
 
     async def get_search_index_status(self) -> SearchIndexStatus: ...
 

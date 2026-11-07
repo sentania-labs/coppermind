@@ -82,6 +82,7 @@ def listing(value: PurgeResult, request: Request) -> str:
             "note": "Deleted note",
             "source": "Orphaned source",
             "artifact": "Removed artifact",
+            "entity": "Dossier",
         }[c.kind]
         if c.leftover:
             label += " (leftover from an interrupted purge)"
@@ -93,7 +94,8 @@ def listing(value: PurgeResult, request: Request) -> str:
     return f"""<div class="metrics"><div class="metric">Deleted notes
 <strong>{value.counts.notes}</strong></div>
 <div class="metric">Orphaned sources<strong>{value.counts.sources}</strong></div>
-<div class="metric">Removed artifacts<strong>{value.counts.artifacts}</strong></div></div>
+<div class="metric">Removed artifacts<strong>{value.counts.artifacts}</strong></div>
+<div class="metric">Dossiers<strong>{value.counts.entities}</strong></div></div>
 <div class="review-grid">{groups}</div>
 <p class="muted">An item associated with several origins or providers counts once in each group.</p>
 <h2>Items in this list</h2><table><thead><tr><th>Item</th><th>Origin / provider</th>
@@ -277,6 +279,8 @@ Save a changed value before previewing. Saving does not start a purge.</p>
                 parts.append(
                     f"{plural(value.counts.notes, 'deleted note')} and their recovery copies"
                 )
+            if value.counts.entities:
+                parts.append(f"{plural(value.counts.entities, 'dossier')} and their facts")
             if value.counts.sources:
                 parts.append(
                     f"{plural(value.counts.sources, 'orphaned source')} with "

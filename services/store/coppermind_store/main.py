@@ -30,6 +30,7 @@ from coppermind_store import __version__
 from coppermind_store.auth import InternalAuth
 from coppermind_store.context_api import router as context_router
 from coppermind_store.control import ControlState
+from coppermind_store.entity_api import router as entity_router
 from coppermind_store.fs import is_writable
 from coppermind_store.internal_api import router as internal_router
 from coppermind_store.notes import LocalStore
@@ -193,6 +194,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
 
     app.include_router(internal_router)
     app.include_router(context_router)
+    app.include_router(entity_router)
     return app
 
 

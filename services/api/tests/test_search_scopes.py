@@ -14,7 +14,9 @@ class Store:
     def __init__(self) -> None:
         self.queries: list[SearchQuery] = []
 
-    async def search(self, query: SearchQuery) -> Page[SearchHit]:
+    async def search(
+        self, query: SearchQuery, *, entities: bool = False, sources: bool = True
+    ) -> Page[SearchHit]:
         self.queries.append(query)
         return Page[SearchHit](items=[], next_cursor=None)
 

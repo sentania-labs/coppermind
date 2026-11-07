@@ -895,6 +895,7 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
     # A store write that committed while the walk was reading may have been
     # replaced by the older bytes the walk saw; the mirror knows better.
     await catch_up(store)
+    await store.entities.refresh()
     current = await status(store)
     return {"notes": current.notes, "sources": current.sources, "artifacts": current.artifacts}
 

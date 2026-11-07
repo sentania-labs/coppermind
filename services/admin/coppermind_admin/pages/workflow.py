@@ -45,7 +45,7 @@ def router(wiring: Wiring) -> APIRouter:
                     ("intake", "Dropbox"),
                     ("enrichment", "Enrichment"),
                     ("review", "Review notes"),
-                    ("dossiers", "People"),
+                    ("dossiers", "Dossiers"),
                 ]
             )
             + "</p>"
@@ -287,29 +287,59 @@ def router(wiring: Wiring) -> APIRouter:
                     )
                 )
             elif tab == "dossiers":
-                title = "People"
+                title = "Dossiers"
                 body += (
-                    "<p>Confirmed contributions from reviewed notes. Editing a reviewed n"
-                    "ote updates its contribution; names alone never merge identities.</p"
-                    ">"
+                    "<p>Read people and companies in Obsidian under People/ and Companies/. "
+                    "Edit a fact there to correct it. This view is for setup and repair.</p>"
                 )
-                for person in data.get("dossiers", {}).values():
-                    body += (
-                        '<section class="connection-card"><h2>' + e(person["address"]) + "</h2><ul>"
-                    )
-                    for note in person["notes"]:
+                for kind, heading in (("person", "People"), ("company", "Companies")):
+                    body += "<h2>" + heading + "</h2>"
+                    for entity in data.get("entities", []):
+                        if entity["kind"] != kind:
+                            continue
                         body += (
-                            '<li><a href="/admin/review/'
-                            + quote(note["id"])
-                            + '">'
-                            + e(note["path"])
-                            + "</a> · "
-                            + e(note["date"])
-                            + "</li>"
+                            '<details class="connection-card" '
+                            'style="overflow-wrap:anywhere"><summary>' + e(entity["name"])
                         )
-                    body += "</ul></section>"
-                if not data.get("dossiers"):
-                    body += '<p class="notice">No confirmed attendee contributions yet.</p>'
+                        body += " (retired)" if entity.get("retired_at") else ""
+                        body += "</summary><p>" + e(entity["path"]) + "</p>"
+                        if entity.get("problem"):
+                            body += '<p class="error">' + e(entity["problem"]) + "</p>"
+                        if entity.get("aliases"):
+                            body += "<p>Aliases: " + e(", ".join(entity["aliases"])) + "</p>"
+                        for section in ("Facts", "Relationships", "Interests"):
+                            body += "<h3>" + section + "</h3><ul>"
+                            for fact in entity["facts"]:
+                                category = (
+                                    "Relationships"
+                                    if fact.get("target")
+                                    else "Interests"
+                                    if fact["predicate"] == "interest"
+                                    else "Facts"
+                                )
+                                if category != section or fact["state"] != "confirmed":
+                                    continue
+                                body += "<li>" + e(fact["predicate"] + ": " + fact["value"])
+                                evidence = fact["evidence"]
+                                if evidence.get("note_id"):
+                                    body += (
+                                        ' · <a href="/admin/review/'
+                                        + quote(evidence["note_id"])
+                                        + '">'
+                                        + e(evidence["path"])
+                                        + "</a>"
+                                    )
+                                else:
+                                    body += " · " + e(evidence["path"])
+                                if evidence.get("quote"):
+                                    body += "<blockquote>" + e(evidence["quote"]) + "</blockquote>"
+                                body += "</li>"
+                            body += "</ul>"
+                        body += "</details>"
+                if not data.get("entities"):
+                    body += (
+                        '<p class="notice">No dossiers yet. Reviewed notes contribute people.</p>'
+                    )
             else:
                 title = "Review notes"
                 body += (

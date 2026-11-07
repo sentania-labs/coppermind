@@ -32,7 +32,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import REGCONFIG
 from sqlalchemy.exc import SQLAlchemyError
 
-from coppermind.db.models import Artifact, Note, SearchDocument
+from coppermind.db.models import Artifact, EntityRecord, Note, SearchDocument
 from coppermind.store_protocol import (
     FilterCursorConflict,
     MetadataUnavailable,
@@ -101,7 +101,7 @@ def decode_cursor(value: str, q: str) -> SearchCursor:
             or isinstance(rank, bool)
             or not isinstance(rank, int | float)
             or not math.isfinite(rank)
-            or kind not in ("note", "source", "artifact")
+            or kind not in ("note", "source", "artifact", "entity")
             or not isinstance(ref_id, str)
         ):
             raise ValueError
@@ -209,6 +209,9 @@ def build_search(
     notes_folder: str,
     after: SearchCursor | None = None,
     extra: list[Any] | None = None,
+    *,
+    entities: bool = False,
+    sources: bool = True,
 ) -> sa.Select[Any]:
     """One page of hits plus one, so the caller knows whether another follows.
 
@@ -218,6 +221,16 @@ def build_search(
     tsquery = ts_query(query.q)
     rank = sa.func.ts_rank(SearchDocument.search_vector, tsquery)
     state = note_state()
+    entity_allowed = sa.exists(
+        sa.select(EntityRecord.id).where(
+            EntityRecord.id == SearchDocument.ref_id,
+            EntityRecord.active.is_(True),
+            sa.cast(EntityRecord.version, sa.Text) == SearchDocument.version,
+        )
+    ).correlate_except(EntityRecord)
+    permitted = (
+        ["note", "artifact"] + (["source"] if sources else []) + (["entity"] if entities else [])
+    )
     matches = (
         sa.select(
             SearchDocument.kind.label("kind"),
@@ -234,7 +247,13 @@ def build_search(
             sa.and_(SearchDocument.kind == "artifact", Artifact.id == SearchDocument.ref_id),
         )
         .where(*match_conditions(query.q))
-        .where(eligible(SearchDocument.kind, SearchDocument.ref_id, notes_folder))
+        .where(SearchDocument.kind.in_(permitted))
+        .where(
+            sa.or_(
+                eligible(SearchDocument.kind, SearchDocument.ref_id, notes_folder),
+                sa.and_(SearchDocument.kind == "entity", entity_allowed),
+            )
+        )
         .where(
             sa.or_(
                 SearchDocument.kind != "source",
@@ -318,9 +337,15 @@ def page_of(rows: list[Any], query: SearchQuery, context: str | None = None) -> 
     return Page[SearchHit](items=hits, next_cursor=next_cursor)
 
 
-async def search(store: LocalStore, query: SearchQuery) -> Page[SearchHit]:
+async def search(
+    store: LocalStore, query: SearchQuery, *, entities: bool = False, sources: bool = True
+) -> Page[SearchHit]:
     from coppermind_store.field_index import conditions, query_context
 
+    if entities:
+        await store.entities.refresh()
+        if store.entities.purge_pending():
+            raise ValidationFailed(["Finish or abandon the interrupted retention purge first"])
     revision = store.control.schema_document().revision
     context = query_context(query, revision) if query.filter else None
     try:
@@ -341,7 +366,12 @@ async def search(store: LocalStore, query: SearchQuery) -> Page[SearchHit]:
                 )
             predicates = await conditions(store, query, session)
             statement = build_search(
-                query, store.control.settings().notes.notes_folder, after, predicates
+                query,
+                store.control.settings().notes.notes_folder,
+                after,
+                predicates,
+                entities=entities,
+                sources=sources,
             )
             rows = list((await session.execute(statement)).all())
     except (SQLAlchemyError, OSError) as exc:

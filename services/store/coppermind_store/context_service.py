@@ -435,6 +435,10 @@ class ContextService:
             "config": config.model_dump(exclude={"sources"}),
             "dropbox": self.dropbox.snapshot(),
             "dossiers": self.read("dossiers", {}),
+            "entities": [
+                e.model_dump(mode="json", exclude={"generated", "pending"})
+                for e in self.store.entities.load().entities.values()
+            ],
             "calendar_followups": self.read("calendar-followups", {}),
             "enrichment_fields": [
                 {"name": key.name, "kind": key.kind, "description": key.description}

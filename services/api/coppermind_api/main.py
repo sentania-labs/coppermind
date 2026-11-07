@@ -28,6 +28,7 @@ from coppermind_api import __version__
 from coppermind_api.auth import ApiKeyAuthenticator, AuthenticationUnavailable
 from coppermind_api.v1.artifacts import router as artifacts_router
 from coppermind_api.v1.calendars import router as calendars_router
+from coppermind_api.v1.entities import router as entities_router
 from coppermind_api.v1.folders import router as folders_router
 from coppermind_api.v1.ingest import router as ingest_router
 from coppermind_api.v1.notes import router as notes_router
@@ -160,6 +161,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
     app.include_router(workflow_router)
     app.include_router(status_router)
     app.include_router(search_router)
+    app.include_router(entities_router)
 
     app.include_router(sources_router)
     app.include_router(artifacts_router)
