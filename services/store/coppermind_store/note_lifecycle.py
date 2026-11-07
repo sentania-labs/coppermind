@@ -309,7 +309,7 @@ class NoteLifecycle:
             "date": str(note_date(fields, schema)),
             "properties": fields,
             "attendees": [p for p in people if isinstance(p, str)],
-            "calendar_hash": await self.context.note_evidence_hash(note),
+            "calendar_hash": await self.context.calendar_evidence_hash(note),
             "state": "confirmed",
             "at": now(),
         }
@@ -408,7 +408,7 @@ class NoteLifecycle:
                     continue
                 if not changed and note.content_hash == record["note_hash"]:
                     continue
-                current = await self.context.note_evidence_hash(note)
+                current = await self.context.calendar_evidence_hash(note)
                 if current != record["calendar_hash"]:
                     updates[identity] = {
                         "note_id": identity,
@@ -444,7 +444,7 @@ class NoteLifecycle:
             note = await self.context.store.get_note(identity)
             if note.content_hash != payload.get("if_match"):
                 raise ValueError("note changed; reload the calendar update")
-            current = await self.context.note_evidence_hash(note)
+            current = await self.context.calendar_evidence_hash(note)
             if current != payload.get("calendar_hash"):
                 raise ValueError("calendar changed again; reload the update")
             event = payload.get("event_id", "")

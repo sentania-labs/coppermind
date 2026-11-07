@@ -1620,11 +1620,13 @@ class ContextService:
                 self.write("finalized", finalized)
             self.write("one-calendar-event-ids", {"complete": True, "at": now()})
 
-    async def queue_reviewed(self, identity: str) -> str:
+    async def queue_reviewed(
+        self, identity: str, prior_jobs: list[EnrichmentJob] | None = None
+    ) -> str:
         note = await self.store.get_note(identity)
         if note.frontmatter.get(self.store.control.schema().role("reviewed_key")) is not True:
             raise ValueError("only reviewed notes contribute facts")
-        for previous in self.jobs():
+        for previous in self.jobs() if prior_jobs is None else prior_jobs:
             if (
                 previous.purpose == "dossier"
                 and previous.note_id == identity
@@ -1674,10 +1676,14 @@ class ContextService:
         )
         self.reviewed_cursor = reviewed.next_cursor
         existing = set(self.read("automatic_baseline", {"ids": []})["ids"])
-        enriched = {j.note_id for j in self.jobs() if j.purpose != "dossier"}
+        prior_jobs = self.jobs()
+        enriched = {j.note_id for j in prior_jobs if j.purpose != "dossier"}
         for note in reviewed.items:
             if note.id not in existing or note.id in enriched:
-                await self.queue_reviewed(note.id)
+                try:
+                    await self.queue_reviewed(note.id, prior_jobs)
+                except (ValueError, StoreError):
+                    log.warning("dossier extraction not queued for note %s", note.id)
         page = await self.store.list_notes(
             NoteQuery(
                 reviewed=False,
@@ -1687,7 +1693,6 @@ class ContextService:
             )
         )
         self.auto_cursor = page.next_cursor
-        prior_jobs = self.jobs()
         baseline = set(self.read("automatic_baseline", {"ids": [n.id for n in page.items]})["ids"])
         for note in page.items:
             try:
