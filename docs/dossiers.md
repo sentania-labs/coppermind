@@ -74,8 +74,8 @@ operations work in Obsidian or the agent API.
 
 ## Deletion and recovery
 
-Deleting a page in Obsidian retires the subject at the next reconciliation or
-entity read. It stays out of active queries and enrichment and is not recreated
+Deleting a page in Obsidian retires the subject at the next reconciliation, index rebuild,
+retention preview or dossier change. It stays out of active queries and enrichment and is not recreated
 without an explicit restore. Retired dossiers join the existing retention
 preview and confirmed purge. The preview includes their pages, facts and
 relationships; other subjects' notes and shared sources stay. Purging a deleted

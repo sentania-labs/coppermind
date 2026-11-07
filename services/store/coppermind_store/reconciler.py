@@ -634,7 +634,10 @@ async def reconcile_once(
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
     store.control.write_reconciler_exclusions(scan.exclusions)
-    await store.entities.refresh()
+    try:
+        await store.entities.refresh()
+    except Exception as exc:  # noqa: BLE001 - dossiers must not stop note reconciliation
+        log.warning("dossier refresh deferred", reason=type(exc).__name__)
     return counts
 
 

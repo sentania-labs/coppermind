@@ -62,6 +62,8 @@ def email(value: str) -> str | None:
     local, separator, domain = value.strip().rpartition("@")
     if not separator or not local or not domain or any(c.isspace() for c in value):
         return None
+    if len(value.strip()) > 200:
+        return None
     if any(c in value for c in "<>[]\0"):
         return None
     return local + "@" + domain.lower()

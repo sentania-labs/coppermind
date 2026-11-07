@@ -1320,7 +1320,6 @@ class LocalStore:
         counts.update(await reconcile_once(self, full=True))
         counts.update(await file_reviewed(self))
         await indexer.rebuild(self)
-        await self.entities.refresh()
         return RebuildMetadataResult(counts=counts)
 
     async def search(

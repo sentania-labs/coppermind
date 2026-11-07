@@ -511,3 +511,23 @@ async def test_search_finds_dossiers_after_an_index_rebuild(store):
     await rebuild(store)
     hits = await store.search(SearchQuery(q="Engineer"), entities=True)
     assert [h.id for h in hits.items if h.kind == "entity"] == [p["id"]]
+
+
+async def test_overlong_address_and_dossier_faults_do_not_stop_reconciliation(store, monkeypatch):
+    address = "x" * 250 + "@example.test"
+    await store.create_note(
+        CreateNote(
+            title="Odd",
+            body="Odd attendee.",
+            frontmatter={"reviewed": True, "date": "2026-11-01", "attendees": [address]},
+        )
+    )
+    await reconcile_once(store)
+    assert (await store.entities.list(EntityQuery()))["items"] == []
+
+    async def broken(self):
+        raise RuntimeError("dossier fault")
+
+    monkeypatch.setattr(EntityService, "refresh", broken)
+    counts = await reconcile_once(store, full=True)
+    assert isinstance(counts, dict)
