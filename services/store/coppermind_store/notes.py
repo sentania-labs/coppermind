@@ -1322,13 +1322,11 @@ class LocalStore:
         await indexer.rebuild(self)
         return RebuildMetadataResult(counts=counts)
 
-    async def search(
-        self, query: SearchQuery, *, entities: bool = False, sources: bool = True
-    ) -> Page[SearchHit]:
+    async def search(self, query: SearchQuery, *, entities: bool = False) -> Page[SearchHit]:
         """Full-text search over note bodies, titles and source projections."""
         from coppermind_store.search import search
 
-        return await search(self, query, entities=entities, sources=sources)
+        return await search(self, query, entities=entities)
 
     async def get_search_index_status(self) -> SearchIndexStatus:
         from coppermind_store.indexer import status

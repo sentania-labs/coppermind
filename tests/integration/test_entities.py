@@ -111,13 +111,13 @@ async def test_returning_reviewed_note_restores_its_existing_facts(store, absenc
     else:
         assert b"reviewed: true" in original
         path.write_bytes(original.replace(b"reviewed: true", b"reviewed: false"))
-    await store.entities.refresh()
+    await reconcile_once(store, full=True)
     withdrawn = await store.entities.get(p["id"])
     assert all(f["state"] == "withdrawn" for f in withdrawn["facts"])
     # The reason for withdrawal must survive a restart while the note is absent.
     store.entities = EntityService(store)
     path.write_bytes(original)
-    await store.entities.refresh()
+    await reconcile_once(store, full=True)
     restored = await store.entities.get(p["id"])
     assert {f["id"] for f in restored["facts"]} == fact_ids
     assert all(f["state"] == "confirmed" for f in restored["facts"])
@@ -158,7 +158,7 @@ async def test_returning_evidence_does_not_reverse_owner_decisions(store, withdr
     path = store.notes_root / note.path
     original = path.read_bytes()
     path.unlink()
-    await store.entities.refresh()
+    await reconcile_once(store, full=True)
     if withdrawal == "api":
         # Explicitly withdrawing an already auto-withdrawn fact must also stick.
         current = await store.entities.get(p["id"])
@@ -172,7 +172,7 @@ async def test_returning_evidence_does_not_reverse_owner_decisions(store, withdr
         )
     store.entities = EntityService(store)
     path.write_bytes(original)
-    await store.entities.refresh()
+    await reconcile_once(store, full=True)
     restored = await store.entities.get(p["id"])
     assert next(f for f in restored["facts"] if f["id"] == fact["id"])["state"] == "withdrawn"
     assert "role: Engineer" not in page.read_text()
@@ -531,3 +531,46 @@ async def test_overlong_address_and_dossier_faults_do_not_stop_reconciliation(st
     monkeypatch.setattr(EntityService, "refresh", broken)
     counts = await reconcile_once(store, full=True)
     assert isinstance(counts, dict)
+
+
+async def test_refresh_reads_each_dossier_once_and_never_rereads_notes(store, monkeypatch):
+    from pathlib import Path
+
+    p = await person(store)
+    note = await reviewed_note(store)
+    await claim(store, p, note)
+    await store.entities.refresh()
+    reads = []
+    original_bytes, original_text = Path.read_bytes, Path.read_text
+
+    def spy_bytes(self):
+        reads.append(self.name)
+        return original_bytes(self)
+
+    def spy_text(self, *args, **kwargs):
+        reads.append(self.name)
+        return original_text(self, *args, **kwargs)
+
+    async def no_note_reads(identity):
+        raise AssertionError("refresh must use the note mirror rows")
+
+    monkeypatch.setattr(Path, "read_bytes", spy_bytes)
+    monkeypatch.setattr(Path, "read_text", spy_text)
+    monkeypatch.setattr(store, "get_note", no_note_reads)
+    await store.entities.refresh()
+    page = (store.notes_root / p["path"]).name
+    assert reads.count(page) == 1
+    assert (await store.search(SearchQuery(q="Engineer"), entities=True)).items
+
+
+async def test_failing_dossier_refresh_does_not_fail_an_index_rebuild(store, monkeypatch):
+    from coppermind_store.indexer import rebuild
+
+    await person(store)
+
+    async def broken(self):
+        raise RuntimeError("dossier fault")
+
+    monkeypatch.setattr(EntityService, "refresh", broken)
+    counts = await rebuild(store)
+    assert "notes" in counts

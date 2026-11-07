@@ -211,7 +211,6 @@ def build_search(
     extra: list[Any] | None = None,
     *,
     entities: bool = False,
-    sources: bool = True,
 ) -> sa.Select[Any]:
     """One page of hits plus one, so the caller knows whether another follows.
 
@@ -228,9 +227,7 @@ def build_search(
             sa.cast(EntityRecord.version, sa.Text) == SearchDocument.version,
         )
     ).correlate_except(EntityRecord)
-    permitted = (
-        ["note", "artifact"] + (["source"] if sources else []) + (["entity"] if entities else [])
-    )
+    permitted = ["note", "source", "artifact"] + (["entity"] if entities else [])
     matches = (
         sa.select(
             SearchDocument.kind.label("kind"),
@@ -338,7 +335,7 @@ def page_of(rows: list[Any], query: SearchQuery, context: str | None = None) -> 
 
 
 async def search(
-    store: LocalStore, query: SearchQuery, *, entities: bool = False, sources: bool = True
+    store: LocalStore, query: SearchQuery, *, entities: bool = False
 ) -> Page[SearchHit]:
     from coppermind_store.field_index import conditions, query_context
 
@@ -369,7 +366,6 @@ async def search(
                 after,
                 predicates,
                 entities=entities,
-                sources=sources,
             )
             rows = list((await session.execute(statement)).all())
     except (SQLAlchemyError, OSError) as exc:

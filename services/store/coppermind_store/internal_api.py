@@ -306,10 +306,9 @@ async def search(
     request: Request,
     query: Annotated[SearchQuery, Query()],
     entity_read: Annotated[bool, Header(alias="X-Entity-Read")] = False,
-    source_read: Annotated[bool, Header(alias="X-Source-Read")] = True,
 ) -> Page[SearchHit] | JSONResponse:
     try:
-        return await _store(request).search(query, entities=entity_read, sources=source_read)
+        return await _store(request).search(query, entities=entity_read)
     except StoreError as error:
         return _failure(error)
 

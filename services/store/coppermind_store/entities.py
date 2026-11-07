@@ -14,7 +14,7 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert
@@ -52,6 +52,14 @@ if TYPE_CHECKING:
 DELIMITER = "<!-- coppermind:dossier -->\n"
 FACT_LINE = re.compile(r"^- (.*?) <!-- fact:([A-Za-z0-9_-]+) -->$", re.MULTILINE)
 FOLDERS = ("People", "Companies")
+
+
+class NoteRef(NamedTuple):
+    id: str
+    title: str
+    path: str
+    content_hash: str
+    frontmatter: dict[str, Any]
 
 
 def digest(value: Any) -> str:
@@ -240,24 +248,19 @@ class EntityService:
         ledger.entities[identity] = entity
         return entity
 
-    async def notes(self) -> dict[str, NoteDocument]:
+    async def notes(self) -> dict[str, NoteRef]:
         async with self.store.session_factory() as session:
-            identities = list(
-                (
-                    await session.scalars(
-                        sa.select(Note.id).where(Note.reviewed.is_(True), Note.state == "ok")
-                    )
-                ).all()
+            rows = await session.execute(
+                sa.select(
+                    Note.id, Note.title, Note.path, Note.content_hash, Note.frontmatter
+                ).where(Note.reviewed.is_(True), Note.state == "ok")
             )
-        notes = {}
-        for identity in identities:
-            try:
-                note = await self.store.get_note(identity)
-            except (NotFound, ValidationFailed):
-                continue
-            if note.frontmatter.get(self.store.control.schema().role("reviewed_key")) is True:
-                notes[identity] = note
-        return notes
+            return {
+                row.id: NoteRef(
+                    row.id, row.title or row.path, row.path, row.content_hash, row.frontmatter
+                )
+                for row in rows
+            }
 
     def correction(
         self,
@@ -285,13 +288,13 @@ class EntityService:
         entity.facts.append(fact)
         return fact
 
-    def observe(self, ledger: EntityLedger, entity: Entity) -> tuple[bytes | None, str]:
+    def observe(self, ledger: EntityLedger, entity: Entity) -> bytes | None:
         path = safe_path(self.store.notes_root, entity.path)
         if not path.exists():
             if entity.generated is not None and not entity.retired_at:
                 entity.retired_at = datetime.now(UTC)
                 self.receipt(ledger, entity, "page deleted")
-            return None, header(entity)
+            return None
         raw = path.read_bytes()
         text = raw.decode("utf-8")
         if "\0" in text:
@@ -303,7 +306,6 @@ class EntityService:
             )
         head, block = text.split(DELIMITER)
         entity.personal = owner_wrote(head)
-        prefix = regenerate(entity, head) + DELIMITER
         if block == entity.pending:
             entity.generated, entity.pending = block, None
         if entity.generated is not None and block != entity.generated:
@@ -340,15 +342,30 @@ class EntityService:
                 self.correction(entity, "note", "\n".join(additions), raw)
             entity.generated, entity.pending = block, None
             self.receipt(ledger, entity, "page correction", note_hash=content_hash(raw))
-        return raw, prefix
+        return raw
 
-    def project(self, ledger: EntityLedger, entity: Entity) -> None:
+    def prefix(self, entity: Entity, raw: bytes | None) -> str:
+        if raw is None:
+            return header(entity)
+        return regenerate(entity, raw.decode().split(DELIMITER)[0]) + DELIMITER
+
+    def project(
+        self,
+        ledger: EntityLedger,
+        entity: Entity,
+        seen: dict[str, bytes | None] | None = None,
+    ) -> None:
         try:
-            raw, prefix = self.observe(ledger, entity)
+            if seen is not None and entity.id in seen:
+                raw = seen[entity.id]
+            else:
+                raw = self.observe(ledger, entity)
+                if seen is not None:
+                    seen[entity.id] = raw
             if entity.retired_at and raw is None:
                 return
             block = render(entity, ledger)
-            wanted = (prefix + block).encode()
+            wanted = (self.prefix(entity, raw) + block).encode()
             if raw == wanted:
                 entity.problem = None
                 return
@@ -371,7 +388,7 @@ class EntityService:
                 "Dossier page could not be projected; check its identity, delimiter and path"
             )
 
-    def contribute(self, ledger: EntityLedger, notes: dict[str, NoteDocument]) -> None:
+    def contribute(self, ledger: EntityLedger, notes: dict[str, NoteRef]) -> None:
         assignment = self.store.context.config().assignments["enrichment"]
         fields = {"attendees", assignment.attendees_field, assignment.contacts_field} - {"", None}
         by_email = {
@@ -519,18 +536,19 @@ class EntityService:
             raise ValidationFailed(["Finish or abandon the interrupted retention purge first"])
         before = ledger.model_dump_json()
         # Import device corrections before adding/retracting metadata contributions.
+        seen: dict[str, bytes | None] = {}
         for entity in list(ledger.entities.values()):
             try:
-                self.observe(ledger, entity)
+                seen[entity.id] = self.observe(ledger, entity)
             except (OSError, ValueError, UnicodeError, fm.FrontmatterError):
                 entity.problem = "Dossier page identity, delimiter or path needs repair"
         self.contribute(ledger, await self.notes())
         await self.migrate(ledger)
         for entity in ledger.entities.values():
-            self.project(ledger, entity)
+            self.project(ledger, entity, seen)
         if ledger.model_dump_json() != before:
             self.save(ledger)
-        await self.mirror(ledger)
+        await self.mirror(ledger, seen)
 
     async def refresh(self) -> None:
         async with self.store.maintenance.shared(), self.lock:
@@ -538,7 +556,9 @@ class EntityService:
                 return
             await self.refresh_locked(self.load())
 
-    def personal_text(self, entity: Entity) -> str:
+    def personal_text(self, entity: Entity, seen: dict[str, bytes | None] | None = None) -> str:
+        if seen is not None and entity.id in seen:
+            return fm.parse(self.prefix(entity, seen[entity.id]).removesuffix(DELIMITER))[1]
         try:
             text = safe_path(self.store.notes_root, entity.path).read_text()
             fields, _ = fm.parse(text)
@@ -549,7 +569,9 @@ class EntityService:
         except (OSError, ValueError, UnicodeError, fm.FrontmatterError):
             return ""
 
-    async def mirror(self, ledger: EntityLedger) -> None:
+    async def mirror(
+        self, ledger: EntityLedger, seen: dict[str, bytes | None] | None = None
+    ) -> None:
         async with self.store.session_factory() as session, session.begin():
             await session.execute(
                 sa.delete(EntityRecord).where(EntityRecord.id.not_in(ledger.entities))
@@ -577,7 +599,7 @@ class EntityService:
                 body = (
                     None
                     if inactive
-                    else self.personal_text(entity) + render(entity, ledger, search=True)
+                    else self.personal_text(entity, seen) + render(entity, ledger, search=True)
                 )
                 values = dict(
                     id=entity.id,

@@ -56,15 +56,15 @@ The story behind these decisions is [architecture.md](architecture.md).
 
 ## Dossiers
 
-`GET /v1/entities` and `GET /v1/entities/{id}` require `entities:read`.
-`POST /v1/entities` and `POST /v1/entities/{id}` additionally require
-`entities:write`. Changes carry the current integer `version`. See the
+`GET /v1/entities` and `GET /v1/entities/{id}` require `entities:read` and
+`notes:read`, because dossiers quote reviewed notes. `POST /v1/entities` and
+`POST /v1/entities/{id}` additionally require `entities:write`. Changes carry
+the current integer `version`. See the
 [dossier contract](dossiers.md#agent-api) for filters, corrections, evidenced
 claims, and merge/split previews. No existing API key gains these scopes.
 
-Entity search hits require both `notes:read` and `entities:read`; source hits
-require both `notes:read` and `sources:read`. Unauthorized kinds are excluded
-before retrieval, ranking and pagination. Entity hits have `kind: entity` and
+Entity search hits require both `notes:read` and `entities:read`. Unauthorized
+kinds are excluded before retrieval, ranking and pagination. Entity hits have `kind: entity` and
 link to stable `People/` or `Companies/` pages. Dossier permissions never grant
 access to source artifacts.
 

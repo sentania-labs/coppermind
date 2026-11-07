@@ -33,8 +33,8 @@ dossier-aware enrichment are the follow-up slice of issue 31.
 
 ## Agent API
 
-Grant `entities:read` and, for corrections, `entities:write` in Admin's key
-settings. Existing and default keys gain neither scope automatically.
+Grant `entities:read`, `notes:read` and, for corrections, `entities:write` in
+Admin's key settings. Existing and default keys gain neither scope automatically.
 
 | Request | Purpose |
 | --- | --- |
@@ -63,9 +63,10 @@ Every change supplies the current integer `version` and an `action`:
   separates mistakenly combined facts under a new identity.
 
 Version conflicts return 409. Invalid evidence or an expired identity preview
-returns 422. Entity access does not grant `sources:read`. Public `/v1/search`
-requires `notes:read`; entity hits additionally require `entities:read`, and
-source hits require `sources:read`. Filtering happens before ranking and paging.
+returns 422. Entity access does not grant `sources:read`. Dossiers quote reviewed
+notes, so every entity route also requires `notes:read`. Public `/v1/search`
+requires `notes:read`; entity hits additionally require `entities:read`.
+Filtering happens before ranking and paging.
 Entity snippets include only active facts, not withdrawn evidence.
 
 Admin's Dossiers view shows People, Companies, facts, relationships, interests

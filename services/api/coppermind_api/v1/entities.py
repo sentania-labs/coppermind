@@ -26,7 +26,7 @@ async def call(client: HttpStoreClient, action: str, payload: dict[str, Any]) ->
 async def list_entities(
     query: Annotated[EntityQuery, Query()],
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("entities:read")),
+    _: Principal = Depends(require_scopes("entities:read", "notes:read")),
 ) -> JSONResponse:
     return await call(client, "list", query.model_dump())
 
@@ -35,7 +35,7 @@ async def list_entities(
 async def get_entity(
     entity_id: str,
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("entities:read")),
+    _: Principal = Depends(require_scopes("entities:read", "notes:read")),
 ) -> JSONResponse:
     return await call(client, "get", {"id": entity_id})
 
@@ -44,7 +44,7 @@ async def get_entity(
 async def create_entity(
     payload: EntityInput,
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("entities:write", "entities:read")),
+    _: Principal = Depends(require_scopes("entities:write", "entities:read", "notes:read")),
 ) -> JSONResponse:
     return await call(client, "create", payload.model_dump())
 
@@ -54,6 +54,6 @@ async def change_entity(
     entity_id: str,
     payload: EntityChange,
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("entities:write", "entities:read")),
+    _: Principal = Depends(require_scopes("entities:write", "entities:read", "notes:read")),
 ) -> JSONResponse:
     return await call(client, "change", {"id": entity_id, "change": payload.model_dump()})

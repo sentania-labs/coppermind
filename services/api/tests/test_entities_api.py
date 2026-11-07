@@ -12,19 +12,22 @@ from coppermind.store_protocol import Page
 class EntityStore:
     def __init__(self):
         self.reader, self.reader_key = create_key("Notes", ["notes:read"])
-        self.writer, self.writer_key = create_key("Entities", ["entities:read", "entities:write"])
+        self.writer, self.writer_key = create_key(
+            "Entities", ["entities:read", "entities:write", "notes:read"]
+        )
+        self.bare, self.bare_key = create_key("Bare", ["entities:read", "entities:write"])
         self.calls = []
         self.searches = []
 
     async def get_api_keys(self):
-        return ApiKeySet(keys=[self.reader, self.writer])
+        return ApiKeySet(keys=[self.reader, self.writer, self.bare])
 
     async def entity_action(self, action, payload):
         self.calls.append((action, payload))
         return {"items": [], "next_cursor": None} if action == "list" else {"id": "person"}
 
-    async def search(self, query, *, entities=False, sources=True):
-        self.searches.append((entities, sources))
+    async def search(self, query, *, entities=False):
+        self.searches.append(entities)
         return Page(items=[])
 
 
@@ -39,6 +42,17 @@ def test_entity_scopes_and_search_exclude_ungranted_kinds(tmp_path):
         app.state.api_key_auth._store = fake
         notes = {"Authorization": f"Bearer {fake.reader_key}"}
         entities = {"Authorization": f"Bearer {fake.writer_key}"}
+        bare = {"Authorization": f"Bearer {fake.bare_key}"}
+        assert client.get("/v1/entities", headers=bare).status_code == 403
+        assert client.get("/v1/entities/person", headers=bare).status_code == 403
+        assert (
+            client.post(
+                "/v1/entities/person",
+                headers=bare,
+                json={"action": "rename", "version": 1, "name": "New"},
+            ).status_code
+            == 403
+        )
         assert client.get("/v1/entities").status_code == 401
         assert client.get("/v1/entities", headers=notes).status_code == 403
         assert client.get("/v1/entities/person", headers=notes).status_code == 403
@@ -65,7 +79,7 @@ def test_entity_scopes_and_search_exclude_ungranted_kinds(tmp_path):
             == 422
         )
         assert client.get("/v1/search?q=Casey", headers=notes).status_code == 200
-        assert fake.searches == [(False, False)]
+        assert fake.searches == [False]
         # Public query parameters cannot impersonate the internal scope headers.
         assert client.get("/v1/search?q=Casey&entities=true", headers=notes).status_code == 422
         assert client.get("/v1/sources/source", headers=entities).status_code == 403
