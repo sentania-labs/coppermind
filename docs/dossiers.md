@@ -39,7 +39,8 @@ people need a full name or exact email, and companies need an explicit name.
 Failures stay in Admin and do not block review, filing or search. Extraction
 receipts prevent replay from duplicating facts or restoring corrected claims.
 
-For an unreviewed note in `Review/`, enrichment considers every configured blank
+For an unreviewed note in the configured review folder (`Review/` by default),
+enrichment considers every configured blank
 field using selected field and tag guidance, note/source text, and relevant
 active dossier facts. It sends at most 20 matching dossiers, including direct
 relationship targets, with at most 40 active facts each. The existing total input

@@ -536,7 +536,8 @@ def router(wiring: Wiring) -> APIRouter:
                 "existing notes that were never sent are not swept when reviewed. "
                 "Calls run one at a time. Keys stay outside the vault and Git.</p>"
                 '<p><a href="/admin/context?tab=review">Select existing notes for enrichment</a>. '
-                "Suggestions with confidence of at least 0.8 fill blank fields in Review/. "
+                "Suggestions with confidence of at least 0.8 fill blank fields in the "
+                "review folder. "
                 "Lower confidence stays here; bodies and filenames stay unchanged.</p>"
             )
             body += _form("save-assignment", fields, "Save enrichment settings", revision=revision)

@@ -210,7 +210,7 @@ def router(wiring: Wiring) -> APIRouter:
                 )
                 fields += (
                     "<fieldset><legend>What should it suggest?</legend><p>Suggestions with "
-                    "confidence of at least 0.8 fill blank selected fields in Review/. "
+                    "confidence of at least 0.8 fill blank selected fields in the review folder. "
                     "Review them in Obsidian. "
                     "Lower-confidence suggestions stay in Admin. Bodies and filenames stay "
                     "unchanged. Reviewed notes contribute dossier facts automatically.</p>"

@@ -50,26 +50,28 @@ class ModelProvider:
             headers["Authorization"] = f"Bearer {key}"
         try:
             async with asyncio.timeout(timeout):
-                async with httpx.AsyncClient(
-                    transport=self.transport,
-                    timeout=timeout,
-                    follow_redirects=False,
-                    trust_env=False,
-                ) as client:
-                    async with client.stream(
+                async with (
+                    httpx.AsyncClient(
+                        transport=self.transport,
+                        timeout=timeout,
+                        follow_redirects=False,
+                        trust_env=False,
+                    ) as client,
+                    client.stream(
                         method,
                         connection.endpoint_url + path,
                         headers=headers,
                         json=payload,
                         params=params,
-                    ) as response:
-                        if not response.is_success:
-                            raise ProviderError(f"provider returned HTTP {response.status_code}")
-                        data = bytearray()
-                        async for chunk in response.aiter_bytes():
-                            data.extend(chunk)
-                            if len(data) > 2 * 1024 * 1024:
-                                raise ProviderError("provider response exceeded 2 MiB")
+                    ) as response,
+                ):
+                    if not response.is_success:
+                        raise ProviderError(f"provider returned HTTP {response.status_code}")
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        data.extend(chunk)
+                        if len(data) > 2 * 1024 * 1024:
+                            raise ProviderError("provider response exceeded 2 MiB")
             result = json.loads(data)
             if not isinstance(result, dict):
                 raise ProviderError("provider returned an invalid response")

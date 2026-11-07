@@ -168,7 +168,7 @@ sanitized field name.
 
 ## Human review and recovery
 
-In `Review/`, validated suggestions with model-reported confidence of at least
+In the configured review folder (`Review/` by default), validated suggestions with model-reported confidence of at least
 0.8 automatically fill blank configured fields. They never replace existing
 values or change body bytes, filenames or reviewed notes. Lower confidence and
 uncertainties stay in Admin. Review the visible fields in Obsidian, then mark the
@@ -188,7 +188,7 @@ Apply selected suggestions individually. Each completed choice remains in the
 audit history. Changing the note date makes remaining suggestions stale and
 requires fresh calendar matching.
 An explicit note review remains separate. Reviewed notes are never eligible
-for automatic enrichment, and human values are not overwritten automatically.
+for automatic field enrichment (they only contribute dossier facts), and human values are not overwritten automatically.
 
 The job binds the note version and path, calendar/contact and dossier evidence, schema,
 provider configuration, and source revisions. Changed evidence makes a proposal
