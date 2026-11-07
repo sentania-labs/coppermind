@@ -512,13 +512,18 @@ class EntityService:
                 return
             ledger = self.load()
             changed = False
+            metadata = [
+                json.dumps(value, ensure_ascii=False, default=str)
+                for value in note.frontmatter.values()
+            ]
             for entity in ledger.entities.values():
                 for fact in entity.facts:
                     ev = fact.evidence
+                    texts = metadata if fact.origin == "metadata" else [note.body]
                     if (
                         ev.note_id == note.id
                         and ev.note_hash == before_hash
-                        and (not ev.quote or ev.quote in note.body)
+                        and (not ev.quote or any(ev.quote in text for text in texts))
                     ):
                         ev.note_hash, ev.path = note.content_hash, note.path
                         entity.version += 1

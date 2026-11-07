@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import Field
 
 from coppermind.context_config import ContextModel
-from coppermind.entities import EntityInput, Evidence, Fact
+from coppermind.entities import Entity, EntityInput, Evidence, Fact
 from coppermind.schema import note_date
 from coppermind_store.entities import active_facts, digest, email
 
@@ -196,7 +196,7 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
             raise ValueError("stale: reviewed note changed during extraction")
         if context.config_hash() != job.config_hash or context.schema_hash() != job.schema_hash:
             raise ValueError("stale: extraction settings changed")
-        resolved = {}
+        resolved: dict[str, Entity] = {}
         used = {c.subject for c in result.claims} | {c.target for c in result.claims if c.target}
         for ref, item in refs.items():
             if ref not in used:
@@ -217,11 +217,17 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
             if entity and (entity.retired_at or entity.redirect or entity.kind != item.kind):
                 raise ValueError("extracted identity is no longer active")
             if entity is None:
+                # Name-only recovery must not collapse separate extraction references
+                # or override a supplied email that failed exact identity matching.
+                assigned = {e.id for e in resolved.values()}
                 prior = [
                     e
                     for e in ledger.entities.values()
                     if e.automatic
                     and not e.redirect
+                    and not addresses
+                    and not e.emails
+                    and e.id not in assigned
                     and e.name == item.name
                     and e.kind == item.kind
                     and any(f.evidence.note_id == note.id for f in e.facts)

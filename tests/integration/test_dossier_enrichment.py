@@ -5,11 +5,12 @@ import json
 import httpx
 import pytest
 from coppermind_store.context_service import ContextService
+from coppermind_store.filing import file_note
 from coppermind_store.model_provider import ModelProvider
 from coppermind_store.reconciler import reconcile_once
 
 from coppermind.entities import EntityChange, EntityInput
-from coppermind.store_protocol import CreateNote, PatchFrontmatter
+from coppermind.store_protocol import CreateNote, IngestRequest, PatchFrontmatter
 from tests.integration.test_context_enrichment import configure
 
 BODY = "Casey Doe (casey@example.test) works at Acme Company as an engineer and enjoys sailing."
@@ -81,6 +82,117 @@ async def contribute(store):
     person = next(e for e in entities if e.kind == "person")
     company = next(e for e in entities if e.kind == "company")
     return context, note, job, person, company
+
+
+@pytest.mark.parametrize("addresses", [("one@example.test", "two@example.test"), ("", "")])
+async def test_distinct_same_name_subjects_keep_separate_dossiers(store, addresses):
+    context = await configure(store)
+    quotes = [
+        f"Casey Doe ({address}) enjoys {interest}."
+        for address, interest in zip(addresses, ("sailing", "hiking"), strict=True)
+    ]
+    note = await store.create_note(
+        CreateNote(title="Two people", body="\n".join(quotes), frontmatter={"reviewed": True})
+    )
+    provider(
+        context,
+        {
+            "entities": [
+                {
+                    "ref": str(i),
+                    "kind": "person",
+                    "name": "Casey Doe",
+                    "emails": [address] if address else [],
+                    "quote": quotes[i],
+                }
+                for i, address in enumerate(addresses)
+            ],
+            "claims": [
+                {"subject": str(i), "predicate": "interest", "value": interest, "quote": quotes[i]}
+                for i, interest in enumerate(("sailing", "hiking"))
+            ],
+        },
+    )
+    job = context.load_job(await context.queue_reviewed(note.id))
+    await context.run_job(job)
+    assert job.state == "applied", job.error
+    entities = list(store.entities.load().entities.values())
+    assert len(entities) == 2
+    for address, interest in zip(addresses, ("sailing", "hiking"), strict=True):
+        entity = next(e for e in entities if any(f.value == interest for f in e.facts))
+        assert entity.emails == ([address] if address else [])
+        assert [f.value for f in entity.facts if f.predicate == "interest"] == [interest]
+    before = store.entities.load().model_dump()
+    await context.run_job(job)
+    assert store.entities.load().model_dump() == before
+
+
+async def test_filing_preserves_extracted_frontmatter_evidence(store):
+    context = await configure(store)
+    await context.setup_lifecycle({"revision": context.config().revision})
+    ingested = await store.ingest(
+        IngestRequest.model_validate(
+            {
+                "source": {
+                    "provider": "plaud",
+                    "external_source_id": "structured-filing",
+                    "source_type": "transcript",
+                    "captured_at": "2026-10-20T17:00:00Z",
+                    "artifacts": [
+                        {
+                            "name": "transcript.txt",
+                            "mime_type": "text/plain",
+                            "content": "Meeting transcript.",
+                        }
+                    ],
+                },
+                "note": {
+                    "title": "Structured filing",
+                    "body": "",
+                    "frontmatter": {
+                        "type": "work",
+                        "people": ["Casey Doe"],
+                        "interests": ["sailing"],
+                    },
+                },
+            }
+        )
+    )
+    note = await store.get_note(ingested.note.id)
+    await context.complete_review(
+        {"note_id": note.id, "if_match": note.content_hash, "confirmation": "Complete review"}
+    )
+    note = await store.get_note(note.id)
+    provider(
+        context,
+        {
+            "entities": [{"ref": "p", "kind": "person", "name": "Casey Doe", "quote": "Casey Doe"}],
+            "claims": [
+                {
+                    "subject": "p",
+                    "predicate": "interest",
+                    "value": "sailing",
+                    "quote": "sailing",
+                    "field": "interests",
+                }
+            ],
+        },
+    )
+    job = context.load_job(await context.queue_reviewed(note.id))
+    await context.run_job(job)
+    assert job.state == "applied", job.error
+    before = next(iter(store.entities.load().entities.values()))
+    assert await file_note(store, note.id)
+    filed = await store.get_note(note.id)
+    assert filed.content_hash != note.content_hash
+    assert filed.path.startswith("Notes/2026/2026-10/")
+    await store.entities.refresh()
+    entity = store.entities.load().entities[before.id]
+    assert {f.id for f in entity.facts} == {f.id for f in before.facts}
+    assert all(f.state == "confirmed" for f in entity.facts)
+    assert all(f.evidence.note_hash == filed.content_hash for f in entity.facts)
+    assert context.load_job(job.id).note_hash == filed.content_hash
+    assert await context.queue_reviewed(note.id) == job.id
 
 
 async def test_review_extracts_projects_and_enriches_without_an_acceptance_step(store):
