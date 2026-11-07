@@ -61,13 +61,13 @@ def listing(value: PurgeResult, request: Request) -> str:
     ]:
         rows = "".join(
             f"<tr><td>{escape(k)}</td><td>{n.notes}</td><td>{n.sources}</td>"
-            f"<td>{n.artifacts}</td></tr>"
+            f"<td>{n.artifacts}</td><td>{n.entities}</td></tr>"
             for k, n in sorted(values.items())
         )
         groups += (
             f"<section><h2>By {label}</h2><table><thead><tr><th>{label.capitalize()}</th>"
             f"<th>Deleted notes</th><th>Orphaned sources</th>"
-            f"<th>Removed artifacts</th></tr></thead>"
+            f"<th>Removed artifacts</th><th>Dossiers</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></section>"
         )
     rows = ""
@@ -91,7 +91,9 @@ def listing(value: PurgeResult, request: Request) -> str:
             where = [*where, c.reason]
         rows += f"""<tr><td>{label}<br><strong>{name}</strong><br>{escape(c.path)}</td>
 <td>{"<br>".join(escape(v) for v in where)}</td><td>{when}</td></tr>"""
-    return f"""<div class="metrics"><div class="metric">Deleted notes
+    return f"""<div class="metrics"
+style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+<div class="metric">Deleted notes
 <strong>{value.counts.notes}</strong></div>
 <div class="metric">Orphaned sources<strong>{value.counts.sources}</strong></div>
 <div class="metric">Removed artifacts<strong>{value.counts.artifacts}</strong></div>
@@ -203,11 +205,11 @@ and no live note cites them.
 Notes still present in Trash are protected.</p>
 <form method="post" action="/v1/admin/purge/preview">
 <input type="hidden" name="revision" value="{revision}">
-<label for="days">Keep deleted notes and removed artifacts for (days)</label>
+<label for="days">Keep deleted notes, removed artifacts and dossiers for (days)</label>
 <input id="days" name="days" type="number" min="0" max="36500" required value="{days}">
 <p class="field-help">Default: 30 days from the recorded deletion or removal. Zero permits immediate
 removal. The same window covers a deleted note and an artifact removed here, through the API or by
-deleting its file in Obsidian.
+deleting its file in Obsidian. It also covers retired dossiers.
 Save a changed value before previewing. Saving does not start a purge.</p>
 <button>Preview what will be removed</button>
 <button class="secondary" formaction="/v1/admin/purge/settings">Save retention</button>
@@ -276,11 +278,9 @@ Save a changed value before previewing. Saving does not start a purge.</p>
             body += kept_line(value)
             parts = []
             if value.counts.notes:
-                parts.append(
-                    f"{plural(value.counts.notes, 'deleted note')} and their recovery copies"
-                )
+                parts.append(f"{plural(value.counts.notes, 'deleted note')} with recovery copies")
             if value.counts.entities:
-                parts.append(f"{plural(value.counts.entities, 'dossier')} and their facts")
+                parts.append(f"{plural(value.counts.entities, 'dossier')} with facts")
             if value.counts.sources:
                 parts.append(
                     f"{plural(value.counts.sources, 'orphaned source')} with "
@@ -299,7 +299,7 @@ Save a changed value before previewing. Saving does not start a purge.</p>
                 "Retry removal of listed items" if unfinished else "Permanently remove listed items"
             )
             body += f'''<div class="notice"><h2>Confirm permanent removal</h2>
-<p>This removes {" and ".join(parts)}.
+<p>This removes {"; ".join(parts)}.
 Their search entries are removed too.
 Admin cannot undo this. Git history remains,
 but it does not contain the original source bundles.</p></div>

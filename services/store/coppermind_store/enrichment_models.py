@@ -11,6 +11,8 @@ from coppermind.context_config import ContextModel
 
 class Suggestion(ContextModel):
     kind: Literal["filename", "field", "event", "contact", "attendee", "invitee"]
+    confidence: float = Field(default=0, ge=0, le=1)
+    entity_ids: list[str] = Field(default_factory=list, max_length=20)
     field: str = ""
     value: Any = None
     event_ids: list[str] = Field(default_factory=list, max_length=20)
@@ -27,7 +29,7 @@ class Suggestions(ContextModel):
 class EnrichmentJob(ContextModel):
     id: str
     note_id: str
-    purpose: Literal["initial", "calendar"] = "initial"
+    purpose: Literal["initial", "calendar", "dossier"] = "initial"
     note_hash: str
     evidence_hash: str
     config_hash: str
@@ -51,6 +53,10 @@ class EnrichmentJob(ContextModel):
     usage: dict[str, Any] = Field(default_factory=dict)
     decisions: list[dict[str, Any]] = Field(default_factory=list)
     pending_approval: dict[str, Any] | None = None
+
+    @property
+    def decided(self) -> set[int]:
+        return {d["index"] for d in self.decisions if "index" in d}
 
     def set_error(
         self, message: str = "", rule: str = "", size: int | None = None, limit: int | None = None
