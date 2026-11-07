@@ -773,7 +773,7 @@ class ContextService:
             )
         return {"jobs": results}
 
-    async def queue_note(self, identity: str, *, force: bool = False) -> str:
+    async def queue_note(self, identity: str, *, force: bool = False, ledger: Any = None) -> str:
         async with self.lock:
             assignment = self.config().assignments["enrichment"]
             if not assignment.enabled:
@@ -784,7 +784,10 @@ class ContextService:
                 raise ValueError("note is not schema-valid")
             if note.frontmatter.get(schema.role("reviewed_key")) is True:
                 raise ValueError("reviewed notes are not eligible")
-            config_hash, evidence_hash = self.config_hash(), await self.note_evidence_hash(note)
+            config_hash, evidence_hash = (
+                self.config_hash(),
+                await self.note_evidence_hash(note, ledger),
+            )
             source_versions = [
                 (item.id, (await self.store.get_source(item.id)).current_revision)
                 for item in await self.store.get_note_sources(identity)
@@ -1759,7 +1762,7 @@ class ContextService:
                 if self.config().lifecycle_enabled and previous:
                     current = await self.store.get_note(note.id)
                     if previous[-1].evidence_hash != await self.note_evidence_hash(current, ledger):
-                        identity = await self.queue_note(note.id)
+                        identity = await self.queue_note(note.id, ledger=ledger)
                         touched.append(identity)
                         changed = self.load_job(identity)
                         known = previous[-1]
@@ -1780,7 +1783,7 @@ class ContextService:
                         self.save_job(changed)
                     continue
                 if note.id not in baseline:
-                    touched.append(await self.queue_note(note.id))
+                    touched.append(await self.queue_note(note.id, ledger=ledger))
                     self.eligibility_errors.pop(note.id, None)
             except (ValueError, StoreError):
                 self.eligibility_errors[note.id] = (

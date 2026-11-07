@@ -200,6 +200,7 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
         if context.config_hash() != job.config_hash or context.schema_hash() != job.schema_hash:
             raise ValueError("stale: extraction settings changed")
         resolved: dict[str, Entity] = {}
+        refused: set[str] = set()
         used = {c.subject for c in result.claims} | {c.target for c in result.claims if c.target}
         for ref, item in refs.items():
             if ref not in used:
@@ -214,11 +215,13 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
                 else (matches[0] if len(matches) == 1 else None)
             )
             if len(matches) > 1 or (item.entity_id and matches and matches[0].id != item.entity_id):
-                raise ValueError("ambiguous exact email identity")
+                refused.add(ref)
+                continue
             if item.entity_id and entity is None:
                 raise ValueError("stale: extracted identity was removed")
             if entity and (entity.retired_at or entity.redirect or entity.kind != item.kind):
-                raise ValueError("extracted identity is no longer active")
+                refused.add(ref)
+                continue
             if entity is None:
                 # Name-only recovery must not collapse separate extraction references
                 # or override a supplied email that failed exact identity matching.
@@ -242,7 +245,8 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
                     any(digest(a) in ledger.suppressed for a in addresses)
                     or digest([item.kind, item.name, note.id]) in ledger.suppressed
                 ):
-                    raise ValueError("extracted identity was purged")
+                    refused.add(ref)
+                    continue
                 entity = service.make(
                     ledger,
                     EntityInput(
@@ -251,7 +255,8 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
                     automatic=True,
                 )
             if entity.retired_at or entity.redirect:
-                raise ValueError("extracted identity is no longer active")
+                refused.add(ref)
+                continue
             if entity.automatic and entity.name in entity.emails and item.name not in entity.emails:
                 entity.name = item.name
                 entity.version += 1
@@ -278,6 +283,8 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
                 entity.version += 1
             resolved[ref] = entity
         for claim in result.claims:
+            if claim.subject in refused or claim.target in refused:
+                continue
             entity = resolved[claim.subject]
             target = resolved[claim.target].id if claim.target else None
             identity = digest([job.id, claim.model_dump()])

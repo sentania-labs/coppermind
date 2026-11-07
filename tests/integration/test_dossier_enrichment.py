@@ -874,3 +874,84 @@ async def test_a_model_filling_every_advertised_field_is_not_rejected(store):
     assert [f["name"] for f in seen[0]["allowed_fields"]] == ["account"]
     assert job.state == "suggested", job.error
     assert [s.field for s in job.result.suggestions] == ["account"]
+
+
+async def test_a_retired_identity_in_a_note_does_not_block_the_other_people_in_it(store):
+    context = await configure(store)
+    gone = await store.entities.create(
+        EntityInput(kind="person", name="Gone Person", emails=["gone@example.test"])
+    )
+    (store.notes_root / gone["path"]).unlink()
+    await store.entities.refresh()
+    assert store.entities.load().entities[gone["id"]].retired_at is not None
+    quotes = [
+        "Gone Person (gone@example.test) enjoys hiking.",
+        "Casey Doe (casey@example.test) enjoys sailing.",
+    ]
+    note = await store.create_note(
+        CreateNote(title="Two people", body="\n".join(quotes), frontmatter={"reviewed": True})
+    )
+    seen = provider(
+        context,
+        {
+            "entities": [
+                {
+                    "ref": "gone",
+                    "kind": "person",
+                    "name": "Gone Person",
+                    "emails": ["gone@example.test"],
+                    "quote": quotes[0],
+                },
+                {
+                    "ref": "casey",
+                    "kind": "person",
+                    "name": "Casey Doe",
+                    "emails": ["casey@example.test"],
+                    "quote": quotes[1],
+                },
+            ],
+            "claims": [
+                {"subject": "gone", "predicate": "interest", "value": "hiking", "quote": quotes[0]},
+                {
+                    "subject": "casey",
+                    "predicate": "interest",
+                    "value": "sailing",
+                    "quote": quotes[1],
+                },
+            ],
+        },
+    )
+    job = context.load_job(await context.queue_reviewed(note.id))
+    await context.run_job(job)
+    assert job.state == "applied", job.error
+    assert len(seen) == 1
+    entities = store.entities.load().entities
+    casey = next(e for e in entities.values() if e.emails == ["casey@example.test"])
+    assert [f.value for f in casey.facts if f.predicate == "interest"] == ["sailing"]
+    assert entities[gone["id"]].retired_at is not None
+    assert not entities[gone["id"]].facts
+
+
+async def test_tick_reads_the_dossier_catalog_once_however_many_notes_it_queues(store, monkeypatch):
+    context = await configure(store)
+    loads = []
+    original = store.entities.load
+
+    def counted():
+        loads.append(1)
+        return original()
+
+    monkeypatch.setattr(store.entities, "load", counted)
+
+    async def reads_during_tick(count):
+        for i in range(count):
+            await store.create_note(
+                CreateNote(title=f"Note {i}", body="sailing", frontmatter={"date": "2026-10-14"})
+            )
+        loads.clear()
+        await context.tick()
+        return len(loads)
+
+    one = await reads_during_tick(1)
+    many = await reads_during_tick(5)
+    assert many == one
