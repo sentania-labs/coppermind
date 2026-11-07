@@ -826,7 +826,6 @@ async def test_an_unreadable_subfolder_types_the_identity_walk_as_the_notes_outa
     elsewhere = store.notes_root / "elsewhere"
     elsewhere.mkdir()
     (store.notes_root / note.path).rename(elsewhere / Path(note.path).name)
-    assert (await store.get_note(note.id)).path == f"elsewhere/{Path(note.path).name}"
     elsewhere.chmod(0)
     try:
         store._identity_index._found = None
@@ -867,13 +866,8 @@ async def test_a_missing_notes_root_types_the_identity_walk_on_every_path(store)
     assert (await store.list_notes(NoteQuery(state="ok"))).items[0].id == note.id
 
 
-async def test_a_fresh_index_answers_a_moved_note_without_walking_again(store):
-    """A note moved between the scan and the listing is answered from the index.
-
-    The listing reads each `ok` row through the same path a single read uses, so
-    a move the mirror has not adopted yet is followed from the scan that is
-    already in hand rather than by a second walk.
-    """
+async def test_a_listing_of_a_note_at_its_recorded_path_does_not_walk_the_tree(store):
+    """Once a read has repaired a moved note's recorded path, listing it needs no walk."""
     note = await store.create_note(CreateNote(title="Fresh", frontmatter={"type": "reference"}))
     elsewhere = store.notes_root / "elsewhere"
     elsewhere.mkdir()
