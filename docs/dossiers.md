@@ -24,10 +24,12 @@ wikilinks in list fields. The API also accepts evidenced prose claims from a
 reviewed note. All such claims count immediately; there is no proposed state.
 Each records the note ID, current hash, date, quotation and extraction version.
 Editing, unreviewing or deleting the supporting note withdraws its old-version
-contribution. Independent corrections survive. Contradictory recorded facts
-remain visible together with evidence. This first slice provides the model and
-claim API; automatic model extraction and dossier-aware enrichment are the
-follow-up slice of issue 31.
+contribution. Independent corrections survive.
+If that same reviewed note version returns, evidence-driven withdrawals are
+restored; explicit withdrawals, corrections and splits remain in effect.
+Contradictory recorded facts remain visible together with evidence. This first
+slice provides the model and claim API; automatic model extraction and
+dossier-aware enrichment are the follow-up slice of issue 31.
 
 ## Agent API
 

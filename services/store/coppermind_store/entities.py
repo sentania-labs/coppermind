@@ -279,6 +279,7 @@ class EntityService:
         )
         if previous:
             previous.state = "withdrawn"
+            previous.withdrawn_for = None
         entity.facts.append(fact)
         return fact
 
@@ -314,6 +315,7 @@ class EntityService:
                     continue
                 if line is None:
                     fact.state = "withdrawn"
+                    fact.withdrawn_for = None
                 else:
                     predicate, sep, value = html.unescape(line).partition(": ")
                     self.correction(
@@ -425,13 +427,20 @@ class EntityService:
                 entity.version += 1
         for entity in ledger.entities.values():
             for fact in entity.facts:
-                if not fact.evidence.note_id or fact.state != "confirmed":
+                if not fact.evidence.note_id:
                     continue
                 supporting = notes.get(fact.evidence.note_id)
                 if supporting is None or supporting.content_hash != fact.evidence.note_hash:
-                    fact.state = "withdrawn"
+                    if fact.state == "confirmed":
+                        fact.state = "withdrawn"
+                        fact.withdrawn_for = "evidence"
+                        entity.version += 1
+                    continue
+                if fact.state == "withdrawn" and fact.withdrawn_for == "evidence":
+                    fact.state = "confirmed"
+                    fact.withdrawn_for = None
                     entity.version += 1
-                elif fact.evidence.path != supporting.path:
+                if fact.state == "confirmed" and fact.evidence.path != supporting.path:
                     fact.evidence.path = supporting.path
 
     async def migrate(self, ledger: EntityLedger) -> None:
@@ -763,6 +772,7 @@ class EntityService:
             elif change.action == "withdraw":
                 assert fact is not None
                 fact.state = "withdrawn"
+                fact.withdrawn_for = None
             elif change.action == "retire":
                 entity.retired_at = datetime.now(UTC)
             elif change.action == "restore":
@@ -820,6 +830,7 @@ class EntityService:
             target.facts.extend(f.model_copy(deep=True) for f in selected)
             for fact in selected:
                 fact.state = "withdrawn"
+                fact.withdrawn_for = None
             if change.emails:
                 if not set(change.emails) <= set(entity.emails):
                     raise ValidationFailed(["split emails must belong to the original dossier"])
@@ -827,7 +838,15 @@ class EntityService:
                 entity.emails = [a for a in entity.emails if a not in change.emails]
         else:
             assert target is not None
-            target.facts.extend(f for f in selected if f.id not in {v.id for v in target.facts})
+            positions = {fact.id: index for index, fact in enumerate(target.facts)}
+            for fact in selected:
+                index = positions.get(fact.id)
+                if index is None:
+                    positions[fact.id] = len(target.facts)
+                    target.facts.append(fact.model_copy(deep=True))
+                elif target.facts[index].state == "withdrawn" and fact.state == "confirmed":
+                    # A split leaves a withdrawn copy behind; merging back restores the live one.
+                    target.facts[index] = fact.model_copy(deep=True)
             target.aliases = sorted(set(target.aliases + entity.aliases + [entity.name]))
             target.emails = sorted(set(target.emails + entity.emails))
             entity.redirect = target.id

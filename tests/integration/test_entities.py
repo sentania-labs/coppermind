@@ -98,6 +98,88 @@ async def test_evidence_withdraws_on_unreview_edit_or_delete(store):
     assert not (await store.search(SearchQuery(q="Engineer"), entities=True)).items
 
 
+@pytest.mark.parametrize("absence", ["deleted", "unreviewed"])
+async def test_returning_reviewed_note_restores_its_existing_facts(store, absence):
+    p = await person(store)
+    note = await reviewed_note(store)
+    p = await claim(store, p, note)
+    fact_ids = {f["id"] for f in p["facts"]}
+    path = store.notes_root / note.path
+    original = path.read_bytes()
+    if absence == "deleted":
+        path.unlink()
+    else:
+        assert b"reviewed: true" in original
+        path.write_bytes(original.replace(b"reviewed: true", b"reviewed: false"))
+    await store.entities.refresh()
+    withdrawn = await store.entities.get(p["id"])
+    assert all(f["state"] == "withdrawn" for f in withdrawn["facts"])
+    # The reason for withdrawal must survive a restart while the note is absent.
+    store.entities = EntityService(store)
+    path.write_bytes(original)
+    await store.entities.refresh()
+    restored = await store.entities.get(p["id"])
+    assert {f["id"] for f in restored["facts"]} == fact_ids
+    assert all(f["state"] == "confirmed" for f in restored["facts"])
+    assert restored["version"] > withdrawn["version"]
+    page = (store.notes_root / p["path"]).read_text()
+    assert "role: Engineer" in page and note.path.removesuffix(".md") in page
+    hits = await store.search(SearchQuery(q="Engineer"), entities=True)
+    assert any(h.kind == "entity" and h.id == p["id"] for h in hits.items)
+
+
+@pytest.mark.parametrize("withdrawal", ["api", "page", "correction"])
+async def test_returning_evidence_does_not_reverse_owner_decisions(store, withdrawal):
+    p = await person(store)
+    note = await reviewed_note(store)
+    p = await claim(store, p, note)
+    fact = next(f for f in p["facts"] if f["predicate"] == "role")
+    page = store.notes_root / p["path"]
+    if withdrawal == "page":
+        page.write_text(
+            "\n".join(
+                line
+                for line in page.read_text().split("\n")
+                if f"<!-- fact:{fact['id']} -->" not in line
+            )
+        )
+        await store.entities.refresh()
+    elif withdrawal == "correction":
+        await store.entities.change(
+            p["id"],
+            EntityChange(
+                version=p["version"],
+                action="correct",
+                fact_id=fact["id"],
+                predicate="role",
+                value="Architect",
+            ),
+        )
+    path = store.notes_root / note.path
+    original = path.read_bytes()
+    path.unlink()
+    await store.entities.refresh()
+    if withdrawal == "api":
+        # Explicitly withdrawing an already auto-withdrawn fact must also stick.
+        current = await store.entities.get(p["id"])
+        await store.entities.change(
+            p["id"],
+            EntityChange(
+                version=current["version"],
+                action="withdraw",
+                fact_id=fact["id"],
+            ),
+        )
+    store.entities = EntityService(store)
+    path.write_bytes(original)
+    await store.entities.refresh()
+    restored = await store.entities.get(p["id"])
+    assert next(f for f in restored["facts"] if f["id"] == fact["id"])["state"] == "withdrawn"
+    assert "role: Engineer" not in page.read_text()
+    if withdrawal == "correction":
+        assert "role: Architect" in page.read_text()
+
+
 async def test_retired_subject_purges_without_rewriting_git_or_regeneration(store):
     retention(store, 0)
     p = await person(store)
@@ -151,7 +233,9 @@ async def test_query_paging_relationship_search_and_identity_preview(store):
         p["id"], EntityChange(action="split", preview=preview["preview"], **request)
     )
     assert split["id"] != p["id"] and split["facts"][0]["id"] == fact["id"]
+    await store.entities.refresh()
     current = await store.entities.get(p["id"])
+    assert next(f for f in current["facts"] if f["id"] == fact["id"])["state"] == "withdrawn"
     request = dict(version=split["version"], target=current["id"])
     preview = await store.entities.change(
         split["id"], EntityChange(action="merge-preview", **request)
@@ -161,6 +245,13 @@ async def test_query_paging_relationship_search_and_identity_preview(store):
     )
     assert merged["id"] == current["id"]
     assert (await store.entities.get(split["id"]))["redirect"] == current["id"]
+    await store.entities.refresh()
+    merged = await store.entities.get(current["id"])
+    copies = [f for f in merged["facts"] if f["id"] == fact["id"]]
+    assert len(copies) == 1 and copies[0]["state"] == "confirmed"
+    assert "role: Engineer" in (store.notes_root / merged["path"]).read_text()
+    hits = await store.search(SearchQuery(q="Engineer"), entities=True)
+    assert any(h.kind == "entity" and h.id == merged["id"] for h in hits.items)
 
 
 async def test_note_purge_scrubs_quotes_and_orphan_dossier(store):

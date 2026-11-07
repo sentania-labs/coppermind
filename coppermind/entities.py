@@ -48,6 +48,8 @@ class Fact(BaseModel):
     value: str
     target: str | None = None
     state: Literal["confirmed", "withdrawn"]
+    # Only evidence-driven withdrawals can be undone when the same note version returns.
+    withdrawn_for: Literal["evidence"] | None = None
     evidence: Evidence
     origin: Literal["metadata", "prose", "correction"]
     supersedes: str | None = None
