@@ -65,7 +65,7 @@ class NoteLifecycle:
 
         note = await self.context.store.get_note(payload["note_id"])
         jobs = sorted(
-            [j for j in self.context.jobs() if j.note_id == note.id],
+            [j for j in self.context.jobs() if j.note_id == note.id and j.purpose != "dossier"],
             key=lambda j: j.created_at,
             reverse=True,
         )
@@ -94,13 +94,12 @@ class NoteLifecycle:
                 if isinstance(value, list)
                 else str(value)
             )
-        stale = bool(
-            job
-            and (
-                job.note_hash != note.content_hash
-                or job.evidence_hash != await self.context.note_evidence_hash(note)
-            )
-        )
+        stale = bool(job and job.note_hash != note.content_hash)
+        if job and not stale:
+            try:
+                stale = job.evidence_hash != await self.context.note_evidence_hash(note)
+            except ValueError:
+                stale = True
         problem = ""
         try:
             validate_review(note, self.context.store.control.schema(), self._default_timezone())
@@ -309,7 +308,7 @@ class NoteLifecycle:
             "date": str(note_date(fields, schema)),
             "properties": fields,
             "attendees": [p for p in people if isinstance(p, str)],
-            "calendar_hash": await self.context.note_evidence_hash(note),
+            "calendar_hash": await self.context.calendar_evidence_hash(note),
             "state": "confirmed",
             "at": now(),
         }
@@ -408,7 +407,7 @@ class NoteLifecycle:
                     continue
                 if not changed and note.content_hash == record["note_hash"]:
                     continue
-                current = await self.context.note_evidence_hash(note)
+                current = await self.context.calendar_evidence_hash(note)
                 if current != record["calendar_hash"]:
                     updates[identity] = {
                         "note_id": identity,
@@ -444,7 +443,7 @@ class NoteLifecycle:
             note = await self.context.store.get_note(identity)
             if note.content_hash != payload.get("if_match"):
                 raise ValueError("note changed; reload the calendar update")
-            current = await self.context.note_evidence_hash(note)
+            current = await self.context.calendar_evidence_hash(note)
             if current != payload.get("calendar_hash"):
                 raise ValueError("calendar changed again; reload the update")
             event = payload.get("event_id", "")

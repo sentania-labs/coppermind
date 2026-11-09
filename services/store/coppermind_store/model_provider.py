@@ -50,26 +50,28 @@ class ModelProvider:
             headers["Authorization"] = f"Bearer {key}"
         try:
             async with asyncio.timeout(timeout):
-                async with httpx.AsyncClient(
-                    transport=self.transport,
-                    timeout=timeout,
-                    follow_redirects=False,
-                    trust_env=False,
-                ) as client:
-                    async with client.stream(
+                async with (
+                    httpx.AsyncClient(
+                        transport=self.transport,
+                        timeout=timeout,
+                        follow_redirects=False,
+                        trust_env=False,
+                    ) as client,
+                    client.stream(
                         method,
                         connection.endpoint_url + path,
                         headers=headers,
                         json=payload,
                         params=params,
-                    ) as response:
-                        if not response.is_success:
-                            raise ProviderError(f"provider returned HTTP {response.status_code}")
-                        data = bytearray()
-                        async for chunk in response.aiter_bytes():
-                            data.extend(chunk)
-                            if len(data) > 2 * 1024 * 1024:
-                                raise ProviderError("provider response exceeded 2 MiB")
+                    ) as response,
+                ):
+                    if not response.is_success:
+                        raise ProviderError(f"provider returned HTTP {response.status_code}")
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        data.extend(chunk)
+                        if len(data) > 2 * 1024 * 1024:
+                            raise ProviderError("provider response exceeded 2 MiB")
             result = json.loads(data)
             if not isinstance(result, dict):
                 raise ProviderError("provider returned an invalid response")
@@ -167,6 +169,11 @@ class ModelProvider:
             usage = {
                 k: v for k, v in usage.items() if isinstance(v, int) and not isinstance(v, bool)
             }
+            reported = result.get("model")
+            usage["model"] = assignment.model
+            usage["provider_model_version"] = (
+                reported[:200] if isinstance(reported, str) else "not supplied"
+            )
             return parsed, usage
         except (ValueError, TypeError, AttributeError) as exc:
             raise ProviderError("model did not return a JSON object") from exc

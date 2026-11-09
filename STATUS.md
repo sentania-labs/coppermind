@@ -12,8 +12,9 @@ People and company identities, evidenced facts, interests, relationships,
 versioned agent corrections, identity previews, Obsidian pages and retention
 integration are implemented. See [dossiers](docs/dossiers.md). The API, page
 correction and search were exercised with isolated live services and PostgreSQL;
-Admin was inspected at desktop and mobile widths. Automatic prose extraction
-and dossier-aware enrichment remain the second slice. Phone synchronization
+Admin was inspected at desktop and mobile widths. The second slice adds automatic
+reviewed-note extraction and dossier-aware blank-field enrichment in the existing
+optional worker, with no additional acceptance step. Phone synchronization
 has not been exercised by this slice.
 
 ## Working

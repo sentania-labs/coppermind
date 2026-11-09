@@ -209,8 +209,11 @@ def router(wiring: Wiring) -> APIRouter:
                     "nrichment.</p></fieldset>"
                 )
                 fields += (
-                    "<fieldset><legend>What should it suggest?</legend><p>A clearer filen"
-                    "ame can be suggested. Your note body stays unchanged.</p>"
+                    "<fieldset><legend>What should it suggest?</legend><p>Suggestions with "
+                    "confidence of at least 0.8 fill blank selected fields in the review folder. "
+                    "Review them in Obsidian. "
+                    "Lower-confidence suggestions stay in Admin. Bodies and filenames stay "
+                    "unchanged. Reviewed notes contribute dossier facts automatically.</p>"
                 )
                 mapped = {
                     assignment[k]
@@ -293,7 +296,8 @@ def router(wiring: Wiring) -> APIRouter:
                     "Edit a fact there to correct it. This view is for setup and repair.</p>"
                 )
                 for kind, heading in (("person", "People"), ("company", "Companies")):
-                    body += "<h2>" + heading + "</h2>"
+                    count = sum(e["kind"] == kind for e in data.get("entities", []))
+                    body += "<h2>" + heading + f" ({count})</h2>"
                     for entity in data.get("entities", []):
                         if entity["kind"] != kind:
                             continue
@@ -308,7 +312,7 @@ def router(wiring: Wiring) -> APIRouter:
                         if entity.get("aliases"):
                             body += "<p>Aliases: " + e(", ".join(entity["aliases"])) + "</p>"
                         for section in ("Facts", "Relationships", "Interests"):
-                            body += "<h3>" + section + "</h3><ul>"
+                            members = ""
                             for fact in entity["facts"]:
                                 category = (
                                     "Relationships"
@@ -319,10 +323,25 @@ def router(wiring: Wiring) -> APIRouter:
                                 )
                                 if category != section or fact["state"] != "confirmed":
                                     continue
-                                body += "<li>" + e(fact["predicate"] + ": " + fact["value"])
+                                labels = {
+                                    "role": "Role",
+                                    "organization": "Works at",
+                                    "relationship": "Relationship",
+                                    "mentioned": "Mentioned in",
+                                    "note": "Note",
+                                }
+                                label = labels.get(
+                                    fact["predicate"],
+                                    fact["predicate"].replace("_", " ").capitalize(),
+                                )
+                                members += "<li>" + e(
+                                    fact["value"]
+                                    if section == "Interests"
+                                    else label + ": " + fact["value"]
+                                )
                                 evidence = fact["evidence"]
                                 if evidence.get("note_id"):
-                                    body += (
+                                    members += (
                                         ' · <a href="/admin/review/'
                                         + quote(evidence["note_id"])
                                         + '">'
@@ -330,11 +349,14 @@ def router(wiring: Wiring) -> APIRouter:
                                         + "</a>"
                                     )
                                 else:
-                                    body += " · " + e(evidence["path"])
+                                    members += " · " + e(evidence["path"])
                                 if evidence.get("quote"):
-                                    body += "<blockquote>" + e(evidence["quote"]) + "</blockquote>"
-                                body += "</li>"
-                            body += "</ul>"
+                                    members += (
+                                        "<blockquote>" + e(evidence["quote"]) + "</blockquote>"
+                                    )
+                                members += "</li>"
+                            if members:
+                                body += "<h3>" + section + "</h3><ul>" + members + "</ul>"
                         body += "</details>"
                 if not data.get("entities"):
                     body += (
@@ -475,6 +497,7 @@ def router(wiring: Wiring) -> APIRouter:
                         + e(suggestion.get("display_value", str(suggestion["value"])))
                         + "</p><p>"
                         + e(suggestion["reason"])
+                        + f" (confidence: {suggestion.get('confidence', 0):.2f})"
                         + "</p><blockquote>"
                         + e(suggestion["quote"])
                         + "</blockquote></div>"

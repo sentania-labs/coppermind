@@ -27,9 +27,37 @@ Editing, unreviewing or deleting the supporting note withdraws its old-version
 contribution. Independent corrections survive.
 If that same reviewed note version returns, evidence-driven withdrawals are
 restored; explicit withdrawals, corrections and splits remain in effect.
-Contradictory recorded facts remain visible together with evidence. This first
-slice provides the model and claim API; automatic model extraction and
-dossier-aware enrichment are the follow-up slice of issue 31.
+Contradictory recorded facts remain visible together with evidence.
+
+The optional enrichment worker extracts explicit people, companies, relationships,
+roles and interests from reviewed note frontmatter and prose. The existing
+Enrichment connection, model, enable/pause and attempt limits also govern this
+work. Marking the note reviewed is acceptance; there is no separate claim step.
+Each bounded extraction validates exact quotations and identity references before
+committing to the same claim ledger. Names alone never merge identities. New
+people need a full name or exact email, and companies need an explicit name.
+Failures stay in Admin and do not block review, filing or search. Extraction
+receipts prevent replay from duplicating facts or restoring corrected claims.
+
+For an unreviewed note in the configured review folder (`Review/` by default),
+enrichment considers every configured blank
+field using selected field and tag guidance, note/source text, and relevant
+active dossier facts. It sends at most 20 matching dossiers, including direct
+relationship targets, with at most 40 active facts each. The existing total input
+limit still applies before transmission. All supplied content is untrusted data;
+there are no tools or external retrieval. Unique full-name matches select context,
+not identity merges; ambiguous names remain unresolved.
+
+Schema-valid suggestions with model-reported confidence of at least 0.8 fill
+blank frontmatter fields, including exact dossier wikilinks in configured list
+fields. Confidence is not a calibrated probability. Other suggestions and doubts
+stay in Admin. No automatic fill replaces a person-set value or changes reviewed
+notes, body bytes or filenames. Read the visible values in Obsidian and mark the
+note reviewed when satisfied. Admin's existing controls remain available for
+repair. The worker persists input versions, provider/config fingerprint, model
+and reported model version (or `not supplied`), confidence, evidence and decisions.
+Changes to the note, sources, guidance or relevant dossiers invalidate a pending
+write; interrupted automatic writes resume only against their recorded bytes.
 
 ## Agent API
 
@@ -88,6 +116,9 @@ unwanted re-creation. Git history is never rewritten.
 Back up the complete notes filesystem and `/data/state/entities/`, alongside
 the existing sources and control state. `entities/catalog.json` schema version
 1 is authoritative for identities, corrections, evidence and operation receipts.
+Back up `/data/state/context/` too: it contains extraction and automatic-fill
+receipts. Versions preceding this slice cannot read the new dossier job purpose;
+rollback requires the complete pre-upgrade snapshot, including context state.
 PostgreSQL `entities` and entity search rows are mirrors, rebuilt during metadata
 rebuild or entity reconciliation without a model. Notes alone cannot restore
 independent corrections. Keep the previous complete-data snapshot for rollback
