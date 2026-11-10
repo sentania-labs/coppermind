@@ -171,6 +171,7 @@ def embeddings_html(
         for item in connections
     )
     datalist = "".join(f'<option value="{escape(name, quote=True)}">' for name in models)
+    unsaved = ' data-unsaved="true"' if attempted is not None else ""
     wait_invalid = "" if _wait_ok(settings["timeout_s"]) else ' aria-invalid="true"'
     checked = lambda flag: " checked" if flag else ""  # noqa: E731
     where_from = (
@@ -185,7 +186,7 @@ def embeddings_html(
 &ldquo;that call where we talked about the licensing change&rdquo;. It works alongside the
 keyword search and falls back to it whenever the model is off or not answering.</p>
 {embedding_status_html(status, zone)}
-<form method="post" action="/v1/admin/search-index/embeddings" id="meaning-form">
+<form method="post" action="/v1/admin/search-index/embeddings" id="meaning-form"{unsaved}>
 <input type="hidden" name="revision" value="{int(view["revision"])}">
 <fieldset><legend>Embeddings model</legend>
 {where_from}
@@ -218,7 +219,8 @@ again; keyword search remains available while it does.</p>
 </form>
 <script>
 const meaningForm = document.getElementById("meaning-form");
-let meaningDirty = false;
+// A form shown after a refused save already holds unsaved values, so the warning starts armed.
+let meaningDirty = meaningForm.dataset.unsaved === "true";
 meaningForm.addEventListener("input", () => {{ meaningDirty = true; }});
 document.getElementById("connections-link").addEventListener("click", (event) => {{
   if (meaningDirty && !confirm(

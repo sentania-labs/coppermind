@@ -525,3 +525,38 @@ def test_leaving_for_connections_warns_that_unsaved_settings_are_lost(signed_in)
     )
     assert 'id="connections-link"' in shown
     assert "Leave anyway?" in shown
+
+
+def _refused_page(client, refuse: str) -> str:
+    client.app.state.store = IndexStore(refuse=refuse)
+    token = form_token(client, "/admin/search-index")
+    return client.post(
+        "/v1/admin/search-index/embeddings",
+        data={"csrf": token, "revision": "2", "connection": "local", "model": "draft"},
+    ).text
+
+
+def test_a_clean_page_does_not_arm_the_leave_warning(signed_in):
+    client, _ = signed_in
+    client.app.state.store = IndexStore()
+
+    shown = client.get("/admin/search-index").text
+
+    assert 'data-unsaved="true"' not in shown
+    assert 'meaningForm.dataset.unsaved === "true"' in shown
+
+
+def test_a_refused_draft_is_shown_with_the_leave_warning_already_armed(signed_in):
+    client, _ = signed_in
+    refusals = {
+        "wrong model": "The service couldn't find model \u2018draft\u2019. Check the model name "
+        "or refresh the model list. Nothing was saved.",
+        "unreachable": "Couldn't connect to Lab embeddings. Check its address and that the "
+        "service is running. Nothing was saved.",
+        "stale": "configuration changed; reload before saving",
+    }
+    for name, refuse in refusals.items():
+        shown = _refused_page(client, refuse)
+        assert 'id="meaning-form" data-unsaved="true"' in shown, name
+        assert 'value="draft"' in shown, name
+        assert "Leave anyway?" in shown, name
