@@ -170,7 +170,6 @@ def test_a_chosen_person_is_followed_through_a_rename_and_refused_once_retired()
     from coppermind_store.speaker_names import current_person
 
     people = _people(0)
-    context = _context({}, people)
     stale = {
         "id": "person:morgan",
         "name": "Morgan Lee",
@@ -178,8 +177,8 @@ def test_a_chosen_person_is_followed_through_a_rename_and_refused_once_retired()
         "path": "People/Morgan Lee.md",
     }
     people["morgan"].name = "Morgan Lee-Park"
-    assert current_person(context, stale)["name"] == "Morgan Lee-Park"
+    assert current_person(people, stale)["name"] == "Morgan Lee-Park"
     people["morgan"].retired_at = datetime.now(UTC)
-    assert current_person(context, stale) is None
+    assert current_person(people, stale) is None
     contact = {"id": "contact:c1", "name": "Alex", "email": "", "path": ""}
-    assert current_person(context, contact) == contact
+    assert current_person(people, contact) == contact

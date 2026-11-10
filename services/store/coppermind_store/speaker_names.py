@@ -66,28 +66,28 @@ def person_candidate(entity: Any) -> dict[str, Any]:
     }
 
 
-def current_person(context: Any, candidate: dict[str, Any]) -> dict[str, Any] | None:
+def current_person(people: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any] | None:
     """The candidate as it stands now, or None when that person has been retired or merged."""
     entity_id = candidate.get("person_id")
     if candidate["id"].startswith("person:"):
         entity_id = candidate["id"].removeprefix("person:")
     if not entity_id:
         return candidate
-    entity = context.store.entities.load().entities.get(entity_id)
+    entity = people.get(entity_id)
     if entity is None or entity.retired_at or entity.redirect:
         return None
     return {**person_candidate(entity), "id": candidate["id"], "person_id": entity_id}
 
 
 def chosen_person(
-    context: Any, identity: str, candidates: dict[str, dict[str, Any]]
+    people: dict[str, Any], identity: str, candidates: dict[str, dict[str, Any]]
 ) -> dict[str, Any] | None:
     """Resolve a supplied candidate or an explicitly selected active People entry."""
     candidate = candidates.get(identity)
     if candidate is not None:
-        return current_person(context, candidate)
+        return current_person(people, candidate)
     if identity.startswith("person:"):
-        entity = context.store.entities.load().entities.get(identity.removeprefix("person:"))
+        entity = people.get(identity.removeprefix("person:"))
         if (
             entity is not None
             and entity.kind == "person"

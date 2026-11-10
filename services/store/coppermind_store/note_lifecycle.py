@@ -79,6 +79,7 @@ class NoteLifecycle:
                 for i, s in enumerate(job.result.suggestions)
                 if i not in decided
             ]
+        people = self.context.store.entities.load().entities
         for suggestion in suggestions:
             labels = []
             for event in job.evidence.get("events", []) if job else []:
@@ -94,7 +95,7 @@ class NoteLifecycle:
                 candidate_list = [
                     current
                     for candidate in saved
-                    if (current := speaker_names.current_person(self.context, candidate))
+                    if (current := speaker_names.current_person(people, candidate))
                     is not None
                 ]
                 if suggestion["value"] and not any(
@@ -145,13 +146,14 @@ class NoteLifecycle:
                 self.context, note, await self.context.calendar_candidates(note)
             )
         if manual:
+            people = self.context.store.entities.load().entities
             manual = {
                 key: manual[key] for key in ("source_id", "revision", "speakers", "candidates")
             }
             manual["candidates"] = [
                 person
                 for candidate in manual["candidates"]
-                if (person := speaker_names.current_person(self.context, candidate)) is not None
+                if (person := speaker_names.current_person(people, candidate)) is not None
             ]
         return {
             "manual_speaker_review": manual,
@@ -272,6 +274,7 @@ class NoteLifecycle:
                         raise ValueError("invalid speaker choices")
                     speaker_data = job.evidence.get("speaker_review") or {}
                     candidates = {c["id"]: c for c in speaker_data.get("candidates", [])}
+                    people = self.context.store.entities.load().entities
                     mapping = {}
                     chosen = []
                     for i in speaker_indexes:
@@ -279,7 +282,7 @@ class NoteLifecycle:
                         person_id = choices.get(str(i), suggestion.value or "")
                         if not person_id:
                             continue
-                        person = speaker_names.chosen_person(self.context, person_id, candidates)
+                        person = speaker_names.chosen_person(people, person_id, candidates)
                         if person is None:
                             person_name = candidates.get(person_id, {}).get("name", "This person")
                             raise ValueError(
@@ -322,6 +325,7 @@ class NoteLifecycle:
                         raise ValueError("the transcript changed; refresh before completing review")
                     if not set(manual_choices) <= set(manual["speakers"]):
                         raise ValueError("a selected speaker no longer appears in the transcript")
+                    people = self.context.store.entities.load().entities
                     candidates = {c["id"]: c for c in manual["candidates"]}
                     if (
                         speaker_operation
@@ -341,7 +345,7 @@ class NoteLifecycle:
                             "people": [],
                         }
                     for label, person_id in manual_choices.items():
-                        person = speaker_names.chosen_person(self.context, person_id, candidates)
+                        person = speaker_names.chosen_person(people, person_id, candidates)
                         if person is None:
                             raise ValueError(
                                 f"{label}: this person is no longer active. Choose someone else."
