@@ -124,6 +124,62 @@ async def test_account_matches_the_live_company_when_a_retired_one_shares_its_na
     assert len([e for e in ledger.entities.values() if e.kind == "company"]) == 2
 
 
+async def test_renamed_company_page_still_receives_notes_for_its_old_account_name(store):
+    await store.create_note(
+        CreateNote(
+            title="First meeting",
+            body="A meeting.",
+            frontmatter={
+                "reviewed": True,
+                "date": "2026-11-01",
+                "account": ["Xcel Energy"],
+                "attendees": ["arthur.smith@xcelenergy.com", "jo.lee@xcelenergy.com"],
+            },
+        )
+    )
+    await store.entities.refresh()
+    company = next(e for e in store.entities.load().entities.values() if e.kind == "company")
+    page = store.notes_root / company.path
+    page.rename(page.with_name("Xcel Energy Corp.md"))
+    await store.entities.refresh()
+    await store.create_note(
+        CreateNote(
+            title="Second meeting",
+            body="Another meeting.",
+            frontmatter={"reviewed": True, "date": "2026-11-02", "account": ["Xcel Energy"]},
+        )
+    )
+    await store.entities.refresh()
+    ledger = store.entities.load()
+    companies = [e for e in ledger.entities.values() if e.kind == "company"]
+    assert [e.id for e in companies] == [company.id]
+    assert companies[0].name == "Xcel Energy Corp"
+    assert "Xcel Energy" in companies[0].aliases
+    text = (store.notes_root / companies[0].path).read_text()
+    assert text.count("met with") == 2
+    assert "Other recorded values" not in text
+
+
+async def test_unusable_account_value_does_not_stop_dossier_refresh(store):
+    for account in ("x" * 201, "Line one\nLine two"):
+        await store.create_note(
+            CreateNote(
+                title="Odd account",
+                body="A meeting.",
+                frontmatter={
+                    "reviewed": True,
+                    "date": "2026-11-01",
+                    "account": [account],
+                    "attendees": ["casey@example.test"],
+                },
+            )
+        )
+    await store.entities.refresh()
+    ledger = store.entities.load()
+    assert not [e for e in ledger.entities.values() if e.kind == "company"]
+    assert any(e.emails == ["casey@example.test"] for e in ledger.entities.values())
+
+
 async def test_trashed_dossier_page_is_not_treated_as_a_move(store):
     entity = await person(store, "Casey Smith")
     old = store.notes_root / entity["path"]

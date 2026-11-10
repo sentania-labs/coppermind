@@ -182,6 +182,13 @@ def regenerate(entity: Entity, head: str) -> str:
     return front + (wanted + body[title.end() :] if title else body)
 
 
+def rename(entity: Entity, name: str) -> None:
+    name = EntityInput.single_line(name)
+    if name != entity.name:
+        entity.aliases = sorted({*entity.aliases, entity.name} - {name})
+        entity.name = name
+
+
 def active_facts(entity: Entity, ledger: EntityLedger) -> list[Fact]:
     return [
         f
@@ -223,6 +230,8 @@ def render(entity: Entity, ledger: EntityLedger, *, search: bool = False) -> str
                 "interest",
                 "mentioned",
                 "note",
+                "attended a meeting for",
+                "met with",
             }:
                 lines.append("  - Other recorded values are shown with their evidence.")
             if not search:
@@ -367,7 +376,7 @@ class EntityService:
             and name != prior.get("name")
             and name != entity.name
         ):
-            entity.name = EntityInput.single_line(name)
+            rename(entity, name)
             self.receipt(ledger, entity, "page name")
         entity.personal = owner_wrote(head)
         if block == entity.pending:
@@ -529,6 +538,8 @@ class EntityService:
                     if not isinstance(account, str) or not account.strip():
                         continue
                     name = account.strip()
+                    if len(name) > 200 or any(c in name for c in "\n\r\0"):
+                        continue
                     if name.startswith("[[") and name.endswith("]]"):
                         target = by_path.get(name[2:-2].split("|", 1)[0].removesuffix(".md"))
                         if target and target.kind == "company" and not target.retired_at:
@@ -984,7 +995,7 @@ class EntityService:
                     old_stem = Path(old).stem
                     new_stem = Path(entity.path).stem
                     if old_stem != new_stem:
-                        entity.name = EntityInput.single_line(new_stem)
+                        rename(entity, new_stem)
                     self.receipt(ledger, entity, "page moved", old_path=old)
                 elif len(paths) > 1:
                     entity.problem = "Multiple pages have this dossier identity; resolve the copies"
@@ -1212,7 +1223,7 @@ class EntityService:
             ):
                 raise ValidationFailed(["target must name an active dossier"])
             if change.action == "rename":
-                entity.name = EntityInput.single_line(change.name or "")
+                rename(entity, change.name or "")
             elif change.action == "aliases":
                 candidate = EntityInput(
                     kind=entity.kind,
