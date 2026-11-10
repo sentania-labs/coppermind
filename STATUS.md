@@ -230,12 +230,12 @@ has not been exercised by this slice.
   identifier alone, and logs each collision once, again only when its paths
   change. The one exception is a copy left in the review folder after its note
   was filed elsewhere: it is removed when its bytes equal the filed note's or a
-  version filing recorded of it (hashes only, the newest 16 per note, kept
-  in the filing receipt after it settles), and otherwise left alone and named, with the
-  filed path, in `review_problem` on the note's review response and on
-  Problems. The process remembers up
-  to 10,000 rejected paths by stat, so an unchanged rejected tree costs one
-  stat per file per pass rather than repeated reads and parses. Only a durable
+  version filing recorded of it (hashes only, the newest 16 per note, kept in
+  the filing receipt after it settles), and otherwise left alone and named,
+  with the filed path, in `review_problem` on the note's review response and on
+  Problems. The process remembers up to 10,000 rejected paths by stat, so an
+  unchanged rejected tree costs one stat per file per pass rather than
+  repeated reads and parses. Only a durable
   rejection is remembered; a file still inside the quiet period is read again
   on the next pass instead, so a whole notes filesystem arriving at once
   cannot fill that memory with paths that are about to settle. A file changed
