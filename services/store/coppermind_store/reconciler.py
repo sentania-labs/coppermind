@@ -1256,10 +1256,9 @@ def adoption_problem(cause: str) -> tuple[str, str]:
 
 
 def _a(names: list[str]) -> str:
-    lowered = [name.lower() for name in names]
-    if len(lowered) == 1:
-        return f"{'an' if lowered[0][:1] in 'aeiou' else 'a'} {lowered[0]}"
-    return " and ".join(lowered)
+    if len(names) == 1:
+        return f"{'an' if names[0][:1].lower() in 'aeiou' else 'a'} {names[0]}"
+    return " and ".join(names)
 
 
 def _in_folder(path: str, folder: str) -> bool:
