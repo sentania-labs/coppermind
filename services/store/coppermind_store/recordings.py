@@ -25,6 +25,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import random
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
@@ -547,7 +548,12 @@ class Recordings:
         )
 
         duration = job.metadata.get("duration_seconds")
-        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration <= 0:
+        if (
+            isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or not math.isfinite(duration)
+            or duration <= 0
+        ):
             duration = None
         speakers = job.metadata.get("num_speakers")
         if isinstance(speakers, bool) or not isinstance(speakers, int) or speakers < 1:

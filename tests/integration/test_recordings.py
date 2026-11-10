@@ -373,6 +373,20 @@ async def test_a_restart_in_the_middle_of_a_transcription_then_a_busy_service_st
     assert (await context.recording_status({"id": job["id"]}))["state"] == "succeeded"
 
 
+@pytest.mark.parametrize("duration", [float("inf"), float("nan")])
+async def test_a_non_finite_duration_is_treated_as_unknown(store, duration):
+    async with Service(jobs=True) as service:
+        context = await setup_transcription(store, service)
+        job = await context.accept_recording(
+            request(await store_audio(store), metadata={"duration_seconds": duration})
+        )
+        assert await context.recordings.tick() is True
+    assert [r["path"].split(" ")[:2] for r in service.requests] == [
+        ["POST", "/v1/audio/transcriptions"]
+    ]
+    assert (await context.recording_status({"id": job["id"]}))["state"] == "succeeded"
+
+
 async def test_a_restart_on_the_jobs_path_asks_again_under_the_same_id(store, monkeypatch):
     from coppermind_store import model_provider
 
