@@ -67,7 +67,11 @@ async def test_reviewed_accounts_create_companies_and_attendee_associations(stor
     link = f"[[{company.path.removesuffix('.md')}]]"
     person_page = (store.notes_root / person.path).read_text()
     assert link in person_page
-    assert fm.parse(person_page)[0]["company"] == []
+    assert fm.parse(person_page)[0]["company"] == [link]
+    company_page = (store.notes_root / company.path).read_text()
+    assert fm.parse(company_page)[0]["domains"] == ["xcelenergy.com"]
+    domain = next(f for f in company.facts if f.predicate == "domain")
+    assert (domain.value, domain.evidence.note_id) == ("xcelenergy.com", note.id)
     assert f"[[{person.path.removesuffix('.md')}]]" in (store.notes_root / company.path).read_text()
     await store.entities.refresh()
     assert len(store.entities.load().entities) == 2
@@ -85,6 +89,108 @@ async def test_moved_dossier_follows_identity_and_respects_owner_name(store):
     assert not current["retired_at"]
     await store.entities.refresh()
     assert (await store.entities.get(entity["id"]))["name"] == "Casey Jones"
+
+
+def customer_note(**extra):
+    return CreateNote(
+        title=extra.pop("title", "Customer meeting"),
+        body="A meeting.",
+        frontmatter={"reviewed": True, "date": "2026-11-01", **extra},
+    )
+
+
+def page_company(store, entity):
+    return fm.parse((store.notes_root / entity.path).read_text())[0]["company"]
+
+
+def named(store, name):
+    return next(e for e in store.entities.load().entities.values() if e.name == name)
+
+
+async def test_company_comes_from_the_attendees_email_domain_not_from_attendance(store):
+    await store.create_note(
+        customer_note(
+            account=["Xcel Energy"],
+            attendees=[
+                "arthur.smith@xcelenergy.com",
+                "vendor.rep@othervendor.test",
+                "scott@gmail.com",
+            ],
+        )
+    )
+    await store.entities.refresh()
+    company = named(store, "Xcel Energy")
+    assert page_company(store, named(store, "Arthur Smith")) == [
+        f"[[{company.path.removesuffix('.md')}]]"
+    ]
+    assert page_company(store, named(store, "Vendor Rep")) == []
+    assert page_company(store, named(store, "Scott")) == []
+    relationships = [f.predicate for f in named(store, "Vendor Rep").facts]
+    assert "attended a meeting for" in relationships
+
+
+async def test_public_mail_domains_never_belong_to_a_company(store):
+    await store.create_note(customer_note(account=["Gmail"], attendees=["casey@gmail.com"]))
+    await store.entities.refresh()
+    company = named(store, "Gmail")
+    assert not [f for f in company.facts if f.predicate == "domain"]
+    assert fm.parse((store.notes_root / company.path).read_text())[0]["domains"] == []
+    assert page_company(store, named(store, "Casey")) == []
+
+
+async def test_a_known_domain_gives_a_company_to_attendees_of_later_notes(store):
+    await store.create_note(
+        customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])
+    )
+    await store.entities.refresh()
+    await store.create_note(
+        customer_note(title="Internal sync", attendees=["jo.lee@xcelenergy.com"])
+    )
+    await store.entities.refresh()
+    company = named(store, "Xcel Energy")
+    assert page_company(store, named(store, "Jo Lee")) == [
+        f"[[{company.path.removesuffix('.md')}]]"
+    ]
+
+
+async def test_owner_set_company_and_domains_always_win(store):
+    await store.create_note(
+        customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])
+    )
+    await store.entities.refresh()
+    arthur, company = named(store, "Arthur Smith"), named(store, "Xcel Energy")
+    page = store.notes_root / arthur.path
+    page.write_text(
+        page.read_text().replace(f"[[{company.path.removesuffix('.md')}]]", "Consultant")
+    )
+    await store.entities.refresh()
+    assert page_company(store, arthur) == ["Consultant"]
+
+    await store.create_note(
+        customer_note(title="Other", attendees=["pat@xcel-partner.test", "kim@acme.test"])
+    )
+    await store.entities.refresh()
+    assert page_company(store, named(store, "Pat")) == []
+    page = store.notes_root / company.path
+    page.write_text(
+        page.read_text().replace(
+            "domains:\n  - xcelenergy.com", "domains:\n  - xcelenergy.com\n  - xcel-partner.test"
+        )
+    )
+    await store.entities.refresh()
+    assert page_company(store, named(store, "Pat")) == [f"[[{company.path.removesuffix('.md')}]]"]
+    assert page_company(store, named(store, "Kim")) == []
+
+    page.write_text(page.read_text().replace("  - xcelenergy.com\n", ""))
+    await store.entities.refresh()
+    await store.entities.refresh()
+    assert "xcelenergy.com" not in fm.parse(page.read_text())[0]["domains"]
+    domains = [
+        f.value
+        for f in named(store, "Xcel Energy").facts
+        if f.state == "confirmed" and f.predicate == "domain"
+    ]
+    assert domains == ["xcel-partner.test"]
 
 
 async def test_deleted_company_page_is_not_recreated(store):
@@ -233,6 +339,12 @@ async def test_legacy_page_move_resumes_after_interruption(store, monkeypatch, s
             frontmatter={"reviewed": True, "attendees": [address], "date": "2026-11-01"},
         )
     )
+    hand = await store.create_note(
+        CreateNote(
+            title="Hand written",
+            body=f"Keep [[Elsewhere]] and this text. See [[{old.removesuffix('.md')}|Hand link]].",
+        )
+    )
     # Metadata already proves this note references the entity before the move starts.
     ledger = store.entities.load()
     store.entities.contribute(ledger, await store.entities.notes())
@@ -252,6 +364,8 @@ async def test_legacy_page_move_resumes_after_interruption(store, monkeypatch, s
     assert not (store.notes_root / old).exists()
     assert (store.notes_root / current["path"]).exists()
     assert "[[People/Arthur Smith|Arthur]]" in (store.notes_root / note.path).read_text()
+    assert "[[People/Arthur Smith|Hand link]]" in (store.notes_root / hand.path).read_text()
+    assert "Keep [[Elsewhere]] and this text. See" in (store.notes_root / hand.path).read_text()
 
 
 async def test_move_retries_a_concurrent_note_edit(store, monkeypatch):

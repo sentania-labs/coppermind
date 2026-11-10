@@ -44,6 +44,7 @@ from coppermind.naming import sanitize_stem
 from coppermind.store_protocol import (
     NoteDocument,
     NotFound,
+    StoreError,
     ValidationFailed,
     VersionConflict,
 )
@@ -121,6 +122,44 @@ def label(value: str) -> str:
     return html.escape(value.replace("\n", " ").replace("\r", " "), quote=False)
 
 
+PUBLIC_MAIL = frozenset(
+    {
+        "aol.com",
+        "fastmail.com",
+        "gmail.com",
+        "gmx.com",
+        "googlemail.com",
+        "hotmail.com",
+        "icloud.com",
+        "live.com",
+        "mac.com",
+        "me.com",
+        "msn.com",
+        "outlook.com",
+        "pm.me",
+        "proton.me",
+        "protonmail.com",
+        "yahoo.com",
+    }
+)
+DOMAIN = re.compile(r"[a-z0-9-]+(\.[a-z0-9-]+)+")
+
+
+def squash(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.casefold())
+
+
+def domain_belongs(domain: str, company: Entity) -> bool:
+    label = squash(domain.rpartition(".")[0])
+    return domain not in PUBLIC_MAIL and any(
+        len(name) >= 3 and name in label for name in map(squash, [company.name, *company.aliases])
+    )
+
+
+def company_domains(entity: Entity, ledger: EntityLedger) -> list[str]:
+    return sorted({f.value for f in active_facts(entity, ledger) if f.predicate == "domain"})
+
+
 def properties(entity: Entity, ledger: EntityLedger) -> dict[str, Any]:
     result: dict[str, Any] = {
         "entity_id": entity.id,
@@ -130,17 +169,28 @@ def properties(entity: Entity, ledger: EntityLedger) -> dict[str, Any]:
     }
     if entity.emails:
         result["email"] = entity.emails
-    companies = sorted(
-        {
-            f"[[{ledger.entities[f.target].path.removesuffix('.md')}]]"
+    if entity.kind == "company":
+        result["domains"] = company_domains(entity, ledger)
+    if entity.kind == "person":
+        linked = {
+            f.target
             for f in active_facts(entity, ledger)
             if f.predicate == "organization"
             and f.target
             and ledger.entities[f.target].kind == "company"
         }
-    )
-    if entity.kind == "person":
-        result["company"] = companies
+        owners: dict[str, set[str]] = {}
+        for other in ledger.entities.values():
+            if other.kind == "company" and not other.retired_at and not other.redirect:
+                for domain in company_domains(other, ledger):
+                    owners.setdefault(domain, set()).add(other.id)
+        for address in entity.emails:
+            matched = owners.get(address.rpartition("@")[2].lower(), set())
+            if len(matched) == 1:
+                linked |= matched
+        result["company"] = sorted(
+            f"[[{ledger.entities[identity].path.removesuffix('.md')}]]" for identity in linked
+        )
     return result
 
 
@@ -155,7 +205,7 @@ def header(entity: Entity, ledger: EntityLedger) -> str:
 
 
 TITLE = re.compile(r"# [^\n]*\n\n?")
-GENERATED_KEYS = {"entity_id", "type", "aliases", "name", "email", "company"}
+GENERATED_KEYS = {"entity_id", "type", "aliases", "name", "email", "company", "domains"}
 
 
 def owner_wrote(head: str) -> bool:
@@ -232,6 +282,7 @@ def render(entity: Entity, ledger: EntityLedger, *, search: bool = False) -> str
                 "note",
                 "attended a meeting for",
                 "met with",
+                "domain",
             }:
                 lines.append("  - Other recorded values are shown with their evidence.")
             if not search:
@@ -378,6 +429,27 @@ class EntityService:
         ):
             rename(entity, name)
             self.receipt(ledger, entity, "page name")
+        listed = fields.get("domains")
+        if entity.kind == "company" and isinstance(listed, list) and listed != prior.get("domains"):
+            wanted = {
+                item.strip().lower()
+                for item in listed
+                if isinstance(item, str) and DOMAIN.fullmatch(item.strip().lower())
+            }
+            held = {f.value for f in active_facts(entity, ledger) if f.predicate == "domain"}
+            shown = prior.get("domains")
+            shown = set(shown) if isinstance(shown, list) else set()
+            for value in sorted(wanted - held):
+                self.correction(entity, "domain", value, raw)
+            for fact in entity.facts:
+                if (
+                    fact.predicate == "domain"
+                    and fact.state == "confirmed"
+                    and fact.value in shown
+                    and fact.value not in wanted
+                ):
+                    fact.state, fact.withdrawn_for = "withdrawn", None
+            self.receipt(ledger, entity, "page domains")
         entity.personal = owner_wrote(head)
         if block == entity.pending:
             entity.generated, entity.pending = block, None
@@ -595,6 +667,44 @@ class EntityService:
                             )
                         )
                         subject.version += 1
+            for company in companies.values():
+                for person in attendees.values():
+                    for address in person.emails:
+                        domain = address.rpartition("@")[2].lower()
+                        if not domain_belongs(domain, company):
+                            continue
+                        identity = digest(
+                            [note.id, note.content_hash, company.id, domain, "domain-v1"]
+                        )
+                        if any(
+                            f.id == identity
+                            or (
+                                f.predicate == "domain"
+                                and f.value == domain
+                                and (f.state == "confirmed" or f.withdrawn_for is None)
+                            )
+                            for f in company.facts
+                        ):
+                            continue
+                        company.facts.append(
+                            Fact(
+                                id=identity,
+                                predicate="domain",
+                                value=domain,
+                                state="confirmed",
+                                origin="metadata",
+                                created_at=datetime.now(UTC),
+                                evidence=Evidence(
+                                    note_id=note.id,
+                                    note_hash=note.content_hash,
+                                    path=note.path,
+                                    date=str(note.frontmatter.get("date", "")),
+                                    quote=address,
+                                    extraction_version="domain-v1",
+                                ),
+                            )
+                        )
+                        company.version += 1
             for entity in mentions.values():
                 identity = digest([note.id, note.content_hash, entity.id, "metadata-v1"])
                 if any(f.id == identity for f in entity.facts):
@@ -765,11 +875,18 @@ class EntityService:
                 if not old_file.exists():
                     continue
                 original = old_file.read_bytes()
-                notes = sorted({f.evidence.note_id for f in entity.facts if f.evidence.note_id})
+                linked_notes, linked_dossiers = await self.linking_pages(ledger, entity, new)
+                notes = sorted(
+                    {f.evidence.note_id for f in entity.facts if f.evidence.note_id}
+                    | set(linked_notes)
+                )
                 dossiers = sorted(
-                    e.id
-                    for e in ledger.entities.values()
-                    if e.id != entity.id and any(f.target == entity.id for f in e.facts)
+                    {
+                        e.id
+                        for e in ledger.entities.values()
+                        if e.id != entity.id and any(f.target == entity.id for f in e.facts)
+                    }
+                    | set(linked_dossiers)
                 )
                 entity.page_move = {
                     "old": entity.path,
@@ -819,6 +936,33 @@ class EntityService:
             self.receipt(ledger, entity, "email page migrated", old_path=old)
             self.save(ledger)
             self.move_checkpoint("complete")
+
+    async def linking_pages(
+        self, ledger: EntityLedger, entity: Entity, new: str
+    ) -> tuple[list[str], list[str]]:
+        old, root = entity.path, self.store.notes_root
+        async with self.store.session_factory() as session:
+            rows = (
+                await session.execute(sa.select(Note.id, Note.path).where(Note.state == "ok"))
+            ).all()
+        candidates = [("note", row.id, row.path) for row in rows] + [
+            ("dossier", e.id, e.path)
+            for e in ledger.entities.values()
+            if e.id != entity.id and not e.retired_at
+        ]
+
+        def scan() -> tuple[list[str], list[str]]:
+            found: dict[str, set[str]] = {"note": set(), "dossier": set()}
+            for kind, identity, relative in candidates:
+                try:
+                    text = safe_path(root, relative).read_text(encoding="utf-8")
+                except (OSError, ValueError, UnicodeError):
+                    continue
+                if rewrite_dossier_links(text, old, new) != text:
+                    found[kind].add(identity)
+            return sorted(found["note"]), sorted(found["dossier"])
+
+        return await asyncio.to_thread(scan)
 
     def _move_replace(
         self, ledger: EntityLedger, entity: Entity, path: Path
@@ -1019,7 +1163,10 @@ class EntityService:
         }
         versions = {}
         for identity in source_notes:
-            versions[identity] = (await self.store.context.selected_sources(identity))[0]
+            try:
+                versions[identity] = (await self.store.context.selected_sources(identity))[0]
+            except StoreError:
+                continue
         self.contribute(ledger, notes, versions)
         await self.migrate(ledger)
         for entity in ledger.entities.values():

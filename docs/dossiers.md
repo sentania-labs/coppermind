@@ -28,8 +28,17 @@ may observe an intermediate state during this resumable per-file migration.
 Reviewed metadata contributes exact attendee emails, explicit account companies,
 attendee-to-company associations and explicit dossier wikilinks in list fields.
 Each attendee gets an "attended a meeting for" relationship to the company and the company a
-"met with" relationship to the attendee, both under Relationships. A person's `company` property
-is filled only from an explicit `organization` fact, never from a shared meeting.
+"met with" relationship to the attendee, both under Relationships. Attending never sets a
+person's `company`.
+
+A company page lists the email domains known to belong to it in its `domains` property. When a
+reviewed note's attendee has an email domain whose name (without the final label) contains the
+account name, for example `xcelenergy.com` for Xcel Energy, the domain is recorded on the company
+as a `domain` fact with the note as evidence. Public mail domains such as `gmail.com` never
+qualify. A person's `company` property is filled from their email domain when exactly one
+company holds it, or from an explicit evidenced `organization` fact. Editing `domains` on a
+company page, or `company` on a person page, always wins and is not overwritten; removing a
+domain withdraws it.
 Existing reviewed notes contribute on refresh. The API also accepts evidenced prose claims from a
 reviewed note. All such claims count immediately; there is no proposed state.
 Each records the note ID, current hash, date, quotation and extraction version.
