@@ -790,7 +790,8 @@ class EntityService:
                                 and f.value == domain
                                 and (f.state == "confirmed" or f.withdrawn_for is None)
                                 and not (
-                                    f.evidence.note_id == note.id
+                                    f.state == "confirmed"
+                                    and f.evidence.note_id == note.id
                                     and f.evidence.note_hash != note.content_hash
                                 )
                             )

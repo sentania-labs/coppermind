@@ -348,6 +348,25 @@ async def test_editing_a_note_keeps_its_domain_without_a_gap(store):
     ]
 
 
+async def test_removed_domain_stays_removed_after_its_note_is_edited(store):
+    note = await store.create_note(
+        customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])
+    )
+    await store.entities.refresh()
+    company = named(store, "Xcel Energy")
+    page = store.notes_root / company.path
+    page.write_text(page.read_text().replace("domains:\n  - xcelenergy.com\n", "domains: []\n"))
+    await store.entities.refresh()
+    assert fm.parse(page.read_text())[0]["domains"] == []
+    path = store.notes_root / note.path
+    path.write_text(path.read_text() + "More discussion.\n")
+    await reconcile_once(store, full=True)
+    await store.entities.refresh()
+    company = named(store, "Xcel Energy")
+    assert not [f for f in company.facts if f.predicate == "domain" and f.state == "confirmed"]
+    assert fm.parse(page.read_text())[0]["domains"] == []
+
+
 async def test_owner_set_company_and_domains_always_win(store):
     await store.create_note(
         customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])
