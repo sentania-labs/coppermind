@@ -364,12 +364,12 @@ class EmbeddingService:
         if not self.active(assignment) or not text.strip():
             return None
         self._follow_config(assignment)
-        if time.monotonic() < self._query_down_until or not await self.table_ready():
-            return None
         cached = self._queries.get((assignment.model, text))
         if cached is not None:
             self._queries.move_to_end((assignment.model, text))
             return QueryVector(cached, assignment.model)
+        if time.monotonic() < self._query_down_until or not await self.table_ready():
+            return None
         try:
             connection, key = self._connection(assignment)
             (vector,) = await self.store.context.provider.embed(

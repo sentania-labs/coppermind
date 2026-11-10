@@ -70,6 +70,7 @@ class SearchCursor:
     kind: str
     ref_id: str
     filtered: bool = False
+    hybrid: bool = False
 
 
 def query_digest(q: str) -> str:
@@ -85,6 +86,7 @@ def encode_cursor(cursor: SearchCursor) -> str:
             "r": cursor.rank,
             "k": cursor.kind,
             "id": cursor.ref_id,
+            "m": "hybrid" if cursor.hybrid else "keyword",
         },
         separators=(",", ":"),
     )
@@ -98,7 +100,9 @@ def decode_cursor(value: str, q: str) -> SearchCursor:
         payload = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
         if not isinstance(payload, dict) or payload.get("v") not in (_CURSOR_VERSION, 2):
             raise ValueError
-        digest, rank, kind, ref_id = (payload.get(key) for key in ("q", "r", "k", "id"))
+        digest, rank, kind, ref_id, scoring = (
+            payload.get(key) for key in ("q", "r", "k", "id", "m")
+        )
         if (
             not isinstance(digest, str)
             or isinstance(rank, bool)
@@ -106,6 +110,7 @@ def decode_cursor(value: str, q: str) -> SearchCursor:
             or not math.isfinite(rank)
             or kind not in ("note", "source", "artifact", "entity")
             or not isinstance(ref_id, str)
+            or scoring not in ("keyword", "hybrid")
         ):
             raise ValueError
     except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
@@ -114,7 +119,13 @@ def decode_cursor(value: str, q: str) -> SearchCursor:
         if payload["v"] == 2:
             raise FilterCursorConflict()
         raise ValidationFailed(["cursor: it pages a different q"])
-    return SearchCursor(query_digest=digest, rank=float(rank), kind=kind, ref_id=ref_id)
+    return SearchCursor(
+        query_digest=digest,
+        rank=float(rank),
+        kind=kind,
+        ref_id=ref_id,
+        hybrid=scoring == "hybrid",
+    )
 
 
 # A word or a quoted phrase, with the `-` that excludes it, as
@@ -517,7 +528,9 @@ def tidy_excerpt(text: str | None) -> str:
     return " ".join((text or "").split())
 
 
-def page_of(rows: list[Any], query: SearchQuery, context: str | None = None) -> Page[SearchHit]:
+def page_of(
+    rows: list[Any], query: SearchQuery, context: str | None = None, *, hybrid: bool = False
+) -> Page[SearchHit]:
     """Turn `limit + 1` rows into a page and the cursor for the next one."""
     hits = [
         SearchHit(
@@ -543,6 +556,7 @@ def page_of(rows: list[Any], query: SearchQuery, context: str | None = None) -> 
                 kind=last.kind,
                 ref_id=last.id,
                 filtered=context is not None,
+                hybrid=hybrid,
             )
         )
     return Page[SearchHit](items=hits, next_cursor=next_cursor)
@@ -573,6 +587,8 @@ async def search(
     if query.mode != "keyword":
         words = meaning_text(query.q)
         wanted = await store.embeddings.query_vector(words) if words else None
+    if after is not None and after.hybrid != (wanted is not None):
+        raise ValidationFailed(["cursor: the ranking changed since that page; search again"])
     try:
         async with store.session_factory() as session, session.begin():
             if query.filter:
@@ -592,4 +608,4 @@ async def search(
         raise MetadataUnavailable(str(exc)) from exc
     if query.filter and store.control.schema_document().revision != revision:
         raise FilterCursorConflict()
-    return page_of(rows, query, context)
+    return page_of(rows, query, context, hybrid=wanted is not None)

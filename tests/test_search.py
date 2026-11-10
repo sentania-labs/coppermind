@@ -227,6 +227,26 @@ def test_a_cursor_round_trips_exactly():
     assert decoded.rank == rank
 
 
+def test_a_cursor_remembers_which_scoring_ranked_its_page():
+    for hybrid in (False, True):
+        cursor = SearchCursor(query_digest("budget"), 0.03, "note", NOTE_ID, hybrid=hybrid)
+
+        decoded = decode_cursor(encode_cursor(cursor), "budget")
+
+        assert decoded.hybrid is hybrid
+
+
+def test_a_page_of_fused_rows_mints_a_cursor_that_pages_by_fused_scores():
+    query = _query(limit=1)
+    rows = [_row("a", 0.033), _row("b", 0.016)]
+
+    fused = page_of(rows, query, hybrid=True)
+    keyword = page_of(rows, query)
+
+    assert fused.next_cursor and decode_cursor(fused.next_cursor, query.q).hybrid is True
+    assert keyword.next_cursor and decode_cursor(keyword.next_cursor, query.q).hybrid is False
+
+
 def test_a_cursor_from_another_question_is_refused():
     cursor = encode_cursor(SearchCursor(query_digest("budget"), 0.5, "note", NOTE_ID))
 
@@ -419,6 +439,7 @@ def test_search_passes_every_filter_and_the_page_through(api):
         "excerpt",
         "rank",
         "state",
+        "match",
     }
     (query,) = fake.queries
     assert query.q == "budget"
