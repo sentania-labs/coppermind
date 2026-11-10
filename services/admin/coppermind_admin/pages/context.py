@@ -548,7 +548,7 @@ def router(wiring: Wiring) -> APIRouter:
                     "timeout_s",
                     "Wait limit (seconds)",
                     "Default 120. How long the model may stay silent, before it starts "
-                    "and while replying. A reply that keeps coming is never cut off.",
+                    "and while replying. A reply that keeps coming is not cut off, up to one hour.",
                 ),
                 (
                     "max_input_chars",
