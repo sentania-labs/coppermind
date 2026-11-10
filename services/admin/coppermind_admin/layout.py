@@ -159,6 +159,7 @@ SETTINGS_LINKS = (
     ("/admin/artifacts", "Artifacts"),
     ("/admin/purge", "Retention purge"),
     ("/admin/workflow", "Workflow setup"),
+    ("/admin/context?tab=review", "Suggestions and backlog"),
     ("/admin/context?tab=models", "Model connections"),
 )
 
@@ -204,6 +205,8 @@ def render(title: str, body: str, path: str) -> str:
         )
         if not section and any(_under(current.path, base) for base in SETTINGS_PAGES):
             section = "/admin/settings"
+        if not section and current.path == "/admin/context" and "tab" not in query:
+            section = "/admin/context?tab=calendar"
         if not section:
             section = next((url for url, _ in LINKS if matches(url)), "")
         if not section and any(matches(url) for url, _ in SETTINGS_LINKS):
