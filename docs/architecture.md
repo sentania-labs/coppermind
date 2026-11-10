@@ -185,8 +185,6 @@ has a prepared place in the design for when it is actually needed:
   to starts empty on purpose; pointing the reconciler at years of existing
   notes would rewrite every one of them and push that all at once to every
   device. Import becomes a deliberate, later Admin action.
-- **Vector or hybrid search**, on top of the plain text search that ships
-  first.
 - **General note history browsing.** Arbitrary historical revisions still
   require Git access. Deleted-note preview and restore are a narrower
   capability, described in STATUS.md, with recovery evidence outside Git.
