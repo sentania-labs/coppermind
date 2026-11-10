@@ -375,7 +375,7 @@ async def test_a_restart_in_the_middle_of_a_transcription_then_a_busy_service_st
 
 @pytest.mark.parametrize("duration", [float("inf"), float("nan")])
 async def test_a_non_finite_duration_is_treated_as_unknown(store, duration):
-    async with Service(jobs=True) as service:
+    async with Service() as service:
         context = await setup_transcription(store, service)
         job = await context.accept_recording(
             request(await store_audio(store), metadata={"duration_seconds": duration})
