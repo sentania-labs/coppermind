@@ -624,3 +624,54 @@ def test_jobs_explain_stale_pause_and_moved_note(signed_in):
     assert "Existing Review backlog" not in response.text
     retry = client.get("/admin/context?tab=review&result=retry-job&job=" + "a" * 64)
     assert "Retry queued for New. Processing is paused; resume it to start." in retry.text
+
+
+def test_reviewed_filed_job_has_same_reason_in_list_and_inspect_and_no_retry(signed_in):
+    job = {
+        "id": "a" * 64,
+        "path": "Review/Example.md",
+        "state": "stale",
+        "error": "stale: reviewed note changed",
+        "input_limit": None,
+        "result": None,
+        "decisions": [],
+        "newest": True,
+        "current": {"path": "Notes/Example.md", "frontmatter": {}},
+        "current_path": "Notes/Example.md",
+        "can_retry": False,
+        "retry_reason": "This note is reviewed and filed; nothing more to do.",
+    }
+
+    class FiledStore(ContextStore):
+        async def context_action(self, action, payload):
+            if action == "job":
+                return job
+            data = await super().context_action(action, payload)
+            if action == "snapshot":
+                data["jobs"] = [job]
+            return data
+
+    client, _ = signed_in
+    client.app.state.store = FiledStore()
+    for url in ("/admin/context?tab=review", f"/admin/context/jobs/{job['id']}"):
+        page = client.get(url)
+        assert "This note is reviewed and filed; nothing more to do." in page.text
+        assert "Retry to use the latest information" not in page.text
+        assert 'action="/v1/admin/context/retry-job"' not in page.text
+    assert "Back to Jobs" in client.get(f"/admin/context/jobs/{job['id']}").text
+
+
+def test_refused_retry_returns_plain_message_on_jobs(signed_in):
+    class RefusingStore(ContextStore):
+        async def context_action(self, action, payload):
+            if action == "retry-job":
+                raise ValueError("reviewed notes are not eligible")
+            return await super().context_action(action, payload)
+
+    client, _ = signed_in
+    client.app.state.store = RefusingStore()
+    csrf = form_token(client, "/admin/context?tab=review")
+    response = client.post("/v1/admin/context/retry-job", data={"csrf": csrf, "id": "a" * 64})
+    assert response.status_code == 200
+    assert "Retry could not be queued." in response.text
+    assert "Could not complete that action" not in response.text

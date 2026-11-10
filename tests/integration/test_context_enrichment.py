@@ -1650,3 +1650,27 @@ async def test_moved_reviewed_note_keeps_current_location_in_jobs(store):
     assert snapshot["jobs"][0]["current_path"] == renamed.path
     assert snapshot["jobs"][0]["path"] == note.path
     assert snapshot["jobs"][0]["can_retry"] is False
+
+
+async def test_reviewed_filed_note_has_same_retry_eligibility_in_list_and_detail(store):
+    from coppermind_store.filing import file_note
+
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Meeting", body="Notes", frontmatter={"date": "2026-10-14"})
+    )
+    identity = await context.queue_note(note.id)
+    job = context.load_job(identity)
+    job.state = "stale"
+    context.save_job(job)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
+    )
+    assert await file_note(store, note.id)
+    filed = await store.get_note(note.id)
+    assert filed.filed
+    summary = (await context.snapshot())["jobs"][0]
+    detail = await context.job_detail({"id": identity})
+    for view in (summary, detail):
+        assert view["can_retry"] is False
+        assert view["retry_reason"] == "This note is reviewed and filed; nothing more to do."

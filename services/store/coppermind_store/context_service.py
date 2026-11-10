@@ -447,8 +447,6 @@ class ContextService:
 
     async def snapshot(self, offset: int = 0) -> dict[str, Any]:
         snapshot = await asyncio.to_thread(self._snapshot, offset)
-        schema = self.store.control.schema()
-        enabled = self.config().assignments["enrichment"].enabled
         for job in snapshot["jobs"]:
             try:
                 note = await self.store.get_note(job["note_id"])
@@ -458,21 +456,30 @@ class ContextService:
                 continue
             job["current_path"] = note.path
             job["current_title"] = note.title
-            reviewed = note.frontmatter.get(schema.role("reviewed_key")) is True
-            eligible = reviewed == (job["purpose"] == "dossier")
-            if not reviewed and schema.validate_frontmatter(note.frontmatter):
-                eligible = False
-            job["can_retry"] = enabled and eligible
-            if not enabled:
-                job["retry_reason"] = "Enable enrichment to retry."
-            elif reviewed and job["purpose"] != "dossier":
-                job["retry_reason"] = "This note is reviewed; mark it unreviewed to retry."
-            elif not reviewed and job["purpose"] == "dossier":
-                job["retry_reason"] = "Mark the note reviewed to retry."
-            elif not eligible:
-                job["retry_reason"] = "Correct the note's metadata to retry."
+            job.update(self.retry_eligibility(job, note))
 
         return snapshot
+
+    def retry_eligibility(self, job: dict[str, Any], note: Any) -> dict[str, Any]:
+        schema = self.store.control.schema()
+        reviewed = note.frontmatter.get(schema.role("reviewed_key")) is True
+        if reviewed and note.filed and job["purpose"] != "dossier":
+            return {
+                "can_retry": False,
+                "retry_reason": "This note is reviewed and filed; nothing more to do.",
+            }
+        if not self.config().assignments["enrichment"].enabled:
+            return {"can_retry": False, "retry_reason": "Enable enrichment to retry."}
+        if reviewed and job["purpose"] != "dossier":
+            return {
+                "can_retry": False,
+                "retry_reason": "This note is reviewed; mark it unreviewed to retry.",
+            }
+        if not reviewed and job["purpose"] == "dossier":
+            return {"can_retry": False, "retry_reason": "Mark the note reviewed to retry."}
+        if not reviewed and schema.validate_frontmatter(note.frontmatter):
+            return {"can_retry": False, "retry_reason": "Correct the note's metadata to retry."}
+        return {"can_retry": True, "retry_reason": ""}
 
     def _snapshot(self, offset: int) -> dict[str, Any]:
         """Materialize bounded mirror pages and counts outside the event loop."""
@@ -1429,6 +1436,7 @@ class ContextService:
         ]
         result["newest"] = self.newest_job_id(job.note_id) == job.id
         result["current"] = note.model_dump(mode="json")
+        result.update(self.retry_eligibility(result, note))
         result["associations"] = self.read("associations", {}).get(note.id, {})
         result["associations_hash"] = fingerprint(result["associations"])
         result["corrections"] = [

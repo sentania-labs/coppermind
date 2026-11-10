@@ -45,6 +45,8 @@ ACTIONS = frozenset(
 
 def _result_message(params: Any, data: dict[str, Any]) -> str:
     action = params.get("result", "")
+    if action == "retry-refused":
+        return "Retry could not be queued. The note or settings may have changed; check Jobs below."
     if action not in ACTIONS:
         return ""
     if action == "retry-job":
@@ -159,6 +161,21 @@ def _stale_reason(error: str) -> str:
     return "The note or its supporting information changed."
 
 
+def _job_status(job: dict[str, Any]) -> str:
+    if job["state"] == "stale":
+        reason = "Out of date: " + _stale_reason(job["error"])
+        next_step = (
+            "Retry to use the latest information."
+            if job.get("can_retry", True)
+            else job.get("retry_reason", "Open Inspect for details.")
+        )
+        return reason + " " + next_step
+    text = job["state"].capitalize() + (": " + job["error"] if job["error"] else "")
+    if not job.get("can_retry", True) and job["state"] == "failed":
+        text += " " + job.get("retry_reason", "Open Inspect for details.")
+    return text
+
+
 def _limit_link(job: dict[str, Any]) -> str:
     """Point a size failure at the setting that controls it."""
     if not job.get("input_limit"):
@@ -267,7 +284,8 @@ def router(wiring: Wiring) -> APIRouter:
 <a href="/admin/context?tab=review">Suggestions and backlog</a></p>"""
         message = _result_message(request.query_params, data)
         if message:
-            head += '<p class="success">' + e(message) + "</p>"
+            style = "notice" if request.query_params.get("result") == "retry-refused" else "success"
+            head += f'<p class="{style}">' + e(message) + "</p>"
         if data["worker_error"]:
             head += '<p class="error">' + e(data["worker_error"]) + "</p>"
         for problem in data.get("eligibility_errors", {}).values():
@@ -701,18 +719,7 @@ picker.addEventListener('change', () => {
                         body += "<br><small>Moved from " + e(job["path"]) + "</small>"
                     body += "</td><td>"
                     can_retry = job.get("can_retry", True)
-                    if state == "stale":
-                        detail = "Out of date: " + _stale_reason(job["error"])
-                        detail += (
-                            " Retry to use the latest information."
-                            if can_retry
-                            else " " + job.get("retry_reason", "Open Inspect for details.")
-                        )
-                        body += e(detail)
-                    else:
-                        body += e(state.capitalize()) + "<br>" + e(job["error"]) + _limit_link(job)
-                        if not can_retry:
-                            body += "<br>" + e(job.get("retry_reason", "Open Inspect for details."))
+                    body += e(_job_status(job)) + _limit_link(job)
                     body += "</td><td>"
                     if state == "stale" and not assignment["enabled"]:
                         body += (
@@ -764,15 +771,7 @@ picker.addEventListener('change', () => {
             "<h1>Review suggestions</h1><p>"
             + e(job["current"].get("path", job["path"]))
             + "</p><p>"
-            + e(
-                (
-                    "Out of date: "
-                    + _stale_reason(job["error"])
-                    + " Retry to use the latest information."
-                )
-                if job["state"] == "stale"
-                else job["state"].capitalize() + ": " + job["error"]
-            )
+            + e(_job_status(job))
             + "</p>"
             + _limit_link(job)
         )
@@ -886,12 +885,13 @@ picker.addEventListener('change', () => {
                     )
                     + "</p>"
                 )
-        body += (
-            "<p>Apply the suggestions you want. A date change requires fresh calendar matching.</p>"
-        )
         if job["state"] == "suggested":
+            body += (
+                "<p>Apply the suggestions you want. "
+                "A date change requires fresh calendar matching.</p>"
+            )
             body += _form("reject", _hidden("id", identity), "Reject proposal")
-        if job["state"] in {"failed", "stale"} and job["newest"]:
+        if job["state"] in {"failed", "stale"} and job["newest"] and job.get("can_retry", True):
             body += _form("retry-job", _hidden("id", identity), "Retry with current evidence")
         if job["state"] == "applying":
             body += _form("resume-approval", _hidden("id", identity), "Resume recorded approval")
@@ -928,9 +928,7 @@ picker.addEventListener('change', () => {
                     _hidden("id", correction["id"]),
                     "Resume recorded association correction",
                 )
-        return page(
-            body + '</details><p><a href="/admin/context?tab=review">Back to suggestions</a></p>'
-        )
+        return page(body + '</details><p><a href="/admin/context?tab=review">Back to Jobs</a></p>')
 
     @routes.post("/v1/admin/context/{action}", include_in_schema=False)
     async def action(action: str, request: Request) -> Response:
@@ -1004,6 +1002,10 @@ picker.addEventListener('change', () => {
                     )
                 )
         except (StoreError, ValueError, KeyError) as exc:
+            if action == "retry-job":
+                return RedirectResponse(
+                    "/admin/context?tab=review&result=retry-refused", status_code=303
+                )
             return error(exc)
         if action == "configure-property":
             return RedirectResponse("/admin/workflow?tab=enrichment&saved=1", status_code=303)
