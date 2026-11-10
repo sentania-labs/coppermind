@@ -301,15 +301,66 @@ async def test_a_note_purged_before_review_takes_its_audio_with_it(store):
         await context.recordings.tick()
     done = await context.recording_status({"id": accepted["id"]})
     archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    note_path = (await store.get_note(done["note_id"])).path
     await set_note_state(store, done["note_id"], "deleted")
     assert await context.recordings.tick() is False
     assert archive.exists()
+    (store.notes_root / note_path).unlink()
     async with store.session_factory() as session, session.begin():
         await session.delete(await session.get(Note, done["note_id"]))
     assert await context.recordings.tick() is True
     assert not archive.exists()
     assert context.recordings.load(accepted["id"]).audio_removed
     assert not [p for p in await store.get_problems() if p.kind == "recording"]
+
+
+async def test_an_empty_database_does_not_make_unreviewed_notes_look_purged(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        other = await store_audio(store, name="other.m4a", data=AUDIO + b"2")
+        first = await context.accept_recording(request(audio, title="First"))
+        second = await context.accept_recording(
+            request(other, title="Second", external_source_id="plaud/rec-2")
+        )
+        await context.recordings.tick()
+        await context.recordings.tick()
+    notes = [
+        (await context.recording_status({"id": item["id"]}))["note_id"] for item in (first, second)
+    ]
+    archives = [
+        store.artifacts_root / audio / "r0001" / "standup.m4a",
+        store.artifacts_root / other / "r0001" / "other.m4a",
+    ]
+    async with store.session_factory() as session, session.begin():
+        for note_id in notes:
+            await session.delete(await session.get(Note, note_id))
+    assert await context.recordings.tick() is False
+    assert [path.read_bytes() for path in archives] == [AUDIO, AUDIO + b"2"]
+    for item in (first, second):
+        job = context.recordings.load(item["id"])
+        assert not job.audio_removed and not job.audio_removal_error
+
+
+async def test_shared_audio_stays_while_the_other_note_has_no_row_but_still_has_its_file(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        first = await context.accept_recording(request(audio, title="First"))
+        second = await context.accept_recording(
+            request(audio, title="Second", external_source_id="plaud/rec-2")
+        )
+        await context.recordings.tick()
+        await context.recordings.tick()
+    one = await context.recording_status({"id": first["id"]})
+    two = await context.recording_status({"id": second["id"]})
+    await approve(store, one["note_id"])
+    async with store.session_factory() as session, session.begin():
+        await session.delete(await session.get(Note, two["note_id"]))
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    assert await context.recordings.tick() is False
+    assert archive.read_bytes() == AUDIO
+    assert not context.recordings.load(first["id"]).audio_removed
 
 
 async def test_a_purged_archive_still_settles_with_a_receipt_from_what_is_known(store):
