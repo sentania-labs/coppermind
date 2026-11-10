@@ -297,6 +297,16 @@ async def attempt(store: LocalStore, **assignment: object) -> str:
             "again.",
         ),
         (
+            lambda request: httpx.Response(422, json={"error": "not an embeddings model"}),
+            "local did not accept the test request. Check that \u2018m1\u2019 is an embeddings "
+            "model and that the connection address ends in /v1. Nothing was saved.",
+        ),
+        (
+            lambda request: httpx.Response(200, json={"data": []}),
+            "local did not accept the test request. Check that \u2018m1\u2019 is an embeddings "
+            "model and that the connection address ends in /v1. Nothing was saved.",
+        ),
+        (
             lambda request: httpx.Response(401),
             "local refused the credentials. Check the API key on the connection. "
             "Nothing was saved.",

@@ -541,6 +541,13 @@ class EmbeddingService:
                 "The test timed out; nothing was saved. Check that the service is ready, then "
                 "try again."
             )
+        if exc.rule in {"provider-rejected", "provider-bad-embeddings"}:
+            return (
+                f"{name} did not accept the test request. Check that "
+                f"\u2018{assignment.model}\u2019 is an embeddings model and that the "
+                "connection address ends in /v1. "
+                "Nothing was saved."
+            )
         if str(exc) in {"provider returned HTTP 401", "provider returned HTTP 403"}:
             return (
                 f"{name} refused the credentials. Check the API key on the connection. "
