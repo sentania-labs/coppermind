@@ -1897,7 +1897,7 @@ class ContextService:
                 previous.set_error()
                 self.save_job(previous)
             return previous.id
-        job_id = fingerprint([identity, note.content_hash, source_versions, EXTRACTION_VERSION, new_id()])
+        job_id = fingerprint([identity, note.content_hash, EXTRACTION_VERSION, new_id()])
         self.save_job(
             EnrichmentJob(
                 id=job_id,
