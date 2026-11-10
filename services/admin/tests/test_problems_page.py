@@ -60,7 +60,12 @@ class ReadOnlyStore:
 
     async def context_action(self, action, payload):
         self._check("context_action")
-        return {"dropbox": {"items": []}, "calendar": {"imports": []}, "jobs": [], "next_offset": None}
+        return {
+            "dropbox": {"items": []},
+            "calendar": {"imports": []},
+            "jobs": [],
+            "next_offset": None,
+        }
 
     async def get_status(self) -> StatusResponse:
         self._check("get_status")
@@ -121,28 +126,30 @@ class ReadOnlyStore:
         raise AssertionError(f"Admin asked the store for {name}, which the dashboard never needs")
 
 
+@pytest.fixture(autouse=True)
+def available_sync(monkeypatch):
+    from coppermind_admin.pages import problems
+
+    monkeypatch.setattr(problems, "sync_status", lambda wiring: {"state": "syncing"})
+
+
 def _install(client, store: ReadOnlyStore) -> ReadOnlyStore:
     client.app.state.store = store
     return store
 
 
-def test_the_overview_shows_the_stores_counters(signed_in):
+def test_home_shows_review_link_and_actionable_problems(signed_in):
     client, _ = signed_in
     _install(client, ReadOnlyStore())
 
     response = client.get("/admin")
 
     assert response.status_code == 200
-    for line in (
-        "Notes awaiting review: 5",
-        "Notes by state: ok: 7, unparsed: 1",
-        "Sources: 10",
-        "Rejected ingests: 2",
-        "Name collisions: 3",
-        "Unparseable files: 1",
-        '<a href="/admin/problems">Problems (6)</a>',
-    ):
-        assert line in response.text
+    assert '<a href="/admin/workflow?tab=review">5 notes awaiting review</a>' in response.text
+    assert "Needs attention (2)" in response.text
+    assert "Inbox/broken &lt;b&gt;.md" in response.text
+    assert f'href="/admin/notes/{NOTE_ID}"' in response.text
+    assert f'href="/admin/sources/{SOURCE_ID}"' in response.text
 
 
 def test_the_overview_shows_a_returned_artifact_and_dismiss_only_hides_it(signed_in):
@@ -151,8 +158,8 @@ def test_the_overview_shows_a_returned_artifact_and_dismiss_only_hides_it(signed
     client, _ = signed_in
     store = _install(client, ReadOnlyStore())
     quiet = client.get("/admin")
-    assert "Artifacts moved in Obsidian and returned to their folder: 0" in quiet.text
-    assert store.calls == ["get_status"], "no notice, no second call to the store"
+    assert "No recent activity." in quiet.text
+    assert "list_reconciler_notices" not in store.calls
 
     artifact_id = "01K4Q8Z2A0P1Q2R3S4T5U6V7W8"
     store.notices = [
@@ -168,7 +175,7 @@ def test_the_overview_shows_a_returned_artifact_and_dismiss_only_hides_it(signed
         )
     ]
     shown = client.get("/admin").text
-    assert "Artifacts moved in Obsidian and returned to their folder: 1" in shown
+    assert "Recent activity" in shown
     assert "<strong>Enablement deck</strong>" in shown
     assert "found at <code>Projects/deck.pptx</code>" in shown
     assert "returned to <code>Artifacts/2026/2026-11/deck.pptx</code>" in shown
@@ -205,7 +212,7 @@ def test_the_problems_page_lists_each_problem_with_a_link(signed_in):
     response = client.get("/admin/problems")
 
     assert response.status_code == 200
-    assert "<h1>Problems</h1>" in response.text
+    assert "<h1>Note and filing details</h1>" in response.text
     assert "frontmatter is not valid YAML" in response.text
     assert "Inbox/broken &lt;b&gt;.md" in response.text
     assert f'<a href="/admin/notes/{NOTE_ID}">' in response.text
@@ -240,7 +247,7 @@ def test_an_empty_dashboard_says_so(signed_in):
     response = client.get("/admin/problems")
 
     assert response.status_code == 200
-    assert "No problems found." in response.text
+    assert "No note or filing problems found." in response.text
 
 
 def test_the_problems_page_reports_an_unreachable_store(signed_in):
@@ -328,7 +335,7 @@ def test_known_unreadable_search_entries_are_counted_and_linked(signed_in):
     assert status.status_code == 200
     assert status.json()["counters"]["known_unreadable"] == 1
     overview = client.get("/admin")
-    assert "Known unreadable search entries: 1" in overview.text
+    assert "Sources/missing.md" in overview.text
 
 
 def test_calendar_and_dropbox_failures_count_and_link_to_dismissal(signed_in):
@@ -345,7 +352,7 @@ def test_calendar_and_dropbox_failures_count_and_link_to_dismissal(signed_in):
         ProblemInfo(kind="dropbox", reference="handout.pdf", reason="Unsupported file type"),
     ]
     _install(client, fake)
-    assert "Problems (2)" in client.get("/admin").text
+    assert "Needs attention (2)" in client.get("/admin").text
     page = client.get("/admin/problems")
     assert 'href="/admin/context?tab=calendar"' in page.text
     assert 'href="/admin/workflow?tab=intake"' in page.text
@@ -496,7 +503,7 @@ def test_problems_and_overview_share_filing_status(signed_in, queue, errors, rea
     assert f"Ready to file: {ready}" in summary
     assert f"Notes with filing errors: {errors}" in summary
     assert "Last filing progress: November 5, 2026" in summary
-    assert problems.text.index(heading) < problems.text.index("No problems found.")
+    assert problems.text.index(heading) < problems.text.index("No note or filing problems found.")
     # The Problems page drops the link that points at the same page; the Overview keeps it.
     assert "Check filing problems and recovery options" not in problems.text
     assert "Check filing problems and recovery options" in overview.text
@@ -572,7 +579,7 @@ def test_returned_notes_and_kept_folders_share_the_one_problems_list(signed_in):
     assert text.count(f'action="/v1/admin/notices/{NOTE_ID}/dismiss"') == 1
     assert "Dismiss notice</button>" in text
     assert text.count("Dismiss notice</button>") == 1
-    assert "Warehouse" not in client.get("/admin").text
+    assert "Warehouse &lt;call&gt;" in client.get("/admin").text
 
 
 def test_dismissing_a_notice_removes_it_from_the_problems_list(signed_in):
@@ -621,3 +628,118 @@ def test_counters_say_plainly_when_the_upgrade_is_complete():
     assert "still to move" not in html
     # The filing explanation leads, ahead of the operational counters.
     assert html.index("Notes filing") < html.index("Rejected ingests")
+
+
+def test_home_aggregates_current_failures_and_excludes_superseded_attempts(signed_in):
+    class SnapshotStore(ReadOnlyStore):
+        async def context_action(self, action, payload):
+            return {
+                "dropbox": {
+                    "items": [
+                        {
+                            "state": "unsupported",
+                            "filename": "slides.pdf",
+                            "error": "Unsupported file",
+                        }
+                    ]
+                },
+                "calendar": {
+                    "imports": [{"state": "failed", "filename": "old.ics", "dismissed": True}]
+                },
+                "jobs": [
+                    {"note_id": "1", "path": "Review/one.md", "id": "new", "state": "applied"},
+                    {
+                        "note_id": "1",
+                        "path": "Review/one.md",
+                        "id": "old",
+                        "state": "failed",
+                        "error": "Old failure",
+                    },
+                    {
+                        "note_id": "2",
+                        "path": "Review/two.md",
+                        "id": "failed",
+                        "state": "failed",
+                        "error": "Input too large",
+                    },
+                ],
+                "totals": {"jobs": 3},
+                "next_offset": None,
+            }
+
+    client, _ = signed_in
+    store = _install(client, SnapshotStore())
+    store.problems = []
+    page = client.get("/admin").text
+    assert "Needs attention (2)" in page
+    assert "slides.pdf" in page and "Unsupported file" in page
+    assert "Review/two.md" in page and "Input too large" in page
+    assert 'href="/admin/context/jobs/failed"' in page
+    assert "Old failure" not in page
+    assert "old.ics: Failure dismissed" in page
+
+
+def test_home_never_says_clear_when_checks_fail(signed_in, monkeypatch):
+    from coppermind_admin.pages import problems
+
+    class UnavailableSnapshot(ReadOnlyStore):
+        async def context_action(self, action, payload):
+            raise StoreUnavailable("unavailable")
+
+    client, _ = signed_in
+    store = _install(client, UnavailableSnapshot())
+    store.problems = []
+
+    def unavailable(wiring):
+        raise OSError("offline")
+
+    monkeypatch.setattr(problems, "sync_status", unavailable)
+    page = client.get("/admin").text
+    assert "Some attention items could not be checked" in page
+    assert "Device connection could not be checked" in page
+    assert "Nothing needs attention right now" not in page
+
+
+def test_home_shows_paused_device(signed_in, monkeypatch):
+    from coppermind_admin.pages import problems
+
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = []
+    monkeypatch.setattr(problems, "sync_status", lambda wiring: {"state": "paused"})
+    page = client.get("/admin").text
+    assert "Device connection needs attention" in page
+    assert 'href="/admin/sync"' in page
+
+
+def test_reviewed_note_does_not_keep_old_initial_failure_on_home(signed_in):
+    class ReviewedStore(ReadOnlyStore):
+        async def context_action(self, action, payload):
+            if action == "lifecycle":
+                return {
+                    "roles": {"reviewed_key": "reviewed"},
+                    "note": {"frontmatter": {"reviewed": True}},
+                }
+            return {
+                "dropbox": {"items": []},
+                "calendar": {"imports": []},
+                "jobs": [
+                    {
+                        "note_id": "reviewed",
+                        "path": "Notes/done.md",
+                        "id": "old",
+                        "purpose": "initial",
+                        "state": "failed",
+                        "error": "Old error",
+                    }
+                ],
+                "totals": {"jobs": 1},
+                "next_offset": None,
+            }
+
+    client, _ = signed_in
+    store = _install(client, ReviewedStore())
+    store.problems = []
+    page = client.get("/admin").text
+    assert "Nothing needs attention right now" in page
+    assert "Old error" not in page

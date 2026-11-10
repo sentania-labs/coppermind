@@ -15,7 +15,7 @@ import json
 import os
 from collections.abc import Sequence
 from html import escape
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import quote
 from urllib.request import Request as URLRequest
 from urllib.request import urlopen
@@ -43,6 +43,8 @@ DISMISS_RETURNS = frozenset({"/admin", "/admin/artifacts", "/admin/problems"})
 
 class StatusReader(Protocol):
     """The read-only part of the store contract these pages use."""
+
+    async def context_action(self, action: str, payload: dict[str, Any]) -> dict[str, Any]: ...
 
     async def get_status(self) -> StatusResponse: ...
 
@@ -111,10 +113,10 @@ def _link(problem: ProblemInfo) -> str:
         return f'<a href="{escape(target)}">Check recovery options</a>'
     if problem.note_id:
         target = f"/admin/notes/{quote(problem.note_id, safe='')}"
-        return f'<a href="{escape(target)}">note {escape(problem.note_id)}</a>'
+        return f'<a href="{escape(target)}">Inspect note</a>'
     if problem.source_id:
         target = f"/admin/sources/{quote(problem.source_id, safe='')}"
-        return f'<a href="{escape(target)}">source {escape(problem.source_id)}</a>'
+        return f'<a href="{escape(target)}">Inspect source</a>'
     return ""
 
 
@@ -140,6 +142,14 @@ def _reason(item: ProblemInfo) -> str:
             "for a saved copy or restore it from a device or backup."
         )
     return item.reason
+
+
+def _attention_reason(item: ProblemInfo) -> str:
+    if item.reason == "payload_too_large":
+        return "The source was too large to import. Check the source and try a smaller file."
+    if item.kind == "search_unreadable":
+        return "This item could not be read by search. Inspect it and check recovery options."
+    return _reason(item)
 
 
 def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems found.") -> str:
@@ -318,23 +328,38 @@ Artifacts<strong>{counters.artifacts}</strong>
 <p><a href="/admin/problems">Problems ({problems})</a></p>"""
 
 
+def sync_status(wiring: Wiring) -> dict:
+    endpoint = os.environ.get("COPPERMIND_SYNC_URL", "http://obsidian-sync:8092").rstrip("/")
+    req = URLRequest(
+        endpoint + "/status",
+        headers={"Authorization": "Bearer " + wiring.read_internal_token()},
+    )
+    with urlopen(req, timeout=2) as response:  # noqa: S310
+        return json.load(response)
+
+
 async def attention_html(request: Request, wiring: Wiring) -> str:
     """Read the live sources; a failed read is itself visible, never an all-clear."""
-    client = store_client(request, wiring)
     try:
+        client = store_client(request, wiring)
         problems = await client.get_problems()
         status = await client.get_status()
     except (StoreError, OSError):
         return f'<p class="error">{UNREACHABLE}</p>'
 
-    active = [item for item in problems if item.kind != "excluded"]
+    active = [
+        item for item in problems if item.kind not in {"excluded", "returned_note", "folder_kept"}
+    ]
+    recent_notices = [item for item in problems if item.kind in {"returned_note", "folder_kept"}]
     rows = [
         f"<li><strong>{escape(KIND_LABELS.get(item.kind, 'Note or file'))}: "
-        f"{_what(item)}</strong><p>{escape(_reason(item))}</p>{_link(item)}</li>"
+        f"{'Source item' if item.kind == 'ingest' else _what(item)}</strong>"
+        f"<p>{escape(_attention_reason(item))}</p>{_link(item)}</li>"
         for item in active
     ]
     incomplete = False
-    latest_jobs: dict[str, dict] = {}
+    latest_jobs: dict[tuple[str, str], dict] = {}
+    recent_imports: list[dict] = []
     filenames: set[str] = {
         item.reference for item in active if item.kind in {"dropbox", "calendar_import"}
     }
@@ -343,6 +368,7 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
         while True:
             data = await client.context_action("snapshot", {"offset": offset})
             if offset == 0:
+                recent_imports = data.get("calendar", {}).get("imports", [])
                 for item in data.get("dropbox", {}).get("items", []):
                     if item.get("state") in {"failed", "unsupported", "needs_identity"}:
                         name = item.get("filename", "Import")
@@ -357,7 +383,8 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
                 if data.get("worker_error"):
                     rows.append(
                         "<li><strong>Suggestions stopped</strong><p>Check suggestion settings "
-                        'and try again.</p><a href="/admin/context?tab=models">Open settings</a></li>'
+                        'and try again.</p><a href="/admin/context?tab=models">'
+                        "Open settings</a></li>"
                     )
             for receipt in data.get("calendar", {}).get("imports", []):
                 if (
@@ -367,14 +394,18 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
                 ):
                     name = receipt.get("filename", "Import")
                     filenames.add(name)
+                    reason = escape(receipt.get("error") or "Import failed.")
                     rows.append(
-                        f"<li><strong>Import: {escape(name)}</strong><p>{escape(receipt.get('error') or 'Import failed.')}</p>"
+                        f"<li><strong>Import: {escape(name)}</strong><p>{reason}</p>"
                         '<a href="/admin/context?tab=calendar">Open import history</a></li>'
                     )
             for job in data.get("jobs", []):
-                latest_jobs.setdefault(job.get("note_id") or job.get("path", ""), job)
+                latest_jobs.setdefault(
+                    (job.get("note_id") or job.get("path", ""), job.get("purpose", "initial")),
+                    job,
+                )
             next_offset = data.get("next_offset")
-            if next_offset is None:
+            if next_offset is None or next_offset >= data.get("totals", {}).get("jobs", 0):
                 break
             if next_offset <= offset:
                 incomplete = True
@@ -382,6 +413,17 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
             offset = next_offset
         for job in latest_jobs.values():
             if job.get("state") == "failed":
+                if job.get("purpose", "initial") == "initial" and job.get("note_id"):
+                    try:
+                        detail = await client.context_action(
+                            "lifecycle", {"note_id": job["note_id"]}
+                        )
+                        reviewed_key = detail["roles"]["reviewed_key"]
+                        if detail["note"]["frontmatter"].get(reviewed_key) is True:
+                            continue
+                    except (StoreError, OSError, KeyError, TypeError):
+                        # A failed read must not silently hide a potentially active failure.
+                        pass
                 target = quote(str(job.get("id", "")), safe="")
                 rows.append(
                     f"<li><strong>Suggestions: {escape(job.get('path', 'Note'))}</strong>"
@@ -393,22 +435,14 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
     if incomplete:
         rows.append(
             "<li><strong>Some attention items could not be checked.</strong><p>Try again, "
-            'or check imports and suggestions directly.</p><a href="/admin/workflow?tab=intake">Imports</a> · '
+            "or check imports and suggestions directly.</p>"
+            '<a href="/admin/workflow?tab=intake">Imports</a> · '
             '<a href="/admin/context?tab=review">Suggestions</a></li>'
         )
 
-    def sync_status() -> dict:
-        endpoint = os.environ.get("COPPERMIND_SYNC_URL", "http://obsidian-sync:8092").rstrip("/")
-        req = URLRequest(
-            endpoint + "/status",
-            headers={"Authorization": "Bearer " + wiring.read_internal_token()},
-        )
-        with urlopen(req, timeout=2) as response:  # noqa: S310
-            return json.load(response)
-
     try:
-        device = await asyncio.to_thread(sync_status)
-        if device.get("last_error") or device.get("state") == "error":
+        device = await asyncio.to_thread(sync_status, wiring)
+        if device.get("last_error") or device.get("state") in {"error", "paused", "stopped"}:
             rows.append(
                 "<li><strong>Device connection needs attention</strong><p>Check the "
                 'connection and reconnect if needed.</p><a href="/admin/sync">Open devices</a></li>'
@@ -418,16 +452,50 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
             "<li><strong>Device connection could not be checked</strong><p>Check "
             'the connection status.</p><a href="/admin/sync">Open devices</a></li>'
         )
+    if status.counters.filing_stalled and not any(item.kind == "filing" for item in active):
+        rows.append(
+            "<li><strong>Filing has stopped</strong><p>Check the filing details to find "
+            'the cause.</p><a href="/admin/problems">Open filing details</a></li>'
+        )
+    recent = [
+        f"<li><strong>{escape(KIND_LABELS.get(item.kind, 'Notice'))}</strong> "
+        f"{escape(_reason(item))}{_link(item)}</li>"
+        for item in recent_notices
+    ]
+    for receipt in recent_imports[:5]:
+        if receipt.get("state") == "succeeded" or receipt.get("dismissed"):
+            outcome = "Imported" if receipt.get("state") == "succeeded" else "Failure dismissed"
+            recent.append(
+                f"<li>{escape(receipt.get('filename', 'Import'))}: {outcome}. "
+                '<a href="/admin/context?tab=calendar">Import history</a></li>'
+            )
+    try:
+        if status.counters.artifacts_returned:
+            from coppermind_admin.pages.search_index import _zone
+
+            recent.append(
+                "<li>"
+                + _notices_html(await client.list_reconciler_notices(), _zone(request))
+                + "</li>"
+            )
+    except (StoreError, OSError):
+        recent.append("<li>Recent file notices could not be loaded.</li>")
+    recent_html = "<ul>" + "".join(recent) + "</ul>" if recent else "<p>No recent activity.</p>"
+    from coppermind_admin.pages.search_index import _zone
+
+    filing = filing_status_html(status, _zone(request))
     review = status.counters.notes_awaiting_review
     content = (
         '<ul class="attention-list">' + "".join(rows) + "</ul>"
         if rows
-        else '<p class="success">Nothing needs attention right now.</p>'
+        else '<p class="lat-banner lat-banner--ok">Nothing needs attention right now.</p>'
     )
     return (
         f'<p><a href="/admin/workflow?tab=review">{review} notes awaiting review</a>. '
         "Review in Obsidian and check Reviewed to file each note.</p>"
-        f"<section><h2>Needs attention ({len(rows)})</h2>{content}</section>"
+        f'<section id="attention"><h2>Needs attention ({len(rows)})</h2>{content}</section>'
+        f"<section><h2>Recent activity</h2>{recent_html}</section>"
+        f"<details><summary>Filing status</summary>{filing}</details>"
         '<p><a href="/admin/problems">Filing details and exclusions</a> · '
         '<a href="/admin/sync">Check devices</a></p>'
     )
@@ -471,14 +539,18 @@ def router(wiring: Wiring) -> APIRouter:
 
         return page(
             "Problems",
-            '<h1>Problems</h1><p><a href="/admin">Overview</a></p>'
+            "<h1>Note and filing details</h1>"
+            '<p><a href="/admin#attention">All needs attention</a></p>'
             + filing_status_html(status, _zone(request), self_page=True)
             + "<p>Start with the affected note and the action below. "
             "Filing retries automatically after the cause is fixed.</p>"
             "<p>Known unreadable search entries: "
             f"{sum(p.kind == 'search_unreadable' for p in problems)}</p>"
             f"<p>Files skipped by exclusion: {sum(p.kind == 'excluded' for p in problems)}</p>"
-            + _problem_rows([item for item in problems if item.kind != "excluded"])
+            + _problem_rows(
+                [item for item in problems if item.kind != "excluded"],
+                "No note or filing problems found. Check Needs attention for other issues.",
+            )
             + "<h2>Intentional exclusions</h2><p>These files were left untouched. "
             "An exclusion is not a failure. "
             '<a href="/admin/settings?section=reconcile">Manage exclusion rules</a>.</p>'

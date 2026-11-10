@@ -44,10 +44,10 @@ def router(wiring: Wiring) -> APIRouter:
                 f'<a href="/admin/workflow?tab={key}">{label}</a>'
                 for key, label in [
                     ("setup", "Workflow"),
-                    ("intake", "Dropbox"),
+                    ("intake", "Imports"),
                     ("enrichment", "Enrichment"),
-                    ("review", "Review notes"),
-                    ("dossiers", "Dossiers"),
+                    ("review", "Review status"),
+                    ("dossiers", "People"),
                 ]
             )
             + "</p>"
@@ -100,7 +100,7 @@ def router(wiring: Wiring) -> APIRouter:
                     "p>"
                 )
             elif tab == "intake":
-                title = "Dropbox"
+                title = "Imports"
                 dropbox = data.get("dropbox", {"folder": "Dropbox", "items": [], "calendars": []})
                 body += (
                     "<p>Drop ICS or ZIP files containing ICS into <strong>"
@@ -293,7 +293,7 @@ def router(wiring: Wiring) -> APIRouter:
                     )
                 )
             elif tab == "dossiers":
-                title = "Dossiers"
+                title = "People"
                 body += (
                     "<p>Read people and companies in Obsidian under People/ and Companies/. "
                     "Edit a fact there to correct it. This view is for setup and repair.</p>"
@@ -366,10 +366,10 @@ def router(wiring: Wiring) -> APIRouter:
                         '<p class="notice">No dossiers yet. Reviewed notes contribute people.</p>'
                     )
             else:
-                title = "Review notes"
+                title = "Review status"
                 body += (
-                    "<p>Read and correct the note, choose any suggestions, "
-                    "then finish review once.</p>"
+                    "<p>Review and correct notes in Obsidian, optionally using the companion. "
+                    "Checking Reviewed files the note. The links below offer an Admin fallback.</p>"
                 )
                 for job in data["jobs"]:
                     body += (

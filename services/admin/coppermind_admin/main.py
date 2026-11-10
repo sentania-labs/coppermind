@@ -341,7 +341,8 @@ required></label><button>Log in</button></form>""",
         return HTMLResponse(
             page(
                 "Home",
-                f"""<h1>Home</h1><p>Review notes in Obsidian. Coppermind files them when you check Reviewed.</p>
+                f"""<h1>Home</h1><p>Review notes in Obsidian.
+Coppermind files them when you check Reviewed.</p>
 {counters}""",
             )
         )
