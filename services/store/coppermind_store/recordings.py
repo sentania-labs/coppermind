@@ -359,6 +359,12 @@ class Recordings:
         job.attempts += 1
         job.set_error()
         self.save(job)
+
+        def later() -> str:
+            if job.attempts >= job.attempt_limit:
+                return ""
+            return (datetime.now(UTC) + timedelta(seconds=TIMEOUT_BACKOFF_S)).isoformat()
+
         try:
             transcript = (
                 self.saved_transcript(job) if job.transcribed else await self.transcribe(job)
@@ -384,7 +390,10 @@ class Recordings:
         except ArtifactMissing:
             job.state = "failed"
             job.set_error(
-                "The stored recording is gone, so there is nothing to transcribe. "
+                "The stored recording was removed before the note could cite it. The transcript "
+                "is kept and the note is filed without that citation."
+                if job.transcribed
+                else "The stored recording is gone, so there is nothing to transcribe. "
                 "Upload it again under a new external id.",
                 "recording-missing",
             )
@@ -406,15 +415,14 @@ class Recordings:
                 else f"The stored recording could not be read ({type(exc).__name__}). The audio "
                 "is kept; retry once the store is healthy.",
                 "filing-failed" if job.transcribed else "recording-unreadable",
-                retry_after=(datetime.now(UTC) + timedelta(seconds=TIMEOUT_BACKOFF_S)).isoformat()
-                if job.attempts < job.attempt_limit
-                else "",
+                retry_after=later(),
             )
         except ValueError as exc:
             job.state = "failed"
             job.set_error(
                 ("The note could not be filed: " if job.transcribed else "") + str(exc)[:500],
                 "recording-not-ready",
+                retry_after=later(),
             )
         except Exception:
             job.state = "failed"
@@ -426,6 +434,7 @@ class Recordings:
                 )
                 + "See the store log.",
                 "job-error",
+                retry_after=later(),
             )
             log.exception("recording job %s failed unexpectedly", job.id)
         if job.state == "failed":

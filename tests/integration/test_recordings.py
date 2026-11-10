@@ -216,6 +216,26 @@ async def test_an_unreadable_recording_is_not_reported_as_a_filing_failure(store
     assert not service.requests
 
 
+async def test_an_unexpected_failure_before_a_transcript_backs_off_instead_of_resending(
+    store, monkeypatch
+):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        job = await context.accept_recording(request(audio))
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(context.provider, "transcribe", broken)
+        await context.recordings.tick()
+        failed = await context.recording_status({"id": job["id"]})
+        assert failed["error_rule"] == "job-error" and "transcribed unexpectedly" in failed["error"]
+        assert datetime.fromisoformat(failed["retry_after"]) > datetime.now(UTC)
+        assert await context.recordings.tick() is False
+    assert not service.requests
+
+
 async def test_a_silent_service_backs_off_before_the_next_attempt(store):
     async with Service(delay=6) as service:
         context = await setup_transcription(store, service, wait_s=5)
