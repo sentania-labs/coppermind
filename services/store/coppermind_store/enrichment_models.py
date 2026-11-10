@@ -47,7 +47,14 @@ class EnrichmentJob(ContextModel):
     error_rule: str = ""
     input_size: int | None = None
     input_limit: int | None = None
+    # The start of the model's reply (bounded) kept on a failed job, so Inspect can show
+    # what the model said when its answer was refused. Empty when there was no reply.
+    reply: str = Field(default="", max_length=4000)
+    # After a timeout, no new attempt before this time (ISO-8601). Empty means no wait.
+    retry_after: str = ""
     created_at: str
+    # When the model last gave an answer this job accepted. Empty until it has.
+    succeeded_at: str = ""
     result: Suggestions | None = None
     evidence: dict[str, Any] = Field(default_factory=dict)
     usage: dict[str, Any] = Field(default_factory=dict)
@@ -59,6 +66,14 @@ class EnrichmentJob(ContextModel):
         return {d["index"] for d in self.decisions if "index" in d}
 
     def set_error(
-        self, message: str = "", rule: str = "", size: int | None = None, limit: int | None = None
+        self,
+        message: str = "",
+        rule: str = "",
+        size: int | None = None,
+        limit: int | None = None,
+        *,
+        reply: str = "",
+        retry_after: str = "",
     ) -> None:
         self.error, self.error_rule, self.input_size, self.input_limit = message, rule, size, limit
+        self.reply, self.retry_after = reply[:4000], retry_after

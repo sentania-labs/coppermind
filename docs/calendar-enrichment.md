@@ -106,7 +106,8 @@ Supported connections:
 - OpenAI-compatible uses an HTTP or HTTPS base URL and an optional API key.
   Include the API prefix, usually `/v1`, in that URL.
 
-Refresh the model list, select a model, and test it using synthetic content.
+Refresh the model list, select a model, and test it using synthetic content (a short sample meeting
+text and a reply of about 150 words, which also measures the model's speed).
 Only models returned by discovery for that connection can be selected or tested.
 Servers without working model discovery cannot be used. A compatible
 server must support Chat Completions, JSON-object response format, and bounded
@@ -137,7 +138,16 @@ existing note sent from the backlog, also contributes dossier facts through this
 worker once it is reviewed, without a separate acceptance action. Existing notes
 that were never sent are not swept when reviewed, and the backlog lists unreviewed
 notes only, so already reviewed history is outside this slice. Calls run serially, with configurable
-input/output limits, timeout, and one to three attempts. Each job records its
+input/output limits, wait limit, and one to three attempts. Replies are streamed. The
+wait limit (120 seconds by default, 5 to 1800) is a silence limit: how long the
+provider may send nothing, before the first byte and between pieces of the reply.
+A slow but steady local model is therefore not cut off, though no single call
+runs past one hour. A provider that cannot stream sends the reply whole, so the
+wait limit must then cover all of it; Admin warns when the measured speed
+(taken from the model test) says it will not. A saved wait limit of 45 seconds,
+the former default, reads as 120. A call that times out is not retried at once:
+while attempts remain, the job waits 5 minutes, doubling per attempt up to 30 minutes,
+and Admin shows the time of the next try. Each job records its
 attempt limit before processing. Interrupted requests consume an attempt, even
 when their outcome is unknown; restarting the worker never resets the budget.
 Unexpected provider-response errors also consume the recorded attempt. An explicit
@@ -165,7 +175,10 @@ that is no longer discovered for its connection, or a
 value that does not fit the note schema). The rule's stable name is stored on the
 job as `error_rule`, and the store logs each failure at warning level with that
 rule. Neither the stored message nor the log holds model output beyond a short,
-sanitized field name.
+sanitized field name. The job itself keeps the first 4,000 characters of the
+model's reply when its answer was refused or failed a check, and Inspect shows
+it; the next attempt clears it. Admin's Jobs list also counts jobs that got an
+answer, failed or went stale, and shows the time of the last answer.
 
 ## Human review and recovery
 

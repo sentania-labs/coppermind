@@ -77,7 +77,7 @@ def test_calendar_models_and_review_render_and_escape(signed_in):
     models = client.get("/admin/context?tab=models")
     assert models.status_code == 200
     assert 'type="password"' in models.text
-    assert "synthetic" in models.text
+    assert "sample meeting text" in models.text
     review = client.get("/admin/context?tab=review")
     assert review.status_code == 200
     assert "Send selected notes for enrichment" in review.text
@@ -449,3 +449,22 @@ def test_calendar_empty_sections_explain_next_step(signed_in):
     dropbox = client.get("/admin/workflow?tab=intake")
     assert "folder in your Obsidian vault" in dropbox.text
     assert "file here" not in dropbox.text
+
+
+def test_speed_note_and_outcome_line_speak_plainly():
+    from coppermind_admin.pages.context import _outcome_line, _speed_note
+
+    assignment = {
+        "connection": "c",
+        "model": "m",
+        "max_output_tokens": 2048,
+        "timeout_s": 45,
+    }
+    streamed = {"speed": {"c/m": {"tokens_per_s": 32.0, "streamed": True}}}
+    assert "takes about 64 seconds" in _speed_note(streamed, assignment)
+    assert "error" not in _speed_note(streamed, assignment)
+    whole = {"speed": {"c/m": {"tokens_per_s": 32.0, "streamed": False}}}
+    assert 'class="error"' in _speed_note(whole, assignment)
+    assert "not measured" in _speed_note({}, assignment)
+    none = {"outcomes": {"counts": {"failed": 2}, "answered": 0, "last_success": ""}}
+    assert "No job has succeeded yet" in _outcome_line(none)

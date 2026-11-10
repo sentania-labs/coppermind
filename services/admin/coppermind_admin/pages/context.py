@@ -54,6 +54,51 @@ def _select(name: str, label: str, choices: list[tuple[str, str]], selected: str
     return f'<label>{e(label)}<select name="{name}">{options}</select></label>'
 
 
+def _speed_note(data: dict[str, Any], assignment: dict[str, Any]) -> str:
+    """What the last model test measured, and whether the limits below can be met."""
+    speed = data.get("speed", {}).get(f"{assignment['connection']}/{assignment['model']}")
+    if not assignment["model"]:
+        return ""
+    if not speed:
+        return (
+            '<p class="field-help">Speed not measured yet. Test the model under Connections '
+            "to see how long a full reply takes.</p>"
+        )
+    rate = speed["tokens_per_s"]
+    full = assignment["max_output_tokens"] / rate
+    text = (
+        f"Measured about {rate:g} tokens per second. A full reply of "
+        f"{assignment['max_output_tokens']:,} tokens takes about {full:,.0f} seconds."
+    )
+    if not speed["streamed"] and full > assignment["timeout_s"]:
+        return (
+            f'<p class="error">{e(text)} This provider sends each reply all at once, so the '
+            f"wait limit ({assignment['timeout_s']} seconds) has to cover the whole reply. Raise "
+            "the wait limit or lower Maximum response tokens.</p>"
+        )
+    if speed["streamed"]:
+        text += " The app keeps waiting while the model keeps replying."
+    return f'<p class="field-help">{e(text)}</p>'
+
+
+def _outcome_line(data: dict[str, Any]) -> str:
+    """How many jobs have produced an answer, failed or gone stale since the start."""
+    outcomes = data.get("outcomes") or {"counts": {}, "answered": 0, "last_success": ""}
+    counts = outcomes["counts"]
+    if not counts:
+        return "<p>No enrichment jobs yet.</p>"
+    text = (
+        f"{outcomes['answered']} of {sum(counts.values())} jobs got an answer from the model "
+        f"({counts.get('applied', 0)} applied, {counts.get('suggested', 0)} waiting for review); "
+        f"{counts.get('failed', 0)} failed; {counts.get('stale', 0)} out of date."
+    )
+    if outcomes["last_success"]:
+        text += " Last answer: " + _calendar_time(outcomes["last_success"]) + "."
+    else:
+        text += " No job has succeeded yet."
+    return "<p>" + e(text) + "</p>"
+
+
 def _limit_link(job: dict[str, Any]) -> str:
     """Point a size failure at the setting that controls it."""
     if not job.get("input_limit"):
@@ -408,7 +453,7 @@ def router(wiring: Wiring) -> APIRouter:
                             "<p>No models discovered. Refresh the list before choosing a model.</p>"
                         )
                     if model_ids:
-                        body += _form("test-model", fields, "Test model with synthetic content")
+                        body += _form("test-model", fields, "Test model with sample meeting text")
                 body += "</details>"
             assignment = config["assignments"]["enrichment"]
             fields = "<fieldset><legend>1. Choose a model</legend>"
@@ -501,8 +546,9 @@ def router(wiring: Wiring) -> APIRouter:
             for key, label, help_text in [
                 (
                     "timeout_s",
-                    "Response timeout (seconds)",
-                    "Default 45. How long to wait for each model call.",
+                    "Wait limit (seconds)",
+                    "Default 120. How long the model may stay silent, before it starts "
+                    "and while replying. A reply that keeps coming is not cut off, up to one hour.",
                 ),
                 (
                     "max_input_chars",
@@ -522,6 +568,7 @@ def router(wiring: Wiring) -> APIRouter:
             ]:
                 fields += _input(key, label, str(assignment[key]), kind="number")
                 fields += '<p class="field-help">' + help_text + "</p>"
+            fields += _speed_note(data, assignment)
             fields += "</details><fieldset><legend>4. Automatic processing</legend>"
             fields += _check(
                 "enabled", "Enable enrichment for new unreviewed notes", assignment["enabled"]
@@ -556,7 +603,11 @@ picker.addEventListener('change', () => {
                 "automatically. Other suggestions need your approval, and applying any "
                 "change leaves the note unreviewed.</p>"
             )
-            body += "<h2>Jobs</h2><table><tr><th>Note</th><th>Status</th><th>Open</th></tr>"
+            body += (
+                "<h2>Jobs</h2>"
+                + _outcome_line(data)
+                + "<table><tr><th>Note</th><th>Status</th><th>Open</th></tr>"
+            )
             for job in data["jobs"]:
                 body += (
                     f"<tr><td>{e(job['path'])}</td><td>{e(job['state'])}<br>{e(job['error'])}"
@@ -601,6 +652,21 @@ picker.addEventListener('change', () => {
             + "</p>"
             + _limit_link(job)
         )
+        if (
+            job.get("retry_after")
+            and job["state"] in {"failed", "queued"}
+            and job["attempts"] < job["attempt_limit"]
+        ):
+            body += (
+                "<p>The app is waiting before it tries again. Next automatic try after "
+                + e(_calendar_time(job["retry_after"]))
+                + ".</p>"
+            )
+        if job.get("reply"):
+            body += (
+                "<details open><summary>What the model replied (the first 4,000 characters)"
+                "</summary><pre>" + e(job["reply"]) + "</pre></details>"
+            )
         body += (
             "<p>Current metadata</p><pre>"
             + e(json.dumps(job["current"]["frontmatter"], indent=2))

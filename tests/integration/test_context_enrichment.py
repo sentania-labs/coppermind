@@ -2,11 +2,13 @@
 
 import base64
 import json
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 import pytest
 from coppermind_store.context_service import ContextService
-from coppermind_store.model_provider import ModelProvider
+from coppermind_store.model_provider import ModelProvider, ProviderError
 from coppermind_store.reconciler import reconcile_once
 
 from coppermind.context_config import FeatureAssignment
@@ -1178,3 +1180,136 @@ async def test_calendar_and_dropbox_problem_counts_and_dismissal_agree(store):
     await store.context.dismiss_import({"id": receipt_id})
     assert await store.get_problems() == []
     assert (await store.get_status()).counters.active_problems == 0
+
+
+async def test_a_refused_answer_keeps_what_the_model_said_and_why(store, caplog):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+
+    async def answer(*args):
+        return _answer({"kind": "field", "field": "nope", "reason": "r", "value": 1}), {}
+
+    context.provider.suggest = answer
+    with caplog.at_level("WARNING"):
+        await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.state == "failed" and final.error_rule
+    assert '"field": "nope"' in final.reply
+    detail = await context.job_detail({"id": job_id})
+    assert detail["reply"] == final.reply
+    assert all("reply" not in job for job in (await context.snapshot())["jobs"])
+    assert all('"nope"' not in r.getMessage() for r in caplog.records)
+
+
+async def test_a_plain_value_error_is_named_not_reported_as_unvalidated(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+
+    async def answer(*args):
+        raise ValueError("entity quote is not in the reviewed note")
+
+    context.provider.suggest = answer
+    await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.error_rule == "answer-rejected"
+    assert "entity quote is not in the reviewed note" in final.error
+    assert "could not be validated" not in final.error
+
+
+async def test_a_timeout_backs_off_instead_of_retrying_at_once(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+    calls = []
+
+    async def slow(*args):
+        calls.append(1)
+        raise ProviderError("quiet", "provider-no-response", waiting=True)
+
+    context.provider.suggest = slow
+    await context.run_job(context.load_job(job_id))
+    waiting = context.load_job(job_id)
+    assert waiting.state == "failed" and waiting.error_rule == "provider-no-response"
+    assert waiting.retry_after > datetime.now(UTC).isoformat()
+    assert waiting.attempts == 1
+
+    # Ticks inside the wait leave the job alone, and do not send another request.
+    await context.tick()
+    await context.tick()
+    assert len(calls) == 1 and context.load_job(job_id).state == "failed"
+
+    # Once the wait is over, the next tick tries again.
+    waiting.retry_after = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    context.save_job(waiting)
+    await context.tick()
+    assert len(calls) == 2
+
+    # The last attempt promises no further automatic try, and an owner's retry still works.
+    final = context.load_job(job_id)
+    assert final.attempts == final.attempt_limit and final.retry_after == ""
+    await context.retry_job({"id": job_id})
+    assert context.load_job(job_id).retry_after == ""
+
+
+async def test_an_error_that_recurs_on_the_same_model_does_not_back_off(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+
+    async def too_long(*args):
+        raise ProviderError("still replying", "provider-too-long")
+
+    context.provider.suggest = too_long
+    await context.run_job(context.load_job(job_id))
+    failed = context.load_job(job_id)
+    assert failed.error_rule == "provider-too-long" and failed.retry_after == ""
+
+
+async def test_the_test_call_is_realistic_and_records_speed(store):
+    context = await configure(store)
+    seen: dict[str, Any] = {}
+
+    async def fake(connection, key, assignment, system, evidence):
+        seen["size"] = len(json.dumps(evidence))
+        seen["assignment"] = assignment
+        return {"ok": True, "summary": "x"}, {
+            "completion_tokens": 200,
+            "streamed": True,
+            "first_byte_ms": 2000,
+            "elapsed_ms": 10000,
+        }
+
+    context.provider.suggest = fake
+    connection = context.config().connections[0].id
+    result = await context.test_model({"connection": connection, "model": "test-model"})
+    assert result["speed"] == {"tokens_per_s": 25.0, "streamed": True}
+    assert seen["size"] > 3000 and seen["assignment"].timeout_s == 120
+    snapshot = await context.snapshot()
+    assert snapshot["speed"][f"{connection}/test-model"]["tokens_per_s"] == 25.0
+
+
+async def test_outcomes_count_every_state_and_the_last_success(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+
+    async def answer(*args):
+        return _answer(), {}
+
+    context.provider.suggest = answer
+    await context.run_job(context.load_job(job_id))
+    outcomes = (await context.snapshot())["outcomes"]
+    assert outcomes["counts"] == {"suggested": 1} and outcomes["answered"] == 1
+    assert outcomes["last_success"] == context.load_job(job_id).succeeded_at != ""
