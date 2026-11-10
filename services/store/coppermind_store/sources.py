@@ -85,7 +85,7 @@ from coppermind.store_protocol import (
     artifact_text,
 )
 from coppermind_store.artifacts import artifact_problems, count_artifacts
-from coppermind_store.eligibility import awaiting_refile
+from coppermind_store.eligibility import filing_root, rendered_note_folder
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
 from coppermind_store.notes import (
     _build_frontmatter,
@@ -1270,13 +1270,29 @@ async def get_status(store: LocalStore) -> StatusResponse:
                 await session.scalar(sa.select(sa.func.count()).select_from(SearchUnreadable)) or 0
             )
             notes_awaiting_review = await session.scalar(awaiting) or 0
-            notes_to_refile = (
-                await session.scalar(
-                    sa.select(sa.func.count())
-                    .select_from(Note)
-                    .where(awaiting_refile(notes_folder))
+            candidates = (
+                await session.scalars(
+                    sa.select(Note).where(
+                        Note.reviewed.is_(True), Note.state == "ok", Note.date.is_not(None)
+                    )
                 )
-                or 0
+            ).all()
+            settings = store.control.settings()
+            type_key = store.control.schema().role("type_key")
+            notes_to_refile = sum(
+                not row.path.startswith(
+                    rendered_note_folder(
+                        filing_root(
+                            row.frontmatter.get(type_key),
+                            settings,
+                            store.notes_root,
+                            store.context.config().dropbox_folder,
+                        )[0],
+                        row.date,
+                    )
+                    + "/"
+                )
+                for row in candidates
             )
             by_state = (
                 await session.execute(sa.select(Note.state, sa.func.count()).group_by(Note.state))
@@ -1620,6 +1636,26 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
     )
     schema = store.control.schema()
     for row in ok_notes:
+        if row.reviewed:
+            root, reserved = filing_root(
+                row.frontmatter.get(schema.role("type_key")),
+                store.control.settings(),
+                store.notes_root,
+                store.context.config().dropbox_folder,
+            )
+            if reserved:
+                problems.append(
+                    ProblemInfo(
+                        kind="reserved_type",
+                        reference=row.path,
+                        note_id=row.id,
+                        reason=(
+                            f"The type {reserved} is reserved for Coppermind. "
+                            f"The note files under {root}/. Choose another type "
+                            "to file it elsewhere."
+                        ),
+                    )
+                )
         mismatch = note_date_mismatch(row.frontmatter, schema)
         if mismatch is not None:
             explicit_date, time_date = mismatch

@@ -2268,7 +2268,11 @@ def _patch_problems(request: PatchFrontmatter, schema: FrontmatterSchema) -> lis
     """
     id_key = schema.role("id_key")
     sources_key = schema.role("sources_key")
-    required = {definition.name for definition in schema.keys if definition.required}
+    required = {
+        definition.name
+        for definition in schema.keys
+        if definition.required and definition.name != schema.role("type_key")
+    }
     unset = set(request.unset)
     problems = [f"{key}: named in both set and unset" for key in request.set if key in unset]
     problems += [

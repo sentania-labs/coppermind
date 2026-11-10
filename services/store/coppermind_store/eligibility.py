@@ -2,42 +2,71 @@
 
 from __future__ import annotations
 
-import re
 from datetime import date
 
 import sqlalchemy as sa
 
 from coppermind.db.models import Artifact, Note, NoteSource, Source
-from coppermind.naming import sanitize_folder
+from coppermind.naming import sanitize_folder, sanitize_stem
 
 MONTH_PATH = r"^[0-9]{4}-(0[1-9]|1[0-2])/"
 NOTES_FOLDER_DEFAULT = "Notes"
 
 
-def rendered_note_folder(notes_folder: str, day: date) -> str:
-    root = sanitize_folder(notes_folder) or NOTES_FOLDER_DEFAULT
+def filing_root(value, settings, notes_root, dropbox_folder="Dropbox"):
+    """Resolve a type to a portable root, preserving an existing spelling."""
+    fallback = sanitize_folder(settings.notes.notes_folder) or NOTES_FOLDER_DEFAULT
+    if isinstance(value, list):
+        value = next((item for item in value if isinstance(item, str)), None)
+    if not isinstance(value, str):
+        return fallback, None
+    candidate = sanitize_stem(value, fallback="")
+    if not candidate:
+        return fallback, None
+    reserved = [
+        "Review",
+        "People",
+        "Companies",
+        "Artifacts",
+        "_Sources",
+        "_Trash",
+        "_Attachments",
+        "Journal",
+        "Dropbox",
+        settings.notes.review_folder,
+        settings.notes.trash_folder,
+        settings.notes.sources_folder,
+        settings.notes.artifacts_folder,
+        settings.notes.attachments_folder,
+        settings.notes.journal_folder,
+        dropbox_folder,
+    ]
+    if candidate.casefold() in {
+        sanitize_folder(name).split("/")[0].casefold() for name in reserved
+    }:
+        return fallback, candidate
+    try:
+        matches = sorted(
+            p.name
+            for p in notes_root.iterdir()
+            if p.is_dir() and p.name.casefold() == candidate.casefold()
+        )
+    except FileNotFoundError:
+        matches = []
+    return (matches[0] if matches else candidate), None
+
+
+def rendered_note_folder(root: str, day: date) -> str:
     return f"{root}/{day:%Y}/{day:%Y-%m}"
 
 
-def awaiting_refile(notes_folder: str):
-    """Reviewed notes whose path is not under the folder their date renders to."""
-    root = sanitize_folder(notes_folder) or NOTES_FOLDER_DEFAULT
-    prefix = sa.literal(f"{root}/") + sa.func.to_char(Note.date, "YYYY/YYYY-MM") + "/"
-    return sa.and_(
-        Note.reviewed.is_(True),
-        Note.date.is_not(None),
-        Note.state == "ok",
-        ~sa.func.starts_with(Note.path, prefix),
-    )
-
-
 def reviewed_note(notes_folder: str):
-    root = sanitize_folder(notes_folder) or NOTES_FOLDER_DEFAULT
-    new_path_pattern = rf"^{re.escape(root)}/[0-9]{{4}}/[0-9]{{4}}-(0[1-9]|1[0-2])/"
-    new_prefix = sa.literal(f"{root}/") + sa.func.to_char(Note.date, "YYYY/YYYY-MM") + "/"
+    # Keep the old roots searchable until their filing pass has drained.
+    new_path_pattern = r"^.+/[0-9]{4}/[0-9]{4}-(0[1-9]|1[0-2])/"
+    dated_suffix = sa.literal("/") + sa.func.to_char(Note.date, "YYYY/YYYY-MM") + "/"
     new_shape = sa.and_(
         Note.path.op("~")(new_path_pattern),
-        sa.func.starts_with(Note.path, new_prefix),
+        sa.func.strpos(Note.path, dated_suffix) > 0,
     )
     legacy_shape = sa.and_(
         Note.path.op("~")(MONTH_PATH),

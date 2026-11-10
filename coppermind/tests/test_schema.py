@@ -47,7 +47,7 @@ def test_a_complete_note_validates(note_type, context):
     )
 
 
-def test_a_value_outside_the_vocabulary_is_reported():
+def test_a_type_outside_the_suggested_vocabulary_is_accepted():
     schema = default_schema()
     problems = schema.validate_frontmatter(
         {
@@ -60,7 +60,7 @@ def test_a_value_outside_the_vocabulary_is_reported():
             "sources": [],
         }
     )
-    assert any("podcast" in problem for problem in problems)
+    assert not any("podcast" in problem for problem in problems)
 
 
 def test_default_schema_requires_account_for_external_notes():
