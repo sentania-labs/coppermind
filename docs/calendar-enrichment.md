@@ -46,7 +46,7 @@ revisions. Correct the event in its source calendar and export it again, or
 use **Dismiss failure** in Calendar import history. Legacy calendar conflicts
 can also be acknowledged on that page without removing the current event or
 originals. Problems includes unsupported and oversized Dropbox files, and
-Overview uses the same active problem count.
+Home's Needs attention lists the same active problems.
 
 `GET /v1/calendars` retains its paginated response shape and describes the single
 calendar (`id: calendar`). Event details include provenance: export source ID,

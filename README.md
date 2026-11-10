@@ -47,10 +47,10 @@ already copied out stays good until its 12 hours are up. Re-claiming with a
 new password is what ends every session at once, and the recovery steps below
 are how you do it. Admin's Home lists what needs attention (failed imports,
 suggestions and filing, with a link to the remedy) and the menu is Home,
-Imports, Review status, Calendar, People and Settings. Obsidian's 'Default location for new attachments' is a
-per-device setting that defaults to the notes filesystem root; set it from
-Settings > Files & links > Default location for attachments so new
-attachments land where your filing rules expect them.
+Imports, Review status, Calendar, People and Settings. Obsidian's 'Default
+location for new attachments' is a per-device setting that defaults to the
+notes filesystem root; set it from Settings > Files & links > Default location
+for attachments so new attachments land where your filing rules expect them.
 
 Forgot the admin password, or need to cut off a session cookie that got away
 from you? Both have the same answer: remove the admin record and claim again.
