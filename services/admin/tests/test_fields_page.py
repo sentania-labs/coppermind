@@ -404,3 +404,30 @@ def test_the_form_needs_a_session(tmp_path):
         response = client.get("/admin/fields", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/admin/claim"
+
+
+def test_a_refusal_opens_the_field_and_shows_the_error_beside_its_control(page):
+    client, store = page
+    values = form(client)
+    kind = index_of(values, "key", "type")
+    account = index_of(values, "key", "account")
+    edits = {
+        f"key-{kind}-default": "note",
+        f"key-{account}-required_when_values": "not-allowed",
+    }
+
+    response = client.post("/v1/admin/fields", data=values | edits)
+
+    assert response.status_code == 422
+    html = response.text
+    # The field holding the default is open and the message sits right after
+    # the Default input, not only in the summary at the top.
+    type_block = html[html.index("<summary>type") - 40 : html.index("<summary>type") + 6000]
+    assert '<details class="field-definition" open>' in type_block[:80]
+    default_input = type_block.index(f'name="key-{kind}-default"')
+    assert "the default &#x27;note&#x27; is not one of the allowed" in type_block[default_input:]
+    account_block = html[html.index("<summary>account") - 40 :]
+    assert '<details class="field-definition" open>' in account_block[:80]
+    assert "not-allowed" in account_block and "Choose from the available" in account_block
+    # What was typed is still in the form.
+    assert 'value="note"' in html and 'value="not-allowed"' in html

@@ -320,8 +320,10 @@ class FrontmatterSchema(BaseModel):
                 ]
                 if unlisted:
                     problems.append(
-                        f"{name}: required when lists {', '.join(unlisted)}, which "
-                        f"{watched.name} does not allow"
+                        f"{name}: the requirement uses {', '.join(repr(v) for v in unlisted)}, "
+                        f"which {'is' if len(unlisted) == 1 else 'are'} not "
+                        f"{watched.name} choices. Choose from the available {watched.name} "
+                        f"values, or add {'it' if len(unlisted) == 1 else 'them'} to the choices."
                     )
         return problems
 

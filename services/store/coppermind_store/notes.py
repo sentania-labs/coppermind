@@ -1489,8 +1489,7 @@ class LocalStore:
                 causes.append(f"keys the schema refused: {', '.join(written)}")
             if supplied:
                 causes.append(
-                    f"the schema's own default is refused by the schema for: "
-                    f"{', '.join(supplied)}; fix the default in Fields and tags"
+                    f"the schema's own default is refused by the schema for: {', '.join(supplied)}"
                 )
             return "invalid", "; ".join(causes)
         mirrored = _jsonable(adopted_frontmatter)

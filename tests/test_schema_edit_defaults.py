@@ -41,7 +41,10 @@ def test_required_when_values_must_be_allowed_values_of_the_watched_key():
     ]
     problems = schema.model_copy(update={"keys": keys}).edit_problems()
 
-    assert any("nonsense" in p and "does not allow" in p for p in problems)
+    assert any(
+        "'nonsense'" in p and "not type choices" in p and "Choose from the available" in p
+        for p in problems
+    )
 
 
 def test_a_schema_file_with_a_bad_default_still_loads():
