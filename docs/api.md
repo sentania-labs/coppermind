@@ -334,6 +334,23 @@ would only repeat (a wrong address or model, a recording the service cannot read
 that cannot be used or has no speakers, a recording that ran past the four-hour ceiling) waits for a person to fix it and press Retry under Suggestions and backlog. Every
 failure is also listed under Problems as "Recording transcription" with the reason.
 
+A service that answers "busy" (HTTP 429, or the reason `busy`) is working for someone
+else, so that is a wait and not a failure. The intake stays `queued` with `error_rule`
+`transcription-busy`, no attempt is used, and the app asks again after the service's
+`Retry-After` (up to an hour) or, without one, after two to three minutes. After 24 hours
+of continuous busy answers it becomes a failed intake (`transcription-busy-limit`) in
+Problems, with Retry and no automatic try. A store restart in the middle of a
+transcription is not a failed attempt either: the recording is sent again under the same
+job id, which re-attaches on the jobs path or finds the service busy and waits.
+
+On the jobs path (recordings over about two hours or 100 MiB) the app polls until the
+service says `done`. It waits at most 1.5 times the audio length (`metadata.duration_seconds`,
+when given; the service runs at about 0.4 times), never less than one hour, and eight
+hours when the length is not known. A service that is still `queued` or `running` after
+that, or that answers five times in a row with no status, ends the intake as failed with
+`transcription-unfinished`. That is waiting for a person to press Retry, and the worker
+moves on to the next recording.
+
 The service is called as OpenAI-compatible `POST {base URL}/audio/transcriptions`, a
 multipart upload of the file with `model`, `response_format` (`diarized_json` or
 `verbose_json`) and, for `diarized_json`, `chunking_strategy=auto`. The reply must carry

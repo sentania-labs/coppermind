@@ -25,6 +25,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import random
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -55,6 +56,13 @@ REPLY_KEPT = 4000
 # A failed attempt sends the whole recording again, so the wait before the next one starts
 # at half an hour and doubles with each attempt.
 RETRY_BACKOFF_S = 1800
+# A service that answers "busy" is working for someone else: that is a wait, not a failed
+# attempt. It is asked again after its Retry-After, or a couple of minutes with jitter, and
+# given up on only after a day of being busy without a break.
+BUSY_WAIT_S = 120
+BUSY_LIMIT_S = 24 * 3600
+BUSY_RULE = "transcription-busy"
+BUSY_MESSAGE = "Waiting for the transcription service, which is busy."
 NOT_SET_UP = (
     "No transcription service is set up, so a recording on its own cannot be accepted. "
     "In Admin open Model connections, find Transcription setup, choose a connection "
@@ -88,6 +96,8 @@ class TranscriptionJob(ContextModel):
     error_rule: str = ""
     reply: str = Field(default="", max_length=REPLY_KEPT)
     retry_after: str = ""
+    # When the service first answered busy in the current run of busy answers.
+    busy_since: str = ""
     # True once the service's transcript is saved. A retry then files it without sending
     # the recording again.
     transcribed: bool = False
@@ -331,7 +341,7 @@ class Recordings:
             if job.state != "failed":
                 raise ValueError("only a failed recording can be retried")
             self.ready()
-            job.state, job.attempts = "queued", 0
+            job.state, job.attempts, job.busy_since = "queued", 0, ""
             job.set_error()
             self.save(job)
         return {"job": job.id}
@@ -364,9 +374,10 @@ class Recordings:
             if job.state in {"succeeded"}:
                 continue
             if job.state == "running":
-                # The store stopped mid-call; whether the service finished is unknown.
-                job.state = "failed"
-                job.set_error("The store restarted while this recording was being transcribed.")
+                # The store stopped mid-call. That is not a failed attempt: asking again either
+                # re-attaches to the job the service has under the same id, or finds the
+                # service still busy with the old upload and waits.
+                self.interrupt(job)
                 self.save(job)
             if job.state == "failed" and job.attempts < job.attempt_limit:
                 if job.retry_after and job.retry_after > _now():
@@ -375,9 +386,37 @@ class Recordings:
                     continue
                 job.state = "queued"
             if job.state == "queued":
+                if job.retry_after and job.retry_after > _now():
+                    continue
                 await self.run_job(job, assignment)
                 return True
         return False
+
+    @staticmethod
+    def interrupt(job: TranscriptionJob) -> None:
+        job.state, job.attempts = "queued", max(0, job.attempts - 1)
+        job.set_error()
+
+    @staticmethod
+    def wait_for_service(job: TranscriptionJob, exc: ProviderError) -> None:
+        """The service said busy: ask again soon without using up an attempt."""
+        now = datetime.now(UTC)
+        job.attempts = max(0, job.attempts - 1)
+        since = datetime.fromisoformat(job.busy_since) if job.busy_since else now
+        job.busy_since = since.isoformat()
+        if (now - since).total_seconds() >= BUSY_LIMIT_S:
+            job.state = "failed"
+            job.set_error(
+                "The transcription service stayed busy for 24 hours, so the app stopped asking. "
+                "Press Retry when it is free.",
+                "transcription-busy-limit",
+            )
+            return
+        wait = exc.retry_after or BUSY_WAIT_S * random.uniform(1.0, 1.5)
+        job.state = "queued"
+        job.set_error(
+            BUSY_MESSAGE, BUSY_RULE, retry_after=(now + timedelta(seconds=wait)).isoformat()
+        )
 
     async def run_job(self, job: TranscriptionJob, assignment: FeatureAssignment) -> None:
         from coppermind_store.context_service import TIMEOUT_BACKOFF_S
@@ -392,6 +431,7 @@ class Recordings:
                 return ""
             return (datetime.now(UTC) + timedelta(seconds=TIMEOUT_BACKOFF_S)).isoformat()
 
+        busy = False
         try:
             transcript = (
                 self.saved_transcript(job) if job.transcribed else await self.transcribe(job)
@@ -400,20 +440,24 @@ class Recordings:
             job.state, job.succeeded_at = "succeeded", _now()
             job.set_error()
         except asyncio.CancelledError:
-            job.state = "failed"
-            job.set_error("The store stopped while this recording was being transcribed.")
+            self.interrupt(job)
             self.save(job)
             raise
         except ProviderError as exc:
-            wait = (
-                (
-                    datetime.now(UTC) + timedelta(seconds=RETRY_BACKOFF_S * 2 ** (job.attempts - 1))
-                ).isoformat()
-                if not repeats_only(exc.rule) and job.attempts < job.attempt_limit
-                else ""
-            )
-            job.state = "failed"
-            job.set_error(str(exc), exc.rule, reply=exc.reply, retry_after=wait)
+            if exc.rule == BUSY_RULE:
+                busy = True
+                self.wait_for_service(job, exc)
+            else:
+                wait = (
+                    (
+                        datetime.now(UTC)
+                        + timedelta(seconds=RETRY_BACKOFF_S * 2 ** (job.attempts - 1))
+                    ).isoformat()
+                    if not repeats_only(exc.rule) and job.attempts < job.attempt_limit
+                    else ""
+                )
+                job.state = "failed"
+                job.set_error(str(exc), exc.rule, reply=exc.reply, retry_after=wait)
         except ArtifactMissing:
             job.state = "failed"
             job.set_error(
@@ -461,6 +505,8 @@ class Recordings:
                 retry_after=later(),
             )
             log.exception("recording job %s failed unexpectedly", job.id)
+        if not busy:
+            job.busy_since = ""
         if job.state == "failed":
             log.warning(
                 "recording job %s failed: rule=%s attempts=%s", job.id, job.error_rule, job.attempts
@@ -588,6 +634,8 @@ NO_AUTOMATIC_RETRY = frozenset(
         "transcript-flat",
         "transcript-no-speakers",
         "recording-missing",
+        "transcription-busy-limit",
+        "transcription-unfinished",
         "note-rejected",
         "connection-missing",
     }

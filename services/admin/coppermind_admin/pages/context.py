@@ -319,6 +319,11 @@ def _recording_state(job: dict[str, Any], assignment: dict[str, Any] | None) -> 
         return "Waiting. Transcription is off. Turn it on to start this recording."
     if paused:
         return "Waiting. Transcription is paused; it starts when you resume it."
+    if job.get("error_rule") == "transcription-busy" and job.get("retry_after"):
+        return (
+            "Waiting for the transcription service, which is busy. The app asks again after "
+            f"{_calendar_time(job['retry_after'])}."
+        )
     return "Waiting for its turn. Recordings are transcribed one at a time."
 
 

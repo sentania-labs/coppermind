@@ -29,8 +29,19 @@ REPLY = {
 class Service:
     """An OpenAI-compatible `POST /v1/audio/transcriptions` that takes its time."""
 
-    def __init__(self, *, delay=0.0, keepalive=0.0, status=200, reply=None, jobs=False):
+    def __init__(
+        self,
+        *,
+        delay=0.0,
+        keepalive=0.0,
+        status=200,
+        reply=None,
+        jobs=False,
+        job_status="done",
+        retry_after=None,
+    ):
         self.jobs = jobs
+        self.job_status, self.retry_after = job_status, retry_after
         self.delay, self.keepalive, self.status = delay, keepalive, status
         self.reply = REPLY if reply is None else reply
         self.requests: list[dict] = []
@@ -88,10 +99,17 @@ class Service:
                     if lines[0].startswith(b"POST "):
                         answer = {"id": "local-job", "status": "queued"}
                     else:
-                        answer = {"status": "done", "result": self.reply}
+                        answer = (
+                            {"status": "done", "result": self.reply}
+                            if self.job_status == "done"
+                            else {"status": self.job_status}
+                            if self.job_status
+                            else {}
+                        )
                 payload = json.dumps(answer).encode()
+                extra = f"retry-after: {self.retry_after}\r\n" if self.retry_after else ""
                 writer.write(
-                    f"HTTP/1.1 {self.status} X\r\ncontent-type: application/json\r\n"
+                    f"HTTP/1.1 {self.status} X\r\ncontent-type: application/json\r\n{extra}"
                     f"content-length: {len(payload)}\r\n\r\n".encode()
                     + payload
                 )
@@ -206,7 +224,7 @@ async def test_a_refused_connection_does_not_wait_and_names_the_address(recordin
         (422, "transcription-http-422", False, "model name or the reply format"),
         (503, "transcription-http", True, "healthy"),
         (409, "transcription-http-409", False, "refused the request"),
-        (429, "transcription-http", True, "healthy"),
+        (429, "transcription-busy", True, "busy"),
         (408, "transcription-http", True, "healthy"),
     ],
 )
@@ -510,3 +528,73 @@ def test_reason_codes_choose_retry_policy():
         assert repeats_only("transcription-" + reason)
     for reason in ("busy", "internal"):
         assert not repeats_only("transcription-" + reason)
+
+
+def test_a_job_is_given_one_and_a_half_times_the_audio_never_under_an_hour_else_eight_hours():
+    from coppermind_store.model_provider import job_budget_seconds
+
+    assert job_budget_seconds(4 * 3600) == 6 * 3600
+    assert job_budget_seconds(600) == 3600
+    assert job_budget_seconds(None) == 8 * 3600
+
+
+@pytest.mark.parametrize("header", ["7", None])
+async def test_a_busy_answer_is_a_wait_that_carries_the_services_retry_after(recording, header):
+    from coppermind_store.recordings import repeats_only
+
+    async with Service(status=429, retry_after=header) as service:
+        with pytest.raises(ProviderError) as caught:
+            await send(service, recording)
+    assert caught.value.rule == "transcription-busy"
+    assert caught.value.retry_after == (7 if header else None)
+    assert not repeats_only(caught.value.rule)
+
+
+@pytest.mark.parametrize("job_status", ["running", "queued", None])
+async def test_a_job_that_never_finishes_ends_instead_of_holding_the_worker(
+    recording, monkeypatch, job_status
+):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(model_provider, "JOB_PACE_HEADROOM", 0)
+    monkeypatch.setattr(model_provider, "JOB_MIN_SECONDS", 0.3)
+    async with Service(jobs=True, job_status=job_status) as service:
+        with pytest.raises(ProviderError) as caught:
+            await asyncio.wait_for(
+                ModelProvider().transcribe(
+                    service.connection,
+                    "",
+                    assignment(),
+                    recording,
+                    filename=recording.name,
+                    mime_type="audio/mp4",
+                    size_bytes=recording.stat().st_size,
+                    job_id="stable",
+                    duration_seconds=7201,
+                ),
+                30,
+            )
+    assert caught.value.rule == "transcription-unfinished"
+    assert "did not finish" in str(caught.value)
+
+
+async def test_an_empty_answer_repeated_ends_the_wait_before_the_deadline(recording, monkeypatch):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    async with Service(jobs=True, job_status=None) as service:
+        with pytest.raises(ProviderError) as caught:
+            await ModelProvider().transcribe(
+                service.connection,
+                "",
+                assignment(),
+                recording,
+                filename=recording.name,
+                mime_type="audio/mp4",
+                size_bytes=recording.stat().st_size,
+                job_id="stable",
+                duration_seconds=7201,
+            )
+    assert caught.value.rule == "transcription-unfinished"
+    assert len(service.requests) == 1 + model_provider.JOB_EMPTY_ANSWERS

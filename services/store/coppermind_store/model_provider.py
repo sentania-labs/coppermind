@@ -40,7 +40,31 @@ UPLOAD_CHUNK_BYTES = 1 << 20
 DIRECT_MAX_BYTES = 100 * 1024 * 1024
 DIRECT_MAX_SECONDS = 2 * 60 * 60
 JOB_POLL_SECONDS = 10
+# The service runs at about 0.4 times the audio length. A job is given 1.5 times the audio
+# length, never less than an hour; with no length known, eight hours.
+JOB_PACE_HEADROOM = 1.5
+JOB_MIN_SECONDS = 3600
+JOB_UNKNOWN_SECONDS = 8 * 3600
+# How many answers in a row without a status end the wait.
+JOB_EMPTY_ANSWERS = 5
+# The longest a busy service's Retry-After is honoured.
+MAX_RETRY_AFTER_SECONDS = 3600
 TRANSCRIPTION_REASONS = {"busy", "internal", "audio_unreadable", "no_speech", "too_long"}
+
+
+def job_budget_seconds(duration_seconds: float | None) -> float:
+    if duration_seconds is None:
+        return JOB_UNKNOWN_SECONDS
+    return max(JOB_MIN_SECONDS, JOB_PACE_HEADROOM * duration_seconds)
+
+
+def retry_after_seconds(value: str | None) -> float | None:
+    """A `Retry-After` given in seconds; a date or anything else is ignored."""
+    try:
+        seconds = float(value) if value is not None else 0.0
+    except ValueError:
+        return None
+    return min(seconds, MAX_RETRY_AFTER_SECONDS) if seconds > 0 else None
 
 
 def transcription_error(reason: str) -> ProviderError:
@@ -64,12 +88,20 @@ class ProviderError(ValueError):
     right response is to wait before trying again rather than to try again at once."""
 
     def __init__(
-        self, message: str, rule: str = "", *, reply: str = "", waiting: bool = False
+        self,
+        message: str,
+        rule: str = "",
+        *,
+        reply: str = "",
+        waiting: bool = False,
+        retry_after: float | None = None,
     ) -> None:
         super().__init__(message)
         self.rule = rule
         self.reply = reply[:REPLY_KEPT_CHARS]
         self.waiting = waiting
+        # Seconds the service asked to wait before it is asked again, when it said.
+        self.retry_after = retry_after
 
 
 class InputLimitError(ProviderError):
@@ -310,11 +342,19 @@ class ModelProvider:
                                 error_data.get("reason") if isinstance(error_data, dict) else None
                             )
                             if isinstance(reason, str) and reason in TRANSCRIPTION_REASONS:
-                                raise transcription_error(reason)
-                        raise self._http_error(
+                                refusal = transcription_error(reason)
+                                refusal.retry_after = retry_after_seconds(
+                                    response.headers.get("retry-after")
+                                )
+                                raise refusal
+                        refusal = self._http_error(
                             response.status_code,
                             upload=body is not None or noun == "transcription service",
                         )
+                        refusal.retry_after = retry_after_seconds(
+                            response.headers.get("retry-after")
+                        )
+                        raise refusal
                     event_stream = "text/event-stream" in response.headers.get("content-type", "")
                     stats.streamed = event_stream
                     data = bytearray()
@@ -617,7 +657,9 @@ class ModelProvider:
             422: "The transcription service could not use the request; the model name or the "
             "reply format may not be supported by it.",
         }
-        retryable = status >= 500 or status in (408, 429)
+        if status == 429:
+            return transcription_error("busy")
+        retryable = status >= 500 or status == 408
         detail = hints.get(
             status,
             "The transcription service reported an error or is busy. Check that it is healthy."
@@ -627,8 +669,7 @@ class ModelProvider:
         return ProviderError(
             detail,
             "transcription-http" if retryable else f"transcription-http-{status}",
-            # A server error or a request to slow down is worth another try later; a refusal
-            # of the request is not.
+            # A server error is worth another try later; a refusal of the request is not.
             waiting=retryable,
         )
 
@@ -651,7 +692,8 @@ class ModelProvider:
 
         The file goes out in chunks and is never held whole. The service may take many
         minutes or hours to answer: `assignment.wait_s` is how long it may stay silent, and
-        `MAX_TRANSCRIBE_SECONDS` bounds the call overall.
+        `MAX_TRANSCRIBE_SECONDS` bounds the call overall. A job on the jobs path is polled
+        for at most `job_budget_seconds(duration_seconds)`.
         """
         if connection.provider == "anthropic":
             raise ProviderError(
@@ -743,6 +785,8 @@ class ModelProvider:
                         "Check the service and retry.",
                         "transcription-provider",
                     )
+                deadline = time.monotonic() + job_budget_seconds(duration_seconds)
+                empty_answers = 0
                 while True:
                     state = result.get("status")
                     if state is not None and not isinstance(state, str):
@@ -750,6 +794,16 @@ class ModelProvider:
                             "The transcription service returned an unknown job state. "
                             "Check the service and retry.",
                             "transcription-provider",
+                        )
+                    empty_answers = empty_answers + 1 if state is None else 0
+                    if empty_answers >= JOB_EMPTY_ANSWERS or (
+                        state in {"queued", "running", None} and time.monotonic() >= deadline
+                    ):
+                        raise ProviderError(
+                            "The transcription service did not finish this recording. It "
+                            "stopped answering with a result, so the app stopped waiting. "
+                            "Check the service, then press Retry.",
+                            "transcription-unfinished",
                         )
                     if progress and state in {"queued", "running", "done", "failed"}:
                         progress(state)

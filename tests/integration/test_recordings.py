@@ -286,6 +286,146 @@ async def test_paused_or_off_transcription_leaves_a_recording_waiting(store):
         assert not service.requests
 
 
+def rewind(context, job_id, **changes):
+    job = context.recordings.load(job_id)
+    for name, value in changes.items():
+        setattr(job, name, value)
+    context.recordings.save(job)
+
+
+async def test_another_client_holding_the_service_is_a_wait_not_a_failed_attempt(store):
+    async with Service(status=429, retry_after=5) as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        job = await context.accept_recording(request(audio))
+        for _ in range(4):  # more busy answers than the two attempts allowed
+            assert await context.recordings.tick() is True
+            waiting = await context.recording_status({"id": job["id"]})
+            assert waiting["state"] == "queued" and waiting["attempts"] == 0
+            assert waiting["error_rule"] == "transcription-busy"
+            assert "busy" in waiting["error"]
+            asked_again = datetime.fromisoformat(waiting["retry_after"])
+            assert datetime.now(UTC) < asked_again <= datetime.now(UTC) + timedelta(seconds=6)
+            # Not asked again before its time, and it is no entry in Problems.
+            assert await context.recordings.tick() is False
+            assert not [p for p in await store.get_problems() if p.kind == "recording"]
+            rewind(context, job["id"], retry_after=(datetime.now(UTC)).isoformat())
+        assert len(service.requests) == 4
+
+        service.status, service.reply = 200, REPLY
+        assert await context.recordings.tick() is True
+    done = await context.recording_status({"id": job["id"]})
+    assert done["state"] == "succeeded" and done["attempts"] == 1 and done["error"] == ""
+    assert done["note_id"]
+
+
+async def test_a_busy_wait_has_a_default_of_a_couple_of_minutes(store):
+    async with Service(status=429) as service:
+        context = await setup_transcription(store, service)
+        job = await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+    waiting = await context.recording_status({"id": job["id"]})
+    delay = (datetime.fromisoformat(waiting["retry_after"]) - datetime.now(UTC)).total_seconds()
+    assert 100 <= delay <= 190
+
+
+async def test_a_day_of_continuous_busy_becomes_a_problem_with_a_retry_and_no_automatic_try(store):
+    async with Service(status=429) as service:
+        context = await setup_transcription(store, service)
+        job = await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+        rewind(
+            context,
+            job["id"],
+            busy_since=(datetime.now(UTC) - timedelta(hours=25)).isoformat(),
+            retry_after="",
+        )
+        await context.recordings.tick()
+        failed = await context.recording_status({"id": job["id"]})
+        assert failed["state"] == "failed" and failed["error_rule"] == "transcription-busy-limit"
+        assert "24 hours" in failed["error"]
+        assert await context.recordings.tick() is False
+        problems = [p for p in await store.get_problems() if p.kind == "recording"]
+        assert len(problems) == 1 and problems[0].retry_available
+
+        service.status, service.reply = 200, REPLY
+        await context.retry_recording({"id": job["id"]})
+        await context.recordings.tick()
+    assert (await context.recording_status({"id": job["id"]}))["state"] == "succeeded"
+
+
+async def test_a_restart_in_the_middle_of_a_transcription_then_a_busy_service_still_waits(store):
+    async with Service(status=429) as service:
+        context = await setup_transcription(store, service)
+        job = await context.accept_recording(request(await store_audio(store)))
+        # The store died on the last attempt it allows, with the upload still running.
+        limit = context.recordings.load(job["id"]).attempt_limit
+        rewind(context, job["id"], state="running", attempts=limit)
+        assert await context.recordings.tick() is True
+        waiting = await context.recording_status({"id": job["id"]})
+        assert waiting["state"] == "queued" and waiting["attempts"] == limit - 1
+        assert waiting["error_rule"] == "transcription-busy"
+
+        service.status, service.reply = 200, REPLY
+        rewind(context, job["id"], retry_after="")
+        assert await context.recordings.tick() is True
+    assert (await context.recording_status({"id": job["id"]}))["state"] == "succeeded"
+
+
+async def test_a_restart_on_the_jobs_path_asks_again_under_the_same_id(store, monkeypatch):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    async with Service(jobs=True) as service:
+        context = await setup_transcription(store, service)
+        job = await context.accept_recording(
+            request(await store_audio(store), metadata={"duration_seconds": 7500})
+        )
+        assert await context.recordings.tick() is True
+        first = service.requests[0]["body"]
+        rewind(context, job["id"], state="running", attempts=1, transcribed=False)
+        assert await context.recordings.tick() is True
+    ident = f"{job['id']}-0".encode()
+    assert b'name="id"\r\n\r\n' + ident in first
+    assert b'name="id"\r\n\r\n' + ident in service.requests[2]["body"]
+    done = await context.recording_status({"id": job["id"]})
+    assert done["state"] == "succeeded" and done["attempts"] == 1
+
+
+@pytest.mark.parametrize("job_status", ["running", None])
+async def test_a_wedged_service_ends_as_a_retriable_problem_and_frees_the_worker(
+    store, monkeypatch, job_status
+):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(model_provider, "JOB_PACE_HEADROOM", 0)
+    monkeypatch.setattr(model_provider, "JOB_MIN_SECONDS", 0.3)
+    async with Service(jobs=True, job_status=job_status) as service:
+        context = await setup_transcription(store, service)
+        wedged = await context.accept_recording(
+            request(await store_audio(store), metadata={"duration_seconds": 7500})
+        )
+        await context.recordings.tick()
+        failed = await context.recording_status({"id": wedged["id"]})
+        assert failed["state"] == "failed" and failed["error_rule"] == "transcription-unfinished"
+        assert "did not finish" in failed["error"]
+        # The worker is free for the next recording, and the failure waits for a person.
+        other = await context.accept_recording(
+            request(
+                await store_audio(store, name="b.m4a", data=AUDIO + b"b"),
+                external_source_id="plaud/rec-2",
+                title="Other",
+            )
+        )
+        service.jobs = False
+        assert await context.recordings.tick() is True
+        assert (await context.recording_status({"id": other["id"]}))["state"] == "succeeded"
+        assert await context.recordings.tick() is False
+        problems = [p for p in await store.get_problems() if p.kind == "recording"]
+        assert len(problems) == 1 and problems[0].retry_available
+
+
 def test_the_transcript_text_keeps_each_label_and_marks_a_missing_one():
     text = render_transcript(
         {

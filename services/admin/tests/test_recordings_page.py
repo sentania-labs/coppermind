@@ -201,6 +201,23 @@ def test_each_state_of_a_recording_reads_as_a_sentence(signed_in):
     assert "A transcript already saved is reused" in page
 
 
+def test_a_recording_waiting_on_a_busy_service_says_so_and_offers_no_retry(signed_in):
+    client, _ = signed_in
+    busy = {
+        **JOB,
+        "title": "Behind another client",
+        "error": "Waiting for the transcription service, which is busy.",
+        "error_rule": "transcription-busy",
+        "retry_after": "2099-01-01T12:00:00+00:00",
+    }
+    saved = FeatureAssignment(connection="local", model="m", enabled=True)
+    client.app.state.store = store_with([busy], saved)
+    page = client.get("/admin/context?tab=review").text
+    assert "Waiting for the transcription service, which is busy." in page
+    assert "The app asks again after" in page
+    assert ">Retry</button>" not in page
+
+
 def test_a_waiting_recording_explains_when_transcription_is_off_or_paused(signed_in):
     client, _ = signed_in
     client.app.state.store = store_with([JOB])
