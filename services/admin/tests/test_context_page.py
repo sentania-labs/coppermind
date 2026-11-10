@@ -686,6 +686,7 @@ def test_speaker_suggestions_are_read_only_in_admin(signed_in):
         "state": "suggested",
         "error": "",
         "input_limit": None,
+        "reply": "Speaker 1 said: private transcript words",
         "result": {
             "suggestions": [
                 {
@@ -719,5 +720,6 @@ def test_speaker_suggestions_are_read_only_in_admin(signed_in):
     assert page.status_code == 200
     assert "Speaker 1" in page.text and "Alex Morgan" in page.text
     assert "person:private-id" not in page.text
+    assert "private transcript words" not in page.text
     assert "Open this note in the Coppermind companion" in page.text
     assert "Apply this suggestion" not in page.text

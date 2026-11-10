@@ -99,6 +99,40 @@ async def evidence(context: Any, note: Any, events: list[dict[str, Any]]) -> dic
     }
 
 
+def people_changes(
+    context: Any, frontmatter: dict[str, Any], people: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """The attendee and contact values a confirmed mapping adds, checked before any receipt."""
+    from coppermind_store.dossier_context import blank
+
+    assignment = context.config().assignments["enrichment"]
+    if not assignment.attendees_field:
+        raise ValueError("set up attendee properties before confirming speakers")
+    links = ["[[" + p["path"].removesuffix(".md") + "]]" for p in people if p["path"]]
+    attendees = [
+        p["email"] or ("[[" + p["path"].removesuffix(".md") + "]]" if p["path"] else p["name"])
+        for p in people
+    ]
+    if not assignment.contacts_field:
+        attendees.extend(links)
+    changes: dict[str, Any] = {}
+    for field, values in (
+        (assignment.attendees_field, attendees),
+        (assignment.contacts_field, links),
+    ):
+        if not field:
+            continue
+        existing = changes.get(field, frontmatter.get(field))
+        if blank(existing):
+            existing = []
+        if not isinstance(existing, list):
+            raise ValueError("people fields must be lists")
+        changes[field] = list(existing) + [v for v in dict.fromkeys(values) if v not in existing]
+    if context.store.control.schema().validate_frontmatter({**frontmatter, **changes}):
+        raise ValueError("confirmed people do not fit the note properties")
+    return changes
+
+
 async def apply(context: Any, receipt: dict[str, Any], note: Any) -> Any:
     """Apply a recorded mapping, replaying safely after a partial review."""
     import json
@@ -116,34 +150,6 @@ async def apply(context: Any, receipt: dict[str, Any], note: Any) -> Any:
 
     operation = receipt["speakers"]
     source_id, revision = operation["source_id"], operation["revision"]
-    if "changes" not in operation:
-        assignment = context.config().assignments["enrichment"]
-        if not assignment.attendees_field:
-            raise ValueError("set up attendee properties before confirming speakers")
-        changes: dict[str, Any] = {}
-        links = [
-            "[[" + p["path"].removesuffix(".md") + "]]" for p in operation["people"] if p["path"]
-        ]
-        attendees = [
-            p["email"] or ("[[" + p["path"].removesuffix(".md") + "]]" if p["path"] else p["name"])
-            for p in operation["people"]
-        ]
-        if not assignment.contacts_field:
-            attendees.extend(links)
-        for field, values in (
-            (assignment.attendees_field, attendees),
-            (assignment.contacts_field, links),
-        ):
-            if not field:
-                continue
-            existing = changes.get(field, note.frontmatter.get(field, []))
-            if not isinstance(existing, list):
-                raise ValueError("people fields must be lists")
-            changes[field] = list(existing) + [
-                v for v in dict.fromkeys(values) if v not in existing
-            ]
-        operation["changes"] = changes
-        context.write("review-completions/" + note.id, receipt)
     changes = operation["changes"]
     if "after_hash" not in operation:
         if note.content_hash != receipt["expected_hash"]:
@@ -152,9 +158,6 @@ async def apply(context: Any, receipt: dict[str, Any], note: Any) -> Any:
         from coppermind_store.notes import _with_kinds
 
         predicted = fm.patch(raw.decode(), _with_kinds(changes, context.store.control.schema()))
-        frontmatter, _ = fm.parse(predicted)
-        if context.store.control.schema().validate_frontmatter(frontmatter):
-            raise ValueError("confirmed people do not fit the note properties")
         operation["after_hash"] = content_hash(predicted.encode())
         context.write("review-completions/" + note.id, receipt)
     if note.content_hash not in {receipt["expected_hash"], operation["after_hash"]}:

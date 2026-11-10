@@ -242,11 +242,16 @@ class NoteLifecycle:
                         mapping[suggestion.field] = candidates[person_id]["name"]
                         chosen.append(candidates[person_id])
                     if mapping:
+                        from coppermind_store import speaker_names
+
                         speaker_operation = {
                             "source_id": speaker_data["source_id"],
                             "revision": speaker_data["revision"],
                             "mapping": mapping,
                             "people": chosen,
+                            "changes": speaker_names.people_changes(
+                                self.context, prospective.frontmatter, chosen
+                            ),
                         }
                     selected = [i for i in selected if i not in speaker_indexes]
                 receipt = {

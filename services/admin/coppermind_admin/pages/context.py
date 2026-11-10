@@ -1093,7 +1093,7 @@ picker.addEventListener('change', () => {
                 + e(_calendar_time(job["retry_after"]))
                 + ".</p>"
             )
-        if job.get("reply") and not job.get("is_recording"):
+        if job.get("reply") and not (job.get("evidence") or {}).get("speaker_review"):
             body += (
                 "<details><summary>What the model replied (the first 4,000 characters)"
                 "</summary><pre>" + e(job["reply"]) + "</pre></details>"
