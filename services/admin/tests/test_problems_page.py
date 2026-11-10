@@ -617,3 +617,31 @@ def test_counters_say_plainly_when_the_upgrade_is_complete():
     assert "still to move" not in html
     # The filing explanation leads, ahead of the operational counters.
     assert html.index("Notes filing") < html.index("Rejected ingests")
+
+
+def test_a_refused_note_says_what_happened_and_offers_a_working_action(signed_in):
+    from coppermind_store.reconciler import adoption_problem
+
+    client, _ = signed_in
+    store = ReadOnlyStore()
+    store.problems = []
+    for path, cause in (
+        ("Review/Wrong type.md", "keys the schema refused: type"),
+        ("Review/Bare.md", "the schema's own default is refused by the schema for: type"),
+        ("Review/Odd.md", "the id it carries is not a valid identifier"),
+    ):
+        action, text = adoption_problem(cause)
+        store.problems.append(
+            ProblemInfo(kind="adoption", reference=path, reason=text, action=action)
+        )
+    client.app.state.store = store
+
+    page = client.get("/admin/problems").text
+
+    assert "Could not add note" in page
+    assert "Coppermind left this note unchanged" in page
+    assert '<a href="/admin/properties">Open Note properties</a>' in page
+    assert '<a href="/admin/properties/new?edit=type">Open the type property</a>' in page
+    assert "checks again on its own" in page
+    for internal in ("Fields and tags", "keys the schema", "the schema"):
+        assert internal not in page

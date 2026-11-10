@@ -1661,7 +1661,7 @@ async def test_a_refusal_of_the_schemas_own_default_points_at_the_schema(store: 
     )
 
     assert outcome == "invalid"
-    assert "own default" in cause and "type" in cause and "Fields and tags" in cause
+    assert "own default" in cause and "type" in cause
     assert "keys the schema refused" not in cause
     assert path.read_bytes() == data
 
@@ -1686,7 +1686,7 @@ async def test_a_refused_adoption_is_listed_on_problems_until_the_file_changes(
     await reconcile_once(store, unidentified=remembered)
 
     listed = [p for p in await store.get_problems() if p.kind == "adoption"]
-    assert [(p.reference, "own default" in p.reason and "type" in p.reason) for p in listed] == [
+    assert [(p.reference, "default" in p.reason and "Type" in p.reason) for p in listed] == [
         ("Review/Bare.md", True)
     ]
 
@@ -1716,3 +1716,66 @@ async def test_a_required_key_with_no_default_is_not_blamed_on_a_default(store: 
     assert outcome == "invalid"
     assert "account" in cause
     assert "own default" not in cause
+
+
+def test_each_adoption_refusal_is_put_in_plain_words_with_an_action():
+    cases = {
+        "keys the schema refused: type": ("properties", "Its Type is not an allowed choice"),
+        "the schema's own default is refused by the schema for: type": (
+            "property:type",
+            "default Coppermind would fill in is not one of the allowed choices",
+        ),
+        "the id it carries is not a valid identifier": ("obsidian", "could not identify"),
+        "the file is not valid UTF-8": ("obsidian", "the file is not valid UTF-8"),
+    }
+    for cause, (action, phrase) in cases.items():
+        got_action, text = reconciler.adoption_problem(cause)
+        assert got_action == action
+        assert phrase in text
+        assert "left this note unchanged" in text or "left it unchanged" in text
+        assert "checks again" in text or "next check" in text
+        for internal in ("schema", "keys the", "Fields and tags"):
+            assert internal not in text
+
+
+async def test_a_refusal_clears_itself_when_the_default_is_corrected(store: LocalStore):
+    """No retry is needed: a corrected schema makes the refused note worth reading again."""
+    schema = store.control.schema()
+    broken = schema.model_copy(
+        update={
+            "keys": [
+                key.model_copy(update={"default": "note", "required": True})
+                if key.name == "type"
+                else key
+                for key in schema.keys
+            ]
+        }
+    )
+    state = store.control.store.read("schema")
+    saved = store.control.store.write(
+        "schema", broken.model_dump(mode="json"), if_revision=state.revision
+    )
+    path = store.notes_root / "Review" / "Bare.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"# Bare note\n")
+    remembered: reconciler.UnidentifiedStats = {}
+
+    await reconcile_once(store, unidentified=remembered)
+    await reconcile_once(store, unidentified=remembered)
+    listed = [p for p in await store.get_problems() if p.kind == "adoption"]
+    assert [p.action for p in listed] == ["property:type"]
+    assert "Note properties" in listed[0].reason
+
+    fixed = schema.model_copy(
+        update={
+            "keys": [
+                key.model_copy(update={"required": True}) if key.name == "type" else key
+                for key in schema.keys
+            ]
+        }
+    )
+    store.control.store.write("schema", fixed.model_dump(mode="json"), if_revision=saved.revision)
+    await reconcile_once(store, unidentified=remembered)
+
+    assert [p for p in await store.get_problems() if p.kind == "adoption"] == []
+    assert fm.parse(path.read_text())[0]["type"] == "reference"

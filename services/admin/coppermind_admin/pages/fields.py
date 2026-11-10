@@ -380,9 +380,38 @@ def select(name: str, label: str, options: tuple[str, ...], chosen: str) -> str:
     )
 
 
-def render_key(index: int, row: dict[str, Any], roles: dict[str, list[str]]) -> str:
+def field_errors(name: str, problems: list[str]) -> dict[str, str]:
+    """The refusals that name one key, each placed beside the control it is about."""
+    slots: dict[str, list[str]] = {"top": [], "required_when": [], "values": [], "default": []}
+    for problem in problems:
+        if not name or not problem.startswith(f"{name}: "):
+            continue
+        text = problem.removeprefix(f"{name}: ")
+        lowered = text.lower()
+        if "requirement" in lowered or "required when" in lowered:
+            slot = "required_when"
+        elif "default" in lowered:
+            slot = "default"
+        elif "allowed value" in lowered or "enum" in lowered:
+            slot = "values"
+        else:
+            slot = "top"
+        slots[slot].append(text)
+    return {
+        slot: "".join(f'<p class="error" role="alert">{escape(t)}</p>' for t in texts)
+        for slot, texts in slots.items()
+    }
+
+
+def render_key(
+    index: int,
+    row: dict[str, Any],
+    roles: dict[str, list[str]],
+    problems: list[str] | None = None,
+) -> str:
     prefix = f"key-{index}"
     name = row["name"]
+    errors = field_errors(name, problems or [])
     if row["new"]:
         heading = "Add a key"
         identity = f'<input type="hidden" name="{prefix}-new" value="1">' + text_input(
@@ -400,10 +429,10 @@ def render_key(index: int, row: dict[str, Any], roles: dict[str, list[str]]) -> 
             row["retire"],
             "Retire this key (notes keep their values; the schema stops checking it)",
         )
-    expanded = " open" if row["new"] else ""
+    expanded = " open" if row["new"] or any(errors.values()) else ""
     return f"""<details class="field-definition"{expanded}>
 <summary>{escape(heading)} <span class="muted">({escape(row["kind"])})</span></summary>
-<fieldset><legend>Edit {escape(heading)}</legend>{identity}
+<fieldset><legend>Edit {escape(heading)}</legend>{errors["top"]}{identity}
 {select(f"{prefix}-kind", "Kind", KINDS, row["kind"])}
 {checkbox(f"{prefix}-required", row["required"], "Required on every note")}
 {
@@ -421,7 +450,7 @@ def render_key(index: int, row: dict[str, Any], roles: dict[str, list[str]]) -> 
             row["required_when_values"],
             "Comma separated values.",
         )
-    }
+    }{errors["required_when"]}
 {
         text_area(
             f"{prefix}-values",
@@ -430,7 +459,7 @@ def render_key(index: int, row: dict[str, Any], roles: dict[str, list[str]]) -> 
             "One per line as value: meaning. Leave empty to accept any value of the kind.",
             4,
         )
-    }
+    }{errors["values"]}
 {
         text_input(
             f"{prefix}-default",
@@ -438,7 +467,7 @@ def render_key(index: int, row: dict[str, Any], roles: dict[str, list[str]]) -> 
             row["default"],
             "Text for string, enum and date keys; JSON otherwise. Blank for none.",
         )
-    }
+    }{errors["default"]}
 {text_input(f"{prefix}-description", "Description", row["description"])}
 {
         text_area(
@@ -496,6 +525,7 @@ def render(
     counts: dict[str, int] | None,
     message: str = "",
     status: int = 200,
+    problems: list[str] | None = None,
 ) -> HTMLResponse:
     from coppermind_admin import main
 
@@ -511,7 +541,7 @@ read from <code>GET /v1/schema</code>. Nothing here rewrites a note.</p>
 <input type="hidden" name="key-count" value="{len(keys)}">
 <input type="hidden" name="tag-count" value="{len(tags)}">
 <h2>Fields</h2>"""
-    body += "".join(render_key(index, row, roles) for index, row in enumerate(keys))
+    body += "".join(render_key(index, row, roles, problems) for index, row in enumerate(keys))
     body += f"""<h2>Tags</h2>
 {select("tag_mode", "Tag mode", TAG_MODES, tag_mode)}
 <p class="muted">Open: any tag is accepted and counted. Closed: a write that adds a tag that is
@@ -595,6 +625,7 @@ async def save(request: Request) -> Response:
             revision=body.get("revision", ""),
             counts=await tag_counts(request),
             message=refusal(problems),
+            problems=problems,
             status=422,
         )
     try:

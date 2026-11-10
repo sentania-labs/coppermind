@@ -1586,7 +1586,8 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         ProblemInfo(
             kind=row.kind,
             reference=row.reference,
-            reason=row.reason,
+            reason=row.reason.partition("\n")[2] if row.kind == "adoption" else row.reason,
+            action=row.reason.partition("\n")[0] if row.kind == "adoption" else None,
             note_id=row.reference if row.kind == "collision" else None,
             source_id=known.get(row.reference) if row.kind == "ingest" else None,
         )

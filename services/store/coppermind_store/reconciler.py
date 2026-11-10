@@ -424,6 +424,12 @@ async def reconcile_once(
         if quiet_period_s > 0
         else None
     )
+    # A refused file is not read again until it changes, so a corrected schema
+    # has to make every remembered refusal worth reading afresh.
+    revision = store.control.schema_document().revision
+    if getattr(store, "_schema_revision_seen", revision) != revision:
+        remembered.clear()
+    store._schema_revision_seen = revision
     scan = await asyncio.to_thread(
         _scan,
         store.notes_root,
@@ -553,9 +559,13 @@ async def reconcile_once(
                 stale = stale.where(RecordedRejection.reference.not_in(kept))
             await session.execute(stale)
             for path, reason in refusals.items():
+                action, text = adoption_problem(reason)
                 session.add(
                     RecordedRejection(
-                        kind="adoption", reference=path, reason=reason, created_at=now
+                        kind="adoption",
+                        reference=path,
+                        reason=f"{action}\n{text}",
+                        created_at=now,
                     )
                 )
 
@@ -1121,6 +1131,58 @@ class _Leftovers:
     keeper_path: str
     keeper: Observation | None
     copies: list[Observation]
+
+
+_REFUSED_VALUES = re.compile(r"keys the schema refused: ([^;]+)")
+_REFUSED_DEFAULTS = re.compile(r"the schema's own default is refused by the schema for: ([^;]+)")
+
+
+def _property_names(listed: str) -> list[str]:
+    return [name.strip()[:1].upper() + name.strip()[1:] for name in listed.split(",")]
+
+
+def adoption_problem(cause: str) -> tuple[str, str]:
+    """What the Problems page tells a person about a note adoption refused.
+
+    The cause is written for logs, in the store's own words. This is the same
+    fact for the person who owns the note: that it was left unchanged, why, and
+    what to do about it, in the names the Admin navigation uses. The first value
+    is the action Admin offers beside it.
+    """
+    default = _REFUSED_DEFAULTS.search(cause)
+    written = _REFUSED_VALUES.search(cause)
+    if default:
+        names = _property_names(default.group(1))
+        listed = " and ".join(names)
+        own = names[0].lower() if len(names) == 1 else None
+        return (
+            f"property:{own}" if own else "properties",
+            f"Coppermind left this note unchanged. The note has no {listed} yet, and the "
+            f"default Coppermind would fill in is not one of the allowed choices. Change "
+            f"the default, or add it to the allowed choices, in Note properties. "
+            f"Coppermind checks again on its own after you save the change.",
+        )
+    if written:
+        listed = " and ".join(_property_names(written.group(1)))
+        return (
+            "properties",
+            f"Coppermind left this note unchanged. Its {listed} is not an allowed choice. "
+            f"Open the note in Obsidian and choose an allowed one (the choices are listed "
+            f"in Note properties). Coppermind checks again on its own once the note is saved.",
+        )
+    if "not a valid identifier" in cause:
+        return (
+            "obsidian",
+            "Coppermind could not identify this note, so it left it unchanged. The "
+            "note's identifier property is not in a form Coppermind can use. Open the "
+            "note in Obsidian and delete that property. Coppermind gives the note a new "
+            "identifier on its next check, and the note itself stays as it is.",
+        )
+    return (
+        "obsidian",
+        f"Coppermind left this note unchanged: {cause}. Coppermind checks again on its "
+        "own once the file is changed.",
+    )
 
 
 def _in_folder(path: str, folder: str) -> bool:
