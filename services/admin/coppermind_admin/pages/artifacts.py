@@ -201,7 +201,7 @@ def router(wiring: Wiring) -> APIRouter:
 
     @routes.get("/admin/artifacts", response_class=HTMLResponse, include_in_schema=False)
     async def artifacts_page(request: Request) -> Response:
-        heading = '<h1>Artifacts</h1><p><a href="/admin">Overview</a></p>'
+        heading = '<h1>Artifacts</h1><p><a href="/admin">Home</a></p>'
         cursor = request.query_params.get("cursor") or None
         try:
             client = _client(request, wiring)

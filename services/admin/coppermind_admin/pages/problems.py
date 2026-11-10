@@ -489,7 +489,7 @@ def router(wiring: Wiring) -> APIRouter:
         try:
             await store_client(request, wiring).dismiss_reconciler_notice(note_id)
         except (StoreError, OSError):
-            return unreachable("Overview")
+            return unreachable("Home")
         return RedirectResponse(back if back in DISMISS_RETURNS else "/admin", status_code=303)
 
     @routes.get("/admin/problems", response_class=HTMLResponse, include_in_schema=False)

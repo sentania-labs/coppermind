@@ -65,6 +65,22 @@ def test_each_page_highlights_its_menu_section(path, current):
     assert ("Devices, connections and maintenance" in html) == (current == "Settings")
 
 
+def test_no_page_links_back_to_an_overview(signed_in):
+    """The landing page is Home; no page may still call it Overview."""
+    import re
+
+    client, _ = signed_in
+    for path in (
+        "/admin",
+        "/admin/artifacts",
+        "/admin/search-index",
+        "/admin/fields",
+        "/admin/sync",
+    ):
+        text = client.get(path).text
+        assert not re.search(r"<a [^>]*>\s*(Admin )?overview\s*</a>", text, re.I), path
+
+
 def test_public_claim_has_no_operator_navigation(tmp_path):
     client, _, _ = _client(tmp_path)
     with client:

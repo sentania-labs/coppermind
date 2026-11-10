@@ -502,7 +502,7 @@ def render(
     roles: dict[str, list[str]] = {}
     for role, name in schema.roles.items():
         roles.setdefault(name, []).append(role)
-    body = f"""<h1>Fields and tags</h1><p><a href="/admin">Overview</a></p>{message}
+    body = f"""<h1>Fields and tags</h1><p><a href="/admin">Home</a></p>{message}
 <p>Revision: {state.revision}</p>
 <p class="muted">The frontmatter schema every write is checked against, and the guidance agents
 read from <code>GET /v1/schema</code>. Nothing here rewrites a note.</p>

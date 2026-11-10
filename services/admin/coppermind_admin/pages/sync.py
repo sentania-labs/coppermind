@@ -270,7 +270,7 @@ def router(wiring: Wiring) -> APIRouter:
                     f"<button>{action.title()}</button></form>"
                 )
         body += configuration_form(product, revision, status)
-        body += '<p><a href="/admin">Admin overview</a></p>'
+        body += '<p><a href="/admin">Home</a></p>'
         return HTMLResponse(page("Devices", body), headers={"Cache-Control": "no-store"})
 
     @routes.post("/admin/sync/{action}")

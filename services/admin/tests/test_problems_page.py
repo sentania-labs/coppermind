@@ -474,7 +474,7 @@ def test_problems_and_overview_share_filing_status(signed_in, queue, errors, rea
     assert f"Notes with filing errors: {errors}" in summary
     assert "Last filing progress: November 5, 2026" in summary
     assert problems.text.index(heading) < problems.text.index("No note or filing problems found.")
-    # The Problems page drops the link that points at the same page; the Overview keeps it.
+    # The Problems page drops the link that points at the same page; Home keeps it.
     assert "Check filing problems and recovery options" not in problems.text
     assert "Check filing problems and recovery options" in overview.text
 
