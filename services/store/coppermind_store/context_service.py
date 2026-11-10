@@ -1215,7 +1215,8 @@ class ContextService:
         labels = speaker_review.get("speakers", [])
         candidates = {c["id"] for c in speaker_review.get("candidates", [])}
         counts = Counter(s.field for s in suggestions if s.kind == "speaker")
-        return [
+        shown = "\n".join(speaker_review.get("excerpts", []))
+        kept = [
             s
             for s in suggestions
             if s.kind != "speaker"
@@ -1225,6 +1226,10 @@ class ContextService:
                 and (s.value is None or (isinstance(s.value, str) and s.value in candidates))
             )
         ]
+        for s in kept:
+            if s.kind == "speaker" and s.quote not in shown:
+                s.quote = ""
+        return kept
 
     @staticmethod
     def proposed_people(job: EnrichmentJob) -> set[str]:

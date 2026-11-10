@@ -831,3 +831,31 @@ async def test_a_bad_speaker_value_leaves_only_that_speaker_unnamed(store, stand
     assert proposals["Speaker 1"].value == alex_id(observed[0])
     assert proposals["Speaker 2"].value is None
     assert proposals["Speaker 2"].reason == "No confident match was suggested."
+
+
+async def test_a_speaker_quote_not_in_the_transcript_is_not_shown_as_evidence(store, standin):
+    await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+
+    def entry(label, value, quote):
+        return {
+            "kind": "speaker",
+            "field": label,
+            "value": value,
+            "confidence": 0.9,
+            "reason": "Addressed by name.",
+            "quote": quote,
+        }
+
+    def answer(evidence, event):
+        alex = alex_id(evidence)
+        return [
+            entry("Speaker 1", alex, "Thanks, Alex."),
+            entry("Speaker 2", alex, "Thanks Alex, over to you"),
+        ]
+
+    context, result, note, job_id, observed = await recorded(store, standin, SHORT, answer)
+    job = context.load_job(job_id)
+    proposals = {s.field: s for s in job.result.suggestions if s.kind == "speaker"}
+    assert proposals["Speaker 1"].quote == "Thanks, Alex."
+    assert proposals["Speaker 2"].quote == ""
+    assert proposals["Speaker 2"].value == alex_id(observed[0])
