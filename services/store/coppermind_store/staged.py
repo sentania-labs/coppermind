@@ -435,9 +435,18 @@ async def finalize(store: LocalStore, receipt_id: str) -> StagedReceipt:
                 "fields": document.get("fields") or {},
             }
         )
-    created = await create_staged_artifact(store, path, declaration, sha256=digest)
+    try:
+        created = await create_staged_artifact(store, path, declaration, sha256=digest)
+    except FileNotFoundError as exc:
+        async with store._artifact_lock:
+            current = _read_receipt(store, receipt_id)
+        if current.get("state") == "stored" and current.get("artifact"):
+            return _receipt(current)
+        raise StagedFileUnavailable(str(exc)) from exc
     async with store._artifact_lock:
         document = _read_receipt(store, receipt_id)
+        if document.get("state") == "stored" and document.get("artifact"):
+            return _receipt(document)
         document["state"] = "stored"
         document["upload_bytes"] = size
         document["failure"] = None

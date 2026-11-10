@@ -425,3 +425,57 @@ async def test_the_body_crosses_the_internal_contract_as_a_stream(store):
         assert done.state == "stored" and done.artifact is not None
     finally:
         await client.aclose()
+
+
+async def test_overlapping_finalizes_answer_one_stored_receipt(store):
+    import asyncio
+
+    receipt = await staged.reserve(store, declaration())
+    await staged.put_bytes(store, receipt.id, chunks(b"quokka"), declared_bytes=6)
+    first, second = await asyncio.gather(
+        staged.finalize(store, receipt.id), staged.finalize(store, receipt.id)
+    )
+    assert first.state == second.state == "stored"
+    assert first.artifact == second.artifact
+    assert first.artifact is not None and first.artifact.created is True
+    assert await staged.get_receipt(store, receipt.id) == first
+
+
+async def test_a_finalize_whose_staged_file_vanished_to_a_rival_answers_the_stored_receipt(
+    store, monkeypatch
+):
+    from coppermind_store import artifacts
+
+    receipt = await staged.reserve(store, declaration())
+    await staged.put_bytes(store, receipt.id, chunks(b"quokka"), declared_bytes=6)
+    real = artifacts.create_staged_artifact
+    rival: list[Any] = []
+
+    async def racing(store, path, declaration, *, sha256):
+        if rival:
+            return await real(store, path, declaration, sha256=sha256)
+        rival.append(None)
+        rival[0] = await staged.finalize(store, receipt.id)
+        raise FileNotFoundError(str(path))
+
+    monkeypatch.setattr(artifacts, "create_staged_artifact", racing)
+    result = await staged.finalize(store, receipt.id)
+    assert result == rival[0]
+    assert result.state == "stored" and result.artifact is not None
+
+
+async def test_a_finalize_that_loses_its_staged_file_without_a_rival_is_reported(
+    store, monkeypatch
+):
+    from coppermind_store import artifacts
+
+    receipt = await staged.reserve(store, declaration())
+    await staged.put_bytes(store, receipt.id, chunks(b"quokka"), declared_bytes=6)
+
+    async def vanished(store, path, declaration, *, sha256):
+        raise FileNotFoundError(str(path))
+
+    monkeypatch.setattr(artifacts, "create_staged_artifact", vanished)
+    with pytest.raises(StagedFileUnavailable):
+        await staged.finalize(store, receipt.id)
+    assert (await staged.get_receipt(store, receipt.id)).state == "uploading"
