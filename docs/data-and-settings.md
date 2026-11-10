@@ -249,10 +249,11 @@ Reviewed notes are filed under `{type}/{yyyy}/{yyyy-mm}/` by note date, using
 the schema's type role. Folder names are sanitized and use the spelling of an
 existing case-insensitive match. Missing or empty types and non-string values
 without a string list entry use `notes.notes_folder` as a fallback. Reserved
-folders, including the reconciler's excluded folders, also use the fallback and appear in Problems with a next step. A type
-or date edit refiles the note on the next pass. Existing notes in the old notes
-root move on that pass and stay searchable until then. Filed source pages go under `{notes.sources_folder}/{yyyy}/{yyyy-mm}/`;
-pending source pages wait under `{sources_folder}/_Pending/{yyyy}/{yyyy-mm}/`.
+folders, including the reconciler's excluded folders, also use the fallback
+and appear in Problems with a next step. A type or date edit refiles the note
+on the next pass. Existing notes in the old notes root move on that pass and
+stay searchable until then. Filed source pages go under
+`{notes.sources_folder}/{yyyy}/{yyyy-mm}/`; pending source pages wait under `{sources_folder}/_Pending/{yyyy}/{yyyy-mm}/`.
 `notes_folder` must be a portable relative folder that does not collide with
 another reserved root. Artifacts are filed under the artifacts folder by the
 same `{yyyy}/{yyyy-mm}` shape (see above); the retired `_Attachments/` folder is
