@@ -133,11 +133,11 @@ No production schema keys are created automatically.
 
 Enablement records the existing note population. Those notes require a
 separate explicit backlog selection, up to 50 at a time. New valid unreviewed
-notes become eligible automatically. A note created after enablement, or an
-existing note sent from the backlog, also contributes dossier facts through this
-worker once it is reviewed, without a separate acceptance action. Existing notes
-that were never sent are not swept when reviewed, and the backlog lists unreviewed
-notes only, so already reviewed history is outside this slice. Calls run serially, with configurable
+notes become eligible automatically. Any reviewed note contributes dossier facts
+through this worker, whether it was created before or after enablement and whether
+or not it was sent from the backlog, without a separate acceptance action. The
+backlog lists unreviewed notes only; notes that were already reviewed when enabled
+are sent without it. Calls run serially, with configurable
 input/output limits, wait limit, and one to three attempts. Replies are streamed. The
 wait limit (120 seconds by default, 5 to 1800) is a silence limit: how long the
 provider may send nothing, before the first byte and between pieces of the reply.
