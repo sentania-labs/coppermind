@@ -197,9 +197,9 @@ async def test_a_refused_connection_does_not_wait_and_names_the_address(recordin
         (413, "transcription-http-413", False, "too large"),
         (422, "transcription-http-422", False, "model name or the reply format"),
         (503, "transcription-http", True, "healthy"),
+        (409, "transcription-http-409", False, "request failed"),
         (429, "transcription-http", True, "healthy"),
         (408, "transcription-http", True, "healthy"),
-        (409, "transcription-http", False, "request failed"),
     ],
 )
 async def test_an_http_failure_is_told_apart_and_only_a_server_fault_is_tried_again(
@@ -337,3 +337,16 @@ async def test_a_service_still_working_past_the_ceiling_is_given_up_on_and_not_r
         await call(mock_service(clock, MAX_TRANSCRIBE_SECONDS + 60, seen), recording, 3600)
     assert caught.value.rule == "provider-too-long"
     assert "Split the recording" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("status", "tried_again"),
+    [(409, False), (404, False), (451, False), (429, True), (408, True), (503, True)],
+)
+async def test_only_a_failure_that_can_pass_is_sent_again_by_itself(recording, status, tried_again):
+    from coppermind_store.recordings import repeats_only
+
+    async with Service(status=status) as service:
+        with pytest.raises(ProviderError) as caught:
+            await send(service, recording)
+    assert repeats_only(caught.value.rule) is not tried_again

@@ -327,7 +327,7 @@ class Recordings:
             if job.state == "failed" and job.attempts < job.attempt_limit:
                 if job.retry_after and job.retry_after > _now():
                     continue
-                if job.error_rule in NO_AUTOMATIC_RETRY:
+                if repeats_only(job.error_rule):
                     continue
                 job.state = "queued"
             if job.state == "queued":
@@ -359,7 +359,7 @@ class Recordings:
                 (
                     datetime.now(UTC) + timedelta(seconds=RETRY_BACKOFF_S * 2 ** (job.attempts - 1))
                 ).isoformat()
-                if exc.rule not in NO_AUTOMATIC_RETRY and job.attempts < job.attempt_limit
+                if not repeats_only(exc.rule) and job.attempts < job.attempt_limit
                 else ""
             )
             job.state = "failed"
@@ -489,18 +489,13 @@ class Recordings:
         await artifacts.cite(self.context.store, result.note.id, [job.artifact_id])
 
 
-# A refusal that the same request would only repeat is not tried again by itself.
+# A refusal that the same request would only repeat is not tried again by itself. The
+# transcription service's refusals are named `transcription-http-<status>`; only 5xx, 408
+# and 429 are named plain `transcription-http`, and those can pass.
 NO_AUTOMATIC_RETRY = frozenset(
     {
         "provider-too-long",
         "transcription-provider",
-        "transcription-http-400",
-        "transcription-http-401",
-        "transcription-http-403",
-        "transcription-http-404",
-        "transcription-http-413",
-        "transcription-http-415",
-        "transcription-http-422",
         "transcript-empty",
         "transcript-flat",
         "transcript-no-speakers",
@@ -509,3 +504,7 @@ NO_AUTOMATIC_RETRY = frozenset(
         "connection-missing",
     }
 )
+
+
+def repeats_only(rule: str) -> bool:
+    return rule in NO_AUTOMATIC_RETRY or rule.startswith("transcription-http-")

@@ -583,7 +583,7 @@ class ModelProvider:
         )
         return ProviderError(
             f"The transcription service answered HTTP {status}. {detail}",
-            f"transcription-http-{status}" if status in hints else "transcription-http",
+            "transcription-http" if retryable else f"transcription-http-{status}",
             # A server error or a request to slow down is worth another try later; a refusal
             # of the request is not.
             waiting=retryable,
