@@ -37,8 +37,8 @@ Each attendee gets an "attended a meeting for" relationship to the company and t
 person's `company`.
 
 A company page lists the email domains known to belong to it in its `domains` property. When a
-reviewed note's attendee has an email domain whose name (without the final label) equals the
-account name, or one hyphen- or dot-separated part of it, for example `xcelenergy.com` or
+reviewed note's attendee has an email domain with a whole DNS label equal to the normalized
+account name, for example `xcelenergy.com` or
 `xcel-energy.com` for Xcel Energy, the domain is recorded on the company
 as a `domain` fact with the note as evidence. Public mail domains such as `gmail.com` never
 qualify. A person's `company` property is filled from their email domain when exactly one

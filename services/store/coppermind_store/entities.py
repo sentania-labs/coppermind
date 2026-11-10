@@ -219,7 +219,7 @@ def squash(value: str) -> str:
 
 def domain_belongs(domain: str, company: Entity) -> bool:
     parts = domain.rpartition(".")[0]
-    labels = {squash(parts.rpartition(".")[2]), *map(squash, re.split(r"[.-]", parts))}
+    labels = set(map(squash, parts.split(".")))
     return domain not in PUBLIC_MAIL and any(
         len(name) >= 3 and name in labels for name in map(squash, [company.name, *company.aliases])
     )

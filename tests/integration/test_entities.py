@@ -322,14 +322,25 @@ async def test_domain_never_attaches_on_a_substring_of_a_longer_word(store, comp
     [
         ("Acme Power", "x@acme-power.test", "acme-power.test"),
         ("Xcel Energy", "y@mail.xcelenergy.com", "mail.xcelenergy.com"),
-        ("Acme", "z@acme-power.test", "acme-power.test"),
     ],
 )
-async def test_domain_attaches_on_a_whole_label_or_component(store, company, address, domain):
+async def test_domain_attaches_on_a_whole_label(store, company, address, domain):
     await store.create_note(customer_note(account=[company], attendees=[address]))
     await store.entities.refresh()
     held = [f.value for f in named(store, company).facts if f.predicate == "domain"]
     assert held == [domain]
+
+
+async def test_hyphenated_competitor_domain_keeps_meeting_without_company(store):
+    await store.create_note(
+        customer_note(account=["Acme"], attendees=["alice@acme-competitor.test"])
+    )
+    await store.entities.refresh()
+    company = named(store, "Acme")
+    alice = named(store, "Alice")
+    assert not [f for f in company.facts if f.predicate == "domain"]
+    assert page_company(store, alice) == []
+    assert any(f.predicate == "attended a meeting for" for f in alice.facts)
 
 
 async def test_editing_a_note_keeps_its_domain_without_a_gap(store):
