@@ -730,15 +730,14 @@ class ModelProvider:
             or (duration_seconds is not None and duration_seconds > DIRECT_MAX_SECONDS)
         )
 
-        def make_head(use_job_path: bool) -> bytes:
-            upload_fields = dict(fields)
+        def make_head() -> bytes:
             return (
                 b"".join(
                     (
                         f"--{boundary}\r\nContent-Disposition: form-data; "
                         f'name="{name}"\r\n\r\n{value}\r\n'
                     ).encode()
-                    for name, value in upload_fields.items()
+                    for name, value in fields.items()
                 )
                 + (
                     f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
@@ -764,7 +763,7 @@ class ModelProvider:
             yield tail
 
         async def upload(use_job_path: bool):
-            head = make_head(use_job_path)
+            head = make_head()
             return await self._exchange(
                 connection,
                 key,
