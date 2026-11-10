@@ -237,7 +237,15 @@ def test_the_notes_folder_is_described_in_plain_words_without_its_internal_key(s
     text = client.get("/admin/settings?section=notes").text
 
     assert "Folder for reviewed notes" in text
-    assert "Reviewed notes are filed by year and month, like Notes/2026/2026-04/." in text
+    assert (
+        "Reviewed notes are filed under a folder named for their type, "
+        "then year and month, like work/2026/2026-04/. "
+        "This folder is used when a note has no usable type."
+    ) in text
+    assert "existing reviewed notes move once automatically" in text
+    assert "Links by note name keep working" in text
+    assert "full old folder path, update it by hand" in text
+    assert "Changing a folder setting does not move existing files" in text
     assert "{notes_folder}" not in text and "{yyyy" not in text
     assert "notes.notes_folder</code>" not in text
 
@@ -256,6 +264,6 @@ def test_every_settings_section_is_linked_with_unfinished_ones_last(signed_in):
         assert positions[keys.index(key)] < heading
     assert "<summary>Technical details</summary>" in page
     filing = client.get("/admin/settings?section=curator").text
-    assert "Reviewed notes are filed automatically by year and month" in filing
+    assert "Reviewed notes are filed automatically by type, year and month" in filing
     assert "nothing to set" in filing
     assert "Automatic filing is not implemented" not in filing

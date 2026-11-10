@@ -191,8 +191,8 @@ so edit the Review note instead. The folder it lands in is the
 of the notes history.
 
 Ingest creates an unreviewed draft. Mark it reviewed in Obsidian or through the
-frontmatter API. Reconciliation then files the note under `Notes/YYYY/YYYY-MM/`
-and its source page under `_Sources/YYYY/YYYY-MM/`; search includes them only after filing
+frontmatter API. Reconciliation then files the note under `{type}/YYYY/YYYY-MM/`
+(`{type}` is the note's own `type` value) and its source page under `_Sources/YYYY/YYYY-MM/`; search includes them only after filing
 succeeds. PDFs and other non-text, non-audio source material are filed as
 artifacts: the bytes join the artifact archive, a browsable copy lands under
 `Artifacts/YYYY/YYYY-MM/`, the note cites it, and image embeds in the note

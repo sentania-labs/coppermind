@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -170,7 +171,10 @@ async def test_reviewed_recording_is_removed_with_a_receipt_and_transcript(store
     listed = next(item for item in listing if item["id"] == accepted["id"])
     assert detail["note_status"] == listed["note_status"] == "filed"
     assert detail["note_path"] == listed["note_path"] == note.path
-    assert note.path.startswith("Notes/")
+    assert note.frontmatter["type"] == "reference"
+    year, month = note.path.split("/")[1:3]
+    assert note.path == f"reference/{year}/{month}/Standup.md"
+    assert re.fullmatch(r"\d{4}", year) and re.fullmatch(rf"{year}-\d{{2}}", month)
     assert "Audio was removed after review" in note.body
     assert hashlib.sha256(AUDIO).hexdigest() in note.body
     assert str(len(AUDIO)) in note.body and "7.5" in note.body

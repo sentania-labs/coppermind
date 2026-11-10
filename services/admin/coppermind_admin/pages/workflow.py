@@ -66,6 +66,14 @@ def router(wiring: Wiring) -> APIRouter:
             if tab == "setup":
                 title = "Workflow setup"
                 body += "<p>New note → suggestions → your review → filing and confirmed facts.</p>"
+                body += (
+                    "<p>Reviewed notes file under a folder named for their type, then year "
+                    "and month. After this upgrade, existing reviewed notes move once "
+                    "automatically from the old notes folder into their type folders as filing "
+                    "runs. Links by note name keep working, and Coppermind updates its own "
+                    "links. If you wrote a link with the full old folder path, update it by hand. "
+                    "Changing a folder setting does not move existing files.</p>"
+                )
                 if not config.get("lifecycle_enabled"):
                     body += (
                         "<h2>Set up the workflow</h2><p>Add optional attendees, invitees, cal"
@@ -462,12 +470,10 @@ def router(wiring: Wiring) -> APIRouter:
                 "Date, or date and start time (YYYY-MM-DDTHH:MM:SS)",
                 current_time,
             )
-            properties += _select(
-                "note_type",
-                "Note type",
-                [(v, v.title()) for v in definition.vocabulary] or [(kind, kind)],
-                kind,
-            )
+            type_choices = [(v, v.title()) for v in definition.vocabulary]
+            if kind and kind not in definition.vocabulary:
+                type_choices.append((kind, kind))
+            properties += _select("note_type", "Note type", type_choices or [(kind, kind)], kind)
             if kind == "work":
                 properties += _check(
                     "time_unknown", "Time unknown", note["frontmatter"].get("time_unknown") is True

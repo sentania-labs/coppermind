@@ -30,7 +30,7 @@ SECTIONS = {
 }
 UNAVAILABLE = {
     "curator": "Filing options will let you change how reviewed notes are filed. "
-    "Reviewed notes are filed automatically by year and month today, "
+    "Reviewed notes are filed automatically by type, year and month today, "
     "and there is nothing to set yet.",
     "indexer": "Index settings will let you tune search indexing. "
     "Search works today, always on with English plus exact words, "
@@ -162,7 +162,13 @@ Other settings stay unchanged.</p>
         if unavailable:
             body += f'<p class="notice">{escape(unavailable)}</p>'
         if group == "notes":
-            body += '<p class="notice">Changing a folder setting does not move existing files.</p>'
+            body += (
+                '<p class="notice">After this upgrade, existing reviewed notes move once '
+                "automatically from the old notes folder into their type folders as filing runs. "
+                "Links by note name keep working, and Coppermind updates its own links. "
+                "If you wrote a link with the full old folder path, update it by hand. "
+                "Changing a folder setting does not move existing files.</p>"
+            )
         body += '<div class="settings-grid">'
         for path, field, value in fields(current):
             if path.split(".")[0] != group:
@@ -178,10 +184,7 @@ Other settings stay unchanged.</p>
             if path == "limits.attachment_max_bytes":
                 help_text += "The attachment upload route is not implemented yet. "
             if path == "notes.notes_folder":
-                help_text = (
-                    "Reviewed notes are filed by year and month, like "
-                    f"{text or 'Notes'}/2026/2026-04/. "
-                )
+                help_text = f"{field.description} "
                 description = ""
                 key_note = ""
             else:

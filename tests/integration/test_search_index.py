@@ -32,7 +32,7 @@ def note(title: str, body: str, **frontmatter: object) -> CreateNote:
     return CreateNote(
         title=title,
         body=body,
-        folder="Notes/2026/2026-09",
+        folder="reference/2026/2026-09",
         frontmatter={
             "date": "2026-09-08",
             "type": "reference",
@@ -97,7 +97,7 @@ async def test_a_created_note_is_found_with_an_excerpt_and_its_place(store: Loca
     assert hit.kind == "note"
     assert hit.title == "Budget planning"
     assert hit.path == created.path
-    assert hit.folder == "Notes/2026/2026-09"
+    assert hit.folder == "reference/2026/2026-09"
     assert hit.state == "ok"
     assert hit.rank > 0
     assert "**marmalade**" in hit.excerpt
@@ -152,10 +152,10 @@ async def test_a_move_and_a_rename_are_followed(store: LocalStore):
     created = await create(store, note("Old name", "A note about the axolotl.\n"))
 
     moved = await store.move_note(
-        created.id, MoveNote(target_folder="Notes/2026/2026-09/Clients"), None
+        created.id, MoveNote(target_folder="reference/2026/2026-09/Clients"), None
     )
-    (hit,) = await search(store, "axolotl", folder="Notes/2026/2026-09")
-    assert (hit.path, hit.folder) == (moved.path, "Notes/2026/2026-09/Clients")
+    (hit,) = await search(store, "axolotl", folder="reference/2026/2026-09")
+    assert (hit.path, hit.folder) == (moved.path, "reference/2026/2026-09/Clients")
     assert await ids(store, "axolotl", folder="Review") == []
 
     renamed = await store.rename_note(created.id, RenameNote(title="New name"), moved.content_hash)
@@ -190,14 +190,14 @@ async def test_device_edits_moves_and_deletes_are_followed(store: LocalStore):
     assert await ids(store, "capybara") == []
     assert await ids(store, "chinchilla") == [created.id]
 
-    moved = store.notes_root / "Notes/2026/2026-09" / "Archive" / "Device renamed.md"
+    moved = store.notes_root / "reference/2026/2026-09" / "Archive" / "Device renamed.md"
     moved.parent.mkdir(parents=True)
     path.rename(moved)
     await reconcile_once(store)
     (hit,) = await search(store, "chinchilla")
     assert (hit.path, hit.folder) == (
-        "Notes/2026/2026-09/Archive/Device renamed.md",
-        "Notes/2026/2026-09/Archive",
+        "reference/2026/2026-09/Archive/Device renamed.md",
+        "reference/2026/2026-09/Archive",
     )
 
     moved.unlink()

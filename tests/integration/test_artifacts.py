@@ -435,7 +435,7 @@ async def test_a_note_that_cites_an_artifact_links_it_files_by_month_and_lists_a
 
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
     filed = await store.get_note(note.id)
-    assert filed.path.startswith("Notes/2026/2026-10/")
+    assert filed.path.startswith("work/2026/2026-10/")
     # The artifact did not move with the note, and keeps its own month.
     assert (store.notes_root / created.path).read_bytes() == data
     assert (await store.get_artifact(created.id)).path == created.path

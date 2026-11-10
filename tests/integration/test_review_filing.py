@@ -52,7 +52,7 @@ async def test_review_files_monthly_then_publishes_and_human_edit_stays_reviewed
     await indexer.catch_up(store)
     note = await store.get_note(result.note.id)
     source = await store.get_source(result.source.id)
-    assert note.path.startswith("Notes/2026/2026-09/")
+    assert note.path.startswith("work/2026/2026-09/")
     assert source.projection_path.startswith("_Sources/2026/2026-09/")
     assert source.projection_path.removesuffix(".md") in note.body
     assert not (store.notes_root / result.projection_path).exists()
@@ -98,7 +98,7 @@ async def test_failed_filing_retries_without_indexing_or_losing_originals(store,
     monkeypatch.setattr(filing, "_copy", copy)
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
     assert not any(p.kind == "filing" for p in await store.get_problems())
-    assert (await store.get_note(result.note.id)).path.startswith("Notes/2026/2026-10/")
+    assert (await store.get_note(result.note.id)).path.startswith("work/2026/2026-10/")
     assert (await store.get_source(result.source.id)).projection_path.startswith(
         "_Sources/2026/2026-10/"
     )
@@ -214,7 +214,7 @@ async def test_date_correction_preserves_canonical_source_path(store):
     hits = (await store.search(SearchQuery(q="kerfuffle"))).items
     assert len(hits) == 1
     assert hits[0].path.startswith("_Sources/2026/2026-09/")
-    assert (await store.get_note(note.id)).path.startswith("Notes/2026/2026-10/")
+    assert (await store.get_note(note.id)).path.startswith("work/2026/2026-10/")
     assert hits[0].path.removesuffix(".md") in (await store.get_note(note.id)).body
 
 
@@ -484,11 +484,11 @@ async def test_a_reviewed_note_files_under_the_notes_root_by_year_and_month(stor
     await approve(store, result.note.id)
     await indexer.catch_up(store)
     note = await store.get_note(result.note.id)
-    assert note.path == "Notes/2026/2026-04/2026-04-13 Warehouse call.md"
+    assert note.path == "work/2026/2026-04/2026-04-13 Warehouse call.md"
     receipt = json.loads(
         (store.control.store.state_dir / "filing" / f"{note.id}.json").read_bytes()
     )
-    assert receipt["folder"] == "Notes/2026/2026-04"
+    assert receipt["folder"] == "work/2026/2026-04"
     assert (await store.search(SearchQuery(q="kerfuffle"))).items
     status = await store.get_status()
     assert status.counters.notes_folder == "Notes"
@@ -638,7 +638,7 @@ async def test_a_configured_notes_root_governs_filing_search_and_indexing(store)
     await approve(store, result.note.id)
     await indexer.catch_up(store)
     note = await store.get_note(result.note.id)
-    assert note.path == "Filed/2026/2026-04/2026-04-13 Warehouse call.md"
+    assert note.path == "work/2026/2026-04/2026-04-13 Warehouse call.md"
     assert note.id in await _eligible_ids(store)
     assert (await store.search(SearchQuery(q="kerfuffle"))).items
     assert (await store.get_status()).counters.notes_folder == "Filed"
@@ -664,7 +664,7 @@ async def test_upgrade_refiles_legacy_notes_and_search_never_empties(store):
     assert (await store.get_status()).counters.notes_to_refile == 1
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
     moved = await store.get_note(note.id)
-    assert moved.path.startswith("Notes/2026/2026-09/")
+    assert moved.path.startswith("work/2026/2026-09/")
     assert note.id in await _eligible_ids(store)
     assert moved.sources == note.sources
     assert (await store.get_status()).counters.notes_to_refile == 0
@@ -714,7 +714,7 @@ async def test_a_hand_moved_note_returns_with_a_reconciler_notice(store):
     assert notice.reference == note.path
     assert note.title in notice.reason
     assert f"found at Elsewhere/{source.name}" in notice.reason
-    assert "Notes/2026/2026-09" in notice.reason
+    assert "work/2026/2026-09" in notice.reason
     assert (await store.get_status()).counters.notes_returned == 1
 
 
@@ -852,4 +852,136 @@ async def test_a_rebuild_from_disk_yields_the_same_eligibility_set(store):
     await store.rebuild_metadata()
     assert await _eligible_ids(store) == before
     assert {(await store.get_note(r.note.id)).path for r in (first, second)} == paths_before
-    assert all(path.startswith("Notes/") for path in paths_before)
+    assert all(path.startswith("work/") for path in paths_before)
+
+
+async def test_type_roots_search_refile_and_reserved_fallback(store):
+    first = await store.ingest(ingest_request("type-one"))
+    second = await store.ingest(ingest_request("type-two"))
+    for result, kind in ((first, "Work"), (second, "personal")):
+        note = await store.get_note(result.note.id)
+        await store.patch_frontmatter(
+            note.id, PatchFrontmatter(set={"type": kind}), note.content_hash
+        )
+        await approve(store, note.id)
+    await indexer.catch_up(store)
+    work = await store.get_note(first.note.id)
+    personal = await store.get_note(second.note.id)
+    assert work.path.startswith("Work/2026/2026-09/")
+    assert personal.path.startswith("personal/2026/2026-09/")
+    assert {first.source.id, second.source.id} <= {
+        hit.id for hit in (await store.search(SearchQuery(q="kerfuffle"))).items
+    }
+    await store.patch_frontmatter(
+        personal.id, PatchFrontmatter(set={"type": "never-seen"}), personal.content_hash
+    )
+    await filing.file_reviewed(store)
+    personal = await store.get_note(personal.id)
+    assert personal.path.startswith("never-seen/2026/2026-09/")
+    await store.patch_frontmatter(
+        personal.id, PatchFrontmatter(set={"type": "work"}), personal.content_hash
+    )
+    assert (await store.get_status()).counters.notes_to_refile == 1
+    await filing.file_reviewed(store)
+    moved = await store.get_note(personal.id)
+    assert moved.path.startswith("Work/2026/2026-09/")
+    assert not (store.notes_root / personal.path).exists()
+    await store.patch_frontmatter(
+        moved.id, PatchFrontmatter(set={"type": "Review"}), moved.content_hash
+    )
+    await filing.file_reviewed(store)
+    moved = await store.get_note(moved.id)
+    assert moved.path.startswith("Notes/2026/2026-09/")
+    assert any(
+        p.kind == "reserved_type" and p.note_id == moved.id for p in await store.get_problems()
+    )
+    await store.patch_frontmatter(
+        moved.id, PatchFrontmatter(set={"type": "templates"}), moved.content_hash
+    )
+    await filing.file_reviewed(store)
+    moved = await store.get_note(moved.id)
+    assert moved.path.startswith("Notes/2026/2026-09/")
+    assert any(
+        p.kind == "reserved_type" and p.note_id == moved.id for p in await store.get_problems()
+    )
+    await store.patch_frontmatter(moved.id, PatchFrontmatter(set={"type": ""}), moved.content_hash)
+    await filing.file_reviewed(store)
+    assert (await store.get_note(moved.id)).path.startswith("Notes/2026/2026-09/")
+    assert not any(
+        p.kind == "reserved_type" and p.note_id == moved.id for p in await store.get_problems()
+    )
+
+
+async def test_journal_type_files_to_its_own_root_without_a_problem(store):
+    (store.notes_root / "Journal").mkdir()
+    result = await store.ingest(ingest_request("journal-type"))
+    note = await store.get_note(result.note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"type": "journal"}), note.content_hash
+    )
+    await approve(store, note.id)
+    assert (await store.get_note(note.id)).path.startswith("Journal/2026/2026-09/")
+    assert not any(p.kind == "reserved_type" for p in await store.get_problems())
+
+
+async def test_old_root_remains_searchable_until_type_upgrade(store):
+    result = await store.ingest(ingest_request("old-root"))
+    await approve(store, result.note.id)
+    note = await store.get_note(result.note.id)
+    old = await store.move_note(note.id, MoveNote(target_folder="Notes/2026/2026-09"), None)
+    receipt_path = store.control.store.state_dir / "filing" / f"{note.id}.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["folder"] = "Notes/2026/2026-09"
+    receipt_path.write_text(json.dumps(receipt))
+    await indexer.rebuild(store)
+    assert old.id in await _eligible_ids(store)
+    assert (await store.search(SearchQuery(q="kerfuffle"))).items
+    assert (await store.get_status()).counters.notes_to_refile == 1
+    await filing.file_reviewed(store)
+    moved = await store.get_note(note.id)
+    assert moved.path.startswith("work/2026/2026-09/")
+    assert not (store.notes_root / old.path).exists()
+    await indexer.catch_up(store)
+    assert (await store.search(SearchQuery(q="kerfuffle"))).items
+
+
+async def test_existing_type_root_keeps_spelling_when_variant_folder_appears(store):
+    first = await store.ingest(ingest_request("case-first"))
+    await approve(store, first.note.id)
+    original = await store.get_note(first.note.id)
+    assert original.path.startswith("work/2026/2026-09/")
+    (store.notes_root / "Work").mkdir()
+    request = ingest_request("case-second")
+    request.note.title = "Second meeting"
+    second = await store.ingest(request)
+    note = await store.get_note(second.note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"type": "Work"}), note.content_hash
+    )
+    await approve(store, note.id)
+    await indexer.catch_up(store)
+    assert (await store.get_note(first.note.id)).path == original.path
+    assert (await store.get_note(second.note.id)).path.startswith("work/2026/2026-09/")
+    assert {first.source.id, second.source.id} <= {
+        hit.id for hit in (await store.search(SearchQuery(q="kerfuffle"))).items
+    }
+
+
+async def test_same_pass_case_variants_use_first_note_id_spelling(store):
+    first = await store.ingest(ingest_request("same-pass-first"))
+    second = await store.ingest(ingest_request("same-pass-second"))
+    kinds = {first.note.id: "Work", second.note.id: "work"}
+    for note_id, kind in kinds.items():
+        note = await store.get_note(note_id)
+        await store.patch_frontmatter(
+            note.id, PatchFrontmatter(set={"type": kind, "reviewed": True}), note.content_hash
+        )
+    assert (await filing.file_reviewed(store))["filing_failed"] == 0
+    root = kinds[min(kinds)]
+    for note_id in kinds:
+        assert (await store.get_note(note_id)).path.startswith(f"{root}/2026/2026-09/")
+    assert not (store.notes_root / ("work" if root == "Work" else "Work")).exists()
+    await indexer.catch_up(store)
+    assert {first.source.id, second.source.id} <= {
+        hit.id for hit in (await store.search(SearchQuery(q="kerfuffle"))).items
+    }

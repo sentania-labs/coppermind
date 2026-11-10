@@ -133,8 +133,8 @@ Current replay behavior matters:
   until the package is within limits. Inspect 422 validation details instead
   of repeatedly resending an invalid package. Escalate other conflicts.
 
-New-install defaults use types `work`, `personal`, `reference`, and `journal`
-(default `reference`), and contexts `internal`, `external`, and `personal`
+New-install defaults suggest types `work`, `personal`, `reference`, and `journal`
+(default `reference`; any other type text is accepted and files under its own folder), and contexts `internal`, `external`, and `personal`
 (default `internal`). Workflow exports using `context: customer` should map
 that to `external`, retaining the customer name in `account`, which is required
 when context is `external`. `account` is a list of customer names. A plain
@@ -154,7 +154,7 @@ Ingest always creates an unreviewed draft, even if automation supplies
 `reviewed: true`. Drafts live in `Review/`; source pages wait under
 `_Sources/_Pending/YYYY/YYYY-MM/`. Mark the note reviewed in Obsidian or through the
 frontmatter API. The next reconciliation pass files the note and source page
-under their respective year and month folders (`Notes/YYYY/YYYY-MM/` and
+under their respective year and month folders (`{type}/YYYY/YYYY-MM/` and
 `_Sources/YYYY/YYYY-MM/`), files non-text, non-audio source
 material as artifacts under `Artifacts/YYYY/YYYY-MM/`, and permits indexing
 only after successful filing. A source keeps the month chosen when it was first

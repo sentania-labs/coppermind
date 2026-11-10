@@ -40,6 +40,12 @@ def test_workflow_setup_and_plugin_download_require_authentication(signed_in):
     for tab in ("setup", "enrichment", "intake", "review", "dossiers"):
         response = client.get("/admin/workflow?tab=" + tab)
         assert response.status_code == 200
+    setup = client.get("/admin/workflow?tab=setup").text
+    assert "folder named for their type, then year and month" in setup
+    assert "existing reviewed notes move once automatically" in setup
+    assert "Links by note name keep working" in setup
+    assert "full old folder path, update it by hand" in setup
+    assert "Changing a folder setting does not move existing files" in setup
     review = client.get("/admin/workflow?tab=review")
     assert "Finish enrichment setup" in review.text
     assert "Enrich selected notes" not in review.text
@@ -155,6 +161,15 @@ def test_work_review_time_controls_and_save(signed_in):
         assert response.status_code == 200
         assert 'name="date"' in response.text
         assert 'name="time_unknown"' not in response.text
+
+
+def test_review_keeps_a_type_outside_the_suggested_list_selected(signed_in):
+    client, _ = signed_in
+    client.app.state.store = ReviewStore("podcast")
+    response = client.get("/admin/review/example")
+    assert response.status_code == 200
+    assert '<option value="podcast" selected>podcast</option>' in response.text
+    assert '<option value="work">Work</option>' in response.text
 
 
 def test_failed_dropbox_file_is_dismissed_not_retried(signed_in):

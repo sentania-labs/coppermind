@@ -70,6 +70,25 @@ def test_customised_definitions_are_left_untouched(tmp_path):
     assert control.store.read("schema").revision == revision
 
 
+def test_the_closed_shipped_type_vocabulary_opens_and_a_customised_one_stays(tmp_path):
+    control = ControlState(tmp_path)
+    control.ensure_defaults()
+    closed = UPGRADES["type"][0][0]
+    save(control, [closed])
+    assert saved_keys(control)["type"].kind == "enum"
+
+    control.ensure_defaults()
+
+    assert saved_keys(control)["type"] == UPGRADES["type"][1]
+    assert saved_keys(control)["type"].kind == "string"
+
+    custom = closed.model_copy(update={"vocabulary": ["work", "play"]})
+    revision = save(control, [custom])
+    control.ensure_defaults()
+    assert saved_keys(control)["type"] == custom
+    assert control.store.read("schema").revision == revision
+
+
 def test_a_current_schema_is_not_rewritten(tmp_path):
     control = ControlState(tmp_path)
     control.ensure_defaults()

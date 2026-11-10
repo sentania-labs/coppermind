@@ -83,6 +83,7 @@ KIND_LABELS = {
     "damaged_source": "Damaged source bundle",
     "missing": "Missing note",
     "filing": "Filing error",
+    "reserved_type": "Reserved note type",
     "path_notice": "Note path changed",
     "returned_note": "Hand-moved note returned",
     "folder_kept": "Old month folder kept",

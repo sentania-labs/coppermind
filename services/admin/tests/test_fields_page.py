@@ -409,7 +409,7 @@ def test_the_form_needs_a_session(tmp_path):
 def test_a_refusal_opens_the_field_and_shows_the_error_beside_its_control(page):
     client, store = page
     values = form(client)
-    kind = index_of(values, "key", "type")
+    kind = index_of(values, "key", "context")
     account = index_of(values, "key", "account")
     edits = {
         f"key-{kind}-default": "note",
@@ -422,10 +422,12 @@ def test_a_refusal_opens_the_field_and_shows_the_error_beside_its_control(page):
     html = response.text
     # The field holding the default is open and the message sits right after
     # the Default input, not only in the summary at the top.
-    type_block = html[html.index("<summary>type") - 40 : html.index("<summary>type") + 6000]
-    assert 'id="field-type" open>' in type_block[:100]
-    default_input = type_block.index(f'name="key-{kind}-default"')
-    assert "the default &#x27;note&#x27; is not one of the allowed" in type_block[default_input:]
+    context_block = html[
+        html.index("<summary>context") - 40 : html.index("<summary>context") + 6000
+    ]
+    assert 'id="field-context" open>' in context_block[:100]
+    default_input = context_block.index(f'name="key-{kind}-default"')
+    assert "the default &#x27;note&#x27; is not one of the allowed" in context_block[default_input:]
     account_block = html[html.index("<summary>account") - 40 :]
     assert 'id="field-account" open>' in account_block[:100]
     assert "not-allowed" in account_block and "Choose from the available" in account_block
