@@ -290,6 +290,17 @@ class FrontmatterSchema(BaseModel):
                 problems.append(f"{name}: an enum needs at least one allowed value")
             if definition.vocabulary and definition.kind not in {"enum", "string"}:
                 problems.append(f"{name}: allowed values apply to enum and string keys only")
+            if (
+                definition.kind == "enum"
+                and definition.vocabulary
+                and definition.default is not None
+                and definition.default not in definition.vocabulary
+            ):
+                problems.append(
+                    f"{name}: the default {definition.default!r} is not one of the allowed "
+                    f"values ({', '.join(definition.vocabulary)}); change the default or "
+                    "add it to the allowed values"
+                )
             if definition.required_when is None:
                 if definition.required_when_values:
                     problems.append(f"{name}: required when values given without a key to watch")
@@ -302,6 +313,18 @@ class FrontmatterSchema(BaseModel):
                 )
             if not definition.required_when_values:
                 problems.append(f"{name}: required when needs at least one value")
+            watched = next((key for key in self.keys if key.name == definition.required_when), None)
+            if watched is not None and watched.kind == "enum" and watched.vocabulary:
+                unlisted = [
+                    v for v in definition.required_when_values if v not in watched.vocabulary
+                ]
+                if unlisted:
+                    problems.append(
+                        f"{name}: the requirement uses {', '.join(repr(v) for v in unlisted)}, "
+                        f"which {'is' if len(unlisted) == 1 else 'are'} not "
+                        f"{watched.name} choices. Choose from the available {watched.name} "
+                        f"values, or add {'it' if len(unlisted) == 1 else 'them'} to the choices."
+                    )
         return problems
 
     def canonical_tag(self, tag: Any) -> Any:

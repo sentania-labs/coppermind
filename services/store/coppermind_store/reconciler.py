@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import json
 import os
 import re
 import stat as stat_module
@@ -49,6 +50,7 @@ from coppermind import frontmatter as fm
 from coppermind.db.models import Note, RecordedRejection
 from coppermind.db.session import transaction
 from coppermind.logging import get_logger
+from coppermind.naming import sanitize_folder
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import MetadataUnavailable, NotesFilesystemUnavailable
 from coppermind_store import indexer
@@ -412,7 +414,9 @@ async def reconcile_once(
     purging = pending_ids(store, "note")
     by_id = {k: v for k, v in (await _mirror_index(store)).items() if k not in purging}
     by_path = _by_path(by_id)
-    schema = store.control.schema()
+    schema_doc = store.control.schema_document()
+    schema = schema_doc.frontmatter_schema
+    revision = schema_doc.revision
     settings = store.control.settings()
     quiet = (
         QuietWindow(
@@ -422,6 +426,11 @@ async def reconcile_once(
         if quiet_period_s > 0
         else None
     )
+    # A refused file is not read again until it changes, so a corrected schema
+    # has to make every remembered refusal worth reading afresh.
+    if getattr(store, "_schema_revision_seen", revision) != revision:
+        remembered.clear()
+    store._schema_revision_seen = revision
     scan = await asyncio.to_thread(
         _scan,
         store.notes_root,
@@ -437,13 +446,26 @@ async def reconcile_once(
     )
     remembered.clear()
     remembered.update(scan.unidentified)
-    collisions_list: list[tuple[str, str, str]] = []
-    observations, duplicates = _choose_observations(scan, by_id, collisions_list)
+    collisions_list: list[tuple[str, str, str, str]] = []
+    unresolved: dict[str, list[str]] = {}
+    leftovers: dict[str, _Leftovers] = {}
+    observations, duplicates = _choose_observations(
+        scan,
+        by_id,
+        collisions_list,
+        unresolved,
+        leftovers,
+        sanitize_folder(settings.notes.review_folder),
+    )
+    duplicates += await _settle_leftovers(store, leftovers, collisions_list, unresolved)
+    _log_unresolved(store, unresolved)
     adopted = 0
     rejected = scan.unidentified_unparsed
     unwritable = 0
     retry = 0
     untried = iter(scan.adoption_candidates)
+    refusals: dict[str, str] = {}
+    judged: set[str] = set()
     for candidate in untried:
         # Every refusal inside `adopt_note` returns before its first await, so
         # a tree the schema mostly refuses would sweep end to end without the
@@ -474,6 +496,7 @@ async def reconcile_once(
                 reason=type(exc).__name__,
             )
             continue
+        judged.add(candidate.path)
         if outcome == "adopted":
             adopted += 1
             if adopted == _ADOPTIONS_PER_PASS:
@@ -485,6 +508,7 @@ async def reconcile_once(
             log.info("device-created note not adopted", path=candidate.path, reason=cause)
         else:
             rejected += 1
+            refusals[candidate.path] = cause
             _remember(remembered, candidate.path, candidate.stat_seen)
             log.warning("device-created note left unchanged", path=candidate.path, reason=cause)
     backlog = retry + sum(1 for _ in untried)
@@ -527,12 +551,31 @@ async def reconcile_once(
                 sa.delete(RecordedRejection).where(RecordedRejection.kind == "collision")
             )
 
-            for note_id, p, kind in collisions_list:
+            # A refused file is not looked at again until it changes, so its
+            # row stays while the file is still remembered and goes when the
+            # file was judged again this pass, was adopted, or is gone.
+            stale = sa.delete(RecordedRejection).where(RecordedRejection.kind == "adoption")
+            kept = set(remembered) - judged
+            if kept:
+                stale = stale.where(RecordedRejection.reference.not_in(kept))
+            await session.execute(stale)
+            for path, reason in refusals.items():
+                action, text = adoption_problem(reason)
+                session.add(
+                    RecordedRejection(
+                        kind="adoption",
+                        reference=path,
+                        reason=f"{action}\n{text}",
+                        created_at=now,
+                    )
+                )
+
+            for note_id, _path, kind, reason in collisions_list:
                 session.add(
                     RecordedRejection(
                         kind=kind,
                         reference=note_id,
-                        reason=f"{p} carries this note identity",
+                        reason=reason,
                         created_at=now,
                     )
                 )
@@ -1083,8 +1126,165 @@ def _identity_from_broken(text: str | None, schema: FrontmatterSchema) -> str | 
     return matches[0] if len(matches) == 1 else None
 
 
+@dataclass(frozen=True)
+class _Leftovers:
+    """Copies of a note's identity sitting in the review folder after it was filed.
+
+    `keeper_path` is where the note's own file is recorded. `keeper` is what this
+    pass read of it, absent when the walk trusted its stat.
+    """
+
+    keeper_path: str
+    keeper: Observation | None
+    copies: list[Observation]
+
+
+def _clause(prefix: str, cause: str) -> list[str]:
+    found = re.search(re.escape(prefix) + r"([^;]+)", cause)
+    if found is None:
+        return []
+    return [name.strip() for name in found.group(1).split(",")]
+
+
+def _first_key(prefix: str, cause: str) -> str | None:
+    found = re.search(re.escape(prefix) + r"([^;,]+)", cause)
+    return found.group(1).strip() if found else None
+
+
+_CHECKS_AGAIN = "Coppermind checks again on its own."
+_UNCHANGED = "Coppermind left this note unchanged"
+_FRONTMATTER_CATEGORIES = {
+    "unterminated_block": (
+        "the properties block at the top is never closed. Add a line with three dashes "
+        "(---) after the last property"
+    ),
+    "not_a_mapping": (
+        "the properties block at the top is not a list of name: value lines. Rewrite it "
+        "that way, or remove it"
+    ),
+    "unsupported_line_endings": (
+        "its line endings aren't supported. Open it in a text editor and save it with "
+        "standard line endings (LF or CRLF)"
+    ),
+}
+
+
+def adoption_problem(cause: str) -> tuple[str, str]:
+    """What the Problems page tells a person about a note adoption refused.
+
+    The cause is written for logs, in the store's own words. This is the same
+    fact for the person who owns the note: that it was left unchanged, why, and
+    what to do about it, in the names the Admin navigation uses. The first value
+    is the action Admin offers beside it. Every cause gets a plain sentence,
+    including one this function has never seen, and none ever quotes a code.
+    """
+    from coppermind_store import notes as causes
+
+    parts: list[str] = []
+    action = "obsidian"
+    default = _clause(causes.CLAUSE_DEFAULT, cause)
+    if default:
+        listed = " and ".join(default)
+        own = _first_key(causes.CLAUSE_DEFAULT, cause) if len(default) == 1 else None
+        return (
+            f"property:{own}" if own else "defaults",
+            f"{_UNCHANGED}. The note has no {listed} yet, and the default Coppermind "
+            "would fill in is not one of the allowed choices. Change the default in Tags "
+            "and advanced rules, or add it to the allowed choices in Note properties. "
+            "Coppermind checks again on its own after you save the change.",
+        )
+    missing = _clause(causes.CLAUSE_MISSING, cause)
+    if missing:
+        parts.append(
+            f"This note needs {_a(missing)}. Add "
+            f"{'it' if len(missing) == 1 else 'them'} as "
+            f"{'a property' if len(missing) == 1 else 'properties'} in Obsidian and save "
+            "the note."
+        )
+    choices = _clause(causes.CLAUSE_REFUSED_CHOICE, cause)
+    if choices:
+        action = "properties"
+        parts.append(
+            f"Its {' and '.join(choices)} is not an allowed choice. Open the note in "
+            "Obsidian and choose an allowed one (the choices are listed in Note "
+            "properties)."
+        )
+    wrong = _clause(causes.CLAUSE_REFUSED_VALUE, cause)
+    if wrong:
+        parts.append(
+            f"Its {' and '.join(wrong)} holds a value of the wrong kind. Open the note "
+            "in Obsidian and correct it."
+        )
+    if parts:
+        return action, f"{_UNCHANGED}. {' '.join(parts)} {_CHECKS_AGAIN}"
+    if cause == causes.CAUSE_BAD_ID:
+        return (
+            "obsidian",
+            "Coppermind could not identify this note, so it left it unchanged. The "
+            "note's identifier property is not in a form Coppermind can use. Open the "
+            "note in Obsidian and delete that property. Coppermind gives the note a new "
+            "identifier on its next check, and the note itself stays as it is.",
+        )
+    reasons = {
+        causes.CAUSE_OUTSIDE: (
+            "its location is outside the notes folder. Move it into the notes folder in Obsidian"
+        ),
+        causes.CAUSE_NOT_UTF8: (
+            "its text is not saved as UTF-8. Open it in a text editor and save it as UTF-8"
+        ),
+        causes.CAUSE_GENERATED: (
+            "Coppermind produced this file itself from a source, so it is not a note "
+            "to add. Leave it where it is"
+        ),
+        causes.CAUSE_UNSTORABLE: (
+            "one of its properties holds a value Coppermind cannot keep. Open the note "
+            "in Obsidian and simplify that property"
+        ),
+        causes.CAUSE_ID_TAKEN: (
+            "another note already uses the same identifier, which usually means this "
+            "is a copy. Delete the copy, or delete the identifier property from it and "
+            "Coppermind will give it a new one"
+        ),
+        causes.CAUSE_PATH_TAKEN: (
+            "another note is already recorded at this location. Rename this file in Obsidian"
+        ),
+    }
+    if cause in reasons:
+        return "obsidian", f"{_UNCHANGED} because {reasons[cause]}. {_CHECKS_AGAIN}"
+    if cause in _FRONTMATTER_CATEGORIES:
+        return "obsidian", f"{_UNCHANGED} because {_FRONTMATTER_CATEGORIES[cause]}. {_CHECKS_AGAIN}"
+    return (
+        "obsidian",
+        f"{_UNCHANGED} because it could not be read as a note. Open it in Obsidian, "
+        f"check the properties block at the top of the file, and save it. {_CHECKS_AGAIN}",
+    )
+
+
+def _a(names: list[str]) -> str:
+    if len(names) == 1:
+        return f"{'an' if names[0][:1].lower() in 'aeiou' else 'a'} {names[0]}"
+    return " and ".join(names)
+
+
+def _in_folder(path: str, folder: str) -> bool:
+    return bool(folder) and path.startswith(folder + "/")
+
+
+def _is_leftover_group(keeper_path: str, copies: list[Observation], folder: str) -> bool:
+    return (
+        bool(copies)
+        and not _in_folder(keeper_path, folder)
+        and all(_in_folder(item.path, folder) for item in copies)
+    )
+
+
 def _choose_observations(
-    scan: ScanResult, by_id: dict[str, MirrorEntry], collisions: list[tuple[str, str, str]]
+    scan: ScanResult,
+    by_id: dict[str, MirrorEntry],
+    collisions: list[tuple[str, str, str, str]],
+    unresolved: dict[str, list[str]],
+    leftovers: dict[str, _Leftovers],
+    review_folder: str,
 ) -> tuple[dict[str, Observation], int]:
     """Pick the one file that speaks for each identity this scan saw.
 
@@ -1092,48 +1292,258 @@ def _choose_observations(
     is changed, and neither is reported gone. The count comes back with the
     choices so the pass reports it where an operator already reads what it
     would not take on, rather than leaving it in a log line nothing counts.
+
+    A copy sitting in the review folder beside a note whose own file is
+    elsewhere is a possible leftover of filing, not an ordinary collision, and
+    comes back in `leftovers` for the pass to settle.
     """
     chosen: dict[str, Observation] = {}
     duplicates = 0
     for note_id, candidates in scan.observed.items():
+        known_path = by_id[note_id].path
         if note_id in scan.held:
             # The walk found this note's own file still at its recorded path,
             # so whatever else carries the identity is a second live copy. That
             # file produced no observation of its own, so its recorded path is
             # named here to report both sides of the collision.
+            if _is_leftover_group(known_path, candidates, review_folder):
+                leftovers[note_id] = _Leftovers(known_path, None, list(candidates))
+                continue
             duplicates += 1
+            paths = [known_path, *(item.path for item in candidates)]
+            unresolved[note_id] = paths
             collisions.extend(
-                [
-                    (note_id, p, "collision")
-                    for p in [by_id[note_id].path, *(item.path for item in candidates)]
-                ]
+                [(note_id, p, "collision", f"{p} carries this note identity") for p in paths]
             )
-            _unresolved(note_id, [by_id[note_id].path, *(item.path for item in candidates)])
             continue
         # A file that named this identity itself outranks one that only
         # inherited it from the row recording its path, so a stranger dropped
         # at a note's old path never captures the note that moved away.
         named = [item for item in candidates if not item.path_derived]
         ranked = named or candidates
-        at_known_path = [item for item in ranked if item.path == by_id[note_id].path]
+        at_known_path = [item for item in ranked if item.path == known_path]
         if len(at_known_path) == 1:
             chosen[note_id] = at_known_path[0]
+            others = [item for item in ranked if item is not at_known_path[0]]
+            if _is_leftover_group(known_path, others, review_folder):
+                leftovers[note_id] = _Leftovers(known_path, at_known_path[0], others)
         elif len(ranked) == 1:
             chosen[note_id] = ranked[0]
         else:
             duplicates += 1
-            collisions.extend([(note_id, p, "collision") for p in [item.path for item in ranked]])
-            _unresolved(note_id, [item.path for item in ranked])
+            paths = [item.path for item in ranked]
+            unresolved[note_id] = paths
+            collisions.extend(
+                [(note_id, p, "collision", f"{p} carries this note identity") for p in paths]
+            )
     return chosen, duplicates
 
 
-def _unresolved(note_id: str, paths: list[str]) -> None:
-    """Name every file claiming one identity, not the identity alone."""
-    log.warning(
-        "duplicate note identity left unresolved",
-        note_id=note_id,
-        paths=sorted(set(paths)),
-    )
+def _journal_hashes(store: LocalStore, note_id: str) -> set[str]:
+    """Every hash filing recorded for this note's contents, in flight or settled."""
+    path = store.control.store.state_dir / "filing" / f"{note_id}.json"
+    try:
+        plan = json.loads(path.read_bytes())
+        recorded = {h for h in plan.get("hashes", []) if isinstance(h, str)}
+        recorded.update(
+            copy["hash"]
+            for copy in plan.get("copies", [])
+            if isinstance(copy, dict) and isinstance(copy.get("hash"), str)
+        )
+        return recorded
+    except (OSError, ValueError, AttributeError, TypeError):
+        return set()
+
+
+def _through_symlink(root: Path, relative: str) -> bool:
+    """Whether the file, or any folder on the way to it, is a symbolic link."""
+    current = root
+    for part in Path(relative).parts:
+        current = current / part
+        try:
+            if stat_module.S_ISLNK(current.lstat().st_mode):
+                return True
+        except OSError:
+            return False
+    return False
+
+
+def _remove_verified(
+    root: Path, relative: str, review_folder: str, expected: str, keeper_relative: str
+) -> bool:
+    """Delete a review copy only if it is provably a separate file with the judged bytes.
+
+    Nothing here follows a link: the copy must be a regular file reached
+    through no symbolic link, inside the review folder, and a different file
+    (by device and inode) from the note's own, so a link or hard link to the
+    filed note can never make this delete the note itself.
+    """
+    parts = Path(relative).parts
+    if not _in_folder(relative, review_folder) or ".." in parts or Path(relative).is_absolute():
+        return False
+    if _through_symlink(root, relative):
+        return False
+    target = root / relative
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        before = target.lstat()
+        if not stat_module.S_ISREG(before.st_mode):
+            return False
+        descriptor = os.open(target, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                return False
+            try:
+                keeper = (root / keeper_relative).stat()
+            except FileNotFoundError:
+                return False
+            if (opened.st_dev, opened.st_ino) == (keeper.st_dev, keeper.st_ino):
+                return False
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                data = handle.read()
+        finally:
+            os.close(descriptor)
+        if content_hash(data) != expected:
+            return False
+        target.unlink()
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return True
+
+
+async def _settle_leftovers(
+    store: LocalStore,
+    leftovers: dict[str, _Leftovers],
+    collisions: list[tuple[str, str, str, str]],
+    unresolved: dict[str, list[str]],
+) -> int:
+    """Remove review copies of filed notes that hold nothing the note lacks.
+
+    A copy goes only when its bytes are exactly the filed note's, or exactly a
+    snapshot filing recorded of it before the move, so nothing is lost. A copy
+    that differs is never touched: it is reported with both paths instead.
+    Returns how many identities still have a copy left in place.
+    """
+    if not leftovers:
+        return 0
+    try:
+        async with store.session_factory() as session:
+            rows = {
+                row.id: row
+                for row in (
+                    await session.execute(
+                        sa.select(Note.id, Note.filed, Note.content_hash).where(
+                            Note.id.in_(sorted(leftovers))
+                        )
+                    )
+                ).all()
+            }
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
+    unsettled = 0
+    review_folder = sanitize_folder(store.control.settings().notes.review_folder)
+    for note_id, group in leftovers.items():
+        row = rows.get(note_id)
+        filed = row is not None and bool(row.filed)
+        known: set[str] = set()
+        if row is not None and filed:
+            known = await asyncio.to_thread(_journal_hashes, store, note_id)
+            known.add(row.content_hash)
+            if group.keeper is not None and group.keeper.content_hash:
+                known.add(group.keeper.content_hash)
+        remaining: list[Observation] = []
+        linked: set[str] = set()
+        for copy in group.copies:
+            if await asyncio.to_thread(_through_symlink, store.notes_root, copy.path):
+                linked.add(copy.path)
+                remaining.append(copy)
+                continue
+            if (
+                filed
+                and copy.content_hash in known
+                and await asyncio.to_thread(
+                    _remove_verified,
+                    store.notes_root,
+                    copy.path,
+                    review_folder,
+                    copy.content_hash,
+                    group.keeper_path,
+                )
+            ):
+                log.info(
+                    "removed review copy of a note already filed",
+                    note_id=note_id,
+                    removed=copy.path,
+                    filed_at=group.keeper_path,
+                )
+                continue
+            remaining.append(copy)
+        if not remaining:
+            continue
+        unsettled += 1
+        unresolved[note_id] = [group.keeper_path, *(item.path for item in remaining)]
+        for copy in remaining:
+            if copy.path in linked:
+                reason = (
+                    f"{copy.path} is a symbolic link that reads as a copy of this note. "
+                    "It was not followed, changed or removed. Delete the link yourself."
+                )
+            elif filed and copy.content_hash in known:
+                reason = (
+                    f"{copy.path} is a copy of this note left in {copy.path.split('/')[0]} "
+                    f"after it was filed at {group.keeper_path}, and could not be removed. "
+                    "It holds nothing the filed note lacks. Delete it."
+                )
+            elif filed:
+                reason = (
+                    f"{copy.path} is a copy of this note left in {copy.path.split('/')[0]} "
+                    f"after it was filed at {group.keeper_path}, and the two differ. "
+                    "Neither was changed. Compare them and delete the one you do not want."
+                )
+            else:
+                reason = (
+                    f"{copy.path} carries the same note identity as {group.keeper_path}. "
+                    "Neither was changed. Compare them and delete the one you do not want."
+                )
+            collisions.append((note_id, copy.path, "collision", reason))
+    return unsettled
+
+
+def _log_unresolved(store: LocalStore, unresolved: dict[str, list[str]]) -> None:
+    """Name each collision once, and again only when the files involved change."""
+    current = {note_id: tuple(sorted(set(paths))) for note_id, paths in unresolved.items()}
+    previous: dict[str, tuple[str, ...]] = getattr(store, "_logged_collisions", {})
+    for note_id, paths in current.items():
+        if previous.get(note_id) != paths:
+            log.warning(
+                "duplicate note identity left unresolved",
+                note_id=note_id,
+                paths=list(paths),
+            )
+    store._logged_collisions = current
+
+
+async def note_collisions(store: LocalStore, note_id: str) -> list[str]:
+    """What the last pass recorded about other files carrying this note's identity."""
+    try:
+        async with store.session_factory() as session:
+            return list(
+                (
+                    await session.scalars(
+                        sa.select(RecordedRejection.reason)
+                        .where(
+                            RecordedRejection.kind == "collision",
+                            RecordedRejection.reference == note_id,
+                        )
+                        .order_by(RecordedRejection.id)
+                    )
+                ).all()
+            )
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
 
 
 def _values_for(

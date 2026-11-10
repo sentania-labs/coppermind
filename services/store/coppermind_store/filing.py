@@ -35,6 +35,14 @@ if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
 
 
+KEPT_HASHES = 16
+
+
+def _keep_hash(plan: dict, digest: str) -> None:
+    hashes = [h for h in plan.get("hashes", []) if h != digest]
+    plan["hashes"] = [*hashes, digest][-KEPT_HASHES:]
+
+
 def _save(path: Path, value: dict) -> None:
     atomic_write_bytes(
         path,
@@ -64,6 +72,7 @@ def remember_note(store, plan: dict, note) -> None:
     copies = plan.setdefault("copies", [])
     if not copies or copies[-1] != snapshot:
         copies.append(snapshot)
+    _keep_hash(plan, note.content_hash)
     _save(store.control.store.state_dir / "filing" / f"{note.id}.json", plan)
 
 
@@ -294,6 +303,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         "complete": False,
         "attempts": (plan or {}).get("attempts", 0),
         "copies": (plan or {}).get("copies", []),
+        "hashes": (plan or {}).get("hashes", []),
     }
     if hand_moved_from is not None:
         plan["hand_moved_from"] = hand_moved_from
@@ -445,7 +455,11 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
 def _settle(journal: Path, plan: dict) -> None:
     """A later pass found the published note in place, so no filing is in flight."""
     changed = plan.pop("error", None) is not None
-    changed = plan.pop("copies", None) is not None or changed
+    copies = plan.pop("copies", None)
+    for copy in copies or []:
+        if isinstance(copy, dict) and isinstance(copy.get("hash"), str):
+            _keep_hash(plan, copy["hash"])
+    changed = copies is not None or changed
     if changed:
         _save(journal, plan)
 

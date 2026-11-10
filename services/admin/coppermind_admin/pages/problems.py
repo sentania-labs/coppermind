@@ -87,10 +87,28 @@ KIND_LABELS = {
     "folder_kept": "Old month folder kept",
     "unreadable_note": "Unreadable note",
     "artifact": "Artifact",
+    "adoption": "Could not add note",
 }
 
 
 def _link(problem: ProblemInfo, back: str = "/admin/problems") -> str:
+    if problem.kind == "adoption":
+        if problem.action and problem.action.startswith("property:"):
+            key = problem.action.removeprefix("property:")
+            target = f"/admin/properties/new?edit={quote(key, safe='')}"
+            return (
+                f'<a href="{escape(target)}">Open the {escape(key)} property</a><br>'
+                f'<a href="/admin/fields?advanced=1&amp;open={quote(key, safe="")}">'
+                "Open Tags and advanced rules</a>"
+            )
+        if problem.action == "defaults":
+            return (
+                '<a href="/admin/properties">Open Note properties</a><br>'
+                '<a href="/admin/fields?advanced=1">Open Tags and advanced rules</a>'
+            )
+        if problem.action == "properties":
+            return '<a href="/admin/properties">Open Note properties</a>'
+        return "Fix it in Obsidian. Coppermind checks again on its own."
     if problem.kind == "returned_note" and problem.note_id:
         action = f"/v1/admin/notices/{quote(problem.note_id, safe='')}/dismiss"
         return (
