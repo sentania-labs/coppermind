@@ -280,7 +280,11 @@ def router(wiring: Wiring) -> APIRouter:
         tab = request.query_params.get("tab", "calendar")
         config = data["config"]
         revision = config["revision"]
-        heading = "Calendar" if tab == "calendar" else "Calendar and enrichment"
+        heading = {
+            "calendar": "Calendar",
+            "models": "Model connections",
+            "review": "Suggestions and backlog",
+        }.get(tab, "Calendar and enrichment")
         head = f"""<h1>{heading}</h1><p class="section-links">
 <a href="/admin/context?tab=calendar">Calendar and contacts</a>
 <a href="/admin/context?tab=models">Connections and model</a>

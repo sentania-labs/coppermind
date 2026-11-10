@@ -150,8 +150,8 @@ LINKS = (
 SETTINGS_LINKS = (
     ("/admin/sync", "Devices"),
     ("/admin/workflow?tab=enrichment", "Suggestions"),
-    ("/admin/properties", "Note properties and tags"),
-    ("/admin/settings", "Folders and filing"),
+    ("/admin/properties", "Note properties"),
+    ("/admin/settings?section=notes", "Folders and filing"),
     ("/admin/keys", "Connected apps"),
     ("/admin/search-index", "Search index"),
     ("/admin/field-index", "Field index"),

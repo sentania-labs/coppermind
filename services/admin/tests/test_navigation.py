@@ -125,3 +125,73 @@ def test_shell_palette_meets_normal_text_contrast():
         ):
             a, b = luminance(color(foreground)), luminance(color(background))
             assert (max(a, b) + 0.05) / (min(a, b) + 0.05) >= 4.5
+
+
+def test_every_settings_menu_destination_matches_its_heading(signed_in, monkeypatch):
+    """Follow the actual Settings menu, including its two tabbed destinations."""
+    import re
+    from html.parser import HTMLParser
+
+    from coppermind_admin.pages import sync
+
+    from coppermind.store_protocol import StoreUnavailable
+    from services.admin.tests.test_context_page import ContextStore
+
+    class MenuParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.in_details = False
+            self.in_link = False
+            self.href = ""
+            self.links = []
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if tag == "details" and not self.links:
+                self.in_details = True
+            if self.in_details and tag == "a":
+                self.in_link = True
+                self.href = attrs.get("href", "")
+
+        def handle_data(self, data):
+            if self.in_link:
+                self.links.append((self.href, data.strip()))
+
+        def handle_endtag(self, tag):
+            if tag == "a":
+                self.in_link = False
+            if tag == "details" and self.in_details:
+                self.in_details = False
+
+    class MenuStore(ContextStore):
+        def __getattr__(self, name):
+            async def unavailable(*args, **kwargs):
+                raise StoreUnavailable("offline")
+
+            return unavailable
+
+    def unavailable(*args, **kwargs):
+        raise OSError("offline")
+
+    monkeypatch.setattr(sync, "urlopen", unavailable)
+    client, _ = signed_in
+    client.app.state.store = MenuStore()
+    menu = MenuParser()
+    page = client.get("/admin/settings").text
+    menu_html = re.search(
+        r"<details><summary>Devices, connections and maintenance</summary>.*?</details>",
+        page,
+        re.S,
+    )
+    assert menu_html
+    menu.feed(menu_html.group())
+    assert len(menu.links) >= 13
+    for url, label in menu.links:
+        response = client.get(url)
+        assert f"<h1>{label}</h1>" in response.text, url
+        assert f"Coppermind / {label}" in response.text, url
+    assert ("/admin/settings?section=notes", "Folders and filing") in menu.links
+    folders = client.get("/admin/settings?section=notes").text
+    assert '<form method="post" action="/v1/admin/settings?section=notes">' in folders
+    assert "Add connection" in client.get("/admin/context?tab=models").text
+    assert "Jobs" in client.get("/admin/context?tab=review").text

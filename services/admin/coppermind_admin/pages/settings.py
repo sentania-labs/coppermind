@@ -149,7 +149,9 @@ def render(
     links += (
         '<span class="section-links-heading">Not available yet</span>' + not_yet if not_yet else ""
     )
-    body = f"""<h1>Settings</h1><p>Save one section at a time. Other settings stay unchanged.</p>
+    page_title = "Folders and filing" if section == "notes" else "Settings"
+    body = f"""<h1>{page_title}</h1><p>Save one section at a time.
+Other settings stay unchanged.</p>
 {message}<div class="section-links" aria-label="Settings sections">{links}</div>"""
     for group, label in SECTIONS.items():
         hidden = " hidden" if group != section else ""
@@ -211,7 +213,7 @@ window.addEventListener('beforeunload', (event) => {{
   if (dirty) {{ event.preventDefault(); event.returnValue = ''; }}
 }});
 </script>"""
-    return HTMLResponse(main.page("Settings", body), status_code=status)
+    return HTMLResponse(main.page(page_title, body), status_code=status)
 
 
 def failure(error: Exception, status: int = 500) -> HTMLResponse:

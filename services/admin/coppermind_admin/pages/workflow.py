@@ -64,7 +64,7 @@ def router(wiring: Wiring) -> APIRouter:
             if data.get("worker_error"):
                 body += '<p class="error">' + e(data["worker_error"]) + "</p>"
             if tab == "setup":
-                title = "Note workflow"
+                title = "Workflow setup"
                 body += "<p>New note → suggestions → your review → filing and confirmed facts.</p>"
                 if not config.get("lifecycle_enabled"):
                     body += (
