@@ -331,7 +331,7 @@ or answered 5xx, is retried by itself after a wait that starts at 30 minutes and
 each time, because every attempt sends the whole recording again (`retry_after` says
 when), until the attempt limit is reached; a refusal the same request
 would only repeat (a wrong address or model, a recording the service cannot read, a reply
-with no speakers, a recording that ran past the four-hour ceiling) waits for a person to fix it and press Retry on the Jobs tab. Every
+that cannot be used or has no speakers, a recording that ran past the four-hour ceiling) waits for a person to fix it and press Retry on the Jobs tab. Every
 failure is also listed under Problems as "Recording transcription" with the reason.
 
 The service is called as OpenAI-compatible `POST {base URL}/audio/transcriptions`, a
