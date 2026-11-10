@@ -427,12 +427,14 @@ class EmbeddingService:
         if not self.active(assignment) or not text.strip():
             return None
         self._follow_config(assignment)
+        if not await self.table_ready():
+            return None
         tag = self.provenance(assignment)
         cached = self._queries.get((tag, text))
         if cached is not None:
             self._queries.move_to_end((tag, text))
             return QueryVector(cached, tag)
-        if time.monotonic() < self._query_down_until or not await self.table_ready():
+        if time.monotonic() < self._query_down_until:
             return None
         try:
             connection, key = self._connection(assignment)

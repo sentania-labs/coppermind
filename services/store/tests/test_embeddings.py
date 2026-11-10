@@ -244,3 +244,22 @@ async def test_a_failed_statement_on_the_table_makes_the_next_use_ask_again():
     service.forget_table()
     assert await service.table_ready() is True
     assert len(asked) == 2
+
+
+async def test_a_cached_question_is_not_used_while_the_table_is_missing():
+    service = EmbeddingService(SimpleNamespace())
+    service.assignment = lambda: SimpleNamespace(enabled=True, model="m")
+    service.active = lambda _: True
+    service._follow_config = lambda _: None
+    service.provenance = lambda _: "tag"
+    service._queries[("tag", "licensing")] = [1.0, 0.0]
+    present = [True]
+
+    async def ready(*, refresh=False):
+        return present[0]
+
+    service.table_ready = ready
+
+    assert await service.query_vector("licensing") is not None
+    present[0] = False
+    assert await service.query_vector("licensing") is None

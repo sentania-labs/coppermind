@@ -151,6 +151,7 @@ async def test_meaning_finds_what_the_words_do_not(store, configured, service) -
 
 async def test_without_a_connection_search_is_full_text(store, service) -> None:
     await create(store, "Vendor call", "We agreed the permit fees and royalty schedule.")
+    assert await found(store, "royalty") == [("Vendor call", "keyword")]
     assert (await store.embeddings.status()).state == "off"
     assert service.calls == []
 
