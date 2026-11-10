@@ -794,5 +794,5 @@ bytes; expanded ZIP and event-count safeguards remain.
 
 Admin shows waiting files, event counts and original import times. Calendar failures identify the conflicting event
 and revisions, can be dismissed from import history, and stay marked dismissed.
-Overview and Problems count the same active failures, including unsupported
+Home and Problems count the same active failures, including unsupported
 Dropbox files. Upgrade discards conflicts superseded by a newer event revision.
