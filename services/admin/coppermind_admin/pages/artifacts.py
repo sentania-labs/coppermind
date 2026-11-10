@@ -182,7 +182,7 @@ def rows_html(items: list[ArtifactSummary], zone: ZoneInfo) -> str:
 
 
 def notices_html(notices: list[ReconcilerNotice], zone: ZoneInfo) -> str:
-    """Artifacts moved in Obsidian and returned, the same notices the overview shows."""
+    """Artifacts moved in Obsidian and returned, the same notices Home shows."""
     moved = [notice for notice in notices if notice.kind == "artifact"]
     if not moved:
         return ""

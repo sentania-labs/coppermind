@@ -1,4 +1,4 @@
-"""Overview counters, the problems dashboard and the pages its links open.
+"""Home, the problems dashboard and the pages its links open.
 
 Every number and every problem is computed by the store from its metadata
 mirror and the rejections it recorded. Admin only reads: nothing here asks the
@@ -39,7 +39,7 @@ from coppermind.store_protocol import (
 
 PROBE_WAIT_S = 1.0
 UNREACHABLE = "The store could not answer. Check that the store and PostgreSQL are running."
-# Where a Dismiss form may send the person back; anything else lands on the overview.
+# Where a Dismiss form may send the person back; anything else lands on Problems.
 DISMISS_RETURNS = frozenset({"/admin", "/admin/artifacts", "/admin/problems"})
 
 
@@ -182,7 +182,7 @@ def _problem_rows(problems: list[ProblemInfo], empty_text: str = "No problems fo
 def filing_status_html(
     status: StatusResponse, zone: ZoneInfo | None = None, *, self_page: bool = False
 ) -> str:
-    """One filing summary shared by Overview and Problems.
+    """One filing summary shared by Home and Problems.
 
     ``self_page`` drops the link to /admin/problems when the summary is rendered
     on the Problems page itself, where that link points at the same page.

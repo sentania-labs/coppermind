@@ -1521,7 +1521,7 @@ def _record_move_back(store: LocalStore, manifest: dict[str, Any], from_path: st
     """Leave the owner a visible notice that a move or rename in the vault was undone.
 
     The notice sits in the same current-notice list a hand-moved reviewed note
-    uses, so Admin's Overview, the Artifacts page and `GET /v1/notices` all
+    uses, so Admin's Home, the Artifacts page and `GET /v1/notices` all
     show what moved, from where, where it went back and why. Nothing needs
     doing about it; dismissing it only hides it.
     """

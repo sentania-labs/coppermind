@@ -44,7 +44,7 @@ has not been exercised by this slice.
   is reported `missing` and the archive stays. Moving or renaming the file in
   Obsidian returns it to its filed place and leaves a notice (what moved, from
   where, where it went back, why, and that nothing needs doing) on Admin's
-  overview and Artifacts page and at `GET /v1/notices` for the companion
+  Home and Artifacts page and at `GET /v1/notices` for the companion
   plugin or an agent, dismissable without moving anything. One edited on a
   device is reported under Problems and never rewritten. `DELETE
   /v1/artifacts/{id}` (`artifacts:write`) removes one for an agent; Admin's
@@ -74,9 +74,9 @@ has not been exercised by this slice.
   attempts are refused, and a login submitted on a system that is not claimed
   returns to the Claim page rather than reporting a bad password. Password
   login creates an expiring HMAC-signed cookie with the shipped 12-hour
-  default and no database session state. The protected overview links to API
-  Keys, Settings, Obsidian Sync and Problems, and shows the store's counters
-  (see `GET /v1/status` below), or a plain notice when the store cannot answer.
+  default and no database session state. The protected Home page opens with
+  Needs attention (see `docs/api.md`), or a plain notice when the store cannot
+  answer; the menu is Home, Imports, Review status, Calendar, People and Settings.
   Logout clears the cookie from that browser and the protected
   page redirects to Login again; because the session is the signed cookie and
   not a row, an issued token stays valid until its expiry no matter where Log
@@ -94,7 +94,7 @@ has not been exercised by this slice.
   pages in Chrome against a fresh compose stack, and `ci/smoke.sh` now drives
   it unattended across the bootstrap and Admin containers: it reads the claim
   code the documented way, claims, refuses a second claim, signs in, renders
-  the overview, signs out and loses it again.
+  Home, signs out and loses it again.
 - `docker compose up -d` on a clean checkout reaches a healthy stack with no
   manual setup and no hand populated setting. The one-shot `bootstrap`
   container creates `/data`, generates the internal bearer token and the
@@ -268,7 +268,7 @@ has not been exercised by this slice.
   the next pass without restart, including removal of a rule for an unchanged
   file. Excluded files are reread each pass to keep this true.
   Admin Problems shows the skipped count and each path with its first matching
-  rule (folder, then pattern, then plugin marker); the overview also shows the
+  rule (folder, then pattern, then plugin marker); Home also shows the
   count. One atomic state snapshot records the last completed pass, survives a
   restart, and is rebuilt by reconciliation. Verification for this change uses
   rendered Admin tests and PostgreSQL reconciliation tests; Compose was not
@@ -554,7 +554,7 @@ has not been exercised by this slice.
   projection deleted by hand stays in the index until the next rebuild, because
   nothing mirrors projections. Bodies are indexed up to their first 250,000
   characters.
-  Admin's Search index page (`/admin/search-index`, linked from the overview)
+  Admin's Search index page (`/admin/search-index`, linked from Settings)
   shows the notes and source pages indexed, when the index last changed and
   when it was last rebuilt, in the operator's timezone (America/Chicago by
   default), and a Rebuild index button. The rebuild runs in the store's
