@@ -210,10 +210,10 @@ has not been exercised by this slice.
   from the schema's own default, the reason says so, and Problems offers both
   remedies, changing the default under Tags and advanced rules or adding it to
   the allowed choices in Note properties. Each refused file is listed on
-  Problems as `adoption` until it changes or is adopted. A carriage return in the body is the
-  person's own byte and never blocks adoption, and neither does a NUL inside a
-  value: the file keeps that byte and the mirror, which is the rebuildable
-  copy, drops it.
+  Problems as `adoption` until it changes or is adopted. A carriage return in
+  the body is the person's own byte and never blocks adoption, and neither
+  does a NUL inside a value: the file keeps that byte and the mirror, which is
+  the rebuildable copy, drops it.
   Everything a file is judged on is decided before a database connection is
   asked for, so a note the schema refuses costs a read
   and a parse however often the scan rediscovers it. A file the store cannot

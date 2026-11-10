@@ -1691,7 +1691,7 @@ async def test_a_refused_adoption_is_listed_on_problems_until_the_file_changes(
     await reconcile_once(store, unidentified=remembered)
 
     listed = [p for p in await store.get_problems() if p.kind == "adoption"]
-    assert [(p.reference, "default" in p.reason and "Type" in p.reason) for p in listed] == [
+    assert [(p.reference, "no type yet" in p.reason and "default" in p.reason) for p in listed] == [
         ("Review/Bare.md", True)
     ]
 
