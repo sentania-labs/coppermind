@@ -2,7 +2,7 @@
 
 import pytest
 import sqlalchemy as sa
-from coppermind_store.entities import DELIMITER, EntityService
+from coppermind_store.entities import DELIMITER, EntityService, dossier_marker
 from coppermind_store.reconciler import reconcile_once
 
 from coppermind import frontmatter as fm
@@ -89,6 +89,93 @@ async def test_moved_dossier_follows_identity_and_respects_owner_name(store):
     assert not current["retired_at"]
     await store.entities.refresh()
     assert (await store.entities.get(entity["id"]))["name"] == "Casey Jones"
+
+
+@pytest.mark.parametrize("change", ["legacy", "no_id", "empty_id", "no_marker", "moved_no_marker"])
+async def test_dossier_identity_migrates_and_recovers_without_visible_ids(store, change):
+    entity = await person(store, "Casey Smith")
+    path = store.notes_root / entity["path"]
+    marker = dossier_marker(entity["id"])
+    text = path.read_text().replace(marker, "Personal text stays.\n\n" + marker)
+    if change == "legacy":
+        text = text.replace("---\n", f"---\nentity_id: {entity['id']}\ntype: person\n", 1)
+        text = text.replace(marker, DELIMITER)
+    elif change == "no_id":
+        text = text.replace(marker, DELIMITER)
+    elif change == "empty_id":
+        text = text.replace(marker, "<!-- coppermind:dossier id= -->\n")
+    else:
+        text = text.replace(marker, "")
+    path.write_text(text)
+    if change == "moved_no_marker":
+        moved = path.with_name("Casey Renamed.md")
+        path.rename(moved)
+        path = moved
+    await store.entities.refresh()
+    current = await store.entities.get(entity["id"])
+    assert not current["retired_at"] and not current["problem"]
+    assert current["path"] == path.relative_to(store.notes_root).as_posix()
+    written = path.read_text()
+    assert "Personal text stays.\n\n" in written
+    assert marker in written
+    assert "entity_id:" not in written.split("---", 2)[1]
+    assert "\ntype:" not in written.split("---", 2)[1]
+    assert "## Scott's Notes" in written and "## Coppermind's Notes" in written
+    assert "## Facts\n" not in written and "### Facts\n" not in written
+    await store.entities.refresh()
+    assert path.read_text() == written
+
+
+async def test_generated_sections_are_nested_and_empty_sections_omitted(store):
+    p = await person(store)
+    note = await reviewed_note(store)
+    await claim(store, p, note)
+    text = (store.notes_root / p["path"]).read_text()
+    assert "## Scott's Notes\n" in text
+    assert "## Coppermind's Notes\n" in text
+    assert "\n### Facts\n" in text and "\n### Supporting notes\n" in text
+    assert "\n### Interests\n" not in text and "\n### Relationships\n" not in text
+
+
+async def test_company_moved_with_missing_marker_recovers_by_name_and_aliases(store):
+    company = await store.entities.create(EntityInput(kind="company", name="Acme"))
+    old = store.notes_root / company["path"]
+    old.write_text(old.read_text().replace(dossier_marker(company["id"]), ""))
+    moved = old.with_name("Acme New.md")
+    old.rename(moved)
+    await store.entities.refresh()
+    current = await store.entities.get(company["id"])
+    assert current["path"] == "Companies/Acme New.md" and not current["retired_at"]
+    assert dossier_marker(company["id"]) in moved.read_text()
+
+
+async def test_legacy_marker_migration_preserves_owner_frontmatter_and_body_bytes(store):
+    p = await person(store, "Casey Smith")
+    path = store.notes_root / p["path"]
+    marker = dossier_marker(p["id"])
+    text = (
+        path.read_text()
+        .replace("---\n", f"---\nentity_id: {p['id']}\ntype: person\ncustom: 'mine' # keep\n", 1)
+        .replace(marker, "My own text.\n\n" + DELIMITER)
+    )
+    path.write_text(text)
+    old_head = text.split(DELIMITER)[0]
+    expected = old_head.replace(f"entity_id: {p['id']}\n", "").replace("type: person\n", "")
+    await store.entities.refresh()
+    assert path.read_text().split(marker)[0] == expected
+
+
+async def test_markerless_dossier_moved_outside_reserved_folders_is_not_adopted_as_note(store):
+    p = await person(store, "Casey Smith")
+    old = store.notes_root / p["path"]
+    old.write_text(old.read_text().replace(dossier_marker(p["id"]), ""))
+    moved = store.notes_root / "Casey Moved.md"
+    old.rename(moved)
+    await reconcile_once(store, full=True)
+    current = await store.entities.get(p["id"])
+    assert current["path"] == "Casey Moved.md" and not current["retired_at"]
+    assert dossier_marker(p["id"]) in moved.read_text()
+    assert "\nid:" not in moved.read_text().split("---", 2)[1]
 
 
 def customer_note(**extra):
@@ -550,17 +637,18 @@ async def test_identity_claims_correction_projection_and_recovery(store):
     note = await reviewed_note(store)
     a = await claim(store, a, note, target=company["id"])
     path = store.notes_root / a["path"]
+    marker = dossier_marker(a["id"])
     original = path.read_text()
-    prefix, block = original.split(DELIMITER)
+    prefix, block = original.split(marker)
     prefix += "Personal writing stays byte for byte.\n\n"
-    path.write_text(prefix + DELIMITER + block.replace("role: Engineer", "role: Architect"))
+    path.write_text(prefix + marker + block.replace("role: Engineer", "role: Architect"))
     await store.entities.refresh()
     updated = await store.entities.get(a["id"])
     assert not updated["problem"]
     corrections = [f for f in updated["facts"] if f["origin"] == "correction"]
     assert corrections[-1]["value"] == "Architect"
     assert corrections[-1]["evidence"]["path"] == a["path"]
-    assert path.read_text().split(DELIMITER)[0] == prefix
+    assert path.read_text().split(marker)[0] == prefix
     assert not any(f["state"] == "confirmed" and f["value"] == "Engineer" for f in updated["facts"])
     # SQL is disposable. Rebuilding uses durable corrections without a model.
     async with store.session_factory() as session, session.begin():
@@ -569,7 +657,7 @@ async def test_identity_claims_correction_projection_and_recovery(store):
     store.entities = EntityService(store)
     await store.entities.refresh()
     assert (await store.entities.get(a["id"]))["facts"] == updated["facts"]
-    assert path.read_text().split(DELIMITER)[0] == prefix
+    assert path.read_text().split(marker)[0] == prefix
     with pytest.raises(VersionConflict):
         await store.entities.change(a["id"], EntityChange(version=1, action="rename", name="New"))
     current = await store.entities.get(a["id"])
@@ -891,7 +979,8 @@ async def test_orphan_purge_preserves_personal_writing_arriving_before_preview(s
     commit(store.notes_root)
     await reconcile_once(store)
     path = store.notes_root / p["path"]
-    path.write_text(path.read_text().replace(DELIMITER, "Personal reminder.\n\n" + DELIMITER))
+    marker = dossier_marker(p["id"])
+    path.write_text(path.read_text().replace(marker, "Personal reminder.\n\n" + marker))
     preview = await store.preview_purge()
     assert [c.kind for c in preview.candidates] == ["note"]
     await store.confirm_purge(confirmation(preview))
@@ -944,25 +1033,26 @@ async def test_rename_and_aliases_regenerate_the_header_without_marking_personal
     p = (await store.entities.list(EntityQuery()))["items"][0]
     assert p["automatic"] and not p["personal"]
     path = store.notes_root / p["path"]
-    assert path.read_text().startswith(f"---\nentity_id: {p['id']}")
+    marker = dossier_marker(p["id"])
+    assert marker in path.read_text() and "entity_id:" not in path.read_text()
     renamed = await store.entities.change(
         p["id"], EntityChange(version=p["version"], action="rename", name="Casey Smith")
     )
     aliased = await store.entities.change(
         p["id"], EntityChange(version=renamed["version"], action="aliases", aliases=["KC"])
     )
-    head = path.read_text().split(DELIMITER)[0]
+    head = path.read_text().split(marker)[0]
     assert "# Casey Smith\n" in head
     assert "- KC" in head or "[KC]" in head
     assert not (await store.entities.get(p["id"]))["personal"]
-    path.write_text(path.read_text().replace(DELIMITER, "Mine.\n\n" + DELIMITER))
+    path.write_text(path.read_text().replace(marker, "Mine.\n\n" + marker))
     await store.entities.refresh()
     owner = await store.entities.get(p["id"])
     assert owner["personal"]
     await store.entities.change(
         p["id"], EntityChange(version=owner["version"], action="rename", name="Casey Jones")
     )
-    head = path.read_text().split(DELIMITER)[0]
+    head = path.read_text().split(marker)[0]
     assert "# Casey Jones\n" in head and "Mine.\n" in head
     assert aliased["aliases"] == ["KC"]
 

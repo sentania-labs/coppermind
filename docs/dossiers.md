@@ -10,17 +10,19 @@ Email-only people get readable provisional names and retain their addresses as
 aliases. A fuller evidenced name can replace the provisional name.
 
 Read and correct the pages in Obsidian. The first section is Scott's Notes;
-the section after `<!-- coppermind:dossier -->` is Coppermind's Notes. Properties
-include the name, emails and linked companies alongside the entity identity and
-aliases. Personal writing is retained when generated properties are refreshed.
+the section after the hidden dossier marker is Coppermind's Notes. Properties
+include the name, emails, linked companies and aliases. Personal writing is
+retained when generated properties are refreshed.
 Below the delimiter, edit a fact
 line to correct it or delete the line to withdraw it. The edit becomes a durable
 correction with that page and its hash as evidence. There is no conflict alarm
-for an ordinary edit, and no separate acceptance ceremony. Keep the delimiter
-and `entity_id` intact; malformed or unrelated files are preserved and reported
+for an ordinary edit, and no separate acceptance ceremony. Keep the marker when
+possible; a missing marker or marker ID can be recovered from matching page
+properties and the ledger. Malformed or unrelated files are preserved and reported
 in Admin Problems. Generated pages never overwrite an unrelated occupied path.
 Names can be changed through the API. Moving or renaming a page in Obsidian keeps
-its identity via `entity_id` and adopts the chosen filename as its name. Legacy
+its identity via the hidden `<!-- coppermind:dossier id=… -->` marker and adopts
+the chosen filename as its name. Legacy frontmatter IDs migrate into that marker. Legacy
 email-named pages migrate to readable filenames with journaled link updates for
 known references; collisions retain an identifier suffix. Git and Obsidian Sync
 may observe an intermediate state during this resumable per-file migration.

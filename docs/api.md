@@ -60,7 +60,8 @@ The story behind these decisions is [architecture.md](architecture.md).
 Reviewed account values create or match company dossiers and relate confirmed
 attendees to the company through that meeting. An attendee's `company` property
 comes from an email domain that belongs to a company, or an explicit organization fact;
-attending a meeting never sets it. Entity IDs remain stable when an Obsidian dossier page is moved or renamed.
+attending a meeting never sets it. Entity IDs remain stable when an Obsidian dossier page is moved or renamed;
+the ID is stored in a hidden dossier marker rather than visible properties.
 
 `GET /v1/entities` and `GET /v1/entities/{id}` require `entities:read` and
 `notes:read`, because dossiers quote reviewed notes. `POST /v1/entities` and

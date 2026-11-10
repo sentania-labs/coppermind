@@ -54,9 +54,54 @@ if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
 
 DELIMITER = "<!-- coppermind:dossier -->\n"
+MARKER = re.compile(r"(?m)^<!-- coppermind:dossier(?: id=([A-Za-z0-9_-]*))? -->\r?\n")
 WIKI_TARGET = re.compile(r"!?\[\[([^\]#|\\]+)")
 FACT_LINE = re.compile(r"^- (.*?) <!-- fact:([A-Za-z0-9_-]+) -->$", re.MULTILINE)
 FOLDERS = ("People", "Companies")
+
+
+def dossier_marker(identity: str) -> str:
+    return f"<!-- coppermind:dossier id={identity} -->\n"
+
+
+def dossier_parts(text: str, entity: Entity) -> tuple[str, str]:
+    """Split old and new markers; recover a missing marker without dropping bytes."""
+    markers = list(MARKER.finditer(text))
+    if len(markers) > 1:
+        raise ValueError("multiple dossier markers")
+    if markers:
+        found = markers[0]
+        if found.group(1) and found.group(1) != entity.id:
+            raise ValueError("dossier marker belongs to another entity")
+        return text[: found.start()], text[found.end() :]
+    if entity.generated and text.endswith(entity.generated):
+        return text[: -len(entity.generated)], entity.generated
+    return text, entity.generated or ""
+
+
+def matches_identity(fields: dict[str, Any], entity: Entity) -> bool:
+    addresses = fields.get("email", [])
+    if isinstance(addresses, str):
+        addresses = [addresses]
+    if isinstance(addresses, list) and {a for a in addresses if isinstance(a, str)} & set(
+        entity.emails
+    ):
+        return True
+    aliases = fields.get("aliases", [])
+    if isinstance(aliases, str):
+        aliases = [aliases]
+    if isinstance(aliases, list) and {a for a in aliases if isinstance(a, str)} & set(
+        entity.emails
+    ):
+        return True
+    name = fields.get("name")
+    return (
+        isinstance(name, str)
+        and name in {entity.name, *entity.aliases}
+        and isinstance(aliases, list)
+        and all(isinstance(a, str) for a in aliases)
+        and set(aliases) <= {entity.name, *entity.aliases}
+    )
 
 
 class NoteRef(NamedTuple):
@@ -197,8 +242,6 @@ def properties(
     entity: Entity, ledger: EntityLedger, owners: dict[str, set[str]] | None = None
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
-        "entity_id": entity.id,
-        "type": entity.kind,
         "aliases": entity.aliases,
         "name": entity.name,
     }
@@ -226,13 +269,10 @@ def properties(
 
 
 def header(entity: Entity, ledger: EntityLedger, owners: dict[str, set[str]] | None = None) -> str:
-    return (
-        fm.compose(
-            properties(entity, ledger, owners),
-            f"# {label(entity.name)}\n\n## Scott's Notes\n\n",
-        )
-        + DELIMITER
-    )
+    return fm.compose(
+        properties(entity, ledger, owners),
+        f"# {label(entity.name)}\n\n## Scott's Notes\n\n",
+    ) + dossier_marker(entity.id)
 
 
 TITLE = re.compile(r"# [^\n]*\n\n?")
@@ -251,16 +291,27 @@ def regenerate(entity: Entity, head: str) -> str:
     fields, body = fm.parse(head)
     title = TITLE.match(body)
     wanted = f"# {label(entity.name)}\n\n"
-    if (
-        fields.get("aliases") == entity.aliases
-        and fields.get("type") == entity.kind
-        and (title is None or title.group(0).strip() == wanted.strip())
+    if fields.get("aliases") == entity.aliases and (
+        title is None or title.group(0).strip() == wanted.strip()
     ):
         return head
-    patched = fm.patch(head, {"type": entity.kind, "aliases": entity.aliases})
+    patched = fm.replace_value_in_place(head, "aliases", entity.aliases) or head
     _, body = fm.split(patched)
     front = patched[: len(patched) - len(body)]
     return front + (wanted + body[title.end() :] if title else body)
+
+
+def remove_legacy_identity(head: str, entity: Entity) -> str:
+    fields, _ = fm.parse(head)
+    block, body = fm.split(head)
+    if fields.get("entity_id") == entity.id:
+        block = re.sub(r"(?m)^entity_id:[^\r\n]*(?:\r?\n|$)", "", block)
+    if fields.get("type") == entity.kind:
+        block = re.sub(r"(?m)^type:[^\r\n]*(?:\r?\n|$)", "", block)
+    # Keep all other frontmatter and personal body bytes unchanged.
+    opening = "---\r\n" if head.startswith("---\r\n") else "---\n"
+    closing = "---\r\n" if "\r\n" in head[: len(head) - len(body)] else "---\n"
+    return opening + block + closing + body
 
 
 def rename(entity: Entity, name: str) -> None:
@@ -298,7 +349,9 @@ def render(entity: Entity, ledger: EntityLedger, *, search: bool = False) -> str
         ("Interests", [f for f in facts if not f.target and f.predicate == "interest"]),
     )
     for heading, members in groups:
-        lines += [f"## {heading}", ""]
+        if not members:
+            continue
+        lines += [f"### {heading}", ""]
         values: dict[str, set[str]] = {}
         for fact in members:
             values.setdefault(fact.predicate, set()).add(fact.value)
@@ -323,10 +376,13 @@ def render(entity: Entity, ledger: EntityLedger, *, search: bool = False) -> str
                     lines.append(f"  - {label(ev.quote)}")
         lines.append("")
     if not search:
-        lines += ["## Supporting notes", ""]
         paths = sorted({f.evidence.path for f in facts if f.evidence.note_id})
-        lines += [f"- [[{p.removesuffix('.md')}]]" for p in paths]
-        lines += ["", "Edit a fact above to correct it; delete its line to withdraw it.", ""]
+        if paths:
+            lines += ["### Supporting notes", ""]
+            lines += [f"- [[{p.removesuffix('.md')}]]" for p in paths]
+            lines.append("")
+        if facts:
+            lines += ["Edit a fact above to correct it; delete its line to withdraw it.", ""]
     return "\n".join(lines)
 
 
@@ -445,11 +501,14 @@ class EntityService:
         if "\0" in text:
             raise ValueError("dossier contains NUL characters")
         fields, _ = fm.parse(text)
-        if fields.get("entity_id") != entity.id or text.count(DELIMITER) != 1:
-            raise ValueError(
-                "Dossier identity or delimiter changed; restore them to resume projection"
-            )
-        head, block = text.split(DELIMITER)
+        markers = list(MARKER.finditer(text))
+        marker_id = markers[0].group(1) if len(markers) == 1 else None
+        legacy_id = fields.get("entity_id")
+        if legacy_id and legacy_id != entity.id:
+            raise ValueError("dossier frontmatter belongs to another entity")
+        if not marker_id and legacy_id != entity.id and not matches_identity(fields, entity):
+            raise ValueError("dossier identity cannot be recovered unambiguously")
+        head, block = dossier_parts(text, entity)
         prior = entity.projection_fields or {}
         name = fields.get("name")
         if (
@@ -533,7 +592,9 @@ class EntityService:
     ) -> str:
         if raw is None:
             return header(entity, ledger, owners)
-        head = regenerate(entity, raw.decode().split(DELIMITER)[0])
+        head, _ = dossier_parts(raw.decode(), entity)
+        head = remove_legacy_identity(head, entity)
+        head = regenerate(entity, head)
         fields, _ = fm.parse(head)
         prior = entity.projection_fields or {}
         wanted = properties(entity, ledger, owners)
@@ -542,11 +603,16 @@ class EntityService:
             for key, value in wanted.items()
             if key not in fields or (key in prior and fields[key] == prior[key])
         }
-        if any(fields.get(key) != value for key, value in patch.items()):
-            head = fm.patch(head, patch)
+        for key, value in patch.items():
+            if key not in fields:
+                head = fm.fill_missing(head, {key: value})
+            elif fields[key] != value:
+                head = fm.replace_value_in_place(head, key, value) or head
         if "## Scott's Notes" not in head:
             head += "\n## Scott's Notes\n\n"
-        return head + DELIMITER
+        if head and not head.endswith("\n"):
+            head += "\n"
+        return head + dossier_marker(entity.id)
 
     def project(
         self,
@@ -1149,8 +1215,8 @@ class EntityService:
                 ):
                     before = saved
         if before != after and other.generated is not None:
-            old_block = before.decode().split(DELIMITER, 1)[-1]
-            new_block = after.decode().split(DELIMITER, 1)[-1]
+            _, old_block = dossier_parts(before.decode(), other)
+            _, new_block = dossier_parts(after.decode(), other)
             if other.generated == old_block:
                 other.generated = new_block
                 self.save(ledger)
@@ -1176,6 +1242,7 @@ class EntityService:
             and not safe_path(self.store.notes_root, e.path).exists()
         }
         found: dict[str, list[str]] = {identity: [] for identity in missing}
+        ambiguous: set[str] = set()
         if missing:
             from coppermind_store.reconciler import _IGNORED_DIRECTORIES
 
@@ -1196,14 +1263,36 @@ class EntityService:
                     try:
                         if path.is_symlink():
                             continue
-                        fields, _ = fm.parse(path.read_text())
-                        identity = fields.get("entity_id")
+                        text = path.read_text()
+                        fields, _ = fm.parse(text)
+                        markers = list(MARKER.finditer(text))
+                        if len(markers) > 1:
+                            continue
+                        identity = markers[0].group(1) if markers else None
+                        legacy_id = fields.get("entity_id")
+                        if identity and legacy_id and identity != legacy_id:
+                            continue
+                        identity = identity or legacy_id
+                        if not identity:
+                            matches = [
+                                e.id
+                                for e in ledger.entities.values()
+                                if matches_identity(fields, e)
+                            ]
+                            identity = matches[0] if len(matches) == 1 else None
+                            if len(matches) > 1:
+                                ambiguous.update(i for i in matches if i in found)
                         if isinstance(identity, str) and identity in found:
                             found[identity].append(path.relative_to(root).as_posix())
                     except (OSError, UnicodeError, fm.FrontmatterError):
                         continue
             for identity, paths in found.items():
                 entity = missing[identity]
+                if identity in ambiguous:
+                    entity.problem = (
+                        "Dossier identity matches multiple pages; resolve the ambiguity"
+                    )
+                    continue
                 if len(paths) == 1:
                     old = entity.path
                     entity.path = paths[0]
@@ -1218,6 +1307,8 @@ class EntityService:
         seen: dict[str, bytes | None] = {}
         for entity in list(ledger.entities.values()):
             if entity.page_move is not None:
+                continue
+            if entity.id in ambiguous:
                 continue
             if entity.id in found and len(found[entity.id]) > 1:
                 continue
@@ -1244,6 +1335,8 @@ class EntityService:
         for entity in ledger.entities.values():
             if entity.page_move is not None:
                 continue
+            if entity.id in ambiguous:
+                continue
             if entity.id in found and len(found[entity.id]) > 1:
                 continue
             self.project(ledger, entity, seen, owners)
@@ -1269,13 +1362,19 @@ class EntityService:
     def personal_text(self, entity: Entity, seen: dict[str, bytes | None] | None = None) -> str:
         if seen is not None and entity.id in seen:
             raw = seen[entity.id]
-            return fm.parse(raw.decode().split(DELIMITER, 1)[0])[1] if raw else ""
+            return fm.parse(dossier_parts(raw.decode(), entity)[0])[1] if raw else ""
         try:
             text = safe_path(self.store.notes_root, entity.path).read_text()
             fields, _ = fm.parse(text)
-            if fields.get("entity_id") != entity.id or text.count(DELIMITER) != 1:
+            markers = list(MARKER.finditer(text))
+            marker_id = markers[0].group(1) if len(markers) == 1 else None
+            if (
+                marker_id != entity.id
+                and fields.get("entity_id") != entity.id
+                and not matches_identity(fields, entity)
+            ):
                 return ""
-            _, body = fm.parse(text.split(DELIMITER, 1)[0])
+            _, body = fm.parse(dossier_parts(text, entity)[0])
             return body
         except (OSError, ValueError, UnicodeError, fm.FrontmatterError):
             return ""
@@ -1622,9 +1721,9 @@ class EntityService:
             path = safe_path(self.store.notes_root, entity.path)
             if orphan and not retired and path.exists():
                 text = path.read_text()
-                if text.count(DELIMITER) != 1:
+                if len(list(MARKER.finditer(text))) != 1:
                     continue
-                head, block = text.split(DELIMITER)
+                head, block = dossier_parts(text, entity)
                 try:
                     wrote = owner_wrote(head)
                 except (ValueError, fm.FrontmatterError):
