@@ -231,7 +231,9 @@ def test_review_returns_people_only_to_a_key_that_can_read_entities():
     assert "alex@example.com" not in narrow.text and "People/Alex.md" not in narrow.text
     assert [s["index"] for s in narrow.json()["suggestions"]] == [1]
     assert narrow.json()["manual_speaker_review"] is None
-    assert "cannot see people" in narrow.json()["speakers_unavailable"]
+    notice = narrow.json()["speakers_unavailable"]
+    assert "cannot see people" in notice and "API keys" in notice
+    assert "permission to read people" in notice and "entities:read" not in notice
     assert wide.json()["manual_speaker_review"]["candidates"] == [person]
     assert [s["index"] for s in wide.json()["suggestions"]] == [0, 1]
     assert not wide.json().get("speakers_unavailable")

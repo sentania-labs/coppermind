@@ -42,7 +42,8 @@ async def call(client: HttpStoreClient, action: str, payload: dict[str, Any]) ->
 
 PEOPLE_HIDDEN = (
     "This API key cannot see people, so speakers cannot be named with it. "
-    "Add entities:read to the key to name speakers."
+    "In Coppermind Admin, open API keys and give this key permission to read people, "
+    "or select a key with that permission in the companion settings."
 )
 
 

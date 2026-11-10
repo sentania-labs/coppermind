@@ -102,7 +102,7 @@ class ReviewView extends ItemView {
             cursor=page.next_cursor||'';moreButton.disabled=!cursor;
             if(!(page.items||[]).length)new Notice('No matching people. Search for another name.');
             else new Notice('Choose a person from the list.');
-          }catch(e){new Notice('Could not find people. Check that the API key has entities:read.');}
+          }catch(e){new Notice('Could not find people. In Coppermind Admin, open API keys and give this key permission to read people, or select a key with that permission in the companion settings.');}
         };
         find.onclick=()=>lookup(false);
         const moreButton=card.createEl('button',{text:'More people'});moreButton.disabled=true;moreButton.onclick=()=>lookup(true);
@@ -167,7 +167,7 @@ class Settings extends PluginSettingTab {
   constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
   display(){const el=this.containerEl;el.empty();el.createEl('h2',{text:'Coppermind'});
     new Setting(el).setName('Server URL').setDesc('Your Coppermind address, without /admin.').addText(t=>t.setValue(this.plugin.settings.url).onChange(async v=>{this.plugin.settings.url=v.trim().replace(/\/$/,'');await this.plugin.saveData(this.plugin.settings);}));
-    new Setting(el).setName('API credential').setDesc('Use a key with notes:read, notes:write and sources:read. Naming speakers needs sources:write and entities:read. Only the secret name is saved in plugin settings.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
+    new Setting(el).setName('API credential').setDesc('Choose a key that can read and change notes, read and change sources, and read people. In Coppermind Admin, open API keys to change its permissions. Only the secret name is saved in plugin settings.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
   }
 }
 module.exports=class CoppermindReview extends Plugin {
@@ -184,6 +184,8 @@ module.exports=class CoppermindReview extends Plugin {
     const url=new URL(this.settings.url);if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw Error('Configure a valid Coppermind HTTP(S) address.');
     const key=this.app.secretStorage?.getSecret(this.settings.secret);if(!key)throw Error('Select an API credential in Coppermind plugin settings.');
     const result=await requestUrl({url:this.settings.url+path,method,headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,throw:false});
+    const namesSpeakers=Object.values(body?.manual_speakers||{}).some(Boolean)||(body?.selected||[]).some(i=>!!body?.speaker_choices?.[i]);
+    if(result.status===403&&method==='POST'&&path.endsWith('/review')&&namesSpeakers)throw Error('This key is not allowed to name speakers. In Coppermind Admin, open API keys and give this key permission to read people and change sources, or select a key with those permissions in the companion settings.');
     if(result.status>=400)throw Error(result.json?.message||'Coppermind could not complete the request. Check connectivity and permissions.');return result.json;
   }
 };
