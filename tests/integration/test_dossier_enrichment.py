@@ -412,10 +412,12 @@ async def test_worker_queues_reviewed_facts_and_rejects_unsupported_quotes_atomi
     assert jobs[0].state == "failed"
     assert len(seen) == 1
     assert not store.entities.load().entities
-    await context.retry_job({"id": jobs[0].id})
+    retried = (await context.retry_job({"id": jobs[0].id}))["job"]
+    assert retried != jobs[0].id
     provider(context, extracted())
     await context.tick()
-    assert context.load_job(jobs[0].id).state == "applied"
+    assert context.load_job(retried).state == "applied"
+    assert context.load_job(jobs[0].id).state == "failed"
 
 
 async def test_automatic_write_receipt_resumes_after_file_write_before_acknowledgement(
