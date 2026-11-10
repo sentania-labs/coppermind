@@ -39,7 +39,9 @@ class Service:
         jobs=False,
         job_status="done",
         retry_after=None,
+        poll_delay=0.0,
     ):
+        self.poll_delay = poll_delay
         self.jobs = jobs
         self.job_status, self.retry_after = job_status, retry_after
         self.delay, self.keepalive, self.status = delay, keepalive, status
@@ -93,7 +95,7 @@ class Service:
                 payload = json.dumps(self.reply).encode()
                 writer.write(f"{len(payload):x}\r\n".encode() + payload + b"\r\n0\r\n\r\n")
             else:
-                await asyncio.sleep(self.delay)
+                await asyncio.sleep(self.poll_delay if lines[0].startswith(b"GET ") else self.delay)
                 answer = self.reply
                 if self.jobs and self.status == 200:
                     if lines[0].startswith(b"POST "):
@@ -637,3 +639,29 @@ async def test_only_a_recording_known_to_be_over_two_hours_starts_on_the_jobs_pa
         duration_seconds=duration,
     )
     assert paths == [path]
+
+
+async def test_stalled_poll_cannot_overrun_job_deadline(recording, monkeypatch):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    monkeypatch.setattr(model_provider, "JOB_PACE_HEADROOM", 0)
+    monkeypatch.setattr(model_provider, "JOB_MIN_SECONDS", 0.2)
+    async with Service(jobs=True, poll_delay=2) as service:
+        with pytest.raises(ProviderError) as caught:
+            await asyncio.wait_for(
+                ModelProvider().transcribe(
+                    service.connection,
+                    "",
+                    assignment(),
+                    recording,
+                    filename=recording.name,
+                    mime_type="audio/mp4",
+                    size_bytes=recording.stat().st_size,
+                    job_id="stable",
+                    duration_seconds=7201,
+                ),
+                timeout=1,
+            )
+    assert caught.value.rule == "transcription-unfinished"
+    assert len(service.requests) == 2

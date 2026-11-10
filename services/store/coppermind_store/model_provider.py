@@ -836,16 +836,26 @@ class ModelProvider:
                             "Check the service and retry.",
                             "transcription-provider",
                         )
-                    await asyncio.sleep(JOB_POLL_SECONDS)
-                    result, stats = await self._exchange(
-                        connection,
-                        key,
-                        "GET",
-                        "/audio/transcriptions/jobs/" + quote(remote_id, safe=""),
-                        timeout=assignment.wait_s,
-                        noun="transcription service",
-                        max_reply_bytes=MAX_TRANSCRIPT_BYTES,
-                    )
+                    try:
+                        # The overall job budget also bounds a slow or stalled individual poll.
+                        async with asyncio.timeout(max(0, deadline - time.monotonic())):
+                            await asyncio.sleep(JOB_POLL_SECONDS)
+                            result, stats = await self._exchange(
+                                connection,
+                                key,
+                                "GET",
+                                "/audio/transcriptions/jobs/" + quote(remote_id, safe=""),
+                                timeout=assignment.wait_s,
+                                noun="transcription service",
+                                max_reply_bytes=MAX_TRANSCRIPT_BYTES,
+                            )
+                    except TimeoutError as exc:
+                        raise ProviderError(
+                            "The transcription service did not finish this recording. It "
+                            "stopped answering with a result, so the app stopped waiting. "
+                            "Check the service, then press Retry.",
+                            "transcription-unfinished",
+                        ) from exc
         except ProviderError as exc:
             if exc.rule:
                 raise
