@@ -37,6 +37,7 @@ from coppermind_api.v1.purge import router as purge_router
 from coppermind_api.v1.schema import router as schema_router
 from coppermind_api.v1.search import router as search_router
 from coppermind_api.v1.sources import router as sources_router
+from coppermind_api.v1.staged import router as staged_router
 from coppermind_api.v1.status import router as status_router
 from coppermind_api.v1.workflow import router as workflow_router
 
@@ -165,6 +166,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
 
     app.include_router(sources_router)
     app.include_router(artifacts_router)
+    app.include_router(staged_router)
     app.include_router(notices_router)
     app.include_router(schema_router)
     return app

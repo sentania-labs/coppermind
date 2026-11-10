@@ -83,8 +83,9 @@ def too_large(limit: int) -> JSONResponse:
         status_code=413,
         content=envelope(
             "payload_too_large",
-            f"This file is larger than the {size} limit. Files over {size} can't be added "
-            "yet; split or compress it, or add a link to it instead.",
+            f"This file is larger than the {size} limit. Files over {size} go through the staged "
+            "upload path: reserve with POST /v1/staged, PUT the bytes to the receipt, then "
+            "finalize it.",
             limit_bytes=limit,
         ),
     )

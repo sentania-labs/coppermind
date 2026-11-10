@@ -164,7 +164,8 @@ Nothing here needs to be set before the system runs.
 | limits | `calendar_max_events` | 50,000 retained events across calendars |
 | limits | `calendar_import_memory_mib` | 1024 MiB parser address space; about 40x the expanded export size |
 | limits | `ingest_max_bytes` | 25 MiB |
-| limits | `artifact_max_bytes` | 10 MiB (10,485,760 bytes) per inline artifact file; a larger file is refused with the limit and what to do now (split or compress it, or add a link to it instead) |
+| limits | `artifact_max_bytes` | 10 MiB (10,485,760 bytes) per inline artifact file; a larger file is refused with the limit and what to do now (use the staged upload path, or split or compress it) |
+| limits | `staged_max_bytes` | 50 MiB (52,428,800 bytes) per staged upload; the ceiling a `POST /v1/staged` declaration is measured against |
 | limits | `attachment_max_bytes` | null (legacy; superseded by `artifact_max_bytes`) |
 | admin | `session_hours` | 12 |
 

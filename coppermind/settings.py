@@ -404,7 +404,16 @@ class LimitSettings(BaseModel):
         ge=1,
         description=(
             "Maximum artifact file in bytes accepted inline. A larger upload is refused "
-            "with 413; files above this need the staged upload path, which is not built yet."
+            "with 413 and goes through the staged upload path instead."
+        ),
+    )
+    staged_max_bytes: int = Field(
+        default=50 * MIB,
+        ge=1,
+        description=(
+            "Maximum staged file in bytes accepted by the staged upload path. A reservation "
+            "declaring more is refused at once, and a stream that passes the declared count "
+            "is stopped mid-write."
         ),
     )
     # Null marks this override as unset. Kept so a settings file written before

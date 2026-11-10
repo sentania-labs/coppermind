@@ -131,6 +131,18 @@ class ArtifactsFilesystemUnavailable(StoreError):
     """The artifact archive or its state records could not be read or written."""
 
 
+class ReceiptMissing(StoreError):
+    """No staged upload reservation carries this receipt identifier."""
+
+    def __init__(self, receipt_id: str) -> None:
+        super().__init__(f"no staged upload reservation with id {receipt_id}")
+        self.receipt_id = receipt_id
+
+
+class StagedFileUnavailable(StoreError):
+    """The durable staging filesystem could not be read or written."""
+
+
 class ProjectionNotPlaced(StoreError):
     """The revision is stored; the page a person reads it by is not.
 
@@ -639,6 +651,123 @@ class ArtifactBytes(BaseModel):
     content: bytes
 
 
+StagedState = Literal["uploading", "processing", "stored", "failed"]
+"""A staged upload, in order: bytes still arriving, the bytes are verified and
+being stored as an artifact, the artifact exists, or an attempt failed. A
+`failed` receipt can be retried; a `stored` one is finished."""
+
+
+class StagedLimits(BaseModel):
+    """The ceilings a reservation must fit inside, stated at reservation time."""
+
+    inline_max_bytes: int = Field(ge=1)
+    staged_max_bytes: int = Field(ge=1)
+
+
+class StagedDeclaration(BaseModel):
+    """What a staged upload declares for one file: the same fields inline accepts.
+
+    `sha256` is the hex digest of the file's own bytes, lowercase, so finalize
+    can verify what arrived without holding it in memory.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, max_length=500)
+    date: date_type | None = None
+    tags: list[str] = Field(default_factory=list)
+    note_id: str | None = None
+    origin: str = Field(default="api", max_length=200)
+    artifact_id: str | None = None
+    url: str | None = Field(default=None, max_length=2048)
+    mime_type: str | None = Field(default=None, max_length=255)
+
+    @field_validator("tags")
+    @classmethod
+    def tags_are_words(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for tag in value:
+            if not isinstance(tag, str) or not tag.strip() or any(c in tag for c in " ,#\t\n"):
+                raise ValueError("each tag is one word without spaces, commas or a leading #")
+            if tag not in cleaned:
+                cleaned.append(tag)
+        return cleaned
+
+    @field_validator("mime_type")
+    @classmethod
+    def mime_type_is_a_token(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        token = value.strip()
+        if not token or "/" not in token or any(ord(c) < 33 or ord(c) > 126 for c in token):
+            raise ValueError("must be a media type such as application/pdf")
+        return token.lower()
+
+    @field_validator("url")
+    @classmethod
+    def url_is_web(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parts = urlsplit(value.strip())
+        if parts.scheme not in {"http", "https"} or not parts.netloc:
+            raise ValueError("must be an http or https URL")
+        if any(ord(c) < 33 for c in value.strip()):
+            raise ValueError("must not contain whitespace or control characters")
+        return value.strip()
+
+
+class StagedReservation(BaseModel):
+    """What a reservation declares: one file, its bytes, and the fields inline accepts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str
+    mime_type: str | None = Field(default=None, max_length=255)
+    size_bytes: int = Field(ge=1)
+    sha256: str
+    fields: StagedDeclaration = Field(default_factory=StagedDeclaration)
+
+    @field_validator("filename")
+    @classmethod
+    def filename_is_a_name(cls, value: str) -> str:
+        return safe_filename(value)
+
+    @field_validator("mime_type")
+    @classmethod
+    def mime_type_is_a_token(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        token = value.strip()
+        if not token or "/" not in token or any(ord(c) < 33 or ord(c) > 126 for c in token):
+            raise ValueError("must be a media type such as application/pdf")
+        return token.lower()
+
+    @field_validator("sha256")
+    @classmethod
+    def sha256_is_lowercase_hex(cls, value: str) -> str:
+        token = value.strip()
+        if len(token) != 64 or any(char not in "0123456789abcdef" for char in token):
+            raise ValueError("must be 64 lowercase hexadecimal characters")
+        return token
+
+
+class StagedReceipt(BaseModel):
+    """The durable state of one staged upload, as `GET` reports it."""
+
+    id: str
+    state: StagedState
+    filename: str
+    mime_type: str | None = None
+    size_bytes: int = Field(ge=0)
+    sha256: str
+    upload_bytes: int = Field(default=0, ge=0)
+    limits: StagedLimits
+    failure: str | None = None
+    artifact: CreatedArtifact | None = None
+    reserved_at: datetime
+    updated_at: datetime
+
+
 class ArtifactQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1096,6 +1225,16 @@ class Store(Protocol):
     ) -> None: ...
 
     async def get_artifact_limit(self) -> int: ...
+
+    async def reserve_staged_upload(self, request: StagedReservation) -> StagedReceipt: ...
+
+    async def put_staged_bytes(
+        self, receipt_id: str, data: bytes, *, declared_bytes: int | None = None
+    ) -> StagedReceipt: ...
+
+    async def finalize_staged_upload(self, receipt_id: str) -> StagedReceipt: ...
+
+    async def get_staged_upload(self, receipt_id: str) -> StagedReceipt: ...
 
 
 def etag_from_if_match(header: str | None) -> ETag:

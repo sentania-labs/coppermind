@@ -30,9 +30,11 @@ from coppermind.store_protocol import (
     PreconditionRequired,
     ProjectionNotPlaced,
     PurgeConflict,
+    ReceiptMissing,
     SourceClaimMissing,
     SourceNotFound,
     SourcesFilesystemUnavailable,
+    StagedFileUnavailable,
     StoreError,
     StoreUnavailable,
     ValidationFailed,
@@ -57,6 +59,11 @@ SOURCES_FILESYSTEM_UNAVAILABLE_MESSAGE = (
 ARTIFACTS_FILESYSTEM_UNAVAILABLE_MESSAGE = (
     "the artifact archive or its records could not be read or written; this artifact operation "
     "can be retried once the volume is healthy"
+)
+
+STAGED_FILESYSTEM_MESSAGE = (
+    "the staged upload area could not be read or written; this staged operation can be retried "
+    "once the volume is healthy"
 )
 
 STORE_UNAVAILABLE_MESSAGE = (
@@ -156,6 +163,10 @@ def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dic
         return 503, envelope(
             "artifacts_filesystem_unavailable", ARTIFACTS_FILESYSTEM_UNAVAILABLE_MESSAGE, **cause
         )
+    if isinstance(error, ReceiptMissing):
+        return 404, envelope("not_found", str(error), receipt_id=error.receipt_id)
+    if isinstance(error, StagedFileUnavailable):
+        return 503, envelope("staged_filesystem_unavailable", STAGED_FILESYSTEM_MESSAGE, **cause)
     if isinstance(error, StoreUnavailable):
         return 503, envelope("store_unavailable", STORE_UNAVAILABLE_MESSAGE, **cause)
     return 500, envelope("internal_error", "unexpected store error", **cause)
