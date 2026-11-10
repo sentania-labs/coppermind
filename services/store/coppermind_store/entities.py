@@ -7,6 +7,7 @@ Markdown below the delimiter are disposable mirrors; personal writing is not.
 from __future__ import annotations
 
 import asyncio
+import base64
 import builtins
 import hashlib
 import html
@@ -25,6 +26,7 @@ from coppermind.atomicio import (
     commit_staged,
     create_exclusive_bytes,
     stage_bytes,
+    sync_directory,
 )
 from coppermind.db.models import EntityRecord, Note, SearchDocument
 from coppermind.entities import (
@@ -83,6 +85,25 @@ def email_name(address: str) -> str:
     return " ".join(part.capitalize() for part in re.split(r"[._+\-]+", local) if part) or address
 
 
+def rewrite_dossier_links(text: str, old: str, new: str) -> str:
+    """Change exact wiki targets and preserve every other character."""
+    old_path, new_path = old.removesuffix(".md"), new.removesuffix(".md")
+    names = {old_path: new_path, Path(old_path).name: Path(new_path).name}
+    pattern = re.compile(r"(!?\[\[)([^\]#|]+)([^\]]*\]\])")
+
+    def replace(match: re.Match[str]) -> str:
+        target = match.group(2)
+        extension = ".md" if target.endswith(".md") else ""
+        replacement = names.get(target.removesuffix(".md"))
+        return (
+            match.group(0)
+            if replacement is None
+            else match.group(1) + replacement + extension + match.group(3)
+        )
+
+    return pattern.sub(replace, text)
+
+
 def safe_path(root: Path, relative: str) -> Path:
     from coppermind_store.purge import resolve
 
@@ -90,7 +111,9 @@ def safe_path(root: Path, relative: str) -> Path:
 
 
 def public(entity: Entity) -> dict[str, Any]:
-    return entity.model_dump(mode="json", exclude={"generated", "pending"})
+    return entity.model_dump(
+        mode="json", exclude={"generated", "pending", "projection_fields", "page_move"}
+    )
 
 
 def label(value: str) -> str:
@@ -449,6 +472,7 @@ class EntityService:
     ) -> None:
         assignment = self.store.context.config().assignments["enrichment"]
         fields = {"attendees", assignment.attendees_field, assignment.contacts_field} - {"", None}
+        attendee_fields = {"attendees", assignment.attendees_field} - {"", None}
         by_email = {
             address: entity
             for entity in ledger.entities.values()
@@ -457,10 +481,10 @@ class EntityService:
         }
         by_path = {e.path.removesuffix(".md"): e for e in ledger.entities.values()}
         by_company: dict[str, list[Entity]] = {}
-        for entity in ledger.entities.values():
-            if entity.kind == "company" and not entity.redirect and not entity.retired_at:
-                for name in {entity.name.casefold(), *(a.casefold() for a in entity.aliases)}:
-                    by_company.setdefault(name, []).append(entity)
+        for known in ledger.entities.values():
+            if known.kind == "company" and not known.redirect and not known.retired_at:
+                for name in {known.name.casefold(), *(a.casefold() for a in known.aliases)}:
+                    by_company.setdefault(name, []).append(known)
         for note in notes.values():
             mentions: dict[str, Entity] = {}
             attendees: dict[str, Entity] = {}
@@ -470,7 +494,7 @@ class EntityService:
                 for value in values:
                     if not isinstance(value, str):
                         continue
-                    entity = None
+                    entity: Entity | None = None
                     if value.startswith("[[") and value.endswith("]]"):
                         entity = by_path.get(value[2:-2].split("|", 1)[0].removesuffix(".md"))
                     elif key in fields and (address := email(value)):
@@ -491,7 +515,7 @@ class EntityService:
                         entity = ledger.entities.get(entity.redirect)
                     if entity and not entity.retired_at:
                         mentions[entity.id] = entity
-                        if key in fields and entity.kind == "person":
+                        if key in attendee_fields and entity.kind == "person":
                             attendees[entity.id] = entity
             accounts = note.frontmatter.get(self.store.control.schema().role("account_key"), [])
             if isinstance(accounts, str):
@@ -502,6 +526,12 @@ class EntityService:
                     if not isinstance(account, str) or not account.strip():
                         continue
                     name = account.strip()
+                    if name.startswith("[[") and name.endswith("]]"):
+                        target = by_path.get(name[2:-2].split("|", 1)[0].removesuffix(".md"))
+                        if target and target.kind == "company" and not target.retired_at:
+                            companies[target.id] = target
+                            mentions[target.id] = target
+                        continue
                     matches = by_company.get(name.casefold(), [])
                     if len(matches) > 1:
                         continue
@@ -676,6 +706,217 @@ class EntityService:
 
         return any(r["state"] in {"applying", "failed"} for r in records(self.store))
 
+    def move_checkpoint(self, step: str) -> None:
+        """Test seam for interruption between durable migration steps."""
+
+    async def migrate_page_paths(self, ledger: EntityLedger) -> None:
+        """Resume journaled email-page moves while the filing lock is held."""
+        for entity in list(ledger.entities.values()):
+            if entity.retired_at or entity.redirect:
+                continue
+            if entity.page_move is None:
+                old_stem = Path(entity.path).stem
+                legacy = any(
+                    old_stem == f"{sanitize_stem(address)[:90]} {entity.id}"
+                    for address in entity.emails
+                )
+                if not legacy or any(
+                    receipt.get("entity_id") == entity.id and receipt.get("action") == "page moved"
+                    for receipt in ledger.receipts
+                ):
+                    continue
+                folder = "People" if entity.kind == "person" else "Companies"
+                stem = sanitize_stem(entity.name)[:90]
+                while len(stem.encode("utf-8")) > 210:
+                    stem = stem[:-1]
+                new = f"{folder}/{stem}.md"
+                if (
+                    any(
+                        e.id != entity.id and e.path.casefold() == new.casefold()
+                        for e in ledger.entities.values()
+                    )
+                    or safe_path(self.store.notes_root, new).exists()
+                ):
+                    new = f"{folder}/{stem} {entity.id}.md"
+                old_file = safe_path(self.store.notes_root, entity.path)
+                if not old_file.exists():
+                    continue
+                original = old_file.read_bytes()
+                notes = sorted({f.evidence.note_id for f in entity.facts if f.evidence.note_id})
+                dossiers = sorted(
+                    e.id
+                    for e in ledger.entities.values()
+                    if e.id != entity.id and any(f.target == entity.id for f in e.facts)
+                )
+                entity.page_move = {
+                    "old": entity.path,
+                    "new": new,
+                    "original": base64.b64encode(original).decode(),
+                    "notes": notes,
+                    "dossiers": dossiers,
+                    "snapshots": {},
+                }
+                self.save(ledger)
+                self.move_checkpoint("intent")
+            plan = entity.page_move
+            old, new = plan["old"], plan["new"]
+            old_file = safe_path(self.store.notes_root, old)
+            new_file = safe_path(self.store.notes_root, new)
+            original = base64.b64decode(plan["original"], validate=True)
+            if not new_file.exists():
+                if not old_file.exists() or old_file.read_bytes() != original:
+                    entity.problem = (
+                        "Dossier changed during its move; retry after resolving the copies"
+                    )
+                    continue
+                create_exclusive_bytes(new_file, original)
+            elif new_file.read_bytes() != original:
+                entity.problem = "Dossier move destination changed; resolve the copies"
+                continue
+            self.move_checkpoint("copy")
+            for note_id in plan["notes"]:
+                await self._rewrite_move_note(ledger, entity, note_id)
+            for identity in plan["dossiers"]:
+                other = ledger.entities.get(identity)
+                if other and not other.retired_at:
+                    self._rewrite_move_dossier(ledger, entity, other)
+            self.move_checkpoint("links")
+            atomic_write_text(
+                self.root / "moves" / f"{entity.id}.json",
+                json.dumps(plan, ensure_ascii=False, sort_keys=True) + "\n",
+            )
+            if old_file.exists():
+                if old_file.read_bytes() != original or new_file.read_bytes() != original:
+                    entity.problem = "Dossier changed during its move; resolve the copies"
+                    continue
+                old_file.unlink()
+                sync_directory(old_file.parent)
+            self.move_checkpoint("remove")
+            entity.path, entity.page_move, entity.problem = new, None, None
+            self.receipt(ledger, entity, "email page migrated", old_path=old)
+            self.save(ledger)
+            self.move_checkpoint("complete")
+
+    def _move_replace(
+        self, ledger: EntityLedger, entity: Entity, path: Path
+    ) -> tuple[bytes, bytes]:
+        plan = entity.page_move
+        assert plan is not None
+        for _ in range(5):
+            raw = path.read_bytes()
+            changed = rewrite_dossier_links(raw.decode("utf-8"), plan["old"], plan["new"]).encode(
+                "utf-8"
+            )
+            if raw == changed:
+                return raw, raw
+            plan["snapshots"][str(path.relative_to(self.store.notes_root))] = base64.b64encode(
+                raw
+            ).decode()
+            self.save(ledger)
+            staged = stage_bytes(path, changed)
+            try:
+                if path.read_bytes() != raw:
+                    continue
+                commit_staged(staged, path)
+                return raw, changed
+            finally:
+                staged.unlink(missing_ok=True)
+        raise ValueError("A linked page kept changing during the dossier move")
+
+    async def _rewrite_move_note(self, ledger: EntityLedger, entity: Entity, identity: str) -> None:
+        from coppermind_store.indexer import index_note
+        from coppermind_store.notes import _jsonable, _mirror_columns, _title_of
+
+        plan = entity.page_move
+        assert plan is not None
+
+        async with (
+            self.store._lock_for(identity),
+            self.store.session_factory() as session,
+            session.begin(),
+        ):
+            row = await session.get(Note, identity)
+            if row is None or row.state != "ok":
+                return
+            path = safe_path(self.store.notes_root, row.path)
+            before, after = self._move_replace(ledger, entity, path)
+            if before == after:
+                snapshot = plan["snapshots"].get(row.path)
+                if not snapshot:
+                    return
+                saved = base64.b64decode(snapshot, validate=True)
+                if (
+                    rewrite_dossier_links(saved.decode(), plan["old"], plan["new"]).encode()
+                    != after
+                ):
+                    return
+                before = saved
+            fields, body = fm.parse(after.decode("utf-8"))
+            digest_after = content_hash(after)
+            now = datetime.now(UTC)
+            await session.execute(
+                sa.update(Note)
+                .where(Note.id == identity)
+                .values(
+                    content_hash=digest_after,
+                    size_bytes=len(after),
+                    mtime=now,
+                    frontmatter=_jsonable(fields),
+                    **_mirror_columns(fields, self.store.control.schema()),
+                    updated_at=now,
+                )
+            )
+            await index_note(
+                session,
+                note_id=identity,
+                path=row.path,
+                title=_title_of(body, path),
+                body=body,
+                version=digest_after,
+                now=now,
+                notes_folder=self.store.control.settings().notes.notes_folder,
+            )
+            for subject in ledger.entities.values():
+                for fact in subject.facts:
+                    if (
+                        fact.evidence.note_id == identity
+                        and fact.evidence.note_hash == content_hash(before)
+                    ):
+                        fact.evidence.note_hash = digest_after
+                        fact.evidence.quote = rewrite_dossier_links(
+                            fact.evidence.quote,
+                            plan["old"],
+                            plan["new"],
+                        )
+            for job in self.store.context.jobs():
+                if job.note_id == identity and job.note_hash == content_hash(before):
+                    job.note_hash = digest_after
+                    self.store.context.save_job(job)
+            self.save(ledger)
+
+    def _rewrite_move_dossier(self, ledger: EntityLedger, entity: Entity, other: Entity) -> None:
+        plan = entity.page_move
+        assert plan is not None
+        path = safe_path(self.store.notes_root, other.path)
+        if not path.exists():
+            return
+        before, after = self._move_replace(ledger, entity, path)
+        if before == after:
+            snapshot = plan["snapshots"].get(other.path)
+            if snapshot:
+                saved = base64.b64decode(snapshot, validate=True)
+                if (
+                    rewrite_dossier_links(saved.decode(), plan["old"], plan["new"]).encode()
+                    == after
+                ):
+                    before = saved
+        if before != after and other.generated is not None:
+            old_block = before.decode().split(DELIMITER, 1)[-1]
+            new_block = after.decode().split(DELIMITER, 1)[-1]
+            if other.generated == old_block:
+                other.generated = new_block
+                self.save(ledger)
+
     async def refresh_locked(self, ledger: EntityLedger) -> None:
         if self.purge_pending():
             raise ValidationFailed(["Finish or abandon the interrupted retention purge first"])
@@ -693,6 +934,7 @@ class EntityService:
             for e in ledger.entities.values()
             if e.generated is not None
             and not e.retired_at
+            and e.page_move is None
             and not safe_path(self.store.notes_root, e.path).exists()
         }
         found: dict[str, list[str]] = {identity: [] for identity in missing}
@@ -722,6 +964,8 @@ class EntityService:
         # Import device corrections before adding/retracting metadata contributions.
         seen: dict[str, bytes | None] = {}
         for entity in list(ledger.entities.values()):
+            if entity.page_move is not None:
+                continue
             if entity.id in found and len(found[entity.id]) > 1:
                 continue
             try:
@@ -744,6 +988,8 @@ class EntityService:
         self.contribute(ledger, notes, versions)
         await self.migrate(ledger)
         for entity in ledger.entities.values():
+            if entity.page_move is not None:
+                continue
             if entity.id in found and len(found[entity.id]) > 1:
                 continue
             self.project(ledger, entity, seen)
@@ -752,10 +998,15 @@ class EntityService:
         await self.mirror(ledger, seen)
 
     async def refresh(self) -> None:
-        async with self.store.maintenance.shared(), self.lock:
+        async with self.store.maintenance.shared(), self.store._filing_lock, self.lock:
             if self.purge_pending():
                 return
-            await self.refresh_locked(self.load())
+            ledger = self.load()
+            await self.refresh_locked(ledger)
+            revision = ledger.revision
+            await self.migrate_page_paths(ledger)
+            if ledger.revision != revision:
+                await self.refresh_locked(ledger)
 
     def personal_text(self, entity: Entity, seen: dict[str, bytes | None] | None = None) -> str:
         if seen is not None and entity.id in seen:
@@ -1147,6 +1398,8 @@ class EntityService:
         ledger = self.load()
         if any(r.get("purge") == token for r in ledger.receipts):
             return
+        for snapshot in (self.root / "moves").glob("*.json"):
+            snapshot.unlink()
         for identity in entity_ids:
             entity = ledger.entities.pop(identity, None)
             if entity:

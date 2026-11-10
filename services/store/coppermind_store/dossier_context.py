@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from coppermind_store.context_service import ContextService
     from coppermind_store.enrichment_models import EnrichmentJob
 
-EXTRACTION_VERSION = "reviewed-model-v1"
+EXTRACTION_VERSION = "reviewed-model-v2"
 CONFIDENCE_THRESHOLD = 0.8
 EXTRACTION_PROMPT = """Extract explicit people, companies, relationships and interests from this
 reviewed note's body, frontmatter and supplied transcript passages. Reviewing the note accepts

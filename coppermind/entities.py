@@ -69,6 +69,7 @@ class Entity(EntityInput):
     generated: str | None = None
     pending: str | None = None
     projection_fields: dict[str, object] | None = None
+    page_move: dict | None = None
     personal: bool = False
     problem: str | None = None
 

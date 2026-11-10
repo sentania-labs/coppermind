@@ -57,6 +57,10 @@ The story behind these decisions is [architecture.md](architecture.md).
 
 ## Dossiers
 
+Reviewed account values create or match company dossiers and relate confirmed
+attendees to the company through that meeting. Email domains alone never infer a
+company. Entity IDs remain stable when an Obsidian dossier page is moved or renamed.
+
 `GET /v1/entities` and `GET /v1/entities/{id}` require `entities:read` and
 `notes:read`, because dossiers quote reviewed notes. `POST /v1/entities` and
 `POST /v1/entities/{id}` additionally require `entities:write`. Changes carry

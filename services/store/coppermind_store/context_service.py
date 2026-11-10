@@ -1858,8 +1858,19 @@ class ContextService:
             previous
             and previous.purpose == "dossier"
             and previous.note_hash == note.content_hash
-            and previous.source_versions == source_versions
-            and previous.extraction_version == EXTRACTION_VERSION
+            and (
+                (
+                    not previous.extraction_version
+                    and (
+                        previous.state != "failed"
+                        or previous.attempts < (previous.attempt_limit or 0)
+                    )
+                )
+                or (
+                    previous.extraction_version == EXTRACTION_VERSION
+                    and previous.source_versions == source_versions
+                )
+            )
         ):
             if previous.state == "stale" or (
                 previous.state == "failed"
@@ -1870,6 +1881,8 @@ class ContextService:
             ):
                 previous.config_hash = self.config_hash()
                 previous.schema_hash = self.schema_hash()
+                previous.source_versions = source_versions
+                previous.extraction_version = EXTRACTION_VERSION
                 previous.state, previous.attempts = "queued", 0
                 previous.set_error()
                 self.save_job(previous)
@@ -1911,17 +1924,14 @@ class ContextService:
             NoteQuery(reviewed=True, state="ok", cursor=self.reviewed_cursor, limit=50)
         )
         self.reviewed_cursor = reviewed.next_cursor
-        existing = set(self.read("automatic_baseline", {"ids": []})["ids"])
         prior_jobs = self.jobs()
         touched: list[str] = []
         ledger = self.store.entities.load()
-        enriched = {j.note_id for j in prior_jobs if j.purpose != "dossier"}
         for note in reviewed.items:
-            if note.id not in existing or note.id in enriched:
-                try:
-                    touched.append(await self.queue_reviewed(note.id, prior_jobs))
-                except (ValueError, StoreError):
-                    log.warning("dossier extraction not queued for note %s", note.id)
+            try:
+                touched.append(await self.queue_reviewed(note.id, prior_jobs))
+            except (ValueError, StoreError):
+                log.warning("dossier extraction not queued for note %s", note.id)
         page = await self.store.list_notes(
             NoteQuery(
                 reviewed=False,

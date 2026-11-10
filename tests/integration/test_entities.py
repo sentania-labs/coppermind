@@ -74,6 +74,105 @@ async def test_moved_dossier_follows_identity_and_respects_owner_name(store):
     assert (await store.entities.get(entity["id"]))["name"] == "Casey Jones"
 
 
+async def test_account_wikilink_uses_only_existing_company(store):
+    company = await store.entities.create(EntityInput(kind="company", name="Acme"))
+    p = await person(store)
+    await store.create_note(
+        CreateNote(
+            title="Meeting",
+            body="Notes.",
+            frontmatter={
+                "reviewed": True,
+                "date": "2026-11-01",
+                "account": [
+                    f"[[{company['path'].removesuffix('.md')}]]",
+                    f"[[{p['path'].removesuffix('.md')}]]",
+                ],
+                "attendees": ["casey@example.test"],
+            },
+        )
+    )
+    await store.entities.refresh()
+    ledger = store.entities.load()
+    assert [e.name for e in ledger.entities.values() if e.kind == "company"] == ["Acme"]
+    assert any(f.target == company["id"] for f in ledger.entities[p["id"]].facts)
+
+
+@pytest.mark.parametrize("step", ["intent", "copy", "links", "remove", "complete"])
+async def test_legacy_page_move_resumes_after_interruption(store, monkeypatch, step):
+    address = "arthur.smith@example.test"
+    entity = await person(store, address, address)
+    ledger = store.entities.load()
+    subject = ledger.entities[entity["id"]]
+    old = f"People/{address} {subject.id}.md"
+    (store.notes_root / subject.path).rename(store.notes_root / old)
+    subject.path, subject.automatic = old, True
+    store.entities.save(ledger)
+    note = await store.create_note(
+        CreateNote(
+            title="Meeting",
+            body=f"See [[{old.removesuffix('.md')}|Arthur]].",
+            frontmatter={"reviewed": True, "attendees": [address], "date": "2026-11-01"},
+        )
+    )
+    # Metadata already proves this note references the entity before the move starts.
+    ledger = store.entities.load()
+    store.entities.contribute(ledger, await store.entities.notes())
+    store.entities.save(ledger)
+
+    def interrupt(point):
+        if point == step:
+            raise RuntimeError("simulated interruption")
+
+    monkeypatch.setattr(store.entities, "move_checkpoint", interrupt)
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        await store.entities.refresh()
+    monkeypatch.setattr(store.entities, "move_checkpoint", lambda _: None)
+    await store.entities.refresh()
+    current = await store.entities.get(subject.id)
+    assert current["path"] == "People/Arthur Smith.md"
+    assert not (store.notes_root / old).exists()
+    assert (store.notes_root / current["path"]).exists()
+    assert "[[People/Arthur Smith|Arthur]]" in (store.notes_root / note.path).read_text()
+
+
+async def test_move_retries_a_concurrent_note_edit(store, monkeypatch):
+    import coppermind_store.entities as module
+
+    address = "arthur.smith@example.test"
+    entity = await person(store, address, address)
+    ledger = store.entities.load()
+    subject = ledger.entities[entity["id"]]
+    old = f"People/{address} {subject.id}.md"
+    (store.notes_root / subject.path).rename(store.notes_root / old)
+    subject.path, subject.automatic = old, True
+    store.entities.save(ledger)
+    note = await store.create_note(
+        CreateNote(
+            title="Meeting",
+            body=f"See [[{old.removesuffix('.md')}]].",
+            frontmatter={"reviewed": True, "attendees": [address], "date": "2026-11-01"},
+        )
+    )
+    note_path = store.notes_root / note.path
+    original_stage = module.stage_bytes
+    edited = False
+
+    def stage_with_edit(path, data):
+        nonlocal edited
+        staged = original_stage(path, data)
+        if path == note_path and not edited:
+            edited = True
+            path.write_text(path.read_text() + "Owner added this.\n")
+        return staged
+
+    monkeypatch.setattr(module, "stage_bytes", stage_with_edit)
+    await store.entities.refresh()
+    assert edited
+    assert "Owner added this." in note_path.read_text()
+    assert "[[People/Arthur Smith]]" in note_path.read_text()
+
+
 async def claim(store, entity, note, **kwargs):
     current = await store.entities.get(entity["id"])
     return await store.entities.change(

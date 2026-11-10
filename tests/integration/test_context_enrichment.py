@@ -1128,25 +1128,23 @@ async def test_non_ascii_transcript_under_the_limit_in_characters_is_not_rejecte
     assert context.load_job(job_id).error_rule != "input-limit"
 
 
-async def test_non_ascii_size_is_reported_in_characters_the_limit_uses(store, monkeypatch):
+async def test_unmatched_non_ascii_transcript_is_omitted(store, monkeypatch):
     text = "字" * 2500  # 7,500 bytes, 2,500 characters
     context, job_id = await _long_run(store, monkeypatch, text)
     await context.run_job(context.load_job(job_id))
     final = context.load_job(job_id)
-    assert final.error_rule == "input-limit"
-    evidence_chars = len(json.dumps(await context.evidence(final), ensure_ascii=False))
-    assert final.input_size == evidence_chars
-    assert 2500 < final.input_size < 7500
-    assert "at least" not in final.error
+    assert final.error_rule != "input-limit"
+    evidence = await context.evidence(final)
+    assert evidence["transcripts"] == []
+    assert evidence["transcript_omitted_characters"] == 2500
 
 
-async def test_far_oversized_input_is_not_read_and_is_labelled_a_minimum(store, monkeypatch):
+async def test_unmatched_transcript_is_not_sent_even_if_artifact_is_large(store, monkeypatch):
     context, job_id = await _long_run(store, monkeypatch, "x", size_bytes=100_000)
     await context.run_job(context.load_job(job_id))
     final = context.load_job(job_id)
-    assert final.error_rule == "input-limit"
-    assert final.input_size == 25_000
-    assert "at least 25,000 characters" in final.error
+    assert final.error_rule != "input-limit"
+    assert (await context.evidence(final))["transcripts"] == []
 
 
 async def test_a_model_no_longer_discovered_fails_the_job_with_a_named_rule(store, caplog):
