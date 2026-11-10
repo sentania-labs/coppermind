@@ -372,3 +372,24 @@ async def test_a_recording_problem_says_whether_a_retry_can_be_queued_now(store)
         context.save_config(config)
         problem = next(p for p in await store.get_problems() if p.kind == "recording")
         assert problem.retry_available is False
+
+
+async def test_a_recording_removed_during_transcription_is_reported_as_removed(store, monkeypatch):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        job = await context.accept_recording(request(audio))
+        real = context.provider.transcribe
+
+        async def transcribe_then_remove(*args, **kwargs):
+            result = await real(*args, **kwargs)
+            await store.remove_artifact(audio)
+            return result
+
+        monkeypatch.setattr(context.provider, "transcribe", transcribe_then_remove)
+        await context.recordings.tick()
+    failed = await context.recording_status({"id": job["id"]})
+    assert failed["state"] == "failed" and failed["error_rule"] == "recording-missing"
+    assert "removed before the note could cite it" in failed["error"]
+    assert "new external id" not in failed["error"]
+    assert await context.recordings.tick() is False

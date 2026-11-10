@@ -547,6 +547,10 @@ class Recordings:
         job.note_id, job.note_path = result.note.id, result.note.path
         job.source_id = result.source.id
         self.save(job)
+        try:
+            await artifacts.known_paths(self.context.store, [job.artifact_id])
+        except ValidationFailed as exc:
+            raise ArtifactMissing(job.artifact_id) from exc
         await artifacts.cite(self.context.store, result.note.id, [job.artifact_id])
 
 
