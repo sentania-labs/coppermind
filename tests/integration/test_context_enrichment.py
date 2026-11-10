@@ -1691,10 +1691,16 @@ async def test_attention_reports_only_open_failures_in_one_read(store):
         return note, job
 
     _, open_job = await failed_job("Open", error="Input too large")
-    reviewed, _ = await failed_job("Done", error="Old error")
+    reviewed, reviewed_job = await failed_job("Done", error="Old error")
     await store.patch_frontmatter(
         reviewed.id, PatchFrontmatter(set={"reviewed": True}), reviewed.content_hash
     )
+    dossier = reviewed_job.model_copy(
+        update={"id": "dossier", "purpose": "dossier", "error": "Dossier failed"}
+    )
+    context.save_job(dossier)
+    gone = open_job.model_copy(update={"id": "gone", "note_id": "no-such-note"})
+    context.save_job(gone)
     _, old = await failed_job("Fixed", error="Old failure", created_at="2026-01-01T00:00:00+00:00")
     newer = old.model_copy(
         update={"id": "newer", "state": "applied", "created_at": "2026-02-01T00:00:00+00:00"}
@@ -1703,9 +1709,9 @@ async def test_attention_reports_only_open_failures_in_one_read(store):
 
     data = await context.attention({})
 
-    assert data["failed_jobs"]["total"] == 1
-    assert data["failed_jobs"]["items"] == [
-        {"id": open_job.id, "path": open_job.path, "error": "Input too large"}
-    ]
+    assert data["failed_jobs"]["total"] == 2
+    assert sorted(item["id"] for item in data["failed_jobs"]["items"]) == sorted(
+        [open_job.id, "dossier"]
+    )
     assert data["failed_imports"] == {"total": 0, "items": []}
     assert data["worker_error"] == ""

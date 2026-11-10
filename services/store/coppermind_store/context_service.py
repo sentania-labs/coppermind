@@ -467,16 +467,26 @@ class ContextService:
         schema = self.store.control.schema()
 
         async def settled(job: EnrichmentJob) -> bool:
-            if job.purpose != "initial":
-                return False
             try:
                 note = await self.store.get_note(job.note_id)
+            except NotFound:
+                return True
             except StoreError:
                 return False
-            return note.frontmatter.get(schema.role("reviewed_key")) is True
+            return (
+                job.purpose == "initial"
+                and note.frontmatter.get(schema.role("reviewed_key")) is True
+            )
 
-        done = await asyncio.gather(*(settled(job) for job in failed_jobs))
-        open_jobs = [job for job, finished in zip(failed_jobs, done, strict=True) if not finished]
+        open_jobs: list[EnrichmentJob] = []
+        unchecked = 0
+        for start in range(0, len(failed_jobs), ATTENTION_LIMIT):
+            chunk = failed_jobs[start : start + ATTENTION_LIMIT]
+            done = await asyncio.gather(*(settled(job) for job in chunk))
+            open_jobs += [job for job, finished in zip(chunk, done, strict=True) if not finished]
+            if len(open_jobs) >= ATTENTION_LIMIT:
+                unchecked = len(failed_jobs) - start - len(chunk)
+                break
         failed_receipts = [r for r in receipts if r.state == "failed" and not r.dismissed]
 
         def name(receipt: Any) -> str:
@@ -500,7 +510,7 @@ class ContextService:
                 for r in receipts[:5]
             ],
             "failed_jobs": {
-                "total": len(open_jobs),
+                "total": len(open_jobs) + unchecked,
                 "items": [
                     {"id": job.id, "path": job.path, "error": job.error}
                     for job in open_jobs[:ATTENTION_LIMIT]
