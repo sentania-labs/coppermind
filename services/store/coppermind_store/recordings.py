@@ -30,6 +30,7 @@ import random
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
+import sqlalchemy as sa
 from pydantic import Field, ValidationError
 
 from coppermind.context_config import ContextModel, FeatureAssignment
@@ -595,7 +596,7 @@ class Recordings:
         async def finished(note_id: str) -> bool:
             async with store.session_factory() as session:
                 row = await session.get(Note, note_id)
-            return row is None or row.state == "deleted" or bool(row.filed and row.reviewed)
+            return row is None or bool(row.filed and row.reviewed)
 
         for other in await asyncio.to_thread(self.jobs):
             if other.id == job.id or other.artifact_id != job.artifact_id or other.audio_removed:
@@ -603,9 +604,14 @@ class Recordings:
             if other.state != "succeeded" or not await finished(other.note_id):
                 return True
         async with store.session_factory() as session:
-            citing = await artifacts.citing_notes(session, [job.artifact_id])
-        for item in citing.get(job.artifact_id, []):
-            if item.id != job.note_id and not await finished(item.id):
+            # Deleted and missing notes remain restorable and can still need the audio.
+            citing = (
+                await session.scalars(
+                    sa.select(Note.id).where(Note.artifact_ids.overlap([job.artifact_id]))
+                )
+            ).all()
+        for note_id in citing:
+            if note_id != job.note_id and not await finished(note_id):
                 return True
         return False
 
