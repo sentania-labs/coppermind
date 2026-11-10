@@ -352,10 +352,10 @@ class NoteLifecycle:
                     )
                 if speaker_operation:
                     taken: dict[str, str] = {}
-                    for label, name in speaker_operation["mapping"].items():
-                        if (earlier := taken.setdefault(name.casefold(), label)) != label:
+                    for label, chosen in speaker_operation["mapping"].items():
+                        if (earlier := taken.setdefault(chosen.casefold(), label)) != label:
                             raise ValueError(
-                                f"{name} is already chosen for {earlier}. Choose someone "
+                                f"{chosen} is already chosen for {earlier}. Choose someone "
                                 "else or leave this speaker unnamed."
                             )
                 receipt = {
