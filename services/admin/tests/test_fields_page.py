@@ -270,7 +270,7 @@ def test_correcting_an_invalid_stale_form_cannot_overwrite_another_tab(page):
     corrected = Form(invalid.text).values
     assert corrected["revision"] == stale["revision"]
     assert corrected[f"key-{context}-values"] == ""
-    corrected[f"key-{context}-values"] = "customer\ninternal"
+    corrected[f"key-{context}-values"] = "internal\nexternal"
     assert client.post("/v1/admin/fields", data=corrected).status_code == 409
     assert store.read("schema").revision == 2
 

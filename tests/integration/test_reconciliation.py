@@ -1638,3 +1638,29 @@ async def test_a_known_note_moved_to_an_unremembered_path_is_still_identified(
     assert counts["moved"] == 1
     assert (await _row(store, note.id)).path == "Work/Operations Runbook.md"
     assert (await store.get_note(note.id)).path == "Work/Operations Runbook.md"
+
+
+async def test_a_refusal_of_the_schemas_own_default_points_at_the_schema(store: LocalStore):
+    """The person's file carries no such value, so the note is not what to fix."""
+    schema = store.control.schema()
+    keys = [
+        key.model_copy(update={"default": "note", "required": True}) if key.name == "type" else key
+        for key in schema.keys
+    ]
+    broken = schema.model_copy(update={"keys": keys})
+    data = b"# Bare note\n"
+    path = store.notes_root / "Review" / "Bare.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+    outcome, cause = await store.adopt_note(
+        "Review/Bare.md",
+        content_hash(data),
+        schema=broken,
+        settings=store.control.settings(),
+    )
+
+    assert outcome == "invalid"
+    assert "own default" in cause and "type" in cause and "Fields and tags" in cause
+    assert "keys the schema refused" not in cause
+    assert path.read_bytes() == data

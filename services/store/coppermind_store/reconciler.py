@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import json
 import os
 import re
 import stat as stat_module
@@ -49,6 +50,7 @@ from coppermind import frontmatter as fm
 from coppermind.db.models import Note, RecordedRejection
 from coppermind.db.session import transaction
 from coppermind.logging import get_logger
+from coppermind.naming import sanitize_folder
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import MetadataUnavailable, NotesFilesystemUnavailable
 from coppermind_store import indexer
@@ -437,8 +439,19 @@ async def reconcile_once(
     )
     remembered.clear()
     remembered.update(scan.unidentified)
-    collisions_list: list[tuple[str, str, str]] = []
-    observations, duplicates = _choose_observations(scan, by_id, collisions_list)
+    collisions_list: list[tuple[str, str, str, str]] = []
+    unresolved: dict[str, list[str]] = {}
+    leftovers: dict[str, _Leftovers] = {}
+    observations, duplicates = _choose_observations(
+        scan,
+        by_id,
+        collisions_list,
+        unresolved,
+        leftovers,
+        sanitize_folder(settings.notes.review_folder),
+    )
+    duplicates += await _settle_leftovers(store, leftovers, collisions_list, unresolved)
+    _log_unresolved(store, unresolved)
     adopted = 0
     rejected = scan.unidentified_unparsed
     unwritable = 0
@@ -527,12 +540,12 @@ async def reconcile_once(
                 sa.delete(RecordedRejection).where(RecordedRejection.kind == "collision")
             )
 
-            for note_id, p, kind in collisions_list:
+            for note_id, _path, kind, reason in collisions_list:
                 session.add(
                     RecordedRejection(
                         kind=kind,
                         reference=note_id,
-                        reason=f"{p} carries this note identity",
+                        reason=reason,
                         created_at=now,
                     )
                 )
@@ -1083,8 +1096,38 @@ def _identity_from_broken(text: str | None, schema: FrontmatterSchema) -> str | 
     return matches[0] if len(matches) == 1 else None
 
 
+@dataclass(frozen=True)
+class _Leftovers:
+    """Copies of a note's identity sitting in the review folder after it was filed.
+
+    `keeper_path` is where the note's own file is recorded. `keeper` is what this
+    pass read of it, absent when the walk trusted its stat.
+    """
+
+    keeper_path: str
+    keeper: Observation | None
+    copies: list[Observation]
+
+
+def _in_folder(path: str, folder: str) -> bool:
+    return bool(folder) and path.startswith(folder + "/")
+
+
+def _is_leftover_group(keeper_path: str, copies: list[Observation], folder: str) -> bool:
+    return (
+        bool(copies)
+        and not _in_folder(keeper_path, folder)
+        and all(_in_folder(item.path, folder) for item in copies)
+    )
+
+
 def _choose_observations(
-    scan: ScanResult, by_id: dict[str, MirrorEntry], collisions: list[tuple[str, str, str]]
+    scan: ScanResult,
+    by_id: dict[str, MirrorEntry],
+    collisions: list[tuple[str, str, str, str]],
+    unresolved: dict[str, list[str]],
+    leftovers: dict[str, _Leftovers],
+    review_folder: str,
 ) -> tuple[dict[str, Observation], int]:
     """Pick the one file that speaks for each identity this scan saw.
 
@@ -1092,48 +1135,196 @@ def _choose_observations(
     is changed, and neither is reported gone. The count comes back with the
     choices so the pass reports it where an operator already reads what it
     would not take on, rather than leaving it in a log line nothing counts.
+
+    A copy sitting in the review folder beside a note whose own file is
+    elsewhere is a possible leftover of filing, not an ordinary collision, and
+    comes back in `leftovers` for the pass to settle.
     """
     chosen: dict[str, Observation] = {}
     duplicates = 0
     for note_id, candidates in scan.observed.items():
+        known_path = by_id[note_id].path
         if note_id in scan.held:
             # The walk found this note's own file still at its recorded path,
             # so whatever else carries the identity is a second live copy. That
             # file produced no observation of its own, so its recorded path is
             # named here to report both sides of the collision.
+            if _is_leftover_group(known_path, candidates, review_folder):
+                leftovers[note_id] = _Leftovers(known_path, None, list(candidates))
+                continue
             duplicates += 1
+            paths = [known_path, *(item.path for item in candidates)]
+            unresolved[note_id] = paths
             collisions.extend(
-                [
-                    (note_id, p, "collision")
-                    for p in [by_id[note_id].path, *(item.path for item in candidates)]
-                ]
+                [(note_id, p, "collision", f"{p} carries this note identity") for p in paths]
             )
-            _unresolved(note_id, [by_id[note_id].path, *(item.path for item in candidates)])
             continue
         # A file that named this identity itself outranks one that only
         # inherited it from the row recording its path, so a stranger dropped
         # at a note's old path never captures the note that moved away.
         named = [item for item in candidates if not item.path_derived]
         ranked = named or candidates
-        at_known_path = [item for item in ranked if item.path == by_id[note_id].path]
+        at_known_path = [item for item in ranked if item.path == known_path]
         if len(at_known_path) == 1:
             chosen[note_id] = at_known_path[0]
+            others = [item for item in ranked if item is not at_known_path[0]]
+            if _is_leftover_group(known_path, others, review_folder):
+                leftovers[note_id] = _Leftovers(known_path, at_known_path[0], others)
         elif len(ranked) == 1:
             chosen[note_id] = ranked[0]
         else:
             duplicates += 1
-            collisions.extend([(note_id, p, "collision") for p in [item.path for item in ranked]])
-            _unresolved(note_id, [item.path for item in ranked])
+            paths = [item.path for item in ranked]
+            unresolved[note_id] = paths
+            collisions.extend(
+                [(note_id, p, "collision", f"{p} carries this note identity") for p in paths]
+            )
     return chosen, duplicates
 
 
-def _unresolved(note_id: str, paths: list[str]) -> None:
-    """Name every file claiming one identity, not the identity alone."""
-    log.warning(
-        "duplicate note identity left unresolved",
-        note_id=note_id,
-        paths=sorted(set(paths)),
-    )
+def _journal_hashes(store: LocalStore, note_id: str) -> set[str]:
+    """Every hash filing recorded for this note's contents before it moved."""
+    path = store.control.store.state_dir / "filing" / f"{note_id}.json"
+    try:
+        plan = json.loads(path.read_bytes())
+        return {
+            copy["hash"]
+            for copy in plan.get("copies", [])
+            if isinstance(copy, dict) and isinstance(copy.get("hash"), str)
+        }
+    except (OSError, ValueError, AttributeError):
+        return set()
+
+
+def _remove_verified(root: Path, relative: str, expected: str) -> bool:
+    """Delete a file only if it still holds exactly the bytes that were judged."""
+    try:
+        target = resolve(root, relative)
+        if target.is_symlink():
+            return False
+        if content_hash(target.read_bytes()) != expected:
+            return False
+        target.unlink()
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return True
+
+
+async def _settle_leftovers(
+    store: LocalStore,
+    leftovers: dict[str, _Leftovers],
+    collisions: list[tuple[str, str, str, str]],
+    unresolved: dict[str, list[str]],
+) -> int:
+    """Remove review copies of filed notes that hold nothing the note lacks.
+
+    A copy goes only when its bytes are exactly the filed note's, or exactly a
+    snapshot filing recorded of it before the move, so nothing is lost. A copy
+    that differs is never touched: it is reported with both paths instead.
+    Returns how many identities still have a copy left in place.
+    """
+    if not leftovers:
+        return 0
+    try:
+        async with store.session_factory() as session:
+            rows = {
+                row.id: row
+                for row in (
+                    await session.execute(
+                        sa.select(Note.id, Note.filed, Note.content_hash).where(
+                            Note.id.in_(sorted(leftovers))
+                        )
+                    )
+                ).all()
+            }
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
+    unsettled = 0
+    for note_id, group in leftovers.items():
+        row = rows.get(note_id)
+        filed = row is not None and bool(row.filed)
+        known: set[str] = set()
+        if row is not None and filed:
+            known = await asyncio.to_thread(_journal_hashes, store, note_id)
+            known.add(row.content_hash)
+            if group.keeper is not None and group.keeper.content_hash:
+                known.add(group.keeper.content_hash)
+        remaining: list[Observation] = []
+        for copy in group.copies:
+            if (
+                filed
+                and copy.content_hash in known
+                and await asyncio.to_thread(
+                    _remove_verified, store.notes_root, copy.path, copy.content_hash
+                )
+            ):
+                log.info(
+                    "removed review copy of a note already filed",
+                    note_id=note_id,
+                    removed=copy.path,
+                    filed_at=group.keeper_path,
+                )
+                continue
+            remaining.append(copy)
+        if not remaining:
+            continue
+        unsettled += 1
+        unresolved[note_id] = [group.keeper_path, *(item.path for item in remaining)]
+        collisions.append(
+            (
+                note_id,
+                group.keeper_path,
+                "collision",
+                f"{group.keeper_path} carries this note identity",
+            )
+        )
+        for copy in remaining:
+            if filed:
+                reason = (
+                    f"{copy.path} is a copy of this note left in {copy.path.split('/')[0]} "
+                    f"after it was filed at {group.keeper_path}, and the two differ. "
+                    "Neither was changed. Compare them and delete the one you do not want."
+                )
+            else:
+                reason = f"{copy.path} carries this note identity"
+            collisions.append((note_id, copy.path, "collision", reason))
+    return unsettled
+
+
+def _log_unresolved(store: LocalStore, unresolved: dict[str, list[str]]) -> None:
+    """Name each collision once, and again only when the files involved change."""
+    current = {note_id: tuple(sorted(set(paths))) for note_id, paths in unresolved.items()}
+    previous: dict[str, tuple[str, ...]] = getattr(store, "_logged_collisions", {})
+    for note_id, paths in current.items():
+        if previous.get(note_id) != paths:
+            log.warning(
+                "duplicate note identity left unresolved",
+                note_id=note_id,
+                paths=list(paths),
+            )
+    store._logged_collisions = current
+
+
+async def note_collisions(store: LocalStore, note_id: str) -> list[str]:
+    """What the last pass recorded about other files carrying this note's identity."""
+    try:
+        async with store.session_factory() as session:
+            return list(
+                (
+                    await session.scalars(
+                        sa.select(RecordedRejection.reason)
+                        .where(
+                            RecordedRejection.kind == "collision",
+                            RecordedRejection.reference == note_id,
+                        )
+                        .order_by(RecordedRejection.id)
+                    )
+                ).all()
+            )
+    except (SQLAlchemyError, OSError) as exc:
+        raise MetadataUnavailable(str(exc)) from exc
 
 
 def _values_for(
