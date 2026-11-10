@@ -112,6 +112,7 @@ dt {font-weight:650} dd {margin:0;overflow-wrap:anywhere}
 .section-links {display:flex;flex-wrap:wrap;gap:.5rem;margin:1.5rem 0}
 .section-links a {padding:.55rem .85rem;border:1px solid var(--line);border-radius:2rem;
   text-decoration:none;background:var(--surface-sunken)}
+.section-links-heading {flex-basis:100%;margin:.5rem 0 -.25rem;color:var(--ink-muted)}
 .section-links a[aria-current=page] {background:var(--accent);color:var(--on-accent);
   border-color:var(--accent)}
 .settings-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 2rem}

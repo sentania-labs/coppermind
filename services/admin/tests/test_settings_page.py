@@ -242,13 +242,20 @@ def test_the_notes_folder_is_described_in_plain_words_without_its_internal_key(s
     assert "notes.notes_folder</code>" not in text
 
 
-def test_settings_hides_placeholder_sections_but_keeps_direct_access(signed_in):
+def test_every_settings_section_is_linked_with_unfinished_ones_last(signed_in):
     client, _ = signed_in
     page = client.get("/admin/settings").text
-    for section in ("curator", "indexer", "events", "schema_version"):
-        assert f'href="/admin/settings?section={section}"' not in page
-        assert client.get(f"/admin/settings?section={section}").status_code == 200
+    working = ["general", "notes", "retention", "reconcile", "git", "sync", "limits", "admin"]
+    unfinished = ["curator", "indexer", "events", "schema_version"]
+    keys = working + unfinished
+    positions = [page.index(f'href="/admin/settings?section={key}"') for key in keys]
+    heading = page.index("Not available yet")
+    for key in unfinished:
+        assert positions[keys.index(key)] > heading
+    for key in working:
+        assert positions[keys.index(key)] < heading
     assert "<summary>Technical details</summary>" in page
     filing = client.get("/admin/settings?section=curator").text
     assert "Reviewed notes are filed automatically by year and month" in filing
+    assert "nothing to set" in filing
     assert "Automatic filing is not implemented" not in filing
