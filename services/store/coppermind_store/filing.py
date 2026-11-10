@@ -201,7 +201,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         raise ValueError("a note date is required in date")
     month = day.strftime("%Y-%m")
     dropbox = store.context.config().dropbox_folder
-    roots = FilingRoots(settings, store.notes_root, dropbox, store.control.store.state_dir)
+    roots = FilingRoots(settings, store.notes_root, dropbox)
     root, _ = roots.resolve(note.frontmatter.get(schema.role("type_key")))
     folder = rendered_note_folder(root, day)
     manifests = {}
@@ -269,7 +269,6 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     ):
         await _publish(store, note)
         _settle(journal, plan)
-        roots.remember(root)
         return False
     # Rebuild a stale plan from current durable manifests. Files already copied
     # remain preserved; the new plan can resume from their recorded paths.
@@ -451,7 +450,6 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     plan.pop("error", None)
     _save(journal, plan)
     await _publish(store, note)
-    roots.remember(root)
     await store.entities.follow(note, before_filing_hash)
     return True
 

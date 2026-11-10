@@ -63,6 +63,40 @@ def test_a_type_outside_the_suggested_vocabulary_is_accepted():
     assert not any("podcast" in problem for problem in problems)
 
 
+def test_a_missing_or_non_text_type_is_reported():
+    schema = default_schema()
+    note = {
+        "schema_version": 1,
+        "id": "x",
+        "date": "2026-09-08",
+        "context": "internal",
+        "reviewed": False,
+        "sources": [],
+    }
+    assert "type: required" in schema.validate_frontmatter(note)
+    assert "type: expected text" in schema.validate_frontmatter({**note, "type": ["work"]})
+
+
+def test_a_type_vocabulary_an_owner_closes_is_enforced():
+    body = default_schema().model_dump(mode="json")
+    for key in body["keys"]:
+        if key["name"] == "type":
+            key["kind"] = "enum"
+    schema = FrontmatterSchema.model_validate(body)
+    problems = schema.validate_frontmatter(
+        {
+            "schema_version": 1,
+            "id": "x",
+            "date": "2026-09-08",
+            "type": "podcast",
+            "context": "internal",
+            "reviewed": False,
+            "sources": [],
+        }
+    )
+    assert "type: 'podcast' is not one of work, personal, reference, journal" in problems
+
+
 def test_default_schema_requires_account_for_external_notes():
     schema = default_schema()
     base = {

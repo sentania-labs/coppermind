@@ -247,9 +247,10 @@ even if PostgreSQL is unavailable.
 
 Reviewed notes are filed under `{type}/{yyyy}/{yyyy-mm}/` by note date, using
 the schema's type role. Folder names are sanitized and use the spelling of an
-existing case-insensitive match. Once used, that spelling is remembered while
-the folder exists. For new case variants reviewed in the same pass, the note
-with the lowest ID creates the folder and chooses its spelling. Missing or empty types and non-string values
+existing case-insensitive match. When several existing folders differ only by
+case, the all-lowercase one is used, otherwise the first in plain codepoint
+order. For new case variants reviewed in the same pass, the note with the
+lowest ID creates the folder and chooses its spelling. Missing or empty types and non-string values
 without a string list entry use `notes.notes_folder` as a fallback. Reserved
 folders, including the reconciler's excluded folders, also use the fallback
 and appear in Problems with a next step. A type or date edit refiles the note

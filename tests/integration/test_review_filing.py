@@ -904,7 +904,7 @@ async def test_type_roots_search_refile_and_reserved_fallback(store):
     assert any(
         p.kind == "reserved_type" and p.note_id == moved.id for p in await store.get_problems()
     )
-    await store.patch_frontmatter(moved.id, PatchFrontmatter(unset=["type"]), moved.content_hash)
+    await store.patch_frontmatter(moved.id, PatchFrontmatter(set={"type": ""}), moved.content_hash)
     await filing.file_reviewed(store)
     assert (await store.get_note(moved.id)).path.startswith("Notes/2026/2026-09/")
     assert not any(
@@ -931,20 +931,6 @@ async def test_old_root_remains_searchable_until_type_upgrade(store):
     assert not (store.notes_root / old.path).exists()
     await indexer.catch_up(store)
     assert (await store.search(SearchQuery(q="kerfuffle"))).items
-
-
-async def test_list_type_uses_first_string_and_other_values_fall_back(store):
-    result = await store.ingest(ingest_request("list-type"))
-    note = await store.get_note(result.note.id)
-    await store.patch_frontmatter(
-        note.id, PatchFrontmatter(set={"type": [5, "hobby"]}), note.content_hash
-    )
-    await approve(store, note.id)
-    note = await store.get_note(note.id)
-    assert note.path.startswith("hobby/2026/2026-09/")
-    await store.patch_frontmatter(note.id, PatchFrontmatter(set={"type": [5]}), note.content_hash)
-    await filing.file_reviewed(store)
-    assert (await store.get_note(note.id)).path.startswith("Notes/2026/2026-09/")
 
 
 async def test_existing_type_root_keeps_spelling_when_variant_folder_appears(store):

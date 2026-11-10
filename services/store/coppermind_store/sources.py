@@ -1282,7 +1282,6 @@ async def get_status(store: LocalStore) -> StatusResponse:
                 store.control.settings(),
                 store.notes_root,
                 store.context.config().dropbox_folder,
-                store.control.store.state_dir,
             )
             notes_to_refile = sum(
                 not path.startswith(
@@ -1635,7 +1634,6 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         store.control.settings(),
         store.notes_root,
         store.context.config().dropbox_folder,
-        store.control.store.state_dir,
     )
     for row in ok_notes:
         if row.reviewed:

@@ -229,10 +229,6 @@ class FrontmatterSchema(BaseModel):
         has_time_date = self._date_satisfied_by_time(frontmatter)
         account_key = self.role("account_key")
         for definition in self.keys:
-            # Types are vault-owned: unknown values and older non-text shapes
-            # must remain editable and file using the fallback when necessary.
-            if definition.name == self.role("type_key"):
-                continue
             present = definition.name in frontmatter
             value = frontmatter.get(definition.name)
             if definition.name == account_key and present and value is not None:
@@ -743,11 +739,14 @@ def default_schema() -> FrontmatterSchema:
             ),
             KeyDefinition(
                 name="type",
-                kind="enum",
+                kind="string",
                 required=True,
                 default="reference",
                 vocabulary=["work", "personal", "reference", "journal"],
-                description="What the note is.",
+                description=(
+                    "What the note is. Reviewed notes file under a folder of this name; "
+                    "the listed values are suggestions and any other text is accepted."
+                ),
             ),
             KeyDefinition(
                 name="context",
