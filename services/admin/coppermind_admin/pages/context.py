@@ -683,7 +683,10 @@ picker.addEventListener('change', () => {
                 )
             if data["jobs"]:
                 body += _outcome_line(data)
-                if any(job["state"] == "failed" for job in data["jobs"]):
+                if any(
+                    job["state"] == "failed" and job.get("can_retry", True)
+                    for job in data["jobs"]
+                ):
                     body += (
                         "<p>Retry all failed notes with current settings and evidence. "
                         "A retry may repeat a request that was already billed.</p>"
@@ -709,6 +712,8 @@ picker.addEventListener('change', () => {
                         body += e(detail)
                     else:
                         body += e(state.capitalize()) + "<br>" + e(job["error"]) + _limit_link(job)
+                        if not can_retry:
+                            body += "<br>" + e(job.get("retry_reason", "Open Inspect for details."))
                     body += "</td><td>"
                     if state == "stale" and not assignment["enabled"]:
                         body += (

@@ -563,6 +563,32 @@ def test_only_the_newest_job_offers_retry_on_inspect(signed_in):
     assert "Retry with current evidence" not in client.get(f"/admin/context/jobs/{'a' * 64}").text
 
 
+def test_failed_job_that_cannot_retry_shows_reason_and_no_bulk_retry(signed_in):
+    class BlockedJobs(ContextStore):
+        async def context_action(self, action, payload):
+            data = await super().context_action(action, payload)
+            if action == "snapshot":
+                data["jobs"] = [
+                    {
+                        "id": "a" * 64,
+                        "path": "Review/Example.md",
+                        "state": "failed",
+                        "error": "Request failed",
+                        "input_limit": None,
+                        "can_retry": False,
+                        "retry_reason": "Enable enrichment to retry.",
+                    }
+                ]
+            return data
+
+    client, _ = signed_in
+    client.app.state.store = BlockedJobs()
+    page = client.get("/admin/context?tab=review")
+    assert "Enable enrichment to retry." in page.text
+    assert "Retry all failed" not in page.text
+    assert ">Retry</button>" not in page.text
+
+
 def test_jobs_explain_stale_pause_and_moved_note(signed_in):
     class UXStore(ContextStore):
         async def context_action(self, action, payload):
