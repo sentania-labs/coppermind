@@ -178,11 +178,7 @@ Other settings stay unchanged.</p>
             if path == "limits.attachment_max_bytes":
                 help_text += "The attachment upload route is not implemented yet. "
             if path == "notes.notes_folder":
-                help_text = (
-                    "Reviewed notes are filed under a folder named for the note's type, "
-                    "then year and month, like work/2026/2026-04/. "
-                    "This folder is used when a note has no usable type. "
-                )
+                help_text = f"{field.description} "
                 description = ""
                 key_note = ""
             else:
