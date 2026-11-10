@@ -516,3 +516,59 @@ async def test_a_receipt_id_with_a_nul_byte_is_an_unknown_receipt(store):
         await staged.finalize(store, "bad\0id")
     with pytest.raises(ReceiptMissing):
         await staged.put_bytes(store, "bad\0id", chunks(b"quokka"), declared_bytes=6)
+
+
+async def _store_file(store, data: bytes, **overrides: Any):
+    digest = hashlib.sha256(data).hexdigest()
+    receipt = await staged.reserve(
+        store, declaration(size_bytes=len(data), sha256=digest, **overrides)
+    )
+    await staged.put_bytes(store, receipt.id, chunks(data), declared_bytes=len(data))
+    return await staged.finalize(store, receipt.id)
+
+
+async def test_a_receipt_id_past_the_filename_limit_is_an_unknown_receipt(store):
+    long_id = "a" * 300
+    with pytest.raises(ReceiptMissing):
+        await staged.get_receipt(store, long_id)
+    with pytest.raises(ReceiptMissing):
+        await staged.finalize(store, long_id)
+    with pytest.raises(ReceiptMissing):
+        await staged.put_bytes(store, long_id, chunks(b"quokka"), declared_bytes=6)
+
+
+async def test_reserving_again_after_the_artifact_was_removed_stores_it_afresh(store):
+    from coppermind_store.artifacts import remove_artifact
+
+    first = await _store_file(store, b"quokka")
+    assert first.artifact is not None
+    assert (await staged.reserve(store, declaration())).id == first.id
+
+    await remove_artifact(store, first.artifact.id)
+
+    again = await staged.reserve(store, declaration())
+    assert again.id != first.id and again.state == "uploading"
+    await staged.put_bytes(store, again.id, chunks(b"quokka"), declared_bytes=6)
+    done = await staged.finalize(store, again.id)
+    assert done.artifact is not None
+    assert done.artifact.created and done.artifact.id != first.artifact.id
+
+
+async def test_restaging_an_earlier_file_after_a_newer_revision_adds_a_revision(store):
+    v1 = await _store_file(store, b"quokka", fields={"title": "Deck"})
+    assert v1.artifact is not None
+    pinned = {"artifact_id": v1.artifact.id, "title": "Deck"}
+    assert (await staged.reserve(store, declaration(fields={"title": "Deck"}))).id == v1.id
+
+    v2 = await _store_file(store, b"wombat!", fields=pinned)
+    assert v2.artifact is not None
+    assert v2.artifact.id == v1.artifact.id and v2.artifact.revision == 2
+
+    superseded = await staged.reserve(store, declaration(fields={"title": "Deck"}))
+    assert superseded.id != v1.id and superseded.state == "uploading"
+
+    receipt = await staged.reserve(store, declaration(fields=pinned))
+    assert receipt.state == "uploading"
+    await staged.put_bytes(store, receipt.id, chunks(b"quokka"), declared_bytes=6)
+    done = await staged.finalize(store, receipt.id)
+    assert done.artifact is not None and done.artifact.revision == 3

@@ -27,11 +27,15 @@ next reservation.
 Identity works the way the inline contract does. The same declaration returns the
 same receipt and the same stored artifact; identical bytes replay, and different
 bytes under one receipt identifier are a conflict rather than a second revision.
+A stored receipt answers a new reservation only while its artifact still exists
+at the revision it wrote; after a removal or a newer revision the same file is
+stored afresh, as an inline upload of it would be.
 """
 
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 import os
@@ -46,6 +50,7 @@ from coppermind.ids import new_id
 from coppermind.logging import get_logger
 from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
+    ArtifactMissing,
     ReceiptMissing,
     StagedFileUnavailable,
     StagedLimits,
@@ -99,7 +104,11 @@ def _read_receipt(store: LocalStore, receipt_id: str) -> dict[str, Any]:
         document = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise ReceiptMissing(receipt_id) from exc
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except OSError as exc:
+        if exc.errno == errno.ENAMETOOLONG:
+            raise ReceiptMissing(receipt_id) from exc
+        raise StagedFileUnavailable(f"the staged receipt {receipt_id} is unreadable") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise StagedFileUnavailable(f"the staged receipt {receipt_id} is unreadable") from exc
     if not isinstance(document, dict) or document.get("id") != receipt_id:
         raise StagedFileUnavailable(f"the staged receipt {receipt_id} is invalid")
@@ -173,6 +182,30 @@ def _same_declaration(document: dict[str, Any], declared: dict[str, Any]) -> boo
         "fields",
     )
     return all(document.get(key) == declared.get(key) for key in declared_keys)
+
+
+def _replayable(store: LocalStore, document: dict[str, Any]) -> bool:
+    """Whether a matching receipt may answer a new reservation.
+
+    A receipt that is not yet stored always may. A stored one only stands in for
+    its upload while the artifact it made still exists at the revision it wrote;
+    once the artifact is removed or a newer revision lands, the same file must be
+    stored afresh, exactly as an inline upload of it would be.
+    """
+    if document.get("state") != "stored":
+        return True
+    from coppermind_store.artifacts import read_manifest
+
+    stored = document.get("artifact")
+    if not isinstance(stored, dict):
+        return True
+    try:
+        manifest = read_manifest(store, str(stored.get("id")))
+    except ArtifactMissing:
+        return False
+    return not manifest.get("removed_at") and manifest.get("current_revision") == stored.get(
+        "revision"
+    )
 
 
 def _load(path: Path) -> dict[str, Any] | None:
@@ -263,7 +296,7 @@ async def reserve(store: LocalStore, request: StagedReservation) -> StagedReceip
     wanted = {key: value for key, value in declared.items() if key != "schema_version"}
     async with store._artifact_lock:
         for document in _survey(store, now):
-            if _same_declaration(document, wanted):
+            if _same_declaration(document, wanted) and _replayable(store, document):
                 return _receipt(document)
         document = dict(wanted, id=new_id(), schema_version=RECEIPT_SCHEMA)
         _write_receipt(store, document)
