@@ -61,10 +61,11 @@ class ReadOnlyStore:
     async def context_action(self, action, payload):
         self._check("context_action")
         return {
-            "dropbox": {"items": []},
-            "calendar": {"imports": []},
-            "jobs": [],
-            "next_offset": None,
+            "dropbox": [],
+            "failed_imports": {"total": 0, "items": []},
+            "recent_imports": [],
+            "failed_jobs": {"total": 0, "items": []},
+            "worker_error": "",
         }
 
     async def get_status(self) -> StatusResponse:
@@ -630,53 +631,51 @@ def test_counters_say_plainly_when_the_upgrade_is_complete():
     assert html.index("Notes filing") < html.index("Rejected ingests")
 
 
-def test_home_aggregates_current_failures_and_excludes_superseded_attempts(signed_in):
-    class SnapshotStore(ReadOnlyStore):
+def test_home_lists_what_the_store_reports_and_notes_overflow(signed_in):
+    class AttentionStore(ReadOnlyStore):
         async def context_action(self, action, payload):
+            self.calls.append(action)
             return {
-                "dropbox": {
-                    "items": [
-                        {
-                            "state": "unsupported",
-                            "filename": "slides.pdf",
-                            "error": "Unsupported file",
-                        }
-                    ]
-                },
-                "calendar": {
-                    "imports": [{"state": "failed", "filename": "old.ics", "dismissed": True}]
-                },
-                "jobs": [
-                    {"note_id": "1", "path": "Review/one.md", "id": "new", "state": "applied"},
-                    {
-                        "note_id": "1",
-                        "path": "Review/one.md",
-                        "id": "old",
-                        "state": "failed",
-                        "error": "Old failure",
-                    },
-                    {
-                        "note_id": "2",
-                        "path": "Review/two.md",
-                        "id": "failed",
-                        "state": "failed",
-                        "error": "Input too large",
-                    },
+                "dropbox": [
+                    {"state": "unsupported", "filename": "slides.pdf", "error": "Unsupported file"}
                 ],
-                "totals": {"jobs": 3},
-                "next_offset": None,
+                "failed_imports": {
+                    "total": 52,
+                    "items": [{"filename": "bad.ics", "error": "Bad calendar"}],
+                },
+                "recent_imports": [
+                    {"filename": "old.ics", "state": "failed", "dismissed": True},
+                    {"filename": "good.ics", "state": "succeeded", "dismissed": False},
+                ],
+                "failed_jobs": {
+                    "total": 1,
+                    "items": [{"id": "failed", "path": "Review/two.md", "error": "Too large"}],
+                },
+                "worker_error": "",
             }
 
     client, _ = signed_in
-    store = _install(client, SnapshotStore())
+    store = _install(client, AttentionStore())
     store.problems = []
     page = client.get("/admin").text
-    assert "Needs attention (2)" in page
+    assert "Needs attention (4)" in page
     assert "slides.pdf" in page and "Unsupported file" in page
-    assert "Review/two.md" in page and "Input too large" in page
+    assert "bad.ics" in page and "Bad calendar" in page
+    assert "51 more failed imports" in page
+    assert "Review/two.md" in page and "Too large" in page
     assert 'href="/admin/context/jobs/failed"' in page
-    assert "Old failure" not in page
-    assert "old.ics: Failure dismissed" in page
+    assert "old.ics: Failure dismissed" in page and "good.ics: Imported" in page
+    assert "Nothing needs attention right now" not in page
+    assert store.calls.count("attention") == 1
+
+
+def test_home_makes_a_bounded_number_of_store_calls(signed_in):
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = []
+    client.get("/admin")
+    assert store.calls.count("context_action") == 1
+    assert len(store.calls) <= 3
 
 
 def test_home_never_says_clear_when_checks_fail(signed_in, monkeypatch):
@@ -710,66 +709,6 @@ def test_home_shows_paused_device(signed_in, monkeypatch):
     page = client.get("/admin").text
     assert "Device connection needs attention" in page
     assert 'href="/admin/sync"' in page
-
-
-def test_reviewed_note_does_not_keep_old_initial_failure_on_home(signed_in):
-    class ReviewedStore(ReadOnlyStore):
-        async def context_action(self, action, payload):
-            if action == "lifecycle":
-                return {
-                    "roles": {"reviewed_key": "reviewed"},
-                    "note": {"frontmatter": {"reviewed": True}},
-                }
-            return {
-                "dropbox": {"items": []},
-                "calendar": {"imports": []},
-                "jobs": [
-                    {
-                        "note_id": "reviewed",
-                        "path": "Notes/done.md",
-                        "id": "old",
-                        "purpose": "initial",
-                        "state": "failed",
-                        "error": "Old error",
-                    }
-                ],
-                "totals": {"jobs": 1},
-                "next_offset": None,
-            }
-
-    client, _ = signed_in
-    store = _install(client, ReviewedStore())
-    store.problems = []
-    page = client.get("/admin").text
-    assert "Nothing needs attention right now" in page
-    assert "Old error" not in page
-
-
-def test_home_scans_later_snapshot_pages_even_when_jobs_fit_on_the_first(signed_in):
-    class PagedStore(ReadOnlyStore):
-        async def context_action(self, action, payload):
-            offset = payload.get("offset", 0)
-            failed = offset == 100
-            return {
-                "dropbox": {"items": []},
-                "calendar": {
-                    "imports": (
-                        [{"state": "failed", "filename": "late.ics", "error": "Bad calendar"}]
-                        if failed
-                        else []
-                    )
-                },
-                "jobs": [],
-                "totals": {"jobs": 0},
-                "next_offset": None if failed else 100,
-            }
-
-    client, _ = signed_in
-    store = _install(client, PagedStore())
-    store.problems = []
-    page = client.get("/admin").text
-    assert "late.ics" in page and "Bad calendar" in page
-    assert "Nothing needs attention right now" not in page
 
 
 def test_dismissing_from_home_returns_to_home(signed_in):

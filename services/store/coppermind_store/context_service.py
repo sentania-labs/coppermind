@@ -97,6 +97,7 @@ PROVIDER_NEXT = "Retry the job; if it keeps failing, try a different model in En
 
 # First wait after a call that timed out; doubles with each further attempt.
 TIMEOUT_BACKOFF_S = 300
+ATTENTION_LIMIT = 50
 
 SAMPLE_MEETING = (
     "Priya Raman from Northwind Logistics met Sam Ortega to review the rollout plan for the "
@@ -459,6 +460,62 @@ class ContextService:
             job.update(self.retry_eligibility(job, note))
 
         return snapshot
+
+    async def attention(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """What Home shows as needing attention, in one bounded read."""
+        failed_jobs, receipts, dropbox = await asyncio.to_thread(self._attention_sources)
+        schema = self.store.control.schema()
+
+        async def settled(job: EnrichmentJob) -> bool:
+            if job.purpose != "initial":
+                return False
+            try:
+                note = await self.store.get_note(job.note_id)
+            except StoreError:
+                return False
+            return note.frontmatter.get(schema.role("reviewed_key")) is True
+
+        done = await asyncio.gather(*(settled(job) for job in failed_jobs))
+        open_jobs = [job for job, finished in zip(failed_jobs, done, strict=True) if not finished]
+        failed_receipts = [r for r in receipts if r.state == "failed" and not r.dismissed]
+
+        def name(receipt: Any) -> str:
+            return receipt.export_filename or receipt.filename
+
+        return {
+            "dropbox": [
+                {key: item.get(key, "") for key in ("filename", "state", "error")}
+                for item in dropbox
+                if item.get("state") in {"failed", "unsupported", "needs_identity"}
+            ][:ATTENTION_LIMIT],
+            "failed_imports": {
+                "total": len(failed_receipts),
+                "items": [
+                    {"filename": name(r), "error": r.error}
+                    for r in failed_receipts[:ATTENTION_LIMIT]
+                ],
+            },
+            "recent_imports": [
+                {"filename": name(r), "state": r.state, "dismissed": r.dismissed}
+                for r in receipts[:5]
+            ],
+            "failed_jobs": {
+                "total": len(open_jobs),
+                "items": [
+                    {"id": job.id, "path": job.path, "error": job.error}
+                    for job in open_jobs[:ATTENTION_LIMIT]
+                ],
+            },
+            "worker_error": self.worker_error,
+        }
+
+    def _attention_sources(self) -> tuple[list[EnrichmentJob], list[Any], list[dict[str, Any]]]:
+        latest: dict[tuple[str, str], EnrichmentJob] = {}
+        for job in sorted(self.jobs(), key=lambda job: job.created_at, reverse=True):
+            latest.setdefault((job.note_id, job.purpose), job)
+        failed = [job for job in latest.values() if job.state == "failed"]
+        receipts = sorted(self.archive.receipts(), key=lambda item: item.received_at, reverse=True)
+        return failed, receipts, self.dropbox.snapshot()["items"]
 
     def retry_eligibility(self, job: dict[str, Any], note: Any) -> dict[str, Any]:
         schema = self.store.control.schema()

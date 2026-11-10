@@ -141,7 +141,6 @@ def render(
         + (' aria-current="page"' if name == section else "")
         + f">{label}</a>"
         for name, label in SECTIONS.items()
-        if name not in {"curator", "indexer", "events", "schema_version"}
     )
     body = f"""<h1>Settings</h1><p>Save one section at a time. Other settings stay unchanged.</p>
 {message}<div class="section-links" aria-label="Settings sections">{links}</div>"""

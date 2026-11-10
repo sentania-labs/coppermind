@@ -36,6 +36,7 @@ from coppermind.store_protocol import (
     StoreError,
 )
 
+PROBE_WAIT_S = 1.0
 UNREACHABLE = "The store could not answer. Check that the store and PostgreSQL are running."
 # Where a Dismiss form may send the person back; anything else lands on the overview.
 DISMISS_RETURNS = frozenset({"/admin", "/admin/artifacts", "/admin/problems"})
@@ -342,25 +343,15 @@ def sync_status(wiring: Wiring) -> dict:
         return json.load(response)
 
 
-async def _reviewed_initial(client: StatusReader, job: dict) -> bool:
-    if job.get("purpose", "initial") != "initial" or not job.get("note_id"):
-        return False
-    try:
-        detail = await client.context_action("lifecycle", {"note_id": job["note_id"]})
-        reviewed_key = detail["roles"]["reviewed_key"]
-        return detail["note"]["frontmatter"].get(reviewed_key) is True
-    except (StoreError, OSError, KeyError, TypeError):
-        # A failed read must not silently hide a potentially active failure.
-        return False
-
-
 async def attention_html(request: Request, wiring: Wiring) -> str:
     """Read the live sources; a failed read is itself visible, never an all-clear."""
+    probe = asyncio.create_task(asyncio.to_thread(sync_status, wiring))
     try:
         client = store_client(request, wiring)
         problems = await client.get_problems()
         status = await client.get_status()
     except (StoreError, OSError):
+        probe.cancel()
         return f'<p class="error">{UNREACHABLE}</p>'
 
     active = [
@@ -374,71 +365,63 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
         for item in active
     ]
     incomplete = False
-    latest_jobs: dict[tuple[str, str], dict] = {}
     recent_imports: list[dict] = []
     filenames: set[str] = {
         item.reference for item in active if item.kind in {"dropbox", "calendar_import"}
     }
-    offset = 0
     try:
-        while True:
-            data = await client.context_action("snapshot", {"offset": offset})
-            if offset == 0:
-                recent_imports = data.get("calendar", {}).get("imports", [])
-                for item in data.get("dropbox", {}).get("items", []):
-                    if item.get("state") in {"failed", "unsupported", "needs_identity"}:
-                        name = item.get("filename", "Import")
-                        if name in filenames:
-                            continue
-                        filenames.add(name)
-                        reason = item.get("error") or "This file needs your attention."
-                        rows.append(
-                            f"<li><strong>Import: {escape(name)}</strong><p>{escape(reason)}</p>"
-                            '<a href="/admin/workflow?tab=intake">Open import</a></li>'
-                        )
-                if data.get("worker_error"):
-                    rows.append(
-                        "<li><strong>Suggestions stopped</strong><p>Check suggestion settings "
-                        'and try again.</p><a href="/admin/context?tab=models">'
-                        "Open settings</a></li>"
-                    )
-            for receipt in data.get("calendar", {}).get("imports", []):
-                if (
-                    receipt.get("state") == "failed"
-                    and not receipt.get("dismissed")
-                    and receipt.get("filename") not in filenames
-                ):
-                    name = receipt.get("filename", "Import")
-                    filenames.add(name)
-                    reason = escape(receipt.get("error") or "Import failed.")
-                    rows.append(
-                        f"<li><strong>Import: {escape(name)}</strong><p>{reason}</p>"
-                        '<a href="/admin/context?tab=calendar">Open import history</a></li>'
-                    )
-            for job in data.get("jobs", []):
-                latest_jobs.setdefault(
-                    (job.get("note_id") or job.get("path", ""), job.get("purpose", "initial")),
-                    job,
-                )
-            next_offset = data.get("next_offset")
-            if next_offset is None:
-                break
-            if next_offset <= offset:
-                incomplete = True
-                break
-            offset = next_offset
-        failed = [job for job in latest_jobs.values() if job.get("state") == "failed"]
-        reviewed = await asyncio.gather(*(_reviewed_initial(client, job) for job in failed))
-        for job, done in zip(failed, reviewed, strict=True):
-            if done:
+        data = await client.context_action("attention", {})
+        recent_imports = data["recent_imports"]
+        for item in data["dropbox"]:
+            name = item.get("filename") or "Import"
+            if name in filenames:
                 continue
+            filenames.add(name)
+            reason = item.get("error") or "This file needs your attention."
+            rows.append(
+                f"<li><strong>Import: {escape(name)}</strong><p>{escape(reason)}</p>"
+                '<a href="/admin/workflow?tab=intake">Open import</a></li>'
+            )
+        if data["worker_error"]:
+            rows.append(
+                "<li><strong>Suggestions stopped</strong><p>Check suggestion settings "
+                'and try again.</p><a href="/admin/context?tab=models">'
+                "Open settings</a></li>"
+            )
+        failed_imports = data["failed_imports"]
+        for receipt in failed_imports["items"]:
+            name = receipt.get("filename") or "Import"
+            if name in filenames:
+                continue
+            filenames.add(name)
+            rows.append(
+                f"<li><strong>Import: {escape(name)}</strong>"
+                f"<p>{escape(receipt.get('error') or 'Import failed.')}</p>"
+                '<a href="/admin/context?tab=calendar">Open import history</a></li>'
+            )
+        hidden = failed_imports["total"] - len(failed_imports["items"])
+        if hidden > 0:
+            rows.append(
+                f"<li><strong>{hidden} more failed imports</strong><p>Open the import "
+                'history to see them all.</p><a href="/admin/context?tab=calendar">'
+                "Open import history</a></li>"
+            )
+        failed_jobs = data["failed_jobs"]
+        for job in failed_jobs["items"]:
             target = quote(str(job.get("id", "")), safe="")
             rows.append(
-                f"<li><strong>Suggestions: {escape(job.get('path', 'Note'))}</strong>"
+                f"<li><strong>Suggestions: {escape(job.get('path') or 'Note')}</strong>"
                 f"<p>{escape(job.get('error') or 'Suggestions could not be completed.')}</p>"
                 f'<a href="/admin/context/jobs/{target}">See what to do</a></li>'
             )
-    except (StoreError, OSError, AttributeError, KeyError, ValueError):
+        hidden = failed_jobs["total"] - len(failed_jobs["items"])
+        if hidden > 0:
+            rows.append(
+                f"<li><strong>{hidden} more notes with failed suggestions</strong>"
+                "<p>Open suggestions to see them all.</p>"
+                '<a href="/admin/context?tab=review">Suggestions</a></li>'
+            )
+    except (StoreError, OSError, AttributeError, KeyError, TypeError, ValueError):
         incomplete = True
     if incomplete:
         rows.append(
@@ -449,7 +432,7 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
         )
 
     try:
-        device = await asyncio.to_thread(sync_status, wiring)
+        device = await asyncio.wait_for(probe, PROBE_WAIT_S)
         if device.get("last_error") or device.get("state") in {"error", "paused", "stopped"}:
             rows.append(
                 "<li><strong>Device connection needs attention</strong><p>Check the "

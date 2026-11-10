@@ -1674,3 +1674,38 @@ async def test_reviewed_filed_note_has_same_retry_eligibility_in_list_and_detail
     for view in (summary, detail):
         assert view["can_retry"] is False
         assert view["retry_reason"] == "This note is reviewed and filed; nothing more to do."
+
+
+async def test_attention_reports_only_open_failures_in_one_read(store):
+    context = await configure(store)
+
+    async def failed_job(title, *, error, state="failed", created_at=None):
+        note = await store.create_note(
+            CreateNote(title=title, body="x", frontmatter={"date": "2026-10-14"})
+        )
+        job = context.load_job(await context.queue_note(note.id))
+        job.state, job.error = state, error
+        if created_at:
+            job.created_at = created_at
+        context.save_job(job)
+        return note, job
+
+    _, open_job = await failed_job("Open", error="Input too large")
+    reviewed, _ = await failed_job("Done", error="Old error")
+    await store.patch_frontmatter(
+        reviewed.id, PatchFrontmatter(set={"reviewed": True}), reviewed.content_hash
+    )
+    _, old = await failed_job("Fixed", error="Old failure", created_at="2026-01-01T00:00:00+00:00")
+    newer = old.model_copy(
+        update={"id": "newer", "state": "applied", "created_at": "2026-02-01T00:00:00+00:00"}
+    )
+    context.save_job(newer)
+
+    data = await context.attention({})
+
+    assert data["failed_jobs"]["total"] == 1
+    assert data["failed_jobs"]["items"] == [
+        {"id": open_job.id, "path": open_job.path, "error": "Input too large"}
+    ]
+    assert data["failed_imports"] == {"total": 0, "items": []}
+    assert data["worker_error"] == ""
