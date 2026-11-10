@@ -129,7 +129,9 @@ def _link(problem: ProblemInfo, back: str = "/admin/problems") -> str:
         return '<a href="/admin/artifacts">Artifacts</a>'
     if problem.kind == "recording":
         return (
-            '<a href="/admin/context?tab=review">Retry or read the details</a><br>'
+            '<a href="/admin/context?tab=review">'
+            + ("Retry or read the details" if problem.retry_available else "View recording details")
+            + "</a><br>"
             '<a href="/admin/context?tab=models#transcription">Transcription settings</a>'
         )
     if problem.kind == "dropbox":

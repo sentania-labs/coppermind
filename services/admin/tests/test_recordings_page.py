@@ -66,7 +66,13 @@ def test_the_models_tab_sets_up_transcription_with_plain_words_and_no_anthropic(
     assert ">Speaker on every segment</option>" in section
     assert ">Whisper-compatible segments with speaker names</option>" in section
     assert "(diarized_json)" not in section and ">diarized_json<" not in section
-    assert "Technical names" in section
+    # The protocol names sit inside a collapsed disclosure, not in always-visible help.
+    # (The option values are form values, not shown text.)
+    section = section.replace('value="diarized_json"', "").replace('value="verbose_json"', "")
+    visible = section.split("<details><summary>Technical names</summary>")
+    assert len(visible) == 2 and "diarized_json" not in visible[0]
+    assert "diarized_json" in visible[1].split("</details>")[0]
+    assert "<details open" not in section.split("Technical names")[0][-40:]
     assert "Transcribe recordings that are handed in" in section
 
 

@@ -234,8 +234,11 @@ def _transcription_setup(config: dict[str, Any], data: dict[str, Any], revision:
             ],
             assignment["response_format"],
         )
-        + '<p class="field-help">Choose what your service supports. Technical names, for '
-        "the service's documentation: diarized_json and verbose_json.</p>" + "</fieldset>"
+        + '<p class="field-help">Choose what your service supports.</p>'
+        + "<details><summary>Technical names</summary>"
+        '<p class="field-help">For the service\'s documentation: diarized_json is '
+        "Speaker on every segment, and verbose_json is Whisper-compatible segments with "
+        "speaker names.</p></details></fieldset>"
     )
     fields += "<fieldset><legend>2. How long to wait</legend>"
     for key, label, help_text in [

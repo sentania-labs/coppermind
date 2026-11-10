@@ -356,3 +356,19 @@ async def test_the_recording_page_reads_the_transcript_and_a_retry_needs_transcr
         context.save_config(config)
         assert (await context.recording_detail({"id": job["id"]}))["can_retry"] is False
         assert context.recordings.listing()[0]["can_retry"] is False
+
+
+async def test_a_recording_problem_says_whether_a_retry_can_be_queued_now(store):
+    service = Service(status=404, reply={"error": "nope"})
+    async with service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        await context.accept_recording(request(audio))
+        await context.recordings.tick()
+        problem = next(p for p in await store.get_problems() if p.kind == "recording")
+        assert problem.retry_available is True
+        config = context.config()
+        config.assignments["transcription"].enabled = False
+        context.save_config(config)
+        problem = next(p for p in await store.get_problems() if p.kind == "recording")
+        assert problem.retry_available is False

@@ -1377,6 +1377,8 @@ class ProblemInfo(BaseModel):
     source_id: str | None = None
     filing_attempts: int | None = None
     artifact_id: str | None = None
+    # A recording problem only: whether a retry can be queued now (transcription is on).
+    retry_available: bool | None = None
     # What Admin offers beside the problem when a link to the note is not it:
     # `properties`, or `property:<key>` for one property's settings.
     action: str | None = None
