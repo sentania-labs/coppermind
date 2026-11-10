@@ -372,8 +372,13 @@ itself.
 On success the note's source holds `transcript.txt`, one line per segment with the
 speaker label exactly as the service gave it (`[00:03:12] Speaker 2: text`), and
 `transcript.json` with the segments and their timings. The note body says the summary
-has not been written yet. The recording stays stored as an artifact the note cites;
-nothing here deletes it, and it is kept whatever happens until a transcript exists. A
+has not been written yet. Once the transcript is nonempty and the note is reviewed
+and filed, Coppermind removes the recording audio and replaces its link with a receipt
+containing its hash, size and duration. Supply `metadata.archive_url` to include the
+location of an external archive in the receipt. Cleanup failures appear in Problems
+and are retried. Audio is kept if transcription fails or review and filing are incomplete.
+Removal does not wait for the retention purge, even if the recording artifact was already
+removed by hand. This is the one case where archived bytes go before the purge window. A
 transcript is saved before the note is filed, so a note that is refused (for example a
 schema problem in `frontmatter`) is retried without sending the recording again. The
 note's `frontmatter` and `title` are fixed when the recording is accepted, and posting

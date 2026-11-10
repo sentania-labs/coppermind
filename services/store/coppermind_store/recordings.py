@@ -14,7 +14,7 @@ rule name.
 When the service answers, the speaker segments are kept as given and filed through the
 ordinary ingest as the note's source (`transcript.txt` to read, `transcript.json` with the
 timings), which lands a note in Review like any other intake. The recording stays an
-artifact, cited from the note, and nothing here deletes it. A transcript is saved before
+artifact, cited from the note until review and filing. A transcript is saved before
 the note is filed, so a failure after that point retries without transcribing again.
 """
 
@@ -30,9 +30,11 @@ import random
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
+import sqlalchemy as sa
 from pydantic import Field, ValidationError
 
 from coppermind.context_config import ContextModel, FeatureAssignment
+from coppermind.db.models import Note
 from coppermind.store_protocol import (
     ArtifactMissing,
     IngestArtifact,
@@ -41,6 +43,7 @@ from coppermind.store_protocol import (
     IngestSource,
     RecordingRequest,
     RecordingStatus,
+    ReplaceNote,
     StoreError,
     ValidationFailed,
 )
@@ -71,6 +74,8 @@ NOT_SET_UP = (
 )
 # How much of a transcript the recording page shows; the whole text is in the note's source.
 DETAIL_TRANSCRIPT_CHARS = 200_000
+AUDIO_REMOVAL_ATTEMPTS = 3
+AUDIO_KEPT_SHARED = "Kept because another note still uses this recording."
 SUMMARY_PENDING = "_Transcribed from a recording. The summary has not been written yet._"
 
 
@@ -110,6 +115,19 @@ class TranscriptionJob(ContextModel):
     note_id: str = ""
     note_path: str = ""
     source_id: str = ""
+    audio_removed: bool = False
+    audio_removal_error: str = ""
+    audio_removal_retry_after: str = ""
+    audio_removal_attempts: int = 0
+    audio_kept: str = ""
+
+    @property
+    def audio_removal_stuck(self) -> bool:
+        return (
+            self.state == "succeeded"
+            and not self.audio_removed
+            and self.audio_removal_attempts >= AUDIO_REMOVAL_ATTEMPTS
+        )
 
     def set_error(
         self, message: str = "", rule: str = "", *, reply: str = "", retry_after: str = ""
@@ -211,10 +229,26 @@ class Recordings:
                 transcript = render_transcript(saved)
         return {
             **job.model_dump(mode="json", exclude={"frontmatter", "metadata"}),
-            "can_retry": job.state == "failed" and self.enabled(),
+            **await self.note_info(job.note_id),
+            "can_retry": (job.state == "failed" and self.enabled()) or job.audio_removal_stuck,
+            "audio_removal_stuck": job.audio_removal_stuck,
             "transcript": transcript[:DETAIL_TRANSCRIPT_CHARS],
             "transcript_cut": len(transcript) > DETAIL_TRANSCRIPT_CHARS,
         }
+
+    async def note_info(self, note_id: str) -> dict[str, Any]:
+        """Read the note's current location and review state, not its intake location."""
+        if not note_id:
+            return {"note_status": "unavailable", "note_path": ""}
+        try:
+            note = await self.context.store.get_note(note_id)
+        except StoreError:
+            return {"note_status": "unavailable", "note_path": ""}
+        reviewed = (
+            note.frontmatter.get(self.context.store.control.schema().role("reviewed_key")) is True
+        )
+        status = "filed" if reviewed and note.filed else "reviewed" if reviewed else "unreviewed"
+        return {"note_status": status, "note_path": note.path}
 
     def listing(self) -> list[dict[str, Any]]:
         """The newest intakes for the Jobs list: what each is, where it stands and why."""
@@ -225,7 +259,9 @@ class Recordings:
                     mode="json",
                     exclude={"metadata", "frontmatter", "usage", "reply", "mime_type"},
                 ),
-                "can_retry": item.state == "failed" and self.enabled(),
+                "can_retry": (item.state == "failed" and self.enabled())
+                or item.audio_removal_stuck,
+                "audio_removal_stuck": item.audio_removal_stuck,
             }
             for item in newest
         ]
@@ -295,12 +331,22 @@ class Recordings:
                 f"artifact_id: this file is {mime or 'of an unknown type'}, not a recording. "
                 "Send the audio with an audio media type."
             )
+        accepted_revision = revision["revision"]
         async with self.context.lock:
             existing = None
             with contextlib.suppress(ValueError):
                 existing = self.load(identity)
             if existing is not None:
                 return self.replay(existing, request)
+            # Cleanup may have retired the artifact while this request was waiting.
+            try:
+                _, revision = await asyncio.to_thread(
+                    artifacts.current_file, self.context.store, request.artifact_id
+                )
+            except ArtifactMissing as exc:
+                raise ValueError("artifact_id: the recording is no longer available.") from exc
+            if revision["revision"] != accepted_revision:
+                raise ValueError("artifact_id: the recording changed; submit the request again.")
             job = TranscriptionJob(
                 id=identity,
                 artifact_id=request.artifact_id,
@@ -337,6 +383,11 @@ class Recordings:
         """Queue a failed intake again with fresh attempts; a saved transcript is reused."""
         async with self.context.lock:
             job = self.load(str(payload.get("id", "")))
+            if job.audio_removal_stuck:
+                job.audio_removal_attempts, job.audio_removal_retry_after = 0, ""
+                job.audio_removal_error = ""
+                self.save(job)
+                return {"job": job.id}
             if job.state != "failed":
                 raise ValueError("only a failed recording can be retried")
             self.ready()
@@ -365,10 +416,18 @@ class Recordings:
 
     async def tick(self) -> bool:
         """Run the oldest job that is due. True when one ran."""
+        for job in sorted(await asyncio.to_thread(self.jobs), key=lambda item: item.created_at):
+            if job.state == "succeeded" and not job.audio_removed:
+                if job.audio_removal_stuck:
+                    continue
+                if job.audio_removal_retry_after and job.audio_removal_retry_after > _now():
+                    continue
+                if await self.remove_reviewed_audio(job):
+                    return True
         assignment = self.assignment()
         if assignment is None or not assignment.enabled or assignment.paused:
             return False
-        for known in sorted(self.jobs(), key=lambda item: item.created_at):
+        for known in sorted(await asyncio.to_thread(self.jobs), key=lambda item: item.created_at):
             job = self.load(known.id)
             if job.state in {"succeeded"}:
                 continue
@@ -416,6 +475,173 @@ class Recordings:
         job.set_error(
             BUSY_MESSAGE, BUSY_RULE, retry_after=(now + timedelta(seconds=wait)).isoformat()
         )
+
+    async def remove_reviewed_audio(self, job: TranscriptionJob) -> bool:
+        """Remove only the accepted revision after its nonempty transcript is filed."""
+        async with self.context.lock:
+            return await self._remove_reviewed_audio(job)
+
+    async def _remove_reviewed_audio(self, job: TranscriptionJob) -> bool:
+        store = self.context.store
+        try:
+            if not job.transcribed or not job.note_id:
+                return False
+            async with store.session_factory() as session:
+                row = await session.get(Note, job.note_id)
+            if row is None:
+                if not await self._purged(job.note_id):
+                    return False
+            elif not (row.filed and row.reviewed):
+                return False
+            deleted = row is None or row.state == "deleted"
+            if await self._shared_audio(job):
+                return self._keep_audio(job, AUDIO_KEPT_SHARED)
+            transcript = await asyncio.to_thread(self.saved_transcript, job)
+            if not any(
+                str(segment.get("text") or "").strip()
+                for segment in transcript.get("segments", [])
+                if isinstance(segment, dict)
+            ):
+                return False
+            if deleted:
+                await self._remove_audio(job)
+                return self._audio_removed(job)
+            note = await store.get_note(job.note_id)
+            reviewed_key = store.control.schema().role("reviewed_key")
+            if note.frontmatter.get(reviewed_key) is not True or not note.filed:
+                return False
+            try:
+                manifest = await asyncio.to_thread(artifacts.read_manifest, store, job.artifact_id)
+            except ArtifactMissing:
+                manifest = None
+            link = None
+            facts = f"size: {job.size_bytes} bytes"
+            if manifest is not None:
+                revision = artifacts._current_revision(manifest)
+                if not job.artifact_revision or revision.get("revision") != job.artifact_revision:
+                    raise ValueError("The recording has changed since it was accepted.")
+                link = artifacts.link_for(
+                    manifest.get("path"), str(manifest["title"]), manifest.get("url")
+                )
+                facts = f"SHA-256: {revision['sha256']}; size: {revision['size_bytes']} bytes"
+            duration = transcript.get("duration")
+            length = f"{duration} seconds" if duration is not None else "unknown"
+            receipt = f"Audio is scheduled for removal after review. {facts}; length: {length}."
+            pointer = job.metadata.get("archive_url")
+            if pointer:
+                receipt += f" Archive: {pointer}"
+            finished = receipt.replace("is scheduled for removal", "was removed")
+            if receipt not in note.body and finished not in note.body:
+                body = (
+                    note.body.replace(link, receipt)
+                    if link and link in note.body
+                    else note.body + "\n\n" + receipt + "\n"
+                )
+                fields = dict(note.frontmatter)
+                artifacts_key = store.control.schema().optional_role("artifacts_key")
+                cited = fields.get(artifacts_key)
+                if isinstance(cited, list):
+                    fields[artifacts_key] = [item for item in cited if item != job.artifact_id]
+                note = await store.replace_note(
+                    job.note_id,
+                    ReplaceNote(frontmatter=fields, body=body),
+                    note.content_hash,
+                )
+            # Serialize against API note edits and recheck both the file and filing mirror.
+            from coppermind_store.notes import _bytes_at
+
+            relative, path = await store._locate(job.note_id)
+            async with store._lock_for(job.note_id):
+                _, fields, _ = _bytes_at(
+                    job.note_id, relative, path, store.control.schema(), note.content_hash
+                )
+                async with store.session_factory() as session:
+                    row = await session.get(Note, job.note_id)
+                    if (
+                        not row
+                        or not row.filed
+                        or not row.reviewed
+                        or fields.get(reviewed_key) is not True
+                    ):
+                        return False
+                await self._remove_audio(job)
+            note = await store.get_note(job.note_id)
+            if receipt in note.body:
+                await store.replace_note(
+                    job.note_id,
+                    ReplaceNote(
+                        frontmatter=note.frontmatter, body=note.body.replace(receipt, finished)
+                    ),
+                    note.content_hash,
+                )
+            return self._audio_removed(job)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("recording audio removal failed for %s", job.id)
+            job.audio_removal_attempts += 1
+            job.audio_removal_error = "The reviewed recording could not be removed."
+            job.audio_removal_retry_after = (
+                datetime.now(UTC) + timedelta(minutes=5 * job.audio_removal_attempts)
+            ).isoformat()
+            self.save(job)
+            return True
+
+    async def _remove_audio(self, job: TranscriptionJob) -> None:
+        with contextlib.suppress(ArtifactMissing):
+            await artifacts.remove_recording_audio(
+                self.context.store, job.artifact_id, job.artifact_revision
+            )
+
+    def _audio_removed(self, job: TranscriptionJob) -> bool:
+        job.audio_removed, job.audio_kept = True, ""
+        job.audio_removal_error, job.audio_removal_retry_after = "", ""
+        job.audio_removal_attempts = 0
+        self.save(job)
+        return True
+
+    def _keep_audio(self, job: TranscriptionJob, reason: str) -> bool:
+        if job.audio_kept != reason or job.audio_removal_error or job.audio_removal_attempts:
+            job.audio_kept, job.audio_removal_error = reason, ""
+            job.audio_removal_retry_after, job.audio_removal_attempts = "", 0
+            self.save(job)
+        return False
+
+    async def _purged(self, note_id: str) -> bool:
+        """A missing database row means purged only when no note file carries the identity."""
+        index = self.context.store._identity_index
+        if not index.fresh():
+            await index.refresh()
+        found = index.lookup(note_id)
+        return found is not None and not found
+
+    async def _shared_audio(self, job: TranscriptionJob) -> bool:
+        """Whether another intake or note that is not yet finished still needs this audio."""
+        store = self.context.store
+
+        async def finished(note_id: str) -> bool:
+            async with store.session_factory() as session:
+                row = await session.get(Note, note_id)
+            if row is None:
+                return await self._purged(note_id)
+            return bool(row.filed and row.reviewed)
+
+        for other in await asyncio.to_thread(self.jobs):
+            if other.id == job.id or other.artifact_id != job.artifact_id or other.audio_removed:
+                continue
+            if other.state != "succeeded" or not await finished(other.note_id):
+                return True
+        async with store.session_factory() as session:
+            # Deleted and missing notes remain restorable and can still need the audio.
+            citing = (
+                await session.scalars(
+                    sa.select(Note.id).where(Note.artifact_ids.overlap([job.artifact_id]))
+                )
+            ).all()
+        for note_id in citing:
+            if note_id != job.note_id and not await finished(note_id):
+                return True
+        return False
 
     async def run_job(self, job: TranscriptionJob, assignment: FeatureAssignment) -> None:
         from coppermind_store.context_service import TIMEOUT_BACKOFF_S
