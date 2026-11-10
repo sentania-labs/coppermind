@@ -465,3 +465,20 @@ def test_transient_transcription_failure_keeps_retry(signed_in, rule):
     client.app.state.store = store_with([failed], saved)
     page = client.get("/admin/context?tab=review").text
     assert ">Retry</button>" in page
+
+
+def test_recovering_recording_shows_recovery_message_with_note_status(signed_in):
+    client, _ = signed_in
+    recovering = {
+        **JOB,
+        "state": "running",
+        "note_status": "unreviewed",
+        "error_rule": "transcription-recovering",
+        "error": "The transcription service lost the job; the recording was sent again.",
+    }
+    client.app.state.store = store_with(
+        [recovering], FeatureAssignment(connection="local", model="m", enabled=True)
+    )
+    page = client.get("/admin/context?tab=review").text
+    assert "The transcription service lost the job; the recording was sent again." in page
+    assert ">Retry</button>" not in page

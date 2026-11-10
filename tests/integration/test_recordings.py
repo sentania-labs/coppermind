@@ -1068,3 +1068,55 @@ async def test_unmatched_recording_creates_review_note_with_capture_time(store):
     assert note.path.startswith("Review/")
     assert str(note.frontmatter["date"]).startswith("2026-11-09T09:30")
     assert not note.frontmatter.get("meeting")
+
+
+async def test_recovering_shared_recording_keeps_audio_until_its_note_is_reviewed(
+    store, monkeypatch
+):
+    import httpx
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        first = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+        second = await context.accept_recording(
+            request(audio, external_source_id="plaud/rec-2", metadata={"duration_seconds": 7500})
+        )
+        note = await store.get_note(
+            (await context.recording_status({"id": first["id"]}))["note_id"]
+        )
+        await store.patch_frontmatter(
+            note.id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
+        )
+        assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+        rewind(
+            context,
+            second["id"],
+            state="running",
+            attempts=1,
+            remote_job_id="lost-job",
+            remote_job_started=datetime.now(UTC).timestamp(),
+        )
+        archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+        requests = []
+
+        async def handle(http_request):
+            requests.append(http_request.method)
+            assert archive.read_bytes() == AUDIO
+            if http_request.method == "GET":
+                return httpx.Response(404, json={"error": {"reason": "not_found"}})
+            assert http_request.headers["idempotency-key"] == second["id"]
+            assert AUDIO in await http_request.aread()
+            return httpx.Response(202, json={"id": "new-job", "status": "done", "result": REPLY})
+
+        context.provider.transport = httpx.MockTransport(handle)
+        assert await context.recordings.tick() is True
+        assert requests == ["GET", "POST"]
+        assert archive.read_bytes() == AUDIO
+        assert not context.recordings.load(first["id"]).audio_removed
+        assert (await context.recording_status({"id": second["id"]}))["state"] == "succeeded"
+        assert await context.recordings.tick() is False
+        assert archive.read_bytes() == AUDIO
