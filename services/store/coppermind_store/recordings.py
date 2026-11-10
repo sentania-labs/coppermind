@@ -610,7 +610,8 @@ class Recordings:
     async def _purged(self, note_id: str) -> bool:
         """A missing database row means purged only when no note file carries the identity."""
         index = self.context.store._identity_index
-        await index.refresh()
+        if not index.fresh():
+            await index.refresh()
         found = index.lookup(note_id)
         return found is not None and not found
 
