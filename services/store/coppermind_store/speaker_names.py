@@ -34,8 +34,92 @@ def rename_speakers(transcript: dict[str, Any], mapping: dict[str, str]) -> dict
     return result
 
 
-async def evidence(context: Any, note: Any, events: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Collect only a recording attached to this note and its candidate people."""
+SAMPLE_BUDGET = 12000
+MIN_SAMPLE = 1000
+MAX_CANDIDATES = 40
+MAX_RECENT = 10
+TURN_CHARS = 300
+_ADDRESSING = re.compile(
+    r"\b(?:[Hh]i|[Hh]ello|[Hh]ey|[Tt]hanks|[Tt]hank you),?\s+[A-Z][a-z]+|,\s+[A-Z][a-z]+\s*[?!.]"
+)
+OMITTED_NOTICE = (
+    "Speaker names could not be suggested for this recording because it is too long; "
+    "you can still name speakers yourself."
+)
+
+
+def person_candidate(entity: Any) -> dict[str, Any]:
+    return {
+        "id": "person:" + entity.id,
+        "name": entity.name,
+        "email": entity.emails[0] if entity.emails else "",
+        "path": entity.path,
+    }
+
+
+def current_person(context: Any, candidate: dict[str, Any]) -> dict[str, Any] | None:
+    """The candidate as it stands now, or None when that person has been retired or merged."""
+    if not candidate["id"].startswith("person:"):
+        return candidate
+    entity = context.store.entities.load().entities.get(candidate["id"].removeprefix("person:"))
+    if entity is None or entity.retired_at or entity.redirect:
+        return None
+    return person_candidate(entity)
+
+
+def same_recording(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
+    """Speakers follow from the immutable transcript revision; People do not matter here."""
+
+    def identity(value: dict[str, Any] | None) -> tuple[Any, Any]:
+        return (value or {}).get("source_id"), (value or {}).get("revision")
+
+    return identity(left) == identity(right)
+
+
+def sample(transcript: dict[str, Any], names: list[str], budget: int) -> list[str]:
+    """A bounded share of turns per speaker: first, addressing or naming someone, longest."""
+    from coppermind_store.recordings import render_transcript
+
+    segments = transcript.get("segments", [])
+    labels = speaker_labels(transcript)
+    tokens = {t for name in names for t in [name, *name.split()[:1]] if len(t) >= 3}
+    named = (
+        re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(tokens))) + r")\b", re.IGNORECASE)
+        if tokens
+        else None
+    )
+
+    def line(index: int) -> str:
+        segment = dict(segments[index], text=str(segments[index].get("text", ""))[:TURN_CHARS])
+        return render_transcript({"segments": [segment]}).rstrip("\n")
+
+    chosen: set[int] = set()
+    for label in labels:
+        turns = [i for i, s in enumerate(segments) if s.get("speaker") == label]
+        addressed = [
+            i
+            for i in turns
+            if _ADDRESSING.search(str(segments[i].get("text", "")))
+            or (named and named.search(str(segments[i].get("text", ""))))
+        ]
+        longest = sorted(turns, key=lambda i: (-len(str(segments[i].get("text", ""))), i))[:3]
+        spent = 0
+        for index in [*turns[:3], *addressed, *longest]:
+            cost = len(line(index)) + 1
+            if index not in chosen and spent + cost <= budget // len(labels):
+                chosen.add(index)
+                spent += cost
+    return [line(i) for i in sorted(chosen)]
+
+
+async def evidence(
+    context: Any,
+    note: Any,
+    events: list[dict[str, Any]],
+    budget: int = SAMPLE_BUDGET,
+    keep: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, Any] | None:
+    """A recording attached to this note, a bounded sample of it and a bounded list of people."""
     import json
 
     recording = next(
@@ -51,6 +135,9 @@ async def evidence(context: Any, note: Any, events: list[dict[str, Any]]) -> dic
     labels = speaker_labels(transcript)
     if not labels:
         return None
+    base = {"source_id": recording.source_id, "revision": manifest.current_revision}
+    if budget < MIN_SAMPLE:
+        return {**base, "speakers": [], "candidates": [], "excerpts": [], "omitted": True}
     candidates: dict[str, dict[str, Any]] = {}
     assignment = context.config().assignments["enrichment"]
     linked = set(context.read("associations", {}).get(note.id, {}).get("events", []))
@@ -72,30 +159,52 @@ async def evidence(context: Any, note: Any, events: list[dict[str, Any]]) -> dic
     from coppermind_store.entities import email
 
     by_email: dict[str, list[str]] = {}
+    people = []
     for entity in context.store.entities.load().entities.values():
         if entity.kind == "person" and not entity.retired_at and not entity.redirect:
+            people.append(entity)
             for address in entity.emails:
                 canonical = email(address)
                 if canonical:
                     by_email.setdefault(canonical, []).append(entity.path)
-            candidates["person:" + entity.id] = {
-                "id": "person:" + entity.id,
-                "name": entity.name,
-                "email": entity.emails[0] if entity.emails else "",
-                "path": entity.path,
-            }
+    haystack = " ".join(
+        [
+            note.title,
+            note.body,
+            json.dumps(note.frontmatter, ensure_ascii=False, default=str),
+            *(str(s.get("text", "")) for s in transcript.get("segments", [])),
+        ]
+    ).casefold()
+    words = set(re.findall(r"\w+", haystack))
+
+    def mentioned(entity: Any) -> int:
+        if entity.name.casefold() in haystack:
+            return 2
+        first = entity.name.casefold().split()[:1]
+        return 1 if first and len(first[0]) >= 3 and first[0] in words else 0
+
+    def met(entity: Any) -> str:
+        return max((f.evidence.date for f in entity.facts if f.state == "confirmed"), default="")
+
+    kept = [e for e in people if "person:" + e.id in keep]
+    rest = [e for e in people if "person:" + e.id not in keep]
+    named = sorted((e for e in rest if mentioned(e)), key=lambda e: (-mentioned(e), e.name, e.id))
+    recent = sorted(
+        (e for e in rest if met(e) and not mentioned(e)), key=lambda e: (met(e), e.id), reverse=True
+    )[:MAX_RECENT]
+    room = max(0, MAX_CANDIDATES - len(candidates) - len(kept))
+    for entity in [*kept, *[*named, *recent][:room]]:
+        candidates["person:" + entity.id] = person_candidate(entity)
     for candidate in candidates.values():
         paths = by_email.get(email(candidate["email"]) or "", [])
         if not candidate["path"] and len(paths) == 1:
             candidate["path"] = paths[0]
-    from coppermind_store.recordings import render_transcript
-
+    listed = list(candidates.values())
     return {
-        "source_id": recording.source_id,
-        "revision": manifest.current_revision,
+        **base,
         "speakers": labels,
-        "candidates": list(candidates.values()),
-        "transcript": render_transcript(transcript),
+        "candidates": listed,
+        "excerpts": sample(transcript, [c["name"] for c in listed], budget),
     }
 
 
@@ -150,16 +259,19 @@ async def apply(context: Any, receipt: dict[str, Any], note: Any) -> Any:
 
     operation = receipt["speakers"]
     source_id, revision = operation["source_id"], operation["revision"]
-    changes = operation["changes"]
     if "after_hash" not in operation:
         if note.content_hash != receipt["expected_hash"]:
             raise ValueError("note changed during review; inspect the recorded operation")
+        operation["changes"] = people_changes(context, note.frontmatter, operation["people"])
         raw = resolve(context.store.notes_root, note.path).read_bytes()
         from coppermind_store.notes import _with_kinds
 
-        predicted = fm.patch(raw.decode(), _with_kinds(changes, context.store.control.schema()))
+        predicted = fm.patch(
+            raw.decode(), _with_kinds(operation["changes"], context.store.control.schema())
+        )
         operation["after_hash"] = content_hash(predicted.encode())
         context.write("review-completions/" + note.id, receipt)
+    changes = operation["changes"]
     if note.content_hash not in {receipt["expected_hash"], operation["after_hash"]}:
         raise ValueError("note changed during review; inspect the recorded operation")
     manifest = await context.store.get_source(source_id)

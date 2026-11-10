@@ -51,8 +51,12 @@ that applies to several customers lists them all, and a note found by any one of
 them.
 
 For a recording, the review panel also shows each diarized speaker with a proposed
-person, confidence and reason. Candidates come from linked calendar attendees and
-existing People dossiers. When enrichment links an event automatically, it asks the model
+person, confidence and reason. Candidates are the linked calendar
+attendees, then People named in the note or transcript, then a few recently met People;
+never the whole People list. The model sees a bounded sample of each speaker's turns, not
+the full transcript. If that cannot fit the input limit, speaker suggestions are skipped
+with a notice and the other suggestions still arrive. A person renamed after suggestions
+were made is written under the current name; one retired is refused for that speaker only. When enrichment links an event automatically, it asks the model
 again with that event's attendees. If you link an event yourself after the first pass, request
 fresh suggestions. Select a speaker suggestion and choose the
 suggested person, another candidate, or leave the speaker unnamed. Completing review
@@ -61,7 +65,7 @@ and links known dossiers. Unselected speakers keep their labels. Setting reviewe
 directly without the panel does not apply speaker suggestions. The review API accepts
 `speaker_choices`, an object mapping selected suggestion indexes to candidate IDs;
 an empty value leaves that speaker unnamed. The review response provides candidates.
-The transcript is sent only to the configured enrichment connection, under the same
+The transcript sample is sent only to the configured enrichment connection, under the same
 input limit and retry rules as other enrichment.
 
 Review completion is recorded durably before writes and can be resumed. Each

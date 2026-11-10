@@ -79,6 +79,7 @@ async def test_review_corrects_a_speaker_and_replays_without_another_revision(
         "segments": [
             {"start": 0, "speaker": "Speaker 1", "text": "Hello Casey."},
             {"start": 3, "speaker": "Speaker 2", "text": "Hello."},
+            {"start": 6, "speaker": "Speaker 1", "text": "Alex sent the notes."},
         ]
     }
     result = await store.ingest(
@@ -225,7 +226,7 @@ async def test_review_corrects_a_speaker_and_replays_without_another_revision(
     detail = await context.lifecycle_detail({"note_id": note.id})
     suggestion = next(s for s in detail["suggestions"] if s["field"] == "Speaker 2")
     assert suggestion["display_value"] == "Casey"
-    assert observed[0]["speaker_review"]["transcript"] == render_transcript(transcript)
+    assert observed[0]["speaker_review"]["excerpts"] == render_transcript(transcript).splitlines()
     payload = {
         "note_id": note.id,
         "if_match": note.content_hash,
@@ -285,3 +286,271 @@ async def test_review_corrects_a_speaker_and_replays_without_another_revision(
         assert source.current_revision == 1
         assert not reviewed.frontmatter.get("attendees")
         assert not context.read("dossiers", {})
+
+
+async def recorded(store, standin, transcript, answer, *, max_input_chars=None):
+    """A linked recording note in Review whose model replies with `answer(evidence)`."""
+    context = await configure(store)
+    await context.setup_lifecycle({"revision": context.config().revision})
+    result = await store.ingest(
+        IngestRequest(
+            source=IngestSource(
+                provider="test-audio",
+                external_source_id="speaker-review",
+                source_type="transcript",
+                artifacts=[
+                    IngestArtifact(
+                        name="transcript.txt",
+                        mime_type="text/plain",
+                        content=render_transcript(transcript),
+                    ),
+                    IngestArtifact(
+                        name="transcript.json",
+                        mime_type="application/json",
+                        content=json.dumps(transcript),
+                    ),
+                ],
+            ),
+            note=IngestNote(
+                title="Planning",
+                body="Casey attended the meeting.",
+                frontmatter={"date": "2026-10-14T09:00:00"},
+            ),
+        )
+    )
+    context.recordings.save(
+        TranscriptionJob(
+            id="a" * 64,
+            artifact_id="b" * 64,
+            filename="meeting.wav",
+            mime_type="audio/wav",
+            size_bytes=1,
+            title="Planning",
+            provider="test-audio",
+            external_source_id="speaker-review",
+            state="succeeded",
+            transcribed=True,
+            created_at="2026-10-14T14:00:00+00:00",
+            note_id=result.note.id,
+            note_path=result.note.path,
+            source_id=result.source.id,
+        )
+    )
+    note = await store.get_note(result.note.id)
+    event = (await context.calendar_candidates(note))[0]
+    note = await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"calendar_event": event["event_id"]}), note.content_hash
+    )
+    observed: list[dict[str, Any]] = []
+
+    def model(request):
+        evidence = json.loads(json.loads(request.content)["messages"][-1]["content"])
+        observed.append(evidence)
+        content = json.dumps({"suggestions": answer(evidence, event), "unresolved": []})
+        return httpx.Response(
+            200, json={"choices": [{"finish_reason": "stop", "message": {"content": content}}]}
+        )
+
+    standin["handler"] = model
+    config = context.config()
+    next(
+        c for c in config.connections if c.id == config.assignments["enrichment"].connection
+    ).base_url = standin["url"]
+    if max_input_chars:
+        config.assignments["enrichment"].max_input_chars = max_input_chars
+    context.save_config(config)
+    context.provider = ModelProvider()
+    job_id = await context.queue_note(note.id)
+    await context.run_job(context.load_job(job_id))
+    return context, result, note, job_id, observed
+
+
+def speaker_answer(person_id, label="Speaker 2"):
+    def answer(evidence, event):
+        candidate = person_id(evidence)
+        return [
+            {
+                "kind": "speaker",
+                "field": label,
+                "value": candidate,
+                "confidence": 0.9,
+                "reason": "Addressed by name.",
+            }
+        ]
+
+    return answer
+
+
+def alex_id(evidence):
+    return next(
+        c["id"] for c in evidence["speaker_review"]["candidates"] if c["name"] == "Alex Morgan"
+    )
+
+
+SHORT = {
+    "segments": [
+        {"start": 0, "speaker": "Speaker 1", "text": "Thanks, Alex."},
+        {"start": 3, "speaker": "Speaker 2", "text": "Hello."},
+    ]
+}
+
+
+async def completion(context, store, result, job_id, **choices):
+    note = await store.get_note(result.note.id)
+    detail = await context.lifecycle_detail({"note_id": note.id})
+    index = next(s["index"] for s in detail["suggestions"] if s["field"] == "Speaker 2")
+    return {
+        "note_id": note.id,
+        "if_match": note.content_hash,
+        "job_id": job_id,
+        "selected": [index],
+        "speaker_choices": {str(index): choices.get("person", "")} if "person" in choices else {},
+        "confirmation": "Complete review",
+    }
+
+
+async def test_unrelated_and_renamed_people_do_not_invalidate_a_waiting_review(store, standin):
+    from coppermind.entities import EntityChange
+
+    alex = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    bystander = await store.entities.create(EntityInput(kind="person", name="Blair Stone"))
+    context, result, note, job_id, observed = await recorded(
+        store, standin, SHORT, speaker_answer(alex_id)
+    )
+    assert len(observed) == 1
+    await store.entities.create(EntityInput(kind="person", name="Dana Fox"))
+    await store.entities.change(
+        bystander["id"], EntityChange(version=bystander["version"], action="rename", name="Blair S")
+    )
+    await store.entities.change(
+        alex["id"], EntityChange(version=alex["version"], action="rename", name="Alexandra Morgan")
+    )
+    completed = await context.complete_review(await completion(context, store, result, job_id))
+    assert completed["state"] == "complete"
+    assert len(observed) == 1
+    text = (await store.get_source_artifact(result.source.id, 2, "transcript.txt")).content
+    assert "Alexandra Morgan: Hello." in text and "Alex Morgan" not in text
+
+
+async def test_a_retired_person_is_reported_for_that_speaker_and_the_rest_stays_confirmable(
+    store, standin
+):
+    from coppermind.entities import EntityChange
+
+    alex = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    context, result, note, job_id, observed = await recorded(
+        store, standin, SHORT, speaker_answer(alex_id)
+    )
+    await store.entities.change(alex["id"], EntityChange(version=alex["version"], action="retire"))
+    payload = await completion(context, store, result, job_id)
+    with pytest.raises(ValueError, match="Speaker 2: Alex Morgan is no longer an active person"):
+        await context.complete_review(payload)
+    assert (await store.get_source(result.source.id)).current_revision == 1
+    leave_unnamed = await completion(context, store, result, job_id, person="")
+    assert (await context.complete_review(leave_unnamed))["state"] == "complete"
+    assert (await store.get_source(result.source.id)).current_revision == 1
+
+
+async def test_speakers_and_an_attendee_suggestion_complete_together_without_losing_either(
+    store, standin
+):
+    alex = await store.entities.create(
+        EntityInput(kind="person", name="Alex Morgan", emails=["alex@example.test"])
+    )
+
+    def answer(evidence, event):
+        casey = event["people"][0]
+        return [
+            {
+                "kind": "attendee",
+                "event_ids": [event["event_id"]],
+                "contact_ids": [casey["contact_id"]],
+                "quote": "Casey attended",
+                "confidence": 0.5,
+                "reason": "Spoke in the meeting.",
+            },
+            *speaker_answer(alex_id)(evidence, event),
+        ]
+
+    context, result, note, job_id, observed = await recorded(store, standin, SHORT, answer)
+    detail = await context.lifecycle_detail({"note_id": note.id})
+    by_kind = {s["kind"]: s["index"] for s in detail["suggestions"] if s["kind"] != "speaker"}
+    speaker = next(s["index"] for s in detail["suggestions"] if s["kind"] == "speaker")
+    note = await store.get_note(note.id)
+    completed = await context.complete_review(
+        {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "job_id": job_id,
+            "selected": [by_kind["attendee"], speaker],
+            "speaker_choices": {str(speaker): "person:" + alex["id"]},
+            "confirmation": "Complete review",
+        }
+    )
+    assert completed["state"] == "complete"
+    attendees = (await store.get_note(note.id)).frontmatter["attendees"]
+    assert "alex@example.test" in attendees
+    assert attendees == ["Casey@EXAMPLE.COM", "alex@example.test", "[[People/Alex Morgan]]"]
+
+
+async def test_a_three_hour_recording_with_hundreds_of_people_keeps_every_suggestion_kind(
+    store, standin
+):
+    transcript = {
+        "segments": [
+            {
+                "start": 20 * i,
+                "speaker": f"Speaker {1 + i % 2}",
+                "text": f"Turn {i}: we reviewed the rollout plan and the budget. " * 4,
+            }
+            for i in range(540)
+        ]
+        + [{"start": 20000, "speaker": "Speaker 2", "text": "Thanks, Alex."}]
+    }
+    await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    for i in range(300):
+        await store.entities.create(EntityInput(kind="person", name=f"Person{i} Filler"))
+
+    def answer(evidence, event):
+        return [
+            {
+                "kind": "filename",
+                "value": "Planning",
+                "event_ids": [event["event_id"]],
+                "reason": "The calendar event",
+            },
+            *speaker_answer(alex_id)(evidence, event),
+        ]
+
+    context, result, note, job_id, observed = await recorded(store, standin, transcript, answer)
+    job = context.load_job(job_id)
+    assert job.state == "suggested", job.error
+    assert (
+        len(json.dumps(observed[0])) <= context.config().assignments["enrichment"].max_input_chars
+    )
+    assert len(observed[0]["speaker_review"]["candidates"]) < 50
+    assert {s.kind for s in job.result.suggestions} >= {"filename", "speaker"}
+
+
+async def test_speaker_evidence_too_big_is_dropped_and_other_suggestions_still_arrive(
+    store, standin
+):
+    def answer(evidence, event):
+        return [
+            {
+                "kind": "filename",
+                "value": "Planning",
+                "event_ids": [event["event_id"]],
+                "reason": "The calendar event",
+            }
+        ]
+
+    context, result, note, job_id, observed = await recorded(
+        store, standin, SHORT, answer, max_input_chars=2400
+    )
+    job = context.load_job(job_id)
+    assert job.state == "suggested", job.error
+    assert [s.kind for s in job.result.suggestions] == ["filename"]
+    assert observed[0]["speaker_review"]["omitted"] is True
+    detail = await context.lifecycle_detail({"note_id": note.id})
+    assert detail["speaker_notice"].startswith("Speaker names could not be suggested")

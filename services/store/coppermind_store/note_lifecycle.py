@@ -15,6 +15,7 @@ from coppermind.schema import (
     parse_note_time,
 )
 from coppermind.store_protocol import NoteDocument, PatchFrontmatter, StoreError
+from coppermind_store import speaker_names
 
 if TYPE_CHECKING:
     from coppermind_store.context_service import ContextService
@@ -131,6 +132,9 @@ class NoteLifecycle:
             "suggestions_enabled": self.context.config().assignments["enrichment"].enabled,
             "suggestion_error": job.error if job and job.state == "failed" else "",
             "stale": stale,
+            "speaker_notice": speaker_names.OMITTED_NOTICE
+            if job and (job.evidence.get("speaker_review") or {}).get("omitted")
+            else "",
             "suggestions": suggestions,
             "unresolved": job.result.unresolved if job and job.result else [],
             "roles": self.context.store.control.schema().roles,
@@ -211,7 +215,14 @@ class NoteLifecycle:
                             for key in removed:
                                 prospective.frontmatter.pop(key, None)
                     validate_review(prospective, schema, self._default_timezone())
-                    if fingerprint(await self.context.evidence(job)) != fingerprint(job.evidence):
+                    current_evidence = await self.context.evidence(job)
+                    if fingerprint(
+                        {k: v for k, v in current_evidence.items() if k != "speaker_review"}
+                    ) != fingerprint(
+                        {k: v for k, v in job.evidence.items() if k != "speaker_review"}
+                    ) or not speaker_names.same_recording(
+                        current_evidence.get("speaker_review"), job.evidence.get("speaker_review")
+                    ):
                         raise ValueError("source evidence changed; regenerate the suggestion")
                     selected.sort(
                         key=lambda i: (
@@ -239,20 +250,23 @@ class NoteLifecycle:
                             continue
                         if person_id not in candidates:
                             raise ValueError("choose a person from the supplied candidates")
-                        mapping[suggestion.field] = candidates[person_id]["name"]
-                        chosen.append(candidates[person_id])
+                        person = speaker_names.current_person(self.context, candidates[person_id])
+                        if person is None:
+                            raise ValueError(
+                                f"{suggestion.field}: {candidates[person_id]['name']} is no "
+                                "longer an active person. Choose someone else or leave this "
+                                "speaker unnamed."
+                            )
+                        mapping[suggestion.field] = person["name"]
+                        chosen.append(person)
                     if mapping:
-                        from coppermind_store import speaker_names
-
                         speaker_operation = {
                             "source_id": speaker_data["source_id"],
                             "revision": speaker_data["revision"],
                             "mapping": mapping,
                             "people": chosen,
-                            "changes": speaker_names.people_changes(
-                                self.context, prospective.frontmatter, chosen
-                            ),
                         }
+                        speaker_names.people_changes(self.context, prospective.frontmatter, chosen)
                     selected = [i for i in selected if i not in speaker_indexes]
                 receipt = {
                     "speakers": speaker_operation,
@@ -302,8 +316,6 @@ class NoteLifecycle:
                     self.context.write(name, receipt)
             current = await self.context.store.get_note(identity)
             if receipt.get("speakers") and not receipt.get("speakers_applied"):
-                from coppermind_store import speaker_names
-
                 current = await speaker_names.apply(self.context, receipt, current)
                 receipt["expected_hash"] = current.content_hash
                 receipt["speakers_applied"] = True

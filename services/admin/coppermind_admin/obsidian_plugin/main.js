@@ -69,6 +69,7 @@ class ReviewView extends ItemView {
       if(!data.suggestions_enabled)el.createEl('p',{text:'Suggestions are off. Turn on enrichment in Model connections, then request suggestions.',cls:'coppermind-notice'});
       else if(data.suggestion_error)el.createEl('p',{text:'Suggestions could not be completed. Open Problems in Admin for details, then request fresh suggestions.',cls:'coppermind-notice'});
       else if(['queued','running'].includes(data.state))el.createEl('p',{text:'Suggestions are in progress. Refresh this panel when ready.',cls:'coppermind-notice'});
+      if(data.speaker_notice)el.createEl('p',{text:data.speaker_notice,cls:'coppermind-notice'});
       if(data.stale)el.createEl('p',{text:'Suggestions are from an earlier version. Keep your edits and finish without them, or request fresh suggestions.',cls:'coppermind-notice'});
       for(const s of data.suggestions){
         const card=el.createDiv({cls:'coppermind-card'});

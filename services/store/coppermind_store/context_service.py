@@ -1169,13 +1169,38 @@ class ContextService:
             },
             "contact_corrections": selected_corrections,
         }
-        result["speaker_review"] = await speaker_names.evidence(self, note, candidates)
-        while budget and len(json.dumps(result, ensure_ascii=False)) > assignment.max_input_chars:
+        speaker_budget = self.speaker_budget()
+        keep = self.proposed_people(job)
+        result["speaker_review"] = await speaker_names.evidence(
+            self, note, candidates, speaker_budget, keep
+        )
+        while (budget or speaker_budget) and len(
+            json.dumps(result, ensure_ascii=False)
+        ) > assignment.max_input_chars:
             budget //= 2
+            speaker_budget //= 2
             result["transcripts"], result["transcript_omitted_characters"] = passages(
                 transcripts, terms, budget
             )
+            if result["speaker_review"] and not result["speaker_review"].get("omitted"):
+                result["speaker_review"] = await speaker_names.evidence(
+                    self, note, candidates, speaker_budget, keep
+                )
         return result
+
+    def speaker_budget(self) -> int:
+        return min(
+            speaker_names.SAMPLE_BUDGET,
+            self.config().assignments["enrichment"].max_input_chars // 4,
+        )
+
+    @staticmethod
+    def proposed_people(job: EnrichmentJob) -> set[str]:
+        return {
+            s.value
+            for s in (job.result.suggestions if job.result else [])
+            if s.kind == "speaker" and isinstance(s.value, str)
+        }
 
     def allowed_fields(self) -> set[str]:
         schema = self.store.control.schema()
@@ -1933,9 +1958,14 @@ class ContextService:
             "body": note.body,
         }
         job.evidence["dossiers"] = dossiers
-        job.evidence["speaker_review"] = await speaker_names.evidence(
-            self, note, job.evidence.get("events", [])
-        )
+        if not (job.evidence.get("speaker_review") or {}).get("omitted"):
+            job.evidence["speaker_review"] = await speaker_names.evidence(
+                self,
+                note,
+                job.evidence.get("events", []),
+                self.speaker_budget(),
+                self.proposed_people(job),
+            )
         job.evidence["allowed_fields"] = [
             field
             for field in job.evidence["allowed_fields"]
