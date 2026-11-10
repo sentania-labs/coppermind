@@ -67,6 +67,7 @@ class FakeStore:
         self.reserved: list[StagedReservation] = []
         self.uploads: list[tuple[str, bytes, int | None]] = []
         self.pieces: list[int] = []
+        self.staged_limit = LIMITS.staged_max_bytes
         self.finalized: list[str] = []
         self.receipt = _receipt()
         self.write_record, self.write_key = create_key(
@@ -110,6 +111,9 @@ class FakeStore:
 
     async def get_artifact_limit(self) -> int:
         return LIMITS.inline_max_bytes
+
+    async def get_staged_limit(self) -> int:
+        return self.staged_limit
 
     async def is_ready(self) -> bool:
         return True
@@ -273,15 +277,15 @@ def test_a_failed_upload_is_reported_without_becoming_an_artifact(api):
     assert body["failure"] == "mismatch"
 
 
-def test_a_put_past_the_staged_maximum_is_refused_before_it_reaches_the_store(api, monkeypatch):
-    from coppermind_api.v1 import staged as staged_routes
-
-    monkeypatch.setattr(staged_routes, "settings_limit", lambda: 8)
+def test_a_put_past_the_staged_maximum_is_refused_before_it_reaches_the_store(api):
     client, fake = api
+    fake.staged_limit = 8
     headers = {**_as(fake, "write"), "Content-Type": "application/octet-stream"}
     sized = client.put(f"/v1/staged/{RECEIPT_ID}", content=b"123456789", headers=headers)
     assert sized.status_code == 413
     assert sized.json()["error"] == "payload_too_large"
+    assert sized.json()["limit_bytes"] == 8
+    assert "8 bytes" in sized.json()["message"]
 
     def chunks():
         yield b"12345"

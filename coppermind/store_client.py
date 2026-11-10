@@ -406,6 +406,10 @@ class HttpStoreClient:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/artifacts/limit")
         return int(response.json()["limit_bytes"])
 
+    async def get_staged_limit(self) -> int:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/artifacts/staged-limit")
+        return int(response.json()["limit_bytes"])
+
     async def reserve_staged_upload(self, request: StagedReservation) -> StagedReceipt:
         response = await self._send(
             "POST",

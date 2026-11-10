@@ -422,6 +422,9 @@ class LocalStore:
     async def get_artifact_limit(self) -> int:
         return self.control.settings().limits.artifact_max_bytes
 
+    async def get_staged_limit(self) -> int:
+        return self.control.settings().limits.staged_max_bytes
+
     async def reserve_staged_upload(self, request: StagedReservation) -> StagedReceipt:
         from coppermind_store.staged import reserve
 

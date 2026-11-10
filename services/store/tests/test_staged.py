@@ -413,6 +413,7 @@ async def test_the_body_crosses_the_internal_contract_as_a_stream(store):
     app.include_router(internal_router)
     client = HttpStoreClient("http://store", "test-token", transport=httpx.ASGITransport(app=app))
     try:
+        assert await client.get_staged_limit() == 50 * 1024 * 1024
         receipt = await client.reserve_staged_upload(declaration())
         uploaded = await client.put_staged_bytes(receipt.id, chunks(b"quokka", 2), declared_bytes=6)
         assert uploaded.upload_bytes == 6

@@ -30,7 +30,6 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from pydantic_core import ErrorDetails
 
-from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
     StagedReceipt,
     StagedReservation,
@@ -140,10 +139,6 @@ def _problem(item: ErrorDetails) -> str:
     return f"{location}: {message}"
 
 
-def settings_limit() -> int:
-    return ProductSettings().limits.staged_max_bytes
-
-
 @router.put("/{receipt_id}", status_code=200, response_model=StagedReceipt)
 async def put_staged_bytes(
     receipt_id: str,
@@ -152,8 +147,11 @@ async def put_staged_bytes(
     _: Principal = Depends(require_scopes("artifacts:write")),
 ) -> JSONResponse:
     """Stream the file's bytes for one receipt into durable staging."""
-    limit = settings_limit()
     declared = request.headers.get("content-length", "")
+    try:
+        limit = await client.get_staged_limit()
+    except StoreError as error:
+        return failure(error)
     try:
         receipt = await client.put_staged_bytes(
             receipt_id,
