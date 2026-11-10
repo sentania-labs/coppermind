@@ -74,9 +74,11 @@ def dossier_parts(text: str, entity: Entity) -> tuple[str, str]:
         if found.group(1) and found.group(1) != entity.id:
             raise ValueError("dossier marker belongs to another entity")
         return text[: found.start()], text[found.end() :]
-    if entity.generated and text.endswith(entity.generated):
+    if not entity.generated:
+        return text, ""
+    if text.endswith(entity.generated):
         return text[: -len(entity.generated)], entity.generated
-    return text, entity.generated or ""
+    raise ValueError("dossier marker is missing; restore it to resume")
 
 
 def matches_identity(fields: dict[str, Any], entity: Entity) -> bool:
@@ -1215,8 +1217,11 @@ class EntityService:
                 ):
                     before = saved
         if before != after and other.generated is not None:
-            _, old_block = dossier_parts(before.decode(), other)
-            _, new_block = dossier_parts(after.decode(), other)
+            try:
+                _, old_block = dossier_parts(before.decode(), other)
+                _, new_block = dossier_parts(after.decode(), other)
+            except ValueError:
+                return
             if other.generated == old_block:
                 other.generated = new_block
                 self.save(ledger)
@@ -1362,7 +1367,12 @@ class EntityService:
     def personal_text(self, entity: Entity, seen: dict[str, bytes | None] | None = None) -> str:
         if seen is not None and entity.id in seen:
             raw = seen[entity.id]
-            return fm.parse(dossier_parts(raw.decode(), entity)[0])[1] if raw else ""
+            if not raw:
+                return ""
+            try:
+                return fm.parse(dossier_parts(raw.decode(), entity)[0])[1]
+            except (ValueError, UnicodeError, fm.FrontmatterError):
+                return ""
         try:
             text = safe_path(self.store.notes_root, entity.path).read_text()
             fields, _ = fm.parse(text)
@@ -1723,8 +1733,8 @@ class EntityService:
                 text = path.read_text()
                 if len(list(MARKER.finditer(text))) != 1:
                     continue
-                head, block = dossier_parts(text, entity)
                 try:
+                    head, block = dossier_parts(text, entity)
                     wrote = owner_wrote(head)
                 except (ValueError, fm.FrontmatterError):
                     continue

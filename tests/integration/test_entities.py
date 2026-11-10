@@ -126,6 +126,21 @@ async def test_dossier_identity_migrates_and_recovers_without_visible_ids(store,
     assert path.read_text() == written
 
 
+async def test_edited_page_without_marker_is_left_alone_and_reported(store):
+    p = await person(store)
+    note = await reviewed_note(store)
+    await claim(store, p, note)
+    path = store.notes_root / p["path"]
+    marker = dossier_marker(p["id"])
+    text = path.read_text()
+    assert marker in text
+    edited = text.replace(marker, "").rstrip("\n") + "\nOwner edit under Coppermind's Notes\n"
+    path.write_text(edited)
+    await store.entities.refresh()
+    assert path.read_text() == edited
+    assert (await store.entities.get(p["id"]))["problem"]
+
+
 async def test_generated_sections_are_nested_and_empty_sections_omitted(store):
     p = await person(store)
     note = await reviewed_note(store)
