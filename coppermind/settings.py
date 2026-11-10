@@ -412,8 +412,8 @@ class LimitSettings(BaseModel):
         ge=1,
         description=(
             "Maximum staged file in bytes accepted by the staged upload path. A reservation "
-            "declaring more is refused at once, and a stream that passes the declared count "
-            "is stopped mid-write."
+            "declaring more is refused at once, and a body that passes it is refused with 413 "
+            "before it is stored."
         ),
     )
     # Null marks this override as unset. Kept so a settings file written before

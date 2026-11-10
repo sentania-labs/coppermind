@@ -51,28 +51,35 @@ def _validation(problems: list[str]) -> JSONResponse:
     )
 
 
-def _ceiling() -> int:
-    from coppermind.settings import ProductSettings
-
-    return ProductSettings().limits.staged_max_bytes + FRAMING_BYTES
-
-
-def _oversized() -> JSONResponse:
-    from coppermind.settings import ProductSettings
+def _oversized(subject: str, limit: int) -> JSONResponse:
     from coppermind_api.v1.artifacts import human_limit
 
-    limit = ProductSettings().limits.staged_max_bytes
     return JSONResponse(
         status_code=413,
         content={
             "error": "payload_too_large",
-            "message": (
-                f"This declaration is larger than the {human_limit(limit)} staged maximum; "
-                "split or compress the file"
-            ),
+            "message": f"This {subject} is larger than the {human_limit(limit)} limit",
             "limit_bytes": limit,
         },
     )
+
+
+async def _read_body(request: Request, limit: int) -> bytes | None:
+    """The request body, or None as soon as it passes `limit` bytes.
+
+    The header is checked first so an honest oversize is refused unread, and the
+    stream is counted as it arrives so a body with no header or a false one is
+    stopped at the limit instead of being buffered whole.
+    """
+    announced = request.headers.get("content-length", "")
+    if announced.isdigit() and int(announced) > limit:
+        return None
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > limit:
+            return None
+    return bytes(body)
 
 
 @router.post("", status_code=201, response_model=StagedReceipt)
@@ -87,14 +94,11 @@ async def reserve_staged_upload(
     fields an inline submission accepts. An identical reservation replays the
     same receipt; a declared size above the staged maximum is refused at once.
     """
-    body = bytearray()
-    ceiling = _ceiling()
-    async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > ceiling:
-            return _oversized()
+    body = await _read_body(request, FRAMING_BYTES)
+    if body is None:
+        return _oversized("declaration", FRAMING_BYTES)
     try:
-        payload = json.loads(bytes(body) or b"{}")
+        payload = json.loads(body or b"{}")
     except ValueError:
         return _validation(["body: must be a JSON object"])
     if not isinstance(payload, dict):
@@ -159,19 +163,15 @@ async def put_staged_bytes(
     _: Principal = Depends(require_scopes("artifacts:write")),
 ) -> JSONResponse:
     """Stream the file's bytes for one receipt into durable staging."""
+    limit = settings_limit()
+    data = await _read_body(request, limit)
+    if data is None:
+        return _oversized("file", limit)
     declared = request.headers.get("content-length", "")
-    ceiling = int(declared) if declared.isdigit() else 0
-    chunks: list[bytes] = []
-    seen = 0
-    async for chunk in request.stream():
-        chunks.append(chunk)
-        seen += len(chunk)
-        if ceiling and seen > ceiling:
-            return _oversized()
     try:
         receipt = await client.put_staged_bytes(
             receipt_id,
-            b"".join(chunks),
+            data,
             declared_bytes=int(declared) if declared.isdigit() else None,
         )
     except StoreError as error:

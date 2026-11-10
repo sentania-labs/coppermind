@@ -522,16 +522,26 @@ def body_with_links(body: str, links: list[str]) -> str:
 # Writes
 
 
-def _size_limit(store: LocalStore, size: int, payload_size_bytes: int | None) -> None:
-    limit = store.control.settings().limits.artifact_max_bytes
+def _size_limit(
+    store: LocalStore, size: int, payload_size_bytes: int | None, max_bytes: int | None
+) -> None:
+    limit = max_bytes or store.control.settings().limits.artifact_max_bytes
     if max(size, payload_size_bytes or 0) > limit:
         raise PayloadTooLarge(limit)
 
 
 async def create_artifact(
-    store: LocalStore, request: CreateArtifact, *, payload_size_bytes: int | None = None
+    store: LocalStore,
+    request: CreateArtifact,
+    *,
+    payload_size_bytes: int | None = None,
+    max_bytes: int | None = None,
 ) -> CreatedArtifact:
-    """Store a file or a link as a new artifact, a new revision, or a replay."""
+    """Store a file or a link as a new artifact, a new revision, or a replay.
+
+    `max_bytes` replaces the inline ceiling for a caller that has already
+    bounded the file another way, which is the staged upload path.
+    """
     settings = store.control.settings()
     data: bytes | None = None
     mime: str | None = None
@@ -542,7 +552,7 @@ async def create_artifact(
             data = request.bytes()
         except (binascii.Error, ValueError) as exc:
             raise ValidationFailed(["content_base64 is not valid base64"]) from exc
-        _size_limit(store, len(data), payload_size_bytes)
+        _size_limit(store, len(data), payload_size_bytes, max_bytes)
         filename = artifact_filename(cast(str, request.filename))
         mime = media_type(filename, request.mime_type, data)
         sha = hashlib.sha256(data).hexdigest()

@@ -22,6 +22,7 @@ from coppermind_store.artifacts import record_path
 from coppermind.db.models import Artifact, SearchDocument
 from coppermind.store_protocol import (
     CreateArtifact,
+    PayloadTooLarge,
     ReceiptMissing,
     StagedFileUnavailable,
     StagedReservation,
@@ -133,8 +134,9 @@ async def test_an_identical_retry_succeeds_and_conflicting_bytes_do_not(store):
     # Same declaration, same receipt identifier: an identical retry, not a new one.
     assert (await staged.reserve(store, declaration())).id == receipt.id
     # Different bytes under that receipt are a conflict on the receipt.
-    conflict = await staged.put_bytes(store, receipt.id, b"other!", declared_bytes=6)
-    assert conflict.state == "failed" and "hashed" in str(conflict.failure)
+    with pytest.raises(ValidationFailed):
+        await staged.put_bytes(store, receipt.id, b"other!", declared_bytes=6)
+    assert (await staged.get_receipt(store, receipt.id)).state == "stored"
     async with store.session_factory() as session:
         rows = (
             await session.execute(sa.select(Artifact).where(Artifact.filename == "deck.pptx"))
@@ -189,3 +191,25 @@ async def test_the_staged_maximum_is_configurable_and_stops_a_long_stream(store,
     result = await staged.put_bytes(store, receipt.id, b"x" * (6 + 1), declared_bytes=6)
     assert result.state == "failed"
     assert "7 bytes" in str(result.failure)
+
+
+async def test_a_file_over_the_inline_limit_is_stored_by_finalize(store):
+    limit = store.control.settings().limits.artifact_max_bytes
+    data = b"q" * (limit + 1024)
+    digest = hashlib.sha256(data).hexdigest()
+    receipt = await staged.reserve(
+        store, declaration(filename="big.bin", size_bytes=len(data), sha256=digest)
+    )
+    await staged.put_bytes(store, receipt.id, data, declared_bytes=len(data))
+    done = await staged.finalize(store, receipt.id)
+    assert done.state == "stored" and done.artifact is not None
+    archived = store.artifacts_root / done.artifact.id / "r0001" / "big.bin"
+    assert archived.stat().st_size == len(data)
+    with pytest.raises(PayloadTooLarge):
+        await store.create_artifact(
+            CreateArtifact(
+                kind="artifact",
+                filename="big.bin",
+                content_base64=base64.b64encode(data).decode(),
+            )
+        )

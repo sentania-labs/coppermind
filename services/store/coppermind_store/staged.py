@@ -254,6 +254,10 @@ async def put_bytes(
     """Stream one body into the staging area, then verify its count and digest."""
     async with store._artifact_lock:
         document = _read_receipt(store, receipt_id)
+        if document.get("state") == "stored":
+            raise ValidationFailed(
+                ["this receipt is already stored; reserve a new declaration to send other bytes"]
+            )
         declared = int(document["size_bytes"])
         if declared_bytes is not None and declared_bytes != declared:
             return _fail(
@@ -262,16 +266,16 @@ async def put_bytes(
                 f"Content-Length announced {declared_bytes} bytes; the reservation declared "
                 f"{declared}",
             )
-        written, digest = await _stream_to_disk(store, receipt_id, data, declared)
+        written, digest = await _stream_to_disk(
+            store, receipt_id, data, declared, str(document["sha256"])
+        )
         if written != declared:
-            _discard_staged(store, receipt_id)
             return _fail(
                 store,
                 document,
                 f"the stream carried {written} bytes; the reservation declared {declared}",
             )
         if digest != str(document["sha256"]):
-            _discard_staged(store, receipt_id)
             return _fail(
                 store,
                 document,
@@ -286,9 +290,13 @@ async def put_bytes(
 
 
 async def _stream_to_disk(
-    store: LocalStore, receipt_id: str, data: bytes, declared: int
+    store: LocalStore, receipt_id: str, data: bytes, declared: int, sha256: str
 ) -> tuple[int, str]:
-    """Write `data` to the staged file in chunks, counting and hashing as it goes."""
+    """Write `data` to a temporary file in chunks, counting and hashing as it goes.
+
+    The staged file is replaced only once the count and digest both match, so a
+    bad upload never destroys a verified one.
+    """
     folder = _staged_dir(store)
     folder.mkdir(parents=True, exist_ok=True)
     hasher = hashlib.sha256()
@@ -304,15 +312,16 @@ async def _stream_to_disk(
                 written += len(chunk)
             stream.flush()
             os.fsync(stream.fileno())
-        if written > declared:
+        digest = hasher.hexdigest()
+        if written != declared or digest != sha256:
             temp.unlink(missing_ok=True)
-            return written, hasher.hexdigest()
+            return written, digest
         os.replace(temp, _bytes_path(store, receipt_id))
     except BaseException:
         temp.unlink(missing_ok=True)
         raise
     sync_directory(folder)
-    return written, hasher.hexdigest()
+    return written, digest
 
 
 def _discard_staged(store: LocalStore, receipt_id: str) -> None:
@@ -334,47 +343,50 @@ def _fail(store: LocalStore, document: dict[str, Any], reason: str) -> StagedRec
 async def finalize(store: LocalStore, receipt_id: str) -> StagedReceipt:
     """Verify the staged bytes, then store the artifact through the inline code path.
 
-    The receipt is read, verified and written outside `store._artifact_lock`, and
-    the artifact write itself is made by `create_artifact`, which takes that lock
-    itself. Holding it here as well would stop the very call this step depends
-    on, since an `asyncio.Lock` is not reentrant. The order is still the one the
-    write protocol asks for: verify the bytes, then let the one artifact write
-    path do its own locked work.
+    The receipt is read and verified under `store._artifact_lock`, and written
+    again under it once the artifact exists. The artifact write itself is made by
+    `create_artifact`, which takes that lock itself, so it runs between the two:
+    an `asyncio.Lock` is not reentrant.
     """
     from coppermind_store.artifacts import create_artifact
 
-    document = _read_receipt(store, receipt_id)
-    if document.get("state") == "stored" and document.get("artifact"):
-        return _receipt(document)
-    if document.get("state") == "failed":
-        raise ValidationFailed([str(document.get("failure") or "the upload failed")])
-    declared = int(document["size_bytes"])
-    path = _bytes_path(store, receipt_id)
-    if not path.is_file():
-        raise ValidationFailed(
-            ["no bytes are staged for this receipt; send the PUT, then finalize"]
-        )
-    size, digest = await _read_staged(path, declared)
-    if size != declared:
-        _discard_staged(store, receipt_id)
-        return _fail(store, document, _mismatch("the staged file", size, declared))
-    if digest != str(document["sha256"]):
-        _discard_staged(store, receipt_id)
-        return _fail(
-            store,
-            document,
-            f"the staged file hashes to {digest}; the reservation declared {document['sha256']}",
-        )
+    async with store._artifact_lock:
+        document = _read_receipt(store, receipt_id)
+        if document.get("state") == "stored" and document.get("artifact"):
+            return _receipt(document)
+        if document.get("state") == "failed":
+            raise ValidationFailed([str(document.get("failure") or "the upload failed")])
+        declared = int(document["size_bytes"])
+        path = _bytes_path(store, receipt_id)
+        if not path.is_file():
+            raise ValidationFailed(
+                ["no bytes are staged for this receipt; send the PUT, then finalize"]
+            )
+        size, digest = await _read_staged(path, declared)
+        if size != declared:
+            _discard_staged(store, receipt_id)
+            return _fail(store, document, _mismatch("the staged file", size, declared))
+        if digest != str(document["sha256"]):
+            _discard_staged(store, receipt_id)
+            return _fail(
+                store,
+                document,
+                f"the staged file hashes to {digest}; "
+                f"the reservation declared {document['sha256']}",
+            )
+        request = _create_request(store, document)
     created = await create_artifact(
-        store, _create_request(store, document), payload_size_bytes=size
+        store, request, max_bytes=store.control.settings().limits.staged_max_bytes
     )
-    document["state"] = "stored"
-    document["upload_bytes"] = size
-    document["failure"] = None
-    document["artifact"] = created.model_dump(mode="json")
-    document["updated_at"] = _now().isoformat()
-    _write_receipt(store, document)
-    _discard_staged(store, receipt_id)
+    async with store._artifact_lock:
+        document = _read_receipt(store, receipt_id)
+        document["state"] = "stored"
+        document["upload_bytes"] = size
+        document["failure"] = None
+        document["artifact"] = created.model_dump(mode="json")
+        document["updated_at"] = _now().isoformat()
+        _write_receipt(store, document)
+        _discard_staged(store, receipt_id)
     return _receipt(document)
 
 

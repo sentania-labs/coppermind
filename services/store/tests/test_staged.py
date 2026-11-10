@@ -210,14 +210,15 @@ async def test_finalize_without_staged_bytes_or_a_failed_upload_is_refused(store
         await staged.finalize(store, bare.id)
 
 
-async def test_a_second_put_of_conflicting_bytes_fails_the_receipt(store):
+async def test_a_put_to_a_stored_receipt_is_refused_and_leaves_it_stored(store):
     receipt = await staged.reserve(store, declaration())
     await staged.put_bytes(store, receipt.id, b"quokka", declared_bytes=6)
     await staged.finalize(store, receipt.id)
-    conflict = await staged.put_bytes(store, receipt.id, b"other!", declared_bytes=6)
-    assert conflict.state == "failed"
-    assert "hashed" in str(conflict.failure)
-    assert (await staged.get_receipt(store, receipt.id)).state == "failed"
+    with pytest.raises(ValidationFailed):
+        await staged.put_bytes(store, receipt.id, b"other!", declared_bytes=6)
+    kept = await staged.get_receipt(store, receipt.id)
+    assert kept.state == "stored" and kept.artifact is not None
+    assert (await staged.finalize(store, receipt.id)).artifact == kept.artifact
 
 
 async def test_an_unknown_or_unreadable_receipt_is_reported(store):
@@ -245,3 +246,30 @@ async def test_an_abandoned_reservation_is_swept_once_the_window_passes(store):
     # A receipt written moments ago survives the same sweep.
     survivors = [json.loads(p.read_text())["filename"] for p in folder.glob("*.json")]
     assert "second.pptx" in survivors
+
+
+async def test_a_bad_second_put_does_not_destroy_the_verified_upload(store):
+    receipt = await staged.reserve(store, declaration())
+    await staged.put_bytes(store, receipt.id, b"quokka", declared_bytes=6)
+    failed = await staged.put_bytes(store, receipt.id, b"QUOKKA", declared_bytes=6)
+    assert failed.state == "failed"
+    staged_path = store.control.store.state_dir / "staged" / f"{receipt.id}.bin"
+    assert staged_path.read_bytes() == b"quokka"
+    recovered = await staged.put_bytes(store, receipt.id, b"quokka", declared_bytes=6)
+    assert recovered.state == "uploading"
+    assert (await staged.finalize(store, receipt.id)).state == "stored"
+
+
+async def test_finalize_stores_a_file_larger_than_the_inline_limit(store):
+    limit = store.control.settings().limits.artifact_max_bytes
+    data = b"q" * (limit + 1024)
+    digest = hashlib.sha256(data).hexdigest()
+    receipt = await staged.reserve(
+        store, declaration(filename="big.bin", size_bytes=len(data), sha256=digest)
+    )
+    await staged.put_bytes(store, receipt.id, data, declared_bytes=len(data))
+    done = await staged.finalize(store, receipt.id)
+    assert done.state == "stored" and done.artifact is not None
+    assert (store.artifacts_root / done.artifact.id / "r0001" / "big.bin").stat().st_size == len(
+        data
+    )

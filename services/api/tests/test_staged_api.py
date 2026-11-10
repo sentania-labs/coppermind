@@ -9,6 +9,7 @@ receipt is in `services/store/tests/test_staged.py`.
 from __future__ import annotations
 
 import hashlib
+import json
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -262,3 +263,34 @@ def test_a_failed_upload_is_reported_without_becoming_an_artifact(api):
     assert body["state"] == "failed"
     assert body["artifact"] is None
     assert body["failure"] == "mismatch"
+
+
+def test_a_put_past_the_staged_maximum_is_refused_before_it_reaches_the_store(api, monkeypatch):
+    from coppermind_api.v1 import staged as staged_routes
+
+    monkeypatch.setattr(staged_routes, "settings_limit", lambda: 8)
+    client, fake = api
+    headers = {**_as(fake, "write"), "Content-Type": "application/octet-stream"}
+    sized = client.put(f"/v1/staged/{RECEIPT_ID}", content=b"123456789", headers=headers)
+    assert sized.status_code == 413
+    assert sized.json()["error"] == "payload_too_large"
+
+    def chunks():
+        yield b"12345"
+        yield b"6789"
+
+    chunked = client.put(f"/v1/staged/{RECEIPT_ID}", content=chunks(), headers=headers)
+    assert chunked.status_code == 413
+    assert fake.uploads == []
+
+
+def test_a_declaration_far_larger_than_its_framing_is_refused_unparsed(api):
+    client, fake = api
+    huge = json.dumps(dict(DECLARATION, fields={"title": "x" * (128 * 1024)}))
+    response = client.post(
+        "/v1/staged",
+        content=huge,
+        headers={**_as(fake, "write"), "Content-Type": "application/json"},
+    )
+    assert response.status_code == 413
+    assert fake.reserved == []
