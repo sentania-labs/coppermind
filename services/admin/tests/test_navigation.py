@@ -100,6 +100,7 @@ def test_shell_palette_meets_normal_text_contrast():
             ("--on-accent", "--bad-ink"),
             ("--link", "--surface"),
             ("--link", "--surface-sunken"),
+            ("--on-accent", "--accent-strong"),
         ):
             a, b = luminance(color(foreground)), luminance(color(background))
             assert (max(a, b) + 0.05) / (min(a, b) + 0.05) >= 4.5

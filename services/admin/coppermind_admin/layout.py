@@ -33,6 +33,7 @@ nav a {padding:.7rem .8rem;border-radius:.4rem;text-decoration:none}
 nav a:hover {background:var(--accent-soft)}
 nav a[aria-current=page] {background:var(--accent);color:var(--on-accent)}
 .sidebar button {width:100%;background:transparent;color:var(--link);border:1px solid var(--line)}
+.sidebar button:hover {background:var(--surface-sunken);color:var(--link)}
 .workspace {padding:2rem;max-width:100rem;width:100%;margin:0 auto}
 .breadcrumb {font-size:.8rem;color:var(--ink-muted);margin-bottom:1.5rem}
 main {background:var(--surface);border:1px solid var(--line);border-radius:.8rem;padding:2rem}
