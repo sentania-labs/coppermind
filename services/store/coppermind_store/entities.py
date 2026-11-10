@@ -870,10 +870,11 @@ class EntityService:
                 if not fact.evidence.note_id:
                     continue
                 supporting = notes.get(fact.evidence.note_id)
+                current_sources = (source_versions or {}).get(fact.evidence.note_id)
                 sources_changed = (
                     bool(fact.evidence.source_versions)
-                    and fact.evidence.note_id in (source_versions or {})
-                    and source_versions[fact.evidence.note_id] != fact.evidence.source_versions
+                    and current_sources is not None
+                    and current_sources != fact.evidence.source_versions
                 )
                 if (
                     supporting is None
