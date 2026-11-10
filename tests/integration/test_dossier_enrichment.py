@@ -979,3 +979,28 @@ async def test_reviewed_recovery_selects_newest_matching_dossier_job(store):
     assert selected == second.id
     assert context.load_job(first.id).state == "failed"
     assert context.load_job(second.id).state == "queued"
+
+
+async def test_reverted_edit_gets_a_new_newest_dossier_job_not_an_older_one(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Reviewed meeting", body=BODY, frontmatter={"reviewed": True})
+    )
+    first = context.load_job(await context.queue_reviewed(note.id))
+    first.state = "failed"
+    context.save_job(first)
+    edited = await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"mood": "b"}), note.content_hash
+    )
+    second = context.load_job(await context.queue_reviewed(note.id))
+    reverted = await store.patch_frontmatter(
+        note.id, PatchFrontmatter(unset=["mood"]), edited.content_hash
+    )
+    assert reverted.content_hash == note.content_hash
+
+    selected = await context.queue_reviewed(note.id)
+
+    assert selected not in {first.id, second.id}
+    assert context.newest_job_id(note.id) == selected
+    assert context.load_job(selected).note_hash == note.content_hash
+    assert context.load_job(first.id).state == "failed"
