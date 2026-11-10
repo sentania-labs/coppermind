@@ -66,23 +66,6 @@ def current_person(context: Any, candidate: dict[str, Any]) -> dict[str, Any] | 
     entity_id = candidate.get("person_id")
     if candidate["id"].startswith("person:"):
         entity_id = candidate["id"].removeprefix("person:")
-    if not entity_id and candidate.get("path"):
-        # Jobs saved before matched contacts carried an entity ID still need revalidation.
-        from coppermind_store.entities import email
-
-        address = email(candidate.get("email", ""))
-        matches = [
-            e
-            for e in context.store.entities.load().entities.values()
-            if e.kind == "person"
-            and (
-                e.path == candidate["path"]
-                or (address is not None and any(email(value) == address for value in e.emails))
-            )
-        ]
-        if len(matches) != 1:
-            return None
-        entity_id = matches[0].id
     if not entity_id:
         return candidate
     entity = context.store.entities.load().entities.get(entity_id)
