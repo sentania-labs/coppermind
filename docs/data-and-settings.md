@@ -265,7 +265,9 @@ connections enrichment uses) and a model, stored with the other model
 assignments in `/data/state/context/config.json` under `embeddings`. The
 credential stays in the connection.
 
-A background worker in the store gives every search entry, newest first,
+A background worker in the store gives every search entry (notes, generated
+source pages, stored artifacts, and the people and company pages, whose text
+includes personal details), newest first,
 passages of about 1,200 characters with the title, asks the connection's
 `/embeddings` endpoint for their vectors a few at a time, and stores them in
 `search_embeddings` (pgvector, no fixed dimension, exact cosine distance).

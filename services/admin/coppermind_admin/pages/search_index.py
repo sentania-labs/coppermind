@@ -206,7 +206,8 @@ including the test when you save.</p>
 <fieldset><legend>When to run</legend>
 <label><input type="checkbox" name="enabled"{checked(settings["enabled"])}>
 Search by meaning</label>
-<p class="muted">When this is on, the text of your notes, source pages and stored artifacts is
+<p class="muted">When this is on, the text of your notes, source pages, stored artifacts and the
+people and company pages (which hold personal details) is
 sent to the connection chosen above so it can be embedded, a few at a time, in the background,
 newest first. It picks up where it left off after a restart. Saving asks the model for one test
 embedding before turning this on. Changing the connection or the model indexes existing content
