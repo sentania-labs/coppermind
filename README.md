@@ -45,9 +45,9 @@ signed cookie itself, not in a database row: Log out clears it from that
 browser, and the same session cannot be cut off anywhere else, so a token
 already copied out stays good until its 12 hours are up. Re-claiming with a
 new password is what ends every session at once, and the recovery steps below
-are how you do it. Admin's overview intentionally reports only that you are
-signed in; settings, API keys, status, and Obsidian Sync connection arrive as
-separate increments. Obsidian's 'Default location for new attachments' is a
+are how you do it. Admin's Home lists what needs attention (failed imports,
+suggestions and filing, with a link to the remedy) and the menu is Home,
+Imports, Review status, Calendar, People and Settings. Obsidian's 'Default location for new attachments' is a
 per-device setting that defaults to the notes filesystem root; set it from
 Settings > Files & links > Default location for attachments so new
 attachments land where your filing rules expect them.
