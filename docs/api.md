@@ -337,7 +337,8 @@ failure is also listed under Problems as "Recording transcription" with the reas
 A service that answers "busy" (HTTP 429, or the reason `busy`) is working for someone
 else, so that is a wait and not a failure. The intake stays `queued` with `error_rule`
 `transcription-busy`, no attempt is used, and the app asks again after the service's
-`Retry-After` (up to an hour) or, without one, after two to three minutes. After 24 hours
+`Retry-After`, but never sooner than 60 seconds or later than 15 minutes, or, without
+one, after two to three minutes. After 24 hours
 of continuous busy answers it becomes a failed intake (`transcription-busy-limit`) in
 Problems, with Retry and no automatic try. A store restart in the middle of a
 transcription is not a failed attempt either: the recording is sent again under the same

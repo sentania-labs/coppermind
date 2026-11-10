@@ -420,7 +420,6 @@ async def test_job_path_polls_and_submits_stable_identity_and_hint(recording, mo
             return httpx.Response(200, json={"status": "running"})
         return httpx.Response(200, json={"status": "done", "result": REPLY})
 
-    progress: list[str] = []
     provider = ModelProvider(httpx.MockTransport(handle))
     connection = ModelConnection(
         id="stt", name="Speech", provider="compatible", base_url="http://127.0.0.1:1/v1"
@@ -436,14 +435,13 @@ async def test_job_path_polls_and_submits_stable_identity_and_hint(recording, mo
         job_id="stable-id",
         duration_seconds=7201,
         num_speakers=3,
-        progress=progress.append,
     )
     assert result["segments"]
     assert requests[0][1] == "/v1/audio/transcriptions/jobs"
     assert b'name="id"\r\n\r\nstable-id' in requests[0][2]
     assert b'name="num_speakers"\r\n\r\n3' in requests[0][2]
     assert requests[1][1] == "/v1/audio/transcriptions/jobs/job-1"
-    assert progress == ["queued", "running", "done"]
+    assert [r[0] for r in requests] == ["POST", "GET", "GET"]
 
 
 @pytest.mark.parametrize(
@@ -538,15 +536,20 @@ def test_a_job_is_given_one_and_a_half_times_the_audio_never_under_an_hour_else_
     assert job_budget_seconds(None) == 8 * 3600
 
 
-@pytest.mark.parametrize("header", ["7", None])
-async def test_a_busy_answer_is_a_wait_that_carries_the_services_retry_after(recording, header):
+@pytest.mark.parametrize(
+    ("header", "asked"),
+    [("1", 60), ("300", 300), ("99999", 900), ("0", None), ("soon", None), (None, None)],
+)
+async def test_a_busy_answer_is_a_wait_that_carries_the_retry_after_kept_within_bounds(
+    recording, header, asked
+):
     from coppermind_store.recordings import repeats_only
 
     async with Service(status=429, retry_after=header) as service:
         with pytest.raises(ProviderError) as caught:
             await send(service, recording)
     assert caught.value.rule == "transcription-busy"
-    assert caught.value.retry_after == (7 if header else None)
+    assert caught.value.retry_after == asked
     assert not repeats_only(caught.value.rule)
 
 

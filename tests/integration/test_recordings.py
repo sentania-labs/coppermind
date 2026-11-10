@@ -294,7 +294,7 @@ def rewind(context, job_id, **changes):
 
 
 async def test_another_client_holding_the_service_is_a_wait_not_a_failed_attempt(store):
-    async with Service(status=429, retry_after=5) as service:
+    async with Service(status=429, retry_after=1) as service:
         context = await setup_transcription(store, service)
         audio = await store_audio(store)
         job = await context.accept_recording(request(audio))
@@ -305,7 +305,8 @@ async def test_another_client_holding_the_service_is_a_wait_not_a_failed_attempt
             assert waiting["error_rule"] == "transcription-busy"
             assert "busy" in waiting["error"]
             asked_again = datetime.fromisoformat(waiting["retry_after"])
-            assert datetime.now(UTC) < asked_again <= datetime.now(UTC) + timedelta(seconds=6)
+            until_then = (asked_again - datetime.now(UTC)).total_seconds()
+            assert 50 < until_then <= 61  # a Retry-After of 1 second is held to the 60 s floor
             # Not asked again before its time, and it is no entry in Problems.
             assert await context.recordings.tick() is False
             assert not [p for p in await store.get_problems() if p.kind == "recording"]
@@ -390,6 +391,27 @@ async def test_a_restart_on_the_jobs_path_asks_again_under_the_same_id(store, mo
     assert b'name="id"\r\n\r\n' + ident in service.requests[2]["body"]
     done = await context.recording_status({"id": job["id"]})
     assert done["state"] == "succeeded" and done["attempts"] == 1
+
+
+async def test_a_job_the_service_failed_is_asked_for_again_under_a_new_id(store, monkeypatch):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    async with Service(jobs=True, job_status="failed") as service:
+        context = await setup_transcription(store, service)
+        job = await context.accept_recording(
+            request(await store_audio(store), metadata={"duration_seconds": 7500})
+        )
+        await context.recordings.tick()
+        failed = await context.recording_status({"id": job["id"]})
+        assert failed["state"] == "failed" and failed["attempts"] == 1
+        service.job_status = "done"
+        rewind(context, job["id"], retry_after="")
+        await context.recordings.tick()
+    first, second = (r["body"] for r in service.requests if r["path"].startswith("POST"))
+    assert b'name="id"\r\n\r\n' + f"{job['id']}-0".encode() in first
+    assert b'name="id"\r\n\r\n' + f"{job['id']}-1".encode() in second
+    assert (await context.recording_status({"id": job["id"]}))["state"] == "succeeded"
 
 
 @pytest.mark.parametrize("job_status", ["running", None])

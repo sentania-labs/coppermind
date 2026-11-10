@@ -7,7 +7,7 @@ import json
 import math
 import secrets
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -47,8 +47,10 @@ JOB_MIN_SECONDS = 3600
 JOB_UNKNOWN_SECONDS = 8 * 3600
 # How many answers in a row without a status end the wait.
 JOB_EMPTY_ANSWERS = 5
-# The longest a busy service's Retry-After is honoured.
-MAX_RETRY_AFTER_SECONDS = 3600
+# A busy service's Retry-After is honoured within these bounds, so a tiny value cannot make
+# the whole recording be sent again every second.
+MIN_RETRY_AFTER_SECONDS = 60
+MAX_RETRY_AFTER_SECONDS = 900
 TRANSCRIPTION_REASONS = {"busy", "internal", "audio_unreadable", "no_speech", "too_long"}
 
 
@@ -64,7 +66,9 @@ def retry_after_seconds(value: str | None) -> float | None:
         seconds = float(value) if value is not None else 0.0
     except ValueError:
         return None
-    return min(seconds, MAX_RETRY_AFTER_SECONDS) if seconds > 0 else None
+    if not seconds > 0:
+        return None
+    return min(max(seconds, MIN_RETRY_AFTER_SECONDS), MAX_RETRY_AFTER_SECONDS)
 
 
 def transcription_error(reason: str) -> ProviderError:
@@ -95,6 +99,7 @@ class ProviderError(ValueError):
         reply: str = "",
         waiting: bool = False,
         retry_after: float | None = None,
+        job_failed: bool = False,
     ) -> None:
         super().__init__(message)
         self.rule = rule
@@ -102,6 +107,8 @@ class ProviderError(ValueError):
         self.waiting = waiting
         # Seconds the service asked to wait before it is asked again, when it said.
         self.retry_after = retry_after
+        # True when the service's own job ended in failure; that job id is spent.
+        self.job_failed = job_failed
 
 
 class InputLimitError(ProviderError):
@@ -686,7 +693,6 @@ class ModelProvider:
         job_id: str = "",
         duration_seconds: float | None = None,
         num_speakers: int | None = None,
-        progress: Callable[[str], None] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Send one recording to `POST /audio/transcriptions`; return its speaker segments.
 
@@ -805,8 +811,6 @@ class ModelProvider:
                             "Check the service, then press Retry.",
                             "transcription-unfinished",
                         )
-                    if progress and state in {"queued", "running", "done", "failed"}:
-                        progress(state)
                     if state == "done":
                         result = result.get("result")
                         if not isinstance(result, dict):
@@ -819,11 +823,14 @@ class ModelProvider:
                     if state == "failed":
                         reason = result.get("reason")
                         if isinstance(reason, str) and reason in TRANSCRIPTION_REASONS:
-                            raise transcription_error(reason)
+                            failure = transcription_error(reason)
+                            failure.job_failed = True
+                            raise failure
                         raise ProviderError(
                             "The transcription job failed. Check the service and retry.",
                             "transcription-http",
                             waiting=True,
+                            job_failed=True,
                         )
                     if state not in {"queued", "running", None}:
                         raise ProviderError(
