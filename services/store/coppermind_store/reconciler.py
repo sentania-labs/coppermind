@@ -554,7 +554,9 @@ async def reconcile_once(
             await session.execute(stale)
             for path, reason in refusals.items():
                 session.add(
-                    RecordedRejection(kind="adoption", reference=path, reason=reason, created_at=now)
+                    RecordedRejection(
+                        kind="adoption", reference=path, reason=reason, created_at=now
+                    )
                 )
 
             for note_id, _path, kind, reason in collisions_list:
