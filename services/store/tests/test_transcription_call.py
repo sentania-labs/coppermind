@@ -722,6 +722,41 @@ async def test_job_recovers_with_same_key(recording, monkeypatch, failure):
     assert updates[-1][3] == ""
 
 
+async def test_a_saved_job_older_than_its_budget_is_still_polled_once_after_a_restart(
+    recording, monkeypatch
+):
+    import time
+
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+
+    requests = []
+
+    async def handle(request):
+        requests.append((request.method, request.url.path))
+        return httpx.Response(200, json={"status": "done", "result": REPLY})
+
+    connection = ModelConnection(
+        id="stt", name="Speech", provider="compatible", base_url="http://127.0.0.1:1/v1"
+    )
+    result, _ = await ModelProvider(httpx.MockTransport(handle)).transcribe(
+        connection,
+        "",
+        assignment(),
+        recording,
+        filename=recording.name,
+        mime_type="audio/mp4",
+        size_bytes=recording.stat().st_size,
+        job_id="stable",
+        duration_seconds=2400,
+        remote_job_id="saved-job",
+        job_started=time.time() - 3 * 3600,
+    )
+    assert result["segments"]
+    assert requests == [("GET", "/v1/audio/transcriptions/jobs/saved-job")]
+
+
 @pytest.mark.parametrize("reason", ["audio_unreadable", "no_speech", "too_long"])
 async def test_failed_job_is_not_resubmitted_for_bad_audio(recording, monkeypatch, reason):
     from coppermind_store import model_provider

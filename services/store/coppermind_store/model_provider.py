@@ -811,8 +811,10 @@ class ModelProvider:
                     else:
                         raise
             if use_job:
-                spent = time.time() - job_started if job_started and remote_job_id else 0
-                deadline = time.monotonic() + max(0, job_budget_seconds(duration_seconds) - spent)
+                remaining = job_budget_seconds(duration_seconds)
+                if job_started and remote_job_id:
+                    remaining = max(remaining - (time.time() - job_started), assignment.wait_s)
+                deadline = time.monotonic() + remaining
                 result = {"status": "running"} if remote_job_id else None
                 stats = CallStats()
                 empty_answers = 0
