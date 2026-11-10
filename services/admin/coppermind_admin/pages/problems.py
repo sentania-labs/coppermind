@@ -367,16 +367,21 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
             '<a href="/admin/context?tab=review">Suggestions</a></li>'
         )
 
+    paused = ""
     try:
         device = await asyncio.wait_for(probe, PROBE_WAIT_S)
         if (
             device.get("last_error")
             or device.get("config_error")
-            or device.get("state") in {"error", "paused", "stopped"}
+            or device.get("state") in {"error", "stopped"}
         ):
             rows.append(
                 "<li><strong>Device connection needs attention</strong><p>Check the "
                 'connection and reconnect if needed.</p><a href="/admin/sync">Open devices</a></li>'
+            )
+        elif device.get("state") == "paused":
+            paused = (
+                '<p class="muted">Sync is paused. <a href="/admin/sync">Resume in Devices</a></p>'
             )
     except (OSError, ValueError):
         rows.append(
@@ -425,6 +430,7 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
         f'<p><a href="/admin/workflow?tab=review">{review} notes awaiting review</a>. '
         "Review in Obsidian and check Reviewed to file each note.</p>"
         f'<section id="attention"><h2>Needs attention ({len(rows)})</h2>{content}</section>'
+        f"{paused}"
         f"<section><h2>Recent activity</h2>{recent_html}</section>"
         f"<details><summary>Filing status</summary>{filing}</details>"
         '<p><a href="/admin/problems">Filing details and exclusions</a> · '

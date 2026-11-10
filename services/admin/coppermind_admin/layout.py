@@ -160,6 +160,28 @@ SETTINGS_LINKS = (
 )
 
 
+SETTINGS_PAGES = (
+    "/admin/sync",
+    "/admin/properties",
+    "/admin/keys",
+    "/admin/search-index",
+    "/admin/field-index",
+    "/admin/note-history",
+    "/admin/artifacts",
+    "/admin/purge",
+)
+
+DETAIL_PARENTS = (
+    ("/admin/notes", "/admin/workflow?tab=review"),
+    ("/admin/review", "/admin/workflow?tab=review"),
+    ("/admin/context/jobs", "/admin/settings"),
+)
+
+
+def _under(path: str, base: str) -> bool:
+    return path == base or path.startswith(base + "/")
+
+
 def render(title: str, body: str, path: str) -> str:
     """Only authenticated requests supply a path and receive navigation."""
     if path:
@@ -167,18 +189,30 @@ def render(title: str, body: str, path: str) -> str:
         current = urlsplit(active)
         query = parse_qs(current.query)
 
-        def selected(url: str) -> bool:
+        def matches(url: str) -> bool:
             target = urlsplit(url)
             target_query = parse_qs(target.query)
             return current.path == target.path and all(
                 query.get(key) == value for key, value in target_query.items()
             )
 
+        section = next(
+            (parent for base, parent in DETAIL_PARENTS if _under(current.path, base)), ""
+        )
+        if not section and any(_under(current.path, base) for base in SETTINGS_PAGES):
+            section = "/admin/settings"
+        if not section:
+            section = next((url for url, _ in LINKS if matches(url)), "")
+        if not section and any(matches(url) for url, _ in SETTINGS_LINKS):
+            section = "/admin/settings"
+
         links = "".join(
-            f'<a href="{url}"' + (' aria-current="page"' if selected(url) else "") + f">{label}</a>"
+            f'<a href="{url}"'
+            + (' aria-current="page"' if url == section else "")
+            + f">{label}</a>"
             for url, label in LINKS
         )
-        if current.path == "/admin/settings":
+        if section == "/admin/settings":
             settings_links = "".join(
                 f'<li><a href="{url}">{label}</a></li>'
                 for url, label in SETTINGS_LINKS
@@ -188,7 +222,11 @@ def render(title: str, body: str, path: str) -> str:
                 f"<details><summary>Devices, connections and maintenance</summary>"
                 f"<ul>{settings_links}</ul></details>"
             )
-            body = body.replace("</h1>", "</h1>" + settings_menu, 1)
+            body = (
+                body.replace("</h1>", "</h1>" + settings_menu, 1)
+                if "</h1>" in body
+                else settings_menu + body
+            )
         controls = """<label>Appearance<select class="theme lat-select">
 <option value="system">System</option><option value="light">Light</option>
 <option value="dark">Dark</option></select></label>

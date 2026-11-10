@@ -625,8 +625,26 @@ def test_home_shows_paused_device(signed_in, monkeypatch):
     store.problems = []
     monkeypatch.setattr(problems, "sync_status", lambda wiring: {"state": "paused"})
     page = client.get("/admin").text
-    assert "Device connection needs attention" in page
+    assert "Nothing needs attention right now" in page
+    assert "Device connection needs attention" not in page
+    assert "Sync is paused" in page
     assert 'href="/admin/sync"' in page
+
+
+@pytest.mark.parametrize(
+    "status",
+    [{"state": "error"}, {"state": "stopped"}, {"last_error": "boom"}, {"config_error": "bad"}],
+)
+def test_home_flags_a_failed_device(signed_in, monkeypatch, status):
+    from coppermind_admin.pages import problems
+
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = []
+    monkeypatch.setattr(problems, "sync_status", lambda wiring: status)
+    page = client.get("/admin").text
+    assert "Device connection needs attention" in page
+    assert "Nothing needs attention right now" not in page
 
 
 def test_dismissing_from_home_returns_to_home(signed_in):
@@ -683,4 +701,3 @@ def test_home_shows_sync_configuration_failure(signed_in, monkeypatch):
     page = client.get("/admin").text
     assert "Device connection needs attention" in page
     assert 'href="/admin/sync"' in page
-    assert "Nothing needs attention right now" not in page
