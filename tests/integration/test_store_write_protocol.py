@@ -677,13 +677,11 @@ async def test_an_invalid_frontmatter_patch_names_the_field_and_changes_nothing(
     with pytest.raises(ValidationFailed) as raised:
         await store.patch_frontmatter(
             created.id,
-            PatchFrontmatter(set={"type": "incident"}),
+            PatchFrontmatter(set={"context": "incident"}),
             created.content_hash,
         )
 
-    assert raised.value.errors == [
-        "type: 'incident' is not one of work, personal, reference, journal"
-    ]
+    assert raised.value.errors == ["context: 'incident' is not one of internal, external, personal"]
     assert path.read_bytes() == before
 
     with pytest.raises(ValidationFailed) as changed_id:
@@ -832,11 +830,11 @@ async def test_unsetting_a_required_field_is_refused_and_changes_nothing(store: 
     with pytest.raises(ValidationFailed) as raised:
         await store.patch_frontmatter(
             created.id,
-            PatchFrontmatter(unset=["type"]),
+            PatchFrontmatter(unset=["context"]),
             created.content_hash,
         )
 
-    assert raised.value.errors == ["type: required, so it cannot be removed"]
+    assert raised.value.errors == ["context: required, so it cannot be removed"]
     assert path.read_bytes() == before
 
 

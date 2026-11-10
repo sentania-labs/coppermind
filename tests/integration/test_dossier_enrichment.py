@@ -249,7 +249,7 @@ async def test_filing_preserves_extracted_frontmatter_evidence(store):
     assert await file_note(store, note.id)
     filed = await store.get_note(note.id)
     assert filed.content_hash != note.content_hash
-    assert filed.path.startswith("Notes/2026/2026-10/")
+    assert filed.path.startswith("work/2026/2026-10/")
     await store.entities.refresh()
     entity = store.entities.load().entities[before.id]
     assert {f.id for f in entity.facts} == {f.id for f in before.facts}
