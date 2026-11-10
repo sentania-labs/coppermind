@@ -362,8 +362,8 @@ reason that can pass is sent again under the same `Idempotency-Key`, at most thr
 and each accepted job gets a fresh time. After a store restart a saved job is always
 polled at least once before the app gives up on it. A service that is still `queued` or
 `running` after that, that answers five times in a row with no status, or that loses or
-fails the job a fourth time, ends the intake as failed with `transcription-unfinished`. That is waiting for a person to press Retry, and the worker
-moves on to the next recording.
+fails the job a fourth time, ends the intake as failed with `transcription-unfinished`.
+That is waiting for a person to press Retry, and the worker moves on to the next recording.
 
 The service is called as OpenAI-compatible `POST {base URL}/audio/transcriptions`, a
 multipart upload of the file with `model`, `response_format` (`diarized_json` or
