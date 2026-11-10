@@ -229,8 +229,8 @@ the service is sent its bytes.
 
 The note's source is the transcript (`transcript.txt` with the speaker labels as the
 service gave them, `Speaker 1` and so on, and `transcript.json` with timings), and the
-recording is a stored artifact the note cites. The summary is not written yet, and the
-audio is not deleted afterwards. A failure appears in Admin under Problems with the
+recording is a stored artifact the note cites until the note is reviewed and filed, when
+the audio is removed (see [Recordings](api.md#recordings-audio-on-its-own)). The summary is not written yet. A failure appears in Admin under Problems with the
 reason, the recording stays stored, and a person can retry it under Suggestions and backlog. See
 [Recordings](api.md#recordings-audio-on-its-own) for every field and failure.
 
@@ -283,8 +283,9 @@ Draft notes and browsable source material stay in a durable review area
 until review. The final month is selected from explicit note date, otherwise
 first received date in the configured local timezone. Retries preserve that
 received date. After review, notes, source pages, and browsable artifacts
-are filed by month. Original archive paths remain stable. Audio stays in the
-archive by default rather than being copied to every Obsidian device.
+are filed by month. Original archive paths remain stable. Audio is kept in the
+archive rather than being copied to every Obsidian device, except recordings
+transcribed here, whose audio is removed after review and filing.
 
 ## Before production activation
 
