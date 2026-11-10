@@ -604,6 +604,7 @@ picker.addEventListener('change', () => {
                 "automatically. Other suggestions need your approval, and applying any "
                 "change leaves the note unreviewed.</p>"
             )
+            assignment = config["assignments"]["enrichment"]
             body += "<h2>Jobs</h2>" + _outcome_line(data)
             if data["jobs"]:
                 if any(job["state"] == "failed" for job in data["jobs"]):
@@ -617,11 +618,11 @@ picker.addEventListener('change', () => {
                     state = job["state"]
                     detail = job["error"]
                     if state == "stale":
-                        detail = (
-                            "The reviewed note changed. "
-                            if "reviewed note changed" in detail
-                            else "The note, its evidence, or enrichment settings changed. "
-                        ) + "A fresh job will be queued when eligible."
+                        detail += (
+                            ". A fresh job is queued automatically."
+                            if assignment["enabled"] and not assignment["paused"]
+                            else ". Enrichment is off or paused, so no fresh job will be queued."
+                        )
                     body += (
                         f"<tr><td>{e(job['path'])}</td><td>{e(state.capitalize())}<br>{e(detail)}"
                         f"{_limit_link(job)}</td><td>"
@@ -943,7 +944,10 @@ picker.addEventListener('change', () => {
         if action == "retry-all-failed":
             message = f"Retry all failed: {result['queued']} queued."
             if result["errors"]:
-                message += " Could not queue: " + "; ".join(result["errors"])
+                shown = [error[:120] for error in result["errors"][:3]]
+                message += " Could not queue: " + "; ".join(shown)
+                if len(result["errors"]) > 3:
+                    message += f"; and {len(result['errors']) - 3} more."
         elif action == "retry-job":
             message = "Retry queued with current settings and evidence."
         else:

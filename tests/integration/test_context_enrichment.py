@@ -1338,3 +1338,46 @@ async def test_retry_history_and_automatic_recovery_after_limit_change(store):
     jobs = sorted(context.jobs(), key=lambda job: job.created_at)
     assert len(jobs) == 3
     assert jobs[-1].config_hash == context.config_hash()
+
+
+async def _two_failed_jobs(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 2000
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Large", body="word " * 1000, frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    await context.run_job(context.load_job(first))
+    second = (await context.retry_job({"id": first}))["job"]
+    await context.run_job(context.load_job(second))
+    assert {context.load_job(first).state, context.load_job(second).state} == {"failed"}
+    return context, first, second
+
+
+async def test_retry_all_failed_queues_one_job_per_note(store):
+    context, first, second = await _two_failed_jobs(store)
+
+    result = await context.retry_all_failed({})
+
+    assert result == {"queued": 1, "errors": []}
+    states = {job.id: job.state for job in context.jobs()}
+    assert len(states) == 3
+    assert states[first] == states[second] == "failed"
+    assert sorted(states.values()) == ["failed", "failed", "queued"]
+
+
+async def test_retry_all_failed_reports_notes_that_could_not_be_queued(store, monkeypatch):
+    context, first, second = await _two_failed_jobs(store)
+
+    async def refuse(*args, **kwargs):
+        raise ValueError("model is not available")
+
+    monkeypatch.setattr(context, "queue_note", refuse)
+
+    result = await context.retry_all_failed({})
+
+    assert result["queued"] == 0
+    assert len(result["errors"]) == 1 and "model is not available" in result["errors"][0]
+    assert len(context.jobs()) == 2

@@ -497,3 +497,25 @@ def test_failed_jobs_offer_retry_and_report_bulk_outcome(signed_in):
     csrf = form_token(client, "/admin/context?tab=review")
     response = client.post("/v1/admin/context/retry-all-failed", data={"csrf": csrf})
     assert "Retry all failed: 1 queued." in response.text
+
+
+def test_bulk_retry_message_caps_listed_errors(signed_in):
+    class ManyErrors(ContextStore):
+        async def context_action(self, action, payload):
+            if action == "retry-all-failed":
+                return {"queued": 2, "errors": [f"Review/N{i}.md: no model" for i in range(40)]}
+            return await super().context_action(action, payload)
+
+    client, _ = signed_in
+    client.app.state.store = ManyErrors()
+    csrf = form_token(client, "/admin/context?tab=review")
+    response = client.post(
+        "/v1/admin/context/retry-all-failed", data={"csrf": csrf}, follow_redirects=False
+    )
+    assert response.status_code == 303
+    assert len(response.headers["location"]) < 600
+    page = client.get(response.headers["location"])
+    assert "Retry all failed: 2 queued." in page.text
+    assert "Review/N0.md: no model" in page.text
+    assert "and 37 more" in page.text
+    assert "Review/N10.md" not in page.text
