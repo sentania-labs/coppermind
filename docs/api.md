@@ -357,7 +357,10 @@ moves on to the next recording.
 
 The service is called as OpenAI-compatible `POST {base URL}/audio/transcriptions`, a
 multipart upload of the file with `model`, `response_format` (`diarized_json` or
-`verbose_json`) and, for `diarized_json`, `chunking_strategy=auto`. The reply must carry
+`verbose_json`) and, for `diarized_json`, `chunking_strategy=auto`. When the request's
+`metadata.num_speakers` is a whole number of 1 or more it is passed along as `num_speakers`,
+a hint for separating voices; the labels stay the service's own (`Speaker 2`), because it
+does not say who anyone is. The reply must carry
 `segments`, each with `text` and a `speaker`. The assignment's wait limit
 (`wait_s`, one hour by default, up to four hours) is how long the connection may stay
 quiet. Most services send nothing until the transcript is finished, so it has to cover the
