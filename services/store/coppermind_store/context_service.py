@@ -1360,6 +1360,8 @@ class ContextService:
             job = self.load_job(payload["id"])
             if job.state not in {"failed", "stale"}:
                 raise ValueError("only failed or stale jobs can be retried")
+            if self.newest_job_id(job.note_id) != job.id:
+                raise ValueError("only the newest job for a note can be retried")
         identity = (
             await self.queue_reviewed(job.note_id, force=True)
             if job.purpose == "dossier"
@@ -1373,6 +1375,10 @@ class ContextService:
                 latest.set_error()
                 self.save_job(latest)
         return {"job": identity}
+
+    def newest_job_id(self, note_id: str) -> str:
+        jobs = [job for job in self.jobs() if job.note_id == note_id]
+        return max(jobs, key=lambda job: job.created_at).id
 
     async def retry_all_failed(self, payload: dict[str, Any]) -> dict[str, Any]:
         latest: dict[str, EnrichmentJob] = {}
@@ -1402,6 +1408,7 @@ class ContextService:
             for j in sorted(self.jobs(), key=lambda j: j.created_at, reverse=True)
             if j.note_id == job.note_id and j.id != job.id
         ]
+        result["newest"] = self.newest_job_id(job.note_id) == job.id
         result["current"] = note.model_dump(mode="json")
         result["associations"] = self.read("associations", {}).get(note.id, {})
         result["associations_hash"] = fingerprint(result["associations"])

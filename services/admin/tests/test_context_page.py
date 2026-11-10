@@ -176,6 +176,7 @@ def test_size_failure_shows_both_numbers_and_links_to_the_setting(signed_in):
         "input_limit": 40000,
         "result": None,
         "decisions": [],
+        "newest": True,
         "current": {"frontmatter": {}},
     }
 
@@ -499,7 +500,7 @@ def test_failed_jobs_offer_retry_and_report_bulk_outcome(signed_in):
     assert "Retry all failed: 1 queued." in response.text
 
 
-def test_bulk_retry_message_caps_listed_errors(signed_in):
+def test_bulk_retry_banner_counts_failures_without_echoing_text(signed_in):
     class ManyErrors(ContextStore):
         async def context_action(self, action, payload):
             if action == "retry-all-failed":
@@ -513,9 +514,47 @@ def test_bulk_retry_message_caps_listed_errors(signed_in):
         "/v1/admin/context/retry-all-failed", data={"csrf": csrf}, follow_redirects=False
     )
     assert response.status_code == 303
-    assert len(response.headers["location"]) < 600
     page = client.get(response.headers["location"])
     assert "Retry all failed: 2 queued." in page.text
-    assert "Review/N0.md: no model" in page.text
-    assert "and 37 more" in page.text
-    assert "Review/N10.md" not in page.text
+    assert "40 could not be queued" in page.text
+    assert "Review/N0.md" not in page.text
+
+
+def test_result_banner_ignores_arbitrary_query_text(signed_in):
+    client, _ = signed_in
+    client.app.state.store = ContextStore()
+    page = client.get("/admin/context?tab=review&result=Your+password+expired")
+    assert 'class="success"' not in page.text
+    assert "Your password expired" not in page.text
+    page = client.get("/admin/context?tab=review&result=retry-all-failed&queued=x")
+    assert 'class="success"' not in page.text
+
+
+def test_only_the_newest_job_offers_retry_on_inspect(signed_in):
+    client, _ = signed_in
+    base = {
+        "id": "a" * 64,
+        "path": "Long.md",
+        "state": "failed",
+        "error": "Request failed",
+        "error_rule": "",
+        "input_size": None,
+        "input_limit": None,
+        "result": None,
+        "decisions": [],
+        "current": {"frontmatter": {}},
+    }
+
+    class JobStore(ContextStore):
+        newest = True
+
+        async def context_action(self, action, payload):
+            if action == "job":
+                return {**base, "newest": self.newest}
+            return await super().context_action(action, payload)
+
+    store = JobStore()
+    client.app.state.store = store
+    assert "Retry with current evidence" in client.get(f"/admin/context/jobs/{'a' * 64}").text
+    store.newest = False
+    assert "Retry with current evidence" not in client.get(f"/admin/context/jobs/{'a' * 64}").text

@@ -17,6 +17,49 @@ from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import StoreError
 from coppermind_admin.pages.problems import store_client
 
+ACTIONS = frozenset(
+    {
+        "setup-lifecycle",
+        "configure-property",
+        "dismiss-drop",
+        "save-connection",
+        "convert-connection",
+        "discover",
+        "test-model",
+        "save-assignment",
+        "retry-import",
+        "dismiss-import",
+        "dismiss-calendar-conflict",
+        "enqueue",
+        "retry-job",
+        "retry-all-failed",
+        "reject",
+        "approve",
+        "resume-approval",
+        "correct-contact",
+        "correct-association",
+        "resume-correction",
+    }
+)
+
+
+def _result_message(params: Any) -> str:
+    action = params.get("result", "")
+    if action not in ACTIONS:
+        return ""
+    if action == "retry-job":
+        return "Retry queued with current settings and evidence."
+    if action == "retry-all-failed":
+        try:
+            queued, failed = int(params.get("queued", "0")), int(params.get("failed", "0"))
+        except ValueError:
+            return ""
+        message = f"Retry all failed: {queued} queued."
+        if failed:
+            message += f" {failed} could not be queued; retry them one at a time to see why."
+        return message
+    return action.replace("-", " ").capitalize() + " completed."
+
 
 def _input(name: str, label: str, value: str = "", *, kind: str = "text") -> str:
     return (
@@ -205,7 +248,7 @@ def router(wiring: Wiring) -> APIRouter:
 <a href="/admin/context?tab=calendar">Calendar and contacts</a>
 <a href="/admin/context?tab=models">Connections and model</a>
 <a href="/admin/context?tab=review">Suggestions and backlog</a></p>"""
-        message = request.query_params.get("result", "")
+        message = _result_message(request.query_params)
         if message:
             head += '<p class="success">' + e(message) + "</p>"
         if data["worker_error"]:
@@ -781,7 +824,7 @@ picker.addEventListener('change', () => {
         )
         if job["state"] == "suggested":
             body += _form("reject", _hidden("id", identity), "Reject proposal")
-        if job["state"] in {"failed", "stale"}:
+        if job["state"] in {"failed", "stale"} and job["newest"]:
             body += _form("retry-job", _hidden("id", identity), "Retry with current evidence")
         if job["state"] == "applying":
             body += _form("resume-approval", _hidden("id", identity), "Resume recorded approval")
@@ -881,29 +924,7 @@ picker.addEventListener('change', () => {
                 payload["confirmation"] = (
                     "Remove mistaken association" if "confirm_remove" in form else ""
                 )
-            allowed = {
-                "setup-lifecycle",
-                "configure-property",
-                "dismiss-drop",
-                "save-connection",
-                "convert-connection",
-                "discover",
-                "test-model",
-                "save-assignment",
-                "retry-import",
-                "dismiss-import",
-                "dismiss-calendar-conflict",
-                "enqueue",
-                "retry-job",
-                "retry-all-failed",
-                "reject",
-                "approve",
-                "resume-approval",
-                "correct-contact",
-                "correct-association",
-                "resume-correction",
-            }
-            if action not in allowed:
+            if action not in ACTIONS:
                 raise ValueError("unknown action")
             result = await client(request).context_action(action, payload)
             if action == "retry-import" and result.get("state") == "failed":
@@ -934,19 +955,9 @@ picker.addEventListener('change', () => {
             in {"enqueue", "retry-job", "retry-all-failed", "reject", "approve", "resume-approval"}
             else "calendar"
         )
+        query = f"tab={tab}&result={action}"
         if action == "retry-all-failed":
-            message = f"Retry all failed: {result['queued']} queued."
-            if result["errors"]:
-                shown = [error[:120] for error in result["errors"][:3]]
-                message += " Could not queue: " + "; ".join(shown)
-                if len(result["errors"]) > 3:
-                    message += f"; and {len(result['errors']) - 3} more."
-        elif action == "retry-job":
-            message = "Retry queued with current settings and evidence."
-        else:
-            message = action.replace("-", " ").capitalize() + " completed."
-        return RedirectResponse(
-            f"/admin/context?tab={tab}&result={quote(message)}", status_code=303
-        )
+            query += f"&queued={int(result['queued'])}&failed={len(result['errors'])}"
+        return RedirectResponse(f"/admin/context?{query}", status_code=303)
 
     return routes

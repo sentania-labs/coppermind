@@ -1369,6 +1369,20 @@ async def test_retry_all_failed_queues_one_job_per_note(store):
     assert sorted(states.values()) == ["failed", "failed", "queued"]
 
 
+async def test_retry_job_rejects_a_job_that_is_not_the_newest_for_its_note(store):
+    context, first, second = await _two_failed_jobs(store)
+    older, newer = context.load_job(first), context.load_job(second)
+    assert older.created_at <= newer.created_at
+    jobs_before = len(context.jobs())
+
+    with pytest.raises(ValueError, match="newest"):
+        await context.retry_job({"id": older.id})
+
+    assert len(context.jobs()) == jobs_before
+    assert (await context.job_detail({"id": older.id}))["newest"] is False
+    assert (await context.job_detail({"id": newer.id}))["newest"] is True
+
+
 async def test_retry_all_failed_reports_notes_that_could_not_be_queued(store, monkeypatch):
     context, first, second = await _two_failed_jobs(store)
 
@@ -1459,7 +1473,7 @@ async def test_an_edited_failed_note_gets_no_new_job_until_it_settles(store, mon
     assert len(context.jobs()) == 2
 
 
-async def test_coppermind_own_writes_do_not_requeue_the_job(store):
+async def test_coppermind_own_writes_do_not_requeue_the_job(store, monkeypatch):
     note = await store.create_note(
         CreateNote(
             title="Old name",
@@ -1486,10 +1500,17 @@ async def test_coppermind_own_writes_do_not_requeue_the_job(store):
     applied.state = "stale"
     context.save_job(applied)
 
+    monkeypatch.setattr(context_service, "NOTE_QUIET_PERIOD", timedelta(0))
     await context.tick()
     await context.tick()
-
     assert [item.id for item in context.jobs()] == [job.id]
+
+    written = await store.get_note(note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"account": "human correction"}), written.content_hash
+    )
+    await context.tick()
+    assert len(context.jobs()) == 2
 
 
 async def test_tick_recovers_when_transcript_revision_changes(store, monkeypatch):
