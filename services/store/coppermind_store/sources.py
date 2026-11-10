@@ -1703,6 +1703,18 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         for job in store.context.recordings.jobs()
         if job.state == "failed"
     )
+    problems.extend(
+        ProblemInfo(
+            kind="recording",
+            reference=job.title,
+            reason=job.audio_removal_error,
+            note_id=job.note_id or None,
+            source_id=job.source_id or None,
+            retry_available=True,
+        )
+        for job in store.context.recordings.jobs()
+        if job.audio_removal_stuck
+    )
     problems.extend(await artifact_problems(store))
     problems.extend(
         ProblemInfo(

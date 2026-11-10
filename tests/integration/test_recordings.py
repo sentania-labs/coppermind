@@ -10,20 +10,27 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from coppermind_store import staged
+from coppermind_store import filing, staged
+from coppermind_store.reconciler import reconcile_once
 from coppermind_store.recordings import render_transcript
 
 from coppermind.context_config import FeatureAssignment
+from coppermind.db.models import Note
 from coppermind.store_protocol import (
     CreateArtifact,
+    CreateNote,
+    PatchFrontmatter,
+    RestoreNote,
     StagedReservation,
     ValidationFailed,
 )
 from services.store.tests.test_transcription_call import REPLY, Service
-from tests.integration.test_review_filing import drain
+from tests.integration.test_note_recovery import commit, git
+from tests.integration.test_review_filing import approve, drain
 
 AUDIO = bytes(range(256)) * 700
 
@@ -132,9 +139,445 @@ async def test_a_recording_alone_becomes_a_transcribed_note_in_review(store):
     )["segments"]
     assert [s["speaker"] for s in segments] == ["Speaker 1", "Speaker 2"]
 
-    # The audio is still stored: nothing here deletes it.
+    # Review has not happened, so the audio is still stored.
     kept = await store.get_artifact_bytes(audio)
     assert await drain(kept) == AUDIO
+
+
+async def test_reviewed_recording_is_removed_with_a_receipt_and_transcript(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(
+            request(audio, metadata={"archive_url": "https://example.test/archive/one"})
+        )
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    note = await store.get_note(done["note_id"])
+    assert await context.recordings.tick() is False
+    assert archive.read_bytes() == AUDIO
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
+    )
+    assert await context.recordings.tick() is False
+    assert archive.exists()
+    assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+    assert await context.recordings.tick() is True
+    assert not archive.exists()
+    note = await store.get_note(note.id)
+    detail = await context.recording_detail({"id": accepted["id"]})
+    listing = (await context.snapshot())["recordings"]
+    listed = next(item for item in listing if item["id"] == accepted["id"])
+    assert detail["note_status"] == listed["note_status"] == "filed"
+    assert detail["note_path"] == listed["note_path"] == note.path
+    assert note.path.startswith("Notes/")
+    assert "Audio was removed after review" in note.body
+    assert hashlib.sha256(AUDIO).hexdigest() in note.body
+    assert str(len(AUDIO)) in note.body and "7.5" in note.body
+    assert "https://example.test/archive/one" in note.body
+    assert "[[Artifacts/" not in note.body
+    assert audio not in note.frontmatter.get("artifacts", [])
+    assert (await store.get_source_artifact(done["source_id"], 1, "transcript.txt")).content
+    assert context.recordings.load(accepted["id"]).audio_removed
+    assert await context.recordings.tick() is False
+
+
+async def test_rebuilding_metadata_after_audio_removal_keeps_the_receipt(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    await approve(store, done["note_id"])
+    assert await context.recordings.tick() is True
+    assert not (store.artifacts_root / audio / "r0001" / "standup.m4a").exists()
+    await store.rebuild_metadata()
+    manifest = json.loads((store.artifacts_root / audio / "manifest.json").read_text())
+    assert manifest["removed_at"]
+    assert manifest["revisions"][0]["sha256"] == hashlib.sha256(AUDIO).hexdigest()
+    assert (await store.get_source_artifact(done["source_id"], 1, "transcript.txt")).content
+
+
+def due_again(context, identity):
+    job = context.recordings.load(identity)
+    job.audio_removal_retry_after = ""
+    context.recordings.save(job)
+
+
+async def test_audio_removal_failure_retries_quietly_then_offers_a_working_retry(
+    store, monkeypatch
+):
+    from coppermind_store import artifacts
+
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    await approve(store, done["note_id"])
+    original = artifacts.remove_recording_audio
+
+    async def fail(*args):
+        raise OSError("stand-in disk failure")
+
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    monkeypatch.setattr(artifacts, "remove_recording_audio", fail)
+    await context.recordings.tick()
+    assert archive.exists()
+    assert context.recordings.load(accepted["id"]).audio_removal_attempts == 1
+    assert not [p for p in await store.get_problems() if p.kind == "recording"]
+    assert await context.recordings.tick() is False
+    for _ in range(2):
+        due_again(context, accepted["id"])
+        await context.recordings.tick()
+    stuck = [p for p in await store.get_problems() if p.kind == "recording"]
+    assert len(stuck) == 1 and "could not be removed" in stuck[0].reason
+    assert stuck[0].retry_available is True
+    listed = next(j for j in context.recordings.listing() if j["id"] == accepted["id"])
+    assert listed["can_retry"] and listed["audio_removal_stuck"]
+    due_again(context, accepted["id"])
+    assert await context.recordings.tick() is False
+
+    monkeypatch.setattr(artifacts, "remove_recording_audio", original)
+    await context.retry_recording({"id": accepted["id"]})
+    assert await context.recordings.tick() is True
+    assert context.recordings.load(accepted["id"]).audio_removed
+    assert not archive.exists()
+    assert not [p for p in await store.get_problems() if p.kind == "recording"]
+
+
+async def test_a_note_deleted_after_review_does_not_keep_the_audio(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    await approve(store, done["note_id"])
+    async with store.session_factory() as session, session.begin():
+        (await session.get(Note, done["note_id"])).state = "deleted"
+    assert await context.recordings.tick() is True
+    assert not (store.artifacts_root / audio / "r0001" / "standup.m4a").exists()
+    job = context.recordings.load(accepted["id"])
+    assert job.audio_removed and not job.audio_removal_error
+    assert not [p for p in await store.get_problems() if p.kind == "recording"]
+
+
+async def set_note_state(store, note_id, state):
+    async with store.session_factory() as session, session.begin():
+        (await session.get(Note, note_id)).state = state
+
+
+async def test_a_note_deleted_before_review_keeps_its_audio_until_it_is_purged(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    await set_note_state(store, done["note_id"], "deleted")
+    for _ in range(2):
+        assert await context.recordings.tick() is False
+    assert archive.read_bytes() == AUDIO
+    assert not context.recordings.load(accepted["id"]).audio_removed
+
+    await set_note_state(store, done["note_id"], "ok")
+    assert await context.recordings.tick() is False
+    assert archive.read_bytes() == AUDIO
+    await approve(store, done["note_id"])
+    assert await context.recordings.tick() is True
+    assert not archive.exists()
+    assert "Audio was removed after review" in (await store.get_note(done["note_id"])).body
+
+
+async def test_a_note_purged_before_review_takes_its_audio_with_it(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    note_path = (await store.get_note(done["note_id"])).path
+    await set_note_state(store, done["note_id"], "deleted")
+    assert await context.recordings.tick() is False
+    assert archive.exists()
+    (store.notes_root / note_path).unlink()
+    async with store.session_factory() as session, session.begin():
+        await session.delete(await session.get(Note, done["note_id"]))
+    assert await context.recordings.tick() is True
+    assert not archive.exists()
+    assert context.recordings.load(accepted["id"]).audio_removed
+    assert not [p for p in await store.get_problems() if p.kind == "recording"]
+
+
+async def test_an_empty_database_does_not_make_unreviewed_notes_look_purged(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        other = await store_audio(store, name="other.m4a", data=AUDIO + b"2")
+        first = await context.accept_recording(request(audio, title="First"))
+        second = await context.accept_recording(
+            request(other, title="Second", external_source_id="plaud/rec-2")
+        )
+        await context.recordings.tick()
+        await context.recordings.tick()
+    notes = [
+        (await context.recording_status({"id": item["id"]}))["note_id"] for item in (first, second)
+    ]
+    archives = [
+        store.artifacts_root / audio / "r0001" / "standup.m4a",
+        store.artifacts_root / other / "r0001" / "other.m4a",
+    ]
+    async with store.session_factory() as session, session.begin():
+        for note_id in notes:
+            await session.delete(await session.get(Note, note_id))
+    assert await context.recordings.tick() is False
+    assert [path.read_bytes() for path in archives] == [AUDIO, AUDIO + b"2"]
+    for item in (first, second):
+        job = context.recordings.load(item["id"])
+        assert not job.audio_removed and not job.audio_removal_error
+
+
+async def test_shared_audio_stays_while_the_other_note_has_no_row_but_still_has_its_file(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        first = await context.accept_recording(request(audio, title="First"))
+        second = await context.accept_recording(
+            request(audio, title="Second", external_source_id="plaud/rec-2")
+        )
+        await context.recordings.tick()
+        await context.recordings.tick()
+    one = await context.recording_status({"id": first["id"]})
+    two = await context.recording_status({"id": second["id"]})
+    await approve(store, one["note_id"])
+    async with store.session_factory() as session, session.begin():
+        await session.delete(await session.get(Note, two["note_id"]))
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    assert await context.recordings.tick() is False
+    assert archive.read_bytes() == AUDIO
+    assert not context.recordings.load(first["id"]).audio_removed
+
+
+async def test_a_purged_archive_still_settles_with_a_receipt_from_what_is_known(store):
+    import shutil
+
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(
+            request(audio, metadata={"archive_url": "https://example.test/archive/two"})
+        )
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    await store.remove_artifact(audio)
+    shutil.rmtree(store.artifacts_root / audio)
+    await approve(store, done["note_id"])
+    assert await context.recordings.tick() is True
+    job = context.recordings.load(accepted["id"])
+    assert job.audio_removed and not job.audio_removal_error
+    body = (await store.get_note(done["note_id"])).body
+    assert "Audio was removed after review" in body
+    assert f"size: {len(AUDIO)} bytes" in body and "7.5" in body
+    assert "https://example.test/archive/two" in body
+    assert hashlib.sha256(AUDIO).hexdigest() not in body
+    assert audio not in (await store.get_note(done["note_id"])).frontmatter.get("artifacts", [])
+    assert not [p for p in await store.get_problems() if p.kind == "recording"]
+
+
+async def test_an_artifact_the_owner_removed_still_loses_its_audio_after_review(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    await store.remove_artifact(audio)
+    assert archive.read_bytes() == AUDIO
+    assert await context.recordings.tick() is False
+    assert archive.read_bytes() == AUDIO
+
+    await approve(store, done["note_id"])
+    assert await context.recordings.tick() is True
+    assert not archive.exists()
+    job = context.recordings.load(accepted["id"])
+    assert job.audio_removed and not job.audio_removal_error
+    assert not [p for p in await store.get_problems() if p.kind == "recording"]
+    manifest = json.loads((store.artifacts_root / audio / "manifest.json").read_text())
+    assert manifest["removed_reason"] != "recording removed after review"
+    assert manifest["revisions"][0]["sha256"] == hashlib.sha256(AUDIO).hexdigest()
+    await store.rebuild_metadata()
+
+
+async def test_a_recording_waiting_in_review_is_not_read_again_on_every_tick(store, monkeypatch):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    reads = []
+    original = type(context.recordings).saved_transcript
+
+    def counted(self, job):
+        reads.append(job.id)
+        return original(self, job)
+
+    monkeypatch.setattr(type(context.recordings), "saved_transcript", counted)
+    for _ in range(3):
+        assert await context.recordings.tick() is False
+    assert reads == []
+    done = await context.recording_status({"id": accepted["id"]})
+    await approve(store, done["note_id"])
+    assert await context.recordings.tick() is True
+    assert reads == [accepted["id"]]
+
+
+async def test_audio_shared_with_another_unfinished_recording_is_kept_until_the_last_is_done(
+    store,
+):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        first = await context.accept_recording(request(audio, title="First"))
+        second = await context.accept_recording(
+            request(audio, title="Second", external_source_id="plaud/rec-2")
+        )
+        await context.recordings.tick()
+        await context.recordings.tick()
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    one = await context.recording_status({"id": first["id"]})
+    two = await context.recording_status({"id": second["id"]})
+    await approve(store, one["note_id"])
+    assert await context.recordings.tick() is False
+    assert archive.read_bytes() == AUDIO
+    kept = context.recordings.load(first["id"])
+    assert kept.audio_kept and not kept.audio_removed and not kept.audio_removal_error
+    assert not [p for p in await store.get_problems() if p.kind == "recording"]
+
+    await approve(store, two["note_id"])
+    while await context.recordings.tick():
+        pass
+    assert not archive.exists()
+    assert context.recordings.load(first["id"]).audio_removed
+    assert context.recordings.load(second["id"]).audio_removed
+    assert "Audio was removed after review" in (await store.get_note(two["note_id"])).body
+
+
+async def test_shared_audio_survives_deletion_and_restore_of_unreviewed_note(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        first = await context.accept_recording(request(audio, title="First"))
+        second = await context.accept_recording(
+            request(audio, title="Second", external_source_id="plaud/rec-2")
+        )
+        await context.recordings.tick()
+        await context.recordings.tick()
+    one = await context.recording_status({"id": first["id"]})
+    two = await context.recording_status({"id": second["id"]})
+    note = await store.get_note(two["note_id"])
+    git(store.notes_root, "init", "-q")
+    commit(store.notes_root)
+    (store.notes_root / note.path).unlink()
+    await reconcile_once(store)
+    commit(store.notes_root)
+    await reconcile_once(store)
+    await approve(store, one["note_id"])
+    await context.recordings.tick()
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    assert archive.read_bytes() == AUDIO
+    for path in store.notes_root.rglob("*"):
+        if path.is_file() and ".git" not in path.relative_to(store.notes_root).parts:
+            os.utime(path, (1, 1))
+    preview = await store.preview_note_restore(note.id)
+    await store.restore_note(
+        note.id, RestoreNote(token=preview.token, confirmation=f"Restore {note.id}")
+    )
+    assert await drain(await store.get_artifact_bytes(audio)) == AUDIO
+    await approve(store, note.id)
+    while await context.recordings.tick():
+        pass
+    assert not archive.exists()
+
+
+async def test_deleted_unreviewed_citing_note_keeps_audio_until_purged(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    other = await store.create_note(
+        CreateNote(title="Other note", body="Shared", frontmatter={"artifacts": [audio]})
+    )
+    await set_note_state(store, other.id, "deleted")
+    done = await context.recording_status({"id": accepted["id"]})
+    await approve(store, done["note_id"])
+    assert await context.recordings.tick() is False
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    assert archive.read_bytes() == AUDIO
+    async with store.session_factory() as session, session.begin():
+        await session.delete(await session.get(Note, other.id))
+    assert await context.recordings.tick() is True
+    assert not archive.exists()
+
+
+async def test_audio_removal_resumes_after_bytes_are_already_gone(store, monkeypatch):
+    from coppermind_store import artifacts
+
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    await approve(store, done["note_id"])
+    original = artifacts.remove_recording_audio
+
+    async def interrupted(*args):
+        await original(*args)
+        raise OSError("stand-in interruption after deletion")
+
+    monkeypatch.setattr(artifacts, "remove_recording_audio", interrupted)
+    await context.recordings.tick()
+    assert not (store.artifacts_root / audio / "r0001" / "standup.m4a").exists()
+    job = context.recordings.load(accepted["id"])
+    assert job.audio_removal_error
+    job.audio_removal_retry_after = ""
+    context.recordings.save(job)
+    monkeypatch.setattr(artifacts, "remove_recording_audio", original)
+    await context.recordings.tick()
+    assert context.recordings.load(accepted["id"]).audio_removed
+    assert "Audio was removed after review" in (await store.get_note(done["note_id"])).body
+
+
+async def test_empty_saved_transcript_or_changed_audio_is_never_removed(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    await approve(store, done["note_id"])
+    job = context.recordings.load(accepted["id"])
+    saved = context.read(context.recordings.transcript_path(job), None)
+    context.write(context.recordings.transcript_path(job), {**saved, "segments": []})
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    assert await context.recordings.tick() is False
+    assert archive.read_bytes() == AUDIO
+
+    context.write(context.recordings.transcript_path(job), saved)
+    changed = b"changed on disk"
+    archive.write_bytes(changed)
+    assert await context.recordings.tick() is True
+    assert archive.read_bytes() == changed
+    job = context.recordings.load(accepted["id"])
+    assert job.audio_removal_error and not job.audio_removed
 
 
 async def test_the_same_request_is_one_intake_and_a_different_recording_is_refused(store):

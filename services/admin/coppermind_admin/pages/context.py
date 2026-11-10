@@ -274,7 +274,7 @@ def _transcription_setup(config: dict[str, Any], data: dict[str, Any], revision:
         "transcribed here and filed as a note in Review. The audio goes to the connection "
         "above and nowhere else. Choose a service inside your lab to keep recordings off "
         "the internet. Recordings arrive through the staged upload, up to its limit "
-        "(1 GiB by default), and stay stored until you remove them.</p>"
+        "(1 GiB by default). Audio is removed after the note is reviewed and filed.</p>"
         + _form("save-transcription", fields, "Save transcription settings", revision=revision)
     )
 
@@ -311,7 +311,28 @@ def _recording_state(job: dict[str, Any], assignment: dict[str, Any] | None) -> 
     on = bool(assignment and assignment["enabled"])
     paused = bool(assignment and assignment["paused"])
     if state == "succeeded":
-        return f"Transcript ready. Note in Review: {job['title']}"
+        status = job.get("note_status", "unavailable" if job.get("audio_removed") else "unreviewed")
+        description = {
+            "filed": "Note reviewed and filed",
+            "reviewed": "Note reviewed and waiting to be filed",
+            "unreviewed": "Note in Review",
+            "unavailable": "Note location unavailable",
+        }.get(status, "Note location unavailable")
+        text = f"Transcript ready. {description}: {job['title']}"
+        if status in {"filed", "reviewed", "unreviewed"} and job.get("note_path"):
+            text += f" ({job['note_path']})"
+        if job.get("audio_removed"):
+            text += (
+                (" Audio removed." if status == "unavailable" else " Audio removed after review.")
+                + " The transcript remains available; "
+                + ("if the note is available, its " if status == "unavailable" else "the note's ")
+                + "citation records the hash, size, length and archive location when supplied."
+            )
+        if job.get("audio_removal_stuck"):
+            return text + f" {job['audio_removal_error']} Retry to remove it again."
+        if job.get("audio_kept"):
+            return text + f" {job['audio_kept']}"
+        return text
     if state == "running":
         if job.get("error_rule") == "transcription-recovering":
             return job["error"]
@@ -347,7 +368,9 @@ def _recording_actions(job: dict[str, Any], assignment: dict[str, Any] | None) -
     on = bool(assignment and assignment["enabled"])
     paused = bool(assignment and assignment["paused"])
     body = ""
-    if job["state"] == "failed":
+    if job.get("audio_removal_stuck"):
+        body += _form("retry-recording", _hidden("id", job["id"]), "Retry")
+    elif job["state"] == "failed":
         if job.get("error_rule") in REPLACEMENT_AUDIO_MESSAGES:
             return ""
         if on:
@@ -399,11 +422,19 @@ def _recording_page(job: dict[str, Any], assignment: dict[str, Any] | None) -> s
         f"<h1>Recording</h1><h2>{e(job['title'])}</h2><p>{e(_recording_state(job, assignment))}</p>"
     )
     if job["state"] == "succeeded":
-        body += (
-            f"<p>The note is at <strong>{e(job['note_path'])}</strong> in your vault. It reaches "
-            "Obsidian when your vault next syncs, and stays unreviewed until you mark it "
-            "reviewed. The recording itself is kept as a stored file the note cites.</p>"
-        )
+        body += _recording_actions(job, assignment)
+        status = job.get("note_status", "unavailable" if job.get("audio_removed") else "unreviewed")
+        if job.get("note_path") and status != "unavailable":
+            body += f"<p>The note is at <strong>{e(job['note_path'])}</strong> in your vault."
+            if status == "unreviewed":
+                body += " It stays unreviewed until you mark it reviewed."
+            body += " It reaches Obsidian when your vault next syncs.</p>"
+        else:
+            body += (
+                "<p>The note's current location is unavailable. Check your vault or try again.</p>"
+            )
+        if not job.get("audio_removed"):
+            body += "<p>The recording's audio is still stored.</p>"
     elif job["state"] == "failed":
         kept = "Your recording is still saved"
         kept += " and so is its transcript." if job["transcribed"] else "."

@@ -57,7 +57,7 @@ def test_the_models_tab_sets_up_transcription_with_plain_words_and_no_anthropic(
     client.app.state.store = store_with([])
     page = client.get("/admin/context?tab=models")
     assert "Transcription setup" in page.text
-    assert "stay stored until you remove them" in page.text
+    assert "Audio is removed after the note is reviewed and filed" in page.text
     assert "goes to the connection above and nowhere else" in page.text
     assert "1 GiB" in page.text
     assert "Wait limit (seconds)" in page.text and 'value="3600"' in page.text
@@ -312,6 +312,90 @@ def test_the_recording_page_shows_the_note_and_transcript_with_ids_only_in_detai
     assert "Review/Standup.md" in head and "Speaker 1: Hello &lt;b&gt;there&lt;/b&gt;." in head
     assert "01NOTEIDXXXXXXXXXXXXXXXXXX" not in head and "01SOURCEID" not in head
     assert "01NOTEIDXXXXXXXXXXXXXXXXXX" in details and "Technical details" in page
+
+
+def test_reviewed_recording_list_shows_current_path_and_removed_audio(signed_in):
+    client, _ = signed_in
+    done = {
+        **JOB,
+        "state": "succeeded",
+        "note_id": "N1",
+        "note_status": "filed",
+        "note_path": "Notes/2026/2026-11/Standup.md",
+        "audio_removed": True,
+    }
+    client.app.state.store = store_with([done])
+    page = client.get("/admin/context?tab=review").text
+    assert "Note reviewed and filed: Standup" in page
+    assert "Notes/2026/2026-11/Standup.md" in page
+    assert "Audio removed after review" in page
+    assert "transcript remains available" in page
+    assert "hash, size, length and archive location" in page
+    assert "Note in Review" not in page
+
+
+def test_reviewed_recording_detail_shows_current_path_and_removed_audio(signed_in):
+    client, _ = signed_in
+    done = {
+        **JOB,
+        "state": "succeeded",
+        "note_id": "N1",
+        "note_status": "filed",
+        "note_path": "Notes/2026/2026-11/Standup.md",
+        "audio_removed": True,
+        "transcribed": True,
+        "source_id": "S1",
+        "artifact_id": "A1",
+        "reply": "",
+        "usage": {},
+        "transcript": "Speaker 1: Hello.",
+        "transcript_cut": False,
+    }
+    store = store_with([done])
+    base = store.context_action
+
+    async def with_detail(action, payload):
+        return done if action == "recording-detail" else await base(action, payload)
+
+    store.context_action = with_detail
+    client.app.state.store = store
+    page = client.get(f"/admin/context/recordings/{'a' * 64}").text
+    assert "Note reviewed and filed: Standup" in page
+    assert "Notes/2026/2026-11/Standup.md" in page
+    assert "Audio removed after review" in page
+    assert "hash, size, length and archive location" in page
+    assert "Speaker 1: Hello." in page
+    assert "Note in Review" not in page and "stays unreviewed" not in page
+
+
+def test_recording_with_unavailable_note_does_not_claim_it_needs_review(signed_in):
+    client, _ = signed_in
+    done = {
+        **JOB,
+        "state": "succeeded",
+        "note_id": "N1",
+        "note_status": "unavailable",
+        "note_path": "",
+        "audio_removed": True,
+        "transcribed": True,
+        "source_id": "S1",
+        "artifact_id": "A1",
+        "reply": "",
+        "usage": {},
+        "transcript": "Speaker 1: Hello.",
+        "transcript_cut": False,
+    }
+    store = store_with([done])
+    base = store.context_action
+
+    async def with_detail(action, payload):
+        return done if action == "recording-detail" else await base(action, payload)
+
+    store.context_action = with_detail
+    client.app.state.store = store
+    page = client.get(f"/admin/context/recordings/{'a' * 64}").text
+    assert "current location is unavailable" in page
+    assert "stays unreviewed" not in page and "Note in Review" not in page
 
 
 def test_retrying_a_recording_is_a_guarded_form_that_confirms_in_words(signed_in):
