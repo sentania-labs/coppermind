@@ -43,7 +43,7 @@ date: 2026-09-08T14:02:11
 | Filenames | Dated types: `YYYY-MM-DD Title.md`. Undated: `Title.md`. Journal: `Journal/YYYY/YYYY-MM-DD.md`. Names are Unicode-normalized, Windows-reserved characters and device names are stripped, capped at 120 characters, and a case-insensitive collision gets a numbered suffix |
 | Identity (`ETag`) | `"sha256:<hex of the file's bytes>"`. A move does not change it; a frontmatter write-back does |
 | Unparseable file | Left byte-for-byte untouched, recorded as `state: unparsed` with a reason, indexed by body if it can be decoded at all |
-| Duplicate ID | The path the mirror last recorded keeps the ID; the other file gets a fresh one written back after it settles |
+| Duplicate ID | The path the mirror last recorded keeps the ID, and no file is rewritten: both are left as they are and reported under Problems with every path. A copy left in the review folder after its note was filed is removed when its bytes equal the filed note's (or a snapshot filing recorded of it); one that differs is kept, named beside the filed path on `GET /v1/notes/{id}/review` as `review_problem` and on Problems. Each unresolved collision is logged when first seen and when its paths change |
 | ID assignment for a device-created file | The reconciler writes the ID, and any other frontmatter the schema requires, once the file has gone 30 seconds (configurable) without an mtime change, using a compare-and-swap on the content hash so a still-in-progress edit is never interrupted |
 
 **Field guidance and tags** live in the same `schema.yaml`. Each key may

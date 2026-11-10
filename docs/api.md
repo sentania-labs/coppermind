@@ -322,7 +322,7 @@ requiring hand-populated configuration.
 | API keys | `GET/POST /v1/admin/keys`, `DELETE /v1/admin/keys/{key_id}` | Create (secret shown once), list, and revoke keys graphically instead of through the store's command line |
 | Obsidian Sync | `GET /v1/admin/sync`, `POST /v1/admin/sync/connect`, `POST /v1/admin/sync/token`, `POST /v1/admin/sync/pause`, `/resume`, `/disconnect` | Connect with email, password, optional MFA, and a vault name or a pasted token; reveal a token once, with a hint for sealing it into GitOps; pause and resume around bulk operations |
 | Settings | `GET/PUT /v1/admin/settings {if_revision, body}` | Every key in the settings table below, grouped by section |
-| Frontmatter schema | `GET/PUT /v1/admin/schema`, `POST /v1/admin/schema/rename-key {from, to}` | Keys, kinds, and vocabularies; renaming a key runs the migration job that rewrites every note through the store |
+| Frontmatter schema | `GET/PUT /v1/admin/schema`, `POST /v1/admin/schema/rename-key {from, to}` | Keys, kinds, and vocabularies; a save is refused, with the reason, when an enum's `default`, or a `required_when` value, is not among the allowed values of the key it names, which also blocks removing an allowed value the default uses; renaming a key runs the migration job that rewrites every note through the store |
 | Fields and tags (`/admin/fields`) | `POST /v1/admin/fields {revision, ...}` | Add, edit and retire keys (kind, required and required when, allowed values each with a one-line meaning, default, guidance); every tag in use with its note count from the mirror, a meaning and aliases per listed tag, and open or closed tags. Saves with the same revision check Settings uses; the role map is carried over untouched, and nothing here rewrites a note |
 | Filing rules | `GET/PUT /v1/admin/rules`, `POST /v1/admin/rules/preview {note_id}` | The ordered rules a note is filed by, with a dry run ("what would this note file as") before committing to a change |
 | Search index (`/admin/search-index`) | `POST /v1/admin/search-index/rebuild` | The number of notes, source pages and artifacts indexed, the known unreadable count, when the index last changed and when it was last rebuilt, in the operator's timezone, and a Rebuild index button. A rebuild runs in the store's background, throws every entry away, except the last indexed text of a note that is currently unparsed, and reads the notes filesystem again; search keeps answering from the old entries until the new ones commit |
@@ -386,9 +386,11 @@ retry that could create a duplicate.
 ## Edge cases worth knowing before integrating against this
 
 - **Duplicate identifiers.** Duplicating a note in Obsidian copies its ID
-  too. The file at the path the database last recorded keeps that ID; any
-  other file carrying the same one gets a fresh ID written back once it
-  settles, and Admin is notified.
+  too. The file at the path the database last recorded keeps that ID and no
+  other file is rewritten; the collision is listed under Problems with every
+  path. A copy left in the review folder after its note was filed is removed
+  when it holds nothing the filed note lacks; if it differs, it stays and
+  `GET /v1/notes/{id}/review` carries both paths in `review_problem`.
 - **A note's identifier changes or disappears from a known path.** The file
   is always the truth, so the old note reads as deleted and a new one
   appears; nothing is silently "repaired", and both are surfaced together in

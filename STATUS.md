@@ -223,7 +223,12 @@ has not been exercised by this slice.
   move whose delete has not arrived yet, and the service will not guess. The
   pass counts that collision and names every path claiming the identity, beside
   the files it refused, so an operator sees both sides rather than an
-  identifier alone. The process remembers up
+  identifier alone, and logs each collision once, again only when its paths
+  change. The one exception is a copy left in the review folder after its note
+  was filed elsewhere: it is removed when its bytes equal the filed note's or a
+  snapshot filing recorded of it, and otherwise left alone and named, with the
+  filed path, in `review_problem` on the note's review response and on
+  Problems. The process remembers up
   to 10,000 rejected paths by stat, so an unchanged rejected tree costs one
   stat per file per pass rather than repeated reads and parses. Only a durable
   rejection is remembered; a file still inside the quiet period is read again
