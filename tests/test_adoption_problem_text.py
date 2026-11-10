@@ -53,6 +53,13 @@ def test_a_missing_value_is_not_called_an_invalid_choice():
     assert "allowed choice" not in text
 
 
+def test_a_missing_mixed_case_key_keeps_its_spelling():
+    _, text = adoption_problem(notes.CLAUSE_MISSING + "dueDate")
+
+    assert "This note needs a dueDate." in text
+    assert "duedate" not in text
+
+
 def test_line_endings_say_what_to_change():
     _, text = adoption_problem("unsupported_line_endings")
 
