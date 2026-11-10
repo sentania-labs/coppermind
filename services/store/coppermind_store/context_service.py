@@ -140,6 +140,17 @@ def fingerprint(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def same_evidence(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Evidence still agrees; People only matter through the recording they are matched to."""
+
+    def rest(value: dict[str, Any]) -> str:
+        return fingerprint({k: v for k, v in value.items() if k != "speaker_review"})
+
+    return rest(left) == rest(right) and speaker_names.same_recording(
+        left.get("speaker_review"), right.get("speaker_review")
+    )
+
+
 NOTE_QUIET_PERIOD = timedelta(seconds=60)
 
 
@@ -1450,7 +1461,7 @@ class ContextService:
                 )
             self.validate_result(result, evidence, await self.source_text(job.note_id))
             # A note or calendar can change during a slow model request.
-            if fingerprint(await self.evidence(job)) != fingerprint(evidence):
+            if not same_evidence(await self.evidence(job), evidence):
                 raise ValueError("stale: source evidence changed during model processing")
             job.result, job.evidence, job.usage = result, evidence, usage
             job.state = "suggested"
@@ -1466,49 +1477,69 @@ class ContextService:
                 updated_speaker = job.evidence.get("speaker_review") or {}
                 current_candidates = {c["id"] for c in updated_speaker.get("candidates", [])}
                 if job.state == "suggested" and current_candidates - previous_candidates:
-                    current_evidence = await self.evidence(job)
-                    if fingerprint(current_evidence) != fingerprint(job.evidence):
-                        raise ValueError("stale: source evidence changed during model processing")
-                    job.state = "running"
-                    self.save_job(job)
-                    reply, speaker_usage = await self.provider.suggest(
-                        connection,
-                        self.key(connection.id),
-                        assignment,
-                        PROMPT + "\nReturn speaker suggestions only for the supplied speakers.",
-                        current_evidence,
-                    )
-                    job.reply = json.dumps(reply, ensure_ascii=False)[:4000]
-                    proposed = Suggestions.model_validate(reply)
-                    proposed.suggestions = [s for s in proposed.suggestions if s.kind == "speaker"]
-                    labels = [s.field for s in proposed.suggestions]
-                    if len(labels) != len(set(labels)):
-                        raise JobRejected(
-                            "duplicate-speaker",
-                            "The model suggested a speaker more than once",
-                            RETRY,
-                        )
-                    self.validate_result(proposed, current_evidence)
-                    if fingerprint(await self.evidence(job)) != fingerprint(current_evidence):
-                        raise ValueError("stale: source evidence changed during model processing")
-                    by_label = {s.field: s for s in proposed.suggestions}
-                    for index, old in enumerate(job.result.suggestions):
-                        if old.kind == "speaker" and old.field in by_label:
-                            replacement = by_label[old.field]
-                            replacement.reason = (
-                                " ".join(replacement.reason.split())[:250] or "No reason given."
+                    first_reply = job.reply
+                    try:
+                        current_evidence = await self.evidence(job)
+                        if not same_evidence(current_evidence, job.evidence):
+                            raise ValueError(
+                                "stale: source evidence changed during model processing"
                             )
-                            job.result.suggestions[index] = replacement
-                    job.usage = dict(usage)
-                    for key, value in speaker_usage.items():
-                        if type(value) in (int, float) and type(job.usage.get(key)) in (int, float):
-                            job.usage[key] += value
-                        elif key not in job.usage:
-                            job.usage[key] = value
-                    job.state = "suggested"
-                    job.succeeded_at = now()
-                    job.set_error()
-                    self.save_job(job)
+                        job.state = "running"
+                        self.save_job(job)
+                        reply, speaker_usage = await self.provider.suggest(
+                            connection,
+                            self.key(connection.id),
+                            assignment,
+                            PROMPT + "\nReturn speaker suggestions only for the supplied speakers.",
+                            current_evidence,
+                        )
+                        job.reply = json.dumps(reply, ensure_ascii=False)[:4000]
+                        proposed = Suggestions.model_validate(reply)
+                        proposed.suggestions = [
+                            s for s in proposed.suggestions if s.kind == "speaker"
+                        ]
+                        labels = [s.field for s in proposed.suggestions]
+                        if len(labels) != len(set(labels)):
+                            raise JobRejected(
+                                "duplicate-speaker",
+                                "The model suggested a speaker more than once",
+                                RETRY,
+                            )
+                        self.validate_result(proposed, current_evidence)
+                        if not same_evidence(await self.evidence(job), current_evidence):
+                            raise ValueError(
+                                "stale: source evidence changed during model processing"
+                            )
+                        by_label = {s.field: s for s in proposed.suggestions}
+                        for index, old in enumerate(job.result.suggestions):
+                            if old.kind == "speaker" and old.field in by_label:
+                                replacement = by_label[old.field]
+                                replacement.reason = (
+                                    " ".join(replacement.reason.split())[:250] or "No reason given."
+                                )
+                                job.result.suggestions[index] = replacement
+                        job.usage = dict(usage)
+                        for key, value in speaker_usage.items():
+                            if type(value) in (int, float) and type(job.usage.get(key)) in (
+                                int,
+                                float,
+                            ):
+                                job.usage[key] += value
+                            elif key not in job.usage:
+                                job.usage[key] = value
+                        job.state = "suggested"
+                        job.succeeded_at = now()
+                        job.set_error()
+                        self.save_job(job)
+                    except (ValueError, StoreError) as exc:
+                        if str(exc).startswith("stale:"):
+                            raise
+                        log.warning(
+                            "speaker refresh for job %s failed: %s", job.id, type(exc).__name__
+                        )
+                        job.state, job.reply = "suggested", first_reply
+                        job.notice = speaker_names.REFRESH_NOTICE
+                        self.save_job(job)
         except (ValueError, StoreError, StopIteration) as exc:
             stale = str(exc).startswith("stale:")
             job.state = "stale" if stale else "failed"
@@ -1765,7 +1796,7 @@ class ContextService:
                 job.state = "stale"
                 self.save_job(job)
                 raise
-            if fingerprint(current_evidence) != fingerprint(job.evidence):
+            if not same_evidence(current_evidence, job.evidence):
                 job.state = "stale"
                 self.save_job(job)
                 raise ValueError("source evidence changed; regenerate the suggestion")

@@ -46,6 +46,10 @@ OMITTED_NOTICE = (
     "Speaker names could not be suggested for this recording because it is too long; "
     "you can still name speakers yourself."
 )
+REFRESH_NOTICE = (
+    "Speaker suggestions could not be refreshed after the calendar event was linked; "
+    "you can still choose people yourself."
+)
 
 
 def person_candidate(entity: Any) -> dict[str, Any]:

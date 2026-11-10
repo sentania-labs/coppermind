@@ -61,6 +61,7 @@ class EnrichmentJob(ContextModel):
     usage: dict[str, Any] = Field(default_factory=dict)
     decisions: list[dict[str, Any]] = Field(default_factory=list)
     pending_approval: dict[str, Any] | None = None
+    notice: str = ""
 
     @property
     def decided(self) -> set[int]:

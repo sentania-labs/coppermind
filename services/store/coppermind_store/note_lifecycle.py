@@ -134,6 +134,8 @@ class NoteLifecycle:
             "stale": stale,
             "speaker_notice": speaker_names.OMITTED_NOTICE
             if job and (job.evidence.get("speaker_review") or {}).get("omitted")
+            else job.notice
+            if job
             else "",
             "suggestions": suggestions,
             "unresolved": job.result.unresolved if job and job.result else [],
@@ -145,7 +147,7 @@ class NoteLifecycle:
         }
 
     async def complete(self, payload: dict[str, Any]) -> dict[str, Any]:
-        from coppermind_store.context_service import fingerprint, now
+        from coppermind_store.context_service import fingerprint, now, same_evidence
 
         if not self.context.config().lifecycle_enabled:
             raise ValueError("enable the note lifecycle in Admin first")
@@ -215,14 +217,7 @@ class NoteLifecycle:
                             for key in removed:
                                 prospective.frontmatter.pop(key, None)
                     validate_review(prospective, schema, self._default_timezone())
-                    current_evidence = await self.context.evidence(job)
-                    if fingerprint(
-                        {k: v for k, v in current_evidence.items() if k != "speaker_review"}
-                    ) != fingerprint(
-                        {k: v for k, v in job.evidence.items() if k != "speaker_review"}
-                    ) or not speaker_names.same_recording(
-                        current_evidence.get("speaker_review"), job.evidence.get("speaker_review")
-                    ):
+                    if not same_evidence(await self.context.evidence(job), job.evidence):
                         raise ValueError("source evidence changed; regenerate the suggestion")
                     selected.sort(
                         key=lambda i: (

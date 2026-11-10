@@ -205,7 +205,24 @@ async def test_review_corrects_a_speaker_and_replays_without_another_revision(
     job_id = await context.queue_note(note.id)
     job = context.load_job(job_id)
     await context.run_job(job)
-    if choice in {"failed", "second_failed"}:
+    if choice == "second_failed":
+        from coppermind_store.speaker_names import REFRESH_NOTICE
+
+        assert job.state == "suggested", job.error
+        assert len(observed) == 2
+        assert (await store.get_note(note.id)).frontmatter["calendar_event"] == event["event_id"]
+        detail = await context.lifecycle_detail({"note_id": note.id})
+        assert detail["speaker_notice"] == REFRESH_NOTICE
+        assert detail["state"] == "suggested"
+        assert [s["field"] for s in detail["suggestions"] if s["kind"] == "speaker"] == [
+            "Speaker 1",
+            "Speaker 2",
+        ]
+        problems = await context.attention({})
+        assert not any(item["id"] == job_id for item in problems["failed_jobs"]["items"])
+        assert (await store.get_source(result.source.id)).current_revision == 1
+        return
+    if choice == "failed":
         assert job.state == "failed"
         problems = await context.attention({})
         assert any(item["id"] == job_id for item in problems["failed_jobs"]["items"])
@@ -473,6 +490,11 @@ async def test_speakers_and_an_attendee_suggestion_complete_together_without_los
         ]
 
     context, result, note, job_id, observed = await recorded(store, standin, SHORT, answer)
+    from coppermind.entities import EntityChange
+
+    await store.entities.change(
+        alex["id"], EntityChange(version=alex["version"], action="rename", name="Alexandra Morgan")
+    )
     detail = await context.lifecycle_detail({"note_id": note.id})
     by_kind = {s["kind"]: s["index"] for s in detail["suggestions"] if s["kind"] != "speaker"}
     speaker = next(s["index"] for s in detail["suggestions"] if s["kind"] == "speaker")
@@ -490,7 +512,11 @@ async def test_speakers_and_an_attendee_suggestion_complete_together_without_los
     assert completed["state"] == "complete"
     attendees = (await store.get_note(note.id)).frontmatter["attendees"]
     assert "alex@example.test" in attendees
-    assert attendees == ["Casey@EXAMPLE.COM", "alex@example.test", "[[People/Alex Morgan]]"]
+    assert attendees[:2] == ["Casey@EXAMPLE.COM", "alex@example.test"]
+    assert attendees[2].startswith("[[People/Alex")
+    text = (await store.get_source_artifact(result.source.id, 2, "transcript.txt")).content
+    assert "Alexandra Morgan: Hello." in text
+    assert len(observed) == 1
 
 
 async def test_a_three_hour_recording_with_hundreds_of_people_keeps_every_suggestion_kind(
