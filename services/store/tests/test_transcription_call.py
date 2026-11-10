@@ -240,6 +240,25 @@ async def test_an_http_failure_is_told_apart_and_only_a_server_fault_is_tried_ag
     assert phrase in str(caught.value) and "secret detail" not in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    ("status", "reason", "rule", "waiting"),
+    [
+        (403, "forbidden", "transcription-http-403", False),
+        (413, "payload_too_large", "transcription-http-413", False),
+        (415, "unsupported_media", "transcription-http-415", False),
+        (500, "something_new", "transcription-internal", True),
+        (503, "models_loading", "transcription-internal", True),
+    ],
+)
+async def test_only_a_server_fault_with_an_unknown_reason_is_treated_as_internal(
+    recording, status, reason, rule, waiting
+):
+    async with Service(status=status, reply={"error": {"reason": reason}}) as service:
+        with pytest.raises(ProviderError) as caught:
+            await send(service, recording)
+    assert caught.value.rule == rule and caught.value.waiting is waiting
+
+
 async def test_an_unusable_answer_is_a_refusal_the_same_upload_would_only_repeat(recording):
     from coppermind_store.recordings import repeats_only
 
@@ -720,6 +739,70 @@ async def test_job_recovers_with_same_key(recording, monkeypatch, failure):
     assert posts == ["stable-id"] * (1 if failure in {"outage", "disconnected"} else 2)
     assert any(update[3] for update in updates)
     assert updates[-1][3] == ""
+
+
+async def test_a_poll_404_with_any_reason_is_a_lost_job_and_is_resubmitted(
+    recording, monkeypatch
+):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    requests = []
+
+    async def handle(request):
+        requests.append((request.method, request.headers.get("Idempotency-Key")))
+        if request.method == "POST":
+            return httpx.Response(202, json={"id": f"job-{len(requests)}", "status": "queued"})
+        if len(requests) == 2:
+            return httpx.Response(404, json={"error": {"reason": "job_not_found"}})
+        return httpx.Response(200, json={"status": "done", "result": REPLY})
+
+    connection = ModelConnection(
+        id="stt", name="Speech", provider="compatible", base_url="http://127.0.0.1:1/v1"
+    )
+    result, _ = await ModelProvider(httpx.MockTransport(handle)).transcribe(
+        connection,
+        "",
+        assignment(),
+        recording,
+        filename=recording.name,
+        mime_type="audio/mp4",
+        size_bytes=recording.stat().st_size,
+        job_id="stable-id",
+        duration_seconds=7201,
+    )
+    assert result["segments"]
+    assert [key for method, key in requests if method == "POST"] == ["stable-id"] * 2
+
+
+async def test_a_direct_413_with_a_body_reason_still_falls_back_to_the_job_path(
+    recording, monkeypatch
+):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    paths = []
+
+    async def handle(request):
+        paths.append(request.url.path)
+        if len(paths) == 1:
+            return httpx.Response(413, json={"error": {"reason": "payload_too_large"}})
+        return httpx.Response(200, json={"id": "job-1", "status": "done", "result": REPLY})
+
+    connection = ModelConnection(
+        id="stt", name="Speech", provider="compatible", base_url="http://127.0.0.1:1/v1"
+    )
+    await ModelProvider(httpx.MockTransport(handle)).transcribe(
+        connection,
+        "",
+        assignment(),
+        recording,
+        filename=recording.name,
+        mime_type="audio/mp4",
+        size_bytes=recording.stat().st_size,
+        job_id="stable-id",
+    )
+    assert paths == ["/v1/audio/transcriptions", "/v1/audio/transcriptions/jobs"]
 
 
 async def test_a_saved_job_older_than_its_budget_is_still_polled_once_after_a_restart(

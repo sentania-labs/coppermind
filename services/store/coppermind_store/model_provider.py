@@ -349,12 +349,9 @@ class ModelProvider:
                                 else {}
                             )
                             reason = error.get("reason") if isinstance(error, dict) else None
-                            if isinstance(reason, str) and reason not in {
-                                "not_found",
-                                "unauthorized",
-                                "invalid_request",
-                                "length_required",
-                            }:
+                            if isinstance(reason, str) and (
+                                reason in TRANSCRIPTION_REASONS or response.status_code >= 500
+                            ):
                                 refusal = transcription_error(
                                     reason if reason in TRANSCRIPTION_REASONS else "internal"
                                 )
