@@ -8,6 +8,7 @@ is held: there is no call Admin could make here that would change one.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 
 import pytest
@@ -622,7 +623,11 @@ def test_counters_say_plainly_when_the_upgrade_is_complete():
 def test_a_refused_note_says_what_happened_and_offers_a_working_action(signed_in):
     from coppermind_store.reconciler import adoption_problem
 
-    client, _ = signed_in
+    from coppermind.schema import default_schema
+    from coppermind.statefiles import StateStore
+
+    client, wiring = signed_in
+    StateStore(wiring.state_dir).ensure("schema", default_schema().model_dump(mode="json"))
     store = ReadOnlyStore()
     store.problems = []
     for path, cause in (
@@ -645,3 +650,9 @@ def test_a_refused_note_says_what_happened_and_offers_a_working_action(signed_in
     assert "checks again on its own" in page
     for internal in ("Fields and tags", "keys the schema", "the schema"):
         assert internal not in page
+    assert '<a href="/admin/fields?advanced=1">Open Tags and advanced rules</a>' in page
+    # Each remedy the refused-default copy offers is a page that has the control.
+    choices = client.get("/admin/properties/new?edit=type").text
+    assert 'name="choices"' in choices and "work" in choices
+    advanced = client.get("/admin/fields?advanced=1").text
+    assert re.search(r'name="key-\d+-default"', advanced)

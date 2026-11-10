@@ -87,7 +87,15 @@ def _link(problem: ProblemInfo) -> str:
         if problem.action and problem.action.startswith("property:"):
             key = problem.action.removeprefix("property:")
             target = f"/admin/properties/new?edit={quote(key, safe='')}"
-            return f'<a href="{escape(target)}">Open the {escape(key)} property</a>'
+            return (
+                f'<a href="{escape(target)}">Open the {escape(key)} property</a><br>'
+                f'<a href="/admin/fields?advanced=1">Open Tags and advanced rules</a>'
+            )
+        if problem.action == "defaults":
+            return (
+                '<a href="/admin/properties">Open Note properties</a><br>'
+                '<a href="/admin/fields?advanced=1">Open Tags and advanced rules</a>'
+            )
         if problem.action == "properties":
             return '<a href="/admin/properties">Open Note properties</a>'
         return "Fix it in Obsidian. Coppermind checks again on its own."

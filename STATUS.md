@@ -207,9 +207,10 @@ has not been exercised by this slice.
   exact and counted rejected. The reason names the parser category, the schema
   keys at fault or the kind of fault, and never the person's own values,
   because logs are collected and shipped. When the key at fault was filled in
-  from the schema's own default, the reason says so and points at Fields and
-  tags, and each refused file is listed on Problems as `adoption` until it
-  changes or is adopted. A carriage return in the body is the
+  from the schema's own default, the reason says so, and Problems offers both
+  remedies, changing the default under Tags and advanced rules or adding it to
+  the allowed choices in Note properties. Each refused file is listed on
+  Problems as `adoption` until it changes or is adopted. A carriage return in the body is the
   person's own byte and never blocks adoption, and neither does a NUL inside a
   value: the file keeps that byte and the mirror, which is the rebuildable
   copy, drops it.

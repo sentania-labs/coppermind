@@ -1157,11 +1157,11 @@ def adoption_problem(cause: str) -> tuple[str, str]:
         listed = " and ".join(names)
         own = names[0] if len(names) == 1 else None
         return (
-            f"property:{own}" if own else "properties",
+            f"property:{own}" if own else "defaults",
             f"Coppermind left this note unchanged. The note has no {listed} yet, and the "
             f"default Coppermind would fill in is not one of the allowed choices. Change "
-            f"the default, or add it to the allowed choices, in Note properties. "
-            f"Coppermind checks again on its own after you save the change.",
+            f"the default in Tags and advanced rules, or add it to the allowed choices in "
+            f"Note properties. Coppermind checks again on its own after you save the change.",
         )
     if written:
         listed = " and ".join(_property_names(written.group(1)))
