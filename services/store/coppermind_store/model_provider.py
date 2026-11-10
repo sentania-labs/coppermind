@@ -810,11 +810,8 @@ class ModelProvider:
                     else:
                         raise
             if use_job:
-                job_started = job_started or time.time()
-                deadline = time.monotonic() + max(
-                    0, job_budget_seconds(duration_seconds) - (time.time() - job_started)
-                )
-                update()
+                spent = time.time() - job_started if job_started and remote_job_id else 0
+                deadline = time.monotonic() + max(0, job_budget_seconds(duration_seconds) - spent)
                 result = {"status": "running"} if remote_job_id else None
                 stats = CallStats()
                 empty_answers = 0
@@ -838,6 +835,8 @@ class ModelProvider:
                                         "transcription-provider",
                                     )
                                 remote_job_id = remote_id
+                                job_started = time.time()
+                                deadline = time.monotonic() + job_budget_seconds(duration_seconds)
                                 update(
                                     "The transcription service lost or failed the job; "
                                     "the recording was sent again."
@@ -903,6 +902,8 @@ class ModelProvider:
                     except TimeoutError as exc:
                         raise exhausted() from exc
                     except ProviderError as exc:
+                        if exc.rule == "transcription-busy" and not remote_job_id:
+                            raise
                         if exc.rule == "transcription-http-404" and remote_job_id:
                             if job_resubmits >= JOB_MAX_RESUBMITS:
                                 raise exhausted() from exc

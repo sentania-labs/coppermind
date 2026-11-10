@@ -7,6 +7,7 @@ documented `diarized_json` shape after a delay, over a real socket.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
@@ -432,6 +433,34 @@ async def test_a_failed_job_retries_with_the_same_key_and_stops_at_the_cap(store
     ]
     assert keys == [job["id"]] * (model_provider.JOB_MAX_RESUBMITS + 2)
     assert (await context.recording_status({"id": job["id"]}))["state"] == "succeeded"
+
+
+async def test_a_service_busy_for_longer_than_the_job_budget_before_accepting_still_waits(
+    store, monkeypatch
+):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    monkeypatch.setattr(model_provider, "JOB_PACE_HEADROOM", 0)
+    monkeypatch.setattr(model_provider, "JOB_MIN_SECONDS", 0.3)
+    async with Service(jobs=True, status=429) as service:
+        context = await setup_transcription(store, service)
+        job = await context.accept_recording(
+            request(await store_audio(store), metadata={"duration_seconds": 7500})
+        )
+        for _ in range(2):
+            assert await context.recordings.tick() is True
+            waiting = await context.recording_status({"id": job["id"]})
+            assert waiting["state"] == "queued" and waiting["attempts"] == 0
+            assert waiting["error_rule"] == "transcription-busy"
+            assert context.recordings.load(job["id"]).remote_job_started == 0
+            await asyncio.sleep(0.4)
+            rewind(context, job["id"], retry_after=datetime.now(UTC).isoformat())
+        service.status = 200
+        assert await context.recordings.tick() is True
+    done = await context.recording_status({"id": job["id"]})
+    assert done["state"] == "succeeded" and done["attempts"] == 1
+    assert len([r for r in service.requests if r["path"].startswith("POST")]) == 3
 
 
 @pytest.mark.parametrize("job_status", ["running", None])
