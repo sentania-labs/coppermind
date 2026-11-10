@@ -74,6 +74,38 @@ async def test_moved_dossier_follows_identity_and_respects_owner_name(store):
     assert (await store.entities.get(entity["id"]))["name"] == "Casey Jones"
 
 
+async def test_deleted_company_page_is_not_recreated(store):
+    await store.create_note(
+        CreateNote(
+            title="Customer meeting",
+            body="A meeting.",
+            frontmatter={"reviewed": True, "date": "2026-11-01", "account": ["Xcel Energy"]},
+        )
+    )
+    await store.entities.refresh()
+    company = next(e for e in store.entities.load().entities.values() if e.kind == "company")
+    (store.notes_root / company.path).unlink()
+    await store.entities.refresh()
+    await store.entities.refresh()
+    ledger = store.entities.load()
+    companies = [e for e in ledger.entities.values() if e.kind == "company"]
+    assert [e.id for e in companies] == [company.id]
+    assert companies[0].retired_at
+    assert not (store.notes_root / company.path).exists()
+
+
+async def test_trashed_dossier_page_is_not_treated_as_a_move(store):
+    entity = await person(store, "Casey Smith")
+    old = store.notes_root / entity["path"]
+    trash = store.notes_root / ".trash"
+    trash.mkdir()
+    old.rename(trash / old.name)
+    await store.entities.refresh()
+    current = await store.entities.get(entity["id"])
+    assert current["path"] == entity["path"]
+    assert current["retired_at"]
+
+
 async def test_account_wikilink_uses_only_existing_company(store):
     company = await store.entities.create(EntityInput(kind="company", name="Acme"))
     p = await person(store)

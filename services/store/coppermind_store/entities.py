@@ -12,6 +12,7 @@ import builtins
 import hashlib
 import html
 import json
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -482,7 +483,7 @@ class EntityService:
         by_path = {e.path.removesuffix(".md"): e for e in ledger.entities.values()}
         by_company: dict[str, list[Entity]] = {}
         for known in ledger.entities.values():
-            if known.kind == "company" and not known.redirect and not known.retired_at:
+            if known.kind == "company":
                 for name in {known.name.casefold(), *(a.casefold() for a in known.aliases)}:
                     by_company.setdefault(name, []).append(known)
         for note in notes.values():
@@ -532,11 +533,17 @@ class EntityService:
                             companies[target.id] = target
                             mentions[target.id] = target
                         continue
-                    matches = by_company.get(name.casefold(), [])
+                    matches: dict[str, Entity] = {}
+                    for match in by_company.get(name.casefold(), []):
+                        while match.redirect and match.redirect in ledger.entities:
+                            match = ledger.entities[match.redirect]
+                        matches[match.id] = match
                     if len(matches) > 1:
                         continue
                     if matches:
-                        company = matches[0]
+                        company = next(iter(matches.values()))
+                        if company.retired_at or company.redirect:
+                            continue
                     elif digest(["company", name, note.id]) not in ledger.suppressed:
                         company = self.make(
                             ledger, EntityInput(kind="company", name=name), automatic=True
@@ -939,16 +946,31 @@ class EntityService:
         }
         found: dict[str, list[str]] = {identity: [] for identity in missing}
         if missing:
-            for path in self.store.notes_root.rglob("*.md"):
-                try:
-                    if path.is_symlink():
+            from coppermind_store.reconciler import _IGNORED_DIRECTORIES
+
+            trash = self.store.control.settings().notes.trash_folder.strip("/")
+            root = self.store.notes_root
+            for parent, directories, files in os.walk(root, followlinks=False):
+                relative_parent = Path(parent).relative_to(root).as_posix()
+                directories[:] = [
+                    name
+                    for name in directories
+                    if name not in _IGNORED_DIRECTORIES
+                    and (name if relative_parent == "." else f"{relative_parent}/{name}") != trash
+                ]
+                for name in files:
+                    if not name.endswith(".md"):
                         continue
-                    fields, _ = fm.parse(path.read_text())
-                    identity = fields.get("entity_id")
-                    if isinstance(identity, str) and identity in found:
-                        found[identity].append(path.relative_to(self.store.notes_root).as_posix())
-                except (OSError, UnicodeError, fm.FrontmatterError):
-                    continue
+                    path = Path(parent) / name
+                    try:
+                        if path.is_symlink():
+                            continue
+                        fields, _ = fm.parse(path.read_text())
+                        identity = fields.get("entity_id")
+                        if isinstance(identity, str) and identity in found:
+                            found[identity].append(path.relative_to(root).as_posix())
+                    except (OSError, UnicodeError, fm.FrontmatterError):
+                        continue
             for identity, paths in found.items():
                 entity = missing[identity]
                 if len(paths) == 1:
