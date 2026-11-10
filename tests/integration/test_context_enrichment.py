@@ -1054,17 +1054,17 @@ async def test_a_later_success_or_retry_clears_the_earlier_failure_rule(store):
     await context.run_job(context.load_job(job_id))
     assert context.load_job(job_id).error_rule == "input-limit"
 
-    await context.retry_job({"id": job_id})
-    queued = context.load_job(job_id)
+    retry = await context.retry_job({"id": job_id})
+    queued = context.load_job(retry["job"])
     assert (queued.state, queued.error, queued.error_rule) == ("queued", "", "")
     assert queued.input_size is None and queued.input_limit is None
 
-    failed = context.load_job(job_id)
+    failed = context.load_job(retry["job"])
     failed.set_error("x", "input-limit", 5, 2)
     failed.attempts = failed.attempt_limit
     context.save_job(failed)
-    await context.run_job(context.load_job(job_id))
-    exhausted = context.load_job(job_id)
+    await context.run_job(context.load_job(retry["job"]))
+    exhausted = context.load_job(retry["job"])
     assert "Attempt limit reached" in exhausted.error
     assert exhausted.error_rule == "" and exhausted.input_limit is None
 
@@ -1313,3 +1313,28 @@ async def test_outcomes_count_every_state_and_the_last_success(store):
     outcomes = (await context.snapshot())["outcomes"]
     assert outcomes["counts"] == {"suggested": 1} and outcomes["answered"] == 1
     assert outcomes["last_success"] == context.load_job(job_id).succeeded_at != ""
+
+
+async def test_retry_history_and_automatic_recovery_after_limit_change(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 2000
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Large", body="word " * 1000, frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    await context.run_job(context.load_job(first))
+    retry = (await context.retry_job({"id": first}))["job"]
+    assert retry != first
+    assert context.load_job(first).state == "failed"
+    await context.run_job(context.load_job(retry))
+    assert [job["id"] for job in (await context.snapshot())["jobs"]] == [retry]
+    assert (await context.job_detail({"id": retry}))["history"][0]["id"] == first
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 10000
+    context.save_config(config)
+    await context.tick()
+    jobs = sorted(context.jobs(), key=lambda job: job.created_at)
+    assert len(jobs) == 3
+    assert jobs[-1].config_hash == context.config_hash()

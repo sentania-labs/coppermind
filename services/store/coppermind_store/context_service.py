@@ -453,6 +453,8 @@ class ContextService:
         schema = self.store.control.schema()
         catalog = self.archive.catalog()
         jobs = sorted(self.jobs(), key=lambda job: job.created_at, reverse=True)
+        jobs = list({job.note_id: job for job in reversed(jobs)}.values())
+        jobs.sort(key=lambda job: job.created_at, reverse=True)
         events = catalog.events
         contacts = catalog.contacts()
         event_count, contact_count = len(events), len(contacts)
@@ -763,6 +765,15 @@ class ContextService:
             assignment.automatic_after = old.automatic_after or now()
             config.assignments["enrichment"] = assignment
             self.save_config(config)
+            if assignment.enabled and not old.enabled:
+                latest: dict[str, EnrichmentJob] = {}
+                for job in sorted(self.jobs(), key=lambda j: j.created_at):
+                    latest[job.note_id] = job
+                for job in latest.values():
+                    if job.state == "failed" and job.error_rule == "model-not-available":
+                        job.state, job.attempts = "queued", 0
+                        job.set_error()
+                        self.save_job(job)
         return {"saved": "enrichment"}
 
     async def upload(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1356,9 +1367,9 @@ class ContextService:
             if job.state not in {"failed", "stale"}:
                 raise ValueError("only failed or stale jobs can be retried")
         identity = (
-            await self.queue_reviewed(job.note_id)
+            await self.queue_reviewed(job.note_id, force=True)
             if job.purpose == "dossier"
-            else await self.queue_note(job.note_id, force=job.state == "stale")
+            else await self.queue_note(job.note_id, force=True)
         )
         async with self.lock:
             latest = self.load_job(identity)
@@ -1369,6 +1380,20 @@ class ContextService:
                 self.save_job(latest)
         return {"job": identity}
 
+    async def retry_all_failed(self, payload: dict[str, Any]) -> dict[str, Any]:
+        latest: dict[str, EnrichmentJob] = {}
+        for job in sorted(self.jobs(), key=lambda j: j.created_at):
+            latest[job.note_id] = job
+        queued, errors = 0, []
+        for job in latest.values():
+            if job.state == "failed":
+                try:
+                    await self.retry_job({"id": job.id})
+                    queued += 1
+                except (ValueError, StoreError) as exc:
+                    errors.append(f"{job.path}: {exc}")
+        return {"queued": queued, "errors": errors}
+
     def load_job(self, identity: str) -> EnrichmentJob:
         if len(identity) != 64 or any(c not in "0123456789abcdef" for c in identity):
             raise ValueError("invalid job identity")
@@ -1378,6 +1403,11 @@ class ContextService:
         job = self.load_job(payload["id"])
         result = job.model_dump()
         note = await self.store.get_note(job.note_id)
+        result["history"] = [
+            j.model_dump(exclude={"evidence", "pending_approval"})
+            for j in sorted(self.jobs(), key=lambda j: j.created_at, reverse=True)
+            if j.note_id == job.note_id and j.id != job.id
+        ]
         result["current"] = note.model_dump(mode="json")
         result["associations"] = self.read("associations", {}).get(note.id, {})
         result["associations_hash"] = fingerprint(result["associations"])
@@ -1757,25 +1787,33 @@ class ContextService:
             self.write("one-calendar-event-ids", {"complete": True, "at": now()})
 
     async def queue_reviewed(
-        self, identity: str, prior_jobs: list[EnrichmentJob] | None = None
+        self, identity: str, prior_jobs: list[EnrichmentJob] | None = None, *, force: bool = False
     ) -> str:
         note = await self.store.get_note(identity)
         if note.frontmatter.get(self.store.control.schema().role("reviewed_key")) is not True:
             raise ValueError("only reviewed notes contribute facts")
         for previous in self.jobs() if prior_jobs is None else prior_jobs:
             if (
-                previous.purpose == "dossier"
+                not force
+                and previous.purpose == "dossier"
                 and previous.note_id == identity
                 and previous.note_hash == note.content_hash
             ):
-                if previous.state == "stale":
+                if previous.state == "stale" or (
+                    previous.state == "failed"
+                    and (
+                        previous.config_hash != self.config_hash()
+                        or previous.schema_hash != self.schema_hash()
+                    )
+                ):
                     previous.config_hash = self.config_hash()
                     previous.schema_hash = self.schema_hash()
                     previous.state, previous.attempts = "queued", 0
                     previous.set_error()
                     self.save_job(previous)
                 return previous.id
-        job_id = fingerprint([identity, note.content_hash, EXTRACTION_VERSION])
+        parts = [identity, note.content_hash, EXTRACTION_VERSION]
+        job_id = fingerprint([*parts, new_id()] if force else parts)
         if not (self.root / "jobs" / f"{job_id}.json").exists():
             self.save_job(
                 EnrichmentJob(
@@ -1838,6 +1876,22 @@ class ContextService:
                     (j for j in prior_jobs if j.note_id == note.id and j.purpose != "dossier"),
                     key=lambda j: j.created_at,
                 )
+                if previous and previous[-1].state in {"failed", "stale"}:
+                    current = await self.store.get_note(note.id)
+                    known = previous[-1]
+                    if (
+                        known.state == "stale"
+                        or known.note_hash != current.content_hash
+                        or known.config_hash != self.config_hash()
+                        or known.schema_hash != self.schema_hash()
+                        or known.evidence_hash != await self.note_evidence_hash(current, ledger)
+                    ):
+                        touched.append(
+                            await self.queue_note(
+                                note.id, force=known.state == "stale", ledger=ledger
+                            )
+                        )
+                    continue
                 if self.config().lifecycle_enabled and previous:
                     current = await self.store.get_note(note.id)
                     if previous[-1].evidence_hash != await self.note_evidence_hash(current, ledger):
@@ -1871,7 +1925,12 @@ class ContextService:
         current_jobs = {job.id: job for job in prior_jobs}
         for identity in touched:
             current_jobs[identity] = self.load_job(identity)
+        latest_by_note: dict[str, EnrichmentJob] = {}
+        for candidate in sorted(current_jobs.values(), key=lambda item: item.created_at):
+            latest_by_note[candidate.note_id] = candidate
         for known in sorted(current_jobs.values(), key=lambda item: item.id):
+            if latest_by_note[known.note_id].id != known.id and known.state != "applying":
+                continue
             if known.state in {"applied", "rejected", "stale"}:
                 continue
             job = self.load_job(known.id)

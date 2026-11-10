@@ -205,8 +205,9 @@ def router(wiring: Wiring) -> APIRouter:
 <a href="/admin/context?tab=calendar">Calendar and contacts</a>
 <a href="/admin/context?tab=models">Connections and model</a>
 <a href="/admin/context?tab=review">Suggestions and backlog</a></p>"""
-        if request.query_params.get("saved"):
-            head += '<p class="success">Action completed.</p>'
+        message = request.query_params.get("result", "")
+        if message:
+            head += '<p class="success">' + e(message) + "</p>"
         if data["worker_error"]:
             head += '<p class="error">' + e(data["worker_error"]) + "</p>"
         for problem in data.get("eligibility_errors", {}).values():
@@ -603,18 +604,39 @@ picker.addEventListener('change', () => {
                 "automatically. Other suggestions need your approval, and applying any "
                 "change leaves the note unreviewed.</p>"
             )
-            body += (
-                "<h2>Jobs</h2>"
-                + _outcome_line(data)
-                + "<table><tr><th>Note</th><th>Status</th><th>Open</th></tr>"
-            )
-            for job in data["jobs"]:
-                body += (
-                    f"<tr><td>{e(job['path'])}</td><td>{e(job['state'])}<br>{e(job['error'])}"
-                    f"{_limit_link(job)}</td>"
-                )
-                body += f'<td><a href="/admin/context/jobs/{job["id"]}">Inspect</a></td></tr>'
-            body += "</table><h2>Existing Review backlog</h2>"
+            body += "<h2>Jobs</h2>" + _outcome_line(data)
+            if data["jobs"]:
+                if any(job["state"] == "failed" for job in data["jobs"]):
+                    body += (
+                        "<p>Retry all failed notes with current settings and evidence. "
+                        "A retry may repeat a request that was already billed.</p>"
+                    )
+                    body += _form("retry-all-failed", "", "Retry all failed")
+                body += "<table><tr><th>Note</th><th>Status</th><th>Actions</th></tr>"
+                for job in data["jobs"]:
+                    state = job["state"]
+                    detail = job["error"]
+                    if state == "stale":
+                        detail = (
+                            "The reviewed note changed. "
+                            if "reviewed note changed" in detail
+                            else "The note, its evidence, or enrichment settings changed. "
+                        ) + "A fresh job will be queued when eligible."
+                    body += (
+                        f"<tr><td>{e(job['path'])}</td><td>{e(state.capitalize())}<br>{e(detail)}"
+                        f"{_limit_link(job)}</td><td>"
+                    )
+                    if state == "failed":
+                        body += (
+                            "<p>Queue with current settings and evidence. "
+                            "This may repeat a billed request.</p>"
+                        )
+                        body += _form("retry-job", _hidden("id", job["id"]), "Retry")
+                    body += f'<a href="/admin/context/jobs/{job["id"]}">Inspect</a></td></tr>'
+                body += "</table>"
+            else:
+                body += "<p>No enrichment jobs yet.</p>"
+            body += "<h2>Existing Review backlog</h2>"
             try:
                 backlog = await client(request).context_action(
                     "backlog", {"cursor": request.query_params.get("cursor")}
@@ -777,6 +799,13 @@ picker.addEventListener('change', () => {
                 + _check("confirm_send", "Send selected notes for enrichment"),
                 "Generate fresh proposal",
             )
+        if job.get("history"):
+            body += "<details><summary>Earlier jobs</summary><ul>"
+            for earlier in job["history"]:
+                stamp = _calendar_time(earlier["created_at"])
+                label = f"{earlier['path']}: {earlier['state']} ({stamp})"
+                body += f'<li><a href="/admin/context/jobs/{earlier["id"]}">{e(label)}</a></li>'
+            body += "</ul></details>"
         body += "<h2>Approved associations</h2>"
         for kind, targets in job.get("associations", {}).items():
             for target in targets:
@@ -872,6 +901,7 @@ picker.addEventListener('change', () => {
                 "dismiss-calendar-conflict",
                 "enqueue",
                 "retry-job",
+                "retry-all-failed",
                 "reject",
                 "approve",
                 "resume-approval",
@@ -906,9 +936,20 @@ picker.addEventListener('change', () => {
                 "save-assignment",
             }
             else "review"
-            if action in {"enqueue", "retry-job", "reject", "approve", "resume-approval"}
+            if action
+            in {"enqueue", "retry-job", "retry-all-failed", "reject", "approve", "resume-approval"}
             else "calendar"
         )
-        return RedirectResponse(f"/admin/context?tab={tab}&saved=1", status_code=303)
+        if action == "retry-all-failed":
+            message = f"Retry all failed: {result['queued']} queued."
+            if result["errors"]:
+                message += " Could not queue: " + "; ".join(result["errors"])
+        elif action == "retry-job":
+            message = "Retry queued with current settings and evidence."
+        else:
+            message = action.replace("-", " ").capitalize() + " completed."
+        return RedirectResponse(
+            f"/admin/context?tab={tab}&result={quote(message)}", status_code=303
+        )
 
     return routes

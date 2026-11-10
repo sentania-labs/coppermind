@@ -36,6 +36,7 @@ ACTIONS = {
     "enqueue": "enqueue",
     "job": "job_detail",
     "retry-job": "retry_job",
+    "retry-all-failed": "retry_all_failed",
     "reject": "reject",
     "approve": "approve",
     "resume-approval": "resume_approval",

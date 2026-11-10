@@ -468,3 +468,32 @@ def test_speed_note_and_outcome_line_speak_plainly():
     assert "not measured" in _speed_note({}, assignment)
     none = {"outcomes": {"counts": {"failed": 2}, "answered": 0, "last_success": ""}}
     assert "No job has succeeded yet" in _outcome_line(none)
+
+
+def test_failed_jobs_offer_retry_and_report_bulk_outcome(signed_in):
+    class FailedJobs(ContextStore):
+        async def context_action(self, action, payload):
+            data = await super().context_action(action, payload)
+            if action == "snapshot":
+                data["jobs"] = [
+                    {
+                        "id": "a" * 64,
+                        "path": "Review/Example.md",
+                        "state": "failed",
+                        "error": "Request failed",
+                        "input_limit": None,
+                    }
+                ]
+            if action == "retry-all-failed":
+                return {"queued": 1, "errors": []}
+            return data
+
+    client, _ = signed_in
+    client.app.state.store = FailedJobs()
+    page = client.get("/admin/context?tab=review")
+    assert "Retry all failed" in page.text
+    assert "may repeat a billed request" in page.text
+    assert ">Retry</button>" in page.text
+    csrf = form_token(client, "/admin/context?tab=review")
+    response = client.post("/v1/admin/context/retry-all-failed", data={"csrf": csrf})
+    assert "Retry all failed: 1 queued." in response.text
