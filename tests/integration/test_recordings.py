@@ -16,6 +16,7 @@ from coppermind_store import filing, staged
 from coppermind_store.recordings import render_transcript
 
 from coppermind.context_config import FeatureAssignment
+from coppermind.db.models import Note
 from coppermind.store_protocol import (
     CreateArtifact,
     PatchFrontmatter,
@@ -237,8 +238,6 @@ async def test_audio_removal_failure_retries_quietly_then_offers_a_working_retry
 
 
 async def test_a_note_deleted_after_review_does_not_keep_the_audio(store):
-    from coppermind.db.models import Note
-
     async with Service() as service:
         context = await setup_transcription(store, service)
         audio = await store_audio(store)
@@ -252,6 +251,79 @@ async def test_a_note_deleted_after_review_does_not_keep_the_audio(store):
     assert not (store.artifacts_root / audio / "r0001" / "standup.m4a").exists()
     job = context.recordings.load(accepted["id"])
     assert job.audio_removed and not job.audio_removal_error
+    assert not [p for p in await store.get_problems() if p.kind == "recording"]
+
+
+async def set_note_state(store, note_id, state):
+    async with store.session_factory() as session, session.begin():
+        (await session.get(Note, note_id)).state = state
+
+
+async def test_a_note_deleted_before_review_keeps_its_audio_until_it_is_purged(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    await set_note_state(store, done["note_id"], "deleted")
+    for _ in range(2):
+        assert await context.recordings.tick() is False
+    assert archive.read_bytes() == AUDIO
+    assert not context.recordings.load(accepted["id"]).audio_removed
+
+    await set_note_state(store, done["note_id"], "ok")
+    assert await context.recordings.tick() is False
+    assert archive.read_bytes() == AUDIO
+    await approve(store, done["note_id"])
+    assert await context.recordings.tick() is True
+    assert not archive.exists()
+    assert "Audio was removed after review" in (await store.get_note(done["note_id"])).body
+
+
+async def test_a_note_purged_before_review_takes_its_audio_with_it(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    await set_note_state(store, done["note_id"], "deleted")
+    assert await context.recordings.tick() is False
+    assert archive.exists()
+    async with store.session_factory() as session, session.begin():
+        await session.delete(await session.get(Note, done["note_id"]))
+    assert await context.recordings.tick() is True
+    assert not archive.exists()
+    assert context.recordings.load(accepted["id"]).audio_removed
+    assert not [p for p in await store.get_problems() if p.kind == "recording"]
+
+
+async def test_a_purged_archive_still_settles_with_a_receipt_from_what_is_known(store):
+    import shutil
+
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(
+            request(audio, metadata={"archive_url": "https://example.test/archive/two"})
+        )
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    await store.remove_artifact(audio)
+    shutil.rmtree(store.artifacts_root / audio)
+    await approve(store, done["note_id"])
+    assert await context.recordings.tick() is True
+    job = context.recordings.load(accepted["id"])
+    assert job.audio_removed and not job.audio_removal_error
+    body = (await store.get_note(done["note_id"])).body
+    assert "Audio was removed after review" in body
+    assert f"size: {len(AUDIO)} bytes" in body and "7.5" in body
+    assert "https://example.test/archive/two" in body
+    assert hashlib.sha256(AUDIO).hexdigest() not in body
+    assert audio not in (await store.get_note(done["note_id"])).frontmatter.get("artifacts", [])
     assert not [p for p in await store.get_problems() if p.kind == "recording"]
 
 

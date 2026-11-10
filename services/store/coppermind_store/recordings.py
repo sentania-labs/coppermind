@@ -468,15 +468,13 @@ class Recordings:
     async def _remove_reviewed_audio(self, job: TranscriptionJob) -> bool:
         store = self.context.store
         try:
-            if not job.transcribed:
+            if not job.transcribed or not job.note_id:
                 return False
             async with store.session_factory() as session:
                 row = await session.get(Note, job.note_id)
-            if row is None:
+            if row is not None and not (row.filed and row.reviewed):
                 return False
-            deleted = row.state == "deleted"
-            if not deleted and not (row.filed and row.reviewed):
-                return False
+            deleted = row is None or row.state == "deleted"
             if await self._shared_audio(job):
                 return self._keep_audio(job, AUDIO_KEPT_SHARED)
             transcript = await asyncio.to_thread(self.saved_transcript, job)
@@ -487,28 +485,29 @@ class Recordings:
             ):
                 return False
             if deleted:
-                await artifacts.remove_recording_audio(
-                    store, job.artifact_id, job.artifact_revision
-                )
+                await self._remove_audio(job)
                 return self._audio_removed(job)
             note = await store.get_note(job.note_id)
             reviewed_key = store.control.schema().role("reviewed_key")
             if note.frontmatter.get(reviewed_key) is not True or not note.filed:
                 return False
-            manifest = await asyncio.to_thread(artifacts.read_manifest, store, job.artifact_id)
-            revision = artifacts._current_revision(manifest)
-            if not job.artifact_revision or revision.get("revision") != job.artifact_revision:
-                raise ValueError("The recording has changed since it was accepted.")
-            link = artifacts.link_for(
-                manifest.get("path"), str(manifest["title"]), manifest.get("url")
-            )
+            try:
+                manifest = await asyncio.to_thread(artifacts.read_manifest, store, job.artifact_id)
+            except ArtifactMissing:
+                manifest = None
+            link = None
+            facts = f"size: {job.size_bytes} bytes"
+            if manifest is not None:
+                revision = artifacts._current_revision(manifest)
+                if not job.artifact_revision or revision.get("revision") != job.artifact_revision:
+                    raise ValueError("The recording has changed since it was accepted.")
+                link = artifacts.link_for(
+                    manifest.get("path"), str(manifest["title"]), manifest.get("url")
+                )
+                facts = f"SHA-256: {revision['sha256']}; size: {revision['size_bytes']} bytes"
             duration = transcript.get("duration")
             length = f"{duration} seconds" if duration is not None else "unknown"
-            receipt = (
-                "Audio is scheduled for removal after review. "
-                f"SHA-256: {revision['sha256']}; size: {revision['size_bytes']} bytes; "
-                f"length: {length}."
-            )
+            receipt = f"Audio is scheduled for removal after review. {facts}; length: {length}."
             pointer = job.metadata.get("archive_url")
             if pointer:
                 receipt += f" Archive: {pointer}"
@@ -516,7 +515,7 @@ class Recordings:
             if receipt not in note.body and finished not in note.body:
                 body = (
                     note.body.replace(link, receipt)
-                    if link in note.body
+                    if link and link in note.body
                     else note.body + "\n\n" + receipt + "\n"
                 )
                 fields = dict(note.frontmatter)
@@ -546,9 +545,7 @@ class Recordings:
                         or fields.get(reviewed_key) is not True
                     ):
                         return False
-                await artifacts.remove_recording_audio(
-                    store, job.artifact_id, job.artifact_revision
-                )
+                await self._remove_audio(job)
             note = await store.get_note(job.note_id)
             if receipt in note.body:
                 await store.replace_note(
@@ -570,6 +567,12 @@ class Recordings:
             ).isoformat()
             self.save(job)
             return True
+
+    async def _remove_audio(self, job: TranscriptionJob) -> None:
+        with contextlib.suppress(ArtifactMissing):
+            await artifacts.remove_recording_audio(
+                self.context.store, job.artifact_id, job.artifact_revision
+            )
 
     def _audio_removed(self, job: TranscriptionJob) -> bool:
         job.audio_removed, job.audio_kept = True, ""
