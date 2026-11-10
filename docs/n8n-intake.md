@@ -133,8 +133,8 @@ Current replay behavior matters:
   until the package is within limits. Inspect 422 validation details instead
   of repeatedly resending an invalid package. Escalate other conflicts.
 
-New-install defaults use types `work`, `personal`, `reference`, and `journal`
-(default `reference`), and contexts `internal`, `external`, and `personal`
+New-install defaults suggest types `work`, `personal`, `reference`, and `journal`
+(default `reference`; any other type text is accepted and files under its own folder), and contexts `internal`, `external`, and `personal`
 (default `internal`). Workflow exports using `context: customer` should map
 that to `external`, retaining the customer name in `account`, which is required
 when context is `external`. `account` is a list of customer names. A plain
