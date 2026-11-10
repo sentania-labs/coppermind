@@ -84,6 +84,7 @@ async def create(request: Request) -> Response:
             main.page(
                 "Key created",
                 "<h1>Key created</h1><p>Copy this credential now. It will never be shown again.</p>"
+                "<p><strong>This key starts working within five minutes.</strong></p>"
                 f'<pre id="credential">{escape(credential)}</pre>'
                 '<a href="/admin/keys">Back to API Keys</a>',
             ),

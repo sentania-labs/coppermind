@@ -952,9 +952,14 @@ def _unadoptable_folders(settings: ProductSettings) -> frozenset[tuple[str, ...]
 def _frontmatter_exclusion(data: bytes) -> str | None:
     """Plugin marker keys identify plugin files regardless of their value."""
     try:
-        frontmatter, _ = fm.parse(data.decode("utf-8"))
+        text = data.decode("utf-8")
+        frontmatter, _ = fm.parse(text)
     except (UnicodeDecodeError, fm.FrontmatterError):
         return None
+    from coppermind_store.entities import MARKER
+
+    if MARKER.search(text):
+        return "dossier marker"
     for marker in ("excalidraw-plugin", "kanban-plugin"):
         if marker in frontmatter:
             return f"frontmatter: {marker}"

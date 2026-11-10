@@ -30,6 +30,7 @@ class EnrichmentJob(ContextModel):
     id: str
     note_id: str
     purpose: Literal["initial", "calendar", "dossier"] = "initial"
+    extraction_version: str = ""
     note_hash: str
     evidence_hash: str
     config_hash: str

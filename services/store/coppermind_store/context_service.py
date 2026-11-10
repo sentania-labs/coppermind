@@ -55,6 +55,7 @@ from coppermind_store.dossier_context import (
 )
 from coppermind_store.enrichment_models import EnrichmentJob, Suggestions
 from coppermind_store.model_provider import InputLimitError, ModelProvider, ProviderError
+from coppermind_store.transcript_search import passages, search_terms
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
@@ -277,9 +278,7 @@ class ContextService:
         return fingerprint(
             {
                 "calendar": await self.calendar_evidence_hash(note),
-                "dossiers": await relevant(
-                    self, note, "\n".join(await self.source_text(note.id)), ledger
-                ),
+                "dossiers": await relevant(self, note, ledger),
             }
         )
 
@@ -994,8 +993,6 @@ class ContextService:
     async def source_text(self, note_id: str) -> list[str]:
         # The authored note often already contains the imported summary. Read sources only
         # when explicitly associated; never search across unreviewed notes for context.
-        assignment = self.config().assignments["enrichment"]
-        transcripts = []
         sources = await self.store.get_note_sources(note_id)
         if len(sources) > 5:
             raise JobRejected(
@@ -1003,24 +1000,28 @@ class ContextService:
                 "The note has more than five associated sources",
                 "Remove sources from the note, then retry.",
             )
-        # Text is at most four bytes per character, so more than four times the limit in
-        # bytes is certainly over it. Anything smaller is read and counted exactly, in the
-        # characters the limit is applied to, by the provider before it sends anything.
-        text_bytes = 0
-        for source in sources:
-            manifest = await self.store.get_source(source.id)
+        return await self.read_sources([source.id for source in sources])
+
+    async def selected_sources(self, note_id: str) -> tuple[dict[str, int], int]:
+        """Dossier extraction reads the five lowest source ids and counts the rest as omitted."""
+        identities = sorted(source.id for source in await self.store.get_note_sources(note_id))
+        versions = {
+            identity: (await self.store.get_source(identity)).current_revision
+            for identity in identities[:5]
+        }
+        return versions, len(identities) - len(versions)
+
+    async def read_sources(self, source_ids: list[str]) -> list[str]:
+        transcripts = []
+        for source_id in source_ids:
+            manifest = await self.store.get_source(source_id)
             revision = next(
                 item for item in manifest.revisions if item.revision == manifest.current_revision
             )
             for artifact in revision.artifacts:
                 if artifact.mime_type.startswith("text/"):
-                    text_bytes += artifact.size_bytes
-                    if text_bytes > 4 * assignment.max_input_chars:
-                        raise InputLimitError(
-                            -(-text_bytes // 4), assignment.max_input_chars, at_least=True
-                        )
                     document = await self.store.get_source_artifact(
-                        source.id, manifest.current_revision, artifact.name
+                        source_id, manifest.current_revision, artifact.name
                     )
                     if document.content:
                         transcripts.append(document.content)
@@ -1087,7 +1088,22 @@ class ContextService:
                     person["name"] = (
                         selected_corrections.get(cursor, {}).get("name") or person["name"]
                     )
-        return {
+        dossiers = await relevant(self, note)
+        terms = search_terms(
+            note.frontmatter,
+            {
+                "attendees",
+                assignment.attendees_field,
+                assignment.contacts_field,
+                schema.role("account_key"),
+            }
+            - {"", None},
+            candidates,
+            dossiers,
+        )
+        budget = min(12000, assignment.max_input_chars)
+        excerpts, omitted = passages(transcripts, terms, budget)
+        result = {
             "note": {
                 "id": note.id,
                 "path": note.path,
@@ -1095,8 +1111,9 @@ class ContextService:
                 "frontmatter": note.frontmatter,
                 "body": note.body,
             },
-            "transcripts": transcripts,
-            "dossiers": await relevant(self, note, "\n".join(transcripts)),
+            "transcripts": excerpts,
+            "transcript_omitted_characters": omitted,
+            "dossiers": dossiers,
             "tags": schema.tags,
             "tag_aliases": schema.tag_aliases,
             "tag_mode": schema.tag_mode,
@@ -1108,6 +1125,12 @@ class ContextService:
             },
             "contact_corrections": selected_corrections,
         }
+        while budget and len(json.dumps(result, ensure_ascii=False)) > assignment.max_input_chars:
+            budget //= 2
+            result["transcripts"], result["transcript_omitted_characters"] = passages(
+                transcripts, terms, budget
+            )
+        return result
 
     def allowed_fields(self) -> set[str]:
         schema = self.store.control.schema()
@@ -1122,7 +1145,12 @@ class ContextService:
             assignment.contacts_field,
         } - {assignment.invitees_field, assignment.event_field}
 
-    def validate_result(self, result: Suggestions, evidence: dict[str, Any]) -> None:
+    def validate_result(
+        self,
+        result: Suggestions,
+        evidence: dict[str, Any],
+        full_transcripts: list[str] | None = None,
+    ) -> None:
         schema = self.store.control.schema()
         assignment = self.config().assignments["enrichment"]
         event_ids = {item["event_id"] for item in evidence["events"]}
@@ -1132,7 +1160,11 @@ class ContextService:
             for person in item["people"]
             if person["contact_id"]
         }
-        text = evidence["note"]["body"] + "\n" + "\n".join(evidence["transcripts"])
+        text = (
+            evidence["note"]["body"]
+            + "\n"
+            + "\n".join(evidence["transcripts"] if full_transcripts is None else full_transcripts)
+        )
         dossiers = {e["id"]: e for e in evidence.get("dossiers", [])}
         for item in result.suggestions:
             if not set(item.entity_ids) <= dossiers.keys():
@@ -1309,7 +1341,7 @@ class ContextService:
                     for s in result.suggestions
                     if s.kind in {"event", "contact", "attendee", "invitee"}
                 ]
-            self.validate_result(result, evidence)
+            self.validate_result(result, evidence, await self.source_text(job.note_id))
             # A note or calendar can change during a slow model request.
             if fingerprint(await self.evidence(job)) != fingerprint(evidence):
                 raise ValueError("stale: source evidence changed during model processing")
@@ -1748,7 +1780,7 @@ class ContextService:
         job.note_hash, job.path = note.content_hash, note.path
         try:
             job.evidence_hash = await self.note_evidence_hash(note)
-            dossiers = await relevant(self, note, "\n".join(await self.source_text(note.id)))
+            dossiers = await relevant(self, note)
         except ValueError:
             job.evidence_hash, dossiers = "", job.evidence.get("dossiers", [])
             rebuilt = False
@@ -1895,8 +1927,29 @@ class ContextService:
         note = await self.store.get_note(identity)
         if note.frontmatter.get(self.store.control.schema().role("reviewed_key")) is not True:
             raise ValueError("only reviewed notes contribute facts")
+        source_versions, _ = await self.selected_sources(identity)
         previous = None if force else self.newest_job(identity, prior_jobs)
-        if previous and previous.purpose == "dossier" and previous.note_hash == note.content_hash:
+        if (
+            previous
+            and previous.purpose == "dossier"
+            and previous.note_hash == note.content_hash
+            and (
+                (
+                    not previous.extraction_version
+                    and (
+                        previous.state in {"queued", "running", "stale"}
+                        or (
+                            previous.state == "failed"
+                            and previous.attempts < (previous.attempt_limit or 0)
+                        )
+                    )
+                )
+                or (
+                    previous.extraction_version == EXTRACTION_VERSION
+                    and previous.source_versions == source_versions
+                )
+            )
+        ):
             if previous.state == "stale" or (
                 previous.state == "failed"
                 and (
@@ -1906,6 +1959,8 @@ class ContextService:
             ):
                 previous.config_hash = self.config_hash()
                 previous.schema_hash = self.schema_hash()
+                previous.source_versions = source_versions
+                previous.extraction_version = EXTRACTION_VERSION
                 previous.state, previous.attempts = "queued", 0
                 previous.set_error()
                 self.save_job(previous)
@@ -1916,7 +1971,9 @@ class ContextService:
                 id=job_id,
                 note_id=identity,
                 purpose="dossier",
+                extraction_version=EXTRACTION_VERSION,
                 note_hash=note.content_hash,
+                source_versions=source_versions,
                 evidence_hash="",
                 config_hash=self.config_hash(),
                 schema_hash=self.schema_hash(),
@@ -1945,17 +2002,14 @@ class ContextService:
             NoteQuery(reviewed=True, state="ok", cursor=self.reviewed_cursor, limit=50)
         )
         self.reviewed_cursor = reviewed.next_cursor
-        existing = set(self.read("automatic_baseline", {"ids": []})["ids"])
         prior_jobs = self.jobs()
         touched: list[str] = []
         ledger = self.store.entities.load()
-        enriched = {j.note_id for j in prior_jobs if j.purpose != "dossier"}
         for note in reviewed.items:
-            if note.id not in existing or note.id in enriched:
-                try:
-                    touched.append(await self.queue_reviewed(note.id, prior_jobs))
-                except (ValueError, StoreError):
-                    log.warning("dossier extraction not queued for note %s", note.id)
+            try:
+                touched.append(await self.queue_reviewed(note.id, prior_jobs))
+            except (ValueError, StoreError):
+                log.warning("dossier extraction not queued for note %s", note.id)
         page = await self.store.list_notes(
             NoteQuery(
                 reviewed=False,
@@ -2015,14 +2069,7 @@ class ContextService:
                             "calendar"
                             if known.result is not None
                             and fingerprint(known.evidence.get("dossiers", []))
-                            == fingerprint(
-                                await relevant(
-                                    self,
-                                    current,
-                                    "\n".join(await self.source_text(current.id)),
-                                    ledger,
-                                )
-                            )
+                            == fingerprint(await relevant(self, current, ledger))
                             else "initial"
                         )
                         self.save_job(changed)

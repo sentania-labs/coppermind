@@ -84,6 +84,70 @@ async def contribute(store):
     return context, note, job, person, company
 
 
+async def test_reviewed_extraction_searches_transcript_and_validates_source_quote(store):
+    context = await configure(store)
+    quote = "Casey Doe (casey@example.test) is an engineer."
+    transcript = "Unrelated context.\n" * 500 + quote + "\n" + "Other material.\n" * 500
+    ingested = await store.ingest(
+        IngestRequest.model_validate(
+            {
+                "source": {
+                    "provider": "plaud",
+                    "external_source_id": "searched-transcript",
+                    "source_type": "transcript",
+                    "captured_at": "2026-10-20T17:00:00Z",
+                    "artifacts": [
+                        {"name": "transcript.txt", "mime_type": "text/plain", "content": transcript}
+                    ],
+                },
+                "note": {
+                    "title": "Meeting",
+                    "body": "Meeting summary.",
+                    "frontmatter": {"reviewed": True, "attendees": ["casey@example.test"]},
+                },
+            }
+        )
+    )
+    note = await store.get_note(ingested.note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
+    )
+    seen = provider(
+        context,
+        {
+            "entities": [
+                {
+                    "ref": "p",
+                    "kind": "person",
+                    "name": "Casey Doe",
+                    "emails": ["casey@example.test"],
+                    "quote": quote,
+                }
+            ],
+            "claims": [
+                {
+                    "subject": "p",
+                    "predicate": "role",
+                    "value": "engineer",
+                    "quote": quote,
+                    "field": "transcript",
+                }
+            ],
+        },
+    )
+    job = context.load_job(await context.queue_reviewed(ingested.note.id))
+    await context.run_job(job)
+    assert job.state == "applied", job.error
+    assert quote in "\n".join(seen[0]["transcripts"])
+    assert transcript not in seen[0]["transcripts"]
+    assert job.evidence["transcript_omitted_characters"] > 0
+    fact = next(
+        f for e in store.entities.load().entities.values() for f in e.facts if f.predicate == "role"
+    )
+    assert fact.evidence.quote == quote
+    assert fact.evidence.source_versions
+
+
 @pytest.mark.parametrize("addresses", [("one@example.test", "two@example.test"), ("", "")])
 async def test_distinct_same_name_subjects_keep_separate_dossiers(store, addresses):
     context = await configure(store)
@@ -575,21 +639,141 @@ async def test_purge_removes_supporting_quotes_from_other_notes_enrichment_snaps
     assert BODY not in saved.model_dump_json()
 
 
-async def test_notes_reviewed_before_enablement_are_not_swept_to_the_provider(store):
+async def test_notes_reviewed_before_enablement_are_extracted_without_rereview(store):
     old = await store.create_note(
         CreateNote(title="Old reviewed", body=BODY, frontmatter={"reviewed": True})
     )
     context = await configure(store)
     seen = provider(context, extracted())
     await context.tick()
-    assert not [j for j in context.jobs() if j.note_id == old.id]
-    assert not seen
+    assert [j.purpose for j in context.jobs() if j.note_id == old.id] == ["dossier"]
+    assert len(seen) == 1
     fresh = await store.create_note(
         CreateNote(title="New reviewed", body=BODY, frontmatter={"reviewed": True})
     )
     await context.tick()
     assert [j.purpose for j in context.jobs() if j.note_id == fresh.id] == ["dossier"]
+    assert len(seen) == 2
+
+
+async def test_old_exhausted_extraction_is_retried_once_under_new_version(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Reviewed", body=BODY, frontmatter={"reviewed": True})
+    )
+    old = context.load_job(await context.queue_reviewed(note.id))
+    old.extraction_version = ""
+    old.state, old.attempt_limit, old.attempts = "failed", 2, 2
+    # Simulate a legacy ID, which did not include source versions or extraction version.
+    (context.root / "jobs" / (old.id + ".json")).unlink()
+    old.id = "a" * 64
+    context.save_job(old)
+    seen = provider(context, extracted())
+    await context.tick()
     assert len(seen) == 1
+    await context.tick()
+    assert len(seen) == 1
+
+
+async def test_applied_legacy_extraction_is_requeued_under_current_version(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Reviewed", body=BODY, frontmatter={"reviewed": True})
+    )
+    legacy = context.load_job(await context.queue_reviewed(note.id))
+    (context.root / "jobs" / (legacy.id + ".json")).unlink()
+    legacy.id = "a" * 64
+    legacy.extraction_version = ""
+    legacy.state = "applied"
+    context.save_job(legacy)
+    current_id = await context.queue_reviewed(note.id)
+    assert current_id != legacy.id
+    current = context.load_job(current_id)
+    assert current.state == "queued" and current.extraction_version
+
+
+async def test_source_only_rerun_does_not_duplicate_note_backed_facts(store, monkeypatch):
+    from types import SimpleNamespace as NS
+
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Reviewed", body=BODY, frontmatter={"reviewed": True})
+    )
+    _fake_transcript(store, monkeypatch, "unrelated transcript")
+    revision = 1
+    artifact = NS(name="t.txt", mime_type="text/plain", size_bytes=20)
+
+    async def source(_identity):
+        return NS(
+            current_revision=revision,
+            revisions=[NS(revision=revision, artifacts=[artifact])],
+        )
+
+    monkeypatch.setattr(store, "get_source", source)
+    provider(context, extracted())
+    first = context.load_job(await context.queue_reviewed(note.id))
+    await context.run_job(first)
+    assert first.state == "applied", first.error
+    before = {
+        entity.id: [fact.id for fact in entity.facts if fact.evidence.note_id == note.id]
+        for entity in store.entities.load().entities.values()
+    }
+    revision = 2
+    second = context.load_job(await context.queue_reviewed(note.id))
+    assert second.id != first.id
+    await context.run_job(second)
+    assert second.state == "applied", second.error
+    after = {
+        entity.id: [fact.id for fact in entity.facts if fact.evidence.note_id == note.id]
+        for entity in store.entities.load().entities.values()
+    }
+    assert after == before
+
+
+async def test_rerun_with_a_different_valid_quote_does_not_duplicate_note_backed_facts(
+    store, monkeypatch
+):
+    from types import SimpleNamespace as NS
+
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Reviewed", body=BODY, frontmatter={"reviewed": True})
+    )
+    _fake_transcript(store, monkeypatch, "unrelated transcript")
+    revision = 1
+    artifact = NS(name="t.txt", mime_type="text/plain", size_bytes=20)
+
+    async def source(_identity):
+        return NS(
+            current_revision=revision,
+            revisions=[NS(revision=revision, artifacts=[artifact])],
+        )
+
+    monkeypatch.setattr(store, "get_source", source)
+    provider(context, extracted())
+    first = context.load_job(await context.queue_reviewed(note.id))
+    await context.run_job(first)
+    assert first.state == "applied", first.error
+
+    def count():
+        return sum(
+            1
+            for entity in store.entities.load().entities.values()
+            for fact in entity.facts
+            if fact.evidence.note_id == note.id and fact.state == "confirmed"
+        )
+
+    before = count()
+    narrower = extracted()
+    for item in [*narrower["entities"], *narrower["claims"]]:
+        item["quote"] = "Casey Doe (casey@example.test)"
+    narrower["entities"][1]["quote"] = "Acme Company"
+    revision = 2
+    provider(context, narrower)
+    second = context.load_job(await context.queue_reviewed(note.id))
+    await context.run_job(second)
+    assert second.state == "applied", second.error
+    assert count() == before
 
 
 async def test_dossier_job_made_stale_by_a_settings_change_is_requeued(store):
@@ -778,9 +962,7 @@ async def test_requeue_asks_for_calendar_suggestions_only_unless_dossiers_change
     assert third.id != second.id and third.purpose == "initial"
 
 
-async def test_review_detail_reports_stale_when_source_evidence_goes_over_the_limit(
-    store, monkeypatch
-):
+async def test_review_detail_does_not_fail_on_oversized_source_metadata(store, monkeypatch):
     context = await configure(store)
     await context.setup_lifecycle({"revision": context.config().revision})
     note = await store.create_note(
@@ -790,7 +972,7 @@ async def test_review_detail_reports_stale_when_source_evidence_goes_over_the_li
     assert (await context.lifecycle_detail({"note_id": note.id}))["stale"] is False
     _fake_transcript(store, monkeypatch, "x", size_bytes=10_000_000)
     detail = await context.lifecycle_detail({"note_id": note.id})
-    assert detail["stale"] is True and detail["job_id"] == job.id
+    assert detail["stale"] is False and detail["job_id"] == job.id
 
 
 async def test_written_fill_is_acknowledged_when_evidence_can_no_longer_be_rebuilt(
@@ -822,7 +1004,11 @@ async def test_written_fill_is_acknowledged_when_evidence_can_no_longer_be_rebui
     await context.run_job(job)
     assert context.load_job(job.id).state == "applying"
     monkeypatch.setattr(store, "patch_frontmatter", original)
-    _fake_transcript(store, monkeypatch, "x", size_bytes=10_000_000)
+
+    async def unavailable_evidence(*args, **kwargs):
+        raise ValueError("evidence unavailable")
+
+    monkeypatch.setattr(context, "note_evidence_hash", unavailable_evidence)
     await context.resume_approval({"id": job.id})
     saved = context.load_job(job.id)
     assert saved.pending_approval is None and len(saved.decisions) == 1
@@ -830,6 +1016,45 @@ async def test_written_fill_is_acknowledged_when_evidence_can_no_longer_be_rebui
     current = await store.get_note(note.id)
     assert current.frontmatter["account"] == ["Sailing"]
     assert "tags" not in current.frontmatter or not current.frontmatter["tags"]
+
+
+async def test_a_note_with_more_than_five_sources_is_extracted_from_the_first_five(
+    store, monkeypatch
+):
+    from types import SimpleNamespace as NS
+
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(
+            title="Reviewed meeting",
+            body=BODY,
+            frontmatter={"reviewed": True, "attendees": ["casey@example.test"]},
+        )
+    )
+    artifact = NS(name="t.txt", mime_type="text/plain", size_bytes=10)
+    manifest = NS(current_revision=3, revisions=[NS(revision=3, artifacts=[artifact])])
+
+    async def sources(note_id):
+        return [NS(id=f"s{n}") for n in range(1, 8)]
+
+    async def source(identity):
+        return manifest
+
+    async def document(identity, revision, name):
+        return NS(content=f"casey@example.test spoke in {identity}.")
+
+    monkeypatch.setattr(store, "get_note_sources", sources)
+    monkeypatch.setattr(store, "get_source", source)
+    monkeypatch.setattr(store, "get_source_artifact", document)
+    seen = provider(context, extracted())
+    job = context.load_job(await context.queue_reviewed(note.id))
+    assert job.source_versions == {f"s{n}": 3 for n in range(1, 6)}
+    await context.run_job(job)
+    assert job.state == "applied", job.error
+    assert seen[0]["transcript_sources_omitted"] == 2
+    assert job.evidence["transcript_sources_omitted"] == 2
+    sent = "\n".join(seen[0]["transcripts"])
+    assert "in s5." in sent and "in s6." not in sent
 
 
 async def test_applied_extraction_job_keeps_identifiers_not_the_note_or_dossier_snapshots(store):
@@ -840,6 +1065,8 @@ async def test_applied_extraction_job_keeps_identifiers_not_the_note_or_dossier_
         "note_id": source.id,
         "note_hash": source.content_hash,
         "entity_ids": sorted([person.id, company.id]),
+        "transcript_omitted_characters": 0,
+        "transcript_sources_omitted": 0,
     }
     assert BODY not in saved.model_dump_json()
 

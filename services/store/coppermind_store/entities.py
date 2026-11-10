@@ -7,10 +7,12 @@ Markdown below the delimiter are disposable mirrors; personal writing is not.
 from __future__ import annotations
 
 import asyncio
+import base64
 import builtins
 import hashlib
 import html
 import json
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +27,7 @@ from coppermind.atomicio import (
     commit_staged,
     create_exclusive_bytes,
     stage_bytes,
+    sync_directory,
 )
 from coppermind.db.models import EntityRecord, Note, SearchDocument
 from coppermind.entities import (
@@ -41,6 +44,7 @@ from coppermind.naming import sanitize_stem
 from coppermind.store_protocol import (
     NoteDocument,
     NotFound,
+    StoreError,
     ValidationFailed,
     VersionConflict,
 )
@@ -50,8 +54,53 @@ if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
 
 DELIMITER = "<!-- coppermind:dossier -->\n"
+MARKER = re.compile(r"(?m)^<!-- coppermind:dossier(?: id=([A-Za-z0-9_-]*))? -->\r?\n")
+WIKI_TARGET = re.compile(r"!?\[\[([^\]#|\\]+)")
 FACT_LINE = re.compile(r"^- (.*?) <!-- fact:([A-Za-z0-9_-]+) -->$", re.MULTILINE)
 FOLDERS = ("People", "Companies")
+
+
+def dossier_marker(identity: str) -> str:
+    return f"<!-- coppermind:dossier id={identity} -->\n"
+
+
+def dossier_parts(text: str, entity: Entity) -> tuple[str, str]:
+    """Split old and new markers; recover a missing marker without dropping bytes."""
+    markers = list(MARKER.finditer(text))
+    if len(markers) > 1:
+        raise ValueError("multiple dossier markers")
+    if markers:
+        found = markers[0]
+        if found.group(1) and found.group(1) != entity.id:
+            raise ValueError("dossier marker belongs to another entity")
+        return text[: found.start()], text[found.end() :]
+    if entity.generated and text.endswith(entity.generated):
+        return text[: -len(entity.generated)], entity.generated
+    raise ValueError("dossier marker is missing; restore it to resume")
+
+
+def matches_identity(fields: dict[str, Any], entity: Entity, domains: list[str]) -> bool:
+    """Exact identity of a page in a store-owned folder: email, or domains, or name with aliases."""
+
+    def strings(key: str) -> set[str]:
+        value = fields.get(key, [])
+        value = [value] if isinstance(value, str) else value
+        return {v for v in value if isinstance(v, str)} if isinstance(value, list) else set()
+
+    if entity.kind == "person":
+        return bool((strings("email") | strings("aliases")) & set(entity.emails))
+    names = {entity.name, *entity.aliases}
+    aliases = fields.get("aliases")
+    if domains and strings("domains") == set(domains):
+        return True
+    name = fields.get("name")
+    return (
+        isinstance(name, str)
+        and name in names
+        and isinstance(aliases, list)
+        and all(isinstance(a, str) for a in aliases)
+        and set(aliases) <= names
+    )
 
 
 class NoteRef(NamedTuple):
@@ -60,6 +109,29 @@ class NoteRef(NamedTuple):
     path: str
     content_hash: str
     frontmatter: dict[str, Any]
+
+
+def recorded(
+    entity: Entity,
+    identity: str,
+    note: NoteRef,
+    version: str,
+    predicate: str,
+    value: str,
+    target: str | None = None,
+) -> bool:
+    return any(
+        f.id == identity
+        or (
+            f.evidence.note_id == note.id
+            and f.evidence.note_hash == note.content_hash
+            and f.evidence.extraction_version == version
+            and f.predicate == predicate
+            and f.value == value
+            and f.target == target
+        )
+        for f in entity.facts
+    )
 
 
 def digest(value: Any) -> str:
@@ -77,6 +149,31 @@ def email(value: str) -> str | None:
     return local + "@" + domain.lower()
 
 
+def email_name(address: str) -> str:
+    """Give an email-only person a readable provisional name."""
+    local = address.rsplit("@", 1)[0]
+    return " ".join(part.capitalize() for part in re.split(r"[._+\-]+", local) if part) or address
+
+
+def rewrite_dossier_links(text: str, old: str, new: str) -> str:
+    """Change exact wiki targets and preserve every other character."""
+    old_path, new_path = old.removesuffix(".md"), new.removesuffix(".md")
+    names = {old_path: new_path, Path(old_path).name: Path(new_path).name}
+    pattern = re.compile(r"(!?\[\[)([^\]#|\\]+)([^\]]*\]\])")
+
+    def replace(match: re.Match[str]) -> str:
+        target = match.group(2)
+        extension = ".md" if target.endswith(".md") else ""
+        replacement = names.get(target.removesuffix(".md"))
+        return (
+            match.group(0)
+            if replacement is None
+            else match.group(1) + replacement + extension + match.group(3)
+        )
+
+    return pattern.sub(replace, text)
+
+
 def safe_path(root: Path, relative: str) -> Path:
     from coppermind_store.purge import resolve
 
@@ -84,31 +181,109 @@ def safe_path(root: Path, relative: str) -> Path:
 
 
 def public(entity: Entity) -> dict[str, Any]:
-    return entity.model_dump(mode="json", exclude={"generated", "pending"})
+    return entity.model_dump(
+        mode="json", exclude={"generated", "pending", "projection_fields", "page_move"}
+    )
 
 
 def label(value: str) -> str:
     return html.escape(value.replace("\n", " ").replace("\r", " "), quote=False)
 
 
-def header(entity: Entity) -> str:
-    return (
-        fm.compose(
-            {"entity_id": entity.id, "type": entity.kind, "aliases": entity.aliases},
-            f"# {label(entity.name)}\n\n",
-        )
-        + DELIMITER
+PUBLIC_MAIL = frozenset(
+    {
+        "aol.com",
+        "fastmail.com",
+        "gmail.com",
+        "gmx.com",
+        "googlemail.com",
+        "hotmail.com",
+        "icloud.com",
+        "live.com",
+        "mac.com",
+        "me.com",
+        "msn.com",
+        "outlook.com",
+        "pm.me",
+        "proton.me",
+        "protonmail.com",
+        "yahoo.com",
+    }
+)
+DOMAIN = re.compile(r"[a-z0-9-]+(\.[a-z0-9-]+)+")
+
+
+def squash(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.casefold())
+
+
+def domain_belongs(domain: str, company: Entity) -> bool:
+    parts = domain.rpartition(".")[0]
+    labels = set(map(squash, parts.split(".")))
+    return domain not in PUBLIC_MAIL and any(
+        len(name) >= 3 and name in labels for name in map(squash, [company.name, *company.aliases])
     )
 
 
+def company_domains(entity: Entity, ledger: EntityLedger) -> list[str]:
+    return sorted({f.value for f in active_facts(entity, ledger) if f.predicate == "domain"})
+
+
+def domain_owners(ledger: EntityLedger) -> dict[str, set[str]]:
+    owners: dict[str, set[str]] = {}
+    for company in ledger.entities.values():
+        if company.kind == "company" and not company.retired_at and not company.redirect:
+            for domain in company_domains(company, ledger):
+                owners.setdefault(domain, set()).add(company.id)
+    return owners
+
+
+def properties(
+    entity: Entity, ledger: EntityLedger, owners: dict[str, set[str]] | None = None
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "aliases": entity.aliases,
+        "name": entity.name,
+    }
+    if entity.emails:
+        result["email"] = entity.emails
+    if entity.kind == "company":
+        result["domains"] = company_domains(entity, ledger)
+    if entity.kind == "person":
+        linked = {
+            f.target
+            for f in active_facts(entity, ledger)
+            if f.predicate == "organization"
+            and f.target
+            and ledger.entities[f.target].kind == "company"
+        }
+        owners = domain_owners(ledger) if owners is None else owners
+        for address in entity.emails:
+            matched = owners.get(address.rpartition("@")[2].lower(), set())
+            if len(matched) == 1:
+                linked |= matched
+        result["company"] = sorted(
+            f"[[{ledger.entities[identity].path.removesuffix('.md')}]]" for identity in linked
+        )
+    return result
+
+
+def header(entity: Entity, ledger: EntityLedger, owners: dict[str, set[str]] | None = None) -> str:
+    return fm.compose(
+        properties(entity, ledger, owners),
+        f"# {label(entity.name)}\n\n## Scott's Notes\n\n",
+    ) + dossier_marker(entity.id)
+
+
 TITLE = re.compile(r"# [^\n]*\n\n?")
-GENERATED_KEYS = {"entity_id", "type", "aliases"}
+GENERATED_KEYS = {"entity_id", "type", "aliases", "name", "email", "company", "domains"}
 
 
 def owner_wrote(head: str) -> bool:
     fields, body = fm.parse(head)
     title = TITLE.match(body)
     rest = body[title.end() :] if title else body
+    rest = rest.replace("## Scott's Notes\n", "", 1)
     return bool(set(fields) - GENERATED_KEYS) or bool(rest.strip())
 
 
@@ -116,16 +291,34 @@ def regenerate(entity: Entity, head: str) -> str:
     fields, body = fm.parse(head)
     title = TITLE.match(body)
     wanted = f"# {label(entity.name)}\n\n"
-    if (
-        fields.get("aliases") == entity.aliases
-        and fields.get("type") == entity.kind
-        and (title is None or title.group(0).strip() == wanted.strip())
+    if fields.get("aliases") == entity.aliases and (
+        title is None or title.group(0).strip() == wanted.strip()
     ):
         return head
-    patched = fm.patch(head, {"type": entity.kind, "aliases": entity.aliases})
+    patched = fm.replace_value_in_place(head, "aliases", entity.aliases) or head
     _, body = fm.split(patched)
     front = patched[: len(patched) - len(body)]
     return front + (wanted + body[title.end() :] if title else body)
+
+
+def remove_legacy_identity(head: str, entity: Entity) -> str:
+    fields, _ = fm.parse(head)
+    block, body = fm.split(head)
+    if fields.get("entity_id") == entity.id:
+        block = re.sub(r"(?m)^entity_id:[^\r\n]*(?:\r?\n|$)", "", block)
+    if fields.get("type") == entity.kind:
+        block = re.sub(r"(?m)^type:[^\r\n]*(?:\r?\n|$)", "", block)
+    # Keep all other frontmatter and personal body bytes unchanged.
+    opening = "---\r\n" if head.startswith("---\r\n") else "---\n"
+    closing = "---\r\n" if "\r\n" in head[: len(head) - len(body)] else "---\n"
+    return opening + block + closing + body
+
+
+def rename(entity: Entity, name: str) -> None:
+    name = EntityInput.single_line(name)
+    if name != entity.name:
+        entity.aliases = sorted({*entity.aliases, entity.name} - {name})
+        entity.name = name
 
 
 def active_facts(entity: Entity, ledger: EntityLedger) -> list[Fact]:
@@ -148,11 +341,12 @@ def render(entity: Entity, ledger: EntityLedger, *, search: bool = False) -> str
         return (
             f"\nSee [[{target.path.removesuffix('.md')}]].\n" if target else "\nRetired identity.\n"
         )
-    lines = ["", f"## {label(entity.name)}", ""]
-    if entity.aliases:
-        lines.extend(["Aliases: " + ", ".join(label(a) for a in entity.aliases), ""])
-    if entity.emails:
-        lines.extend(["Email: " + ", ".join(label(a) for a in entity.emails), ""])
+    lines = ["", "## Coppermind's Notes", ""]
+    if search:
+        if entity.aliases:
+            lines.extend(["Aliases: " + ", ".join(label(a) for a in entity.aliases), ""])
+        if entity.emails:
+            lines.extend(["Email: " + ", ".join(label(a) for a in entity.emails), ""])
     facts = active_facts(entity, ledger)
     groups = (
         ("Facts", [f for f in facts if not f.target and f.predicate != "interest"]),
@@ -160,7 +354,9 @@ def render(entity: Entity, ledger: EntityLedger, *, search: bool = False) -> str
         ("Interests", [f for f in facts if not f.target and f.predicate == "interest"]),
     )
     for heading, members in groups:
-        lines += [f"## {heading}", ""]
+        if not members:
+            continue
+        lines += [f"### {heading}", ""]
         values: dict[str, set[str]] = {}
         for fact in members:
             values.setdefault(fact.predicate, set()).add(fact.value)
@@ -173,6 +369,9 @@ def render(entity: Entity, ledger: EntityLedger, *, search: bool = False) -> str
                 "interest",
                 "mentioned",
                 "note",
+                "attended a meeting for",
+                "met with",
+                "domain",
             }:
                 lines.append("  - Other recorded values are shown with their evidence.")
             if not search:
@@ -182,10 +381,13 @@ def render(entity: Entity, ledger: EntityLedger, *, search: bool = False) -> str
                     lines.append(f"  - {label(ev.quote)}")
         lines.append("")
     if not search:
-        lines += ["## Supporting notes", ""]
         paths = sorted({f.evidence.path for f in facts if f.evidence.note_id})
-        lines += [f"- [[{p.removesuffix('.md')}]]" for p in paths]
-        lines += ["", "Edit a fact above to correct it; delete its line to withdraw it.", ""]
+        if paths:
+            lines += ["### Supporting notes", ""]
+            lines += [f"- [[{p.removesuffix('.md')}]]" for p in paths]
+            lines.append("")
+        if facts:
+            lines += ["Edit a fact above to correct it; delete its line to withdraw it.", ""]
     return "\n".join(lines)
 
 
@@ -233,11 +435,15 @@ class EntityService:
             raise ValidationFailed(["email already belongs to a dossier; use an identity preview"])
         identity = identity or new_id()
         folder = "People" if request.kind == "person" else "Companies"
-        # The suffix distinguishes same-name people and keeps paths stable after rename.
         stem = sanitize_stem(request.name)[:90]
         while len(stem.encode("utf-8")) > 220:
             stem = stem[:-1]
-        path = f"{folder}/{stem} {identity}.md"
+        path = f"{folder}/{stem}.md"
+        if (
+            any(e.path.casefold() == path.casefold() for e in ledger.entities.values())
+            or safe_path(self.store.notes_root, path).exists()
+        ):
+            path = f"{folder}/{stem} {identity}.md"
         entity = Entity(
             **request.model_dump(exclude={"emails"}),
             emails=emails,
@@ -300,11 +506,45 @@ class EntityService:
         if "\0" in text:
             raise ValueError("dossier contains NUL characters")
         fields, _ = fm.parse(text)
-        if fields.get("entity_id") != entity.id or text.count(DELIMITER) != 1:
-            raise ValueError(
-                "Dossier identity or delimiter changed; restore them to resume projection"
-            )
-        head, block = text.split(DELIMITER)
+        legacy_id = fields.get("entity_id")
+        if legacy_id and legacy_id != entity.id:
+            raise ValueError("dossier frontmatter belongs to another entity")
+        head, block = dossier_parts(text, entity)
+        prior = entity.projection_fields or {}
+        name = fields.get("name")
+        if (
+            isinstance(name, str)
+            and name.strip()
+            and name != prior.get("name")
+            and name != entity.name
+        ):
+            rename(entity, name)
+            self.receipt(ledger, entity, "page name")
+        listed = fields.get("domains")
+        if entity.kind == "company" and isinstance(listed, list) and listed != prior.get("domains"):
+            wanted = {
+                item.strip().lower()
+                for item in listed
+                if isinstance(item, str) and DOMAIN.fullmatch(item.strip().lower())
+            }
+            held = {f.value for f in active_facts(entity, ledger) if f.predicate == "domain"}
+            shown = prior.get("domains")
+            shown = set(shown) if isinstance(shown, list) else set()
+            added = sorted(wanted - held - shown)
+            for value in added:
+                self.correction(entity, "domain", value, raw)
+            removed = [
+                fact
+                for fact in entity.facts
+                if fact.predicate == "domain"
+                and fact.state == "confirmed"
+                and fact.value in shown
+                and fact.value not in wanted
+            ]
+            for fact in removed:
+                fact.state, fact.withdrawn_for = "withdrawn", None
+            if added or removed:
+                self.receipt(ledger, entity, "page domains")
         entity.personal = owner_wrote(head)
         if block == entity.pending:
             entity.generated, entity.pending = block, None
@@ -344,17 +584,62 @@ class EntityService:
             self.receipt(ledger, entity, "page correction", note_hash=content_hash(raw))
         return raw
 
-    def prefix(self, entity: Entity, raw: bytes | None) -> str:
+    def prefix(
+        self,
+        entity: Entity,
+        raw: bytes | None,
+        ledger: EntityLedger,
+        owners: dict[str, set[str]] | None = None,
+    ) -> str:
         if raw is None:
-            return header(entity)
-        return regenerate(entity, raw.decode().split(DELIMITER)[0]) + DELIMITER
+            return header(entity, ledger, owners)
+        head, _ = dossier_parts(raw.decode(), entity)
+        head = remove_legacy_identity(head, entity)
+        head = regenerate(entity, head)
+        fields, _ = fm.parse(head)
+        prior = entity.projection_fields or {}
+        wanted = properties(entity, ledger, owners)
+        patch = {
+            key: value
+            for key, value in wanted.items()
+            if (key not in fields and key not in prior)
+            or (
+                key in fields and (key == "domains" or (key in prior and fields[key] == prior[key]))
+            )
+        }
+        for key, value in patch.items():
+            if key not in fields:
+                head = fm.fill_missing(head, {key: value})
+            elif fields[key] != value:
+                head = fm.replace_value_in_place(head, key, value) or head
+        if "## Scott's Notes" not in head:
+            head += "\n## Scott's Notes\n\n"
+        if head and not head.endswith("\n"):
+            head += "\n"
+        return head + dossier_marker(entity.id)
+
+    def projected(
+        self,
+        entity: Entity,
+        written: bytes,
+        ledger: EntityLedger,
+        owners: dict[str, set[str]] | None,
+    ) -> dict[str, object]:
+        fields, _ = fm.parse(written.decode())
+        held = dict(entity.projection_fields or {})
+        for key, value in properties(entity, ledger, owners).items():
+            if fields.get(key) == value:
+                held[key] = value
+        return held
 
     def project(
         self,
         ledger: EntityLedger,
         entity: Entity,
         seen: dict[str, bytes | None] | None = None,
+        owners: dict[str, set[str]] | None = None,
     ) -> None:
+        owners = domain_owners(ledger) if owners is None else owners
         try:
             if seen is not None and entity.id in seen:
                 raw = seen[entity.id]
@@ -365,9 +650,10 @@ class EntityService:
             if entity.retired_at and raw is None:
                 return
             block = render(entity, ledger)
-            wanted = (self.prefix(entity, raw) + block).encode()
+            wanted = (self.prefix(entity, raw, ledger, owners) + block).encode()
             if raw == wanted:
                 entity.problem = None
+                entity.projection_fields = self.projected(entity, wanted, ledger, owners)
                 return
             entity.pending = block
             self.save(ledger)  # Persist corrections and the expected replacement before writing.
@@ -383,14 +669,21 @@ class EntityService:
                 finally:
                     staged.unlink(missing_ok=True)
             entity.generated, entity.pending, entity.problem = block, None, None
+            entity.projection_fields = self.projected(entity, wanted, ledger, owners)
         except (OSError, ValueError, UnicodeError, fm.FrontmatterError):
             entity.problem = (
                 "Dossier page could not be projected; check its identity, delimiter and path"
             )
 
-    def contribute(self, ledger: EntityLedger, notes: dict[str, NoteRef]) -> None:
+    def contribute(
+        self,
+        ledger: EntityLedger,
+        notes: dict[str, NoteRef],
+        source_versions: dict[str, dict[str, int]] | None = None,
+    ) -> None:
         assignment = self.store.context.config().assignments["enrichment"]
         fields = {"attendees", assignment.attendees_field, assignment.contacts_field} - {"", None}
+        attendee_fields = {"attendees", assignment.attendees_field} - {"", None}
         by_email = {
             address: entity
             for entity in ledger.entities.values()
@@ -398,15 +691,21 @@ class EntityService:
             for address in entity.emails
         }
         by_path = {e.path.removesuffix(".md"): e for e in ledger.entities.values()}
+        by_company: dict[str, list[Entity]] = {}
+        for known in ledger.entities.values():
+            if known.kind == "company":
+                for name in {known.name.casefold(), *(a.casefold() for a in known.aliases)}:
+                    by_company.setdefault(name, []).append(known)
         for note in notes.values():
             mentions: dict[str, Entity] = {}
+            attendees: dict[str, Entity] = {}
             for key, values in note.frontmatter.items():
                 if not isinstance(values, list):
                     continue
                 for value in values:
                     if not isinstance(value, str):
                         continue
-                    entity = None
+                    entity: Entity | None = None
                     if value.startswith("[[") and value.endswith("]]"):
                         entity = by_path.get(value[2:-2].split("|", 1)[0].removesuffix(".md"))
                     elif key in fields and (address := email(value)):
@@ -414,7 +713,12 @@ class EntityService:
                         if entity is None and digest(address) not in ledger.suppressed:
                             entity = self.make(
                                 ledger,
-                                EntityInput(kind="person", name=address, emails=[address]),
+                                EntityInput(
+                                    kind="person",
+                                    name=email_name(address),
+                                    emails=[address],
+                                    aliases=[address],
+                                ),
                                 automatic=True,
                             )
                             by_email[address] = entity
@@ -422,9 +726,126 @@ class EntityService:
                         entity = ledger.entities.get(entity.redirect)
                     if entity and not entity.retired_at:
                         mentions[entity.id] = entity
+                        if key in attendee_fields and entity.kind == "person":
+                            attendees[entity.id] = entity
+            accounts = note.frontmatter.get(self.store.control.schema().role("account_key"), [])
+            if isinstance(accounts, str):
+                accounts = [accounts]
+            companies: dict[str, Entity] = {}
+            if isinstance(accounts, list):
+                for account in accounts:
+                    if not isinstance(account, str) or not account.strip():
+                        continue
+                    name = account.strip()
+                    if len(name) > 200 or any(c in name for c in "\n\r\0"):
+                        continue
+                    if name.startswith("[[") and name.endswith("]]"):
+                        target = by_path.get(name[2:-2].split("|", 1)[0].removesuffix(".md"))
+                        if target and target.kind == "company" and not target.retired_at:
+                            companies[target.id] = target
+                            mentions[target.id] = target
+                        continue
+                    matches: dict[str, Entity] = {}
+                    for match in by_company.get(name.casefold(), []):
+                        while match.redirect and match.redirect in ledger.entities:
+                            match = ledger.entities[match.redirect]
+                        matches[match.id] = match
+                    live = [m for m in matches.values() if not m.retired_at and not m.redirect]
+                    if len(live) > 1 or (matches and not live):
+                        continue
+                    if live:
+                        company = live[0]
+                    elif digest(["company", name, note.id]) not in ledger.suppressed:
+                        company = self.make(
+                            ledger, EntityInput(kind="company", name=name), automatic=True
+                        )
+                        by_company.setdefault(name.casefold(), []).append(company)
+                    else:
+                        continue
+                    companies[company.id] = company
+                    mentions[company.id] = company
+            for person in attendees.values():
+                for company in companies.values():
+                    for subject, other, predicate in (
+                        (person, company, "attended a meeting for"),
+                        (company, person, "met with"),
+                    ):
+                        identity = digest(
+                            [note.id, note.content_hash, subject.id, other.id, "account-v1"]
+                        )
+                        if recorded(
+                            subject, identity, note, "account-v1", predicate, other.name, other.id
+                        ):
+                            continue
+                        subject.facts.append(
+                            Fact(
+                                id=identity,
+                                predicate=predicate,
+                                value=other.name,
+                                target=other.id,
+                                state="confirmed",
+                                origin="metadata",
+                                created_at=datetime.now(UTC),
+                                evidence=Evidence(
+                                    note_id=note.id,
+                                    note_hash=note.content_hash,
+                                    path=note.path,
+                                    date=str(note.frontmatter.get("date", "")),
+                                    extraction_version="account-v1",
+                                ),
+                            )
+                        )
+                        subject.version += 1
+            for company in companies.values():
+                for person in attendees.values():
+                    for address in person.emails:
+                        domain = address.rpartition("@")[2].lower()
+                        if not domain_belongs(domain, company):
+                            continue
+                        identity = digest(
+                            [note.id, note.content_hash, company.id, domain, "domain-v1"]
+                        )
+                        if any(
+                            f.id == identity
+                            or (
+                                f.predicate == "domain"
+                                and f.value == domain
+                                and (f.state == "confirmed" or f.withdrawn_for is None)
+                                and not (
+                                    f.state == "confirmed"
+                                    and f.evidence.note_id
+                                    and (
+                                        f.evidence.note_id not in notes
+                                        or notes[f.evidence.note_id].content_hash
+                                        != f.evidence.note_hash
+                                    )
+                                )
+                            )
+                            for f in company.facts
+                        ):
+                            continue
+                        company.facts.append(
+                            Fact(
+                                id=identity,
+                                predicate="domain",
+                                value=domain,
+                                state="confirmed",
+                                origin="metadata",
+                                created_at=datetime.now(UTC),
+                                evidence=Evidence(
+                                    note_id=note.id,
+                                    note_hash=note.content_hash,
+                                    path=note.path,
+                                    date=str(note.frontmatter.get("date", "")),
+                                    quote=address,
+                                    extraction_version="domain-v1",
+                                ),
+                            )
+                        )
+                        company.version += 1
             for entity in mentions.values():
                 identity = digest([note.id, note.content_hash, entity.id, "metadata-v1"])
-                if any(f.id == identity for f in entity.facts):
+                if recorded(entity, identity, note, "metadata-v1", "mentioned", note.title):
                     continue
                 entity.facts.append(
                     Fact(
@@ -449,7 +870,17 @@ class EntityService:
                 if not fact.evidence.note_id:
                     continue
                 supporting = notes.get(fact.evidence.note_id)
-                if supporting is None or supporting.content_hash != fact.evidence.note_hash:
+                current_sources = (source_versions or {}).get(fact.evidence.note_id)
+                sources_changed = (
+                    bool(fact.evidence.source_versions)
+                    and current_sources is not None
+                    and current_sources != fact.evidence.source_versions
+                )
+                if (
+                    supporting is None
+                    or supporting.content_hash != fact.evidence.note_hash
+                    or sources_changed
+                ):
                     if fact.state == "confirmed":
                         fact.state = "withdrawn"
                         fact.withdrawn_for = "evidence"
@@ -523,7 +954,11 @@ class EntityService:
                     if (
                         ev.note_id == note.id
                         and ev.note_hash == before_hash
-                        and (not ev.quote or any(ev.quote in text for text in texts))
+                        and (
+                            not ev.quote
+                            or ev.source_versions
+                            or any(ev.quote in text for text in texts)
+                        )
                     ):
                         ev.note_hash, ev.path = note.content_hash, note.path
                         entity.version += 1
@@ -544,40 +979,445 @@ class EntityService:
 
         return any(r["state"] in {"applying", "failed"} for r in records(self.store))
 
+    def move_checkpoint(self, step: str) -> None:
+        """Test seam for interruption between durable migration steps."""
+
+    async def migrate_page_paths(self, ledger: EntityLedger) -> dict[str, str]:
+        """Resume journaled email-page moves while the filing lock is held."""
+        index: dict[str, dict[str, set[str]]] | None = None
+        unreadable: list[str] = []
+        blocked: dict[str, str] = {}
+        for entity in list(ledger.entities.values()):
+            if entity.retired_at or entity.redirect:
+                continue
+            if entity.page_move is None:
+                old_stem = Path(entity.path).stem
+                legacy = any(
+                    old_stem == f"{sanitize_stem(address)[:90]} {entity.id}"
+                    for address in entity.emails
+                )
+                if not legacy or any(
+                    receipt.get("entity_id") == entity.id and receipt.get("action") == "page moved"
+                    for receipt in ledger.receipts
+                ):
+                    continue
+                folder = "People" if entity.kind == "person" else "Companies"
+                stem = sanitize_stem(entity.name)[:90]
+                while len(stem.encode("utf-8")) > 210:
+                    stem = stem[:-1]
+                new = f"{folder}/{stem}.md"
+                if (
+                    any(
+                        e.id != entity.id and e.path.casefold() == new.casefold()
+                        for e in ledger.entities.values()
+                    )
+                    or safe_path(self.store.notes_root, new).exists()
+                ):
+                    new = f"{folder}/{stem} {entity.id}.md"
+                old_file = safe_path(self.store.notes_root, entity.path)
+                if not old_file.exists():
+                    continue
+                original = old_file.read_bytes()
+                if index is None:
+                    index, unreadable = await self.link_index(ledger)
+                old_target = entity.path.removesuffix(".md")
+                holders = [
+                    index[target]
+                    for target in (old_target, Path(old_target).name)
+                    if target in index
+                ]
+                pages = sorted(set(unreadable).union(*(h["blocked"] for h in holders)))
+                if pages:
+                    blocked[entity.id] = (
+                        "These pages could not be updated or scanned for links to this dossier: "
+                        + ", ".join(pages[:3])
+                        + (f" and {len(pages) - 3} more" if len(pages) > 3 else "")
+                        + "; resolve them and the move resumes"
+                    )
+                    continue
+                linked_notes = set().union(*(h["note"] for h in holders))
+                linked_dossiers = set().union(*(h["dossier"] for h in holders)) - {entity.id}
+                notes = sorted(
+                    {f.evidence.note_id for f in entity.facts if f.evidence.note_id}
+                    | set(linked_notes)
+                )
+                dossiers = sorted(
+                    {
+                        e.id
+                        for e in ledger.entities.values()
+                        if e.id != entity.id and any(f.target == entity.id for f in e.facts)
+                    }
+                    | set(linked_dossiers)
+                )
+                entity.page_move = {
+                    "old": entity.path,
+                    "new": new,
+                    "original": base64.b64encode(original).decode(),
+                    "notes": notes,
+                    "dossiers": dossiers,
+                    "snapshots": {},
+                }
+                self.save(ledger)
+                self.move_checkpoint("intent")
+            plan = entity.page_move
+            old, new = plan["old"], plan["new"]
+            old_file = safe_path(self.store.notes_root, old)
+            new_file = safe_path(self.store.notes_root, new)
+            original = base64.b64decode(plan["original"], validate=True)
+            if not new_file.exists():
+                if not old_file.exists() or old_file.read_bytes() != original:
+                    entity.problem = (
+                        "Dossier changed during its move; retry after resolving the copies"
+                    )
+                    continue
+                create_exclusive_bytes(new_file, original)
+            elif new_file.read_bytes() != original:
+                entity.problem = "Dossier move destination changed; resolve the copies"
+                continue
+            self.move_checkpoint("copy")
+            for note_id in plan["notes"]:
+                await self._rewrite_move_note(ledger, entity, note_id)
+            for identity in plan["dossiers"]:
+                other = ledger.entities.get(identity)
+                if other and not other.retired_at:
+                    self._rewrite_move_dossier(ledger, entity, other)
+            self.move_checkpoint("links")
+            atomic_write_text(
+                self.root / "moves" / f"{entity.id}.json",
+                json.dumps(plan, ensure_ascii=False, sort_keys=True) + "\n",
+            )
+            if old_file.exists():
+                if old_file.read_bytes() != original or new_file.read_bytes() != original:
+                    entity.problem = "Dossier changed during its move; resolve the copies"
+                    continue
+                old_file.unlink()
+                sync_directory(old_file.parent)
+            self.move_checkpoint("remove")
+            entity.path, entity.page_move, entity.problem = new, None, None
+            self.receipt(ledger, entity, "email page migrated", old_path=old)
+            self.save(ledger)
+            self.move_checkpoint("complete")
+        return blocked
+
+    async def link_index(
+        self, ledger: EntityLedger
+    ) -> tuple[dict[str, dict[str, set[str]]], list[str]]:
+        root = self.store.notes_root
+        async with self.store.session_factory() as session:
+            rows = (await session.execute(sa.select(Note.id, Note.path, Note.state))).all()
+        candidates = [
+            ("note" if row.state == "ok" else "blocked", row.id, row.path) for row in rows
+        ] + [("dossier", e.id, e.path) for e in ledger.entities.values() if not e.retired_at]
+
+        def scan() -> tuple[dict[str, dict[str, set[str]]], list[str]]:
+            index: dict[str, dict[str, set[str]]] = {}
+            unreadable: list[str] = []
+            for kind, identity, relative in candidates:
+                try:
+                    text = safe_path(root, relative).read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    continue
+                except (OSError, UnicodeError):
+                    unreadable.append(relative)
+                    continue
+                except ValueError:
+                    continue
+                for target in {item.removesuffix(".md") for item in WIKI_TARGET.findall(text)}:
+                    index.setdefault(target, {"note": set(), "dossier": set(), "blocked": set()})[
+                        kind
+                    ].add(relative if kind == "blocked" else identity)
+            return index, unreadable
+
+        return await asyncio.to_thread(scan)
+
+    def _move_replace(
+        self, ledger: EntityLedger, entity: Entity, path: Path
+    ) -> tuple[bytes, bytes]:
+        plan = entity.page_move
+        assert plan is not None
+        for _ in range(5):
+            raw = path.read_bytes()
+            changed = rewrite_dossier_links(raw.decode("utf-8"), plan["old"], plan["new"]).encode(
+                "utf-8"
+            )
+            if raw == changed:
+                return raw, raw
+            plan["snapshots"][str(path.relative_to(self.store.notes_root))] = base64.b64encode(
+                raw
+            ).decode()
+            self.save(ledger)
+            staged = stage_bytes(path, changed)
+            try:
+                if path.read_bytes() != raw:
+                    continue
+                commit_staged(staged, path)
+                return raw, changed
+            finally:
+                staged.unlink(missing_ok=True)
+        raise ValueError("A linked page kept changing during the dossier move")
+
+    async def _rewrite_move_note(self, ledger: EntityLedger, entity: Entity, identity: str) -> None:
+        from coppermind_store.indexer import index_note
+        from coppermind_store.notes import _jsonable, _mirror_columns, _title_of
+
+        plan = entity.page_move
+        assert plan is not None
+
+        async with (
+            self.store._lock_for(identity),
+            self.store.session_factory() as session,
+            session.begin(),
+        ):
+            row = await session.get(Note, identity)
+            if row is None or row.state != "ok":
+                return
+            path = safe_path(self.store.notes_root, row.path)
+            before, after = self._move_replace(ledger, entity, path)
+            if before == after:
+                snapshot = plan["snapshots"].get(row.path)
+                if not snapshot:
+                    return
+                saved = base64.b64decode(snapshot, validate=True)
+                if (
+                    rewrite_dossier_links(saved.decode(), plan["old"], plan["new"]).encode()
+                    != after
+                ):
+                    return
+                before = saved
+            fields, body = fm.parse(after.decode("utf-8"))
+            digest_after = content_hash(after)
+            now = datetime.now(UTC)
+            await session.execute(
+                sa.update(Note)
+                .where(Note.id == identity)
+                .values(
+                    content_hash=digest_after,
+                    size_bytes=len(after),
+                    mtime=now,
+                    frontmatter=_jsonable(fields),
+                    **_mirror_columns(fields, self.store.control.schema()),
+                    updated_at=now,
+                )
+            )
+            await index_note(
+                session,
+                note_id=identity,
+                path=row.path,
+                title=_title_of(body, path),
+                body=body,
+                version=digest_after,
+                now=now,
+                notes_folder=self.store.control.settings().notes.notes_folder,
+            )
+            for subject in ledger.entities.values():
+                for fact in subject.facts:
+                    if (
+                        fact.evidence.note_id == identity
+                        and fact.evidence.note_hash == content_hash(before)
+                    ):
+                        fact.evidence.note_hash = digest_after
+                        fact.evidence.quote = rewrite_dossier_links(
+                            fact.evidence.quote,
+                            plan["old"],
+                            plan["new"],
+                        )
+            for job in self.store.context.jobs():
+                if job.note_id == identity and job.note_hash == content_hash(before):
+                    job.note_hash = digest_after
+                    self.store.context.save_job(job)
+            self.save(ledger)
+
+    def _rewrite_move_dossier(self, ledger: EntityLedger, entity: Entity, other: Entity) -> None:
+        plan = entity.page_move
+        assert plan is not None
+        path = safe_path(self.store.notes_root, other.path)
+        if not path.exists():
+            return
+        before, after = self._move_replace(ledger, entity, path)
+        if before == after:
+            snapshot = plan["snapshots"].get(other.path)
+            if snapshot:
+                saved = base64.b64decode(snapshot, validate=True)
+                if (
+                    rewrite_dossier_links(saved.decode(), plan["old"], plan["new"]).encode()
+                    == after
+                ):
+                    before = saved
+        if before != after and other.generated is not None:
+            try:
+                _, old_block = dossier_parts(before.decode(), other)
+                _, new_block = dossier_parts(after.decode(), other)
+            except ValueError:
+                return
+            if other.generated == old_block:
+                other.generated = new_block
+                self.save(ledger)
+
     async def refresh_locked(self, ledger: EntityLedger) -> None:
         if self.purge_pending():
             raise ValidationFailed(["Finish or abandon the interrupted retention purge first"])
         before = ledger.model_dump_json()
+        for entity in ledger.entities.values():
+            if entity.kind == "person" and entity.automatic and entity.name in entity.emails:
+                address = entity.name
+                entity.name = email_name(address)
+                entity.aliases = sorted(set(entity.aliases + [address]))
+                self.receipt(ledger, entity, "readable email name")
+        # Obsidian moves a page without changing its identity. Find missing pages by
+        # their entity_id before treating absence as a deletion.
+        missing = {
+            e.id: e
+            for e in ledger.entities.values()
+            if e.generated is not None
+            and not e.retired_at
+            and e.page_move is None
+            and not safe_path(self.store.notes_root, e.path).exists()
+        }
+        found: dict[str, list[str]] = {identity: [] for identity in missing}
+        guessed: dict[str, list[str]] = {identity: [] for identity in missing}
+        ambiguous: set[str] = set()
+        if missing:
+            from coppermind_store.reconciler import _IGNORED_DIRECTORIES
+
+            trash = self.store.control.settings().notes.trash_folder.strip("/")
+            root = self.store.notes_root
+            for parent, directories, files in os.walk(root, followlinks=False):
+                relative_parent = Path(parent).relative_to(root).as_posix()
+                directories[:] = [
+                    name
+                    for name in directories
+                    if name not in _IGNORED_DIRECTORIES
+                    and (name if relative_parent == "." else f"{relative_parent}/{name}") != trash
+                ]
+                for name in files:
+                    if not name.endswith(".md"):
+                        continue
+                    path = Path(parent) / name
+                    try:
+                        if path.is_symlink():
+                            continue
+                        text = path.read_text()
+                        fields, _ = fm.parse(text)
+                        markers = list(MARKER.finditer(text))
+                        if len(markers) > 1:
+                            continue
+                        identity = markers[0].group(1) if markers else None
+                        legacy_id = fields.get("entity_id")
+                        if identity and legacy_id and identity != legacy_id:
+                            continue
+                        identity = identity or legacy_id
+                        relative = path.relative_to(root)
+                        if isinstance(identity, str) and identity in found:
+                            found[identity].append(relative.as_posix())
+                        elif not identity and relative.parts[0] in FOLDERS:
+                            matches = [
+                                e.id
+                                for e in ledger.entities.values()
+                                if e.generated
+                                and text.endswith(e.generated)
+                                and matches_identity(
+                                    fields,
+                                    e,
+                                    company_domains(e, ledger) if e.kind == "company" else [],
+                                )
+                            ]
+                            if len(matches) > 1:
+                                ambiguous.update(i for i in matches if i in found)
+                            elif matches and matches[0] in guessed:
+                                guessed[matches[0]].append(relative.as_posix())
+                    except (OSError, UnicodeError, fm.FrontmatterError):
+                        continue
+            for identity, paths in found.items():
+                paths[:] = paths or guessed[identity]
+                entity = missing[identity]
+                if identity in ambiguous:
+                    entity.problem = (
+                        "Dossier identity matches multiple pages; resolve the ambiguity"
+                    )
+                    continue
+                if len(paths) == 1:
+                    old = entity.path
+                    entity.path = paths[0]
+                    old_stem = Path(old).stem
+                    new_stem = Path(entity.path).stem
+                    if old_stem != new_stem:
+                        rename(entity, new_stem)
+                    self.receipt(ledger, entity, "page moved", old_path=old)
+                elif len(paths) > 1:
+                    entity.problem = "Multiple pages have this dossier identity; resolve the copies"
         # Import device corrections before adding/retracting metadata contributions.
         seen: dict[str, bytes | None] = {}
         for entity in list(ledger.entities.values()):
+            if entity.page_move is not None:
+                continue
+            if entity.id in ambiguous:
+                continue
+            if entity.id in found and len(found[entity.id]) > 1:
+                continue
             try:
                 seen[entity.id] = self.observe(ledger, entity)
             except (OSError, ValueError, UnicodeError, fm.FrontmatterError):
                 entity.problem = "Dossier page identity, delimiter or path needs repair"
-        self.contribute(ledger, await self.notes())
+        notes = await self.notes()
+        source_notes = {
+            fact.evidence.note_id
+            for entity in ledger.entities.values()
+            for fact in entity.facts
+            if fact.evidence.source_versions and fact.evidence.note_id in notes
+        }
+        versions = {}
+        for identity in source_notes:
+            try:
+                versions[identity] = (await self.store.context.selected_sources(identity))[0]
+            except NotFound:
+                versions[identity] = {}
+            except StoreError:
+                continue
+        self.contribute(ledger, notes, versions)
         await self.migrate(ledger)
+        owners = domain_owners(ledger)
         for entity in ledger.entities.values():
-            self.project(ledger, entity, seen)
+            if entity.page_move is not None:
+                continue
+            if entity.id in ambiguous:
+                continue
+            if entity.id in found and len(found[entity.id]) > 1:
+                continue
+            self.project(ledger, entity, seen, owners)
         if ledger.model_dump_json() != before:
             self.save(ledger)
         await self.mirror(ledger, seen)
 
     async def refresh(self) -> None:
-        async with self.store.maintenance.shared(), self.lock:
+        async with self.store.maintenance.shared(), self.store._filing_lock, self.lock:
             if self.purge_pending():
                 return
-            await self.refresh_locked(self.load())
+            ledger = self.load()
+            await self.refresh_locked(ledger)
+            revision = ledger.revision
+            blocked = await self.migrate_page_paths(ledger)
+            if ledger.revision != revision:
+                await self.refresh_locked(ledger)
+            if blocked:
+                for identity, problem in blocked.items():
+                    ledger.entities[identity].problem = problem
+                self.save(ledger)
 
     def personal_text(self, entity: Entity, seen: dict[str, bytes | None] | None = None) -> str:
         if seen is not None and entity.id in seen:
-            return fm.parse(self.prefix(entity, seen[entity.id]).removesuffix(DELIMITER))[1]
+            raw = seen[entity.id]
+            if not raw:
+                return ""
+            try:
+                return fm.parse(dossier_parts(raw.decode(), entity)[0])[1]
+            except (ValueError, UnicodeError, fm.FrontmatterError):
+                return ""
         try:
             text = safe_path(self.store.notes_root, entity.path).read_text()
             fields, _ = fm.parse(text)
-            if fields.get("entity_id") != entity.id or text.count(DELIMITER) != 1:
+            if fields.get("entity_id") not in (None, entity.id):
                 return ""
-            _, body = fm.parse(text.split(DELIMITER, 1)[0])
+            _, body = fm.parse(dossier_parts(text, entity)[0])
             return body
         except (OSError, ValueError, UnicodeError, fm.FrontmatterError):
             return ""
@@ -748,7 +1588,7 @@ class EntityService:
             ):
                 raise ValidationFailed(["target must name an active dossier"])
             if change.action == "rename":
-                entity.name = EntityInput.single_line(change.name or "")
+                rename(entity, change.name or "")
             elif change.action == "aliases":
                 candidate = EntityInput(
                     kind=entity.kind,
@@ -924,10 +1764,10 @@ class EntityService:
             path = safe_path(self.store.notes_root, entity.path)
             if orphan and not retired and path.exists():
                 text = path.read_text()
-                if text.count(DELIMITER) != 1:
+                if len(list(MARKER.finditer(text))) != 1:
                     continue
-                head, block = text.split(DELIMITER)
                 try:
+                    head, block = dossier_parts(text, entity)
                     wrote = owner_wrote(head)
                 except (ValueError, fm.FrontmatterError):
                     continue
@@ -958,6 +1798,8 @@ class EntityService:
         ledger = self.load()
         if any(r.get("purge") == token for r in ledger.receipts):
             return
+        for snapshot in (self.root / "moves").glob("*.json"):
+            snapshot.unlink()
         for identity in entity_ids:
             entity = ledger.entities.pop(identity, None)
             if entity:

@@ -83,3 +83,69 @@ def test_entity_scopes_and_search_exclude_ungranted_kinds(tmp_path):
         # Public query parameters cannot impersonate the internal scope headers.
         assert client.get("/v1/search?q=Casey&entities=true", headers=notes).status_code == 422
         assert client.get("/v1/sources/source", headers=entities).status_code == 403
+
+
+def fact(identity, quote, source_versions):
+    return {
+        "id": identity,
+        "predicate": "role",
+        "value": "Engineer",
+        "evidence": {
+            "note_id": "note",
+            "note_hash": "hash",
+            "path": "Meetings/Note.md",
+            "quote": quote,
+            "source_versions": source_versions,
+        },
+    }
+
+
+ENTITY = {
+    "id": "person",
+    "facts": [
+        fact("from-note", "Casey is an engineer.", {}),
+        fact("from-transcript", "I run the platform team.", {"source": 1}),
+    ],
+}
+
+
+class QuoteStore(EntityStore):
+    def __init__(self):
+        super().__init__()
+        self.narrow, self.narrow_key = create_key("Narrow", ["entities:read", "notes:read"])
+        self.wide, self.wide_key = create_key(
+            "Wide", ["entities:read", "notes:read", "sources:read"]
+        )
+
+    async def get_api_keys(self):
+        return ApiKeySet(keys=[self.narrow, self.wide])
+
+    async def entity_action(self, action, payload):
+        return {"items": [ENTITY], "next_cursor": None} if action == "list" else ENTITY
+
+
+def test_transcript_quotes_need_sources_read(tmp_path):
+    token = tmp_path / "internal"
+    token.write_text("test-internal")
+    app = create_app(Wiring(internal_token_file=token))
+    fake = QuoteStore()
+    app.dependency_overrides[store] = lambda: fake
+    with TestClient(app) as client:
+        app.state.api_key_auth._store = fake
+        narrow = {"Authorization": f"Bearer {fake.narrow_key}"}
+        wide = {"Authorization": f"Bearer {fake.wide_key}"}
+        for path in ("/v1/entities/person", "/v1/entities"):
+            body = client.get(path, headers=narrow).json()
+            facts = (body["items"][0] if "items" in body else body)["facts"]
+            note_fact, transcript_fact = facts
+            assert note_fact["evidence"]["quote"] == "Casey is an engineer."
+            assert "quote_withheld" not in note_fact["evidence"]
+            assert transcript_fact["evidence"]["quote"] == ""
+            assert transcript_fact["evidence"]["quote_withheld"] is True
+            assert transcript_fact["value"] == "Engineer"
+            assert transcript_fact["evidence"]["source_versions"] == {"source": 1}
+            assert "run the platform" not in client.get(path, headers=narrow).text
+            body = client.get(path, headers=wide).json()
+            facts = (body["items"][0] if "items" in body else body)["facts"]
+            assert facts[1]["evidence"]["quote"] == "I run the platform team."
+            assert "quote_withheld" not in facts[1]["evidence"]

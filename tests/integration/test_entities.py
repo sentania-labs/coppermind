@@ -1,13 +1,22 @@
 """Dossier behavior against real files and PostgreSQL, including recovery and purge."""
 
+import re
+
 import pytest
 import sqlalchemy as sa
-from coppermind_store.entities import DELIMITER, EntityService
+from coppermind_store.entities import DELIMITER, EntityService, dossier_marker
 from coppermind_store.reconciler import reconcile_once
 
+from coppermind import frontmatter as fm
 from coppermind.db.models import EntityRecord, SearchDocument
 from coppermind.entities import EntityChange, EntityInput, EntityQuery
-from coppermind.store_protocol import CreateNote, PatchFrontmatter, SearchQuery, VersionConflict
+from coppermind.store_protocol import (
+    CreateNote,
+    NotFound,
+    PatchFrontmatter,
+    SearchQuery,
+    VersionConflict,
+)
 from tests.integration.test_purge import confirmation, retention
 
 
@@ -29,6 +38,839 @@ async def reviewed_note(store, body="Casey is an engineer."):
     )
     await store.entities.refresh()
     return note
+
+
+async def test_reviewed_accounts_create_companies_and_attendee_associations(store):
+    note = await store.create_note(
+        CreateNote(
+            title="Customer meeting",
+            body="A meeting.",
+            frontmatter={
+                "reviewed": True,
+                "date": "2026-11-01",
+                "account": ["Xcel Energy"],
+                "attendees": ["arthur.smith@xcelenergy.com"],
+            },
+        )
+    )
+    await store.entities.refresh()
+    ledger = store.entities.load()
+    people = [e for e in ledger.entities.values() if e.kind == "person"]
+    companies = [e for e in ledger.entities.values() if e.kind == "company"]
+    assert len(people) == len(companies) == 1
+    person, company = people[0], companies[0]
+    assert person.name == "Arthur Smith"
+    assert person.path == "People/Arthur Smith.md"
+    assert person.emails[0] in person.aliases
+    assert any(
+        f.target == company.id and f.predicate == "attended a meeting for"
+        for f in person.facts
+        if f.evidence.note_id == note.id
+    )
+    assert any(
+        f.target == person.id and f.predicate == "met with"
+        for f in company.facts
+        if f.evidence.note_id == note.id
+    )
+    link = f"[[{company.path.removesuffix('.md')}]]"
+    person_page = (store.notes_root / person.path).read_text()
+    assert link in person_page
+    assert fm.parse(person_page)[0]["company"] == [link]
+    company_page = (store.notes_root / company.path).read_text()
+    assert fm.parse(company_page)[0]["domains"] == ["xcelenergy.com"]
+    domain = next(f for f in company.facts if f.predicate == "domain")
+    assert (domain.value, domain.evidence.note_id) == ("xcelenergy.com", note.id)
+    assert f"[[{person.path.removesuffix('.md')}]]" in (store.notes_root / company.path).read_text()
+    await store.entities.refresh()
+    assert len(store.entities.load().entities) == 2
+
+
+async def test_moved_dossier_follows_identity_and_respects_owner_name(store):
+    entity = await person(store, "Casey Smith")
+    old = store.notes_root / entity["path"]
+    moved = store.notes_root / "People" / "Casey Jones.md"
+    old.rename(moved)
+    await store.entities.refresh()
+    current = await store.entities.get(entity["id"])
+    assert current["path"] == "People/Casey Jones.md"
+    assert current["name"] == "Casey Jones"
+    assert not current["retired_at"]
+    await store.entities.refresh()
+    assert (await store.entities.get(entity["id"]))["name"] == "Casey Jones"
+
+
+@pytest.mark.parametrize("change", ["legacy", "no_id", "empty_id", "no_marker", "moved_no_marker"])
+async def test_dossier_identity_migrates_and_recovers_without_visible_ids(store, change):
+    entity = await person(store, "Casey Smith")
+    path = store.notes_root / entity["path"]
+    marker = dossier_marker(entity["id"])
+    text = path.read_text().replace(marker, "Personal text stays.\n\n" + marker)
+    if change == "legacy":
+        text = text.replace("---\n", f"---\nentity_id: {entity['id']}\ntype: person\n", 1)
+        text = text.replace(marker, DELIMITER)
+    elif change == "no_id":
+        text = text.replace(marker, DELIMITER)
+    elif change == "empty_id":
+        text = text.replace(marker, "<!-- coppermind:dossier id= -->\n")
+    else:
+        text = text.replace(marker, "")
+    path.write_text(text)
+    if change == "moved_no_marker":
+        moved = path.with_name("Casey Renamed.md")
+        path.rename(moved)
+        path = moved
+    await store.entities.refresh()
+    current = await store.entities.get(entity["id"])
+    assert not current["retired_at"] and not current["problem"]
+    assert current["path"] == path.relative_to(store.notes_root).as_posix()
+    written = path.read_text()
+    assert "Personal text stays.\n\n" in written
+    assert marker in written
+    assert "entity_id:" not in written.split("---", 2)[1]
+    assert "\ntype:" not in written.split("---", 2)[1]
+    assert "## Scott's Notes" in written and "## Coppermind's Notes" in written
+    assert "## Facts\n" not in written and "### Facts\n" not in written
+    await store.entities.refresh()
+    assert path.read_text() == written
+
+
+async def test_edited_page_without_marker_is_left_alone_and_reported(store):
+    p = await person(store)
+    note = await reviewed_note(store)
+    await claim(store, p, note)
+    path = store.notes_root / p["path"]
+    marker = dossier_marker(p["id"])
+    text = path.read_text()
+    assert marker in text
+    edited = text.replace(marker, "").rstrip("\n") + "\nOwner edit under Coppermind's Notes\n"
+    path.write_text(edited)
+    await store.entities.refresh()
+    assert path.read_text() == edited
+    assert (await store.entities.get(p["id"]))["problem"]
+
+
+async def test_generated_sections_are_nested_and_empty_sections_omitted(store):
+    p = await person(store)
+    note = await reviewed_note(store)
+    await claim(store, p, note)
+    text = (store.notes_root / p["path"]).read_text()
+    assert "## Scott's Notes\n" in text
+    assert "## Coppermind's Notes\n" in text
+    assert "\n### Facts\n" in text and "\n### Supporting notes\n" in text
+    assert "\n### Interests\n" not in text and "\n### Relationships\n" not in text
+
+
+async def test_company_moved_with_missing_marker_recovers_by_name_and_aliases(store):
+    company = await store.entities.create(EntityInput(kind="company", name="Acme"))
+    old = store.notes_root / company["path"]
+    old.write_text(old.read_text().replace(dossier_marker(company["id"]), ""))
+    moved = old.with_name("Acme New.md")
+    old.rename(moved)
+    await store.entities.refresh()
+    current = await store.entities.get(company["id"])
+    assert current["path"] == "Companies/Acme New.md" and not current["retired_at"]
+    assert dossier_marker(company["id"]) in moved.read_text()
+
+
+async def test_moved_company_page_with_non_text_name_is_not_recovered_and_does_not_abort(store):
+    company = await store.entities.create(EntityInput(kind="company", name="Acme"))
+    old = store.notes_root / company["path"]
+    text = old.read_text().replace(dossier_marker(company["id"]), "")
+    assert "name: Acme" in text
+    moved = old.with_name("Acme New.md")
+    moved.write_text(text.replace("name: Acme", "name: [Acme]", 1))
+    old.unlink()
+    await store.entities.refresh()
+    current = await store.entities.get(company["id"])
+    assert current["path"] == company["path"]
+    assert dossier_marker(company["id"]) not in moved.read_text()
+
+
+async def test_legacy_marker_migration_preserves_owner_frontmatter_and_body_bytes(store):
+    p = await person(store, "Casey Smith")
+    path = store.notes_root / p["path"]
+    marker = dossier_marker(p["id"])
+    text = (
+        path.read_text()
+        .replace("---\n", f"---\nentity_id: {p['id']}\ntype: person\ncustom: 'mine' # keep\n", 1)
+        .replace(marker, "My own text.\n\n" + DELIMITER)
+    )
+    path.write_text(text)
+    old_head = text.split(DELIMITER)[0]
+    expected = old_head.replace(f"entity_id: {p['id']}\n", "").replace("type: person\n", "")
+    await store.entities.refresh()
+    assert path.read_text().split(marker)[0] == expected
+
+
+async def test_markerless_dossier_moved_outside_reserved_folders_is_not_claimed(store):
+    p = await person(store, "Casey Smith")
+    old = store.notes_root / p["path"]
+    old.write_text(old.read_text().replace(dossier_marker(p["id"]), ""))
+    moved = store.notes_root / "Casey Moved.md"
+    old.rename(moved)
+    await reconcile_once(store, full=True)
+    await store.entities.refresh()
+    current = await store.entities.get(p["id"])
+    assert current["path"] == p["path"] and current["retired_at"]
+    assert dossier_marker(p["id"]) not in moved.read_text()
+
+
+@pytest.mark.parametrize(
+    "folder,front",
+    [
+        ("Contacts", "email: [casey@example.test]\nname: Casey Smith\naliases: []\n"),
+        ("Contacts", "name: Casey Smith\n"),
+        ("People", "name: Casey Smith\n"),
+        ("People", "email: [casey@example.test]\nname: Casey Smith\n"),
+    ],
+)
+async def test_owner_note_sharing_email_or_name_is_never_claimed_or_written(store, folder, front):
+    p = await person(store, "Casey Smith")
+    (store.notes_root / p["path"]).unlink()
+    (store.notes_root / folder).mkdir(exist_ok=True)
+    owner = store.notes_root / folder / "Casey Contact.md"
+    text = f"---\n{front}---\nMy own contact note.\n"
+    owner.write_text(text)
+    await store.entities.refresh()
+    await reconcile_once(store, full=True)
+    await store.entities.refresh()
+    current = await store.entities.get(p["id"])
+    assert current["path"] == p["path"]
+    assert "My own contact note." in owner.read_text()
+    assert "coppermind:dossier" not in owner.read_text()
+    assert "## Coppermind's Notes" not in owner.read_text()
+
+
+async def test_owner_note_in_another_folder_is_adopted_not_withheld(store):
+    p = await person(store, "Casey Smith")
+    (store.notes_root / p["path"]).unlink()
+    owner = store.notes_root / "Casey Contact.md"
+    owner.write_text("---\nemail: casey@example.test\n---\nMy own contact note.\n")
+    await store.entities.refresh()
+    await reconcile_once(store, full=True)
+    assert "\nid:" in owner.read_text().split("---", 2)[1]
+
+
+def customer_note(**extra):
+    return CreateNote(
+        title=extra.pop("title", "Customer meeting"),
+        body="A meeting.",
+        frontmatter={"reviewed": True, "date": "2026-11-01", **extra},
+    )
+
+
+def page_company(store, entity):
+    return fm.parse((store.notes_root / entity.path).read_text())[0]["company"]
+
+
+def named(store, name):
+    return next(e for e in store.entities.load().entities.values() if e.name == name)
+
+
+async def test_company_comes_from_the_attendees_email_domain_not_from_attendance(store):
+    await store.create_note(
+        customer_note(
+            account=["Xcel Energy"],
+            attendees=[
+                "arthur.smith@xcelenergy.com",
+                "vendor.rep@othervendor.test",
+                "scott@gmail.com",
+            ],
+        )
+    )
+    await store.entities.refresh()
+    company = named(store, "Xcel Energy")
+    assert page_company(store, named(store, "Arthur Smith")) == [
+        f"[[{company.path.removesuffix('.md')}]]"
+    ]
+    assert page_company(store, named(store, "Vendor Rep")) == []
+    assert page_company(store, named(store, "Scott")) == []
+    relationships = [f.predicate for f in named(store, "Vendor Rep").facts]
+    assert "attended a meeting for" in relationships
+
+
+async def test_public_mail_domains_never_belong_to_a_company(store):
+    await store.create_note(customer_note(account=["Gmail"], attendees=["casey@gmail.com"]))
+    await store.entities.refresh()
+    company = named(store, "Gmail")
+    assert not [f for f in company.facts if f.predicate == "domain"]
+    assert fm.parse((store.notes_root / company.path).read_text())[0]["domains"] == []
+    assert page_company(store, named(store, "Casey")) == []
+
+
+async def test_a_known_domain_gives_a_company_to_attendees_of_later_notes(store):
+    await store.create_note(
+        customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])
+    )
+    await store.entities.refresh()
+    await store.create_note(
+        customer_note(title="Internal sync", attendees=["jo.lee@xcelenergy.com"])
+    )
+    await store.entities.refresh()
+    company = named(store, "Xcel Energy")
+    assert page_company(store, named(store, "Jo Lee")) == [
+        f"[[{company.path.removesuffix('.md')}]]"
+    ]
+
+
+@pytest.mark.parametrize(
+    "company,address",
+    [("Ford", "x@afford.com"), ("Ford", "y@crawford.com"), ("Dell", "z@modellers.test")],
+)
+async def test_domain_never_attaches_on_a_substring_of_a_longer_word(store, company, address):
+    await store.create_note(customer_note(account=[company], attendees=[address]))
+    await store.entities.refresh()
+    assert not [f for f in named(store, company).facts if f.predicate == "domain"]
+    person = next(e for e in store.entities.load().entities.values() if address in e.emails)
+    assert page_company(store, person) == []
+
+
+@pytest.mark.parametrize(
+    "company,address,domain",
+    [
+        ("Acme Power", "x@acme-power.test", "acme-power.test"),
+        ("Xcel Energy", "y@mail.xcelenergy.com", "mail.xcelenergy.com"),
+    ],
+)
+async def test_domain_attaches_on_a_whole_label(store, company, address, domain):
+    await store.create_note(customer_note(account=[company], attendees=[address]))
+    await store.entities.refresh()
+    held = [f.value for f in named(store, company).facts if f.predicate == "domain"]
+    assert held == [domain]
+
+
+async def test_hyphenated_competitor_domain_keeps_meeting_without_company(store):
+    await store.create_note(
+        customer_note(account=["Acme"], attendees=["alice@acme-competitor.test"])
+    )
+    await store.entities.refresh()
+    company = named(store, "Acme")
+    alice = named(store, "Alice")
+    assert not [f for f in company.facts if f.predicate == "domain"]
+    assert page_company(store, alice) == []
+    assert any(f.predicate == "attended a meeting for" for f in alice.facts)
+
+
+async def test_editing_a_note_keeps_its_domain_without_a_gap(store):
+    note = await store.create_note(
+        customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])
+    )
+    await store.entities.refresh()
+    path = store.notes_root / note.path
+    path.write_text(path.read_text() + "More discussion.\n")
+    await reconcile_once(store, full=True)
+    company = named(store, "Xcel Energy")
+    live = [f.value for f in company.facts if f.predicate == "domain" and f.state == "confirmed"]
+    assert live == ["xcelenergy.com"]
+    assert fm.parse((store.notes_root / company.path).read_text())[0]["domains"] == [
+        "xcelenergy.com"
+    ]
+
+
+@pytest.mark.parametrize("change", ["edit", "unreview"])
+async def test_domain_survives_when_the_note_that_first_held_it_goes_stale(store, change):
+    first = await store.create_note(
+        customer_note(
+            title="First",
+            account=["Xcel Energy"],
+            attendees=["arthur.smith@xcelenergy.com"],
+        )
+    )
+    await store.entities.refresh()
+    await store.create_note(
+        customer_note(
+            title="Second",
+            account=["Xcel Energy"],
+            attendees=["jo.lee@xcelenergy.com"],
+        )
+    )
+    await store.entities.refresh()
+    held = [f for f in named(store, "Xcel Energy").facts if f.predicate == "domain"]
+    assert [f.evidence.note_id for f in held if f.state == "confirmed"] == [first.id]
+    path = store.notes_root / first.path
+    if change == "edit":
+        path.write_text(path.read_text() + "More discussion.\n")
+    else:
+        path.write_text(path.read_text().replace("reviewed: true", "reviewed: false"))
+    await reconcile_once(store, full=True)
+    company = named(store, "Xcel Energy")
+    live = [f for f in company.facts if f.predicate == "domain" and f.state == "confirmed"]
+    assert [f.value for f in live] == ["xcelenergy.com"]
+    assert fm.parse((store.notes_root / company.path).read_text())[0]["domains"] == [
+        "xcelenergy.com"
+    ]
+
+
+async def test_removed_domain_stays_removed_after_its_note_is_edited(store):
+    note = await store.create_note(
+        customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])
+    )
+    await store.entities.refresh()
+    company = named(store, "Xcel Energy")
+    page = store.notes_root / company.path
+    page.write_text(page.read_text().replace("domains:\n  - xcelenergy.com\n", "domains: []\n"))
+    await store.entities.refresh()
+    assert fm.parse(page.read_text())[0]["domains"] == []
+    path = store.notes_root / note.path
+    path.write_text(path.read_text() + "More discussion.\n")
+    await reconcile_once(store, full=True)
+    await store.entities.refresh()
+    company = named(store, "Xcel Energy")
+    assert not [f for f in company.facts if f.predicate == "domain" and f.state == "confirmed"]
+    assert fm.parse(page.read_text())[0]["domains"] == []
+
+
+async def test_owner_set_company_and_domains_always_win(store):
+    await store.create_note(
+        customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])
+    )
+    await store.entities.refresh()
+    arthur, company = named(store, "Arthur Smith"), named(store, "Xcel Energy")
+    page = store.notes_root / arthur.path
+    page.write_text(
+        page.read_text().replace(f"[[{company.path.removesuffix('.md')}]]", "Consultant")
+    )
+    await store.entities.refresh()
+    assert page_company(store, arthur) == ["Consultant"]
+
+    await store.create_note(
+        customer_note(title="Other", attendees=["pat@xcel-partner.test", "kim@acme.test"])
+    )
+    await store.entities.refresh()
+    assert page_company(store, named(store, "Pat")) == []
+    page = store.notes_root / company.path
+    page.write_text(
+        page.read_text().replace(
+            "domains:\n  - xcelenergy.com", "domains:\n  - xcelenergy.com\n  - xcel-partner.test"
+        )
+    )
+    await store.entities.refresh()
+    assert page_company(store, named(store, "Pat")) == [f"[[{company.path.removesuffix('.md')}]]"]
+    assert page_company(store, named(store, "Kim")) == []
+
+    page.write_text(page.read_text().replace("  - xcelenergy.com\n", ""))
+    await store.entities.refresh()
+    await store.entities.refresh()
+    assert "xcelenergy.com" not in fm.parse(page.read_text())[0]["domains"]
+    domains = [
+        f.value
+        for f in named(store, "Xcel Energy").facts
+        if f.state == "confirmed" and f.predicate == "domain"
+    ]
+    assert domains == ["xcel-partner.test"]
+
+
+async def test_a_property_the_owner_deleted_stays_deleted_but_a_legacy_page_is_filled_once(store):
+    await store.create_note(
+        customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])
+    )
+    await store.entities.refresh()
+    arthur = named(store, "Arthur Smith")
+    page = store.notes_root / arthur.path
+    block, body = fm.split(page.read_text())
+    assert "company" in fm.parse(page.read_text())[0]
+    page.write_text(
+        "---\n" + re.sub(r"(?ms)^company:\n(?:  - [^\n]*\n)+", "", block) + "---\n" + body
+    )
+    assert "company" not in fm.parse(page.read_text())[0]
+    await store.entities.refresh()
+    await store.entities.refresh()
+    assert "company" not in fm.parse(page.read_text())[0]
+
+    ledger = store.entities.load()
+    ledger.entities[arthur.id].projection_fields = None
+    store.entities.save(ledger)
+    await store.entities.refresh()
+    assert page_company(store, arthur)
+
+
+async def test_owner_domain_edit_and_a_new_domain_in_the_same_refresh_both_survive(store):
+    await store.create_note(
+        customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])
+    )
+    await store.entities.refresh()
+    company = named(store, "Xcel Energy")
+    page = store.notes_root / company.path
+    page.write_text(
+        page.read_text().replace(
+            "domains:\n  - xcelenergy.com", "domains:\n  - xcelenergy.com\n  - owner-added.test"
+        )
+    )
+    await store.create_note(
+        customer_note(title="Second", account=["Xcel Energy"], attendees=["pat@xcel-energy.com"])
+    )
+    for _ in range(3):
+        await store.entities.refresh()
+    held = sorted(
+        f.value
+        for f in named(store, "Xcel Energy").facts
+        if f.state == "confirmed" and f.predicate == "domain"
+    )
+    assert held == ["owner-added.test", "xcel-energy.com", "xcelenergy.com"]
+    assert sorted(fm.parse(page.read_text())[0]["domains"]) == held
+
+
+async def test_a_transient_source_read_failure_does_not_withdraw_transcript_facts(
+    store, monkeypatch
+):
+    from coppermind.store_protocol import MetadataUnavailable
+
+    p = await person(store)
+    note = await reviewed_note(store)
+    await claim(store, p, note)
+    ledger = store.entities.load()
+    fact = next(f for f in ledger.entities[p["id"]].facts if f.predicate == "role")
+    fact.evidence.source_versions = {"source": 1}
+    store.entities.save(ledger)
+
+    async def unavailable(_identity):
+        raise MetadataUnavailable("busy")
+
+    monkeypatch.setattr(store.context, "selected_sources", unavailable)
+    await store.entities.refresh()
+    held = next(f for f in store.entities.load().entities[p["id"]].facts if f.predicate == "role")
+    assert held.state == "confirmed"
+
+    async def gone(_identity):
+        raise NotFound("source")
+
+    monkeypatch.setattr(store.context, "selected_sources", gone)
+    await store.entities.refresh()
+    held = next(f for f in store.entities.load().entities[p["id"]].facts if f.predicate == "role")
+    assert held.state == "withdrawn" and held.withdrawn_for == "evidence"
+
+
+async def test_unsorted_mixed_case_domains_settle_without_new_receipts(store):
+    await store.create_note(customer_note(account=["Xcel Energy"]))
+    await store.entities.refresh()
+    company = named(store, "Xcel Energy")
+    page = store.notes_root / company.path
+    page.write_text(
+        page.read_text().replace(
+            "domains: []",
+            "domains:\n  - Zeta.test\n  - alpha.test\n  - ALPHA.test\n  - not a domain",
+        )
+    )
+    await store.entities.refresh()
+    settled = store.entities.load()
+    held = sorted(f.value for f in settled.entities[company.id].facts if f.predicate == "domain")
+    assert held == ["alpha.test", "zeta.test"]
+    for _ in range(2):
+        await store.entities.refresh()
+    again = store.entities.load()
+    assert len(again.receipts) == len(settled.receipts)
+    assert again.entities[company.id].version == settled.entities[company.id].version
+
+
+async def test_deleted_company_page_is_not_recreated(store):
+    await store.create_note(
+        CreateNote(
+            title="Customer meeting",
+            body="A meeting.",
+            frontmatter={"reviewed": True, "date": "2026-11-01", "account": ["Xcel Energy"]},
+        )
+    )
+    await store.entities.refresh()
+    company = next(e for e in store.entities.load().entities.values() if e.kind == "company")
+    (store.notes_root / company.path).unlink()
+    await store.entities.refresh()
+    await store.entities.refresh()
+    ledger = store.entities.load()
+    companies = [e for e in ledger.entities.values() if e.kind == "company"]
+    assert [e.id for e in companies] == [company.id]
+    assert companies[0].retired_at
+    assert not (store.notes_root / company.path).exists()
+
+
+async def test_account_matches_the_live_company_when_a_retired_one_shares_its_name(store):
+    old = await store.entities.create(EntityInput(kind="company", name="Xcel Energy"))
+    await store.entities.change(old["id"], EntityChange(version=old["version"], action="retire"))
+    live = await store.entities.create(EntityInput(kind="company", name="Xcel Energy"))
+    note = await store.create_note(
+        CreateNote(
+            title="Customer meeting",
+            body="A meeting.",
+            frontmatter={"reviewed": True, "date": "2026-11-01", "account": ["Xcel Energy"]},
+        )
+    )
+    await store.entities.refresh()
+    ledger = store.entities.load()
+    assert any(f.evidence.note_id == note.id for f in ledger.entities[live["id"]].facts)
+    assert len([e for e in ledger.entities.values() if e.kind == "company"]) == 2
+
+
+async def test_renamed_company_page_still_receives_notes_for_its_old_account_name(store):
+    await store.create_note(
+        CreateNote(
+            title="First meeting",
+            body="A meeting.",
+            frontmatter={
+                "reviewed": True,
+                "date": "2026-11-01",
+                "account": ["Xcel Energy"],
+                "attendees": ["arthur.smith@xcelenergy.com", "jo.lee@xcelenergy.com"],
+            },
+        )
+    )
+    await store.entities.refresh()
+    company = next(e for e in store.entities.load().entities.values() if e.kind == "company")
+    page = store.notes_root / company.path
+    page.rename(page.with_name("Xcel Energy Corp.md"))
+    await store.entities.refresh()
+    await store.create_note(
+        CreateNote(
+            title="Second meeting",
+            body="Another meeting.",
+            frontmatter={"reviewed": True, "date": "2026-11-02", "account": ["Xcel Energy"]},
+        )
+    )
+    await store.entities.refresh()
+    ledger = store.entities.load()
+    companies = [e for e in ledger.entities.values() if e.kind == "company"]
+    assert [e.id for e in companies] == [company.id]
+    assert companies[0].name == "Xcel Energy Corp"
+    assert "Xcel Energy" in companies[0].aliases
+    text = (store.notes_root / companies[0].path).read_text()
+    assert text.count("met with") == 2
+    assert "Other recorded values" not in text
+
+
+async def test_unusable_account_value_does_not_stop_dossier_refresh(store):
+    for account in ("x" * 201, "Line one\nLine two"):
+        await store.create_note(
+            CreateNote(
+                title="Odd account",
+                body="A meeting.",
+                frontmatter={
+                    "reviewed": True,
+                    "date": "2026-11-01",
+                    "account": [account],
+                    "attendees": ["casey@example.test"],
+                },
+            )
+        )
+    await store.entities.refresh()
+    ledger = store.entities.load()
+    assert not [e for e in ledger.entities.values() if e.kind == "company"]
+    assert any(e.emails == ["casey@example.test"] for e in ledger.entities.values())
+
+
+async def test_trashed_dossier_page_is_not_treated_as_a_move(store):
+    entity = await person(store, "Casey Smith")
+    old = store.notes_root / entity["path"]
+    trash = store.notes_root / ".trash"
+    trash.mkdir()
+    old.rename(trash / old.name)
+    await store.entities.refresh()
+    current = await store.entities.get(entity["id"])
+    assert current["path"] == entity["path"]
+    assert current["retired_at"]
+
+
+async def test_account_wikilink_uses_only_existing_company(store):
+    company = await store.entities.create(EntityInput(kind="company", name="Acme"))
+    p = await person(store)
+    await store.create_note(
+        CreateNote(
+            title="Meeting",
+            body="Notes.",
+            frontmatter={
+                "reviewed": True,
+                "date": "2026-11-01",
+                "account": [
+                    f"[[{company['path'].removesuffix('.md')}]]",
+                    f"[[{p['path'].removesuffix('.md')}]]",
+                ],
+                "attendees": ["casey@example.test"],
+            },
+        )
+    )
+    await store.entities.refresh()
+    ledger = store.entities.load()
+    assert [e.name for e in ledger.entities.values() if e.kind == "company"] == ["Acme"]
+    assert any(f.target == company["id"] for f in ledger.entities[p["id"]].facts)
+
+
+@pytest.mark.parametrize("step", ["intent", "copy", "links", "remove", "complete"])
+async def test_legacy_page_move_resumes_after_interruption(store, monkeypatch, step):
+    address = "arthur.smith@example.test"
+    entity = await person(store, address, address)
+    ledger = store.entities.load()
+    subject = ledger.entities[entity["id"]]
+    old = f"People/{address} {subject.id}.md"
+    (store.notes_root / subject.path).rename(store.notes_root / old)
+    subject.path, subject.automatic = old, True
+    store.entities.save(ledger)
+    note = await store.create_note(
+        CreateNote(
+            title="Meeting",
+            body=f"See [[{old.removesuffix('.md')}|Arthur]].",
+            frontmatter={"reviewed": True, "attendees": [address], "date": "2026-11-01"},
+        )
+    )
+    hand = await store.create_note(
+        CreateNote(
+            title="Hand written",
+            body=f"Keep [[Elsewhere]] and this text. See [[{old.removesuffix('.md')}|Hand link]].",
+        )
+    )
+    # Metadata already proves this note references the entity before the move starts.
+    ledger = store.entities.load()
+    store.entities.contribute(ledger, await store.entities.notes())
+    store.entities.save(ledger)
+
+    def interrupt(point):
+        if point == step:
+            raise RuntimeError("simulated interruption")
+
+    monkeypatch.setattr(store.entities, "move_checkpoint", interrupt)
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        await store.entities.refresh()
+    monkeypatch.setattr(store.entities, "move_checkpoint", lambda _: None)
+    await store.entities.refresh()
+    current = await store.entities.get(subject.id)
+    assert current["path"] == "People/Arthur Smith.md"
+    assert not (store.notes_root / old).exists()
+    assert (store.notes_root / current["path"]).exists()
+    assert "[[People/Arthur Smith|Arthur]]" in (store.notes_root / note.path).read_text()
+    assert "[[People/Arthur Smith|Hand link]]" in (store.notes_root / hand.path).read_text()
+    assert "Keep [[Elsewhere]] and this text. See" in (store.notes_root / hand.path).read_text()
+
+
+async def test_unscannable_page_keeps_the_old_dossier_until_it_can_be_checked(store, monkeypatch):
+    address = "arthur.smith@example.test"
+    entity = await person(store, address, address)
+    ledger = store.entities.load()
+    subject = ledger.entities[entity["id"]]
+    old = f"People/{address} {subject.id}.md"
+    (store.notes_root / subject.path).rename(store.notes_root / old)
+    subject.path, subject.automatic = old, True
+    store.entities.save(ledger)
+    hand = await store.create_note(
+        CreateNote(title="Hand written", body=f"See [[{old.removesuffix('.md')}|Hand link]].")
+    )
+    hand_file = store.notes_root / hand.path
+    good = hand_file.read_bytes()
+    hand_file.write_bytes(b"\xff\xfe not utf-8 \xff")
+    await store.entities.refresh()
+    current = await store.entities.get(subject.id)
+    assert current["path"] == old
+    assert (store.notes_root / old).exists()
+    assert current["problem"]
+    hand_file.write_bytes(good)
+    await store.entities.refresh()
+    current = await store.entities.get(subject.id)
+    assert current["path"] == "People/Arthur Smith.md"
+    assert not (store.notes_root / old).exists()
+    assert "[[People/Arthur Smith|Hand link]]" in hand_file.read_text()
+
+
+async def legacy_person(store):
+    address = "arthur.smith@example.test"
+    entity = await person(store, address, address)
+    ledger = store.entities.load()
+    subject = ledger.entities[entity["id"]]
+    old = f"People/{address} {subject.id}.md"
+    (store.notes_root / subject.path).rename(store.notes_root / old)
+    subject.path, subject.automatic = old, True
+    store.entities.save(ledger)
+    return subject.id, old
+
+
+async def test_a_page_move_does_not_duplicate_facts_for_the_rewritten_note(store):
+    identity, old = await legacy_person(store)
+    note = await store.create_note(
+        CreateNote(
+            title="Meeting",
+            body=f"See [[{old.removesuffix('.md')}|Arthur]].",
+            frontmatter={
+                "reviewed": True,
+                "date": "2026-11-01",
+                "account": ["Example"],
+                "attendees": ["arthur.smith@example.test"],
+            },
+        )
+    )
+    ledger = store.entities.load()
+    store.entities.contribute(ledger, await store.entities.notes())
+    store.entities.save(ledger)
+    for _ in range(3):
+        await store.entities.refresh()
+    ledger = store.entities.load()
+    assert ledger.entities[identity].path == "People/Arthur Smith.md"
+    assert (store.notes_root / note.path).read_text().count("[[People/Arthur Smith|Arthur]]") == 1
+    for entity in ledger.entities.values():
+        facts = [(f.predicate, f.value) for f in entity.facts if f.state == "confirmed"]
+        assert len(facts) == len(set(facts)), (entity.name, facts)
+    assert len([f for f in ledger.entities[identity].facts if f.predicate == "mentioned"]) == 1
+
+
+async def test_table_escaped_alias_links_follow_the_move(store):
+    identity, old = await legacy_person(store)
+    target = old.removesuffix(".md")
+    hand = await store.create_note(
+        CreateNote(title="Table", body=f"| who |\n| --- |\n| [[{target}\\|Arthur]] |\n")
+    )
+    await store.entities.refresh()
+    assert (await store.entities.get(identity))["path"] == "People/Arthur Smith.md"
+    assert "[[People/Arthur Smith\\|Arthur]]" in (store.notes_root / hand.path).read_text()
+
+
+async def test_unparsed_note_linking_the_old_page_blocks_the_move_and_is_named(store):
+    from coppermind.db.models import Note
+
+    identity, old = await legacy_person(store)
+    hand = await store.create_note(
+        CreateNote(title="Broken", body=f"See [[{old.removesuffix('.md')}|Arthur]].")
+    )
+    async with store.session_factory() as session, session.begin():
+        await session.execute(sa.update(Note).where(Note.id == hand.id).values(state="unparsed"))
+    await store.entities.refresh()
+    current = await store.entities.get(identity)
+    assert current["path"] == old and (store.notes_root / old).exists()
+    assert hand.path in current["problem"]
+    async with store.session_factory() as session, session.begin():
+        await session.execute(sa.update(Note).where(Note.id == hand.id).values(state="ok"))
+    await store.entities.refresh()
+    assert (await store.entities.get(identity))["path"] == "People/Arthur Smith.md"
+    assert "[[People/Arthur Smith|Arthur]]" in (store.notes_root / hand.path).read_text()
+
+
+async def test_move_retries_a_concurrent_note_edit(store, monkeypatch):
+    import coppermind_store.entities as module
+
+    address = "arthur.smith@example.test"
+    entity = await person(store, address, address)
+    ledger = store.entities.load()
+    subject = ledger.entities[entity["id"]]
+    old = f"People/{address} {subject.id}.md"
+    (store.notes_root / subject.path).rename(store.notes_root / old)
+    subject.path, subject.automatic = old, True
+    store.entities.save(ledger)
+    note = await store.create_note(
+        CreateNote(
+            title="Meeting",
+            body=f"See [[{old.removesuffix('.md')}]].",
+            frontmatter={"reviewed": True, "attendees": [address], "date": "2026-11-01"},
+        )
+    )
+    note_path = store.notes_root / note.path
+    original_stage = module.stage_bytes
+    edited = False
+
+    def stage_with_edit(path, data):
+        nonlocal edited
+        staged = original_stage(path, data)
+        if path == note_path and not edited:
+            edited = True
+            path.write_text(path.read_text() + "Owner added this.\n")
+        return staged
+
+    monkeypatch.setattr(module, "stage_bytes", stage_with_edit)
+    await store.entities.refresh()
+    assert edited
+    assert "Owner added this." in note_path.read_text()
+    assert "[[People/Arthur Smith]]" in note_path.read_text()
 
 
 async def claim(store, entity, note, **kwargs):
@@ -55,17 +897,18 @@ async def test_identity_claims_correction_projection_and_recovery(store):
     note = await reviewed_note(store)
     a = await claim(store, a, note, target=company["id"])
     path = store.notes_root / a["path"]
+    marker = dossier_marker(a["id"])
     original = path.read_text()
-    prefix, block = original.split(DELIMITER)
+    prefix, block = original.split(marker)
     prefix += "Personal writing stays byte for byte.\n\n"
-    path.write_text(prefix + DELIMITER + block.replace("role: Engineer", "role: Architect"))
+    path.write_text(prefix + marker + block.replace("role: Engineer", "role: Architect"))
     await store.entities.refresh()
     updated = await store.entities.get(a["id"])
     assert not updated["problem"]
     corrections = [f for f in updated["facts"] if f["origin"] == "correction"]
     assert corrections[-1]["value"] == "Architect"
     assert corrections[-1]["evidence"]["path"] == a["path"]
-    assert path.read_text().split(DELIMITER)[0] == prefix
+    assert path.read_text().split(marker)[0] == prefix
     assert not any(f["state"] == "confirmed" and f["value"] == "Engineer" for f in updated["facts"])
     # SQL is disposable. Rebuilding uses durable corrections without a model.
     async with store.session_factory() as session, session.begin():
@@ -74,7 +917,7 @@ async def test_identity_claims_correction_projection_and_recovery(store):
     store.entities = EntityService(store)
     await store.entities.refresh()
     assert (await store.entities.get(a["id"]))["facts"] == updated["facts"]
-    assert path.read_text().split(DELIMITER)[0] == prefix
+    assert path.read_text().split(marker)[0] == prefix
     with pytest.raises(VersionConflict):
         await store.entities.change(a["id"], EntityChange(version=1, action="rename", name="New"))
     current = await store.entities.get(a["id"])
@@ -396,7 +1239,8 @@ async def test_orphan_purge_preserves_personal_writing_arriving_before_preview(s
     commit(store.notes_root)
     await reconcile_once(store)
     path = store.notes_root / p["path"]
-    path.write_text(path.read_text().replace(DELIMITER, "Personal reminder.\n\n" + DELIMITER))
+    marker = dossier_marker(p["id"])
+    path.write_text(path.read_text().replace(marker, "Personal reminder.\n\n" + marker))
     preview = await store.preview_purge()
     assert [c.kind for c in preview.candidates] == ["note"]
     await store.confirm_purge(confirmation(preview))
@@ -449,25 +1293,26 @@ async def test_rename_and_aliases_regenerate_the_header_without_marking_personal
     p = (await store.entities.list(EntityQuery()))["items"][0]
     assert p["automatic"] and not p["personal"]
     path = store.notes_root / p["path"]
-    assert path.read_text().startswith(f"---\nentity_id: {p['id']}")
+    marker = dossier_marker(p["id"])
+    assert marker in path.read_text() and "entity_id:" not in path.read_text()
     renamed = await store.entities.change(
         p["id"], EntityChange(version=p["version"], action="rename", name="Casey Smith")
     )
     aliased = await store.entities.change(
         p["id"], EntityChange(version=renamed["version"], action="aliases", aliases=["KC"])
     )
-    head = path.read_text().split(DELIMITER)[0]
+    head = path.read_text().split(marker)[0]
     assert "# Casey Smith\n" in head
     assert "- KC" in head or "[KC]" in head
     assert not (await store.entities.get(p["id"]))["personal"]
-    path.write_text(path.read_text().replace(DELIMITER, "Mine.\n\n" + DELIMITER))
+    path.write_text(path.read_text().replace(marker, "Mine.\n\n" + marker))
     await store.entities.refresh()
     owner = await store.entities.get(p["id"])
     assert owner["personal"]
     await store.entities.change(
         p["id"], EntityChange(version=owner["version"], action="rename", name="Casey Jones")
     )
-    head = path.read_text().split(DELIMITER)[0]
+    head = path.read_text().split(marker)[0]
     assert "# Casey Jones\n" in head and "Mine.\n" in head
     assert aliased["aliases"] == ["KC"]
 
@@ -511,6 +1356,19 @@ async def test_search_finds_dossiers_after_an_index_rebuild(store):
     await rebuild(store)
     hits = await store.search(SearchQuery(q="Engineer"), entities=True)
     assert [h.id for h in hits.items if h.kind == "entity"] == [p["id"]]
+
+
+async def test_search_finds_a_person_by_email_and_by_a_former_name(store):
+    p = await person(store, name="Arthur Smith", address="arthur.smith@xcelenergy.com")
+    await store.entities.refresh()
+    hits = await store.search(SearchQuery(q="arthur.smith@xcelenergy.com"), entities=True)
+    assert [h.id for h in hits.items if h.kind == "entity"] == [p["id"]]
+    renamed = await store.entities.change(
+        p["id"], EntityChange(version=p["version"], action="rename", name="Zebulon Quartermaine")
+    )
+    await store.entities.refresh()
+    hits = await store.search(SearchQuery(q="Arthur"), entities=True)
+    assert [h.id for h in hits.items if h.kind == "entity"] == [renamed["id"]]
 
 
 async def test_overlong_address_and_dossier_faults_do_not_stop_reconciliation(store, monkeypatch):

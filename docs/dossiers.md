@@ -4,23 +4,50 @@ Dossiers are undated reference pages in `People/` and `Companies/`. Ordinary
 reviewed notes continue to file under `Notes/{yyyy}/{yyyy-mm}/`. Names and
 aliases are searchable through the entity API. Two people can have the same
 name; exact email addresses and explicit identity decisions distinguish them.
-A company has its own identity. A name alone or an email domain never creates
-an inferred identity or employer.
+A company has its own identity. A reviewed note's explicit `account` creates or
+matches a company; an email domain never creates a company, and only attaches to a company the account names.
+Email-only people get readable provisional names and retain their addresses as
+aliases. A fuller evidenced name can replace the provisional name.
 
-Read and correct the pages in Obsidian. Writing above
-`<!-- coppermind:dossier -->` is preserved byte for byte, except that the
-generated title and frontmatter `aliases` follow the dossier's name and aliases.
-Below the delimiter, edit a fact
+Read and correct the pages in Obsidian. The first section is Scott's Notes;
+the section after the hidden dossier marker is Coppermind's Notes. Properties
+include the name, emails, linked companies and aliases. Personal writing is
+retained when generated properties are refreshed.
+Below the marker, edit a fact
 line to correct it or delete the line to withdraw it. The edit becomes a durable
 correction with that page and its hash as evidence. There is no conflict alarm
-for an ordinary edit, and no separate acceptance ceremony. Keep the delimiter
-and `entity_id` intact; malformed or unrelated files are preserved and reported
+for an ordinary edit, and no separate acceptance ceremony. Keep the marker when
+possible; a page that lost its marker ID, or its whole marker while the generated
+section is intact, is recovered at its own path. A page moved without its marker is
+found only inside `People/` or `Companies/`, by an exact email (person) or domains
+or name with aliases (company), and only when one page matches. Notes elsewhere are
+never claimed, even when they share an email or name. Malformed or unrelated files are preserved and reported
 in Admin Problems. Generated pages never overwrite an unrelated occupied path.
-Names can be changed through the API without changing page paths or backlinks;
-the page title and `aliases` are updated to match.
+Names can be changed through the API. Moving or renaming a page in Obsidian keeps
+its identity via the hidden `<!-- coppermind:dossier id=… -->` marker and adopts
+the chosen filename as its name. Legacy frontmatter IDs migrate into that marker. Legacy
+email-named pages migrate to readable filenames with journaled link updates for
+known references; collisions retain an identifier suffix. Git and Obsidian Sync
+may observe an intermediate state during this resumable per-file migration.
 
-Reviewed metadata contributes exact attendee emails and explicit dossier
-wikilinks in list fields. The API also accepts evidenced prose claims from a
+Reviewed metadata contributes exact attendee emails, explicit account companies,
+attendee-to-company associations and explicit dossier wikilinks in list fields.
+Each attendee gets an "attended a meeting for" relationship to the company and the company a
+"met with" relationship to the attendee, both under Relationships. Attending never sets a
+person's `company`.
+
+A company page lists the email domains known to belong to it in its `domains` property. When a
+reviewed note's attendee has an email domain with a whole DNS label equal to the normalized
+account name, for example `xcelenergy.com` or
+`xcel-energy.com` for Xcel Energy, the domain is recorded on the company
+as a `domain` fact with the note as evidence. Public mail domains such as `gmail.com` never
+qualify. A person's `company` property is filled from their email domain when exactly one
+company holds it, or from an explicit evidenced `organization` fact. Editing `domains` on a
+company page, or `company` on a person page, always wins and is not overwritten; removing a
+domain withdraws it. A generated property (`name`, `email`, `aliases`, `company`, `domains`) is
+filled in only on a page that never had it. Once Coppermind has written a property, deleting it
+from the page keeps it deleted.
+Existing reviewed notes contribute on refresh. The API also accepts evidenced prose claims from a
 reviewed note. All such claims count immediately; there is no proposed state.
 Each records the note ID, current hash, date, quotation and extraction version.
 Editing, unreviewing or deleting the supporting note withdraws its old-version
@@ -33,11 +60,17 @@ The optional enrichment worker extracts explicit people, companies, relationship
 roles and interests from reviewed note frontmatter and prose. The existing
 Enrichment connection, model, enable/pause and attempt limits also govern this
 work. Marking the note reviewed is acceptance; there is no separate claim step.
+When enrichment is enabled, previously reviewed notes are eligible for extraction
+without another review; pausing or disabling enrichment stops these model calls.
 Each bounded extraction validates exact quotations and identity references before
 committing to the same claim ledger. Names alone never merge identities. New
 people need a full name or exact email, and companies need an explicit name.
 Failures stay in Admin and do not block review, filing or search. Extraction
 receipts prevent replay from duplicating facts or restoring corrected claims.
+The worker sends the note and bounded passages retrieved around known attendees,
+accounts and matching dossier names, rather than the whole transcript. The job
+records omitted transcript characters and validates quotations against stored source
+text; changes to source revisions withdraw claims supported by those sources.
 
 For an unreviewed note in the configured review folder (`Review/` by default),
 enrichment considers every configured blank
@@ -92,7 +125,10 @@ Every change supplies the current integer `version` and an `action`:
 
 Version conflicts return 409. Invalid evidence or an expired identity preview
 returns 422. Entity access does not grant `sources:read`. Dossiers quote reviewed
-notes, so every entity route also requires `notes:read`. Public `/v1/search`
+notes, so every entity route also requires `notes:read`. A fact that cites a
+transcript or other source returns its value and `source_versions`, with an empty
+`quote` and `quote_withheld: true`, unless the key also holds `sources:read`. The
+dossier page in the owner's vault keeps the quote. Public `/v1/search`
 requires `notes:read`; entity hits additionally require `entities:read`.
 Filtering happens before ranking and paging.
 Entity snippets include only active facts, not withdrawn evidence.

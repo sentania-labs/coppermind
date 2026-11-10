@@ -40,6 +40,7 @@ class Evidence(BaseModel):
     date: str = ""
     quote: str = ""
     extraction_version: str = "operator-v1"
+    source_versions: dict[str, int] = Field(default_factory=dict)
 
 
 class Fact(BaseModel):
@@ -67,6 +68,8 @@ class Entity(EntityInput):
     # Page receipts allow a restart between ledger commit and projection replacement.
     generated: str | None = None
     pending: str | None = None
+    projection_fields: dict[str, object] | None = None
+    page_move: dict | None = None
     personal: bool = False
     problem: str | None = None
 

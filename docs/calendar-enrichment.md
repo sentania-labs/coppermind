@@ -133,11 +133,11 @@ No production schema keys are created automatically.
 
 Enablement records the existing note population. Those notes require a
 separate explicit backlog selection, up to 50 at a time. New valid unreviewed
-notes become eligible automatically. A note created after enablement, or an
-existing note sent from the backlog, also contributes dossier facts through this
-worker once it is reviewed, without a separate acceptance action. Existing notes
-that were never sent are not swept when reviewed, and the backlog lists unreviewed
-notes only, so already reviewed history is outside this slice. Calls run serially, with configurable
+notes become eligible automatically. Any reviewed note contributes dossier facts
+through this worker, whether it was created before or after enablement and whether
+or not it was sent from the backlog, without a separate acceptance action. The
+backlog lists unreviewed notes only; notes that were already reviewed when enabled
+are sent without it. Calls run serially, with configurable
 input/output limits, wait limit, and one to three attempts. Replies are streamed. The
 wait limit (120 seconds by default, 5 to 1800) is a silence limit: how long the
 provider may send nothing, before the first byte and between pieces of the reply.
@@ -157,10 +157,16 @@ an already-running call can finish. Disablement does not affect calendar intake
 or ordinary note work. Usage is shown only when the provider supplies numeric
 usage fields; currency budgets and billing estimates are not provided.
 
-Only the selected note, explicitly associated text sources (maximum five),
-nearby calendar events, relevant contact corrections, matching active dossiers
-and selected field/tag guidance are sent. Dossier selection is bounded and includes
-only direct relationship targets, never the whole corpus. Oversized input fails before transmission; the job states the
+Only the selected note, short passages from explicitly associated text sources
+(maximum five), nearby calendar events, relevant contact corrections, matching
+active dossiers and selected field/tag guidance are sent. Transcripts are never
+sent whole: at most 12,000 characters are chosen around known attendees,
+accounts and dossier names, and the job records how many characters were
+omitted. Dossier selection is bounded and includes
+only direct relationship targets, never the whole corpus. The maximum input
+defaults to 60,000 characters and can be raised to 200,000; existing configured
+limits stay in force. Other input that is still oversized fails before
+transmission; the job states the
 actual size against the limit and links to Maximum note and transcript
 characters under Processing limits. The model has
 no tools, URL fetches, or write access. It returns structured suggestions;
