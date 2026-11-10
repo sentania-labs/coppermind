@@ -22,7 +22,7 @@ from coppermind_store.notes import LocalStore
 from coppermind.context_config import ContextConfig, EmbeddingAssignment, ModelConnection
 from coppermind.db.models import SearchDocument, SearchEmbedding
 from coppermind.db.session import transaction
-from coppermind.store_protocol import CreateNote, SearchQuery
+from coppermind.store_protocol import CreateNote, MetadataUnavailable, SearchQuery
 
 IDEAS = [
     {"licensing", "license", "licence", "permit", "royalty", "royalties"},
@@ -151,7 +151,6 @@ async def test_meaning_finds_what_the_words_do_not(store, configured, service) -
 
 async def test_without_a_connection_search_is_full_text(store, service) -> None:
     await create(store, "Vendor call", "We agreed the permit fees and royalty schedule.")
-    assert await found(store, "royalty") == [("Vendor call", "keyword")]
     assert (await store.embeddings.status()).state == "off"
     assert service.calls == []
 
@@ -240,6 +239,31 @@ async def test_a_missing_table_is_created_once_the_server_offers_pgvector(
     status = await store.embeddings.status()
 
     assert status.state != "unavailable"
+    await settle(store)
+    assert await found(store, "licensing") == [("Vendor call", "meaning")]
+
+
+async def test_a_table_dropped_while_running_is_made_again_after_one_failed_search(
+    store, configured, service
+) -> None:
+    async with store.session_factory() as session:
+        offered = await session.scalar(
+            sa.text("SELECT 1 FROM pg_available_extensions WHERE name = 'vector'")
+        )
+    if offered is None:
+        pytest.skip("this PostgreSQL does not offer pgvector")
+    await create(store, "Vendor call", "We agreed the permit fees and royalty schedule.")
+    configured()
+    await settle(store)
+    assert await found(store, "licensing") == [("Vendor call", "meaning")]
+
+    async with transaction(store.session_factory) as session:
+        await session.execute(sa.text("DROP TABLE search_embeddings"))
+
+    with pytest.raises(MetadataUnavailable):
+        await found(store, "licensing")
+    assert await found(store, "licensing") == []
+    assert await found(store, "royalty") == [("Vendor call", "keyword")]
     await settle(store)
     assert await found(store, "licensing") == [("Vendor call", "meaning")]
 

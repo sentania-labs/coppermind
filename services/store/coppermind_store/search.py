@@ -602,6 +602,8 @@ async def search(
                 statement = build_search(query, notes_folder, after, predicates, entities=entities)
                 rows = list((await session.execute(statement)).all())
     except (SQLAlchemyError, OSError) as exc:
+        if wanted is not None:
+            store.embeddings.forget_table()
         raise MetadataUnavailable(str(exc)) from exc
     if query.filter and store.control.schema_document().revision != revision:
         raise FilterCursorConflict()

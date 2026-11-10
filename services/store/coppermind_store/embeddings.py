@@ -209,6 +209,10 @@ class EmbeddingService:
             self._table_ok, self._table_checked = found, now
         return found
 
+    def forget_table(self) -> None:
+        """A statement on the table failed: ask the database again before the next use."""
+        self._table_ok = None
+
     async def _ensure_table(self) -> bool:
         async with self.store.session_factory() as session:
             if await session.scalar(sa.text("SELECT to_regclass('search_embeddings')")) is not None:
@@ -246,6 +250,7 @@ class EmbeddingService:
                 raise
             except (SQLAlchemyError, OSError) as exc:
                 log.warning("embedding worker could not reach the database", error=str(exc))
+                self.forget_table()
                 delay = 30.0
             except Exception:  # noqa: BLE001 - the loop must outlive any one document
                 log.exception("embedding worker failed")

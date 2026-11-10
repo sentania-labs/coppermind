@@ -225,3 +225,22 @@ async def test_a_table_that_disappears_is_noticed_and_made_again(monkeypatch):
     assert await service.table_ready() is False
     assert await service.table_ready(refresh=True) is True
     assert len(asked) == 3
+
+
+async def test_a_failed_statement_on_the_table_makes_the_next_use_ask_again():
+    service = EmbeddingService(SimpleNamespace())
+    answers = [True, True]
+    asked = []
+
+    async def ensure() -> bool:
+        asked.append(1)
+        return answers.pop(0)
+
+    service._ensure_table = ensure
+
+    assert await service.table_ready() is True
+    assert await service.table_ready() is True
+    assert len(asked) == 1
+    service.forget_table()
+    assert await service.table_ready() is True
+    assert len(asked) == 2
