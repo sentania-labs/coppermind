@@ -30,7 +30,7 @@ DEFAULT_TIMEZONE = "America/Chicago"
 NOTICES = {
     "started": "Rebuild started. The counts below change when it finishes.",
     "running": "A rebuild is already running.",
-    "embeddings-saved": "Saved. Embedding runs in the background; the progress below updates.",
+    "connection-saved": "Connection saved. Choose it below to use it for search by meaning.",
 }
 
 
@@ -105,8 +105,8 @@ def embedding_status_html(status: EmbeddingStatus, zone: ZoneInfo) -> str:
             f'<p role="status">Embedding your notes with {model}: {status.embedded} of '
             f'{status.documents} done ({percent}%). <progress max="{status.documents}" '
             f'value="{status.embedded}">{percent}%</progress></p>'
-            '<p class="muted">Searches use keywords, plus meaning for what is done. '
-            '<a href="/admin/search-index">Refresh progress</a></p>'
+            '<p class="muted">Searches use keywords, plus meaning for what is done. This page '
+            'does not refresh by itself: <a href="/admin/search-index">Refresh progress</a>.</p>'
         )
     if status.state == "waiting":
         retry = f" Next try {escape(local_time(status.retry_at, zone))}." if status.retry_at else ""
@@ -122,9 +122,31 @@ def embedding_status_html(status: EmbeddingStatus, zone: ZoneInfo) -> str:
     return lines
 
 
-def embeddings_html(view: dict[str, Any], status: EmbeddingStatus, zone: ZoneInfo) -> str:
-    """The meaning-search section: progress first, then the settings."""
-    settings = view["embeddings"]
+CONNECTIONS_LINK = "/admin/context?tab=models&return=/admin/search-index"
+
+
+def saved_notice(enabled: bool, status: EmbeddingStatus) -> str:
+    """What saving did, in words, from the state the page now shows."""
+    if not enabled:
+        return "Search by meaning is off. Searches use keywords only."
+    return (
+        f"Saved. Indexing by meaning has started; {status.embedded} of {status.documents} "
+        "entries are ready."
+    )
+
+
+def embeddings_html(
+    view: dict[str, Any],
+    status: EmbeddingStatus,
+    zone: ZoneInfo,
+    attempted: dict[str, Any] | None = None,
+) -> str:
+    """The meaning-search section: progress first, then the settings.
+
+    `attempted` is what was just submitted and refused; the form keeps it, so a failed test
+    never silently puts the old choice back.
+    """
+    settings = {**view["embeddings"], **(attempted or {})}
     connections = view["connections"]
     models = view["discovery"].get(settings["connection"], [])
     choices = '<option value="">Choose a connection</option>' + "".join(
@@ -135,9 +157,10 @@ def embeddings_html(view: dict[str, Any], status: EmbeddingStatus, zone: ZoneInf
     )
     datalist = "".join(f'<option value="{escape(name, quote=True)}">' for name in models)
     checked = lambda flag: " checked" if flag else ""  # noqa: E731
-    no_connection = (
-        '<p class="muted">No OpenAI or OpenAI-compatible connection yet. Add one under '
-        '<a href="/admin/context?tab=models">Connections</a>.</p>'
+    where_from = (
+        "<p>There is no OpenAI or OpenAI-compatible connection yet. A connection is a service "
+        "address plus an API key if it needs one, and is where models come from. Add one, then "
+        "come back here to choose it.</p>"
         if not connections
         else ""
     )
@@ -146,29 +169,45 @@ def embeddings_html(view: dict[str, Any], status: EmbeddingStatus, zone: ZoneInf
 &ldquo;that call where we talked about the licensing change&rdquo;. It works alongside the
 keyword search and falls back to it whenever the model is off or not answering.</p>
 {embedding_status_html(status, zone)}
-<form method="post" action="/v1/admin/search-index/embeddings">
+<form method="post" action="/v1/admin/search-index/embeddings" id="meaning-form">
 <input type="hidden" name="revision" value="{int(view["revision"])}">
 <fieldset><legend>Embeddings model</legend>
-{no_connection}
+{where_from}
 <label>Connection<select name="connection">{choices}</select></label>
+<p class="muted"><a href="{CONNECTIONS_LINK}">Add or edit connection</a>
+(you come back to this page after saving one)</p>
 <label>Model<input name="model" list="embedding-models"
 value="{escape(settings["model"], quote=True)}"
 placeholder="for example text-embedding-3-small"></label>
 <datalist id="embedding-models">{datalist}</datalist>
-<p class="muted"><a href="/admin/context?tab=models">Manage connections and refresh the
-model list</a></p>
+<p class="muted">The model list comes from the connection; refresh it on the Connections page.</p>
+<label>Wait limit (seconds)<input name="timeout_s" type="number" min="5" max="600"
+value="{int(settings["timeout_s"])}"></label>
+<p class="muted">How long the service may stay silent before one request is given up on,
+including the test when you save.</p>
 </fieldset>
 <fieldset><legend>When to run</legend>
 <label><input type="checkbox" name="enabled"{checked(settings["enabled"])}>
 Search by meaning</label>
 <p class="muted">When this is on, the text of your notes, source pages and stored artifacts is
-sent to the connection chosen above so it can be embedded, a few at a time, in the background.
-Existing content is embedded first-in, newest first, and picks up where it left off after a
-restart. Saving asks the model for one test embedding before turning this on. Changing the model
-embeds everything again.</p>
+sent to the connection chosen above so it can be embedded, a few at a time, in the background,
+newest first. It picks up where it left off after a restart. Saving asks the model for one test
+embedding before turning this on. Changing the connection or the model indexes existing content
+again; keyword search remains available while it does.</p>
 </fieldset>
+<p id="meaning-testing" role="status" hidden></p>
 <button>Save search by meaning</button>
-</form>"""
+</form>
+<script>
+document.getElementById("meaning-form").addEventListener("submit", (event) => {{
+  const form = event.target;
+  if (!form.elements.enabled.checked) return;
+  const note = document.getElementById("meaning-testing");
+  note.textContent = "Testing connection... this may take up to " +
+    form.elements.timeout_s.value + " seconds";
+  note.hidden = false;
+}});
+</script>"""
 
 
 def router(wiring: Wiring) -> APIRouter:
@@ -180,14 +219,17 @@ def router(wiring: Wiring) -> APIRouter:
         return HTMLResponse(render("Search index", body), status_code=status_code)
 
     async def meaning_section(
-        request: Request, status: SearchIndexStatus, problem: str = ""
+        request: Request,
+        status: SearchIndexStatus,
+        problem: str = "",
+        attempted: dict[str, Any] | None = None,
     ) -> str:
         try:
             view = await _client(request, wiring).context_action("embeddings", {})
         except (StoreError, OSError):
             return f'<h2>Search by meaning</h2><p class="error">{UNREACHABLE}</p>'
         failure = f'<p class="error">{escape(problem)}</p>' if problem else ""
-        return failure + embeddings_html(view, status.embeddings, _zone(request))
+        return failure + embeddings_html(view, status.embeddings, _zone(request), attempted)
 
     @routes.get("/admin/search-index", response_class=HTMLResponse, include_in_schema=False)
     async def search_index_page(request: Request) -> Response:
@@ -196,7 +238,10 @@ def router(wiring: Wiring) -> APIRouter:
             status = await _client(request, wiring).get_search_index_status()
         except (StoreError, OSError):
             return page(f'{heading}<p class="error">{UNREACHABLE}</p>', 503)
-        message = NOTICES.get(request.query_params.get("notice", ""), "")
+        notice_key = request.query_params.get("notice", "")
+        message = NOTICES.get(notice_key, "")
+        if notice_key in {"embeddings-on", "embeddings-off"}:
+            message = saved_notice(notice_key == "embeddings-on", status.embeddings)
         notice = f"<p>{escape(message)}</p>" if message else ""
         meaning = await meaning_section(request, status)
         return page(
@@ -232,13 +277,22 @@ rebuilding it loses nothing.</p>
             revision = int(form.get("revision", "0"))
         except ValueError:
             revision = -1
+        try:
+            wait = int(form.get("timeout_s", "60"))
+        except ValueError:
+            wait = -1
         assignment = {
             "connection": form.get("connection", ""),
             "model": form.get("model", ""),
             "enabled": "enabled" in form,
+            "timeout_s": wait,
         }
         client = _client(request, wiring)
         try:
+            if not 5 <= wait <= 600:
+                raise ValueError(
+                    "The wait limit must be between 5 and 600 seconds. Nothing was saved."
+                )
             await client.context_action(
                 "save-embeddings", {"revision": revision, "assignment": assignment}
             )
@@ -251,7 +305,9 @@ rebuilding it loses nothing.</p>
             problem = (
                 str(exc) if isinstance(exc, StoreError | ValueError) else UNREACHABLE
             ) or "That could not be saved."
-            return page(heading + await meaning_section(request, status, problem), 422)
-        return RedirectResponse("/admin/search-index?notice=embeddings-saved", status_code=303)
+            shown = {**assignment, "timeout_s": wait if 5 <= wait <= 600 else 60}
+            return page(heading + await meaning_section(request, status, problem, shown), 422)
+        notice = "embeddings-on" if assignment["enabled"] else "embeddings-off"
+        return RedirectResponse(f"/admin/search-index?notice={notice}", status_code=303)
 
     return routes

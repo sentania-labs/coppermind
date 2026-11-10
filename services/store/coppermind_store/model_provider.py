@@ -373,6 +373,11 @@ class ModelProvider:
                     f"The embeddings service refused the text it was sent ({str(exc)[-3:]}).",
                     "provider-rejected",
                 ) from exc
+            if not exc.rule and str(exc) == "provider returned HTTP 404":
+                raise ProviderError(
+                    "The embeddings service answered 404: no such model or address.",
+                    "provider-not-found",
+                ) from exc
             raise
         rows = result.get("data")
         if not isinstance(rows, list) or len(rows) != len(texts):

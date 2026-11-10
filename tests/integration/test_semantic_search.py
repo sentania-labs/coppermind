@@ -261,3 +261,63 @@ async def test_another_connection_serving_the_same_model_name_is_embedded_again(
     async with store.session_factory() as session:
         tags = set((await session.scalars(sa.select(SearchEmbedding.model))).all())
     assert len(tags) == 1 and next(iter(tags)).startswith("other|")
+
+
+async def attempt(store: LocalStore, **assignment: object) -> str:
+    """Save through the same call Admin makes; returns the refusal, or empty when saved."""
+    config = store.context.config()
+    try:
+        await store.embeddings.save(
+            {
+                "revision": config.revision,
+                "assignment": {"connection": "local", "model": "m1", "enabled": True, **assignment},
+            }
+        )
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
+@pytest.mark.parametrize(
+    ("respond", "expected"),
+    [
+        (
+            lambda request: httpx.Response(404, json={"error": "no such model"}),
+            "The service couldn't find model ‘m1’. Check the model name or refresh "
+            "the model list. Nothing was saved.",
+        ),
+        (
+            lambda request: (_ for _ in ()).throw(httpx.ConnectError("refused", request=request)),
+            "Couldn't connect to local. Check its address and that the service is running. "
+            "Nothing was saved.",
+        ),
+        (
+            lambda request: (_ for _ in ()).throw(httpx.ReadTimeout("slow", request=request)),
+            "The test timed out; nothing was saved. Check that the service is ready, then try "
+            "again.",
+        ),
+        (
+            lambda request: httpx.Response(401),
+            "local refused the credentials. Check the API key on the connection. "
+            "Nothing was saved.",
+        ),
+    ],
+)
+async def test_a_failed_test_says_what_happened_and_what_to_do(
+    store, configured, respond, expected
+) -> None:
+    configured()
+    store.context.provider = ModelProvider(transport=httpx.MockTransport(respond))
+    before = store.context.config().embeddings
+
+    assert await attempt(store, model="m1", enabled=True) == expected
+    assert store.context.config().embeddings == before
+
+
+async def test_the_wait_limit_is_saved_and_a_good_test_saves_everything(
+    store, configured, service
+) -> None:
+    configured()
+    assert await attempt(store, model="m2", timeout_s=90) == ""
+    saved = store.context.config().embeddings
+    assert (saved.model, saved.timeout_s, saved.enabled) == ("m2", 90, True)

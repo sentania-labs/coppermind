@@ -18,6 +18,7 @@ from coppermind.store_protocol import (
 )
 from services.admin.tests.browser import admin_browser as admin_browser
 from services.admin.tests.test_admin import form_token
+from services.admin.tests.test_context_page import ContextStore
 
 
 class IndexStore:
@@ -32,6 +33,7 @@ class IndexStore:
         self.embeddings = embeddings or EmbeddingStatus()
         self.refuse = refuse
         self.saved: dict = {}
+        self.connections = [{"id": "local", "name": "Lab embeddings", "provider": "compatible"}]
         self.reachable = reachable
         self.running = running
         self.calls: list[str] = []
@@ -76,8 +78,9 @@ class IndexStore:
                 "connection": "local",
                 "model": "nomic-embed",
                 "enabled": True,
+                "timeout_s": 60,
             },
-            "connections": [{"id": "local", "name": "Lab embeddings", "provider": "compatible"}],
+            "connections": self.connections,
             "discovery": {"local": ["nomic-embed", "bge-small"]},
         }
 
@@ -247,13 +250,14 @@ def test_saving_sends_the_choice_and_returns_to_the_page(signed_in):
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/admin/search-index?notice=embeddings-saved"
+    assert response.headers["location"] == "/admin/search-index?notice=embeddings-on"
     assert store.saved == {
         "revision": 4,
         "assignment": {
             "connection": "local",
             "model": " nomic-embed ",
             "enabled": True,
+            "timeout_s": 60,
         },
     }
 
@@ -280,3 +284,161 @@ def test_saving_needs_the_form_token(signed_in):
 
     assert client.post("/v1/admin/search-index/embeddings", data={}).status_code == 403
     assert store.saved == {}
+
+
+def test_a_connection_is_added_on_the_connections_page_and_the_way_back_is_offered(signed_in):
+    client, _ = signed_in
+    store = IndexStore()
+    store.connections = []
+    client.app.state.store = store
+
+    shown = client.get("/admin/search-index").text
+
+    assert 'href="/admin/context?tab=models&amp;return=/admin/search-index"' in shown or (
+        'href="/admin/context?tab=models&return=/admin/search-index"' in shown
+    )
+    assert "Add or edit connection" in shown
+    assert "There is no OpenAI or OpenAI-compatible connection yet." in shown
+    assert "where models come from" in shown
+
+
+def test_a_failed_save_keeps_what_was_typed_and_the_reason_says_what_to_do(signed_in):
+    client, _ = signed_in
+    store = IndexStore(
+        refuse="The service couldn\u2019t find model \u2018wrong-model\u2019. Check the model "
+        "name or refresh the model list. Nothing was saved."
+    )
+    store.connections.append({"id": "other", "name": "Other host", "provider": "compatible"})
+    client.app.state.store = store
+    token = form_token(client, "/admin/search-index")
+
+    response = client.post(
+        "/v1/admin/search-index/embeddings",
+        data={
+            "csrf": token,
+            "revision": "4",
+            "connection": "other",
+            "model": "wrong-model",
+            "timeout_s": "90",
+            "enabled": "on",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Check the model name or refresh the model list. Nothing was saved." in response.text
+    assert '<option value="other" selected>Other host</option>' in response.text
+    assert 'value="wrong-model"' in response.text
+    assert 'name="timeout_s" type="number" min="5" max="600"\nvalue="90"' in response.text
+    assert re.search(r'name="enabled" checked', response.text)
+
+
+def test_the_wait_limit_is_a_setting_here_and_testing_is_announced_on_submit(signed_in):
+    client, _ = signed_in
+    client.app.state.store = IndexStore()
+
+    shown = client.get("/admin/search-index").text
+
+    assert "Wait limit (seconds)" in shown
+    assert 'name="timeout_s"' in shown
+    assert "Processing limits" not in shown
+    assert "Testing connection... this may take up to" in shown
+
+
+def test_an_out_of_range_wait_limit_is_refused_before_the_store(signed_in):
+    client, _ = signed_in
+    store = IndexStore()
+    client.app.state.store = store
+    token = form_token(client, "/admin/search-index")
+
+    response = client.post(
+        "/v1/admin/search-index/embeddings",
+        data={"csrf": token, "revision": "4", "connection": "local", "timeout_s": "9000"},
+    )
+
+    assert response.status_code == 422
+    assert "between 5 and 600 seconds. Nothing was saved." in response.text
+    assert store.saved == {}
+
+
+def test_saving_with_search_off_says_so_and_never_says_indexing_started(signed_in):
+    client, _ = signed_in
+    client.app.state.store = IndexStore()
+
+    shown = client.get("/admin/search-index?notice=embeddings-off").text
+
+    assert "Search by meaning is off. Searches use keywords only." in shown
+    assert "Indexing by meaning has started" not in shown
+    assert "Embedding runs in the background" not in shown
+
+
+def test_saving_on_says_how_far_indexing_is(signed_in):
+    client, _ = signed_in
+    client.app.state.store = IndexStore(
+        embeddings=EmbeddingStatus(state="working", model="m", documents=340, embedded=119)
+    )
+
+    shown = client.get("/admin/search-index?notice=embeddings-on").text
+
+    assert "Saved. Indexing by meaning has started; 119 of 340 entries are ready." in shown
+
+
+def test_changing_connection_or_model_is_explained_and_refresh_is_manual(signed_in):
+    client, _ = signed_in
+    client.app.state.store = IndexStore(
+        embeddings=EmbeddingStatus(state="working", model="m", documents=10, embedded=3)
+    )
+
+    shown = " ".join(client.get("/admin/search-index").text.split())
+
+    assert (
+        "Changing the connection or the model indexes existing content again; keyword search "
+        "remains available while it does." in shown
+    )
+    assert "does not refresh by itself" in shown
+    assert "Refresh progress" in shown
+
+
+def test_connections_opened_from_search_offer_the_way_back_and_return_after_saving(signed_in):
+    client, _ = signed_in
+    store = ContextStore()
+    client.app.state.store = store
+
+    opened = client.get("/admin/context?tab=models&return=/admin/search-index")
+    assert 'href="/admin/search-index">Back to Search index' in opened.text
+    assert 'name="return" value="/admin/search-index"' in opened.text
+
+    plain = client.get("/admin/context?tab=models").text
+    assert "Back to Search index" not in plain
+    assert 'name="return"' not in plain
+
+    token = form_token(client, "/admin/context?tab=models")
+    saved = client.post(
+        "/v1/admin/context/save-connection",
+        data={
+            "csrf": token,
+            "revision": "0",
+            "return": "/admin/search-index",
+            "id": "",
+            "name": "New",
+            "provider": "compatible",
+            "base_url": "http://embed.example/v1",
+        },
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    assert saved.headers["location"] == "/admin/search-index?notice=connection-saved"
+
+    elsewhere = client.post(
+        "/v1/admin/context/save-connection",
+        data={
+            "csrf": token,
+            "revision": "0",
+            "return": "https://evil.example/",
+            "id": "",
+            "name": "New",
+            "provider": "compatible",
+            "base_url": "http://embed.example/v1",
+        },
+        follow_redirects=False,
+    )
+    assert elsewhere.headers["location"].startswith("/admin/context?tab=models")

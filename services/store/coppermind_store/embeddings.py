@@ -523,6 +523,31 @@ class EmbeddingService:
             "status": (await self.status()).model_dump(mode="json"),
         }
 
+    @staticmethod
+    def _test_failure(exc: ProviderError, name: str, assignment: EmbeddingAssignment) -> str:
+        """What a failed connection test means to the person who ran it, and what to do."""
+        if exc.rule == "provider-not-found":
+            return (
+                f"The service couldn't find model \u2018{assignment.model}\u2019. Check the model "
+                "name or refresh the model list. Nothing was saved."
+            )
+        if exc.rule in {"provider-connect", "provider-dropped"}:
+            return (
+                f"Couldn't connect to {name}. Check its address and that the service is running. "
+                "Nothing was saved."
+            )
+        if exc.rule in {"provider-no-response", "provider-stalled", "provider-too-long"}:
+            return (
+                "The test timed out; nothing was saved. Check that the service is ready, then "
+                "try again."
+            )
+        if str(exc) in {"provider returned HTTP 401", "provider returned HTTP 403"}:
+            return (
+                f"{name} refused the credentials. Check the API key on the connection. "
+                "Nothing was saved."
+            )
+        return f"{str(exc).rstrip('.')}. Nothing was saved."
+
     async def save(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Save the assignment. Turning it on first asks the service for one vector."""
         context = self.store.context
@@ -532,15 +557,20 @@ class EmbeddingService:
         assignment.model = assignment.model.strip()
         if assignment.enabled:
             if not assignment.connection:
-                raise ValueError("Choose a connection before turning meaning search on.")
+                raise ValueError(
+                    "Choose a connection before turning meaning search on. Nothing was saved."
+                )
             if not assignment.model:
-                raise ValueError("Enter the embeddings model before turning meaning search on.")
+                raise ValueError(
+                    "Enter the embeddings model before turning meaning search on. "
+                    "Nothing was saved."
+                )
         if assignment.connection:
             connection = context.connection(assignment.connection)
             if connection.provider == "anthropic":
                 raise ValueError(
                     "Anthropic offers no embeddings. Choose an OpenAI or OpenAI-compatible "
-                    "connection."
+                    "connection. Nothing was saved."
                 )
             if assignment.enabled:
                 # Asked before the configuration lock is taken: a slow model must not hold
@@ -554,9 +584,7 @@ class EmbeddingService:
                         timeout=assignment.timeout_s,
                     )
                 except ProviderError as exc:
-                    raise ValueError(
-                        f"The embeddings model did not answer a test, so nothing was saved. {exc}"
-                    ) from exc
+                    raise ValueError(self._test_failure(exc, connection.name, assignment)) from exc
         async with context.lock:
             config = context.config()
             context.check_revision(config, payload)
