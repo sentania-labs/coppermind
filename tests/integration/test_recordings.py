@@ -163,6 +163,9 @@ async def test_nothing_is_accepted_without_a_transcription_service_or_a_recordin
         )
         with pytest.raises(ValueError, match="not a recording"):
             await context.accept_recording(request(note_file.id))
+        video = await store_audio(store, name="clip.mp4", data=AUDIO + b"v", mime="video/mp4")
+        with pytest.raises(ValueError, match="video/mp4, not a recording"):
+            await context.accept_recording(request(video))
 
 
 async def test_a_refusal_lands_in_problems_keeps_the_audio_and_retries_on_request(store):
@@ -194,6 +197,23 @@ async def test_a_refusal_lands_in_problems_keeps_the_audio_and_retries_on_reques
     done = await context.recording_status({"id": job["id"]})
     assert done["state"] == "succeeded" and done["note_id"]
     assert not [p for p in await store.get_problems() if p.kind == "recording"]
+
+
+async def test_an_unreadable_recording_is_not_reported_as_a_filing_failure(store, monkeypatch):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        job = await context.accept_recording(request(audio))
+
+        async def unreadable(*args, **kwargs):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(context.provider, "transcribe", unreadable)
+        await context.recordings.tick()
+    failed = await context.recording_status({"id": job["id"]})
+    assert failed["state"] == "failed" and failed["error_rule"] == "recording-unreadable"
+    assert "could not be read" in failed["error"] and "Filing" not in failed["error"]
+    assert not service.requests
 
 
 async def test_a_silent_service_backs_off_before_the_next_attempt(store):

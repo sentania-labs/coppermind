@@ -256,7 +256,7 @@ class Recordings:
                 "recording first (POST /v1/staged for a large one), then name its id here."
             ) from exc
         mime = str(revision.get("mime_type") or "")
-        if not mime.startswith(("audio/", "video/")):
+        if not mime.startswith("audio/"):
             raise ValueError(
                 f"artifact_id: this file is {mime or 'of an unknown type'}, not a recording. "
                 "Send the audio with an audio media type."
@@ -401,19 +401,30 @@ class Recordings:
             job.state = "failed"
             job.set_error(
                 f"Filing the note failed ({type(exc).__name__}). The transcript is kept; "
-                "retry once the store is healthy.",
-                "filing-failed",
+                "retry once the store is healthy."
+                if job.transcribed
+                else f"The stored recording could not be read ({type(exc).__name__}). The audio "
+                "is kept; retry once the store is healthy.",
+                "filing-failed" if job.transcribed else "recording-unreadable",
                 retry_after=(datetime.now(UTC) + timedelta(seconds=TIMEOUT_BACKOFF_S)).isoformat()
                 if job.attempts < job.attempt_limit
                 else "",
             )
         except ValueError as exc:
             job.state = "failed"
-            job.set_error(str(exc)[:500], "recording-not-ready")
+            job.set_error(
+                ("The note could not be filed: " if job.transcribed else "") + str(exc)[:500],
+                "recording-not-ready",
+            )
         except Exception:
             job.state = "failed"
             job.set_error(
-                "The recording could not be processed unexpectedly. See the store log.",
+                (
+                    "The note could not be filed unexpectedly. The transcript is kept. "
+                    if job.transcribed
+                    else "The recording could not be transcribed unexpectedly. "
+                )
+                + "See the store log.",
                 "job-error",
             )
             log.exception("recording job %s failed unexpectedly", job.id)
