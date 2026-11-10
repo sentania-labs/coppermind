@@ -186,14 +186,14 @@ The Admin Jobs table shows one row per note, its newest job; earlier jobs for th
 note are listed under Earlier jobs on Inspect. A failed row has a Retry button
 when it can be retried, or the reason it cannot. Retry all failed appears when at
 least one failed row can be retried, and queues every failed note's newest job,
-reporting how many were queued and how many could not be. A retry always creates a new job with current
-settings and evidence. Without any click, an unreviewed note whose newest job
-failed or went stale gets a new job when the note changes (after it has been
-unedited for 60 seconds), when the note is moved or renamed, when the evidence,
-schema or provider configuration changes, or when a model reported as
-unavailable becomes discovered. Reviewed notes' failed dossier jobs are requeued
-automatically when the configuration or schema changes; otherwise they are
-retried by hand.
+reporting how many were queued and how many could not be. A retry always creates
+a new job with current settings and evidence. Without any click, an unreviewed
+note whose newest job failed or went stale gets a new job when the note changes
+(after it has been unedited for 60 seconds), when the note is moved or renamed,
+when the evidence, schema or provider configuration changes, or when a model
+reported as unavailable becomes discovered. Reviewed notes' failed dossier jobs
+are requeued automatically when the configuration or schema changes; otherwise
+they are retried by hand.
 
 In the configured review folder (`Review/` by default), validated suggestions with model-reported confidence of at least
 0.8 automatically fill blank configured fields. They never replace existing

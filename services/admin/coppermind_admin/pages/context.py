@@ -684,8 +684,7 @@ picker.addEventListener('change', () => {
             if data["jobs"]:
                 body += _outcome_line(data)
                 if any(
-                    job["state"] == "failed" and job.get("can_retry", True)
-                    for job in data["jobs"]
+                    job["state"] == "failed" and job.get("can_retry", True) for job in data["jobs"]
                 ):
                     body += (
                         "<p>Retry all failed notes with current settings and evidence. "
