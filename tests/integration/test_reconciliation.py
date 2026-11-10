@@ -1731,7 +1731,7 @@ def test_each_adoption_refusal_is_put_in_plain_words_with_an_action():
             "default Coppermind would fill in is not one of the allowed choices",
         ),
         "the id it carries is not a valid identifier": ("obsidian", "could not identify"),
-        "the file is not valid UTF-8": ("obsidian", "the file is not valid UTF-8"),
+        "the file is not valid UTF-8": ("obsidian", "not saved as UTF-8"),
     }
     for cause, (action, phrase) in cases.items():
         got_action, text = reconciler.adoption_problem(cause)
