@@ -265,7 +265,7 @@ async def reserve(store: LocalStore, request: StagedReservation) -> StagedReceip
         for document in _survey(store, now):
             if _same_declaration(document, wanted):
                 return _receipt(document)
-        document = dict(wanted, id=new_id())
+        document = dict(wanted, id=new_id(), schema_version=RECEIPT_SCHEMA)
         _write_receipt(store, document)
     return _receipt(document)
 
