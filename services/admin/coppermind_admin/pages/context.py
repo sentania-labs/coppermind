@@ -27,11 +27,13 @@ ACTIONS = frozenset(
         "discover",
         "test-model",
         "save-assignment",
+        "save-transcription",
         "retry-import",
         "dismiss-import",
         "dismiss-calendar-conflict",
         "enqueue",
         "retry-job",
+        "retry-recording",
         "retry-all-failed",
         "reject",
         "approve",
@@ -56,6 +58,14 @@ def _result_message(params: Any, data: dict[str, Any]) -> str:
         if data["config"]["assignments"]["enrichment"]["paused"]:
             message += " Processing is paused; resume it to start."
         return message
+    if action == "retry-recording":
+        message = "Retry queued for the recording."
+        transcription = data["config"]["assignments"].get("transcription")
+        if transcription and transcription["paused"]:
+            message += " Transcription is paused; resume it to start."
+        return message
+    if action == "save-transcription":
+        return "Transcription settings saved."
     if action == "retry-all-failed":
         try:
             queued, failed = int(params.get("queued", "0")), int(params.get("failed", "0"))
@@ -188,6 +198,138 @@ def _limit_link(job: dict[str, Any]) -> str:
         '<br><a href="/admin/workflow?tab=enrichment#processing-limits">'
         "Change Maximum note and transcript characters</a>"
     )
+
+
+def _transcription_setup(config: dict[str, Any], data: dict[str, Any], revision: int) -> str:
+    """The Transcription assignment: which connection turns a recording into speaker text."""
+    saved = config["assignments"].get("transcription")
+    assignment = saved or {
+        **FeatureAssignment(timeout_s=1800).model_dump(),
+        "attempts": 2,
+    }
+    connections = [item for item in config["connections"] if item["provider"] != "anthropic"]
+    options = '<option value="">Choose a connection</option>'
+    for item in connections:
+        selected = " selected" if item["id"] == assignment["connection"] else ""
+        options += (
+            f'<option value="{e(item["id"], quote=True)}"{selected}>{e(item["name"])}</option>'
+        )
+    known = data["discovery"].get(assignment["connection"], [])
+    fields = (
+        "<fieldset><legend>1. Choose a service</legend>"
+        f'<label>Connection<select name="connection">{options}</select></label>'
+        '<p class="field-help">Any OpenAI-compatible connection that offers audio '
+        "transcription. Anthropic does not.</p>"
+        f'<label>Model<input name="model" list="transcription-models" '
+        f'value="{e(assignment["model"], quote=True)}"></label>'
+        '<datalist id="transcription-models">'
+        + "".join(f'<option value="{e(item, quote=True)}"></option>' for item in known)
+        + "</datalist>"
+        '<p class="field-help">The model name the service expects. Refresh the connection\'s '
+        "models above to see a list; a transcription service may not publish one, so you can "
+        "type the name.</p>"
+        + _select(
+            "response_format",
+            "Reply with",
+            [
+                ("diarized_json", "A speaker on every segment (diarized_json)"),
+                ("verbose_json", "Whisper-style segments with a speaker added (verbose_json)"),
+            ],
+            assignment["response_format"],
+        )
+        + "</fieldset>"
+    )
+    fields += "<fieldset><legend>2. How long to wait</legend>"
+    for key, label, help_text in [
+        (
+            "timeout_s",
+            "Wait limit (seconds)",
+            "Default 1,800. How long the service may stay silent before the app gives up. "
+            "A service that sends nothing until it has finished needs a limit longer than "
+            "the whole job: an hour of audio can take 10 to 20 minutes on a CPU. The app "
+            "stops after four hours in any case.",
+        ),
+        (
+            "attempts",
+            "Total attempts per recording",
+            "Default 2, including the first. A failed attempt is tried again after a wait "
+            "that grows each time.",
+        ),
+    ]:
+        fields += _input(key, label, str(assignment[key]), kind="number")
+        fields += '<p class="field-help">' + help_text + "</p>"
+    fields += "</fieldset><fieldset><legend>3. Turn it on</legend>"
+    fields += _check(
+        "enabled", "Transcribe recordings that are handed in", bool(assignment["enabled"])
+    )
+    fields += _check("paused", "Pause transcription", bool(assignment["paused"]))
+    fields += "</fieldset>"
+    return (
+        '<h2 id="transcription">Transcription setup</h2>'
+        "<p>With this on, a recording handed in on its own (without a transcript) is "
+        "transcribed here and filed as a note in Review. The audio goes to the connection "
+        "above and nowhere else. Choose a service inside your lab to keep recordings off "
+        "the internet. Recordings arrive through the staged upload, up to its limit "
+        "(1 GiB by default), and stay stored until you remove them.</p>"
+        + _form("save-transcription", fields, "Save transcription settings", revision=revision)
+    )
+
+
+def _recording_status(job: dict[str, Any], assignment: dict[str, Any] | None) -> str:
+    """One plain sentence about where a recording stands."""
+    state = job["state"]
+    if state == "succeeded":
+        return "Transcript filed. The note is in Review."
+    if state == "running":
+        return (
+            f"Transcribing since {_calendar_time(job['started_at'])} "
+            f"(attempt {job['attempts']} of {job['attempt_limit']}). A long recording can "
+            "take many minutes."
+        )
+    if state == "failed":
+        text = "Failed: " + job["error"]
+        if job["retry_after"] and job["attempts"] < job["attempt_limit"]:
+            text += f" The app will try again after {_calendar_time(job['retry_after'])}."
+        elif job["attempts"] >= job["attempt_limit"] or not job["retry_after"]:
+            text += " Retry to try again."
+        return text
+    if not assignment or not assignment["enabled"]:
+        return "Waiting. Transcription is off; turn it on under Models to start."
+    if assignment["paused"]:
+        return "Waiting. Transcription is paused; resume it under Models to start."
+    return "Waiting for its turn. Recordings are transcribed one at a time."
+
+
+def _recordings_section(data: dict[str, Any]) -> str:
+    assignment = data["config"]["assignments"].get("transcription")
+    body = "<h2>Recordings</h2>"
+    if data.get("recording_worker_error"):
+        body += f'<p class="error">{e(data["recording_worker_error"])}</p>'
+    jobs = data.get("recordings", [])
+    if not jobs:
+        if assignment and assignment["enabled"]:
+            return body + (
+                "<p>No recordings yet. One handed in on its own appears here while it is "
+                "transcribed, then lands in Review as a note.</p>"
+            )
+        return body + (
+            "<p>No recordings yet. To take a recording on its own, "
+            '<a href="/admin/context?tab=models#transcription">set up transcription</a>.</p>'
+        )
+    body += "<table><tr><th>Recording</th><th>Status</th><th>Actions</th></tr>"
+    for job in jobs:
+        size = f"{job['size_bytes'] / (1024 * 1024):,.1f} MiB"
+        body += f"<tr><td>{e(job['title'])}<br><small>{e(job['filename'])}, {size}</small></td><td>"
+        body += e(_recording_status(job, assignment)) + "</td><td>"
+        if job["state"] == "failed" and job["can_retry"]:
+            body += (
+                "<p>Try again. A transcript already saved is reused, not asked for twice.</p>"
+                + _form("retry-recording", _hidden("id", job["id"]), "Retry")
+            )
+        if job["note_id"]:
+            body += f'<a href="/admin/notes/{quote(job["note_id"], safe="")}">Open note</a>'
+        body += "</td></tr>"
+    return body + "</table>"
 
 
 def _proposal_value(value: Any) -> str:
@@ -686,6 +828,7 @@ def router(wiring: Wiring) -> APIRouter:
                 "Lower confidence stays here; bodies and filenames stay unchanged.</p>"
             )
             body += _form("save-assignment", fields, "Save enrichment settings", revision=revision)
+            body += _transcription_setup(config, data, revision)
             body += """<script>
 const picker = document.getElementById('enrichment-connection');
 picker.addEventListener('change', () => {
@@ -708,6 +851,7 @@ picker.addEventListener('change', () => {
                 )
             except StoreError as exc:
                 return error(exc)
+            body += _recordings_section(data)
             body += "<h2>Jobs</h2>"
             if assignment["paused"]:
                 body += (
@@ -992,6 +1136,16 @@ picker.addEventListener('change', () => {
                     assignment[key] = int(form[key])
                 assignment["enabled"], assignment["paused"] = "enabled" in form, "paused" in form
                 payload["assignment"] = assignment
+            elif action == "save-transcription":
+                payload["assignment"] = {
+                    "connection": form.get("connection", ""),
+                    "model": form.get("model", ""),
+                    "response_format": form.get("response_format", "diarized_json"),
+                    "timeout_s": int(form["timeout_s"]),
+                    "attempts": int(form["attempts"]),
+                    "enabled": "enabled" in form,
+                    "paused": "paused" in form,
+                }
             elif action == "enqueue":
                 payload["regenerate"] = form.get("regenerate") == "yes"
                 payload["note_ids"] = [key[5:] for key in form if key.startswith("note_")]
@@ -1045,10 +1199,19 @@ picker.addEventListener('change', () => {
                 "discover",
                 "test-model",
                 "save-assignment",
+                "save-transcription",
             }
             else "review"
             if action
-            in {"enqueue", "retry-job", "retry-all-failed", "reject", "approve", "resume-approval"}
+            in {
+                "enqueue",
+                "retry-job",
+                "retry-recording",
+                "retry-all-failed",
+                "reject",
+                "approve",
+                "resume-approval",
+            }
             else "calendar"
         )
         if form.get("return") == SEARCH_RETURN and tab == "models":

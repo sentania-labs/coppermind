@@ -121,7 +121,7 @@ async def test_a_reservation_is_durable_and_names_the_accepted_limits(store):
     receipt = await staged.reserve(store, declaration())
     assert receipt.state == "uploading"
     assert receipt.upload_bytes == 0
-    assert receipt.limits.staged_max_bytes == 50 * 1024 * 1024
+    assert receipt.limits.staged_max_bytes == 1024 * 1024 * 1024
     path = store.control.store.state_dir / "staged" / f"{receipt.id}.json"
     assert path.is_file()
     assert json.loads(path.read_text())["sha256"] == DIGEST
@@ -137,7 +137,7 @@ async def test_the_same_declaration_replays_the_same_receipt(store):
 
 async def test_a_declaration_over_the_staged_maximum_is_refused_at_once(store):
     with pytest.raises(ValidationFailed) as info:
-        await staged.reserve(store, declaration(size_bytes=50 * 1024 * 1024 + 1))
+        await staged.reserve(store, declaration(size_bytes=1024 * 1024 * 1024 + 1))
     assert "staged maximum" in str(info.value)
     assert list((store.control.store.state_dir / "staged").glob("*.json")) == []
 
@@ -441,7 +441,7 @@ async def test_the_body_crosses_the_internal_contract_as_a_stream(store):
     app.include_router(internal_router)
     client = HttpStoreClient("http://store", "test-token", transport=httpx.ASGITransport(app=app))
     try:
-        assert await client.get_staged_limit() == 50 * 1024 * 1024
+        assert await client.get_staged_limit() == 1024 * 1024 * 1024
         receipt = await client.reserve_staged_upload(declaration())
         uploaded = await client.put_staged_bytes(receipt.id, chunks(b"quokka", 2), declared_bytes=6)
         assert uploaded.upload_bytes == 6

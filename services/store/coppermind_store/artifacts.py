@@ -180,6 +180,21 @@ def _revision_file(store: LocalStore, artifact_id: str, revision: dict[str, Any]
     return resolve(store.artifacts_root / artifact_id / f"r{number:04d}", str(revision["filename"]))
 
 
+def current_file(store: LocalStore, artifact_id: str) -> tuple[Path, dict[str, Any]]:
+    """The archived file of an artifact's current revision, and that revision's record.
+
+    For a reader that streams the file instead of loading it. A removed artifact and a
+    link, which has no file, both raise `ArtifactMissing`.
+    """
+    manifest = read_manifest(store, artifact_id)
+    if manifest.get("removed_at"):
+        raise ArtifactMissing(artifact_id)
+    revision = _current_revision(manifest)
+    if not revision.get("filename"):
+        raise ArtifactMissing(artifact_id)
+    return _revision_file(store, artifact_id, revision), revision
+
+
 def _verified_bytes(path: Path, sha256: str, size_bytes: int) -> bytes:
     data = path.read_bytes()
     if len(data) != size_bytes or hashlib.sha256(data).hexdigest() != sha256:

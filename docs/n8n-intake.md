@@ -14,7 +14,8 @@ holding an API key with `sources:write` and `notes:write`. Keep credentials
 out of workflow exports and request bodies.
 
 One submitted package contains a transcript, a summary, and optionally the
-original audio. Preserve each original independently. Use the summary as
+original audio. A recording with no transcript yet can instead be sent on its own and
+transcribed here (see [the recording on its own](#available-now-the-recording-on-its-own)). Preserve each original independently. Use the summary as
 the draft note body as well as retaining it as a source artifact. A later
 Zoom summary, OCR export, or manual note is a separate note. Coppermind does
 not infer a calendar match or merge their contents.
@@ -174,6 +175,37 @@ and association edits never approve a newer source revision. New associations
 on an already reviewed note also require that deliberate review action.
 Approval records pin the exact source revisions; restore cannot advance them.
 Use a distinct submission ID for new material that needs its own reviewable note.
+
+## Available now: the recording on its own
+
+When no transcript or summary exists yet, send only the recording and let Coppermind
+transcribe it. This needs a transcription service set up in Admin (Models, then
+Transcription); without one the second call below is refused with a plain message.
+Use an API key with `artifacts:write`, `sources:write` and `notes:write`.
+
+1. Hash the file and store it through the staged path, which streams to disk and was
+   built for files of hundreds of MiB: `POST /v1/staged` (`filename`, exact
+   `size_bytes`, lowercase `sha256`, `fields.mime_type` such as `audio/mp4`), then
+   `PUT /v1/staged/{receipt_id}` with the bytes as the body, then
+   `POST /v1/staged/{receipt_id}/finalize`. The finalize answer carries the artifact
+   `id`. The ceiling is stated in the receipt (`limits.staged_max_bytes`, 1 GiB by
+   default); a larger file is refused at the reservation, before any bytes move.
+2. `POST /v1/recordings` with that `artifact_id`, a stable `provider` and
+   `external_source_id` (the same identity rules as `/v1/ingest`: persist it before the
+   call, and retries send the same one), a `title`, and optionally `captured_at` and
+   `frontmatter`. It answers 202 at once.
+3. Poll `GET /v1/recordings/{id}` with bounded backoff until `state` is `succeeded` (the
+   status then names `note_path`) or `failed`. A recording can take a long time: an hour
+   of audio is 10 to 20 minutes on a CPU service, and a queue of recordings runs one at a
+   time. Reaching `succeeded` means a draft note is waiting in `Review/`, not that anyone
+   has reviewed it.
+
+The note's source is the transcript (`transcript.txt` with the speaker labels as the
+service gave them, `Speaker 1` and so on, and `transcript.json` with timings), and the
+recording is a stored artifact the note cites. The summary is not written yet, and the
+audio is not deleted afterwards. A failure appears in Admin under Problems with the
+reason, the recording stays stored, and a person can retry it from the Jobs tab. See
+[Recordings](api.md#recordings-audio-on-its-own) for every field and failure.
 
 ## Proposed next contract: staged bundles
 

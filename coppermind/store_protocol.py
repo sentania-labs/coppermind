@@ -762,6 +762,71 @@ class StagedReceipt(BaseModel):
     updated_at: datetime
 
 
+RecordingState = Literal["queued", "running", "succeeded", "failed"]
+"""A recording intake, in order: waiting for the transcription worker, being transcribed,
+filed as a note in Review, or stopped on an error the status carries."""
+
+
+class RecordingRequest(BaseModel):
+    """Hand in a recording that is already stored as an artifact, to be transcribed.
+
+    The recording goes up first through the staged upload path (or the inline route when it
+    is small enough). `provider` and `external_source_id` are the idempotency key, exactly
+    as for `/v1/ingest`: sending them again returns the same intake.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1, max_length=200)
+    external_source_id: str = Field(min_length=1, max_length=500)
+    title: str = Field(min_length=1, max_length=500)
+    captured_at: datetime | None = None
+    origin: str = Field(default="", max_length=200)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    frontmatter: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("provider", "external_source_id")
+    @classmethod
+    def trimmed_identity(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("must not be blank")
+        return normalized
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def normalize_title(cls, value: Any) -> Any:
+        return " ".join(value.split()) if isinstance(value, str) else value
+
+    @field_validator("captured_at")
+    @classmethod
+    def captured_at_has_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("must include a timezone")
+        return value
+
+
+class RecordingStatus(BaseModel):
+    """Where one recording intake stands. `note_id`, `note_path` and `source_id` are set once
+    the transcript has been filed; `error` says why a failed intake stopped and `retry_after`
+    when the worker will try again by itself."""
+
+    id: str
+    state: RecordingState
+    artifact_id: str
+    attempts: int = Field(ge=0)
+    attempt_limit: int = Field(ge=1)
+    error: str = ""
+    error_rule: str = ""
+    retry_after: str = ""
+    created_at: str
+    succeeded_at: str = ""
+    note_id: str = ""
+    note_path: str = ""
+    source_id: str = ""
+
+
 class ArtifactQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1295,7 +1360,8 @@ class ProblemInfo(BaseModel):
     returned to its filed folder), `folder_kept` (an old month folder still holds
     files), `unreadable_note` (a listed note whose file
     cannot be read), `artifact` (an artifact whose browsable copy no longer matches
-    the archived bytes, or whose text could not be extracted) or `excluded`.
+    the archived bytes, or whose text could not be extracted), `recording` (a recording
+    that could not be transcribed or filed) or `excluded`.
     `note_id` and `source_id` name what the problem is about when it exists.
     """
 

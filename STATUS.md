@@ -53,7 +53,7 @@ has not been exercised by this slice.
   removes one after a confirmation that says what happens to a file or to a
   link. A file over the 10 MiB limit is refused with the limit and what to do
   now, the same for multipart and JSON; the staged upload path (`POST
-  /v1/staged`, then a streamed `PUT`, then finalize) takes files up to 50 MiB. Removed archives are purged through
+  /v1/staged`, then a streamed `PUT`, then finalize) takes files up to 1 GiB. Removed archives are purged through
   the retention purge's dry run and confirm flow, each candidate showing its
   reason. `rebuild_metadata` recreates every record, row and search entry from
   `/data` alone. `_Attachments/` is retired:
@@ -65,6 +65,22 @@ has not been exercised by this slice.
   listed `reference` tag; saved schema files gain them on the next start.
   Proven by `tests/integration/test_artifacts.py` against PostgreSQL and the
   unit suites under the store, API and Admin.
+- A recording can be handed in on its own. Store it through the staged upload,
+  then `POST /v1/recordings` (`sources:write`, `notes:write`) names it; a worker
+  loop of its own sends it, streamed from disk, to the transcription service
+  chosen under Admin Models, Transcription (OpenAI-compatible
+  `/audio/transcriptions`, `diarized_json` or `verbose_json`), waiting on
+  silence rather than total time and backing off after a timeout. The speaker
+  segments are kept as given and filed through the ordinary ingest as the
+  note's source, so a draft lands in Review; the recording stays an artifact
+  the note cites. Each intake is listed with its state and a Retry on the Jobs
+  tab, and a failure also appears under Problems with its reason. Summary,
+  speaker names, deleting the audio and search by meaning are later steps. No
+  transcription service was reachable while this was built, so it is proven
+  against a local stand-in that returns the documented shape slowly
+  (`services/store/tests/test_transcription_call.py`,
+  `tests/integration/test_recordings.py`); try it against the real service
+  before relying on it.
 - Admin is a separate service and image on loopback port 8082. A fresh install
   opens on a server-rendered Claim page. Bootstrap creates the one-time code
   at `/data/state/internal/claim-code`, records that location in its log, and

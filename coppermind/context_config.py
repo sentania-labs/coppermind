@@ -98,6 +98,9 @@ class FeatureAssignment(ContextModel):
     event_field: str = ""
     contacts_field: str = ""
     automatic_after: str = ""
+    # Transcription only: the reply shape asked of the service. `diarized_json` carries a
+    # speaker on every segment; `verbose_json` is for services that add one to Whisper's shape.
+    response_format: Literal["diarized_json", "verbose_json"] = "diarized_json"
 
     @field_validator("timeout_s", mode="before")
     @classmethod
@@ -154,8 +157,11 @@ class ContextConfig(ContextModel):
                 a, b = source.folder.casefold(), other.folder.casefold()
                 if a == b or a.startswith(b + "/") or b.startswith(a + "/"):
                     raise ValueError("calendar drop folders cannot overlap")
-        if set(self.assignments) != {"enrichment"}:
-            raise ValueError("only enrichment is implemented")
+        if "enrichment" not in self.assignments or not set(self.assignments) <= {
+            "enrichment",
+            "transcription",
+        }:
+            raise ValueError("only enrichment and transcription are implemented")
         return self
 
 

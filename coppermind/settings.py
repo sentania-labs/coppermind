@@ -408,7 +408,7 @@ class LimitSettings(BaseModel):
         ),
     )
     staged_max_bytes: int = Field(
-        default=50 * MIB,
+        default=1024 * MIB,
         ge=1,
         description=(
             "Maximum staged file in bytes accepted by the staged upload path. A reservation "

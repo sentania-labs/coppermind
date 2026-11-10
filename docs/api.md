@@ -256,7 +256,7 @@ removes temporary files a crash left behind. It runs on the next reservation.
 
 | Method and path | Scope | What it does | Success | Failure |
 |---|---|---|---|---|
-| `POST /v1/staged` | `artifacts:write` | Reserve one file. The JSON body declares `filename`, `size_bytes` and lowercase `sha256` of the file's own bytes, and a `fields` object holding the same fields the inline route accepts (`title`, `date`, `tags`, `origin`, `note_id`, `artifact_id`, `mime_type`); a staged upload carries a file, so `fields.url` is refused | 201, the receipt: `{id, state, filename, size_bytes, sha256, upload_bytes, limits, failure, artifact, reserved_at, updated_at}`; an identical declaration replays the same receipt until its artifact is removed or a newer revision lands, after which the same file gets a new receipt and is stored afresh | 422 `validation_error` naming each field at fault, and for a declared size over `limits.staged_max_bytes` (50 MiB by default); 413 `payload_too_large` for a declaration body over 64 KiB; 503 |
+| `POST /v1/staged` | `artifacts:write` | Reserve one file. The JSON body declares `filename`, `size_bytes` and lowercase `sha256` of the file's own bytes, and a `fields` object holding the same fields the inline route accepts (`title`, `date`, `tags`, `origin`, `note_id`, `artifact_id`, `mime_type`); a staged upload carries a file, so `fields.url` is refused | 201, the receipt: `{id, state, filename, size_bytes, sha256, upload_bytes, limits, failure, artifact, reserved_at, updated_at}`; an identical declaration replays the same receipt until its artifact is removed or a newer revision lands, after which the same file gets a new receipt and is stored afresh | 422 `validation_error` naming each field at fault, and for a declared size over `limits.staged_max_bytes` (1 GiB by default); 413 `payload_too_large` for a declaration body over 64 KiB; 503 |
 | `PUT /v1/staged/{receipt_id}` | `artifacts:write` | The file's bytes as the whole body, streamed to staging. `Content-Length` must agree with the declared size; the count and digest are verified from the staged file | 200, the receipt with `state: "uploading"` and `upload_bytes` filled in; an identical retry answers the same count, and so does one to a receipt that is already `stored` | 404 for an unknown receipt; 422 when the bytes or the length disagree with the declaration, which marks the receipt `failed` with the reason in `failure` (a `stored` receipt is left as it is and the request is refused); 413 over the staged maximum; 503 |
 | `POST /v1/staged/{receipt_id}/finalize` | `artifacts:write` | Verify the staged bytes and store the artifact, then drop the staged copy | 200, the receipt with `state: "stored"` and `artifact` holding what an inline upload would have returned; finalizing twice answers the same stored artifact | 404; 422 when no bytes are staged, the receipt is `failed`, or the digest or count disagrees; 503 |
 | `GET /v1/staged/{receipt_id}` | `artifacts:read` | One receipt's state, for a caller deciding whether to retry | 200, the receipt | 404 for an unknown receipt; 503 `staged_filesystem_unavailable` when the state tree cannot be read |
@@ -294,6 +294,59 @@ JSON with `kind: artifact` and optional `title`, `tags`, `date`), or
 parked as unsupported with that instruction, never guessed at. A marked drop skips
 Dropbox import history: the same file dropped again after its artifact was removed
 is stored again, and identical bytes under the same filename replay as for the API.
+
+## Recordings (audio on its own)
+
+A recording can be handed in without a transcript or a summary. Coppermind sends it to
+a transcription service, files the speaker-labelled text as the note's source, and
+lands the note in Review like any other intake. This needs a transcription service set
+up under Models, then Transcription in Admin (see
+[Transcription service](data-and-settings.md#transcription-service)); without one the
+route refuses with a plain message.
+
+It takes two steps, so the recording never has to be held whole in a request:
+
+1. Store the file as an artifact. A recording is hundreds of MiB, so use the
+   [staged upload path](#staged-uploads): `POST /v1/staged`, `PUT` the bytes,
+   `POST .../finalize`. Send the real audio media type in `fields.mime_type`
+   (`audio/mp4`, `audio/mpeg`, `audio/wav`). The limit is `limits.staged_max_bytes`
+   (1 GiB by default, changed under Settings), stated in every reservation receipt.
+2. `POST /v1/recordings` with the artifact's id. It returns at once; the work happens in
+   the background on a worker of its own, one recording at a time, so a long recording
+   never holds a request open or delays calendar and enrichment jobs.
+
+| Method and path | Scope | What it does | Success | Failure |
+|---|---|---|---|---|
+| `POST /v1/recordings` | `sources:write` and `notes:write` | Queue a stored recording. Body: `artifact_id`, `provider`, `external_source_id` (together the idempotency key, as for `/v1/ingest`), `title`, optional offset-qualified `captured_at`, `origin`, `metadata` (kept on the source) and `frontmatter` (the note's fields, checked against the schema when the note is filed) | 202 with the status below while it is queued or running; 200 with the same status once it has succeeded or failed. The same `provider` and `external_source_id` with the same artifact returns the same intake | 422 `validation_error` with one plain message when no transcription service is set up, the artifact does not exist, it is not audio or video, or the id already belongs to a different recording; 401, 403 |
+| `GET /v1/recordings/{id}` | `sources:read` | The status of one intake, for polling with bounded backoff | 200, the status | 422 for an unknown id |
+
+The status is `{id, state, artifact_id, attempts, attempt_limit, error, error_rule,
+retry_after, created_at, succeeded_at, note_id, note_path, source_id}`. `state` is
+`queued`, `running`, `succeeded` (the note exists and `note_id`, `note_path` and
+`source_id` are set) or `failed` (`error` says why in plain words and `error_rule` is a
+stable name). A failure that is worth another try, such as a service that stayed silent
+or answered 5xx, is retried by itself after a wait that doubles each time
+(`retry_after` says when) until the attempt limit is reached; a refusal the same request
+would only repeat (a wrong address or model, a recording the service cannot read, a reply
+with no speakers) waits for a person to fix it and press Retry on the Jobs tab. Every
+failure is also listed under Problems as "Recording transcription" with the reason.
+
+The service is called as OpenAI-compatible `POST {base URL}/audio/transcriptions`, a
+multipart upload of the file with `model`, `response_format` (`diarized_json` or
+`verbose_json`) and, for `diarized_json`, `chunking_strategy=auto`. The reply must carry
+`segments`, each with `text` and a `speaker`. The app waits on silence, not on total
+time: the connection may stay quiet for the assignment's wait limit (30 minutes by
+default) before the attempt fails, and bytes sent while the service works, such as
+keep-alive whitespace in the reply, restart that clock. The app stops after four hours
+for any one recording. An hour of audio can take 10 to 20 minutes on a CPU service.
+
+On success the note's source holds `transcript.txt`, one line per segment with the
+speaker label exactly as the service gave it (`[00:03:12] Speaker 2: text`), and
+`transcript.json` with the segments and their timings. The note body says the summary
+has not been written yet. The recording stays stored as an artifact the note cites;
+nothing here deletes it, and it is kept whatever happens until a transcript exists. A
+transcript is saved before the note is filed, so a note that is refused (for example a
+schema problem in `frontmatter`) is retried without sending the recording again.
 
 ## Search and status
 
