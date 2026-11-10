@@ -203,10 +203,7 @@ def _limit_link(job: dict[str, Any]) -> str:
 def _transcription_setup(config: dict[str, Any], data: dict[str, Any], revision: int) -> str:
     """The Transcription assignment: which connection turns a recording into speaker text."""
     saved = config["assignments"].get("transcription")
-    assignment = saved or {
-        **FeatureAssignment(timeout_s=1800).model_dump(),
-        "attempts": 2,
-    }
+    assignment = saved or FeatureAssignment().model_dump()
     connections = [item for item in config["connections"] if item["provider"] != "anthropic"]
     options = '<option value="">Choose a connection</option>'
     for item in connections:
@@ -242,18 +239,21 @@ def _transcription_setup(config: dict[str, Any], data: dict[str, Any], revision:
     fields += "<fieldset><legend>2. How long to wait</legend>"
     for key, label, help_text in [
         (
-            "timeout_s",
+            "wait_s",
             "Wait limit (seconds)",
-            "Default 1,800. How long the service may stay silent before the app gives up. "
-            "A service that sends nothing until it has finished needs a limit longer than "
-            "the whole job: an hour of audio can take 10 to 20 minutes on a CPU. The app "
-            "stops after four hours in any case.",
+            "Default 3,600, up to 14,400 (four hours). How long the service may take to "
+            "answer one recording. Most services send nothing until the transcript is "
+            "finished, so this has to cover the whole job: an hour of audio can take 10 to "
+            "20 minutes on a CPU, so allow several times the length of your longest "
+            "recording. A recording that takes longer fails, and is not sent again for at "
+            "least half an hour.",
         ),
         (
             "attempts",
             "Total attempts per recording",
             "Default 2, including the first. A failed attempt is tried again after a wait "
-            "that grows each time.",
+            "that starts at half an hour and doubles each time, because every attempt sends "
+            "the whole recording again.",
         ),
     ]:
         fields += _input(key, label, str(assignment[key]), kind="number")
@@ -1141,7 +1141,7 @@ picker.addEventListener('change', () => {
                     "connection": form.get("connection", ""),
                     "model": form.get("model", ""),
                     "response_format": form.get("response_format", "diarized_json"),
-                    "timeout_s": int(form["timeout_s"]),
+                    "wait_s": int(form["wait_s"]),
                     "attempts": int(form["attempts"]),
                     "enabled": "enabled" in form,
                     "paused": "paused" in form,

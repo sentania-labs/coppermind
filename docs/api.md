@@ -325,20 +325,23 @@ retry_after, created_at, succeeded_at, note_id, note_path, source_id}`. `state` 
 `queued`, `running`, `succeeded` (the note exists and `note_id`, `note_path` and
 `source_id` are set) or `failed` (`error` says why in plain words and `error_rule` is a
 stable name). A failure that is worth another try, such as a service that stayed silent
-or answered 5xx, is retried by itself after a wait that doubles each time
-(`retry_after` says when) until the attempt limit is reached; a refusal the same request
+or answered 5xx, is retried by itself after a wait that starts at 30 minutes and doubles
+each time, because every attempt sends the whole recording again (`retry_after` says
+when), until the attempt limit is reached; a refusal the same request
 would only repeat (a wrong address or model, a recording the service cannot read, a reply
-with no speakers) waits for a person to fix it and press Retry on the Jobs tab. Every
+with no speakers, a recording that ran past the four-hour ceiling) waits for a person to fix it and press Retry on the Jobs tab. Every
 failure is also listed under Problems as "Recording transcription" with the reason.
 
 The service is called as OpenAI-compatible `POST {base URL}/audio/transcriptions`, a
 multipart upload of the file with `model`, `response_format` (`diarized_json` or
 `verbose_json`) and, for `diarized_json`, `chunking_strategy=auto`. The reply must carry
-`segments`, each with `text` and a `speaker`. The app waits on silence, not on total
-time: the connection may stay quiet for the assignment's wait limit (30 minutes by
-default) before the attempt fails, and bytes sent while the service works, such as
-keep-alive whitespace in the reply, restart that clock. The app stops after four hours
-for any one recording. An hour of audio can take 10 to 20 minutes on a CPU service.
+`segments`, each with `text` and a `speaker`. The assignment's wait limit
+(`wait_s`, one hour by default, up to four hours) is how long the connection may stay
+quiet. Most services send nothing until the transcript is finished, so it has to cover the
+whole job; an hour of audio can take 10 to 20 minutes on a CPU service. If the service
+sends bytes while it works, each one restarts that clock. The app stops after four hours
+for any one recording, and a recording that runs into that ceiling is not tried again by
+itself.
 
 On success the note's source holds `transcript.txt`, one line per segment with the
 speaker label exactly as the service gave it (`[00:03:12] Speaker 2: text`), and

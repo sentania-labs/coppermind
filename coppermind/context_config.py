@@ -80,6 +80,11 @@ class ModelConnection(ContextModel):
         }[self.provider]
 
 
+# The most one recording may take to transcribe, however steadily the service answers. An
+# hour of audio can take 10 to 20 minutes on a CPU; this leaves room for several hours.
+MAX_TRANSCRIBE_SECONDS = 4 * 3600
+
+
 class FeatureAssignment(ContextModel):
     connection: str = ""
     model: str = Field(default="", max_length=200)
@@ -101,6 +106,9 @@ class FeatureAssignment(ContextModel):
     # Transcription only: the reply shape asked of the service. `diarized_json` carries a
     # speaker on every segment; `verbose_json` is for services that add one to Whisper's shape.
     response_format: Literal["diarized_json", "verbose_json"] = "diarized_json"
+    # Transcription only: how long the service may take to answer one recording. A service
+    # that does not stream sends nothing until it has finished, so this is the whole job.
+    wait_s: int = Field(default=3600, ge=5, le=MAX_TRANSCRIBE_SECONDS)
 
     @field_validator("timeout_s", mode="before")
     @classmethod

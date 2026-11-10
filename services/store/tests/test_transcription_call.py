@@ -8,10 +8,11 @@ speaker each) after a delay, optionally sending whitespace while it works.
 import asyncio
 import json
 
+import httpx
 import pytest
 from coppermind_store.model_provider import ModelProvider, ProviderError, parse_transcript
 
-from coppermind.context_config import FeatureAssignment, ModelConnection
+from coppermind.context_config import MAX_TRANSCRIBE_SECONDS, FeatureAssignment, ModelConnection
 
 REPLY = {
     "text": "Hello there. Hi.",
@@ -94,11 +95,10 @@ class Service:
             writer.close()
 
 
-def assignment(timeout_s=60, **extra):
+def assignment(wait_s=60, **extra):
     # model_construct skips the 5 s floor so the tests stay fast.
     return FeatureAssignment.model_construct(
-        **{**FeatureAssignment().__dict__, "model": "whisper-diarize", "timeout_s": timeout_s}
-        | extra
+        **{**FeatureAssignment().__dict__, "model": "whisper-diarize", "wait_s": wait_s} | extra
     )
 
 
@@ -267,3 +267,73 @@ def test_speaker_labels_are_kept_as_given_even_when_numeric_or_missing_on_a_segm
     )
     assert [s["speaker"] for s in parsed["segments"]] == ["0", "A", ""]
     assert parsed["segments"][1]["start"] is None
+
+
+class VirtualClock:
+    """Moves the running loop's clock forward without waiting, so hours pass in no time."""
+
+    def __init__(self):
+        self.loop = asyncio.get_running_loop()
+        self.offset = 0.0
+        real = self.loop.time
+        self.loop.time = lambda: real() + self.offset  # type: ignore[method-assign]
+
+    def advance(self, seconds):
+        self.offset += seconds
+
+
+def mock_service(clock, took, seen):
+    async def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions["timeout"])
+        await request.aread()
+        clock.advance(took)
+        await asyncio.sleep(0.05)
+        return httpx.Response(200, json=REPLY)
+
+    return httpx.MockTransport(handle)
+
+
+async def call(transport, recording, wait_s):
+    connection = ModelConnection(
+        id="stt", name="Speech", provider="compatible", base_url="http://stt.lab/v1"
+    )
+    return await ModelProvider(transport).transcribe(
+        connection,
+        "",
+        assignment(wait_s),
+        recording,
+        filename="meeting.m4a",
+        mime_type="audio/mp4",
+        size_bytes=recording.stat().st_size,
+    )
+
+
+def test_the_transcription_wait_limit_reaches_the_four_hour_ceiling_the_enrichment_one_cannot():
+    assert FeatureAssignment().wait_s == 3600
+    assert FeatureAssignment(wait_s=MAX_TRANSCRIBE_SECONDS).wait_s == 4 * 3600
+    with pytest.raises(ValueError):
+        FeatureAssignment(wait_s=MAX_TRANSCRIBE_SECONDS + 1)
+    with pytest.raises(ValueError):
+        FeatureAssignment(timeout_s=1801)
+
+
+async def test_a_service_that_answers_after_more_than_the_old_half_hour_bound_is_waited_for(
+    recording,
+):
+    clock = VirtualClock()
+    seen: list[dict] = []
+    transcript, _ = await call(mock_service(clock, 2 * 3600, seen), recording, 3 * 3600)
+    assert len(transcript["segments"]) == 2
+    # The connection waits the whole limit for the answer but not for the connection to open.
+    assert seen[0]["read"] == 3 * 3600 and seen[0]["connect"] == 60
+
+
+async def test_a_service_still_working_past_the_ceiling_is_given_up_on_and_not_retried_by_itself(
+    recording,
+):
+    clock = VirtualClock()
+    seen: list[dict] = []
+    with pytest.raises(ProviderError) as caught:
+        await call(mock_service(clock, MAX_TRANSCRIBE_SECONDS + 60, seen), recording, 3600)
+    assert caught.value.rule == "provider-too-long"
+    assert "Split the recording" in str(caught.value)

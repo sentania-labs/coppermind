@@ -250,7 +250,7 @@ class ContextService:
         config = self.config()
         assignment = config.assignments["enrichment"]
         values = assignment.model_dump(
-            exclude={"paused", "enabled", "automatic_after", "response_format"}
+            exclude={"paused", "enabled", "automatic_after", "response_format", "wait_s"}
         )
         connection = next(
             (

@@ -58,7 +58,7 @@ def test_the_models_tab_sets_up_transcription_with_plain_words_and_no_anthropic(
     assert "stay stored until you remove them" in page.text
     assert "goes to the connection above and nowhere else" in page.text
     assert "1 GiB" in page.text
-    assert "Wait limit (seconds)" in page.text and 'value="1800"' in page.text
+    assert "Wait limit (seconds)" in page.text and 'value="3600"' in page.text
     # Only connections that can transcribe are offered; the raw reply format is explained.
     section = page.text.split("Transcription setup")[1]
     assert ">Local</option>" in section and ">Claude</option>" not in section
@@ -80,7 +80,7 @@ def test_saving_transcription_sends_one_assignment_through_a_guarded_form(signed
             "connection": "local",
             "model": "whisper-diarize",
             "response_format": "verbose_json",
-            "timeout_s": "900",
+            "wait_s": "9000",
             "attempts": "3",
             "enabled": "on",
         },
@@ -93,7 +93,7 @@ def test_saving_transcription_sends_one_assignment_through_a_guarded_form(signed
         "connection": "local",
         "model": "whisper-diarize",
         "response_format": "verbose_json",
-        "timeout_s": 900,
+        "wait_s": 9000,
         "attempts": 3,
         "enabled": True,
         "paused": False,
@@ -108,7 +108,7 @@ def test_a_saved_setup_is_shown_back(signed_in):
         connection="local",
         model="whisper-diarize",
         enabled=True,
-        timeout_s=600,
+        wait_s=600,
         attempts=3,
         response_format="verbose_json",
     )

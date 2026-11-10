@@ -181,7 +181,8 @@ Models > Transcription**. It uses the same connections as enrichment, any OpenAI
 one that offers `POST /audio/transcriptions` (Anthropic does not). The assignment holds the
 connection, the model name (typed, because a transcription service may not publish a model
 list), the reply format (`diarized_json`, the default, or `verbose_json`), the wait limit
-(default 1,800 seconds of silence, up to 1,800), the total attempts per recording (default
+(default 3,600 seconds, up to 14,400: how long the service may take to answer one
+recording, since most send nothing until they have finished), the total attempts per recording (default
 2) and the on and pause switches. It is off until switched on, and the recording is sent
 only to that connection. Editing a connection turns off every assignment that uses it, as
 for enrichment. Saved in `/data/state/context/config.json` as `assignments.transcription`;

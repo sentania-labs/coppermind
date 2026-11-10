@@ -50,7 +50,7 @@ async def store_audio(store, name="standup.m4a", data=AUDIO, mime="audio/mp4"):
     return done.artifact.id
 
 
-async def setup_transcription(store, service, *, enabled=True, timeout_s=30, **extra):
+async def setup_transcription(store, service, *, enabled=True, wait_s=30, **extra):
     context = store.context
     saved = await context.save_connection(
         {
@@ -66,7 +66,7 @@ async def setup_transcription(store, service, *, enabled=True, timeout_s=30, **e
         connection=saved["saved"],
         model="whisper-diarize",
         enabled=enabled,
-        timeout_s=timeout_s,
+        wait_s=wait_s,
         **extra,
     )
     await context.save_transcription({"revision": 1, "assignment": assignment.model_dump()})
@@ -181,13 +181,13 @@ async def test_a_refusal_lands_in_problems_keeps_the_audio_and_retries_on_reques
 
 async def test_a_silent_service_backs_off_before_the_next_attempt(store):
     async with Service(delay=6) as service:
-        context = await setup_transcription(store, service, timeout_s=5)
+        context = await setup_transcription(store, service, wait_s=5)
         audio = await store_audio(store)
         job = await context.accept_recording(request(audio))
         await context.recordings.tick()
     failed = await context.recording_status({"id": job["id"]})
     assert failed["error_rule"] == "provider-no-response"
-    assert datetime.fromisoformat(failed["retry_after"]) > datetime.now(UTC) + timedelta(minutes=4)
+    assert datetime.fromisoformat(failed["retry_after"]) > datetime.now(UTC) + timedelta(minutes=25)
     # Backing off: the worker leaves it alone until the time comes.
     assert await context.recordings.tick() is False
 

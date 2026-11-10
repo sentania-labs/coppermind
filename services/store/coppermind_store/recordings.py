@@ -7,8 +7,9 @@ jobs up one at a time. It is a separate loop from the enrichment worker because 
 recording can take many minutes on a CPU service, and nothing else should wait for it.
 
 The call itself is `ModelProvider.transcribe`, so it gets the machinery the model calls
-get: the wait limit counts silence rather than total time, a timeout backs off before the
-next attempt, and every failure is a plain message with a stable rule name.
+get: the wait limit counts silence rather than total time, a failure that may pass backs off
+before the whole recording is sent again, and every failure is a plain message with a stable
+rule name.
 
 When the service answers, the speaker segments are kept as given and filed through the
 ordinary ingest as the note's source (`transcript.txt` to read, `transcript.json` with the
@@ -50,6 +51,9 @@ log = logging.getLogger(__name__)
 
 # How much of a failed reply is kept, as for enrichment jobs.
 REPLY_KEPT = 4000
+# A failed attempt sends the whole recording again, so the wait before the next one starts
+# at half an hour and doubles with each attempt.
+RETRY_BACKOFF_S = 1800
 NOT_SET_UP = (
     "No transcription service is set up, so a recording on its own cannot be accepted. "
     "In Admin open Models, then Transcription: choose a connection and a model and turn it on."
@@ -209,7 +213,7 @@ class Recordings:
                 model=given.model.strip(),
                 enabled=given.enabled,
                 paused=given.paused,
-                timeout_s=given.timeout_s,
+                wait_s=given.wait_s,
                 attempts=given.attempts,
                 response_format=given.response_format,
                 automatic_after=old.automatic_after,
@@ -353,10 +357,9 @@ class Recordings:
         except ProviderError as exc:
             wait = (
                 (
-                    datetime.now(UTC)
-                    + timedelta(seconds=min(TIMEOUT_BACKOFF_S * 2 ** (job.attempts - 1), 1800))
+                    datetime.now(UTC) + timedelta(seconds=RETRY_BACKOFF_S * 2 ** (job.attempts - 1))
                 ).isoformat()
-                if exc.waiting and job.attempts < job.attempt_limit
+                if exc.rule not in NO_AUTOMATIC_RETRY and job.attempts < job.attempt_limit
                 else ""
             )
             job.state = "failed"
@@ -489,6 +492,7 @@ class Recordings:
 # A refusal that the same request would only repeat is not tried again by itself.
 NO_AUTOMATIC_RETRY = frozenset(
     {
+        "provider-too-long",
         "transcription-provider",
         "transcription-http-400",
         "transcription-http-401",

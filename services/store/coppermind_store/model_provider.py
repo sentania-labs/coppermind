@@ -13,7 +13,11 @@ from typing import Any
 
 import httpx
 
-from coppermind.context_config import FeatureAssignment, ModelConnection
+from coppermind.context_config import (
+    MAX_TRANSCRIBE_SECONDS,
+    FeatureAssignment,
+    ModelConnection,
+)
 
 # The longest the app waits for one model call, however steadily the reply arrives. The
 # per-job wait limit is a silence limit; this stops a trickle from holding the single
@@ -26,9 +30,9 @@ MAX_STREAM_BYTES = 16 * 1024 * 1024
 MAX_EMBEDDING_DIMENSIONS = 8192
 # How much of a model's reply is kept on a failed job so Inspect can show why it failed.
 REPLY_KEPT_CHARS = 4000
-# The most one recording may take to transcribe, however steadily the service answers. An
-# hour of audio can take 10 to 20 minutes on a CPU; this leaves room for several hours.
-MAX_TRANSCRIBE_SECONDS = 4 * 3600
+# How long a connection to the transcription service may take to open. The wait limit is for
+# the service's answer, and can be hours.
+TRANSCRIBE_CONNECT_SECONDS = 60
 # The largest transcript reply read: speaker segments with timings run to a few MiB for hours.
 MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 1 << 20
@@ -232,6 +236,7 @@ class ModelProvider:
         noun: str = "model provider",
         limit_name: str = "Processing limits",
         length: int | None = None,
+        connect_timeout: float | None = None,
     ) -> tuple[dict[str, Any], CallStats]:
         """One HTTP call. `timeout` is a silence limit: how long the provider may send nothing,
         before the first byte and between pieces of a streamed reply. `body` streams a request
@@ -254,7 +259,9 @@ class ModelProvider:
                 async with (
                     httpx.AsyncClient(
                         transport=self.transport,
-                        timeout=timeout,
+                        timeout=httpx.Timeout(
+                            timeout, connect=timeout if connect_timeout is None else connect_timeout
+                        ),
                         follow_redirects=False,
                         trust_env=False,
                     ) as client,
@@ -596,7 +603,7 @@ class ModelProvider:
         """Send one recording to `POST /audio/transcriptions`; return its speaker segments.
 
         The file goes out in chunks and is never held whole. The service may take many
-        minutes to answer: `assignment.timeout_s` is how long it may stay silent, and
+        minutes or hours to answer: `assignment.wait_s` is how long it may stay silent, and
         `MAX_TRANSCRIBE_SECONDS` bounds the call overall.
         """
         if connection.provider == "anthropic":
@@ -642,7 +649,8 @@ class ModelProvider:
             key,
             "POST",
             "/audio/transcriptions",
-            timeout=assignment.timeout_s,
+            timeout=assignment.wait_s,
+            connect_timeout=TRANSCRIBE_CONNECT_SECONDS,
             body=body(),
             content_type=f"multipart/form-data; boundary={boundary}",
             max_seconds=MAX_TRANSCRIBE_SECONDS,
