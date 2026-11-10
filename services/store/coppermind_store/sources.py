@@ -1278,7 +1278,10 @@ async def get_status(store: LocalStore) -> StatusResponse:
                 )
             ).all()
             roots = FilingRoots(
-                store.control.settings(), store.notes_root, store.context.config().dropbox_folder
+                store.control.settings(),
+                store.notes_root,
+                store.context.config().dropbox_folder,
+                store.control.store.state_dir,
             )
             type_key = store.control.schema().role("type_key")
             notes_to_refile = sum(
@@ -1633,7 +1636,10 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
     )
     schema = store.control.schema()
     roots = FilingRoots(
-        store.control.settings(), store.notes_root, store.context.config().dropbox_folder
+        store.control.settings(),
+        store.notes_root,
+        store.context.config().dropbox_folder,
+        store.control.store.state_dir,
     )
     for row in ok_notes:
         if row.reviewed:

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import sqlalchemy as sa
 
+from coppermind.atomicio import atomic_write_bytes
 from coppermind.db.models import Artifact, Note, NoteSource, Source
 from coppermind.naming import sanitize_folder, sanitize_stem
 
@@ -20,7 +22,7 @@ class FilingRoots:
     so resolving many notes costs no further disk or configuration reads.
     """
 
-    def __init__(self, settings, notes_root, dropbox_folder="Dropbox"):
+    def __init__(self, settings, notes_root, dropbox_folder="Dropbox", state_dir=None):
         self.fallback = sanitize_folder(settings.notes.notes_folder) or NOTES_FOLDER_DEFAULT
         owned = [
             "Review",
@@ -46,6 +48,12 @@ class FilingRoots:
             self.existing = sorted(p.name for p in notes_root.iterdir() if p.is_dir())
         except FileNotFoundError:
             self.existing = []
+        self.registry = state_dir / "filing-roots.json" if state_dir is not None else None
+        try:
+            recorded = json.loads(self.registry.read_text()) if self.registry else {}
+            self.recorded = recorded if isinstance(recorded, dict) else {}
+        except (OSError, ValueError):
+            self.recorded = {}
 
     def resolve(self, value):
         if isinstance(value, list):
@@ -58,7 +66,20 @@ class FilingRoots:
         if candidate.casefold() in self.reserved:
             return self.fallback, candidate
         matches = [name for name in self.existing if name.casefold() == candidate.casefold()]
+        previous = self.recorded.get(candidate.casefold())
+        if previous in matches:
+            return previous, None
         return (matches[0] if matches else candidate), None
+
+    def remember(self, root):
+        """Remember a successfully used root while it still exists in the vault."""
+        if self.registry is None or "/" in root:
+            return
+        key = root.casefold()
+        if self.recorded.get(key) == root:
+            return
+        self.recorded[key] = root
+        atomic_write_bytes(self.registry, json.dumps(self.recorded, sort_keys=True).encode())
 
 
 def rendered_note_folder(root: str, day: date) -> str:

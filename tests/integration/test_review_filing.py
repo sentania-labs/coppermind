@@ -945,3 +945,45 @@ async def test_list_type_uses_first_string_and_other_values_fall_back(store):
     await store.patch_frontmatter(note.id, PatchFrontmatter(set={"type": [5]}), note.content_hash)
     await filing.file_reviewed(store)
     assert (await store.get_note(note.id)).path.startswith("Notes/2026/2026-09/")
+
+
+async def test_existing_type_root_keeps_spelling_when_variant_folder_appears(store):
+    first = await store.ingest(ingest_request("case-first"))
+    await approve(store, first.note.id)
+    original = await store.get_note(first.note.id)
+    assert original.path.startswith("work/2026/2026-09/")
+    (store.notes_root / "Work").mkdir()
+    request = ingest_request("case-second")
+    request.note.title = "Second meeting"
+    second = await store.ingest(request)
+    note = await store.get_note(second.note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"type": "Work"}), note.content_hash
+    )
+    await approve(store, note.id)
+    await indexer.catch_up(store)
+    assert (await store.get_note(first.note.id)).path == original.path
+    assert (await store.get_note(second.note.id)).path.startswith("work/2026/2026-09/")
+    assert {first.source.id, second.source.id} <= {
+        hit.id for hit in (await store.search(SearchQuery(q="kerfuffle"))).items
+    }
+
+
+async def test_same_pass_case_variants_use_first_note_id_spelling(store):
+    first = await store.ingest(ingest_request("same-pass-first"))
+    second = await store.ingest(ingest_request("same-pass-second"))
+    kinds = {first.note.id: "Work", second.note.id: "work"}
+    for note_id, kind in kinds.items():
+        note = await store.get_note(note_id)
+        await store.patch_frontmatter(
+            note.id, PatchFrontmatter(set={"type": kind, "reviewed": True}), note.content_hash
+        )
+    assert (await filing.file_reviewed(store))["filing_failed"] == 0
+    root = kinds[min(kinds)]
+    for note_id in kinds:
+        assert (await store.get_note(note_id)).path.startswith(f"{root}/2026/2026-09/")
+    assert not (store.notes_root / ("work" if root == "Work" else "Work")).exists()
+    await indexer.catch_up(store)
+    assert {first.source.id, second.source.id} <= {
+        hit.id for hit in (await store.search(SearchQuery(q="kerfuffle"))).items
+    }
