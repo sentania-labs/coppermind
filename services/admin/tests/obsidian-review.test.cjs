@@ -28,7 +28,7 @@ async function fixture(local, overrides={}){
   class Plugin {registerView(type,fn){factory=fn;}addSettingTab(){}addCommand(){}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,PluginSettingTab:class{},SecretComponent:class{},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.includes('/v1/entities?'))return {status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/v1/entities')&&req.method==='POST')return {status:200,json:{id:'new-person',name:JSON.parse(req.body).name,emails:[]}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,PluginSettingTab:class{},SecretComponent:class{},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.includes('/v1/entities?'))return {status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
@@ -115,12 +115,8 @@ test('empty candidates permit searching People and choosing a result',async()=>{
   assert.ok(f.view.contentEl.all().some(e=>e.text==='Speaker 1 → Blair'));
 });
 
-test('a person can be added and selected when there are no candidates',async()=>{
-  const f=await fixture(undefined,{state:'failed',manual_speaker_review:{source_id:'src',revision:1,speakers:['Speaker 1'],candidates:[]}});
-  f.view.contentEl.all().find(e=>e.tag==='input').value='Jamie Lee';
-  await f.view.contentEl.all().find(e=>e.text==='Add person').onclick();
-  assert.ok(f.view.contentEl.all().some(e=>e.text==='Speaker 1 → Jamie Lee'));
-  await f.view.contentEl.all().find(e=>e.text==='Apply selected & mark reviewed').onclick();
-  const review=f.requests.find(r=>r.url.endsWith('/review')&&r.method==='POST');
-  assert.equal(JSON.parse(review.body).manual_speakers['Speaker 1'],'person:new-person');
+test('a key that cannot see people shows why speakers are missing',async()=>{
+  const f=await fixture(undefined,{state:'suggested',suggestions:[],manual_speaker_review:null,speakers_unavailable:'This API key cannot see people, so speakers cannot be named with it. Add entities:read to the key to name speakers.'});
+  assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('cannot be named with it')));
+  assert.ok(!f.view.contentEl.all().some(e=>e.tag==='select'));
 });

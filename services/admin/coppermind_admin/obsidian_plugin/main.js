@@ -74,6 +74,7 @@ class ReviewView extends ItemView {
           try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/suggestions','POST',{});new Notice('Suggestions queued. Refresh when ready.');}catch(e){new Notice(e.message);}
         };
       } else if(['queued','running'].includes(data.state))el.createEl('p',{text:'Suggestions are in progress. Refresh this panel when ready.',cls:'coppermind-notice'});
+      if(data.speakers_unavailable)el.createEl('p',{text:data.speakers_unavailable,cls:'coppermind-notice'});
       if(data.speaker_notice)el.createEl('p',{text:data.speaker_notice,cls:'coppermind-notice'});
       if(data.stale)el.createEl('p',{text:'Suggestions are from an earlier version. Keep your edits and finish without them, or request fresh suggestions.',cls:'coppermind-notice'});
       const preview=el.createDiv({cls:'coppermind-card'});
@@ -99,19 +100,11 @@ class ReviewView extends ItemView {
             const page=await this.plugin.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(search.value.trim())+(more&&cursor?'&cursor='+encodeURIComponent(cursor):''));
             for(const person of page.items||[])add({id:'person:'+person.id,name:person.name,email:person.emails?.[0]||''});
             cursor=page.next_cursor||'';moreButton.disabled=!cursor;
-            if(!(page.items||[]).length)new Notice('No matching people. Use Add person below, or search for another name.');
+            if(!(page.items||[]).length)new Notice('No matching people. Search for another name.');
             else new Notice('Choose a person from the list.');
           }catch(e){new Notice('Could not find people. Check that the API key has entities:read.');}
         };
         find.onclick=()=>lookup(false);
-        const create=card.createEl('button',{text:'Add person'});create.disabled=disabled;create.onclick=async()=>{
-          try{
-            if(!search.value?.trim()){new Notice('Enter the person’s full name first.');return;}
-            const person=await this.plugin.call('/v1/entities','POST',{kind:'person',name:search.value.trim()});
-            const added={id:'person:'+person.id,name:person.name,email:person.emails?.[0]||''};add(added);
-            chooser.value=added.id;chooser.onchange();new Notice('Person added and selected.');
-          }catch(e){new Notice('Could not add the person: '+e.message+' Check the name and entities:write access.');}
-        };
         const moreButton=card.createEl('button',{text:'More people'});moreButton.disabled=true;moreButton.onclick=()=>lookup(true);
         return chooser;
       };
@@ -124,7 +117,7 @@ class ReviewView extends ItemView {
         card.createEl('p',{text:s.display_value||(Array.isArray(s.value)?s.value.join(', '):String(s.value??''))});
         if(s.kind==='speaker'){
           card.createEl('p',{text:'Model confidence: '+Math.round(s.confidence*100)+'%'});
-          if(!s.candidates.length)card.createEl('p',{text:'No people suggested. Enter a name below, then choose Find a person or Add person.'});
+          if(!s.candidates.length)card.createEl('p',{text:'No people suggested. Enter a name below, then choose Find a person.'});
           const people=[...s.candidates];
           const chooser=makeChooser(card,s.field,people,s.value,value=>{speakerChoices[s.index]=value;selected.add(s.index);toggle.setValue(true);},!ready);
           speakerChoices[s.index]=chooser.value;cards.push({label:s.field,chooser,people,active:()=>selected.has(s.index),select:()=>{if(chooser.value){selected.add(s.index);toggle.setValue(true);}}});
@@ -139,7 +132,7 @@ class ReviewView extends ItemView {
         const card=el.createDiv({cls:'coppermind-card'});card.createEl('h3',{text:label});
         card.createEl('p',{text:'Choose a person, or leave this speaker unnamed.'});
         const people=[...manual.candidates];
-        if(!people.length)card.createEl('p',{text:'No people suggested. Enter a name below, then choose Find a person or Add person.'});
+        if(!people.length)card.createEl('p',{text:'No people suggested. Enter a name below, then choose Find a person.'});
         const chooser=makeChooser(card,label,people,'',value=>{manualSpeakers[label]=value;},!synced);
         cards.push({label,chooser,people,active:()=>!!manualSpeakers[label],select:()=>{}});
       }
@@ -174,7 +167,7 @@ class Settings extends PluginSettingTab {
   constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
   display(){const el=this.containerEl;el.empty();el.createEl('h2',{text:'Coppermind'});
     new Setting(el).setName('Server URL').setDesc('Your Coppermind address, without /admin.').addText(t=>t.setValue(this.plugin.settings.url).onChange(async v=>{this.plugin.settings.url=v.trim().replace(/\/$/,'');await this.plugin.saveData(this.plugin.settings);}));
-    new Setting(el).setName('API credential').setDesc('Use a key with notes:read, notes:write and sources:read. Confirming speaker names needs sources:write; searching People needs entities:read and adding a person needs entities:write. Only the secret name is saved in plugin settings.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
+    new Setting(el).setName('API credential').setDesc('Use a key with notes:read, notes:write and sources:read. Naming speakers needs sources:write and entities:read. Only the secret name is saved in plugin settings.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
   }
 }
 module.exports=class CoppermindReview extends Plugin {

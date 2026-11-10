@@ -22,8 +22,9 @@ be applied; reload or explicitly request fresh suggestions.
 Install the companion ZIP from **Note workflow** into
 `.obsidian/plugins/coppermind-review/`. Enable it in Community plugins. It requires
 Obsidian 1.11 or later and a Coppermind API key with `notes:read`, `notes:write` and
-`sources:read`. Confirming speaker names also needs `sources:write`; searching People
-needs `entities:read`, and adding a person needs `entities:write`. Select the key through
+`sources:read`. Naming speakers also needs `sources:write` and `entities:read`; a key
+without `entities:read` still reviews everything else, and the panel says that speakers
+cannot be named with it. Select the key through
 Obsidian SecretStorage; the plugin saves only
 its name, never its value, in plugin settings. Configure it separately on devices
 that do not share local secret storage.
@@ -137,11 +138,13 @@ Do not restore old note files over newer reviewed content.
 
 - `GET /v1/notes/{id}/review`: note, current proposals and follow-up status.
   Requires `notes:read` and `sources:read` because evidence can reference sources.
+  Speaker proposals and the manual speaker chooser list People (names, emails, pages), so
+  they are returned only to a key that also holds `entities:read`; otherwise
+  `speakers_unavailable` explains that and the rest of the review is unchanged.
 - `POST /v1/notes/{id}/review`: explicit completion with `if_match`, selected
   proposal indexes and optional filename-risk acknowledgement. Also requires
-  `notes:write`. Confirming a speaker also requires `sources:write`. Choosing a People
-  entry outside the supplied candidates requires `entities:read`. Repeating the recorded
-  request is safe.
+  `notes:write`. Confirming a speaker also requires `sources:write` and `entities:read`.
+  Repeating the recorded request is safe.
 - `POST /v1/notes/{id}/suggestions`: explicit refresh, with the same three scopes.
 - `POST /v1/notes/{id}/calendar-update`: confirm a candidate or dismiss the update,
   conditional on both note version and calendar evidence version.

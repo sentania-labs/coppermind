@@ -40,13 +40,31 @@ async def call(client: HttpStoreClient, action: str, payload: dict[str, Any]) ->
         return failure(exc)
 
 
+PEOPLE_HIDDEN = (
+    "This API key cannot see people, so speakers cannot be named with it. "
+    "Add entities:read to the key to name speakers."
+)
+
+
 @router.get("/notes/{note_id}/review")
 async def review(
     note_id: str,
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("notes:read", "sources:read")),
+    principal: Principal = Depends(require_scopes("notes:read", "sources:read")),
 ) -> Response:
-    return await call(client, "lifecycle", {"note_id": note_id})
+    try:
+        detail = await client.context_action("lifecycle", {"note_id": note_id})
+    except StoreError as exc:
+        return failure(exc)
+    if principal.has("entities:read"):
+        return JSONResponse(detail)
+    hidden = detail.get("manual_speaker_review") is not None or any(
+        s.get("kind") == "speaker" for s in detail.get("suggestions", [])
+    )
+    detail["suggestions"] = [s for s in detail.get("suggestions", []) if s.get("kind") != "speaker"]
+    detail["manual_speaker_review"] = None
+    detail["speakers_unavailable"] = PEOPLE_HIDDEN if hidden else ""
+    return JSONResponse(detail)
 
 
 @router.post("/notes/{note_id}/review")
@@ -63,16 +81,8 @@ async def finish(
         )
 
     manual = [value for value in payload.manual_speakers.values() if value]
-    if manual and not principal.has("sources:write"):
+    if manual and not principal.has("sources:write", "entities:read"):
         raise forbidden()
-    if manual and not principal.has("entities:read"):
-        try:
-            detail = await client.context_action("lifecycle", {"note_id": note_id})
-        except StoreError as exc:
-            return failure(exc)
-        candidates = (detail.get("manual_speaker_review") or {}).get("candidates", [])
-        if not set(manual) <= {item["id"] for item in candidates}:
-            raise forbidden()
     if payload.selected and not principal.has("sources:write", "entities:read"):
         # Inspect the durable job, not client-supplied labels. This also covers retries
         # after a speaker decision has already been recorded in an unfinished review.
@@ -81,18 +91,13 @@ async def finish(
         except StoreError as exc:
             return failure(exc)
         suggestions = (job.get("result") or {}).get("suggestions", [])
-        candidates = (job.get("evidence", {}).get("speaker_review") or {}).get("candidates", [])
-        candidate_ids = {item["id"] for item in candidates}
         for index in payload.selected:
             if index < 0 or index >= len(suggestions):
                 raise forbidden()
             item = suggestions[index]
             choice = payload.speaker_choices.get(str(index), item.get("value") or "")
             if item.get("kind") == "speaker" and choice:
-                if not principal.has("sources:write"):
-                    raise forbidden()
-                if choice not in candidate_ids and not principal.has("entities:read"):
-                    raise forbidden()
+                raise forbidden()
     return await call(client, "complete-review", {"note_id": note_id, **payload.model_dump()})
 
 
