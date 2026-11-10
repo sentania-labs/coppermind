@@ -430,6 +430,34 @@ async def legacy_person(store):
     return subject.id, old
 
 
+async def test_a_page_move_does_not_duplicate_facts_for_the_rewritten_note(store):
+    identity, old = await legacy_person(store)
+    note = await store.create_note(
+        CreateNote(
+            title="Meeting",
+            body=f"See [[{old.removesuffix('.md')}|Arthur]].",
+            frontmatter={
+                "reviewed": True,
+                "date": "2026-11-01",
+                "account": ["Example"],
+                "attendees": ["arthur.smith@example.test"],
+            },
+        )
+    )
+    ledger = store.entities.load()
+    store.entities.contribute(ledger, await store.entities.notes())
+    store.entities.save(ledger)
+    for _ in range(3):
+        await store.entities.refresh()
+    ledger = store.entities.load()
+    assert ledger.entities[identity].path == "People/Arthur Smith.md"
+    assert (store.notes_root / note.path).read_text().count("[[People/Arthur Smith|Arthur]]") == 1
+    for entity in ledger.entities.values():
+        facts = [(f.predicate, f.value) for f in entity.facts if f.state == "confirmed"]
+        assert len(facts) == len(set(facts)), (entity.name, facts)
+    assert len([f for f in ledger.entities[identity].facts if f.predicate == "mentioned"]) == 1
+
+
 async def test_table_escaped_alias_links_follow_the_move(store):
     identity, old = await legacy_person(store)
     target = old.removesuffix(".md")

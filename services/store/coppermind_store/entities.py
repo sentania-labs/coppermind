@@ -67,6 +67,29 @@ class NoteRef(NamedTuple):
     frontmatter: dict[str, Any]
 
 
+def recorded(
+    entity: Entity,
+    identity: str,
+    note: NoteRef,
+    version: str,
+    predicate: str,
+    value: str,
+    target: str | None = None,
+) -> bool:
+    return any(
+        f.id == identity
+        or (
+            f.evidence.note_id == note.id
+            and f.evidence.note_hash == note.content_hash
+            and f.evidence.extraction_version == version
+            and f.predicate == predicate
+            and f.value == value
+            and f.target == target
+        )
+        for f in entity.facts
+    )
+
+
 def digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -666,7 +689,9 @@ class EntityService:
                         identity = digest(
                             [note.id, note.content_hash, subject.id, other.id, "account-v1"]
                         )
-                        if any(f.id == identity for f in subject.facts):
+                        if recorded(
+                            subject, identity, note, "account-v1", predicate, other.name, other.id
+                        ):
                             continue
                         subject.facts.append(
                             Fact(
@@ -727,7 +752,7 @@ class EntityService:
                         company.version += 1
             for entity in mentions.values():
                 identity = digest([note.id, note.content_hash, entity.id, "metadata-v1"])
-                if any(f.id == identity for f in entity.facts):
+                if recorded(entity, identity, note, "metadata-v1", "mentioned", note.title):
                     continue
                 entity.facts.append(
                     Fact(

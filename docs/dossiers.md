@@ -5,7 +5,7 @@ reviewed notes continue to file under `Notes/{yyyy}/{yyyy-mm}/`. Names and
 aliases are searchable through the entity API. Two people can have the same
 name; exact email addresses and explicit identity decisions distinguish them.
 A company has its own identity. A reviewed note's explicit `account` creates or
-matches a company; an email domain never creates a company or infers an employer.
+matches a company; an email domain never creates a company, and only attaches to a company the account names.
 Email-only people get readable provisional names and retain their addresses as
 aliases. A fuller evidenced name can replace the provisional name.
 

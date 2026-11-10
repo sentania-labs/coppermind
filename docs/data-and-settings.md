@@ -215,8 +215,8 @@ fallback for anything that matches nothing: leave it in place and mark it
 ## Keys and Admin state
 
 New API keys can take up to five minutes to start working while the API refreshes
-its key cache. Enrichment's default maximum input is 200,000 characters; existing
-configured limits remain in force. The note is sent with bounded transcript
+its key cache. Enrichment's maximum input defaults to 60,000 characters and can be raised to 200,000
+in Admin; existing configured limits remain in force. The note is sent with bounded transcript
 passages selected around known meeting entities, and the job records omissions.
 
 `keys.json`: one entry per API key, `key_id`, `name`, an argon2 hash of the

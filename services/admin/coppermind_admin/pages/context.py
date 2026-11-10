@@ -633,8 +633,9 @@ def router(wiring: Wiring) -> APIRouter:
                     "max_input_chars",
                     "Maximum context size (characters)",
                     (
-                        "Default 200,000. Transcripts are cut to short passages around known "
-                        "people and companies; the omitted character count is recorded. "
+                        "Default 60,000, up to 200,000. Transcripts are cut to short passages "
+                        "around known people and companies; the omitted character count is "
+                        "recorded. "
                         "Other context that is still too large fails before sending."
                     ),
                 ),
