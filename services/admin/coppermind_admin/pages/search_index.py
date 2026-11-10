@@ -1,7 +1,7 @@
 """The search index page: its state and the button that rebuilds it.
 
 The index is derived from the notes filesystem, so rebuilding it is always
-safe: the store throws every entry away and reads the files again, in the
+safe: the store reads the files again and replaces the entries, in the
 background, while search keeps answering from the old entries until the new
 ones are committed. Times are shown in the operator's timezone.
 """

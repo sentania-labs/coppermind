@@ -191,6 +191,25 @@ async def test_edits_reembed_and_deletes_remove_vectors(store, configured, servi
     assert await vectors(store) == 0
 
 
+async def test_rebuilding_the_index_keeps_the_vectors_of_unchanged_entries(
+    store, configured, service
+) -> None:
+    await create(store, "Vendor call", "We agreed the permit fees and royalty schedule.")
+    await create(store, "Team lunch", "Soup and sandwiches on Friday.")
+    configured()
+    await settle(store)
+    before = await vectors(store)
+    assert before == 2
+    sent = len(service.calls)
+
+    await indexer.rebuild(store)
+
+    assert await vectors(store) == before
+    await settle(store)
+    assert len(service.calls) == sent
+    assert await found(store, "licensing") == [("Vendor call", "meaning")]
+
+
 async def test_changing_the_model_reembeds_everything(store, configured, service) -> None:
     await create(store, "Vendor call", "We agreed the permit fees.")
     configured("model-a")
