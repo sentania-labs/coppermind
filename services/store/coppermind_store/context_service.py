@@ -1252,7 +1252,10 @@ class ContextService:
                 speaker = evidence.get("speaker_review") or {}
                 if item.field not in speaker.get("speakers", []) or (
                     item.value is not None
-                    and item.value not in {c["id"] for c in speaker.get("candidates", [])}
+                    and not (
+                        isinstance(item.value, str)
+                        and item.value in {c["id"] for c in speaker.get("candidates", [])}
+                    )
                 ):
                     raise JobRejected(
                         "unknown-speaker", "The model selected an unknown speaker or person", RETRY

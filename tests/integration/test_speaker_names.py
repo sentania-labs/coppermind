@@ -757,3 +757,23 @@ async def test_manual_speaker_works_after_model_failure_and_can_pick_any_person(
     assert (await store.get_source(result.source.id)).current_revision == 2
     text = (await store.get_source_artifact(result.source.id, 2, "transcript.txt")).content
     assert "Unmentioned Person: Hello." in text
+
+
+async def test_a_non_text_speaker_value_is_rejected_with_retry_guidance(store, standin):
+    await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+
+    def answer(evidence, event):
+        return [
+            {
+                "kind": "speaker",
+                "field": "Speaker 2",
+                "value": [alex_id(evidence)],
+                "confidence": 0.9,
+                "reason": "Addressed by name.",
+            }
+        ]
+
+    context, result, note, job_id, observed = await recorded(store, standin, SHORT, answer)
+    job = context.load_job(job_id)
+    assert job.state == "failed"
+    assert "unknown speaker or person" in job.error
