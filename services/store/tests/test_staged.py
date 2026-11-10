@@ -479,3 +479,12 @@ async def test_a_finalize_that_loses_its_staged_file_without_a_rival_is_reported
     with pytest.raises(StagedFileUnavailable):
         await staged.finalize(store, receipt.id)
     assert (await staged.get_receipt(store, receipt.id)).state == "uploading"
+
+
+async def test_a_receipt_id_with_a_nul_byte_is_an_unknown_receipt(store):
+    with pytest.raises(ReceiptMissing):
+        await staged.get_receipt(store, "bad\0id")
+    with pytest.raises(ReceiptMissing):
+        await staged.finalize(store, "bad\0id")
+    with pytest.raises(ReceiptMissing):
+        await staged.put_bytes(store, "bad\0id", chunks(b"quokka"), declared_bytes=6)

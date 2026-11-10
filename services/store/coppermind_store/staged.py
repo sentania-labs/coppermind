@@ -92,7 +92,7 @@ def _write_receipt(store: LocalStore, document: dict[str, Any]) -> None:
 
 
 def _read_receipt(store: LocalStore, receipt_id: str) -> dict[str, Any]:
-    if not receipt_id:
+    if not receipt_id or "\0" in receipt_id:
         raise ReceiptMissing(receipt_id)
     path = _receipt_path(store, receipt_id)
     try:

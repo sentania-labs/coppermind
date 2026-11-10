@@ -652,10 +652,9 @@ class ArtifactBytes(BaseModel):
     content: bytes
 
 
-StagedState = Literal["uploading", "processing", "stored", "failed"]
-"""A staged upload, in order: bytes still arriving, the bytes are verified and
-being stored as an artifact, the artifact exists, or an attempt failed. A
-`failed` receipt can be retried; a `stored` one is finished."""
+StagedState = Literal["uploading", "stored", "failed"]
+"""A staged upload, in order: bytes still arriving, the artifact exists, or an
+attempt failed. A `failed` receipt can be retried; a `stored` one is finished."""
 
 
 class StagedLimits(BaseModel):
