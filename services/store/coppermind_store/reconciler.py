@@ -1230,7 +1230,10 @@ def _remove_verified(
             opened = os.fstat(descriptor)
             if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
                 return False
-            keeper = (root / keeper_relative).stat()
+            try:
+                keeper = (root / keeper_relative).stat()
+            except FileNotFoundError:
+                return False
             if (opened.st_dev, opened.st_ino) == (keeper.st_dev, keeper.st_ino):
                 return False
             with os.fdopen(descriptor, "rb", closefd=False) as handle:
@@ -1318,14 +1321,6 @@ async def _settle_leftovers(
             continue
         unsettled += 1
         unresolved[note_id] = [group.keeper_path, *(item.path for item in remaining)]
-        collisions.append(
-            (
-                note_id,
-                group.keeper_path,
-                "collision",
-                f"{group.keeper_path} carries this note identity",
-            )
-        )
         for copy in remaining:
             if copy.path in linked:
                 reason = (
@@ -1345,7 +1340,10 @@ async def _settle_leftovers(
                     "Neither was changed. Compare them and delete the one you do not want."
                 )
             else:
-                reason = f"{copy.path} carries this note identity"
+                reason = (
+                    f"{copy.path} carries the same note identity as {group.keeper_path}. "
+                    "Neither was changed. Compare them and delete the one you do not want."
+                )
             collisions.append((note_id, copy.path, "collision", reason))
     return unsettled
 
