@@ -904,10 +904,10 @@ async def test_written_fill_is_acknowledged_when_evidence_can_no_longer_be_rebui
     assert context.load_job(job.id).state == "applying"
     monkeypatch.setattr(store, "patch_frontmatter", original)
 
-    async def unavailable_source(_):
-        raise ValueError("source unavailable")
+    async def unavailable_evidence(*args, **kwargs):
+        raise ValueError("evidence unavailable")
 
-    monkeypatch.setattr(context, "source_text", unavailable_source)
+    monkeypatch.setattr(context, "note_evidence_hash", unavailable_evidence)
     await context.resume_approval({"id": job.id})
     saved = context.load_job(job.id)
     assert saved.pending_approval is None and len(saved.decisions) == 1
@@ -915,6 +915,45 @@ async def test_written_fill_is_acknowledged_when_evidence_can_no_longer_be_rebui
     current = await store.get_note(note.id)
     assert current.frontmatter["account"] == ["Sailing"]
     assert "tags" not in current.frontmatter or not current.frontmatter["tags"]
+
+
+async def test_a_note_with_more_than_five_sources_is_extracted_from_the_first_five(
+    store, monkeypatch
+):
+    from types import SimpleNamespace as NS
+
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(
+            title="Reviewed meeting",
+            body=BODY,
+            frontmatter={"reviewed": True, "attendees": ["casey@example.test"]},
+        )
+    )
+    artifact = NS(name="t.txt", mime_type="text/plain", size_bytes=10)
+    manifest = NS(current_revision=3, revisions=[NS(revision=3, artifacts=[artifact])])
+
+    async def sources(note_id):
+        return [NS(id=f"s{n}") for n in range(1, 8)]
+
+    async def source(identity):
+        return manifest
+
+    async def document(identity, revision, name):
+        return NS(content=f"casey@example.test spoke in {identity}.")
+
+    monkeypatch.setattr(store, "get_note_sources", sources)
+    monkeypatch.setattr(store, "get_source", source)
+    monkeypatch.setattr(store, "get_source_artifact", document)
+    seen = provider(context, extracted())
+    job = context.load_job(await context.queue_reviewed(note.id))
+    assert job.source_versions == {f"s{n}": 3 for n in range(1, 6)}
+    await context.run_job(job)
+    assert job.state == "applied", job.error
+    assert seen[0]["transcript_sources_omitted"] == 2
+    assert job.evidence["transcript_sources_omitted"] == 2
+    sent = "\n".join(seen[0]["transcripts"])
+    assert "in s5." in sent and "in s6." not in sent
 
 
 async def test_applied_extraction_job_keeps_identifiers_not_the_note_or_dossier_snapshots(store):
@@ -926,6 +965,7 @@ async def test_applied_extraction_job_keeps_identifiers_not_the_note_or_dossier_
         "note_hash": source.content_hash,
         "entity_ids": sorted([person.id, company.id]),
         "transcript_omitted_characters": 0,
+        "transcript_sources_omitted": 0,
     }
     assert BODY not in saved.model_dump_json()
 

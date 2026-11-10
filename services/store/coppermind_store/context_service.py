@@ -277,9 +277,7 @@ class ContextService:
         return fingerprint(
             {
                 "calendar": await self.calendar_evidence_hash(note),
-                "dossiers": await relevant(
-                    self, note, "\n".join(await self.source_text(note.id)), ledger
-                ),
+                "dossiers": await relevant(self, note, ledger),
             }
         )
 
@@ -927,7 +925,6 @@ class ContextService:
     async def source_text(self, note_id: str) -> list[str]:
         # The authored note often already contains the imported summary. Read sources only
         # when explicitly associated; never search across unreviewed notes for context.
-        transcripts = []
         sources = await self.store.get_note_sources(note_id)
         if len(sources) > 5:
             raise JobRejected(
@@ -935,15 +932,28 @@ class ContextService:
                 "The note has more than five associated sources",
                 "Remove sources from the note, then retry.",
             )
-        for source in sources:
-            manifest = await self.store.get_source(source.id)
+        return await self.read_sources([source.id for source in sources])
+
+    async def selected_sources(self, note_id: str) -> tuple[dict[str, int], int]:
+        """Dossier extraction reads the five lowest source ids and counts the rest as omitted."""
+        identities = sorted(source.id for source in await self.store.get_note_sources(note_id))
+        versions = {
+            identity: (await self.store.get_source(identity)).current_revision
+            for identity in identities[:5]
+        }
+        return versions, len(identities) - len(versions)
+
+    async def read_sources(self, source_ids: list[str]) -> list[str]:
+        transcripts = []
+        for source_id in source_ids:
+            manifest = await self.store.get_source(source_id)
             revision = next(
                 item for item in manifest.revisions if item.revision == manifest.current_revision
             )
             for artifact in revision.artifacts:
                 if artifact.mime_type.startswith("text/"):
                     document = await self.store.get_source_artifact(
-                        source.id, manifest.current_revision, artifact.name
+                        source_id, manifest.current_revision, artifact.name
                     )
                     if document.content:
                         transcripts.append(document.content)
@@ -1702,7 +1712,7 @@ class ContextService:
         job.note_hash, job.path = note.content_hash, note.path
         try:
             job.evidence_hash = await self.note_evidence_hash(note)
-            dossiers = await relevant(self, note, "\n".join(await self.source_text(note.id)))
+            dossiers = await relevant(self, note)
         except ValueError:
             job.evidence_hash, dossiers = "", job.evidence.get("dossiers", [])
             rebuilt = False
@@ -1849,10 +1859,7 @@ class ContextService:
         note = await self.store.get_note(identity)
         if note.frontmatter.get(self.store.control.schema().role("reviewed_key")) is not True:
             raise ValueError("only reviewed notes contribute facts")
-        source_versions = {
-            source.id: (await self.store.get_source(source.id)).current_revision
-            for source in await self.store.get_note_sources(identity)
-        }
+        source_versions, _ = await self.selected_sources(identity)
         previous = None if force else self.newest_job(identity, prior_jobs)
         if (
             previous
@@ -1991,14 +1998,7 @@ class ContextService:
                             "calendar"
                             if known.result is not None
                             and fingerprint(known.evidence.get("dossiers", []))
-                            == fingerprint(
-                                await relevant(
-                                    self,
-                                    current,
-                                    "\n".join(await self.source_text(current.id)),
-                                    ledger,
-                                )
-                            )
+                            == fingerprint(await relevant(self, current, ledger))
                             else "initial"
                         )
                         self.save_job(changed)

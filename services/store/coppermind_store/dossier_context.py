@@ -82,12 +82,11 @@ def quoted_frontmatter(note: NoteDocument) -> dict[str, str]:
 async def relevant(
     context: ContextService,
     note: NoteDocument,
-    extra: str = "",
     ledger: EntityLedger | None = None,
 ) -> list[dict[str, Any]]:
     """Select exact links/emails or unique full names; never send the whole catalog."""
     ledger = context.store.entities.load() if ledger is None else ledger
-    text = (note.body + "\n" + json.dumps(note.frontmatter, default=str) + "\n" + extra).casefold()
+    text = (note.body + "\n" + json.dumps(note.frontmatter, default=str)).casefold()
     active = [e for e in ledger.entities.values() if not e.retired_at and not e.redirect]
     names: dict[str, int] = {}
     for entity in active:
@@ -151,13 +150,10 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
     if job.config_hash != context.config_hash() or job.schema_hash != context.schema_hash():
         raise ValueError("stale: extraction configuration changed")
     dossiers = await relevant(context, note)
-    transcripts = await context.source_text(note.id)
-    current_sources = {
-        source.id: (await context.store.get_source(source.id)).current_revision
-        for source in await context.store.get_note_sources(note.id)
-    }
+    current_sources, omitted_sources = await context.selected_sources(note.id)
     if current_sources != job.source_versions:
         raise ValueError("stale: source revisions changed")
+    transcripts = await context.read_sources(list(current_sources))
     events = await context.calendar_candidates(note)
     fields = {
         "attendees",
@@ -173,6 +169,7 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
         "dossiers": dossiers,
         "transcripts": excerpts,
         "transcript_omitted_characters": omitted,
+        "transcript_sources_omitted": omitted_sources,
     }
     while budget and len(json.dumps(evidence, ensure_ascii=False)) > assignment.max_input_chars:
         budget //= 2
@@ -232,10 +229,7 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
         current = await context.store.get_note(note.id)
         if current.content_hash != note.content_hash or current.path != note.path:
             raise ValueError("stale: reviewed note changed during extraction")
-        if current_sources != {
-            source.id: (await context.store.get_source(source.id)).current_revision
-            for source in await context.store.get_note_sources(note.id)
-        }:
+        if current_sources != (await context.selected_sources(note.id))[0]:
             raise ValueError("stale: source revisions changed during extraction")
         if context.config_hash() != job.config_hash or context.schema_hash() != job.schema_hash:
             raise ValueError("stale: extraction settings changed")
@@ -381,5 +375,6 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
         "note_hash": note.content_hash,
         "entity_ids": sorted(entity.id for entity in resolved.values()),
         "transcript_omitted_characters": omitted,
+        "transcript_sources_omitted": omitted_sources,
     }
     job.usage, job.state = usage, "applied"

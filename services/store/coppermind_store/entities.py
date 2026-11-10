@@ -134,7 +134,9 @@ def properties(entity: Entity, ledger: EntityLedger) -> dict[str, Any]:
         {
             f"[[{ledger.entities[f.target].path.removesuffix('.md')}]]"
             for f in active_facts(entity, ledger)
-            if f.target and ledger.entities[f.target].kind == "company"
+            if f.predicate == "organization"
+            and f.target
+            and ledger.entities[f.target].kind == "company"
         }
     )
     if entity.kind == "person":
@@ -538,12 +540,11 @@ class EntityService:
                         while match.redirect and match.redirect in ledger.entities:
                             match = ledger.entities[match.redirect]
                         matches[match.id] = match
-                    if len(matches) > 1:
+                    live = [m for m in matches.values() if not m.retired_at and not m.redirect]
+                    if len(live) > 1 or (matches and not live):
                         continue
-                    if matches:
-                        company = next(iter(matches.values()))
-                        if company.retired_at or company.redirect:
-                            continue
+                    if live:
+                        company = live[0]
                     elif digest(["company", name, note.id]) not in ledger.suppressed:
                         company = self.make(
                             ledger, EntityInput(kind="company", name=name), automatic=True
@@ -555,30 +556,34 @@ class EntityService:
                     mentions[company.id] = company
             for person in attendees.values():
                 for company in companies.values():
-                    identity = digest(
-                        [note.id, note.content_hash, person.id, company.id, "account-v1"]
-                    )
-                    if any(f.id == identity for f in person.facts):
-                        continue
-                    person.facts.append(
-                        Fact(
-                            id=identity,
-                            predicate="associated with",
-                            value=company.name,
-                            target=company.id,
-                            state="confirmed",
-                            origin="metadata",
-                            created_at=datetime.now(UTC),
-                            evidence=Evidence(
-                                note_id=note.id,
-                                note_hash=note.content_hash,
-                                path=note.path,
-                                date=str(note.frontmatter.get("date", "")),
-                                extraction_version="account-v1",
-                            ),
+                    for subject, other, predicate in (
+                        (person, company, "attended a meeting for"),
+                        (company, person, "met with"),
+                    ):
+                        identity = digest(
+                            [note.id, note.content_hash, subject.id, other.id, "account-v1"]
                         )
-                    )
-                    person.version += 1
+                        if any(f.id == identity for f in subject.facts):
+                            continue
+                        subject.facts.append(
+                            Fact(
+                                id=identity,
+                                predicate=predicate,
+                                value=other.name,
+                                target=other.id,
+                                state="confirmed",
+                                origin="metadata",
+                                created_at=datetime.now(UTC),
+                                evidence=Evidence(
+                                    note_id=note.id,
+                                    note_hash=note.content_hash,
+                                    path=note.path,
+                                    date=str(note.frontmatter.get("date", "")),
+                                    extraction_version="account-v1",
+                                ),
+                            )
+                        )
+                        subject.version += 1
             for entity in mentions.values():
                 identity = digest([note.id, note.content_hash, entity.id, "metadata-v1"])
                 if any(f.id == identity for f in entity.facts):
@@ -1003,10 +1008,7 @@ class EntityService:
         }
         versions = {}
         for identity in source_notes:
-            versions[identity] = {
-                source.id: (await self.store.get_source(source.id)).current_revision
-                for source in await self.store.get_note_sources(identity)
-            }
+            versions[identity] = (await self.store.context.selected_sources(identity))[0]
         self.contribute(ledger, notes, versions)
         await self.migrate(ledger)
         for entity in ledger.entities.values():

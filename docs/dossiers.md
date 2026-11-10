@@ -27,7 +27,9 @@ may observe an intermediate state during this resumable per-file migration.
 
 Reviewed metadata contributes exact attendee emails, explicit account companies,
 attendee-to-company associations and explicit dossier wikilinks in list fields.
-The association records a shared meeting, not an inferred employment relationship.
+Each attendee gets an "attended a meeting for" relationship to the company and the company a
+"met with" relationship to the attendee, both under Relationships. A person's `company` property
+is filled only from an explicit `organization` fact, never from a shared meeting.
 Existing reviewed notes contribute on refresh. The API also accepts evidenced prose claims from a
 reviewed note. All such claims count immediately; there is no proposed state.
 Each records the note ID, current hash, date, quotation and extraction version.

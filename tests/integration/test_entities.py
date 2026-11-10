@@ -5,6 +5,7 @@ import sqlalchemy as sa
 from coppermind_store.entities import DELIMITER, EntityService
 from coppermind_store.reconciler import reconcile_once
 
+from coppermind import frontmatter as fm
 from coppermind.db.models import EntityRecord, SearchDocument
 from coppermind.entities import EntityChange, EntityInput, EntityQuery
 from coppermind.store_protocol import CreateNote, PatchFrontmatter, SearchQuery, VersionConflict
@@ -53,9 +54,21 @@ async def test_reviewed_accounts_create_companies_and_attendee_associations(stor
     assert person.name == "Arthur Smith"
     assert person.path == "People/Arthur Smith.md"
     assert person.emails[0] in person.aliases
-    assert any(f.target == company.id and f.evidence.note_id == note.id for f in person.facts)
-    assert any(f.evidence.note_id == note.id for f in company.facts)
-    assert f"[[{company.path.removesuffix('.md')}]]" in (store.notes_root / person.path).read_text()
+    assert any(
+        f.target == company.id and f.predicate == "attended a meeting for"
+        for f in person.facts
+        if f.evidence.note_id == note.id
+    )
+    assert any(
+        f.target == person.id and f.predicate == "met with"
+        for f in company.facts
+        if f.evidence.note_id == note.id
+    )
+    link = f"[[{company.path.removesuffix('.md')}]]"
+    person_page = (store.notes_root / person.path).read_text()
+    assert link in person_page
+    assert fm.parse(person_page)[0]["company"] == []
+    assert f"[[{person.path.removesuffix('.md')}]]" in (store.notes_root / company.path).read_text()
     await store.entities.refresh()
     assert len(store.entities.load().entities) == 2
 
@@ -92,6 +105,23 @@ async def test_deleted_company_page_is_not_recreated(store):
     assert [e.id for e in companies] == [company.id]
     assert companies[0].retired_at
     assert not (store.notes_root / company.path).exists()
+
+
+async def test_account_matches_the_live_company_when_a_retired_one_shares_its_name(store):
+    old = await store.entities.create(EntityInput(kind="company", name="Xcel Energy"))
+    await store.entities.change(old["id"], EntityChange(version=old["version"], action="retire"))
+    live = await store.entities.create(EntityInput(kind="company", name="Xcel Energy"))
+    note = await store.create_note(
+        CreateNote(
+            title="Customer meeting",
+            body="A meeting.",
+            frontmatter={"reviewed": True, "date": "2026-11-01", "account": ["Xcel Energy"]},
+        )
+    )
+    await store.entities.refresh()
+    ledger = store.entities.load()
+    assert any(f.evidence.note_id == note.id for f in ledger.entities[live["id"]].facts)
+    assert len([e for e in ledger.entities.values() if e.kind == "company"]) == 2
 
 
 async def test_trashed_dossier_page_is_not_treated_as_a_move(store):
