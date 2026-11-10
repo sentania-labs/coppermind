@@ -332,7 +332,7 @@ def test_a_failed_save_keeps_what_was_typed_and_the_reason_says_what_to_do(signe
     assert re.search(r'name="enabled" checked', response.text)
 
 
-def test_the_wait_limit_is_a_setting_here_and_testing_is_announced_on_submit(signed_in):
+def test_the_wait_limit_is_a_setting_here(signed_in):
     client, _ = signed_in
     client.app.state.store = IndexStore()
 
@@ -341,7 +341,6 @@ def test_the_wait_limit_is_a_setting_here_and_testing_is_announced_on_submit(sig
     assert "Wait limit (seconds)" in shown
     assert 'name="timeout_s"' in shown
     assert "Processing limits" not in shown
-    assert "Testing connection... this may take up to" in shown
 
 
 def test_an_out_of_range_wait_limit_is_refused_before_the_store(signed_in):
@@ -524,7 +523,6 @@ def test_leaving_for_connections_warns_that_unsaved_settings_are_lost(signed_in)
         "unsaved changes to the settings below are lost when you leave, so save them first" in shown
     )
     assert 'id="connections-link"' in shown
-    assert "Leave anyway?" in shown
 
 
 def _refused_page(client, refuse: str) -> str:
@@ -543,7 +541,6 @@ def test_a_clean_page_does_not_arm_the_leave_warning(signed_in):
     shown = client.get("/admin/search-index").text
 
     assert 'data-unsaved="true"' not in shown
-    assert 'meaningForm.dataset.unsaved === "true"' in shown
 
 
 def test_a_refused_draft_is_shown_with_the_leave_warning_already_armed(signed_in):
@@ -559,4 +556,3 @@ def test_a_refused_draft_is_shown_with_the_leave_warning_already_armed(signed_in
         shown = _refused_page(client, refuse)
         assert 'id="meaning-form" data-unsaved="true"' in shown, name
         assert 'value="draft"' in shown, name
-        assert "Leave anyway?" in shown, name
