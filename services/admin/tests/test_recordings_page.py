@@ -1,5 +1,7 @@
 """Admin: set up transcription, watch recordings, retry a failed one."""
 
+import pytest
+
 from coppermind.context_config import ContextConfig, FeatureAssignment, ModelConnection
 from services.admin.tests.browser import admin_browser as admin_browser
 from services.admin.tests.test_admin import form_token
@@ -201,6 +203,23 @@ def test_each_state_of_a_recording_reads_as_a_sentence(signed_in):
     assert "A transcript already saved is reused" in page
 
 
+def test_a_recording_waiting_on_a_busy_service_says_so_and_offers_no_retry(signed_in):
+    client, _ = signed_in
+    busy = {
+        **JOB,
+        "title": "Behind another client",
+        "error": "Waiting for the transcription service, which is busy.",
+        "error_rule": "transcription-busy",
+        "retry_after": "2099-01-01T12:00:00+00:00",
+    }
+    saved = FeatureAssignment(connection="local", model="m", enabled=True)
+    client.app.state.store = store_with([busy], saved)
+    page = client.get("/admin/context?tab=review").text
+    assert "Waiting for the transcription service, which is busy." in page
+    assert "The app asks again after" in page
+    assert ">Retry</button>" not in page
+
+
 def test_a_waiting_recording_explains_when_transcription_is_off_or_paused(signed_in):
     client, _ = signed_in
     client.app.state.store = store_with([JOB])
@@ -317,3 +336,48 @@ def test_a_worker_fault_is_shown_on_the_jobs_tab(signed_in):
     client, _ = signed_in
     client.app.state.store = store_with([], worker_error="The recording worker failed.")
     assert "The recording worker failed." in client.get("/admin/context?tab=review").text
+
+
+@pytest.mark.parametrize(
+    ("rule", "message"),
+    [
+        (
+            "transcription-audio_unreadable",
+            "The recording could not be read. Send a readable audio file again",
+        ),
+        ("transcription-no_speech", "No speech was found. Send a corrected recording again"),
+    ],
+)
+@pytest.mark.parametrize("enabled", [True, False])
+def test_audio_needing_replacement_has_no_retry(signed_in, rule, message, enabled):
+    client, _ = signed_in
+    failed = {
+        **JOB,
+        "state": "failed",
+        "error_rule": rule,
+        "error": "Old message",
+        "can_retry": True,
+    }
+    saved = FeatureAssignment(connection="local", model="m", enabled=enabled)
+    client.app.state.store = store_with([failed], saved)
+    page = client.get("/admin/context?tab=review").text
+    assert message in page
+    assert "the same way recordings normally arrive" in page
+    assert ">Retry</button>" not in page
+    assert "Turn it on to retry" not in page
+
+
+@pytest.mark.parametrize("rule", ["transcription-unfinished", "transcription-internal"])
+def test_transient_transcription_failure_keeps_retry(signed_in, rule):
+    client, _ = signed_in
+    failed = {
+        **JOB,
+        "state": "failed",
+        "error_rule": rule,
+        "error": "Service problem",
+        "can_retry": True,
+    }
+    saved = FeatureAssignment(connection="local", model="m", enabled=True)
+    client.app.state.store = store_with([failed], saved)
+    page = client.get("/admin/context?tab=review").text
+    assert ">Retry</button>" in page

@@ -293,6 +293,18 @@ SETTINGS_RULES = frozenset(
 )
 
 
+REPLACEMENT_AUDIO_MESSAGES = {
+    "transcription-audio_unreadable": (
+        "The recording could not be read. Send a readable audio file again "
+        "the same way recordings normally arrive."
+    ),
+    "transcription-no_speech": (
+        "No speech was found. Send a corrected recording again "
+        "the same way recordings normally arrive."
+    ),
+}
+
+
 def _recording_state(job: dict[str, Any], assignment: dict[str, Any] | None) -> str:
     """One plain sentence about where a recording stands."""
     state = job["state"]
@@ -307,6 +319,8 @@ def _recording_state(job: dict[str, Any], assignment: dict[str, Any] | None) -> 
             "a long recording. It carries on by itself; this page does not need to stay open."
         )
     if state == "failed":
+        if job.get("error_rule") in REPLACEMENT_AUDIO_MESSAGES:
+            return REPLACEMENT_AUDIO_MESSAGES[job["error_rule"]]
         text = job["error"]
         if not on:
             return text + " Transcription is off. Turn it on to retry this recording."
@@ -319,6 +333,11 @@ def _recording_state(job: dict[str, Any], assignment: dict[str, Any] | None) -> 
         return "Waiting. Transcription is off. Turn it on to start this recording."
     if paused:
         return "Waiting. Transcription is paused; it starts when you resume it."
+    if job.get("error_rule") == "transcription-busy" and job.get("retry_after"):
+        return (
+            "Waiting for the transcription service, which is busy. The app asks again after "
+            f"{_calendar_time(job['retry_after'])}."
+        )
     return "Waiting for its turn. Recordings are transcribed one at a time."
 
 
@@ -327,6 +346,8 @@ def _recording_actions(job: dict[str, Any], assignment: dict[str, Any] | None) -
     paused = bool(assignment and assignment["paused"])
     body = ""
     if job["state"] == "failed":
+        if job.get("error_rule") in REPLACEMENT_AUDIO_MESSAGES:
+            return ""
         if on:
             body += (
                 "<p>Try again. A transcript already saved is reused, not asked for twice.</p>"

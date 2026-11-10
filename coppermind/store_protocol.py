@@ -815,7 +815,8 @@ class RecordingRequest(BaseModel):
 class RecordingStatus(BaseModel):
     """Where one recording intake stands. `note_id`, `note_path` and `source_id` are set once
     the transcript has been filed; `error` says why a failed intake stopped and `retry_after`
-    when the worker will try again by itself."""
+    when the worker will try again by itself. A `queued` intake whose `error_rule` is
+    `transcription-busy` is waiting for a busy service to be free and has used no attempt."""
 
     id: str
     state: RecordingState

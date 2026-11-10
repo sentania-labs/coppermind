@@ -1,10 +1,8 @@
 # n8n recording intake
 
-Status: the JSON ingest route below exists in v0.2.1. The staged bundle
-contract is a proposed next increment, not an available endpoint. (The
-single-file `/v1/staged` upload for large artifacts is a different, available
-route; see the [API reference](api.md#staged-uploads).) This branch implements monthly filing and reviewed-only indexing; those changes
-are not deployed yet. Validate the released version before connecting production intake.
+Status: JSON ingest, staged single-file uploads, and recording transcription are implemented.
+The staged bundle contract below is proposed, not an available endpoint. Verify the
+installed release and configure transcription before connecting production intake.
 
 ## Where to send material
 
@@ -195,11 +193,33 @@ the service is sent its bytes.
 2. `POST /v1/recordings` with that `artifact_id`, a stable `provider` and
    `external_source_id` (the same identity rules as `/v1/ingest`: persist it before the
    call, and retries send the same one), a `title`, and optionally `captured_at` and
-   `frontmatter`. It answers 202 at once.
+   `origin`, `metadata`, and `frontmatter`. It answers 202 at once. For example:
+
+   ```json
+   {
+     "artifact_id": "ARTIFACT_ID_FROM_FINALIZE",
+     "provider": "plaud",
+     "external_source_id": "recording-42",
+     "title": "Planning meeting",
+     "captured_at": "2026-10-13T09:30:00-05:00",
+     "origin": "n8n",
+     "metadata": {"device": "Plaud", "duration_seconds": 7500, "num_speakers": 3},
+     "frontmatter": {}
+   }
+   ```
+
+   `duration_seconds` and `num_speakers` are optional metadata supplied by the caller.
+   The speaker count is a hint, not an identification. A recording without a calendar
+   match still becomes a Review note using its capture date and time; fill in its details
+   during review.
 3. Poll `GET /v1/recordings/{id}` with bounded backoff until `state` is `succeeded` (the
    status then names `note_path`) or `failed`. A recording can take a long time: an hour
    of audio is 10 to 20 minutes on a CPU service, and a queue of recordings runs one at a
-   time. Reaching `succeeded` means a draft note is waiting in `Review/`, not that anyone
+   time. A busy transcription service is waited for, not counted as a failure (status
+   `queued`, `error_rule` `transcription-busy`). Send `duration_seconds` when you know it,
+   because it sets how long a long job is waited for; the
+   [API reference](api.md#recordings-audio-on-its-own) has the rules. Reaching `succeeded`
+   means a draft note is waiting in `Review/`, not that anyone
    has reviewed it.
 
 The note's source is the transcript (`transcript.txt` with the speaker labels as the
