@@ -164,6 +164,20 @@ async def test_company_moved_with_missing_marker_recovers_by_name_and_aliases(st
     assert dossier_marker(company["id"]) in moved.read_text()
 
 
+async def test_moved_company_page_with_non_text_name_is_not_recovered_and_does_not_abort(store):
+    company = await store.entities.create(EntityInput(kind="company", name="Acme"))
+    old = store.notes_root / company["path"]
+    text = old.read_text().replace(dossier_marker(company["id"]), "")
+    assert "name: Acme" in text
+    moved = old.with_name("Acme New.md")
+    moved.write_text(text.replace("name: Acme", "name: [Acme]", 1))
+    old.unlink()
+    await store.entities.refresh()
+    current = await store.entities.get(company["id"])
+    assert current["path"] == company["path"]
+    assert dossier_marker(company["id"]) not in moved.read_text()
+
+
 async def test_legacy_marker_migration_preserves_owner_frontmatter_and_body_bytes(store):
     p = await person(store, "Casey Smith")
     path = store.notes_root / p["path"]

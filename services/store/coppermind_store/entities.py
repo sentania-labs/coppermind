@@ -93,8 +93,10 @@ def matches_identity(fields: dict[str, Any], entity: Entity, domains: list[str])
     aliases = fields.get("aliases")
     if domains and strings("domains") == set(domains):
         return True
+    name = fields.get("name")
     return (
-        fields.get("name") in names
+        isinstance(name, str)
+        and name in names
         and isinstance(aliases, list)
         and all(isinstance(a, str) for a in aliases)
         and set(aliases) <= names
