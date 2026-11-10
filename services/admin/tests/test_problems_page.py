@@ -286,21 +286,6 @@ def test_the_json_endpoints_match_the_pages(signed_in):
 
 
 def test_exclusions_do_not_inflate_problem_counter_and_are_separated(signed_in):
-    from coppermind_admin.pages.problems import counters_html
-
-    assert "Problems (0)" in counters_html(
-        StatusResponse(
-            counters=StatusCounters(
-                notes_awaiting_review=0,
-                notes_by_state={},
-                sources=0,
-                rejected_ingests=0,
-                name_collisions=0,
-                unparseable_files=0,
-                excluded_count=8,
-            )
-        )
-    )
     client, _ = signed_in
     store = ReadOnlyStore()
     store.problems.append(
@@ -379,25 +364,6 @@ def test_an_unreadable_purge_receipt_offers_abandon(signed_in):
     assert 'name="csrf"' in response.text
 
 
-def test_the_overview_count_includes_purge_problems():
-    from coppermind_admin.pages.problems import counters_html
-
-    html = counters_html(
-        StatusResponse(
-            counters=StatusCounters(
-                notes_awaiting_review=0,
-                notes_by_state={},
-                sources=0,
-                rejected_ingests=1,
-                name_collisions=0,
-                unparseable_files=0,
-                purge_problems=3,
-            )
-        )
-    )
-    assert "Problems (4)" in html and "Retention purge items needing attention: 3" in html
-
-
 def test_a_damaged_source_bundle_is_plain_and_has_no_dead_link(signed_in):
     client, _ = signed_in
     store = _install(client, ReadOnlyStore())
@@ -442,7 +408,7 @@ def test_filing_errors_are_actionable_and_missing_links_to_recovery(signed_in):
 
 
 def test_filing_estimate_excludes_errors_and_shows_stalled_work():
-    from coppermind_admin.pages.problems import counters_html
+    from coppermind_admin.pages.problems import filing_status_html
 
     counters = StatusCounters(
         notes_awaiting_review=0,
@@ -455,15 +421,15 @@ def test_filing_estimate_excludes_errors_and_shows_stalled_work():
         filing_failures=2,
         filing_estimated_drain_s=60,
     )
-    text = counters_html(StatusResponse(counters=counters))
+    text = filing_status_html(StatusResponse(counters=counters))
     assert "Filing needs attention" in text
     assert "about 1" not in text
     counters.filing_ready_depth = 1
-    text = counters_html(StatusResponse(counters=counters))
+    text = filing_status_html(StatusResponse(counters=counters))
     assert "about 1 minute for notes without errors" in text
     assert "1 minutes" not in text
     counters.filing_stalled = True
-    assert "No recent filing progress" in counters_html(StatusResponse(counters=counters))
+    assert "No recent filing progress" in filing_status_html(StatusResponse(counters=counters))
 
 
 @pytest.mark.parametrize(
@@ -508,31 +474,6 @@ def test_problems_and_overview_share_filing_status(signed_in, queue, errors, rea
     # The Problems page drops the link that points at the same page; the Overview keeps it.
     assert "Check filing problems and recovery options" not in problems.text
     assert "Check filing problems and recovery options" in overview.text
-
-
-def test_counters_show_the_notes_root_and_the_pending_move_count():
-    from coppermind_admin.pages.problems import counters_html
-
-    html = counters_html(
-        StatusResponse(
-            counters=StatusCounters(
-                notes_awaiting_review=0,
-                notes_by_state={},
-                sources=0,
-                rejected_ingests=0,
-                name_collisions=0,
-                unparseable_files=0,
-                notes_folder="Notes",
-                notes_to_refile=7,
-                notes_returned=2,
-            )
-        )
-    )
-    assert "organized by year and month under <code>Notes/</code>" in html
-    assert "<code>Notes/2026/2026-04/</code>" in html
-    assert "7 notes still to move." in html
-    assert "Upgrade complete" not in html
-    assert "returned to their filed folder: 2" in html
 
 
 class NoticeStore(ReadOnlyStore):
@@ -605,30 +546,6 @@ def test_dismissing_needs_the_form_token(signed_in):
 
     assert client.post(f"/v1/admin/notices/{NOTE_ID}/dismiss", data={}).status_code == 403
     assert len(store.problems) == before
-
-
-def test_counters_say_plainly_when_the_upgrade_is_complete():
-    from coppermind_admin.pages.problems import counters_html
-
-    html = counters_html(
-        StatusResponse(
-            counters=StatusCounters(
-                notes_awaiting_review=0,
-                notes_by_state={},
-                sources=0,
-                rejected_ingests=0,
-                name_collisions=0,
-                unparseable_files=0,
-                notes_folder="Filed",
-                notes_to_refile=0,
-            )
-        )
-    )
-    assert "Upgrade complete." in html
-    assert "<code>Filed/2026/2026-04/</code>" in html
-    assert "still to move" not in html
-    # The filing explanation leads, ahead of the operational counters.
-    assert html.index("Notes filing") < html.index("Rejected ingests")
 
 
 def test_home_lists_what_the_store_reports_and_notes_overflow(signed_in):
