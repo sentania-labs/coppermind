@@ -627,7 +627,7 @@ def test_jobs_explain_stale_pause_and_moved_note(signed_in):
 
 
 def test_reviewed_filed_job_has_same_reason_in_list_and_inspect_and_no_retry(signed_in):
-    job = {
+    job: dict[str, Any] = {
         "id": "a" * 64,
         "path": "Review/Example.md",
         "state": "stale",
