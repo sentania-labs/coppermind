@@ -30,7 +30,7 @@ SECTIONS = {
 }
 UNAVAILABLE = {
     "curator": "Filing options will let you change how reviewed notes are filed. "
-    "Reviewed notes are filed automatically by year and month today, "
+    "Reviewed notes are filed automatically by type, year and month today, "
     "and there is nothing to set yet.",
     "indexer": "Index settings will let you tune search indexing. "
     "Search works today, always on with English plus exact words, "
@@ -179,8 +179,9 @@ Other settings stay unchanged.</p>
                 help_text += "The attachment upload route is not implemented yet. "
             if path == "notes.notes_folder":
                 help_text = (
-                    "Reviewed notes are filed by year and month, like "
-                    f"{text or 'Notes'}/2026/2026-04/. "
+                    "Reviewed notes are filed under a folder named for the note's type, "
+                    "then year and month, like work/2026/2026-04/. "
+                    "This folder is used when a note has no usable type. "
                 )
                 description = ""
                 key_note = ""

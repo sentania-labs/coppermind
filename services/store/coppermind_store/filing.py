@@ -440,7 +440,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
             folder=folder,
             reason=(
                 f"Moved back to {folder}/ because reviewed notes are filed by "
-                "note date; a hand move outside that folder is not kept."
+                "type and note date; a hand move outside that folder is not kept."
             ),
             at=datetime.now(tz=UTC),
         )
