@@ -1675,7 +1675,7 @@ async def test_a_refused_adoption_is_listed_on_problems_until_the_file_changes(
         key.model_copy(update={"default": "note", "required": True}) if key.name == "type" else key
         for key in schema.keys
     ]
-    store.control.schema = lambda: schema.model_copy(update={"keys": keys})  # type: ignore[method-assign]
+    store.control.schema = lambda: schema.model_copy(update={"keys": keys})
     path = store.notes_root / "Review" / "Bare.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"# Bare note\n")
