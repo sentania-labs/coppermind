@@ -157,6 +157,15 @@ def test_work_review_time_controls_and_save(signed_in):
         assert 'name="time_unknown"' not in response.text
 
 
+def test_review_keeps_a_type_outside_the_suggested_list_selected(signed_in):
+    client, _ = signed_in
+    client.app.state.store = ReviewStore("podcast")
+    response = client.get("/admin/review/example")
+    assert response.status_code == 200
+    assert '<option value="podcast" selected>podcast</option>' in response.text
+    assert '<option value="work">Work</option>' in response.text
+
+
 def test_failed_dropbox_file_is_dismissed_not_retried(signed_in):
     class FailedStore(ContextStore):
         async def context_action(self, action, payload):

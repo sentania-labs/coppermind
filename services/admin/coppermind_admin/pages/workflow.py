@@ -462,12 +462,10 @@ def router(wiring: Wiring) -> APIRouter:
                 "Date, or date and start time (YYYY-MM-DDTHH:MM:SS)",
                 current_time,
             )
-            properties += _select(
-                "note_type",
-                "Note type",
-                [(v, v.title()) for v in definition.vocabulary] or [(kind, kind)],
-                kind,
-            )
+            type_choices = [(v, v.title()) for v in definition.vocabulary]
+            if kind and kind not in definition.vocabulary:
+                type_choices.append((kind, kind))
+            properties += _select("note_type", "Note type", type_choices or [(kind, kind)], kind)
             if kind == "work":
                 properties += _check(
                     "time_unknown", "Time unknown", note["frontmatter"].get("time_unknown") is True
