@@ -453,6 +453,9 @@ class ContextService:
 
     async def snapshot(self, offset: int = 0) -> dict[str, Any]:
         snapshot = await asyncio.to_thread(self._snapshot, offset)
+        for recording in snapshot["recordings"]:
+            if recording["state"] == "succeeded":
+                recording.update(await self.recordings.note_info(recording["note_id"]))
         for job in snapshot["jobs"]:
             try:
                 note = await self.store.get_note(job["note_id"])

@@ -229,11 +229,26 @@ class Recordings:
                 transcript = render_transcript(saved)
         return {
             **job.model_dump(mode="json", exclude={"frontmatter", "metadata"}),
+            **await self.note_info(job.note_id),
             "can_retry": (job.state == "failed" and self.enabled()) or job.audio_removal_stuck,
             "audio_removal_stuck": job.audio_removal_stuck,
             "transcript": transcript[:DETAIL_TRANSCRIPT_CHARS],
             "transcript_cut": len(transcript) > DETAIL_TRANSCRIPT_CHARS,
         }
+
+    async def note_info(self, note_id: str) -> dict[str, Any]:
+        """Read the note's current location and review state, not its intake location."""
+        if not note_id:
+            return {"note_status": "unavailable", "note_path": ""}
+        try:
+            note = await self.context.store.get_note(note_id)
+        except StoreError:
+            return {"note_status": "unavailable", "note_path": ""}
+        reviewed = (
+            note.frontmatter.get(self.context.store.control.schema().role("reviewed_key")) is True
+        )
+        status = "filed" if reviewed and note.filed else "reviewed" if reviewed else "unreviewed"
+        return {"note_status": status, "note_path": note.path}
 
     def listing(self) -> list[dict[str, Any]]:
         """The newest intakes for the Jobs list: what each is, where it stands and why."""

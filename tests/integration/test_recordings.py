@@ -165,6 +165,12 @@ async def test_reviewed_recording_is_removed_with_a_receipt_and_transcript(store
     assert await context.recordings.tick() is True
     assert not archive.exists()
     note = await store.get_note(note.id)
+    detail = await context.recording_detail({"id": accepted["id"]})
+    listing = (await context.snapshot())["recordings"]
+    listed = next(item for item in listing if item["id"] == accepted["id"])
+    assert detail["note_status"] == listed["note_status"] == "filed"
+    assert detail["note_path"] == listed["note_path"] == note.path
+    assert note.path.startswith("Notes/")
     assert "Audio was removed after review" in note.body
     assert hashlib.sha256(AUDIO).hexdigest() in note.body
     assert str(len(AUDIO)) in note.body and "7.5" in note.body
