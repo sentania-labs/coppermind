@@ -530,7 +530,7 @@ class EntityService:
             held = {f.value for f in active_facts(entity, ledger) if f.predicate == "domain"}
             shown = prior.get("domains")
             shown = set(shown) if isinstance(shown, list) else set()
-            added = sorted(wanted - held)
+            added = sorted(wanted - held - shown)
             for value in added:
                 self.correction(entity, "domain", value, raw)
             removed = [
@@ -602,7 +602,10 @@ class EntityService:
         patch = {
             key: value
             for key, value in wanted.items()
-            if key not in fields or (key in prior and fields[key] == prior[key])
+            if (key not in fields and key not in prior)
+            or (
+                key in fields and (key == "domains" or (key in prior and fields[key] == prior[key]))
+            )
         }
         for key, value in patch.items():
             if key not in fields:
@@ -614,6 +617,20 @@ class EntityService:
         if head and not head.endswith("\n"):
             head += "\n"
         return head + dossier_marker(entity.id)
+
+    def projected(
+        self,
+        entity: Entity,
+        written: bytes,
+        ledger: EntityLedger,
+        owners: dict[str, set[str]] | None,
+    ) -> dict[str, object]:
+        fields, _ = fm.parse(written.decode())
+        held = dict(entity.projection_fields or {})
+        for key, value in properties(entity, ledger, owners).items():
+            if fields.get(key) == value:
+                held[key] = value
+        return held
 
     def project(
         self,
@@ -636,7 +653,7 @@ class EntityService:
             wanted = (self.prefix(entity, raw, ledger, owners) + block).encode()
             if raw == wanted:
                 entity.problem = None
-                entity.projection_fields = properties(entity, ledger, owners)
+                entity.projection_fields = self.projected(entity, wanted, ledger, owners)
                 return
             entity.pending = block
             self.save(ledger)  # Persist corrections and the expected replacement before writing.
@@ -652,7 +669,7 @@ class EntityService:
                 finally:
                     staged.unlink(missing_ok=True)
             entity.generated, entity.pending, entity.problem = block, None, None
-            entity.projection_fields = properties(entity, ledger, owners)
+            entity.projection_fields = self.projected(entity, wanted, ledger, owners)
         except (OSError, ValueError, UnicodeError, fm.FrontmatterError):
             entity.problem = (
                 "Dossier page could not be projected; check its identity, delimiter and path"
@@ -853,9 +870,10 @@ class EntityService:
                 if not fact.evidence.note_id:
                     continue
                 supporting = notes.get(fact.evidence.note_id)
-                sources_changed = bool(fact.evidence.source_versions) and (
-                    (source_versions or {}).get(fact.evidence.note_id)
-                    != fact.evidence.source_versions
+                sources_changed = (
+                    bool(fact.evidence.source_versions)
+                    and fact.evidence.note_id in (source_versions or {})
+                    and source_versions[fact.evidence.note_id] != fact.evidence.source_versions
                 )
                 if (
                     supporting is None
@@ -1350,6 +1368,8 @@ class EntityService:
         for identity in source_notes:
             try:
                 versions[identity] = (await self.store.context.selected_sources(identity))[0]
+            except NotFound:
+                versions[identity] = {}
             except StoreError:
                 continue
         self.contribute(ledger, notes, versions)

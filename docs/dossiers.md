@@ -44,7 +44,9 @@ as a `domain` fact with the note as evidence. Public mail domains such as `gmail
 qualify. A person's `company` property is filled from their email domain when exactly one
 company holds it, or from an explicit evidenced `organization` fact. Editing `domains` on a
 company page, or `company` on a person page, always wins and is not overwritten; removing a
-domain withdraws it.
+domain withdraws it. A generated property (`name`, `email`, `aliases`, `company`, `domains`) is
+filled in only on a page that never had it. Once Coppermind has written a property, deleting it
+from the page keeps it deleted.
 Existing reviewed notes contribute on refresh. The API also accepts evidenced prose claims from a
 reviewed note. All such claims count immediately; there is no proposed state.
 Each records the note ID, current hash, date, quotation and extraction version.

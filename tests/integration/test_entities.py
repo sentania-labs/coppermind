@@ -1,5 +1,7 @@
 """Dossier behavior against real files and PostgreSQL, including recovery and purge."""
 
+import re
+
 import pytest
 import sqlalchemy as sa
 from coppermind_store.entities import DELIMITER, EntityService, dossier_marker
@@ -8,7 +10,13 @@ from coppermind_store.reconciler import reconcile_once
 from coppermind import frontmatter as fm
 from coppermind.db.models import EntityRecord, SearchDocument
 from coppermind.entities import EntityChange, EntityInput, EntityQuery
-from coppermind.store_protocol import CreateNote, PatchFrontmatter, SearchQuery, VersionConflict
+from coppermind.store_protocol import (
+    CreateNote,
+    NotFound,
+    PatchFrontmatter,
+    SearchQuery,
+    VersionConflict,
+)
 from tests.integration.test_purge import confirmation, retention
 
 
@@ -450,6 +458,86 @@ async def test_owner_set_company_and_domains_always_win(store):
         if f.state == "confirmed" and f.predicate == "domain"
     ]
     assert domains == ["xcel-partner.test"]
+
+
+async def test_a_property_the_owner_deleted_stays_deleted_but_a_legacy_page_is_filled_once(store):
+    await store.create_note(
+        customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])
+    )
+    await store.entities.refresh()
+    arthur = named(store, "Arthur Smith")
+    page = store.notes_root / arthur.path
+    block, body = fm.split(page.read_text())
+    assert "company" in fm.parse(page.read_text())[0]
+    page.write_text(
+        "---\n" + re.sub(r"(?ms)^company:\n(?:  - [^\n]*\n)+", "", block) + "---\n" + body
+    )
+    assert "company" not in fm.parse(page.read_text())[0]
+    await store.entities.refresh()
+    await store.entities.refresh()
+    assert "company" not in fm.parse(page.read_text())[0]
+
+    ledger = store.entities.load()
+    ledger.entities[arthur.id].projection_fields = None
+    store.entities.save(ledger)
+    await store.entities.refresh()
+    assert page_company(store, arthur)
+
+
+async def test_owner_domain_edit_and_a_new_domain_in_the_same_refresh_both_survive(store):
+    await store.create_note(
+        customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])
+    )
+    await store.entities.refresh()
+    company = named(store, "Xcel Energy")
+    page = store.notes_root / company.path
+    page.write_text(
+        page.read_text().replace(
+            "domains:\n  - xcelenergy.com", "domains:\n  - xcelenergy.com\n  - owner-added.test"
+        )
+    )
+    await store.create_note(
+        customer_note(title="Second", account=["Xcel Energy"], attendees=["pat@xcel-energy.com"])
+    )
+    for _ in range(3):
+        await store.entities.refresh()
+    held = sorted(
+        f.value
+        for f in named(store, "Xcel Energy").facts
+        if f.state == "confirmed" and f.predicate == "domain"
+    )
+    assert held == ["owner-added.test", "xcel-energy.com", "xcelenergy.com"]
+    assert sorted(fm.parse(page.read_text())[0]["domains"]) == held
+
+
+async def test_a_transient_source_read_failure_does_not_withdraw_transcript_facts(
+    store, monkeypatch
+):
+    from coppermind.store_protocol import MetadataUnavailable
+
+    p = await person(store)
+    note = await reviewed_note(store)
+    await claim(store, p, note)
+    ledger = store.entities.load()
+    fact = next(f for f in ledger.entities[p["id"]].facts if f.predicate == "role")
+    fact.evidence.source_versions = {"source": 1}
+    store.entities.save(ledger)
+
+    async def unavailable(_identity):
+        raise MetadataUnavailable("busy")
+
+    monkeypatch.setattr(store.context, "selected_sources", unavailable)
+    await store.entities.refresh()
+    held = next(f for f in store.entities.load().entities[p["id"]].facts if f.predicate == "role")
+    assert held.state == "confirmed"
+
+    async def gone(_identity):
+        raise NotFound("source")
+
+    monkeypatch.setattr(store.context, "selected_sources", gone)
+    await store.entities.refresh()
+    held = next(f for f in store.entities.load().entities[p["id"]].facts if f.predicate == "role")
+    assert held.state == "withdrawn" and held.withdrawn_for == "evidence"
 
 
 async def test_unsorted_mixed_case_domains_settle_without_new_receipts(store):
@@ -1275,6 +1363,12 @@ async def test_search_finds_a_person_by_email_and_by_a_former_name(store):
     await store.entities.refresh()
     hits = await store.search(SearchQuery(q="arthur.smith@xcelenergy.com"), entities=True)
     assert [h.id for h in hits.items if h.kind == "entity"] == [p["id"]]
+    renamed = await store.entities.change(
+        p["id"], EntityChange(version=p["version"], action="rename", name="Zebulon Quartermaine")
+    )
+    await store.entities.refresh()
+    hits = await store.search(SearchQuery(q="Arthur"), entities=True)
+    assert [h.id for h in hits.items if h.kind == "entity"] == [renamed["id"]]
 
 
 async def test_overlong_address_and_dossier_faults_do_not_stop_reconciliation(store, monkeypatch):
