@@ -110,7 +110,7 @@ def test_the_page_shows_counts_and_times_in_local_time(signed_in):
     assert "Source pages indexed: 3" in response.text
     assert "Last updated: October 9, 2026, 2:05 PM CDT" in response.text
     assert "last finished October 9, 2026, 1:01 PM CDT" in response.text
-    assert "<button>Rebuild index</button>" in response.text
+    assert ">Rebuild index</button>" in response.text
 
 
 def test_rebuild_index_starts_a_rebuild_and_says_so(signed_in):

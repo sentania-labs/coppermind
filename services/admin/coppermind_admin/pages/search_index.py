@@ -173,15 +173,15 @@ keyword search and falls back to it whenever the model is off or not answering.<
 <input type="hidden" name="revision" value="{int(view["revision"])}">
 <fieldset><legend>Embeddings model</legend>
 {where_from}
-<label>Connection<select name="connection">{choices}</select></label>
+<label>Connection<select name="connection" class="lat-select">{choices}</select></label>
 <p class="muted"><a href="{CONNECTIONS_LINK}">Add or edit connection</a>
 (you come back to this page after saving one)</p>
-<label>Model<input name="model" list="embedding-models"
+<label>Model<input class="lat-input" name="model" list="embedding-models"
 value="{escape(settings["model"], quote=True)}"
 placeholder="for example text-embedding-3-small"></label>
 <datalist id="embedding-models">{datalist}</datalist>
 <p class="muted">The model list comes from the connection; refresh it on the Connections page.</p>
-<label>Wait limit (seconds)<input name="timeout_s" type="number" min="5" max="600"
+<label>Wait limit (seconds)<input class="lat-input" name="timeout_s" type="number" min="5" max="600"
 value="{int(settings["timeout_s"])}"></label>
 <p class="muted">How long the service may stay silent before one request is given up on,
 including the test when you save.</p>
@@ -195,8 +195,8 @@ newest first. It picks up where it left off after a restart. Saving asks the mod
 embedding before turning this on. Changing the connection or the model indexes existing content
 again; keyword search remains available while it does.</p>
 </fieldset>
-<p id="meaning-testing" role="status" hidden></p>
-<button>Save search by meaning</button>
+<p id="meaning-testing" class="notice" role="status" hidden></p>
+<button class="lat-btn lat-btn--primary">Save search by meaning</button>
 </form>
 <script>
 document.getElementById("meaning-form").addEventListener("submit", (event) => {{
@@ -242,7 +242,7 @@ def router(wiring: Wiring) -> APIRouter:
         message = NOTICES.get(notice_key, "")
         if notice_key in {"embeddings-on", "embeddings-off"}:
             message = saved_notice(notice_key == "embeddings-on", status.embeddings)
-        notice = f"<p>{escape(message)}</p>" if message else ""
+        notice = f'<p class="notice">{escape(message)}</p>' if message else ""
         meaning = await meaning_section(request, status)
         return page(
             f"""{heading}{notice}
@@ -251,7 +251,8 @@ pages, and over the text extracted from artifacts. The index is rebuilt from the
 notes filesystem and the artifact records, never the other way round, so
 rebuilding it loses nothing.</p>
 {status_html(status, _zone(request))}
-<form method="post" action="/v1/admin/search-index/rebuild"><button>Rebuild index</button></form>
+<form method="post" action="/v1/admin/search-index/rebuild">
+<button class="lat-btn">Rebuild index</button></form>
 {meaning}"""
         )
 
@@ -297,7 +298,7 @@ rebuilding it loses nothing.</p>
                 "save-embeddings", {"revision": revision, "assignment": assignment}
             )
         except (StoreError, OSError, ValueError) as exc:
-            heading = '<h1>Search index</h1><p><a href="/admin">Overview</a></p>'
+            heading = '<h1>Search index</h1><p><a href="/admin">Home</a></p>'
             try:
                 status = await client.get_search_index_status()
             except (StoreError, OSError):
