@@ -641,7 +641,12 @@ class CreatedArtifact(BaseModel):
 
 
 class ArtifactBytes(BaseModel):
-    """One revision's bytes, with what the archive recorded about them."""
+    """One revision's bytes, with what the archive recorded about them.
+
+    `content` is read once, in chunks, so no holder ever has the whole artifact in memory.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     id: ArtifactId
     revision: int = Field(ge=1)
@@ -649,7 +654,7 @@ class ArtifactBytes(BaseModel):
     mime_type: str
     sha256: str
     size_bytes: int = Field(ge=0)
-    content: bytes
+    content: AsyncIterator[bytes]
 
 
 StagedState = Literal["uploading", "stored", "failed"]

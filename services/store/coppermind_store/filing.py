@@ -355,16 +355,14 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
                 name = artifact["name"]
                 if Path(name).name != name or "\\" in name:
                     raise ValueError("invalid artifact filename")
-                data = resolve(
-                    store.sources_root / source_id / f"r{item['revision']:04d}", name
-                ).read_bytes()
+                held = resolve(store.sources_root / source_id / f"r{item['revision']:04d}", name)
                 artifact_id, filed_path = await file_source_artifact(
                     store,
                     source_id=source_id,
                     source_name=name,
                     provider=str(manifest.get("provider", "")),
                     mime_type=mime,
-                    data=data,
+                    data=held,
                     received_at=_manifest_time(revision.get("ingested_at"), "ingested_at"),
                 )
                 links.append(f"[[{filed_path}]]")

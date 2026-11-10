@@ -22,6 +22,7 @@ from coppermind.store_protocol import (
     ValidationFailed,
 )
 from services.store.tests.test_transcription_call import REPLY, Service
+from tests.integration.test_review_filing import drain
 
 AUDIO = bytes(range(256)) * 700
 
@@ -132,7 +133,7 @@ async def test_a_recording_alone_becomes_a_transcribed_note_in_review(store):
 
     # The audio is still stored: nothing here deletes it.
     kept = await store.get_artifact_bytes(audio)
-    assert kept.content == AUDIO
+    assert await drain(kept) == AUDIO
 
 
 async def test_the_same_request_is_one_intake_and_a_different_recording_is_refused(store):
@@ -181,7 +182,7 @@ async def test_a_refusal_lands_in_problems_keeps_the_audio_and_retries_on_reques
         problems = [p for p in await store.get_problems() if p.kind == "recording"]
         assert len(problems) == 1 and "no transcription endpoint" in problems[0].reason
         assert problems[0].reference == "Standup"
-        assert (await store.get_artifact_bytes(audio)).content == AUDIO
+        assert await drain(await store.get_artifact_bytes(audio)) == AUDIO
 
         listed = (await context.snapshot())["recordings"]
         assert listed[0]["state"] == "failed" and listed[0]["can_retry"] is True

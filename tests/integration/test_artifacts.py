@@ -34,7 +34,7 @@ from coppermind.store_protocol import (
     ValidationFailed,
 )
 from services.store.tests.test_extraction import deck, minimal_pdf
-from tests.integration.test_review_filing import approve
+from tests.integration.test_review_filing import approve, drain
 from tests.integration.test_search_index import ingest_request
 
 
@@ -115,7 +115,7 @@ async def test_a_pptx_upload_is_a_browsable_file_and_searchable_at_once_with_not
     assert read.citing_note_ids == [] and read.revision == 1
     assert "kerfuffle" in read.text
     served = await store.get_artifact_bytes(created.id)
-    assert served.content == data and served.filename == "VCDX design package.pptx"
+    assert await drain(served) == data and served.filename == "VCDX design package.pptx"
 
 
 async def test_search_can_leave_artifact_hits_out(store):
@@ -290,14 +290,14 @@ async def test_an_unfinished_search_for_a_moved_copy_never_retires_the_artifact(
     stray.parent.mkdir()
     stray.write_bytes(b"x" * len(data))
     commit(store.notes_root)
-    real = Path.read_bytes
+    real = Path.open
 
-    def flaky(self):
+    def flaky(self, *args, **kwargs):
         if self.name == "sync-temp.bin":
             raise OSError("vanished during sync")
-        return real(self)
+        return real(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", flaky)
+    monkeypatch.setattr(Path, "open", flaky)
     swept = await artifacts.sweep(store)
 
     assert swept["artifacts_removed"] == 0 and swept["artifacts_missing"] == 1
@@ -664,8 +664,8 @@ async def test_a_changed_upload_is_a_new_revision_and_identical_bytes_replay(sto
     assert (revised.id, revised.revision, revised.created) == (created.id, 2, True)
     assert revised.path == created.path
     assert (store.notes_root / created.path).read_bytes() == two
-    assert (await store.get_artifact_bytes(created.id, revision=1)).content == one
-    assert (await store.get_artifact_bytes(created.id)).content == two
+    assert await drain(await store.get_artifact_bytes(created.id, revision=1)) == one
+    assert await drain(await store.get_artifact_bytes(created.id)) == two
     record = await store.get_artifact(created.id)
     assert record.revision == 2 and [r.revision for r in record.revisions] == [1, 2]
     assert "two" in record.text and "one" not in record.text.split("Version")[0]
@@ -692,7 +692,7 @@ async def test_a_device_edit_to_the_browsable_copy_is_reported_never_rewritten(s
     assert (await store.get_artifact(created.id)).state == "modified"
     # Still searchable by the archived text, and the archive still serves the original.
     assert [hit.id for hit in await hits(store, "echidna")] == [created.id]
-    assert (await store.get_artifact_bytes(created.id)).content == data
+    assert await drain(await store.get_artifact_bytes(created.id)) == data
     # Removing in Admin leaves the edited file alone, because it is no longer the store's bytes.
     await store.remove_artifact(created.id)
     assert (store.notes_root / created.path).exists()
@@ -879,3 +879,31 @@ async def test_an_identical_file_that_predates_the_artifact_is_never_taken_as_it
     assert keeper.read_bytes() == data
     assert not (store.notes_root / created.path).exists()
     assert await store.list_reconciler_notices() == []
+
+
+async def test_a_large_artifact_is_served_and_checked_in_bounded_chunks(store, monkeypatch):
+    from pathlib import Path
+
+    data = bytes(range(256)) * (3 * 1024 * 1024 // 256) + b"tail"
+    created = await store.create_artifact(upload("recording.m4a", data))
+
+    def whole(self):
+        raise AssertionError(f"read whole: {self.name}")
+
+    monkeypatch.setattr(Path, "read_bytes", whole)
+    served = await store.get_artifact_bytes(created.id)
+    sizes = [len(chunk) async for chunk in served.content]
+    assert sum(sizes) == len(data) == served.size_bytes
+    assert len(sizes) >= 4 and max(sizes) <= artifacts.READ_CHUNK_BYTES
+
+    await artifacts.sweep(store, full=True)
+    assert (await store.get_artifact(created.id)).state == "ok"
+    assert (await artifacts.recover_artifacts(store)) is not None
+
+
+async def test_an_archive_that_fails_verification_is_refused_before_any_byte_is_served(store):
+    created = await store.create_artifact(upload("recording.m4a", b"a" * 4096))
+    archived = store.artifacts_root / created.id / "r0001" / "recording.m4a"
+    archived.write_bytes(b"b" * 4096)
+    with pytest.raises(artifacts.ArtifactsFilesystemUnavailable, match="verification"):
+        await store.get_artifact_bytes(created.id)
