@@ -415,7 +415,14 @@ async def test_job_path_polls_and_submits_stable_identity_and_hint(recording, mo
     requests = []
 
     async def handle(request):
-        requests.append((request.method, request.url.path, await request.aread()))
+        requests.append(
+            (
+                request.method,
+                request.url.path,
+                await request.aread(),
+                request.headers.get("Idempotency-Key"),
+            )
+        )
         if request.method == "POST":
             return httpx.Response(200, json={"id": "job-1", "status": "queued"})
         if len(requests) == 2:
@@ -440,7 +447,7 @@ async def test_job_path_polls_and_submits_stable_identity_and_hint(recording, mo
     )
     assert result["segments"]
     assert requests[0][1] == "/v1/audio/transcriptions/jobs"
-    assert b'name="id"\r\n\r\nstable-id' in requests[0][2]
+    assert requests[0][3] == "stable-id"
     assert b'name="num_speakers"\r\n\r\n3' in requests[0][2]
     assert requests[1][1] == "/v1/audio/transcriptions/jobs/job-1"
     assert [r[0] for r in requests] == ["POST", "GET", "GET"]
@@ -581,7 +588,7 @@ async def test_a_job_that_never_finishes_ends_instead_of_holding_the_worker(
                 30,
             )
     assert caught.value.rule == "transcription-unfinished"
-    assert "did not finish" in str(caught.value)
+    assert "kept losing or failing" in str(caught.value)
 
 
 async def test_an_empty_answer_repeated_ends_the_wait_before_the_deadline(recording, monkeypatch):
@@ -665,3 +672,120 @@ async def test_stalled_poll_cannot_overrun_job_deadline(recording, monkeypatch):
             )
     assert caught.value.rule == "transcription-unfinished"
     assert len(service.requests) == 2
+
+
+@pytest.mark.parametrize(
+    "failure", ["lost", "purged", "internal", "unknown", "outage", "disconnected"]
+)
+async def test_job_recovers_with_same_key(recording, monkeypatch, failure):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    monkeypatch.setattr(model_provider, "MIN_RETRY_AFTER_SECONDS", 0)
+    requests = []
+    updates = []
+
+    async def handle(request):
+        requests.append((request.method, request.headers.get("Idempotency-Key")))
+        if request.method == "POST":
+            return httpx.Response(202, json={"id": f"job-{len(requests)}", "status": "queued"})
+        if len(requests) == 2:
+            if failure in {"lost", "purged"}:
+                return httpx.Response(404, json={"error": {"reason": "not_found"}})
+            if failure == "disconnected":
+                raise httpx.ConnectError("unavailable", request=request)
+            if failure == "outage":
+                return httpx.Response(503, json={"error": {"reason": "internal"}})
+            return httpx.Response(200, json={"status": "failed", "error": {"reason": failure}})
+        return httpx.Response(200, json={"status": "done", "result": REPLY})
+
+    provider = ModelProvider(httpx.MockTransport(handle))
+    connection = ModelConnection(
+        id="stt", name="Speech", provider="compatible", base_url="http://127.0.0.1:1/v1"
+    )
+    result, _ = await provider.transcribe(
+        connection,
+        "",
+        assignment(),
+        recording,
+        filename=recording.name,
+        mime_type="audio/mp4",
+        size_bytes=recording.stat().st_size,
+        job_id="stable-id",
+        duration_seconds=7201,
+        job_update=lambda *args: updates.append(args),
+    )
+    assert result["segments"]
+    posts = [key for method, key in requests if method == "POST"]
+    assert posts == ["stable-id"] * (1 if failure in {"outage", "disconnected"} else 2)
+    assert any(update[3] for update in updates)
+
+
+@pytest.mark.parametrize("reason", ["audio_unreadable", "no_speech", "too_long"])
+async def test_failed_job_is_not_resubmitted_for_bad_audio(recording, monkeypatch, reason):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    requests = []
+
+    async def handle(request):
+        requests.append(request.method)
+        if request.method == "POST":
+            return httpx.Response(202, json={"id": "job", "status": "queued"})
+        return httpx.Response(200, json={"status": "failed", "error": {"reason": reason}})
+
+    connection = ModelConnection(
+        id="stt", name="Speech", provider="compatible", base_url="http://127.0.0.1:1/v1"
+    )
+    with pytest.raises(ProviderError) as exc:
+        await ModelProvider(httpx.MockTransport(handle)).transcribe(
+            connection,
+            "",
+            assignment(),
+            recording,
+            filename=recording.name,
+            mime_type="audio/mp4",
+            size_bytes=recording.stat().st_size,
+            job_id="stable",
+            duration_seconds=7201,
+        )
+    assert exc.value.rule == "transcription-" + reason
+    assert requests == ["POST", "GET"]
+
+
+async def test_repeated_loss_hits_cap_and_restart_resumes_poll(recording, monkeypatch):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    requests = []
+    updates = []
+
+    async def handle(request):
+        requests.append((request.method, request.url.path, request.headers.get("Idempotency-Key")))
+        if request.method == "GET":
+            return httpx.Response(404, json={"error": {"reason": "not_found"}})
+        return httpx.Response(202, json={"id": "new-job", "status": "queued"})
+
+    connection = ModelConnection(
+        id="stt", name="Speech", provider="compatible", base_url="http://127.0.0.1:1/v1"
+    )
+    with pytest.raises(ProviderError) as exc:
+        await ModelProvider(httpx.MockTransport(handle)).transcribe(
+            connection,
+            "",
+            assignment(),
+            recording,
+            filename=recording.name,
+            mime_type="audio/mp4",
+            size_bytes=recording.stat().st_size,
+            job_id="stable",
+            duration_seconds=7201,
+            remote_job_id="prior-job",
+            job_update=lambda *args: updates.append(args),
+        )
+    assert exc.value.rule == "transcription-unfinished"
+    assert requests[0][1].endswith("/prior-job")
+    assert [key for method, _, key in requests if method == "POST"] == [
+        "stable"
+    ] * model_provider.JOB_MAX_RESUBMITS
+    assert updates[-1][2] == model_provider.JOB_MAX_RESUBMITS

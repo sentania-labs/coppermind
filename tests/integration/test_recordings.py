@@ -387,7 +387,7 @@ async def test_a_non_finite_duration_is_treated_as_unknown(store, duration):
     assert (await context.recording_status({"id": job["id"]}))["state"] == "succeeded"
 
 
-async def test_a_restart_on_the_jobs_path_asks_again_under_the_same_id(store, monkeypatch):
+async def test_a_restart_on_the_jobs_path_resumes_the_saved_job(store, monkeypatch):
     from coppermind_store import model_provider
 
     monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
@@ -396,21 +396,26 @@ async def test_a_restart_on_the_jobs_path_asks_again_under_the_same_id(store, mo
         job = await context.accept_recording(
             request(await store_audio(store), metadata={"duration_seconds": 7500})
         )
+        rewind(
+            context,
+            job["id"],
+            state="running",
+            attempts=1,
+            remote_job_id="local-job",
+            remote_job_started=datetime.now(UTC).timestamp(),
+        )
         assert await context.recordings.tick() is True
-        first = service.requests[0]["body"]
-        rewind(context, job["id"], state="running", attempts=1, transcribed=False)
-        assert await context.recordings.tick() is True
-    ident = f"{job['id']}-0".encode()
-    assert b'name="id"\r\n\r\n' + ident in first
-    assert b'name="id"\r\n\r\n' + ident in service.requests[2]["body"]
+    assert len(service.requests) == 1
+    assert service.requests[0]["path"].startswith("GET /v1/audio/transcriptions/jobs/local-job ")
     done = await context.recording_status({"id": job["id"]})
     assert done["state"] == "succeeded" and done["attempts"] == 1
 
 
-async def test_a_job_the_service_failed_is_asked_for_again_under_a_new_id(store, monkeypatch):
+async def test_a_failed_job_retries_with_the_same_key_and_stops_at_the_cap(store, monkeypatch):
     from coppermind_store import model_provider
 
     monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    monkeypatch.setattr(model_provider, "MIN_RETRY_AFTER_SECONDS", 0)
     async with Service(jobs=True, job_status="failed") as service:
         context = await setup_transcription(store, service)
         job = await context.accept_recording(
@@ -418,13 +423,14 @@ async def test_a_job_the_service_failed_is_asked_for_again_under_a_new_id(store,
         )
         await context.recordings.tick()
         failed = await context.recording_status({"id": job["id"]})
-        assert failed["state"] == "failed" and failed["attempts"] == 1
+        assert failed["state"] == "failed" and failed["error_rule"] == "transcription-unfinished"
         service.job_status = "done"
-        rewind(context, job["id"], retry_after="")
+        await context.retry_recording({"id": job["id"]})
         await context.recordings.tick()
-    first, second = (r["body"] for r in service.requests if r["path"].startswith("POST"))
-    assert b'name="id"\r\n\r\n' + f"{job['id']}-0".encode() in first
-    assert b'name="id"\r\n\r\n' + f"{job['id']}-1".encode() in second
+    keys = [
+        r["headers"]["idempotency-key"] for r in service.requests if r["path"].startswith("POST")
+    ]
+    assert keys == [job["id"]] * (model_provider.JOB_MAX_RESUBMITS + 2)
     assert (await context.recording_status({"id": job["id"]}))["state"] == "succeeded"
 
 
@@ -445,7 +451,7 @@ async def test_a_wedged_service_ends_as_a_retriable_problem_and_frees_the_worker
         await context.recordings.tick()
         failed = await context.recording_status({"id": wedged["id"]})
         assert failed["state"] == "failed" and failed["error_rule"] == "transcription-unfinished"
-        assert "did not finish" in failed["error"]
+        assert "kept losing or failing" in failed["error"]
         # The worker is free for the next recording, and the failure waits for a person.
         other = await context.accept_recording(
             request(

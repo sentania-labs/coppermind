@@ -103,6 +103,9 @@ class TranscriptionJob(ContextModel):
     # the recording again.
     transcribed: bool = False
     transcription_generation: int = 0
+    remote_job_id: str = ""
+    remote_job_started: float = 0
+    remote_job_resubmits: int = 0
     created_at: str
     started_at: str = ""
     succeeded_at: str = ""
@@ -341,6 +344,7 @@ class Recordings:
                 raise ValueError("only a failed recording can be retried")
             self.ready()
             job.state, job.attempts, job.busy_since = "queued", 0, ""
+            job.remote_job_id, job.remote_job_started, job.remote_job_resubmits = "", 0, 0
             job.set_error()
             self.save(job)
         return {"job": job.id}
@@ -443,8 +447,6 @@ class Recordings:
             self.save(job)
             raise
         except ProviderError as exc:
-            if exc.job_failed:
-                job.transcription_generation += 1
             if exc.rule == BUSY_RULE:
                 busy = True
                 self.wait_for_service(job, exc)
@@ -558,6 +560,16 @@ class Recordings:
         speakers = job.metadata.get("num_speakers")
         if isinstance(speakers, bool) or not isinstance(speakers, int) or speakers < 1:
             speakers = None
+
+        def save_remote(remote_id: str, started: float, resubmits: int, message: str) -> None:
+            job.remote_job_id, job.remote_job_started, job.remote_job_resubmits = (
+                remote_id,
+                started,
+                resubmits,
+            )
+            job.set_error(message, "transcription-recovering" if message else "")
+            self.save(job)
+
         transcript, usage = await self.context.provider.transcribe(
             connection,
             self.context.key(connection.id),
@@ -566,7 +578,11 @@ class Recordings:
             filename=job.filename,
             mime_type=job.mime_type,
             size_bytes=int(revision["size_bytes"]),
-            job_id=f"{job.id}-{job.transcription_generation}",
+            job_id=job.id,
+            remote_job_id=job.remote_job_id,
+            job_started=job.remote_job_started,
+            job_resubmits=job.remote_job_resubmits,
+            job_update=save_remote,
             duration_seconds=duration,
             num_speakers=speakers,
         )
