@@ -457,6 +457,8 @@ async def reconcile_once(
     unwritable = 0
     retry = 0
     untried = iter(scan.adoption_candidates)
+    refusals: dict[str, str] = {}
+    judged: set[str] = set()
     for candidate in untried:
         # Every refusal inside `adopt_note` returns before its first await, so
         # a tree the schema mostly refuses would sweep end to end without the
@@ -487,6 +489,7 @@ async def reconcile_once(
                 reason=type(exc).__name__,
             )
             continue
+        judged.add(candidate.path)
         if outcome == "adopted":
             adopted += 1
             if adopted == _ADOPTIONS_PER_PASS:
@@ -498,6 +501,7 @@ async def reconcile_once(
             log.info("device-created note not adopted", path=candidate.path, reason=cause)
         else:
             rejected += 1
+            refusals[candidate.path] = cause
             _remember(remembered, candidate.path, candidate.stat_seen)
             log.warning("device-created note left unchanged", path=candidate.path, reason=cause)
     backlog = retry + sum(1 for _ in untried)
@@ -539,6 +543,19 @@ async def reconcile_once(
             await session.execute(
                 sa.delete(RecordedRejection).where(RecordedRejection.kind == "collision")
             )
+
+            # A refused file is not looked at again until it changes, so its
+            # row stays while the file is still remembered and goes when the
+            # file was judged again this pass, was adopted, or is gone.
+            stale = sa.delete(RecordedRejection).where(RecordedRejection.kind == "adoption")
+            kept = set(remembered) - judged
+            if kept:
+                stale = stale.where(RecordedRejection.reference.not_in(kept))
+            await session.execute(stale)
+            for path, reason in refusals.items():
+                session.add(
+                    RecordedRejection(kind="adoption", reference=path, reason=reason, created_at=now)
+                )
 
             for note_id, _path, kind, reason in collisions_list:
                 session.add(

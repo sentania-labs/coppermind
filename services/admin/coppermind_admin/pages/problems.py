@@ -87,6 +87,7 @@ KIND_LABELS = {
     "folder_kept": "Old month folder kept",
     "unreadable_note": "Unreadable note",
     "artifact": "Artifact",
+    "adoption": "Note not adopted",
 }
 
 

@@ -1254,7 +1254,8 @@ def etag_from_if_match(header: str | None) -> ETag:
 class ProblemInfo(BaseModel):
     """One problem for the Admin dashboard, computed and never written into a note.
 
-    `kind` is `ingest` (a refused ingest), `collision` (several files carry one
+    `kind` is `ingest` (a refused ingest), `adoption` (a bare note the store
+    refused to adorn, with the cause), `collision` (several files carry one
     note identity), `unparsed` (a file the reconciler could not read), `filing`
     (monthly filing failed and will retry), `calendar_import` (a retained calendar
     import failed validation or exceeded its configured budget), `dropbox` (a Dropbox
