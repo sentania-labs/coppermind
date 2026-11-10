@@ -64,7 +64,11 @@ attending a meeting never sets it. Entity IDs remain stable when an Obsidian dos
 the ID is stored in a hidden dossier marker rather than visible properties.
 
 `GET /v1/entities` and `GET /v1/entities/{id}` require `entities:read` and
-`notes:read`, because dossiers quote reviewed notes. `POST /v1/entities` and
+`notes:read`, because dossiers quote reviewed notes. A fact whose evidence comes
+from a transcript or other source (its evidence has `source_versions`) returns
+its value, `source_versions` and `quote_withheld: true` with an empty `quote`,
+unless the key also holds `sources:read`, which returns the quoted text. Quotes
+from the reviewed note body need only `notes:read`. `POST /v1/entities` and
 `POST /v1/entities/{id}` additionally require `entities:write`. Changes carry
 the current integer `version`. See the
 [dossier contract](dossiers.md#agent-api) for filters, corrections, evidenced

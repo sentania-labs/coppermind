@@ -123,7 +123,10 @@ Every change supplies the current integer `version` and an `action`:
 
 Version conflicts return 409. Invalid evidence or an expired identity preview
 returns 422. Entity access does not grant `sources:read`. Dossiers quote reviewed
-notes, so every entity route also requires `notes:read`. Public `/v1/search`
+notes, so every entity route also requires `notes:read`. A fact that cites a
+transcript or other source returns its value and `source_versions`, with an empty
+`quote` and `quote_withheld: true`, unless the key also holds `sources:read`. The
+dossier page in the owner's vault keeps the quote. Public `/v1/search`
 requires `notes:read`; entity hits additionally require `entities:read`.
 Filtering happens before ranking and paging.
 Entity snippets include only active facts, not withdrawn evidence.
