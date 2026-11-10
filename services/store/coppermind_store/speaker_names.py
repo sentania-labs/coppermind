@@ -63,12 +63,51 @@ def person_candidate(entity: Any) -> dict[str, Any]:
 
 def current_person(context: Any, candidate: dict[str, Any]) -> dict[str, Any] | None:
     """The candidate as it stands now, or None when that person has been retired or merged."""
-    if not candidate["id"].startswith("person:"):
+    entity_id = candidate.get("person_id")
+    if candidate["id"].startswith("person:"):
+        entity_id = candidate["id"].removeprefix("person:")
+    if not entity_id and candidate.get("path"):
+        # Jobs saved before matched contacts carried an entity ID still need revalidation.
+        from coppermind_store.entities import email
+
+        address = email(candidate.get("email", ""))
+        matches = [
+            e
+            for e in context.store.entities.load().entities.values()
+            if e.kind == "person"
+            and (
+                e.path == candidate["path"]
+                or (address is not None and any(email(value) == address for value in e.emails))
+            )
+        ]
+        if len(matches) != 1:
+            return None
+        entity_id = matches[0].id
+    if not entity_id:
         return candidate
-    entity = context.store.entities.load().entities.get(candidate["id"].removeprefix("person:"))
+    entity = context.store.entities.load().entities.get(entity_id)
     if entity is None or entity.retired_at or entity.redirect:
         return None
-    return person_candidate(entity)
+    return {**person_candidate(entity), "id": candidate["id"], "person_id": entity_id}
+
+
+def chosen_person(
+    context: Any, identity: str, candidates: dict[str, dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Resolve a supplied candidate or an explicitly selected active People entry."""
+    candidate = candidates.get(identity)
+    if candidate is not None:
+        return current_person(context, candidate)
+    if identity.startswith("person:"):
+        entity = context.store.entities.load().entities.get(identity.removeprefix("person:"))
+        if (
+            entity is not None
+            and entity.kind == "person"
+            and not entity.retired_at
+            and not entity.redirect
+        ):
+            return person_candidate(entity)
+    return None
 
 
 def same_recording(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
@@ -162,15 +201,17 @@ async def evidence(
                 }
     from coppermind_store.entities import email
 
-    by_email: dict[str, list[str]] = {}
+    by_email: dict[str, list[Any]] = {}
     people = []
     for entity in context.store.entities.load().entities.values():
-        if entity.kind == "person" and not entity.retired_at and not entity.redirect:
+        if entity.kind != "person":
+            continue
+        for address in entity.emails:
+            canonical = email(address)
+            if canonical:
+                by_email.setdefault(canonical, []).append(entity)
+        if not entity.retired_at and not entity.redirect:
             people.append(entity)
-            for address in entity.emails:
-                canonical = email(address)
-                if canonical:
-                    by_email.setdefault(canonical, []).append(entity.path)
     haystack = " ".join(
         [
             note.title,
@@ -199,10 +240,14 @@ async def evidence(
     room = max(0, MAX_CANDIDATES - len(candidates) - len(kept))
     for entity in [*kept, *[*named, *recent][:room]]:
         candidates["person:" + entity.id] = person_candidate(entity)
-    for candidate in candidates.values():
-        paths = by_email.get(email(candidate["email"]) or "", [])
-        if not candidate["path"] and len(paths) == 1:
-            candidate["path"] = paths[0]
+    for identity, candidate in list(candidates.items()):
+        matches = by_email.get(email(candidate["email"]) or "", [])
+        if not candidate["path"] and len(matches) == 1:
+            if matches[0].retired_at or matches[0].redirect:
+                del candidates[identity]
+                continue
+            candidate["path"] = matches[0].path
+            candidate["person_id"] = matches[0].id
     listed = list(candidates.values())
     return {
         **base,

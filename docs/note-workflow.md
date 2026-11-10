@@ -22,7 +22,9 @@ be applied; reload or explicitly request fresh suggestions.
 Install the companion ZIP from **Note workflow** into
 `.obsidian/plugins/coppermind-review/`. Enable it in Community plugins. It requires
 Obsidian 1.11 or later and a Coppermind API key with `notes:read`, `notes:write` and
-`sources:read`. Select the key through Obsidian SecretStorage; the plugin saves only
+`sources:read`. Confirming speaker names also needs `sources:write`; searching People
+needs `entities:read`, and adding a person needs `entities:write`. Select the key through
+Obsidian SecretStorage; the plugin saves only
 its name, never its value, in plugin settings. Configure it separately on devices
 that do not share local secret storage.
 
@@ -58,13 +60,16 @@ the full transcript. If that cannot fit the input limit, speaker suggestions are
 with a notice and the other suggestions still arrive. A person renamed after suggestions
 were made is written under the current name; one retired is refused for that speaker only. When enrichment links an event automatically, it asks the model
 again with that event's attendees. If you link an event yourself after the first pass, request
-fresh suggestions. Select a speaker suggestion and choose the
-suggested person, another candidate, or leave the speaker unnamed. Completing review
+fresh suggestions. Confident names start selected, and the panel previews each change.
+Choose another candidate or leave a speaker unnamed. Search People or add a person from
+the panel, even if the model is unavailable or speaker suggestions were omitted. Completing review
 replaces selected speaker labels throughout the transcript, adds confirmed attendees
 and links known dossiers. Unselected speakers keep their labels. Setting reviewed
 directly without the panel does not apply speaker suggestions. The review API accepts
 `speaker_choices`, an object mapping selected suggestion indexes to candidate IDs;
-an empty value leaves that speaker unnamed. The review response provides candidates.
+an empty value leaves that speaker unnamed. For manual names, pass `manual_speakers`
+(label to candidate ID), `manual_source_id` and `manual_source_revision` from the review
+response. The review response provides the current speakers and bounded candidates.
 The transcript sample is sent only to the configured enrichment connection, under the same
 input limit and retry rules as other enrichment.
 
@@ -134,7 +139,9 @@ Do not restore old note files over newer reviewed content.
   Requires `notes:read` and `sources:read` because evidence can reference sources.
 - `POST /v1/notes/{id}/review`: explicit completion with `if_match`, selected
   proposal indexes and optional filename-risk acknowledgement. Also requires
-  `notes:write`. Repeating the recorded request is safe.
+  `notes:write`. Confirming a speaker also requires `sources:write`. Choosing a People
+  entry outside the supplied candidates requires `entities:read`. Repeating the recorded
+  request is safe.
 - `POST /v1/notes/{id}/suggestions`: explicit refresh, with the same three scopes.
 - `POST /v1/notes/{id}/calendar-update`: confirm a candidate or dismiss the update,
   conditional on both note version and calendar evidence version.

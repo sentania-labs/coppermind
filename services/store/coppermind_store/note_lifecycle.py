@@ -88,9 +88,24 @@ class NoteLifecycle:
                     if person["contact_id"] in suggestion["contact_ids"]:
                         labels.append(person["address"])
             if suggestion["kind"] == "speaker":
-                candidate_list = (
+                saved = (
                     (job.evidence.get("speaker_review") or {}).get("candidates", []) if job else []
                 )
+                candidate_list = [
+                    current
+                    for candidate in saved
+                    if (current := speaker_names.current_person(self.context, candidate))
+                    is not None
+                ]
+                if suggestion["value"] and not any(
+                    candidate["id"] == suggestion["value"] for candidate in candidate_list
+                ):
+                    suggestion["value"] = None
+                    suggestion["reason"] = (
+                        "The suggested person is no longer active. Choose someone else "
+                        "or leave this speaker unnamed."
+                    )
+                    suggestion["confidence"] = 0
                 suggestion["candidates"] = candidate_list
                 suggestion["display_value"] = next(
                     (c["name"] for c in candidate_list if c["id"] == suggestion["value"]),
@@ -124,7 +139,22 @@ class NoteLifecycle:
         update = self.context.read("calendar-followups", {}).get(note.id)
         if update is not None:
             update = dict(update, candidates=await self.context.calendar_candidates(note))
+        manual = None
+        if any(r.note_id == note.id and r.source_id for r in self.context.recordings.jobs()):
+            manual = await speaker_names.evidence(
+                self.context, note, await self.context.calendar_candidates(note)
+            )
+        if manual:
+            manual = {
+                key: manual[key] for key in ("source_id", "revision", "speakers", "candidates")
+            }
+            manual["candidates"] = [
+                person
+                for candidate in manual["candidates"]
+                if (person := speaker_names.current_person(self.context, candidate)) is not None
+            ]
         return {
+            "manual_speaker_review": manual,
             "review_problem": problem,
             "note": note.model_dump(mode="json"),
             "job_id": job.id if job else None,
@@ -172,6 +202,9 @@ class NoteLifecycle:
                         "job_id",
                         "selected",
                         "speaker_choices",
+                        "manual_speakers",
+                        "manual_source_revision",
+                        "manual_source_id",
                         "accept_link_risk",
                     )
                 }
@@ -243,12 +276,11 @@ class NoteLifecycle:
                         person_id = choices.get(str(i), suggestion.value or "")
                         if not person_id:
                             continue
-                        if person_id not in candidates:
-                            raise ValueError("choose a person from the supplied candidates")
-                        person = speaker_names.current_person(self.context, candidates[person_id])
+                        person = speaker_names.chosen_person(self.context, person_id, candidates)
                         if person is None:
+                            person_name = candidates.get(person_id, {}).get("name", "This person")
                             raise ValueError(
-                                f"{suggestion.field}: {candidates[person_id]['name']} is no "
+                                f"{suggestion.field}: {person_name} is no "
                                 "longer an active person. Choose someone else or leave this "
                                 "speaker unnamed."
                             )
@@ -263,6 +295,61 @@ class NoteLifecycle:
                         }
                         speaker_names.people_changes(self.context, prospective.frontmatter, chosen)
                     selected = [i for i in selected if i not in speaker_indexes]
+                manual_choices = payload.get("manual_speakers") or {}
+                if (
+                    not isinstance(manual_choices, dict)
+                    or any(
+                        not isinstance(k, str) or not isinstance(v, str)
+                        for k, v in manual_choices.items()
+                    )
+                    or len(manual_choices) > 30
+                ):
+                    raise ValueError("invalid manual speaker choices")
+                manual_choices = {
+                    label: person for label, person in manual_choices.items() if person
+                }
+                if manual_choices:
+                    manual = await speaker_names.evidence(
+                        self.context, note, await self.context.calendar_candidates(note)
+                    )
+                    if not manual or (manual["source_id"], manual["revision"]) != (
+                        payload.get("manual_source_id"),
+                        payload.get("manual_source_revision"),
+                    ):
+                        raise ValueError("the transcript changed; refresh before completing review")
+                    if not set(manual_choices) <= set(manual["speakers"]):
+                        raise ValueError("a selected speaker no longer appears in the transcript")
+                    candidates = {c["id"]: c for c in manual["candidates"]}
+                    if (
+                        speaker_operation
+                        and set(manual_choices) & speaker_operation["mapping"].keys()
+                    ):
+                        raise ValueError("choose only one person for each speaker")
+                    if speaker_operation and (
+                        speaker_operation["source_id"],
+                        speaker_operation["revision"],
+                    ) != (manual["source_id"], manual["revision"]):
+                        raise ValueError("the transcript changed; refresh before completing review")
+                    if not speaker_operation:
+                        speaker_operation = {
+                            "source_id": manual["source_id"],
+                            "revision": manual["revision"],
+                            "mapping": {},
+                            "people": [],
+                        }
+                    for label, person_id in manual_choices.items():
+                        person = speaker_names.chosen_person(self.context, person_id, candidates)
+                        if person is None:
+                            raise ValueError(
+                                f"{label}: this person is no longer active. Choose someone else."
+                            )
+                        speaker_operation["mapping"][label] = person["name"]
+                        speaker_operation["people"].append(person)
+                    speaker_names.people_changes(
+                        self.context,
+                        prospective.frontmatter if selected else note.frontmatter,
+                        speaker_operation["people"],
+                    )
                 receipt = {
                     "speakers": speaker_operation,
                     "note_id": identity,

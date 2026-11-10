@@ -100,7 +100,8 @@ def test_review_forwards_the_owner_speaker_choice():
     app.include_router(router)
     app.dependency_overrides[store] = lambda: fake
     app.dependency_overrides[authenticated_key] = lambda: Principal(
-        "test", frozenset({"notes:read", "notes:write", "sources:read"})
+        "test",
+        frozenset({"notes:read", "notes:write", "sources:read", "sources:write", "entities:read"}),
     )
     with TestClient(app) as client:
         result = client.post(
@@ -115,3 +116,106 @@ def test_review_forwards_the_owner_speaker_choice():
         )
     assert result.status_code == 200
     assert fake.calls[0][1]["speaker_choices"] == {"2": "person:chosen"}
+
+
+@pytest.mark.parametrize(
+    "selected,choices,expected",
+    [([0], {}, 403), ([0], {"0": "person:other"}, 403), ([0], {"0": ""}, 200), ([1], {}, 200)],
+)
+def test_speaker_revision_requires_source_write_but_other_review_remains_available(
+    selected, choices, expected
+):
+    class JobStore(Store):
+        async def context_action(self, action, payload):
+            if action == "job":
+                return {
+                    "result": {
+                        "suggestions": [
+                            {"kind": "speaker", "value": "person:proposed"},
+                            {"kind": "field", "value": "work"},
+                        ]
+                    }
+                }
+            return await super().context_action(action, payload)
+
+    app = FastAPI()
+    fake = JobStore()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal(
+        "test", frozenset({"notes:read", "notes:write", "sources:read"})
+    )
+    with TestClient(app) as client:
+        result = client.post(
+            "/v1/notes/note/review",
+            json={
+                "if_match": "hash",
+                "confirmation": "Complete review",
+                "job_id": "job",
+                "selected": selected,
+                "speaker_choices": choices,
+            },
+        )
+    assert result.status_code == expected
+    assert bool(fake.calls) == (expected == 200)
+    if expected == 403:
+        assert result.json()["detail"]["error"] == "forbidden"
+
+
+def test_manual_speaker_and_unlisted_person_require_their_respective_scopes():
+    class ReviewStore(Store):
+        async def context_action(self, action, payload):
+            if action == "lifecycle":
+                return {"manual_speaker_review": {"candidates": [{"id": "person:listed"}]}}
+            if action == "job":
+                return {
+                    "result": {"suggestions": [{"kind": "speaker", "value": "person:listed"}]},
+                    "evidence": {"speaker_review": {"candidates": [{"id": "person:listed"}]}},
+                }
+            return await super().context_action(action, payload)
+
+    app = FastAPI()
+    fake = ReviewStore()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    scopes = {"notes:read", "notes:write", "sources:read"}
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    base = {"if_match": "hash", "confirmation": "Complete review", "job_id": "job"}
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/v1/notes/note/review",
+                json=base | {"manual_speakers": {"Speaker 1": "person:listed"}},
+            ).status_code
+            == 403
+        )
+        scopes.add("sources:write")
+        assert (
+            client.post(
+                "/v1/notes/note/review",
+                json=base | {"manual_speakers": {"Speaker 1": "person:unlisted"}},
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                "/v1/notes/note/review",
+                json=base | {"manual_speakers": {"Speaker 1": "person:listed"}},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/v1/notes/note/review",
+                json=base | {"selected": [0], "speaker_choices": {"0": "person:unlisted"}},
+            ).status_code
+            == 403
+        )
+        scopes.add("entities:read")
+        assert (
+            client.post(
+                "/v1/notes/note/review",
+                json=base | {"selected": [0], "speaker_choices": {"0": "person:unlisted"}},
+            ).status_code
+            == 200
+        )

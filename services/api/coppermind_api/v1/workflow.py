@@ -5,10 +5,11 @@ from __future__ import annotations
 import base64
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from coppermind.errors import envelope
 from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import StoreError
 from coppermind_api.auth import Principal
@@ -26,6 +27,9 @@ class ReviewCompletion(BaseModel):
     job_id: str | None = None
     selected: list[int] = Field(default_factory=list, max_length=30)
     speaker_choices: dict[str, str] = Field(default_factory=dict, max_length=30)
+    manual_speakers: dict[str, str] = Field(default_factory=dict, max_length=30)
+    manual_source_revision: int | None = Field(default=None, ge=1)
+    manual_source_id: str | None = None
     accept_link_risk: bool = False
 
 
@@ -50,8 +54,45 @@ async def finish(
     note_id: str,
     payload: ReviewCompletion,
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("notes:write", "notes:read", "sources:read")),
+    principal: Principal = Depends(require_scopes("notes:write", "notes:read", "sources:read")),
 ) -> Response:
+    def forbidden() -> HTTPException:
+        return HTTPException(
+            status_code=403,
+            detail=envelope("forbidden", "the API key does not grant the required scope"),
+        )
+
+    manual = [value for value in payload.manual_speakers.values() if value]
+    if manual and not principal.has("sources:write"):
+        raise forbidden()
+    if manual and not principal.has("entities:read"):
+        try:
+            detail = await client.context_action("lifecycle", {"note_id": note_id})
+        except StoreError as exc:
+            return failure(exc)
+        candidates = (detail.get("manual_speaker_review") or {}).get("candidates", [])
+        if not set(manual) <= {item["id"] for item in candidates}:
+            raise forbidden()
+    if payload.selected and not principal.has("sources:write", "entities:read"):
+        # Inspect the durable job, not client-supplied labels. This also covers retries
+        # after a speaker decision has already been recorded in an unfinished review.
+        try:
+            job = await client.context_action("job", {"id": payload.job_id or ""})
+        except StoreError as exc:
+            return failure(exc)
+        suggestions = (job.get("result") or {}).get("suggestions", [])
+        candidates = (job.get("evidence", {}).get("speaker_review") or {}).get("candidates", [])
+        candidate_ids = {item["id"] for item in candidates}
+        for index in payload.selected:
+            if index < 0 or index >= len(suggestions):
+                raise forbidden()
+            item = suggestions[index]
+            choice = payload.speaker_choices.get(str(index), item.get("value") or "")
+            if item.get("kind") == "speaker" and choice:
+                if not principal.has("sources:write"):
+                    raise forbidden()
+                if choice not in candidate_ids and not principal.has("entities:read"):
+                    raise forbidden()
     return await call(client, "complete-review", {"note_id": note_id, **payload.model_dump()})
 
 

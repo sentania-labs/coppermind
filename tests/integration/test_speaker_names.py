@@ -580,3 +580,180 @@ async def test_speaker_evidence_too_big_is_dropped_and_other_suggestions_still_a
     assert observed[0]["speaker_review"]["omitted"] is True
     detail = await context.lifecycle_detail({"note_id": note.id})
     assert detail["speaker_notice"].startswith("Speaker names could not be suggested")
+
+
+@pytest.mark.parametrize("action", ["rename", "retire"])
+async def test_calendar_contact_tracks_matched_dossier_changes(store, standin, action):
+    from coppermind.entities import EntityChange
+
+    person = await store.entities.create(
+        EntityInput(kind="person", name="Casey", emails=["Casey@example.com"])
+    )
+
+    def calendar_candidate(evidence):
+        return next(
+            c["id"]
+            for c in evidence["speaker_review"]["candidates"]
+            if c["id"].startswith("contact:")
+        )
+
+    context, result, note, job_id, _ = await recorded(
+        store, standin, SHORT, speaker_answer(calendar_candidate)
+    )
+    change = (
+        EntityChange(version=person["version"], action="rename", name="Casey Updated")
+        if action == "rename"
+        else EntityChange(version=person["version"], action="retire")
+    )
+    await store.entities.change(person["id"], change)
+    detail = await context.lifecycle_detail({"note_id": note.id})
+    suggestion = next(s for s in detail["suggestions"] if s["field"] == "Speaker 2")
+    contacts = [c for c in suggestion["candidates"] if c["id"].startswith("contact:")]
+    if action == "rename":
+        assert contacts[0]["name"] == "Casey Updated"
+        completed = await context.complete_review(await completion(context, store, result, job_id))
+        assert completed["state"] == "complete"
+        text = (await store.get_source_artifact(result.source.id, 2, "transcript.txt")).content
+        assert "Casey Updated: Hello." in text
+        current = await store.entities.get(person["id"])
+        reviewed = await store.get_note(note.id)
+        assert (
+            "[[" + current["path"].removesuffix(".md") + "]]" in reviewed.frontmatter["attendees"]
+        )
+    else:
+        assert not contacts and suggestion["value"] is None
+        assert "no longer active" in suggestion["reason"]
+        from coppermind_store import speaker_names
+
+        refreshed = await speaker_names.evidence(
+            context, note, await context.calendar_candidates(note)
+        )
+        assert not any(c["id"].startswith("contact:") for c in refreshed["candidates"])
+        with pytest.raises(ValueError, match="no longer an active person"):
+            await context.complete_review(await completion(context, store, result, job_id))
+        assert (await store.get_source(result.source.id)).current_revision == 1
+
+
+async def test_public_review_api_approves_corrects_and_leaves_a_speaker_unknown(store, standin):
+    from coppermind_store.auth import InternalAuth
+    from coppermind_store.context_api import router as internal_router
+    from fastapi import FastAPI
+
+    from coppermind.store_client import HttpStoreClient
+    from tests.integration.test_store_write_protocol import authorized_api
+
+    alex = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    blair = await store.entities.create(EntityInput(kind="person", name="Blair Stone"))
+    transcript = {
+        "segments": [
+            {"start": 0, "speaker": "Speaker 1", "text": "Alex here."},
+            {"start": 3, "speaker": "Speaker 2", "text": "Blair here."},
+            {"start": 6, "speaker": "Speaker 3", "text": "Hello."},
+        ]
+    }
+
+    def answer(evidence, event):
+        alex_candidate = next(
+            c["id"] for c in evidence["speaker_review"]["candidates"] if c["name"] == "Alex Morgan"
+        )
+        return [
+            {
+                "kind": "speaker",
+                "field": label,
+                "value": alex_candidate,
+                "confidence": 0.9,
+                "reason": "Named in the conversation.",
+            }
+            for label in ("Speaker 1", "Speaker 2")
+        ]
+
+    context, result, note, job_id, _ = await recorded(store, standin, transcript, answer)
+    internal = FastAPI()
+    internal.state.store = store
+    internal.state.auth = InternalAuth("synthetic-internal-token")
+    internal.include_router(internal_router)
+    client = HttpStoreClient(
+        "http://store", "synthetic-internal-token", transport=httpx.ASGITransport(app=internal)
+    )
+    app, headers = authorized_api(store)
+    app.state.store = client
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://api", headers=headers
+    ) as api:
+        detail = await api.get(f"/v1/notes/{note.id}/review")
+        assert detail.status_code == 200, detail.text
+        proposals = {s["field"]: s for s in detail.json()["suggestions"] if s["kind"] == "speaker"}
+        first, second = proposals["Speaker 1"], proposals["Speaker 2"]
+        response = await api.post(
+            f"/v1/notes/{note.id}/review",
+            json={
+                "if_match": note.content_hash,
+                "confirmation": "Complete review",
+                "job_id": job_id,
+                "selected": [first["index"], second["index"]],
+                "speaker_choices": {
+                    str(first["index"]): "person:" + alex["id"],
+                    str(second["index"]): "person:" + blair["id"],
+                },
+            },
+        )
+        assert response.status_code == 200, response.text
+    source = await store.get_source(result.source.id)
+    text = (
+        await store.get_source_artifact(result.source.id, source.current_revision, "transcript.txt")
+    ).content
+    assert "Alex Morgan: Alex here." in text
+    assert "Blair Stone: Blair here." in text
+    assert "Speaker 3: Hello." in text
+    reviewed = await store.get_note(note.id)
+    assert reviewed.frontmatter["reviewed"] is True
+
+
+@pytest.mark.parametrize("state", ["failed", "omitted", "disabled"])
+async def test_manual_speaker_works_after_model_failure_and_can_pick_any_person(
+    store, standin, state
+):
+    await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    other = await store.entities.create(EntityInput(kind="person", name="Unmentioned Person"))
+    context, result, note, job_id, _ = await recorded(
+        store, standin, SHORT, speaker_answer(alex_id)
+    )
+    job = context.load_job(job_id)
+    if state == "failed":
+        job.state = "failed"
+        job.result = None
+        job.set_error("The model timed out.")
+    elif state == "omitted":
+        job.result.suggestions = []
+        job.evidence["speaker_review"]["omitted"] = True
+    else:
+        config = context.config()
+        config.assignments["enrichment"].enabled = False
+        context.save_config(config)
+        job.result = None
+    context.save_job(job)
+    detail = await context.lifecycle_detail({"note_id": note.id})
+    if state == "failed":
+        assert detail["suggestion_error"] == "The model timed out."
+    assert "Speaker 2" in detail["manual_speaker_review"]["speakers"]
+    assert "person:" + other["id"] not in {
+        c["id"] for c in detail["manual_speaker_review"]["candidates"]
+    }
+    payload = {
+        "note_id": note.id,
+        "if_match": note.content_hash,
+        "confirmation": "Complete review",
+        "selected": [],
+        "manual_source_revision": detail["manual_speaker_review"]["revision"],
+        "manual_source_id": detail["manual_speaker_review"]["source_id"],
+        "manual_speakers": {"Speaker 2": "person:" + other["id"]},
+    }
+    with pytest.raises(ValueError, match="transcript changed"):
+        await context.complete_review({**payload, "manual_source_revision": 99})
+    assert (await store.get_source(result.source.id)).current_revision == 1
+    receipt = await context.complete_review(payload)
+    assert receipt["state"] == "complete"
+    assert await context.complete_review(payload) == receipt
+    assert (await store.get_source(result.source.id)).current_revision == 2
+    text = (await store.get_source_artifact(result.source.id, 2, "transcript.txt")).content
+    assert "Unmentioned Person: Hello." in text
