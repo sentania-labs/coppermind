@@ -237,6 +237,34 @@ async def test_a_put_to_a_stored_receipt_replays_identical_bytes_and_refuses_oth
     assert (await staged.finalize(store, receipt.id)).artifact == kept.artifact
 
 
+async def test_finalize_refuses_corrupted_or_truncated_staged_bytes(store):
+    """A staged file that no longer matches the declaration is a failed upload, 422."""
+    # Truncated: the file holds fewer bytes than the reservation declared.
+    short = await staged.reserve(store, declaration())
+    await staged.put_bytes(store, short.id, chunks(b"quokka"), declared_bytes=6)
+    bin_path = store.control.store.state_dir / "staged" / f"{short.id}.bin"
+    bin_path.write_bytes(b"quok")
+    with pytest.raises(ValidationFailed) as info:
+        await staged.finalize(store, short.id)
+    assert "holds 4 bytes" in str(info.value)
+    receipt = await staged.get_receipt(store, short.id)
+    assert receipt.state == "failed" and receipt.failure is not None
+    assert "holds 4 bytes" in receipt.failure
+    assert receipt.artifact is None
+    assert not bin_path.exists()
+
+    # Modified: the same count, a different digest.
+    changed = await staged.reserve(store, declaration(filename="other.pptx"))
+    await staged.put_bytes(store, changed.id, chunks(b"quokka"), declared_bytes=6)
+    other = store.control.store.state_dir / "staged" / f"{changed.id}.bin"
+    other.write_bytes(b"QUOKKA")
+    with pytest.raises(ValidationFailed) as info:
+        await staged.finalize(store, changed.id)
+    assert "the staged file hashes to" in str(info.value)
+    again = await staged.get_receipt(store, changed.id)
+    assert again.state == "failed" and "the staged file hashes to" in str(again.failure)
+
+
 async def test_an_unknown_or_unreadable_receipt_is_reported(store):
     with pytest.raises(ReceiptMissing):
         await staged.get_receipt(store, "nope")

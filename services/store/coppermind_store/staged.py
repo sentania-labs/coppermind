@@ -416,17 +416,19 @@ async def finalize(store: LocalStore, receipt_id: str) -> StagedReceipt:
                 ["no bytes are staged for this receipt; send the PUT, then finalize"]
             )
         size, digest = await asyncio.to_thread(_read_staged, path, declared)
+        reason: str | None = None
         if size != declared:
-            _discard_staged(store, receipt_id)
-            return _fail(store, document, _mismatch("the staged file", size, declared))
-        if digest != str(document["sha256"]):
-            _discard_staged(store, receipt_id)
-            return _fail(
-                store,
-                document,
-                f"the staged file hashes to {digest}; "
-                f"the reservation declared {document['sha256']}",
+            reason = _mismatch("the staged file", size, declared)
+        elif digest != str(document["sha256"]):
+            reason = (
+                f"the staged file hashes to {digest}; the reservation declared {document['sha256']}"
             )
+        if reason is not None:
+            # The receipt keeps the reason, and the same answer goes out as the
+            # validation error the route reports: a failed upload is not a 200.
+            _fail(store, document, reason)
+            _discard_staged(store, receipt_id)
+            raise ValidationFailed([reason])
         declaration = StagedReservation.model_validate(
             {
                 "filename": document["filename"],
