@@ -130,7 +130,7 @@ def test_rendered_forms_drive_claim_login_and_logout(fresh):
     assert token is not None
     assert sessions.valid(token)
     assert "HttpOnly" in logged_in.headers["set-cookie"]
-    assert "You are signed in" in client.get("/admin").text
+    assert "<h1>Home</h1>" in client.get("/admin").text
 
     logged_out = client.post(
         "/v1/admin/logout", data={"csrf": form_token(client, "/admin")}, follow_redirects=False
@@ -164,7 +164,7 @@ def test_an_unsigned_csrf_cookie_cannot_authorize_a_signed_in_post(fresh):
     assert refused.status_code == 403
     assert "CSRF token missing or invalid" in refused.text
     assert COOKIE in client.cookies
-    assert "You are signed in" in client.get("/admin").text
+    assert "<h1>Home</h1>" in client.get("/admin").text
 
 
 def test_an_ended_session_says_so_on_the_login_page(fresh):
@@ -172,7 +172,7 @@ def test_an_ended_session_says_so_on_the_login_page(fresh):
     client, _, sessions = fresh
     claim(client)
     login(client)
-    assert "You are signed in" in client.get("/admin").text
+    assert "<h1>Home</h1>" in client.get("/admin").text
 
     sessions.now = lambda: datetime.now(tz=UTC) + timedelta(hours=13)
     ended = client.get("/admin", follow_redirects=False)
@@ -210,7 +210,7 @@ def test_the_session_cookie_is_always_secure(tmp_path: Path):
     with client:
         claim(client)
         assert "Secure" in login(client).headers["set-cookie"]
-        assert "You are signed in" in client.get("/admin").text
+        assert "<h1>Home</h1>" in client.get("/admin").text
 
 
 def test_the_session_cookie_lasts_the_browser_session_not_its_signed_validity(fresh):
@@ -275,7 +275,7 @@ def test_re_claiming_after_recovery_ends_every_session_the_old_password_opened(f
     client, wiring, sessions = fresh
     claim(client)
     login(client)
-    assert "You are signed in" in client.get("/admin").text
+    assert "<h1>Home</h1>" in client.get("/admin").text
 
     (wiring.state_dir / "admin.json").unlink()
     (wiring.state_dir / "internal" / "claim-code").write_text(CLAIM_CODE + "\n", encoding="utf-8")
@@ -401,7 +401,7 @@ def test_a_refused_claim_code_never_ends_a_live_session(fresh):
     refused = claim(client, code="not the code")
     assert refused.headers["location"] == "/admin/claim?error=invalid_claim_code"
     record.write_bytes(previous)
-    assert "You are signed in" in client.get("/admin").text
+    assert "<h1>Home</h1>" in client.get("/admin").text
 
 
 def test_a_tampered_session_cookie_is_refused(fresh):
@@ -446,7 +446,7 @@ def test_logout_clears_this_browser_but_not_a_token_taken_elsewhere(fresh):
     assert COOKIE not in client.cookies
     assert sessions.valid(captured)
     client.cookies.set(COOKIE, captured)
-    assert "You are signed in" in client.get("/admin").text
+    assert "<h1>Home</h1>" in client.get("/admin").text
 
     client.cookies.delete(COOKIE)
     (wiring.state_dir / "admin.json").unlink()

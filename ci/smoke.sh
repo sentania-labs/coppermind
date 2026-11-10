@@ -211,10 +211,10 @@ has_session_cookie && fail "a refused password issued a session cookie"
     || fail "the admin password chosen at claim did not sign in"
 has_session_cookie || fail "signing in did not issue a session cookie"
 overview_page="$(admin_page "$ADMIN/admin")"
-printf '%s' "$overview_page" | grep -Fq 'You are signed in' \
+printf '%s' "$overview_page" | grep -Fq '<h1>Home</h1>' \
     || fail "the protected overview did not render for a signed in operator"
 
-admin_csrf="$(admin_page -f "$ADMIN/admin" | form_value csrf)"
+admin_csrf="$(admin_page -f "$ADMIN/admin" | form_value csrf | head -1)"
 [ -n "$admin_csrf" ] || fail "Signed-in page has no CSRF token"
 
 step "create an API key through Admin and reveal it only once"

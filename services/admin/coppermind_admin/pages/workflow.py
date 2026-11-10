@@ -44,10 +44,10 @@ def router(wiring: Wiring) -> APIRouter:
                 f'<a href="/admin/workflow?tab={key}">{label}</a>'
                 for key, label in [
                     ("setup", "Workflow"),
-                    ("intake", "Dropbox"),
-                    ("enrichment", "Enrichment"),
-                    ("review", "Review notes"),
-                    ("dossiers", "Dossiers"),
+                    ("intake", "Imports"),
+                    ("enrichment", "Suggestions"),
+                    ("review", "Review status"),
+                    ("dossiers", "People"),
                 ]
             )
             + "</p>"
@@ -64,7 +64,7 @@ def router(wiring: Wiring) -> APIRouter:
             if data.get("worker_error"):
                 body += '<p class="error">' + e(data["worker_error"]) + "</p>"
             if tab == "setup":
-                title = "Note workflow"
+                title = "Workflow setup"
                 body += "<p>New note → suggestions → your review → filing and confirmed facts.</p>"
                 if not config.get("lifecycle_enabled"):
                     body += (
@@ -100,7 +100,7 @@ def router(wiring: Wiring) -> APIRouter:
                     "p>"
                 )
             elif tab == "intake":
-                title = "Dropbox"
+                title = "Imports"
                 dropbox = data.get("dropbox", {"folder": "Dropbox", "items": [], "calendars": []})
                 body += (
                     "<p>Drop ICS or ZIP files containing ICS into <strong>"
@@ -178,7 +178,7 @@ def router(wiring: Wiring) -> APIRouter:
                     "a></details>"
                 )
             elif tab == "enrichment":
-                title = "Enrichment"
+                title = "Suggestions"
                 assignment = config["assignments"]["enrichment"]
                 body += (
                     "<p>Make suggestions once for each new unreviewed note. Editing a not"
@@ -293,7 +293,7 @@ def router(wiring: Wiring) -> APIRouter:
                     )
                 )
             elif tab == "dossiers":
-                title = "Dossiers"
+                title = "People"
                 body += (
                     "<p>Read people and companies in Obsidian under People/ and Companies/. "
                     "Edit a fact there to correct it. This view is for setup and repair.</p>"
@@ -366,10 +366,10 @@ def router(wiring: Wiring) -> APIRouter:
                         '<p class="notice">No dossiers yet. Reviewed notes contribute people.</p>'
                     )
             else:
-                title = "Review notes"
+                title = "Review status"
                 body += (
-                    "<p>Read and correct the note, choose any suggestions, "
-                    "then finish review once.</p>"
+                    "<p>Review and correct notes in Obsidian, optionally using the companion. "
+                    "Checking Reviewed files the note. The links below offer an Admin fallback.</p>"
                 )
                 for job in data["jobs"]:
                     body += (
@@ -385,13 +385,18 @@ def router(wiring: Wiring) -> APIRouter:
                 backlog = await client(request).context_action(
                     "backlog", {"cursor": request.query_params.get("cursor")}
                 )
+                if not backlog["notes"]:
+                    body += (
+                        "<p>No notes are waiting for review. "
+                        "New notes appear here after they arrive.</p>"
+                    )
                 if not config["assignments"]["enrichment"]["enabled"]:
                     body += (
                         '<p class="notice">Enrichment is off. <a href="/admin/workflow?tab=en'
                         'richment">Finish enrichment setup</a> to queue notes. You can still '
                         "review notes without suggestions.</p>"
                     )
-                else:
+                elif backlog["notes"]:
                     fields = "".join(_check("note_" + n["id"], n["path"]) for n in backlog["notes"])
                     fields += _check("confirm_send", "Send selected notes for enrichment")
                     body += _form("enqueue", fields, "Enrich selected notes")

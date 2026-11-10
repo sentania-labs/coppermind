@@ -247,11 +247,13 @@ def router(wiring: Wiring) -> APIRouter:
     def client(request: Request) -> HttpStoreClient:
         return cast(HttpStoreClient, store_client(request, wiring))
 
-    def page(body: str, status: int = 200) -> HTMLResponse:
+    def page(
+        body: str, status: int = 200, *, title: str = "Calendar and enrichment"
+    ) -> HTMLResponse:
         from coppermind_admin.main import page as render
 
         return HTMLResponse(
-            render("Calendar and enrichment", '<div class="context-content">' + body + "</div>"),
+            render(title, '<div class="context-content">' + body + "</div>"),
             status_code=status,
         )
 
@@ -278,7 +280,12 @@ def router(wiring: Wiring) -> APIRouter:
         tab = request.query_params.get("tab", "calendar")
         config = data["config"]
         revision = config["revision"]
-        head = """<h1>Calendar and enrichment</h1><p class="section-links">
+        heading = {
+            "calendar": "Calendar",
+            "models": "Model connections",
+            "review": "Suggestions and backlog",
+        }.get(tab, "Calendar and enrichment")
+        head = f"""<h1>{heading}</h1><p class="section-links">
 <a href="/admin/context?tab=calendar">Calendar and contacts</a>
 <a href="/admin/context?tab=models">Connections and model</a>
 <a href="/admin/context?tab=review">Suggestions and backlog</a></p>"""
@@ -759,7 +766,7 @@ picker.addEventListener('change', () => {
         if data.get("next_offset") is not None:
             target = f"/admin/context?tab={quote(tab)}&amp;offset={data['next_offset']}"
             body += f'<a href="{target}">Next records</a>'
-        return page(head + body)
+        return page(head + body, title=heading)
 
     @routes.get("/admin/context/jobs/{identity}", include_in_schema=False)
     async def job_page(identity: str, request: Request) -> Response:

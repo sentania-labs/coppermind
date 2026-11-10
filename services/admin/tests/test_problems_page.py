@@ -9,9 +9,12 @@ is held: there is no call Admin could make here that would change one.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from http.client import BadStatusLine, IncompleteRead
 
 import pytest
+from coppermind_admin.pages.problems import sync_status as real_sync_status
 
+from coppermind.settings import Wiring
 from coppermind.store_protocol import (
     NoteSourceInfo,
     NotFound,
@@ -57,6 +60,16 @@ class ReadOnlyStore:
         self.calls.append(name)
         if not self.reachable:
             raise StoreUnavailable("the store is down")
+
+    async def context_action(self, action, payload):
+        self._check("context_action")
+        return {
+            "dropbox": [],
+            "failed_imports": {"total": 0, "items": []},
+            "recent_imports": [],
+            "failed_jobs": {"total": 0, "unchecked": 0, "items": []},
+            "worker_error": "",
+        }
 
     async def get_status(self) -> StatusResponse:
         self._check("get_status")
@@ -117,28 +130,30 @@ class ReadOnlyStore:
         raise AssertionError(f"Admin asked the store for {name}, which the dashboard never needs")
 
 
+@pytest.fixture(autouse=True)
+def available_sync(monkeypatch):
+    from coppermind_admin.pages import problems
+
+    monkeypatch.setattr(problems, "sync_status", lambda wiring: {"state": "syncing"})
+
+
 def _install(client, store: ReadOnlyStore) -> ReadOnlyStore:
     client.app.state.store = store
     return store
 
 
-def test_the_overview_shows_the_stores_counters(signed_in):
+def test_home_shows_review_link_and_actionable_problems(signed_in):
     client, _ = signed_in
     _install(client, ReadOnlyStore())
 
     response = client.get("/admin")
 
     assert response.status_code == 200
-    for line in (
-        "Notes awaiting review: 5",
-        "Notes by state: ok: 7, unparsed: 1",
-        "Sources: 10",
-        "Rejected ingests: 2",
-        "Name collisions: 3",
-        "Unparseable files: 1",
-        '<a href="/admin/problems">Problems (6)</a>',
-    ):
-        assert line in response.text
+    assert '<a href="/admin/workflow?tab=review">5 notes awaiting review</a>' in response.text
+    assert "Needs attention (2)" in response.text
+    assert "Inbox/broken &lt;b&gt;.md" in response.text
+    assert f'href="/admin/notes/{NOTE_ID}"' in response.text
+    assert f'href="/admin/sources/{SOURCE_ID}"' in response.text
 
 
 def test_the_overview_shows_a_returned_artifact_and_dismiss_only_hides_it(signed_in):
@@ -147,8 +162,8 @@ def test_the_overview_shows_a_returned_artifact_and_dismiss_only_hides_it(signed
     client, _ = signed_in
     store = _install(client, ReadOnlyStore())
     quiet = client.get("/admin")
-    assert "Artifacts moved in Obsidian and returned to their folder: 0" in quiet.text
-    assert store.calls == ["get_status"], "no notice, no second call to the store"
+    assert "No recent activity." in quiet.text
+    assert "list_reconciler_notices" not in store.calls
 
     artifact_id = "01K4Q8Z2A0P1Q2R3S4T5U6V7W8"
     store.notices = [
@@ -164,7 +179,7 @@ def test_the_overview_shows_a_returned_artifact_and_dismiss_only_hides_it(signed
         )
     ]
     shown = client.get("/admin").text
-    assert "Artifacts moved in Obsidian and returned to their folder: 1" in shown
+    assert "Recent activity" in shown
     assert "<strong>Enablement deck</strong>" in shown
     assert "found at <code>Projects/deck.pptx</code>" in shown
     assert "returned to <code>Artifacts/2026/2026-11/deck.pptx</code>" in shown
@@ -201,7 +216,7 @@ def test_the_problems_page_lists_each_problem_with_a_link(signed_in):
     response = client.get("/admin/problems")
 
     assert response.status_code == 200
-    assert "<h1>Problems</h1>" in response.text
+    assert "<h1>Note and filing details</h1>" in response.text
     assert "frontmatter is not valid YAML" in response.text
     assert "Inbox/broken &lt;b&gt;.md" in response.text
     assert f'<a href="/admin/notes/{NOTE_ID}">' in response.text
@@ -236,7 +251,7 @@ def test_an_empty_dashboard_says_so(signed_in):
     response = client.get("/admin/problems")
 
     assert response.status_code == 200
-    assert "No problems found." in response.text
+    assert "No note or filing problems found." in response.text
 
 
 def test_the_problems_page_reports_an_unreachable_store(signed_in):
@@ -274,21 +289,6 @@ def test_the_json_endpoints_match_the_pages(signed_in):
 
 
 def test_exclusions_do_not_inflate_problem_counter_and_are_separated(signed_in):
-    from coppermind_admin.pages.problems import counters_html
-
-    assert "Problems (0)" in counters_html(
-        StatusResponse(
-            counters=StatusCounters(
-                notes_awaiting_review=0,
-                notes_by_state={},
-                sources=0,
-                rejected_ingests=0,
-                name_collisions=0,
-                unparseable_files=0,
-                excluded_count=8,
-            )
-        )
-    )
     client, _ = signed_in
     store = ReadOnlyStore()
     store.problems.append(
@@ -324,7 +324,7 @@ def test_known_unreadable_search_entries_are_counted_and_linked(signed_in):
     assert status.status_code == 200
     assert status.json()["counters"]["known_unreadable"] == 1
     overview = client.get("/admin")
-    assert "Known unreadable search entries: 1" in overview.text
+    assert "Sources/missing.md" in overview.text
 
 
 def test_calendar_and_dropbox_failures_count_and_link_to_dismissal(signed_in):
@@ -341,7 +341,7 @@ def test_calendar_and_dropbox_failures_count_and_link_to_dismissal(signed_in):
         ProblemInfo(kind="dropbox", reference="handout.pdf", reason="Unsupported file type"),
     ]
     _install(client, fake)
-    assert "Problems (2)" in client.get("/admin").text
+    assert "Needs attention (2)" in client.get("/admin").text
     page = client.get("/admin/problems")
     assert 'href="/admin/context?tab=calendar"' in page.text
     assert 'href="/admin/workflow?tab=intake"' in page.text
@@ -365,25 +365,6 @@ def test_an_unreadable_purge_receipt_offers_abandon(signed_in):
     assert 'action="/v1/admin/purge/abandon"' in response.text
     assert f'name="token" value="{"a" * 64}"' in response.text
     assert 'name="csrf"' in response.text
-
-
-def test_the_overview_count_includes_purge_problems():
-    from coppermind_admin.pages.problems import counters_html
-
-    html = counters_html(
-        StatusResponse(
-            counters=StatusCounters(
-                notes_awaiting_review=0,
-                notes_by_state={},
-                sources=0,
-                rejected_ingests=1,
-                name_collisions=0,
-                unparseable_files=0,
-                purge_problems=3,
-            )
-        )
-    )
-    assert "Problems (4)" in html and "Retention purge items needing attention: 3" in html
 
 
 def test_a_damaged_source_bundle_is_plain_and_has_no_dead_link(signed_in):
@@ -430,7 +411,7 @@ def test_filing_errors_are_actionable_and_missing_links_to_recovery(signed_in):
 
 
 def test_filing_estimate_excludes_errors_and_shows_stalled_work():
-    from coppermind_admin.pages.problems import counters_html
+    from coppermind_admin.pages.problems import filing_status_html
 
     counters = StatusCounters(
         notes_awaiting_review=0,
@@ -443,15 +424,15 @@ def test_filing_estimate_excludes_errors_and_shows_stalled_work():
         filing_failures=2,
         filing_estimated_drain_s=60,
     )
-    text = counters_html(StatusResponse(counters=counters))
+    text = filing_status_html(StatusResponse(counters=counters))
     assert "Filing needs attention" in text
     assert "about 1" not in text
     counters.filing_ready_depth = 1
-    text = counters_html(StatusResponse(counters=counters))
+    text = filing_status_html(StatusResponse(counters=counters))
     assert "about 1 minute for notes without errors" in text
     assert "1 minutes" not in text
     counters.filing_stalled = True
-    assert "No recent filing progress" in counters_html(StatusResponse(counters=counters))
+    assert "No recent filing progress" in filing_status_html(StatusResponse(counters=counters))
 
 
 @pytest.mark.parametrize(
@@ -492,35 +473,10 @@ def test_problems_and_overview_share_filing_status(signed_in, queue, errors, rea
     assert f"Ready to file: {ready}" in summary
     assert f"Notes with filing errors: {errors}" in summary
     assert "Last filing progress: November 5, 2026" in summary
-    assert problems.text.index(heading) < problems.text.index("No problems found.")
-    # The Problems page drops the link that points at the same page; the Overview keeps it.
+    assert problems.text.index(heading) < problems.text.index("No note or filing problems found.")
+    # The Problems page drops the link that points at the same page; Home keeps it.
     assert "Check filing problems and recovery options" not in problems.text
     assert "Check filing problems and recovery options" in overview.text
-
-
-def test_counters_show_the_notes_root_and_the_pending_move_count():
-    from coppermind_admin.pages.problems import counters_html
-
-    html = counters_html(
-        StatusResponse(
-            counters=StatusCounters(
-                notes_awaiting_review=0,
-                notes_by_state={},
-                sources=0,
-                rejected_ingests=0,
-                name_collisions=0,
-                unparseable_files=0,
-                notes_folder="Notes",
-                notes_to_refile=7,
-                notes_returned=2,
-            )
-        )
-    )
-    assert "organized by year and month under <code>Notes/</code>" in html
-    assert "<code>Notes/2026/2026-04/</code>" in html
-    assert "7 notes still to move." in html
-    assert "Upgrade complete" not in html
-    assert "returned to their filed folder: 2" in html
 
 
 class NoticeStore(ReadOnlyStore):
@@ -568,7 +524,7 @@ def test_returned_notes_and_kept_folders_share_the_one_problems_list(signed_in):
     assert text.count(f'action="/v1/admin/notices/{NOTE_ID}/dismiss"') == 1
     assert "Dismiss notice</button>" in text
     assert text.count("Dismiss notice</button>") == 1
-    assert "Warehouse" not in client.get("/admin").text
+    assert "Warehouse &lt;call&gt;" in client.get("/admin").text
 
 
 def test_dismissing_a_notice_removes_it_from_the_problems_list(signed_in):
@@ -595,25 +551,237 @@ def test_dismissing_needs_the_form_token(signed_in):
     assert len(store.problems) == before
 
 
-def test_counters_say_plainly_when_the_upgrade_is_complete():
-    from coppermind_admin.pages.problems import counters_html
+def test_home_lists_what_the_store_reports_and_notes_overflow(signed_in):
+    class AttentionStore(ReadOnlyStore):
+        async def context_action(self, action, payload):
+            self.calls.append(action)
+            return {
+                "dropbox": [
+                    {"state": "unsupported", "filename": "slides.pdf", "error": "Unsupported file"}
+                ],
+                "failed_imports": {
+                    "total": 52,
+                    "items": [{"filename": "bad.ics", "error": "Bad calendar"}],
+                },
+                "recent_imports": [
+                    {"filename": "old.ics", "state": "failed", "dismissed": True},
+                    {"filename": "good.ics", "state": "succeeded", "dismissed": False},
+                ],
+                "failed_jobs": {
+                    "total": 1,
+                    "unchecked": 0,
+                    "items": [{"id": "failed", "path": "Review/two.md", "error": "Too large"}],
+                },
+                "worker_error": "",
+            }
 
-    html = counters_html(
-        StatusResponse(
-            counters=StatusCounters(
-                notes_awaiting_review=0,
-                notes_by_state={},
-                sources=0,
-                rejected_ingests=0,
-                name_collisions=0,
-                unparseable_files=0,
-                notes_folder="Filed",
-                notes_to_refile=0,
-            )
-        )
+    client, _ = signed_in
+    store = _install(client, AttentionStore())
+    store.problems = []
+    page = client.get("/admin").text
+    assert "Needs attention (4)" in page
+    assert "slides.pdf" in page and "Unsupported file" in page
+    assert "bad.ics" in page and "Bad calendar" in page
+    assert "51 more failed imports" in page
+    assert "Review/two.md" in page and "Too large" in page
+    assert 'href="/admin/context/jobs/failed"' in page
+    assert "old.ics: Failure dismissed" in page and "good.ics: Imported" in page
+    assert "Nothing needs attention right now" not in page
+    assert store.calls.count("attention") == 1
+
+
+def test_home_makes_a_bounded_number_of_store_calls(signed_in):
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = []
+    client.get("/admin")
+    assert store.calls.count("context_action") == 1
+    assert len(store.calls) <= 3
+
+
+def test_home_never_says_clear_when_checks_fail(signed_in, monkeypatch):
+    from coppermind_admin.pages import problems
+
+    class UnavailableSnapshot(ReadOnlyStore):
+        async def context_action(self, action, payload):
+            raise StoreUnavailable("unavailable")
+
+    client, _ = signed_in
+    store = _install(client, UnavailableSnapshot())
+    store.problems = []
+
+    def unavailable(wiring):
+        raise OSError("offline")
+
+    monkeypatch.setattr(problems, "sync_status", unavailable)
+    page = client.get("/admin").text
+    assert "Some attention items could not be checked" in page
+    assert "Device connection could not be checked" in page
+    assert "Nothing needs attention right now" not in page
+
+
+def test_home_shows_paused_device(signed_in, monkeypatch):
+    from coppermind_admin.pages import problems
+
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = []
+    monkeypatch.setattr(problems, "sync_status", lambda wiring: {"state": "paused"})
+    page = client.get("/admin").text
+    assert "Nothing needs attention right now" in page
+    assert "Device connection needs attention" not in page
+    assert "Sync is paused" in page
+    assert 'href="/admin/sync"' in page
+
+
+@pytest.mark.parametrize(
+    "status",
+    [{"state": "error"}, {"state": "stopped"}, {"last_error": "boom"}, {"config_error": "bad"}],
+)
+def test_home_flags_a_failed_device(signed_in, monkeypatch, status):
+    from coppermind_admin.pages import problems
+
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = []
+    monkeypatch.setattr(problems, "sync_status", lambda wiring: status)
+    page = client.get("/admin").text
+    assert "Device connection needs attention" in page
+    assert "Nothing needs attention right now" not in page
+
+
+class _Response:
+    def __init__(self, body: bytes, error: Exception | None = None) -> None:
+        self.body = body
+        self.error = error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, size: int = -1) -> bytes:
+        if self.error:
+            raise self.error
+        return self.body
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        _Response(b"", BadStatusLine("")),
+        _Response(b"", IncompleteRead(b"{")),
+        _Response(b"[]"),
+        _Response(b"null"),
+        _Response(b"not json"),
+    ],
+)
+def test_home_survives_a_bad_sync_helper_answer(signed_in, monkeypatch, response):
+    from coppermind_admin.pages import problems
+
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = []
+    monkeypatch.setattr(problems, "sync_status", real_sync_status)
+    monkeypatch.setattr(problems, "urlopen", lambda req, timeout: response)
+    monkeypatch.setattr(Wiring, "read_internal_token", lambda self: "token")
+    page = client.get("/admin")
+    assert page.status_code == 200
+    assert "Device connection could not be checked" in page.text
+    assert "Nothing needs attention right now" not in page.text
+
+
+def test_dismissing_from_home_returns_to_home(signed_in):
+    import re
+
+    client, _ = signed_in
+    _install(client, NoticeStore())
+    home = client.get("/admin").text
+    form = re.search(r"<form[^>]*dismiss[^>]*>(.*?)</form>", home, re.S)
+    assert form, "Home shows the dismiss form for a returned note"
+    back = re.search(r'name="back" value="([^"]*)"', form.group(1))
+    assert back
+    token = form_token(client, "/admin")
+    response = client.post(
+        f"/v1/admin/notices/{NOTE_ID}/dismiss",
+        data={"csrf": token, "back": back.group(1)},
+        follow_redirects=False,
     )
-    assert "Upgrade complete." in html
-    assert "<code>Filed/2026/2026-04/</code>" in html
-    assert "still to move" not in html
-    # The filing explanation leads, ahead of the operational counters.
-    assert html.index("Notes filing") < html.index("Rejected ingests")
+    assert response.headers["location"] == "/admin"
+
+
+def test_home_says_more_may_be_failing_when_the_store_stopped_checking(signed_in):
+    class CappedStore(ReadOnlyStore):
+        async def context_action(self, action, payload):
+            data = await super().context_action(action, payload)
+            data["failed_jobs"] = {
+                "total": 50,
+                "unchecked": 250,
+                "items": [
+                    {"id": f"job{i}", "path": f"Review/{i}.md", "error": "Too large"}
+                    for i in range(50)
+                ],
+            }
+            return data
+
+    client, _ = signed_in
+    store = _install(client, CappedStore())
+    store.problems = []
+    page = client.get("/admin").text
+    assert "More notes may have failed suggestions" in page
+    assert "Needs attention (51)" in page
+    assert "250 more" not in page
+
+
+def test_home_shows_sync_configuration_failure(signed_in, monkeypatch):
+    from coppermind_admin.pages import problems
+
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = []
+    monkeypatch.setattr(
+        problems, "sync_status", lambda wiring: {"state": "configuring", "config_error": "Failed"}
+    )
+    page = client.get("/admin").text
+    assert "Device connection needs attention" in page
+    assert 'href="/admin/sync"' in page
+
+
+@pytest.mark.parametrize("device", [{"state": "not_connected"}, {"configured": False}])
+def test_home_flags_unconnected_sync(signed_in, monkeypatch, device):
+    from coppermind_admin.pages import problems
+
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = []
+    monkeypatch.setattr(problems, "sync_status", lambda wiring: device)
+    page = client.get("/admin").text
+    assert "Obsidian Sync isn&#x27;t connected" in page or "Obsidian Sync isn't connected" in page
+    assert '<a href="/admin/sync">Connect devices</a>' in page
+    assert "Nothing needs attention right now" not in page
+
+
+def test_home_groups_collision_without_exposing_identity(signed_in):
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = [
+        ProblemInfo(
+            kind="collision",
+            reference=NOTE_ID,
+            note_id=NOTE_ID,
+            reason="Review/Meeting.md carries this note identity",
+        ),
+        ProblemInfo(
+            kind="collision",
+            reference=NOTE_ID,
+            note_id=NOTE_ID,
+            reason="Meetings/Duplicate.md carries this note identity",
+        ),
+    ]
+    page = client.get("/admin").text
+    assert "Needs attention (1)" in page
+    assert page.count("Two files appear to be the same note") == 1
+    assert "Review/Meeting.md" in page and "Meetings/Duplicate.md" in page
+    assert "Neither file was changed" in page and "Compare and resolve" in page
+    assert NOTE_ID not in page

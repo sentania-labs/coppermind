@@ -23,19 +23,22 @@ SECTIONS = {
     "sync": "Sync limits",
     "limits": "Upload limits",
     "admin": "Sessions",
-    "curator": "Filing (planned)",
-    "indexer": "Index settings (planned)",
-    "events": "Events (planned)",
+    "curator": "Filing",
+    "indexer": "Index settings",
+    "events": "Events",
     "schema_version": "Settings format",
 }
 UNAVAILABLE = {
-    "curator": "Automatic filing is not implemented. These settings do not affect notes yet.",
-    "indexer": (
-        "Search works, but these controls are not connected yet. Indexing is always on, "
-        "uses English plus exact words, and catches up with filesystem reconciliation."
-    ),
-    "events": "Event consumers and retention controls are not implemented yet.",
-    "schema_version": "This format version is managed by Coppermind and cannot be edited here.",
+    "curator": "Filing options will let you change how reviewed notes are filed. "
+    "Reviewed notes are filed automatically by year and month today, "
+    "and there is nothing to set yet.",
+    "indexer": "Index settings will let you tune search indexing. "
+    "Search works today, always on with English plus exact words, "
+    "and there is nothing to set yet.",
+    "events": "Events will let you control event consumers and how long events are kept. "
+    "There is nothing to set today.",
+    "schema_version": "Settings format will show the version of the settings file. "
+    "Coppermind manages it, so there is nothing to set today.",
 }
 LABELS = {
     "limits.calendar_max_events": "Maximum retained calendar events",
@@ -136,13 +139,19 @@ def render(
     revision = submitted.get("revision", "") if submitted else str(state.revision)
     if section not in SECTIONS:
         section = "general"
-    links = "".join(
-        f'<a href="/admin/settings?section={name}"'
-        + (' aria-current="page"' if name == section else "")
-        + f">{label}</a>"
-        for name, label in SECTIONS.items()
+
+    def link(name: str) -> str:
+        current = ' aria-current="page"' if name == section else ""
+        return f'<a href="/admin/settings?section={name}"{current}>{SECTIONS[name]}</a>'
+
+    links = "".join(link(name) for name in SECTIONS if name not in UNAVAILABLE)
+    not_yet = "".join(link(name) for name in SECTIONS if name in UNAVAILABLE)
+    links += (
+        '<span class="section-links-heading">Not available yet</span>' + not_yet if not_yet else ""
     )
-    body = f"""<h1>Settings</h1><p>Save one section at a time. Other settings stay unchanged.</p>
+    page_title = "Folders and filing" if section == "notes" else "Settings"
+    body = f"""<h1>{page_title}</h1><p>Save one section at a time.
+Other settings stay unchanged.</p>
 {message}<div class="section-links" aria-label="Settings sections">{links}</div>"""
     for group, label in SECTIONS.items():
         hidden = " hidden" if group != section else ""
@@ -176,17 +185,22 @@ def render(
                 description = ""
                 key_note = ""
             else:
-                description = field.description or field.title or path
-                key_note = f'<span class="muted">Setting: <code>{path}</code></span>'
+                description = field.description or field.title or title
+                key_note = (
+                    "<details><summary>Technical details</summary>"
+                    f"<code>{escape(path)}</code></details>"
+                )
             body += f'''<div><label for="{path}">{title}</label>
 {control(path, field, defaults[path], text, disabled)}
 <p class="setting-help">{escape(help_text)}{escape(description)}<br>
-Default: <code>{escape(displayed(defaults[path]))}</code>.
-{key_note}</p></div>'''
+Default: <code>{escape(displayed(defaults[path]))}</code>.</p>
+{key_note}</div>'''
         body += '</div><div class="form-footer">'
         if not unavailable:
             body += "<button>Save this section</button>"
-        body += f'<p class="muted">Revision: {state.revision}. Concurrent changes are refused.</p>'
+        body += (
+            f"<details><summary>Technical details</summary>Revision: {state.revision}.</details>"
+        )
         body += "</div></form>"
     initial_dirty = "true" if submitted else "false"
     body += f"""<script type="module">
@@ -199,7 +213,7 @@ window.addEventListener('beforeunload', (event) => {{
   if (dirty) {{ event.preventDefault(); event.returnValue = ''; }}
 }});
 </script>"""
-    return HTMLResponse(main.page("Settings", body), status_code=status)
+    return HTMLResponse(main.page(page_title, body), status_code=status)
 
 
 def failure(error: Exception, status: int = 500) -> HTMLResponse:

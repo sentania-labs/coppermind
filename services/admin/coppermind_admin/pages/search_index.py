@@ -88,7 +88,7 @@ def router(wiring: Wiring) -> APIRouter:
 
     @routes.get("/admin/search-index", response_class=HTMLResponse, include_in_schema=False)
     async def search_index_page(request: Request) -> Response:
-        heading = '<h1>Search index</h1><p><a href="/admin">Overview</a></p>'
+        heading = '<h1>Search index</h1><p><a href="/admin">Home</a></p>'
         try:
             status = await _client(request, wiring).get_search_index_status()
         except (StoreError, OSError):

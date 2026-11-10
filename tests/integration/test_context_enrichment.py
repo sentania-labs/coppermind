@@ -1674,3 +1674,80 @@ async def test_reviewed_filed_note_has_same_retry_eligibility_in_list_and_detail
     for view in (summary, detail):
         assert view["can_retry"] is False
         assert view["retry_reason"] == "This note is reviewed and filed; nothing more to do."
+
+
+async def test_attention_reports_only_open_failures_in_one_read(store):
+    context = await configure(store)
+
+    async def failed_job(title, *, error, state="failed", created_at=None):
+        note = await store.create_note(
+            CreateNote(title=title, body="x", frontmatter={"date": "2026-10-14"})
+        )
+        job = context.load_job(await context.queue_note(note.id))
+        job.state, job.error = state, error
+        if created_at:
+            job.created_at = created_at
+        context.save_job(job)
+        return note, job
+
+    _, open_job = await failed_job("Open", error="Input too large")
+    reviewed, reviewed_job = await failed_job("Done", error="Old error")
+    await store.patch_frontmatter(
+        reviewed.id, PatchFrontmatter(set={"reviewed": True}), reviewed.content_hash
+    )
+    dossier = reviewed_job.model_copy(
+        update={"id": "dossier", "purpose": "dossier", "error": "Dossier failed"}
+    )
+    context.save_job(dossier)
+    reviewed_calendar = reviewed_job.model_copy(
+        update={"id": "reviewed-calendar", "purpose": "calendar", "error": "Old calendar error"}
+    )
+    context.save_job(reviewed_calendar)
+    open_calendar = open_job.model_copy(
+        update={"id": "open-calendar", "purpose": "calendar", "error": "Calendar failed"}
+    )
+    context.save_job(open_calendar)
+    gone = open_job.model_copy(update={"id": "gone", "note_id": "no-such-note"})
+    context.save_job(gone)
+    _, old = await failed_job("Fixed", error="Old failure", created_at="2026-01-01T00:00:00+00:00")
+    newer = old.model_copy(
+        update={"id": "newer", "state": "applied", "created_at": "2026-02-01T00:00:00+00:00"}
+    )
+    context.save_job(newer)
+
+    data = await context.attention({})
+
+    assert data["failed_jobs"]["total"] == 3
+    assert sorted(item["id"] for item in data["failed_jobs"]["items"]) == sorted(
+        [open_job.id, "open-calendar", "dossier"]
+    )
+    assert data["failed_imports"] == {"total": 0, "items": []}
+    assert data["worker_error"] == ""
+
+
+async def test_attention_caps_open_failures_and_says_when_it_stopped_checking(store):
+    context = await configure(store)
+    for index in range(55):
+        note = await store.create_note(
+            CreateNote(title=f"Note {index}", body="x", frontmatter={"date": "2026-10-14"})
+        )
+        job = context.load_job(await context.queue_note(note.id))
+        job.state, job.error = "failed", "Too large"
+        job.created_at = f"2026-03-01T00:{index:02}:00+00:00"
+        context.save_job(job)
+    for index in range(5):
+        context.save_job(
+            job.model_copy(
+                update={
+                    "id": f"gone{index}",
+                    "note_id": f"no-such-note-{index}",
+                    "created_at": f"2026-01-01T00:0{index}:00+00:00",
+                }
+            )
+        )
+
+    jobs = (await context.attention({}))["failed_jobs"]
+
+    assert len(jobs["items"]) == 50
+    assert jobs["total"] == 50
+    assert jobs["unchecked"] == 10

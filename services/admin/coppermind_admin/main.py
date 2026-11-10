@@ -297,7 +297,9 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
             except AdminRecordUnreadable as exc:
                 return unreadable_state_file(credentials.path, str(exc), ADMIN_RECORD_REMEDY)
             if signed_in:
-                context = admin_path.set(path)
+                context = admin_path.set(
+                    path + (("?" + request.url.query) if request.url.query else "")
+                )
                 try:
                     return await call_next(request)
                 finally:
@@ -338,13 +340,10 @@ required></label><button>Log in</button></form>""",
         counters = await problems.overview_counters(request, settings)
         return HTMLResponse(
             page(
-                "Overview",
-                f"""<h1>Coppermind Admin</h1><p>You are signed in.</p>
-<p class="muted">Review the current state, inspect problems, and manage your notes filesystem.</p>
-{counters}
-<h2>Operate and recover</h2>
-<p><a href="/admin/search-index">Inspect or rebuild the search index</a>. A search rebuild
-is not a complete restore of source records and note associations.</p>""",
+                "Home",
+                f"""<h1>Home</h1><p>Review notes in Obsidian.
+Coppermind files them when you check Reviewed.</p>
+{counters}""",
             )
         )
 

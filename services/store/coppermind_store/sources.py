@@ -1445,7 +1445,7 @@ def _damaged_reason(entry: dict[str, str]) -> str:
 
 
 async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
-    """What retention purge leaves for the owner, for Problems and the Overview count.
+    """What retention purge leaves for the owner, for Problems and the Home Needs attention list.
 
     This reads the problems the last maintenance scan recorded and the few receipts
     that can still be unfinished. It never walks a source bundle or a finished receipt.

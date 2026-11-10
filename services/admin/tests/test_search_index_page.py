@@ -56,11 +56,11 @@ class IndexStore:
         raise AssertionError(f"Admin asked the store for {name}, which this page never needs")
 
 
-def test_the_overview_links_to_the_search_index(signed_in):
+def test_settings_links_to_the_search_index(signed_in):
     client, _ = signed_in
     client.app.state.store = IndexStore()
 
-    assert '<a href="/admin/search-index">Search index</a>' in client.get("/admin").text
+    assert '<a href="/admin/search-index">Search index</a>' in client.get("/admin/settings").text
 
 
 def test_the_page_shows_counts_and_times_in_local_time(signed_in):
@@ -114,7 +114,7 @@ def test_an_unreachable_store_is_named_and_nothing_is_rebuilt(signed_in):
     client, _ = signed_in
     client.app.state.store = IndexStore(reachable=False)
     page = client.get("/admin/search-index")
-    token = form_token(client, "/admin")
+    token = form_token(client, "/admin/search-index")
 
     refused = client.post("/v1/admin/search-index/rebuild", data={"csrf": token})
 

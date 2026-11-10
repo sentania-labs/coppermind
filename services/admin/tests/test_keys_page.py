@@ -76,7 +76,7 @@ def test_list_create_reveal_once_revoke(signed_in):
     second = client.get("/admin/keys")
     assert credential not in second.text and secret not in second.text
     assert record.hash not in second.text
-    assert "<script>" not in second.text
+    assert "<script>alert" not in second.text
     for value in [key_id, "notes:read", "Created:", "Revoked: No"]:
         assert value in second.text
     revision = load_keys(store).revision

@@ -22,7 +22,7 @@ def render(store: StateStore, message: str = "", status: int = 200) -> HTMLRespo
         zone = ZoneInfo(read_settings(store).general.timezone)
     except (OSError, ValueError):
         zone = ZoneInfo("America/Chicago")
-    body = '<h1>API Keys</h1><p><a href="/admin">Overview</a></p>' + message
+    body = '<h1>Connected apps</h1><p>API Keys</p><p><a href="/admin">Home</a></p>' + message
     body += "<p>Changes reach the API within five minutes.</p>"
     for key in keys.keys:
         body += f"""<section><h2>{escape(key.name)}</h2>
@@ -40,7 +40,7 @@ def render(store: StateStore, message: str = "", status: int = 200) -> HTMLRespo
     for scope in API_SCOPES:
         body += f'<label><input type="checkbox" name="scope:{scope}" value="on">{scope}</label>'
     body += "</fieldset><button>Create key</button></form>"
-    return HTMLResponse(main.page("API Keys", body), status_code=status)
+    return HTMLResponse(main.page("Connected apps", body), status_code=status)
 
 
 def refused(error: Exception, status: int) -> HTMLResponse:
@@ -48,8 +48,9 @@ def refused(error: Exception, status: int) -> HTMLResponse:
 
     return HTMLResponse(
         main.page(
-            "API Keys",
-            f'<h1>API Keys</h1><p class="error">{escape(main.rejection_detail(error))}</p>'
+            "Connected apps",
+            "<h1>Connected apps</h1><p>API Keys</p>"
+            f'<p class="error">{escape(main.rejection_detail(error))}</p>'
             '<a href="/admin/keys">Reload keys</a>',
         ),
         status_code=status,

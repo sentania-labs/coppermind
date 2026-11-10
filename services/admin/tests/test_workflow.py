@@ -192,3 +192,34 @@ def test_failed_dropbox_file_is_dismissed_not_retried(signed_in):
     action, payload = fake.calls[-1]
     assert action == "dismiss-drop"
     assert payload["id"] == "failed-file"
+
+
+def test_review_status_has_clear_empty_state_without_enqueue(signed_in):
+    client, _ = signed_in
+
+    class EnabledStore(ContextStore):
+        async def context_action(self, action, payload):
+            data = await super().context_action(action, payload)
+            if action == "snapshot":
+                data["config"]["assignments"]["enrichment"]["enabled"] = True
+            return data
+
+    client.app.state.store = EnabledStore()
+    page = client.get("/admin/workflow?tab=review").text
+    assert "No notes are waiting for review. New notes appear here after they arrive." in page
+    assert "Enrich selected notes" not in page
+    assert "Send selected notes for enrichment" not in page
+
+
+def test_task_destination_names_match_headings_and_breadcrumbs(signed_in):
+    client, _ = signed_in
+    client.app.state.store = ContextStore()
+    for url, name in (
+        ("/admin/context?tab=calendar", "Calendar"),
+        ("/admin/workflow?tab=enrichment", "Suggestions"),
+        ("/admin/keys", "Connected apps"),
+        ("/admin/sync", "Devices"),
+    ):
+        page = client.get(url).text
+        assert f"<h1>{name}</h1>" in page
+        assert f"Coppermind / {name}" in page
