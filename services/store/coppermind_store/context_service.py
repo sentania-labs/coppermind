@@ -132,6 +132,9 @@ def fingerprint(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
 
 
+NOTE_QUIET_PERIOD = timedelta(seconds=60)
+
+
 def now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -1877,21 +1880,17 @@ class ContextService:
                             model_ready = True
                         except ValueError:
                             pass
+                    changed = known.note_hash != current.content_hash
+                    if changed and datetime.now(UTC) - current.updated_at < NOTE_QUIET_PERIOD:
+                        continue
                     if (
-                        model_ready
-                        or known.state == "stale"
-                        or known.note_hash != current.content_hash
+                        changed
+                        or model_ready
                         or known.config_hash != self.config_hash()
                         or known.schema_hash != self.schema_hash()
                         or known.evidence_hash != await self.note_evidence_hash(current, ledger)
                     ):
-                        touched.append(
-                            await self.queue_note(
-                                note.id,
-                                force=model_ready or known.state == "stale",
-                                ledger=ledger,
-                            )
-                        )
+                        touched.append(await self.queue_note(note.id, force=True, ledger=ledger))
                     continue
                 if self.config().lifecycle_enabled and previous:
                     current = await self.store.get_note(note.id)

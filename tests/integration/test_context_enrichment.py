@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
+from coppermind_store import context_service
 from coppermind_store.context_service import ContextService
 from coppermind_store.model_provider import ModelProvider, ProviderError
 from coppermind_store.reconciler import reconcile_once
@@ -1431,3 +1432,61 @@ async def test_tick_recovers_a_model_not_available_failure_once_the_model_is_dis
     assert len(jobs) == 2
     assert jobs[0].id == first and jobs[0].state == "failed"
     assert jobs[-1].state == "suggested"
+
+
+async def test_an_edited_failed_note_gets_no_new_job_until_it_settles(store, monkeypatch):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 2000
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Large", body="word " * 1000, frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    await context.run_job(context.load_job(first))
+    assert context.load_job(first).state == "failed"
+
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"account": "human correction"}), note.content_hash
+    )
+    await context.tick()
+    await context.tick()
+    assert [job.id for job in context.jobs()] == [first]
+
+    monkeypatch.setattr(context_service, "NOTE_QUIET_PERIOD", timedelta(0))
+    await context.tick()
+    await context.tick()
+    assert len(context.jobs()) == 2
+
+
+async def test_coppermind_own_writes_do_not_requeue_the_job(store):
+    note = await store.create_note(
+        CreateNote(
+            title="Old name",
+            body="# Original heading\nCasey attended.",
+            frontmatter={"date": "2026-10-14"},
+        )
+    )
+    context = await configure(store)
+    queued = await context.enqueue(
+        {"note_ids": [note.id], "confirmation": "Send selected notes for enrichment"}
+    )
+    job = context.load_job(queued["jobs"][0])
+    await context.run_job(job)
+    assert job.state == "suggested", job.error
+    await context.approve(
+        {
+            "id": job.id,
+            "index": 0,
+            "confirmation": "Apply selected suggestion",
+            "accept_link_risk": True,
+        }
+    )
+    applied = context.load_job(job.id)
+    applied.state = "stale"
+    context.save_job(applied)
+
+    await context.tick()
+    await context.tick()
+
+    assert [item.id for item in context.jobs()] == [job.id]

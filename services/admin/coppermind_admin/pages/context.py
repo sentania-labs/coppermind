@@ -604,7 +604,6 @@ picker.addEventListener('change', () => {
                 "automatically. Other suggestions need your approval, and applying any "
                 "change leaves the note unreviewed.</p>"
             )
-            assignment = config["assignments"]["enrichment"]
             body += "<h2>Jobs</h2>" + _outcome_line(data)
             if data["jobs"]:
                 if any(job["state"] == "failed" for job in data["jobs"]):
@@ -617,12 +616,6 @@ picker.addEventListener('change', () => {
                 for job in data["jobs"]:
                     state = job["state"]
                     detail = job["error"]
-                    if state == "stale":
-                        detail += (
-                            ". A fresh job is queued automatically."
-                            if assignment["enabled"] and not assignment["paused"]
-                            else ". Enrichment is off or paused, so no fresh job will be queued."
-                        )
                     body += (
                         f"<tr><td>{e(job['path'])}</td><td>{e(state.capitalize())}<br>{e(detail)}"
                         f"{_limit_link(job)}</td><td>"
