@@ -1666,6 +1666,36 @@ async def test_a_refusal_of_the_schemas_own_default_points_at_the_schema(store: 
     assert path.read_bytes() == data
 
 
+async def test_a_refused_adoption_is_listed_on_problems_until_the_file_changes(
+    store: LocalStore,
+):
+    """Admin Problems names the file and the cause; fixing the file clears it."""
+    schema = store.control.schema()
+    keys = [
+        key.model_copy(update={"default": "note", "required": True}) if key.name == "type" else key
+        for key in schema.keys
+    ]
+    store.control.schema = lambda: schema.model_copy(update={"keys": keys})  # type: ignore[method-assign]
+    path = store.notes_root / "Review" / "Bare.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"# Bare note\n")
+    remembered: reconciler.UnidentifiedStats = {}
+
+    await reconcile_once(store, unidentified=remembered)
+    # A second pass does not look at the unchanged file; the entry must stay.
+    await reconcile_once(store, unidentified=remembered)
+
+    listed = [p for p in await store.get_problems() if p.kind == "adoption"]
+    assert [(p.reference, "own default" in p.reason and "type" in p.reason) for p in listed] == [
+        ("Review/Bare.md", True)
+    ]
+
+    path.unlink()
+    await reconcile_once(store, unidentified=remembered)
+
+    assert [p for p in await store.get_problems() if p.kind == "adoption"] == []
+
+
 async def test_a_required_key_with_no_default_is_not_blamed_on_a_default(store: LocalStore):
     """No default was supplied, so the operator has no default to fix."""
     schema = store.control.schema()
