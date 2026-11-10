@@ -859,7 +859,11 @@ class ModelProvider:
                                     reason = (
                                         error.get("reason") if isinstance(error, dict) else None
                                     )
-                                    if reason in {"audio_unreadable", "no_speech", "too_long"}:
+                                    if isinstance(reason, str) and reason in {
+                                        "audio_unreadable",
+                                        "no_speech",
+                                        "too_long",
+                                    }:
                                         raise transcription_error(reason)
                                     if job_resubmits >= JOB_MAX_RESUBMITS:
                                         raise exhausted(True)

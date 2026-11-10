@@ -775,6 +775,42 @@ async def test_a_poll_404_with_any_reason_is_a_lost_job_and_is_resubmitted(
     assert [key for method, key in requests if method == "POST"] == ["stable-id"] * 2
 
 
+@pytest.mark.parametrize("reason", [["internal"], {"code": 1}, 7])
+async def test_a_failed_job_with_an_unusable_reason_is_treated_as_internal_and_resubmitted(
+    recording, monkeypatch, reason
+):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    monkeypatch.setattr(model_provider, "MIN_RETRY_AFTER_SECONDS", 0)
+    requests = []
+
+    async def handle(request):
+        requests.append((request.method, request.headers.get("Idempotency-Key")))
+        if request.method == "POST":
+            return httpx.Response(202, json={"id": f"job-{len(requests)}", "status": "queued"})
+        if len(requests) == 2:
+            return httpx.Response(200, json={"status": "failed", "error": {"reason": reason}})
+        return httpx.Response(200, json={"status": "done", "result": REPLY})
+
+    connection = ModelConnection(
+        id="stt", name="Speech", provider="compatible", base_url="http://127.0.0.1:1/v1"
+    )
+    result, _ = await ModelProvider(httpx.MockTransport(handle)).transcribe(
+        connection,
+        "",
+        assignment(),
+        recording,
+        filename=recording.name,
+        mime_type="audio/mp4",
+        size_bytes=recording.stat().st_size,
+        job_id="stable-id",
+        duration_seconds=7201,
+    )
+    assert result["segments"]
+    assert [key for method, key in requests if method == "POST"] == ["stable-id"] * 2
+
+
 async def test_a_direct_413_with_a_body_reason_still_falls_back_to_the_job_path(
     recording, monkeypatch
 ):
