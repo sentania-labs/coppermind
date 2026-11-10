@@ -82,7 +82,8 @@ def test_calendar_models_and_review_render_and_escape(signed_in):
     assert "sample meeting text" in models.text
     review = client.get("/admin/context?tab=review")
     assert review.status_code == 200
-    assert "Send selected notes for enrichment" in review.text
+    assert "No jobs or unreviewed notes yet." in review.text
+    assert "Queue selected notes" not in review.text
 
 
 def test_configuration_and_backlog_are_csrf_guarded(signed_in):
@@ -560,3 +561,40 @@ def test_only_the_newest_job_offers_retry_on_inspect(signed_in):
     assert "Retry with current evidence" in client.get(f"/admin/context/jobs/{'a' * 64}").text
     store.newest = False
     assert "Retry with current evidence" not in client.get(f"/admin/context/jobs/{'a' * 64}").text
+
+
+def test_jobs_explain_stale_pause_and_moved_note(signed_in):
+    class UXStore(ContextStore):
+        async def context_action(self, action, payload):
+            data = await super().context_action(action, payload)
+            if action == "snapshot":
+                data["config"]["assignments"]["enrichment"]["paused"] = True
+                data["jobs"] = [
+                    {
+                        "id": "a" * 64,
+                        "path": "Review/Old.md",
+                        "current_path": "Notes/New.md",
+                        "current_title": "New",
+                        "state": "stale",
+                        "error": "stale: associated source revisions changed",
+                        "input_limit": None,
+                        "can_retry": True,
+                    }
+                ]
+            return data
+
+    client, _ = signed_in
+    client.app.state.store = UXStore()
+    response = client.get("/admin/context?tab=review")
+    assert "Processing is paused. Queued retries will wait until you resume." in response.text
+    assert "Resume processing" in response.text
+    assert "Notes/New.md" in response.text and "Moved from Review/Old.md" in response.text
+    assert (
+        "Out of date: The supporting information changed. Retry to use the latest information."
+        in response.text
+    )
+    assert "stale: associated" not in response.text
+    assert ">Retry</button>" in response.text
+    assert "Existing Review backlog" not in response.text
+    retry = client.get("/admin/context?tab=review&result=retry-job&job=" + "a" * 64)
+    assert "Retry queued for New. Processing is paused; resume it to start." in retry.text

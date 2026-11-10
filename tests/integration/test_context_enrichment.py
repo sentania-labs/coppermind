@@ -1607,3 +1607,46 @@ async def test_tick_recovers_when_transcript_revision_changes(store, monkeypatch
     assert jobs[0].id == first and jobs[0].state == "failed"
     assert jobs[1].source_versions == {"source": 2}
     assert jobs[1].state == "queued"
+
+
+async def test_jobs_snapshot_uses_current_note_and_latest_state(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Original", body="Notes", frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    failed = context.load_job(first)
+    failed.state = "failed"
+    context.save_job(failed)
+    renamed = await store.rename_note(
+        note.id, RenameNote(title="Renamed", preserve_body=True), note.content_hash
+    )
+    snapshot = await context.snapshot()
+    assert snapshot["jobs"][0]["current_path"] == renamed.path
+    assert snapshot["jobs"][0]["path"] == note.path
+    assert snapshot["outcomes"]["counts"] == {"failed": 1}
+    await context.retry_job({"id": first})
+    snapshot = await context.snapshot()
+    assert len(snapshot["jobs"]) == 1
+    assert snapshot["outcomes"]["counts"] == {"queued": 1}
+
+
+async def test_moved_reviewed_note_keeps_current_location_in_jobs(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Original", body="Notes", frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    job = context.load_job(first)
+    job.state = "stale"
+    context.save_job(job)
+    renamed = await store.rename_note(
+        note.id, RenameNote(title="Renamed", preserve_body=True), note.content_hash
+    )
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": True}), renamed.content_hash
+    )
+    snapshot = await context.snapshot()
+    assert snapshot["jobs"][0]["current_path"] == renamed.path
+    assert snapshot["jobs"][0]["path"] == note.path
+    assert snapshot["jobs"][0]["can_retry"] is False

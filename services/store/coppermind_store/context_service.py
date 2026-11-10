@@ -446,7 +446,33 @@ class ContextService:
         ]
 
     async def snapshot(self, offset: int = 0) -> dict[str, Any]:
-        return await asyncio.to_thread(self._snapshot, offset)
+        snapshot = await asyncio.to_thread(self._snapshot, offset)
+        schema = self.store.control.schema()
+        enabled = self.config().assignments["enrichment"].enabled
+        for job in snapshot["jobs"]:
+            try:
+                note = await self.store.get_note(job["note_id"])
+            except StoreError:
+                job["can_retry"] = False
+                job["retry_reason"] = "Restore the note to retry."
+                continue
+            job["current_path"] = note.path
+            job["current_title"] = note.title
+            reviewed = note.frontmatter.get(schema.role("reviewed_key")) is True
+            eligible = reviewed == (job["purpose"] == "dossier")
+            if not reviewed and schema.validate_frontmatter(note.frontmatter):
+                eligible = False
+            job["can_retry"] = enabled and eligible
+            if not enabled:
+                job["retry_reason"] = "Enable enrichment to retry."
+            elif reviewed and job["purpose"] != "dossier":
+                job["retry_reason"] = "This note is reviewed; mark it unreviewed to retry."
+            elif not reviewed and job["purpose"] == "dossier":
+                job["retry_reason"] = "Mark the note reviewed to retry."
+            elif not eligible:
+                job["retry_reason"] = "Correct the note's metadata to retry."
+
+        return snapshot
 
     def _snapshot(self, offset: int) -> dict[str, Any]:
         """Materialize bounded mirror pages and counts outside the event loop."""
@@ -538,7 +564,7 @@ class ContextService:
             },
             "tests": self.read("model_tests", {}),
             "speed": self.read("model_speed", {}),
-            "outcomes": self.outcomes(self.jobs()),
+            "outcomes": self.outcomes(jobs),
         }
 
     @staticmethod
