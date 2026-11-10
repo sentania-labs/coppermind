@@ -4,9 +4,9 @@
 `limits.artifact_max_bytes`. A bigger file uses this path instead, so that no
 single request has to be buffered whole:
 
-1. `POST /v1/staged` reserves. The declaration names the filename, media type,
-   exact byte count and lowercase sha256 of the file, plus the same fields the
-   inline route accepts. The receipt and the accepted limits come back.
+1. `POST /v1/staged` reserves. The declaration names the filename, exact byte
+   count and lowercase sha256 of the file, plus the same fields the inline route
+   accepts (the media type among them). The receipt and the accepted limits come back.
 2. `PUT /v1/staged/{receipt_id}` carries the file's bytes as the whole body,
    streamed to durable staging outside the browsable notes filesystem.
 3. `POST /v1/staged/{receipt_id}/finalize` verifies the count and the digest,

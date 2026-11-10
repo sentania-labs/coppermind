@@ -52,7 +52,8 @@ has not been exercised by this slice.
   Obsidian and the citing notes by title, readable at 1280 pixels wide, and
   removes one after a confirmation that says what happens to a file or to a
   link. A file over the 10 MiB limit is refused with the limit and what to do
-  now, the same for multipart and JSON. Removed archives are purged through
+  now, the same for multipart and JSON; the staged upload path (`POST
+  /v1/staged`, then a streamed `PUT`, then finalize) takes files up to 50 MiB. Removed archives are purged through
   the retention purge's dry run and confirm flow, each candidate showing its
   reason. `rebuild_metadata` recreates every record, row and search entry from
   `/data` alone. `_Attachments/` is retired:
