@@ -132,7 +132,8 @@ Filename value is a short single-line title without a path or .md extension. Eve
 proposals link supplied records. Every proposal needs a reason and supplied event evidence or
 an exact quote. For recording speakers, propose kind speaker with field set to the exact supplied
 speaker label and value set to one supplied candidate id, or to null when no candidate fits.
-Use transcript clues and give confidence and a short reason. Do not invent candidates or assert unsupported identities.
+Use transcript clues and give confidence and a short reason.
+Do not invent candidates or assert unsupported identities.
 Existing values are human-owned; never propose replacing them.
 """
 
