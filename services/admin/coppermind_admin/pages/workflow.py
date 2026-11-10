@@ -22,7 +22,9 @@ from coppermind_admin.pages.context import (
     _form,
     _hidden,
     _input,
+    _outcome_line,
     _select,
+    _speed_note,
 )
 from coppermind_admin.pages.problems import store_client
 
@@ -181,7 +183,7 @@ def router(wiring: Wiring) -> APIRouter:
                 body += (
                     "<p>Make suggestions once for each new unreviewed note. Editing a not"
                     "e does not repeatedly call the model.</p>"
-                )
+                ) + _outcome_line(data)
                 body += (
                     '<p><a href="/admin/context?tab=models">'
                     "Manage connections and test models</a></p>"
@@ -267,12 +269,13 @@ def router(wiring: Wiring) -> APIRouter:
                 )
                 fields += '<details id="processing-limits"><summary>Processing limits</summary>'
                 for key, label in [
-                    ("timeout_s", "Request timeout (seconds)"),
+                    ("timeout_s", "Wait limit (seconds, how long the model may stay silent)"),
                     ("max_input_chars", "Maximum note and transcript characters"),
                     ("max_output_tokens", "Maximum response tokens"),
                     ("attempts", "Maximum attempts"),
                 ]:
                     fields += _input(key, label, str(assignment[key]), kind="number")
+                fields += _speed_note(data, assignment)
                 fields += "</details>"
                 body += _form(
                     "save-assignment", fields, "Save enrichment", revision=config["revision"]

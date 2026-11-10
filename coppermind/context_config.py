@@ -85,7 +85,9 @@ class FeatureAssignment(ContextModel):
     model: str = Field(default="", max_length=200)
     enabled: bool = False
     paused: bool = False
-    timeout_s: int = Field(default=45, ge=5, le=120)
+    # How long the provider may stay silent (before the first byte, or mid-reply) before the
+    # call is given up. It is not a cap on total time: a streamed reply may run longer.
+    timeout_s: int = Field(default=120, ge=5, le=1800)
     max_output_tokens: int = Field(default=2048, ge=256, le=8192)
     max_input_chars: int = Field(default=60000, ge=2000, le=200000)
     # One worker serializes model calls and approvals. No unbounded fan-out.
@@ -96,6 +98,13 @@ class FeatureAssignment(ContextModel):
     event_field: str = ""
     contacts_field: str = ""
     automatic_after: str = ""
+
+    @field_validator("timeout_s", mode="before")
+    @classmethod
+    def legacy_default_timeout(cls, value: object) -> object:
+        # 45 s was the old default, written into every saved configuration. It cannot cover
+        # queueing plus prefill on a local model, so it reads as the new default.
+        return 120 if value == 45 else value
 
 
 class ContextConfig(ContextModel):

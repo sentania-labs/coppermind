@@ -157,6 +157,7 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
     output, usage = await context.provider.suggest(
         connection, context.key(connection.id), assignment, EXTRACTION_PROMPT, evidence
     )
+    job.reply = json.dumps(output, ensure_ascii=False)[:4000]
     result = Extraction.model_validate(output)
     refs = {item.ref: item for item in result.entities}
     if len(refs) != len(result.entities):
