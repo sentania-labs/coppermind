@@ -104,7 +104,7 @@ class ReviewView extends ItemView {
             cursor=page.next_cursor||'';moreButton.disabled=!cursor;
             if(!(page.items||[]).length)new Notice('No matching people. Search for another name.');
             else new Notice('Choose a person from the list.');
-          }catch(e){new Notice(data.people_access_notice||'Could not find people. Check your connection and API credential, then refresh this panel.');}
+          }catch(e){new Notice(e.status===403&&data.people_access_notice||'Could not find people. Check your connection and API credential, then refresh this panel.');}
         };
         find.onclick=()=>lookup(false);
         const moreButton=card.createEl('button',{text:'More people'});moreButton.disabled=true;moreButton.onclick=()=>lookup(true);
@@ -188,6 +188,6 @@ module.exports=class CoppermindReview extends Plugin {
     const result=await requestUrl({url:this.settings.url+path,method,headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,throw:false});
     const namesSpeakers=Object.values(body?.manual_speakers||{}).some(Boolean)||(body?.selected||[]).some(i=>!!body?.speaker_choices?.[i]);
     if(result.status===403&&method==='POST'&&path.endsWith('/review')&&namesSpeakers)throw Error('This key is not allowed to name speakers. In Coppermind Admin, open Connected apps (API Keys) and create a new key with Read notes, Update notes, Read sources, Update sources, and Read people and companies, then select that key in the companion settings.');
-    if(result.status>=400)throw Error(result.json?.message||'Coppermind could not complete the request. Check connectivity and permissions.');return result.json;
+    if(result.status>=400)throw Object.assign(Error(result.json?.message||'Coppermind could not complete the request. Check connectivity and permissions.'),{status:result.status});return result.json;
   }
 };
