@@ -342,6 +342,11 @@ def render(entity: Entity, ledger: EntityLedger, *, search: bool = False) -> str
             f"\nSee [[{target.path.removesuffix('.md')}]].\n" if target else "\nRetired identity.\n"
         )
     lines = ["", "## Coppermind's Notes", ""]
+    if search:
+        if entity.aliases:
+            lines.extend(["Aliases: " + ", ".join(label(a) for a in entity.aliases), ""])
+        if entity.emails:
+            lines.extend(["Email: " + ", ".join(label(a) for a in entity.emails), ""])
     facts = active_facts(entity, ledger)
     groups = (
         ("Facts", [f for f in facts if not f.target and f.predicate != "interest"]),

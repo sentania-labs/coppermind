@@ -1270,6 +1270,13 @@ async def test_search_finds_dossiers_after_an_index_rebuild(store):
     assert [h.id for h in hits.items if h.kind == "entity"] == [p["id"]]
 
 
+async def test_search_finds_a_person_by_email_and_by_a_former_name(store):
+    p = await person(store, name="Arthur Smith", address="arthur.smith@xcelenergy.com")
+    await store.entities.refresh()
+    hits = await store.search(SearchQuery(q="arthur.smith@xcelenergy.com"), entities=True)
+    assert [h.id for h in hits.items if h.kind == "entity"] == [p["id"]]
+
+
 async def test_overlong_address_and_dossier_faults_do_not_stop_reconciliation(store, monkeypatch):
     address = "x" * 250 + "@example.test"
     await store.create_note(
