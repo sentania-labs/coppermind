@@ -193,7 +193,7 @@ async def test_saving_from_admin_keeps_the_timeout_and_attempts_an_operator_set(
     async def ready(*, refresh=False):
         return True
 
-    service.table_ready = ready  # type: ignore[method-assign]
+    service.table_ready = ready
 
     await service.save(
         {"revision": 0, "assignment": {"connection": "lab", "model": " new ", "enabled": True}}
@@ -215,7 +215,7 @@ async def test_a_table_that_disappears_is_noticed_and_made_again(monkeypatch):
         asked.append(now[0])
         return answers.pop(0)
 
-    service._ensure_table = ensure  # type: ignore[method-assign]
+    service._ensure_table = ensure
 
     assert await service.table_ready() is True
     assert await service.table_ready() is True

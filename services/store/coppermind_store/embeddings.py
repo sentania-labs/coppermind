@@ -20,7 +20,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
@@ -207,7 +207,7 @@ class EmbeddingService:
             async with transaction(self.store.session_factory) as session:
                 await session.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
                 await session.run_sync(
-                    lambda sync: SearchEmbedding.__table__.create(
+                    lambda sync: cast(sa.Table, SearchEmbedding.__table__).create(
                         sync.connection(), checkfirst=True
                     )
                 )
