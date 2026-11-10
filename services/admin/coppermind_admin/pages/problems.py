@@ -76,6 +76,7 @@ KIND_LABELS = {
     "calendar_import": "Calendar import",
     "calendar_conflict": "Calendar conflict",
     "dropbox": "Dropbox",
+    "recording": "Recording transcription",
     "purge": "Retention purge",
     "purge_unfinished": "Retention purge",
     "purge_receipt": "Retention purge receipt",
@@ -126,6 +127,13 @@ def _link(problem: ProblemInfo, back: str = "/admin/problems") -> str:
         return '<a href="/admin/purge">Retention purge</a>'
     if problem.kind == "artifact" or problem.artifact_id:
         return '<a href="/admin/artifacts">Artifacts</a>'
+    if problem.kind == "recording":
+        return (
+            '<a href="/admin/context?tab=review">'
+            + ("Retry or read the details" if problem.retry_available else "View recording details")
+            + "</a><br>"
+            '<a href="/admin/context?tab=models#transcription">Transcription settings</a>'
+        )
     if problem.kind == "dropbox":
         return '<a href="/admin/workflow?tab=intake">Dropbox receipts</a>'
     if problem.kind in {"calendar_import", "calendar_conflict"}:

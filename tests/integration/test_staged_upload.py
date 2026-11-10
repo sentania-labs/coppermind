@@ -31,7 +31,7 @@ from coppermind.store_protocol import (
 
 DIGEST = hashlib.sha256(b"quokka").hexdigest()
 PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-STAGED_MAX = 50 * 1024 * 1024
+STAGED_MAX = 1024 * 1024 * 1024
 
 
 async def chunks(data: bytes, size: int = 4):

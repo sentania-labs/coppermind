@@ -46,6 +46,10 @@ RECORD = ArtifactRecord(
 )
 
 
+async def _once(data: bytes):
+    yield data
+
+
 class FakeStore:
     def __init__(self) -> None:
         self.created: list[CreateArtifact] = []
@@ -99,7 +103,7 @@ class FakeStore:
             mime_type=(RECORD.mime_type or "") if revision is None else "text/plain\r\nX-Evil: 1",
             sha256="abc",
             size_bytes=4,
-            content=b"PK\x03\x04",
+            content=_once(b"PK\x03\x04"),
         )
 
     async def remove_artifact(self, artifact_id: str, removal: str = "admin") -> None:

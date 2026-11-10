@@ -165,7 +165,7 @@ Nothing here needs to be set before the system runs.
 | limits | `calendar_import_memory_mib` | 1024 MiB parser address space; about 40x the expanded export size |
 | limits | `ingest_max_bytes` | 25 MiB |
 | limits | `artifact_max_bytes` | 10 MiB (10,485,760 bytes) per inline artifact file; a larger file is refused with the limit and what to do now (use the staged upload path, or split or compress it) |
-| limits | `staged_max_bytes` | 50 MiB (52,428,800 bytes) per staged upload; the ceiling a `POST /v1/staged` declaration is measured against |
+| limits | `staged_max_bytes` | 1 GiB (1,073,741,824 bytes) per staged upload; the ceiling a `POST /v1/staged` declaration is measured against. Uploading, finalizing, serving the bytes back, and verifying or hashing the archive all work a megabyte at a time, so the limit costs disk, not memory |
 | limits | `attachment_max_bytes` | null (legacy; superseded by `artifact_max_bytes`) |
 | admin | `session_hours` | 12 |
 
@@ -173,6 +173,21 @@ Every control state file, including this one, carries `schema_version` and
 `revision`. A write must state the revision it is replacing, and the file it
 replaces moves to `/data/state/history/`, so nothing is ever silently lost
 to a concurrent edit.
+
+### Transcription service
+
+A recording handed in on its own is transcribed by a service chosen under **Admin >
+Settings > Model connections > Transcription setup**. It uses the same connections as enrichment, any OpenAI-compatible
+one that offers `POST /audio/transcriptions` (Anthropic does not). The assignment holds the
+connection, the model name (typed, because a transcription service may not publish a model
+list), the reply format (`diarized_json`, the default, or `verbose_json`), the wait limit
+(default 3,600 seconds, up to 14,400: how long the service may take to answer one
+recording, since most send nothing until they have finished), the total attempts per recording (default
+2) and the on and pause switches. It is off until switched on, and the recording is sent
+only to that connection. Editing a connection turns off every assignment that uses it, as
+for enrichment. Saved in `/data/state/context/config.json` as `assignments.transcription`;
+each intake is one small file under `/data/state/context/recordings/` and its saved
+transcript under `/data/state/context/recording-transcripts/`.
 
 ### Calendar import budgets
 

@@ -63,6 +63,10 @@ RECORD = ArtifactRecord(
 )
 
 
+async def _once(data: bytes):
+    yield data
+
+
 class ArtifactStore:
     def __init__(self) -> None:
         self.created: list[tuple[CreateArtifact, int | None]] = []
@@ -98,7 +102,7 @@ class ArtifactStore:
             mime_type=RECORD.mime_type or "",
             sha256="abc",
             size_bytes=3,
-            content=b"\x00\x01\x02",
+            content=_once(b"\x00\x01\x02"),
         )
 
     async def list_artifacts(self, query: ArtifactQuery) -> Page[ArtifactSummary]:
@@ -162,7 +166,7 @@ async def test_create_list_get_bytes_and_remove_cross_the_internal_contract():
         assert missing.value.artifact_id == "nope"
 
         data = await client.get_artifact_bytes(ARTIFACT_ID)
-        assert data.content == b"\x00\x01\x02"
+        assert b"".join([chunk async for chunk in data.content]) == b"\x00\x01\x02"
         assert data.filename == "Design päckage ✓.pptx"
         assert data.mime_type == RECORD.mime_type
         assert data.revision == 2 and data.sha256 == "abc" and data.size_bytes == 3
@@ -226,3 +230,54 @@ def test_a_kind_marker_is_the_word_artifact_or_json_declaring_it():
     }
     assert read_kind_marker(b'{"kind": "note"}') is None
     assert read_kind_marker(b"\xff\xfe") is None
+
+
+class _Counted(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+        self.pulled = 0
+        self.closed = False
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            self.pulled += 1
+            yield chunk
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+async def test_the_client_hands_back_bytes_it_has_not_read_yet():
+    body = _Counted([b"a" * 1000, b"b" * 1000, b"c" * 1000])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"X-Coppermind-Size-Bytes": "3000", "X-Coppermind-SHA256": "abc"},
+            stream=body,
+        )
+
+    client = HttpStoreClient("http://store", TOKEN, transport=httpx.MockTransport(handler))
+    try:
+        served = await client.get_artifact_bytes(ARTIFACT_ID)
+        assert body.pulled == 0 and served.size_bytes == 3000
+        chunks = [chunk async for chunk in served.content]
+        assert [len(chunk) for chunk in chunks] == [1000, 1000, 1000]
+        assert body.closed
+    finally:
+        await client.aclose()
+
+
+async def test_a_refused_download_is_a_typed_error_and_releases_the_connection():
+    body = _Counted([b'{"artifact_id": "x"}'])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, headers={"content-type": "application/json"}, stream=body)
+
+    client = HttpStoreClient("http://store", TOKEN, transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ArtifactMissing):
+            await client.get_artifact_bytes(ARTIFACT_ID)
+        assert body.closed
+    finally:
+        await client.aclose()

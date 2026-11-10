@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -153,9 +154,11 @@ class ContextService:
         )
         from coppermind_store.dropbox import Dropbox
         from coppermind_store.note_lifecycle import NoteLifecycle
+        from coppermind_store.recordings import Recordings
 
         self.lifecycle = NoteLifecycle(self)
         self.dropbox = Dropbox(self)
+        self.recordings = Recordings(self)
         self.provider = ModelProvider()
         self.lock = asyncio.Lock()
         self.seen: dict[str, tuple[tuple[int, int, int, int], float]] = {}
@@ -246,7 +249,9 @@ class ContextService:
     def config_hash(self) -> str:
         config = self.config()
         assignment = config.assignments["enrichment"]
-        values = assignment.model_dump(exclude={"paused", "enabled", "automatic_after"})
+        values = assignment.model_dump(
+            exclude={"paused", "enabled", "automatic_after", "response_format", "wait_s"}
+        )
         connection = next(
             (
                 self.connection_evidence(item)
@@ -630,6 +635,8 @@ class ContextService:
                 job.model_dump(exclude={"evidence", "pending_approval", "reply"})
                 for job in jobs[window]
             ],
+            "recordings": self.recordings.listing(),
+            "recording_worker_error": self.recordings.worker_error,
             "watch_status": self.watch_status,
             "worker_error": self.worker_error,
             "eligibility_errors": self.eligibility_errors,
@@ -893,6 +900,21 @@ class ContextService:
             self.archive.submit, CALENDAR_ID, payload["filename"], data
         )
         return receipt.model_dump()
+
+    async def accept_recording(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.recordings.accept(payload)
+
+    async def recording_status(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.recordings.status(payload)
+
+    async def save_transcription(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.recordings.save_assignment(payload)
+
+    async def recording_detail(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.recordings.detail(payload)
+
+    async def retry_recording(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.recordings.retry(payload)
 
     async def retry_import(self, payload: dict[str, Any]) -> dict[str, Any]:
         receipts = await asyncio.to_thread(self.archive.receipts)
@@ -2144,12 +2166,20 @@ class ContextService:
                 break
 
     async def run(self) -> None:
-        while True:
-            try:
-                await self.tick()
-                self.worker_error = ""
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                self.worker_error = "Context worker failed; inspect configuration and retry"
-            await asyncio.sleep(10)
+        # Recordings run on a loop of their own: one can take many minutes on a CPU service,
+        # and calendar imports and enrichment should not wait behind it.
+        recordings = asyncio.create_task(self.recordings.run(), name="coppermind-recordings")
+        try:
+            while True:
+                try:
+                    await self.tick()
+                    self.worker_error = ""
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self.worker_error = "Context worker failed; inspect configuration and retry"
+                await asyncio.sleep(10)
+        finally:
+            recordings.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await recordings

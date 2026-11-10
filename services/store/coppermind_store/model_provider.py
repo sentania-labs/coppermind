@@ -5,12 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import secrets
 import time
+from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import httpx
 
-from coppermind.context_config import FeatureAssignment, ModelConnection
+from coppermind.context_config import (
+    MAX_TRANSCRIBE_SECONDS,
+    FeatureAssignment,
+    ModelConnection,
+)
 
 # The longest the app waits for one model call, however steadily the reply arrives. The
 # per-job wait limit is a silence limit; this stops a trickle from holding the single
@@ -23,6 +30,12 @@ MAX_STREAM_BYTES = 16 * 1024 * 1024
 MAX_EMBEDDING_DIMENSIONS = 8192
 # How much of a model's reply is kept on a failed job so Inspect can show why it failed.
 REPLY_KEPT_CHARS = 4000
+# How long a connection to the transcription service may take to open. The wait limit is for
+# the service's answer, and can be hours.
+TRANSCRIBE_CONNECT_SECONDS = 60
+# The largest transcript reply read: speaker segments with timings run to a few MiB for hours.
+MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 1 << 20
 
 
 class ProviderError(ValueError):
@@ -216,12 +229,23 @@ class ModelProvider:
         timeout: int,
         payload: dict[str, Any] | None = None,
         params: dict[str, str | int] | None = None,
+        body: AsyncIterator[bytes] | None = None,
+        content_type: str = "application/json",
+        max_seconds: float | None = None,
+        max_reply_bytes: int = 2 * 1024 * 1024,
+        noun: str = "model provider",
+        limit_name: str = "Processing limits",
+        length: int | None = None,
+        connect_timeout: float | None = None,
     ) -> tuple[dict[str, Any], CallStats]:
         """One HTTP call. `timeout` is a silence limit: how long the provider may send nothing,
-        before the first byte and between pieces of a streamed reply."""
+        before the first byte and between pieces of a streamed reply. `body` streams a request
+        body of raw bytes (`content_type` says what it is) instead of sending `payload`."""
         if connection.provider != "compatible" and not key:
             raise ProviderError("this provider requires an API key")
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": content_type}
+        if length is not None:
+            headers["Content-Length"] = str(length)
         if connection.provider == "anthropic":
             headers.update({"x-api-key": key, "anthropic-version": "2023-06-01"})
         elif key:
@@ -229,11 +253,15 @@ class ModelProvider:
         stats = CallStats()
         seen_body = False
         try:
-            async with asyncio.timeout(max(MAX_CALL_SECONDS, timeout)):
+            async with asyncio.timeout(
+                max(MAX_CALL_SECONDS if max_seconds is None else max_seconds, timeout)
+            ):
                 async with (
                     httpx.AsyncClient(
                         transport=self.transport,
-                        timeout=timeout,
+                        timeout=httpx.Timeout(
+                            timeout, connect=timeout if connect_timeout is None else connect_timeout
+                        ),
                         follow_redirects=False,
                         trust_env=False,
                     ) as client,
@@ -241,12 +269,13 @@ class ModelProvider:
                         method,
                         connection.endpoint_url + path,
                         headers=headers,
-                        json=payload,
+                        json=payload if body is None else None,
+                        content=body,
                         params=params,
                     ) as response,
                 ):
                     if not response.is_success:
-                        raise ProviderError(f"provider returned HTTP {response.status_code}")
+                        raise self._http_error(response.status_code, upload=body is not None)
                     event_stream = "text/event-stream" in response.headers.get("content-type", "")
                     stats.streamed = event_stream
                     data = bytearray()
@@ -258,8 +287,11 @@ class ModelProvider:
                             collector.feed(chunk)
                         else:
                             data.extend(chunk)
-                            if len(data) > 2 * 1024 * 1024:
-                                raise ProviderError("provider response exceeded 2 MiB")
+                            if len(data) > max_reply_bytes:
+                                raise ProviderError(
+                                    "provider response exceeded "
+                                    f"{max_reply_bytes // (1024 * 1024)} MiB"
+                                )
             if collector is not None:
                 return collector.result(), stats
             result = json.loads(data)
@@ -268,34 +300,41 @@ class ModelProvider:
             return result, stats
         except TimeoutError as exc:
             raise ProviderError(
-                f"The model was still replying after {_seconds(stats.elapsed)}, the longest the "
-                "app waits for one call. Use a faster model or a shorter maximum response.",
+                (
+                    f"The transcription service was still working after "
+                    f"{_seconds(stats.elapsed)}, the longest the app waits for one recording. "
+                    "Split the recording or use a faster service."
+                    if body is not None
+                    else f"The model was still replying after {_seconds(stats.elapsed)}, the "
+                    "longest the app waits for one call. Use a faster model or a shorter "
+                    "maximum response."
+                ),
                 "provider-too-long",
             ) from exc
         except httpx.TimeoutException as exc:
             if isinstance(exc, httpx.ConnectTimeout):
-                raise self._cannot_connect(stats, timeout) from exc
+                raise self._cannot_connect(stats, noun) from exc
             if not seen_body:
                 raise ProviderError(
-                    f"The model provider accepted the request but sent nothing for "
+                    f"The {noun} accepted the request but sent nothing for "
                     f"{_seconds(stats.elapsed)} (wait limit {timeout} s). It is probably busy "
                     "with other requests or still loading the model. The app will try again "
-                    "later; raise the wait limit under Processing limits if this repeats.",
+                    f"later; raise the wait limit under {limit_name} if this repeats.",
                     "provider-no-response",
                     waiting=True,
                 ) from exc
             raise ProviderError(
-                f"The model provider stopped sending partway through its reply: it went "
+                f"The {noun} stopped sending partway through its reply: it went "
                 f"quiet for {timeout} s after {_seconds(stats.elapsed)} in total. The app will "
-                "try again later; raise the wait limit under Processing limits if this repeats.",
+                f"try again later; raise the wait limit under {limit_name} if this repeats.",
                 "provider-stalled",
                 waiting=True,
             ) from exc
         except httpx.ConnectError as exc:
-            raise self._cannot_connect(stats, timeout) from exc
+            raise self._cannot_connect(stats, noun) from exc
         except httpx.HTTPError as exc:
             raise ProviderError(
-                f"The model provider dropped the connection after {_seconds(stats.elapsed)}"
+                f"The {noun} dropped the connection after {_seconds(stats.elapsed)}"
                 + (" while replying." if seen_body else " before replying."),
                 "provider-dropped",
             ) from exc
@@ -305,10 +344,10 @@ class ModelProvider:
             raise ProviderError("provider returned invalid JSON") from exc
 
     @staticmethod
-    def _cannot_connect(stats: CallStats, timeout: int) -> ProviderError:
+    def _cannot_connect(stats: CallStats, noun: str) -> ProviderError:
         return ProviderError(
-            f"Could not connect to the model provider (gave up after {_seconds(stats.elapsed)}). "
-            "Check the connection address and that the model server is running.",
+            f"Could not connect to the {noun} (gave up after {_seconds(stats.elapsed)}). "
+            "Check the connection address and that the server is running.",
             "provider-connect",
             waiting=True,
         )
@@ -522,3 +561,179 @@ class ModelProvider:
             reported[:200] if isinstance(reported, str) else "not supplied"
         )
         return parsed, usage
+
+    @staticmethod
+    def _http_error(status: int, *, upload: bool) -> ProviderError:
+        if not upload:
+            return ProviderError(f"provider returned HTTP {status}")
+        hints = {
+            400: "The transcription service refused the request; the recording may be in a "
+            "format it cannot read.",
+            401: "The transcription service refused the key. Check the connection's key.",
+            403: "The transcription service refused the key. Check the connection's key.",
+            404: "The transcription service could not find the endpoint or the model. Check the "
+            "connection address and the model name.",
+            413: "The transcription service refused the recording as too large.",
+            415: "The transcription service cannot read this kind of recording.",
+            422: "The transcription service could not use the request; the model name or the "
+            "reply format may not be supported by it.",
+        }
+        retryable = status >= 500 or status in (408, 429)
+        detail = hints.get(
+            status,
+            "The transcription service reported an error or is busy. Check that it is healthy."
+            if retryable
+            else "The transcription service refused the request.",
+        )
+        return ProviderError(
+            detail,
+            "transcription-http" if retryable else f"transcription-http-{status}",
+            # A server error or a request to slow down is worth another try later; a refusal
+            # of the request is not.
+            waiting=retryable,
+        )
+
+    async def transcribe(
+        self,
+        connection: ModelConnection,
+        key: str,
+        assignment: FeatureAssignment,
+        audio: Path,
+        *,
+        filename: str,
+        mime_type: str,
+        size_bytes: int,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Send one recording to `POST /audio/transcriptions`; return its speaker segments.
+
+        The file goes out in chunks and is never held whole. The service may take many
+        minutes or hours to answer: `assignment.wait_s` is how long it may stay silent, and
+        `MAX_TRANSCRIBE_SECONDS` bounds the call overall.
+        """
+        if connection.provider == "anthropic":
+            raise ProviderError(
+                "Anthropic does not offer transcription. Choose an OpenAI-compatible connection.",
+                "transcription-provider",
+            )
+        boundary = "coppermind-" + secrets.token_hex(16)
+        fields = {"model": assignment.model, "response_format": assignment.response_format}
+        if assignment.response_format == "diarized_json":
+            fields["chunking_strategy"] = "auto"
+        head = (
+            b"".join(
+                (
+                    f"--{boundary}\r\nContent-Disposition: form-data; "
+                    f'name="{name}"\r\n\r\n{value}\r\n'
+                ).encode()
+                for name, value in fields.items()
+            )
+            + (
+                f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+                f'filename="{_header_safe(filename)}"\r\nContent-Type: {_header_safe(mime_type)}'
+                "\r\n\r\n"
+            ).encode()
+        )
+        tail = f"\r\n--{boundary}--\r\n".encode()
+
+        async def body() -> AsyncIterator[bytes]:
+            yield head
+            sent = 0
+            with audio.open("rb") as stream:
+                while chunk := await asyncio.to_thread(stream.read, UPLOAD_CHUNK_BYTES):
+                    sent += len(chunk)
+                    yield chunk
+            if sent != size_bytes:
+                raise ProviderError(
+                    "The stored recording changed while it was being sent.", "recording-changed"
+                )
+            yield tail
+
+        try:
+            result, stats = await self._exchange(
+                connection,
+                key,
+                "POST",
+                "/audio/transcriptions",
+                timeout=assignment.wait_s,
+                connect_timeout=TRANSCRIBE_CONNECT_SECONDS,
+                body=body(),
+                content_type=f"multipart/form-data; boundary={boundary}",
+                max_seconds=MAX_TRANSCRIBE_SECONDS,
+                max_reply_bytes=MAX_TRANSCRIPT_BYTES,
+                noun="transcription service",
+                limit_name="Transcription",
+                length=len(head) + size_bytes + len(tail),
+            )
+        except ProviderError as exc:
+            if exc.rule:
+                raise
+            raise ProviderError(
+                f"The transcription service's answer could not be used ({exc}). Check the "
+                "connection address and key under Model connections, then Transcription setup.",
+                "transcription-provider",
+            ) from exc
+        transcript = parse_transcript(result)
+        reported = result.get("usage")
+        usage: dict[str, Any] = {
+            k: v
+            for k, v in (reported if isinstance(reported, dict) else {}).items()
+            if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)
+        }
+        usage.update(stats.usage())
+        usage["model"] = assignment.model
+        return transcript, usage
+
+
+def _header_safe(value: str) -> str:
+    return "".join("_" if c in '"\\\r\n' else c for c in value)
+
+
+def _clock(value: Any) -> float | None:
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
+def parse_transcript(result: dict[str, Any]) -> dict[str, Any]:
+    """The service's reply as ordered speaker segments, with speakers kept as given."""
+    raw = result.get("segments")
+    segments: list[dict[str, Any]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            continue
+        text = item["text"].strip()
+        if not text:
+            continue
+        speaker = item.get("speaker")
+        segments.append(
+            {
+                "speaker": str(speaker).strip()[:80]
+                if isinstance(speaker, str | int) and not isinstance(speaker, bool)
+                else "",
+                "start": _clock(item.get("start")),
+                "end": _clock(item.get("end")),
+                "text": text,
+            }
+        )
+    if not segments:
+        if str(result.get("text") or "").strip():
+            raise ProviderError(
+                "The transcription service sent text but no segments, so speakers cannot be "
+                "told apart. Choose a service and reply format that label speakers.",
+                "transcript-flat",
+            )
+        raise ProviderError(
+            "The transcription service sent back no speech. The recording may be silent or in a "
+            "format it could not read.",
+            "transcript-empty",
+        )
+    if not any(segment["speaker"] for segment in segments):
+        raise ProviderError(
+            "The transcription service did not label any speaker. Choose a service and reply "
+            "format that does, such as diarized_json.",
+            "transcript-no-speakers",
+        )
+    language = result.get("language")
+    return {
+        "language": language[:40] if isinstance(language, str) else "",
+        "duration": _clock(result.get("duration")),
+        "segments": segments,
+    }

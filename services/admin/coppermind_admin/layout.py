@@ -180,6 +180,7 @@ DETAIL_PARENTS = (
     ("/admin/notes", "/admin/workflow?tab=review"),
     ("/admin/review", "/admin/workflow?tab=review"),
     ("/admin/context/jobs", "/admin/settings"),
+    ("/admin/context/recordings", "/admin/settings"),
 )
 
 

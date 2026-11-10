@@ -372,11 +372,25 @@ class HttpStoreClient:
     async def get_artifact_bytes(
         self, artifact_id: ArtifactId, revision: int | None = None
     ) -> ArtifactBytes:
-        response = await self._send(
-            "GET",
-            f"{INTERNAL_PREFIX}/artifacts/{_segment(artifact_id)}/bytes",
-            params={"revision": revision} if revision is not None else None,
-        )
+        try:
+            response = await self._client.send(
+                self._client.build_request(
+                    "GET",
+                    f"{INTERNAL_PREFIX}/artifacts/{_segment(artifact_id)}/bytes",
+                    params={"revision": revision} if revision is not None else None,
+                ),
+                stream=True,
+            )
+        except httpx.HTTPError as exc:
+            raise StoreUnavailable(str(exc)) from exc
+        if not response.is_success:
+            try:
+                await response.aread()
+            except httpx.HTTPError as exc:
+                raise StoreUnavailable(str(exc)) from exc
+            finally:
+                await response.aclose()
+            raise _as_typed_error(response)
         return ArtifactBytes(
             id=response.headers.get("X-Coppermind-Artifact-Id", artifact_id),
             revision=int(response.headers.get("X-Coppermind-Revision", revision or 1)),
@@ -385,8 +399,8 @@ class HttpStoreClient:
                 response.headers.get("X-Coppermind-Mime-Type", "application/octet-stream")
             ),
             sha256=response.headers.get("X-Coppermind-SHA256", ""),
-            size_bytes=int(response.headers.get("X-Coppermind-Size-Bytes", len(response.content))),
-            content=response.content,
+            size_bytes=int(response.headers.get("X-Coppermind-Size-Bytes", 0)),
+            content=_stream_body(response),
         )
 
     async def list_artifacts(self, query: ArtifactQuery) -> Page[ArtifactSummary]:
@@ -461,6 +475,16 @@ class HttpStoreClient:
         if response.is_success:
             return response
         raise _as_typed_error(response)
+
+
+async def _stream_body(response: httpx.Response) -> AsyncIterator[bytes]:
+    try:
+        async for chunk in response.aiter_bytes():
+            yield chunk
+    except httpx.HTTPError as exc:
+        raise StoreUnavailable(str(exc)) from exc
+    finally:
+        await response.aclose()
 
 
 def _as_typed_error(response: httpx.Response) -> Exception:

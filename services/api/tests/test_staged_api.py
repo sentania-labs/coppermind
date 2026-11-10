@@ -34,7 +34,7 @@ from coppermind.store_protocol import (
 ARTIFACT_ID = "01K4Q8Z2A0P1Q2R3S4T5U6V7W8"
 RECEIPT_ID = "01K4Q8Z2A0P1Q2R3S4T5U6V7W9"
 NOW = datetime(2026, 11, 4, 15, 0, tzinfo=UTC)
-LIMITS = StagedLimits(inline_max_bytes=10 * 1024 * 1024, staged_max_bytes=50 * 1024 * 1024)
+LIMITS = StagedLimits(inline_max_bytes=10 * 1024 * 1024, staged_max_bytes=1024 * 1024 * 1024)
 DIGEST = hashlib.sha256(b"quokka").hexdigest()
 
 ARTIFACT = CreatedArtifact(
@@ -165,7 +165,7 @@ def test_a_reservation_returns_the_receipt_and_the_accepted_limits(api):
     assert body["state"] == "uploading"
     assert body["limits"] == {
         "inline_max_bytes": 10 * 1024 * 1024,
-        "staged_max_bytes": 50 * 1024 * 1024,
+        "staged_max_bytes": 1024 * 1024 * 1024,
     }
     assert fake.reserved[0].fields.title == "Deck"
     assert fake.reserved[0].fields.tags == ["reference"]
@@ -196,13 +196,13 @@ def test_the_write_routes_need_the_write_scope_and_the_read_the_read_scope(api):
 
 def test_an_oversize_declaration_is_refused_with_the_staged_maximum(api):
     client, fake = api
-    too_big = dict(DECLARATION, size_bytes=50 * 1024 * 1024 + 1)
+    too_big = dict(DECLARATION, size_bytes=1024 * 1024 * 1024 + 1)
     response = client.post("/v1/staged", json=too_big, headers=_as(fake, "write"))
     assert response.status_code == 422
     body = response.json()
     assert body["error"] == "validation_error"
     assert "staged maximum" in body["message"]
-    assert fake.reserved[0].size_bytes == 50 * 1024 * 1024 + 1
+    assert fake.reserved[0].size_bytes == 1024 * 1024 * 1024 + 1
 
 
 def test_a_declaration_without_a_hash_or_a_size_is_refused_with_the_reason(api):

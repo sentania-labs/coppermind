@@ -21,6 +21,10 @@ from coppermind.store_protocol import (
 from tests.integration.test_search_index import ingest_request
 
 
+async def drain(artifact) -> bytes:
+    return b"".join([chunk async for chunk in artifact.content])
+
+
 async def approve(store, note_id):
     note = await store.get_note(note_id)
     await store.patch_frontmatter(
@@ -320,8 +324,8 @@ async def test_device_rereview_approves_revised_pdf_without_overwriting_old_copy
 
     artifact = (await store.list_artifacts(ArtifactQuery())).items[0]
     assert artifact.revision == 2
-    assert (await store.get_artifact_bytes(artifact.id, revision=1)).content == b"version one"
-    assert (await store.get_artifact_bytes(artifact.id, revision=2)).content == b"version two"
+    assert await drain(await store.get_artifact_bytes(artifact.id, revision=1)) == b"version one"
+    assert await drain(await store.get_artifact_bytes(artifact.id, revision=2)) == b"version two"
 
 
 async def test_approval_does_not_cover_a_revision_arriving_before_filing(store):
@@ -461,8 +465,9 @@ async def test_new_revision_repoints_embeds_to_the_current_attachments(store):
     artifact = (await store.list_artifacts(ArtifactQuery())).items[0]
     assert artifact.revision == 2 and artifact.path == filed
     assert (
-        await store.get_artifact_bytes(artifact.id, revision=1)
-    ).content == b"synthetic jpeg one"
+        await drain(await store.get_artifact_bytes(artifact.id, revision=1))
+        == b"synthetic jpeg one"
+    )
 
 
 async def _eligible_ids(store):

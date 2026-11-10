@@ -832,3 +832,36 @@ def test_a_refused_note_says_what_happened_and_offers_a_working_action(signed_in
     assert block.startswith('id="field-type" open>')
     assert re.search(r'name="key-\d+-default" value="[^"]*" autofocus', block)
     assert 'field-account" open' not in focused
+
+
+@pytest.mark.parametrize(
+    ("retry_available", "label", "other"),
+    [
+        (True, "Retry or read the details", "View recording details"),
+        (False, "View recording details", "Retry or read the details"),
+    ],
+)
+def test_a_recording_that_could_not_be_transcribed_is_listed_with_its_reason(
+    signed_in, retry_available, label, other
+):
+    client, _ = signed_in
+    store = ReadOnlyStore()
+    store.problems = [
+        ProblemInfo(
+            kind="recording",
+            reference="Standup <b>",
+            reason="The transcription service could not find the endpoint or the model.",
+            retry_available=retry_available,
+        )
+    ]
+    _install(client, store)
+
+    page = client.get("/admin/problems").text
+
+    assert "Recording transcription" in page
+    assert "Standup &lt;b&gt;" in page
+    assert "could not find the endpoint or the model." in page
+    # While transcription is off no retry can be queued, so the link does not promise one.
+    assert f'<a href="/admin/context?tab=review">{label}</a>' in page
+    assert other not in page
+    assert 'href="/admin/context?tab=models#transcription">Transcription settings' in page

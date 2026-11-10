@@ -27,11 +27,13 @@ ACTIONS = frozenset(
         "discover",
         "test-model",
         "save-assignment",
+        "save-transcription",
         "retry-import",
         "dismiss-import",
         "dismiss-calendar-conflict",
         "enqueue",
         "retry-job",
+        "retry-recording",
         "retry-all-failed",
         "reject",
         "approve",
@@ -56,6 +58,14 @@ def _result_message(params: Any, data: dict[str, Any]) -> str:
         if data["config"]["assignments"]["enrichment"]["paused"]:
             message += " Processing is paused; resume it to start."
         return message
+    if action == "retry-recording":
+        message = "Retry queued for the recording."
+        transcription = data["config"]["assignments"].get("transcription")
+        if transcription and transcription["paused"]:
+            message += " Transcription is paused; resume it to start."
+        return message
+    if action == "save-transcription":
+        return "Transcription settings saved."
     if action == "retry-all-failed":
         try:
             queued, failed = int(params.get("queued", "0")), int(params.get("failed", "0"))
@@ -190,6 +200,215 @@ def _limit_link(job: dict[str, Any]) -> str:
     )
 
 
+def _transcription_setup(config: dict[str, Any], data: dict[str, Any], revision: int) -> str:
+    """The Transcription assignment: which connection turns a recording into speaker text."""
+    saved = config["assignments"].get("transcription")
+    assignment = saved or FeatureAssignment().model_dump()
+    connections = [item for item in config["connections"] if item["provider"] != "anthropic"]
+    options = '<option value="">Choose a connection</option>'
+    for item in connections:
+        selected = " selected" if item["id"] == assignment["connection"] else ""
+        options += (
+            f'<option value="{e(item["id"], quote=True)}"{selected}>{e(item["name"])}</option>'
+        )
+    known = data["discovery"].get(assignment["connection"], [])
+    fields = (
+        "<fieldset><legend>1. Choose a service</legend>"
+        f'<label>Connection<select name="connection">{options}</select></label>'
+        '<p class="field-help">Any OpenAI-compatible connection that offers audio '
+        "transcription. Anthropic does not.</p>"
+        f'<label>Model<input name="model" list="transcription-models" '
+        f'value="{e(assignment["model"], quote=True)}"></label>'
+        '<datalist id="transcription-models">'
+        + "".join(f'<option value="{e(item, quote=True)}"></option>' for item in known)
+        + "</datalist>"
+        '<p class="field-help">The model name the service expects. Refresh the connection\'s '
+        "models above to see a list; a transcription service may not publish one, so you can "
+        "type the name.</p>"
+        + _select(
+            "response_format",
+            "Reply with",
+            [
+                ("diarized_json", "Speaker on every segment"),
+                ("verbose_json", "Whisper-compatible segments with speaker names"),
+            ],
+            assignment["response_format"],
+        )
+        + '<p class="field-help">Choose what your service supports.</p>'
+        + "<details><summary>Technical names</summary>"
+        '<p class="field-help">For the service\'s documentation: diarized_json is '
+        "Speaker on every segment, and verbose_json is Whisper-compatible segments with "
+        "speaker names.</p></details></fieldset>"
+    )
+    fields += "<fieldset><legend>2. How long to wait</legend>"
+    for key, label, help_text in [
+        (
+            "wait_s",
+            "Wait limit (seconds)",
+            "Default 3,600, up to 14,400 (four hours). How long the service may take to "
+            "answer one recording. Most services send nothing until the transcript is "
+            "finished, so this has to cover the whole job: an hour of audio can take 10 to "
+            "20 minutes on a CPU, so allow several times the length of your longest "
+            "recording. A recording that takes longer fails, and is not sent again for at "
+            "least half an hour.",
+        ),
+        (
+            "attempts",
+            "Total attempts per recording",
+            "Default 2, including the first. A failed attempt is tried again after a wait "
+            "that starts at half an hour and doubles each time, because every attempt sends "
+            "the whole recording again.",
+        ),
+    ]:
+        fields += _input(key, label, str(assignment[key]), kind="number")
+        fields += '<p class="field-help">' + help_text + "</p>"
+    fields += "</fieldset><fieldset><legend>3. Turn it on</legend>"
+    fields += _check(
+        "enabled", "Transcribe recordings that are handed in", bool(assignment["enabled"])
+    )
+    fields += _check("paused", "Pause transcription", bool(assignment["paused"]))
+    fields += "</fieldset>"
+    return (
+        '<h2 id="transcription">Transcription setup</h2>'
+        "<p>With this on, a recording handed in on its own (without a transcript) is "
+        "transcribed here and filed as a note in Review. The audio goes to the connection "
+        "above and nowhere else. Choose a service inside your lab to keep recordings off "
+        "the internet. Recordings arrive through the staged upload, up to its limit "
+        "(1 GiB by default), and stay stored until you remove them.</p>"
+        + _form("save-transcription", fields, "Save transcription settings", revision=revision)
+    )
+
+
+SETUP_LINK = "/admin/context?tab=models#transcription"
+# Failures that setting a different connection, key or model can cure.
+SETTINGS_RULES = frozenset(
+    {
+        "transcription-http-401",
+        "transcription-http-403",
+        "transcription-http-404",
+        "transcription-http-422",
+        "transcription-provider",
+        "connection-missing",
+    }
+)
+
+
+def _recording_state(job: dict[str, Any], assignment: dict[str, Any] | None) -> str:
+    """One plain sentence about where a recording stands."""
+    state = job["state"]
+    on = bool(assignment and assignment["enabled"])
+    paused = bool(assignment and assignment["paused"])
+    if state == "succeeded":
+        return f"Transcript ready. Note in Review: {job['title']}"
+    if state == "running":
+        return (
+            f"Transcribing since {_calendar_time(job['started_at'])} "
+            f"(attempt {job['attempts']} of {job['attempt_limit']}). This can take hours for "
+            "a long recording. It carries on by itself; this page does not need to stay open."
+        )
+    if state == "failed":
+        text = job["error"]
+        if not on:
+            return text + " Transcription is off. Turn it on to retry this recording."
+        if paused:
+            return text + " Transcription is paused; a retry will start when you resume it."
+        if job["retry_after"] and job["attempts"] < job["attempt_limit"]:
+            return text + f" The app will try again after {_calendar_time(job['retry_after'])}."
+        return text
+    if not on:
+        return "Waiting. Transcription is off. Turn it on to start this recording."
+    if paused:
+        return "Waiting. Transcription is paused; it starts when you resume it."
+    return "Waiting for its turn. Recordings are transcribed one at a time."
+
+
+def _recording_actions(job: dict[str, Any], assignment: dict[str, Any] | None) -> str:
+    on = bool(assignment and assignment["enabled"])
+    paused = bool(assignment and assignment["paused"])
+    body = ""
+    if job["state"] == "failed":
+        if on:
+            body += (
+                "<p>Try again. A transcript already saved is reused, not asked for twice.</p>"
+                + _form("retry-recording", _hidden("id", job["id"]), "Retry")
+            )
+            if job["error_rule"] in SETTINGS_RULES:
+                body += f'<p><a href="{SETUP_LINK}">Check the connection and model</a></p>'
+        else:
+            body += f'<p><a href="{SETUP_LINK}">Turn on transcription</a></p>'
+    elif job["state"] == "queued" and (not on or paused):
+        label = "Turn on transcription" if not on else "Resume transcription"
+        body += f'<p><a href="{SETUP_LINK}">{label}</a></p>'
+    return body
+
+
+def _recordings_section(data: dict[str, Any]) -> str:
+    assignment = data["config"]["assignments"].get("transcription")
+    body = "<h2>Recordings</h2>"
+    if data.get("recording_worker_error"):
+        body += f'<p class="error">{e(data["recording_worker_error"])}</p>'
+    jobs = data.get("recordings", [])
+    if not jobs:
+        if assignment and assignment["enabled"]:
+            return body + (
+                "<p>No recordings yet. One handed in on its own appears here while it is "
+                "transcribed, then lands in Review as a note.</p>"
+            )
+        return body + (
+            "<p>No recordings yet. To take a recording on its own, "
+            f'<a href="{SETUP_LINK}">set up transcription</a>.</p>'
+        )
+    body += "<table><tr><th>Recording</th><th>Status</th><th>Actions</th></tr>"
+    for job in jobs:
+        size = f"{job['size_bytes'] / (1024 * 1024):,.1f} MiB"
+        body += f"<tr><td>{e(job['title'])}<br><small>{e(job['filename'])}, {size}</small></td><td>"
+        body += e(_recording_state(job, assignment)) + "</td><td>"
+        body += _recording_actions(job, assignment)
+        label = "Read the transcript" if job["state"] == "succeeded" else "Details"
+        body += f'<a href="/admin/context/recordings/{quote(job["id"], safe="")}">{label}</a>'
+        body += "</td></tr>"
+    return body + "</table>"
+
+
+def _recording_page(job: dict[str, Any], assignment: dict[str, Any] | None) -> str:
+    """One recording in full: what happened, the transcript, and the technical facts."""
+    body = (
+        f"<h1>Recording</h1><h2>{e(job['title'])}</h2><p>{e(_recording_state(job, assignment))}</p>"
+    )
+    if job["state"] == "succeeded":
+        body += (
+            f"<p>The note is at <strong>{e(job['note_path'])}</strong> in your vault. It reaches "
+            "Obsidian when your vault next syncs, and stays unreviewed until you mark it "
+            "reviewed. The recording itself is kept as a stored file the note cites.</p>"
+        )
+    elif job["state"] == "failed":
+        kept = "Your recording is still saved"
+        kept += " and so is its transcript." if job["transcribed"] else "."
+        body += f"<p>{kept}</p>" + _recording_actions(job, assignment)
+    if job["transcript"]:
+        body += "<h3>Transcript</h3><pre>" + e(job["transcript"]) + "</pre>"
+        if job["transcript_cut"]:
+            body += "<p>Only the start is shown here. The whole text is in the note's source.</p>"
+    facts = {
+        "Recording file": f"{job['filename']} ({job['size_bytes']:,} bytes)",
+        "Attempts": f"{job['attempts']} of {job['attempt_limit']}",
+        "Failure rule": job["error_rule"] or "none",
+        "Recording id": job["artifact_id"],
+        "Intake id": job["id"],
+        "Note id": job["note_id"] or "not filed yet",
+        "Source id": job["source_id"] or "not filed yet",
+    }
+    body += "<details><summary>Technical details</summary><ul>"
+    body += "".join(f"<li>{e(k)}: {e(str(v))}</li>" for k, v in facts.items())
+    body += "</ul>"
+    if job.get("reply"):
+        body += "<p>What the service last sent back:</p><pre>" + e(job["reply"]) + "</pre>"
+    if job.get("usage"):
+        body += "<p>Timing and usage: " + e(json.dumps(job["usage"], sort_keys=True)) + "</p>"
+    body += "</details>"
+    return body + '<p><a href="/admin/context?tab=review">Back to Suggestions and backlog</a></p>'
+
+
 def _proposal_value(value: Any) -> str:
     if isinstance(value, str):
         return _hidden("value_kind", "text") + _input("value", "Proposed value", value)
@@ -291,7 +510,7 @@ def router(wiring: Wiring) -> APIRouter:
         }.get(tab, "Calendar and enrichment")
         head = f"""<h1>{heading}</h1><p class="section-links">
 <a href="/admin/context?tab=calendar">Calendar and contacts</a>
-<a href="/admin/context?tab=models">Connections and model</a>
+<a href="/admin/context?tab=models">Model connections</a>
 <a href="/admin/context?tab=review">Suggestions and backlog</a></p>"""
         message = _result_message(request.query_params, data)
         if message:
@@ -686,6 +905,7 @@ def router(wiring: Wiring) -> APIRouter:
                 "Lower confidence stays here; bodies and filenames stay unchanged.</p>"
             )
             body += _form("save-assignment", fields, "Save enrichment settings", revision=revision)
+            body += _transcription_setup(config, data, revision)
             body += """<script>
 const picker = document.getElementById('enrichment-connection');
 picker.addEventListener('change', () => {
@@ -708,6 +928,7 @@ picker.addEventListener('change', () => {
                 )
             except StoreError as exc:
                 return error(exc)
+            body += _recordings_section(data)
             body += "<h2>Jobs</h2>"
             if assignment["paused"]:
                 body += (
@@ -785,6 +1006,16 @@ picker.addEventListener('change', () => {
             )
             head = f'<p><a href="{SEARCH_RETURN}">Back to Search index</a></p>' + head
         return page(head + body, title=heading)
+
+    @routes.get("/admin/context/recordings/{identity}", include_in_schema=False)
+    async def recording_page(identity: str, request: Request) -> Response:
+        try:
+            job = await client(request).context_action("recording-detail", {"id": identity})
+            data = await client(request).context_action("snapshot", {"offset": 0})
+        except (StoreError, ValueError) as exc:
+            return error(exc)
+        assignment = data["config"]["assignments"].get("transcription")
+        return page(_recording_page(job, assignment), title="Recording")
 
     @routes.get("/admin/context/jobs/{identity}", include_in_schema=False)
     async def job_page(identity: str, request: Request) -> Response:
@@ -992,6 +1223,16 @@ picker.addEventListener('change', () => {
                     assignment[key] = int(form[key])
                 assignment["enabled"], assignment["paused"] = "enabled" in form, "paused" in form
                 payload["assignment"] = assignment
+            elif action == "save-transcription":
+                payload["assignment"] = {
+                    "connection": form.get("connection", ""),
+                    "model": form.get("model", ""),
+                    "response_format": form.get("response_format", "diarized_json"),
+                    "wait_s": int(form["wait_s"]),
+                    "attempts": int(form["attempts"]),
+                    "enabled": "enabled" in form,
+                    "paused": "paused" in form,
+                }
             elif action == "enqueue":
                 payload["regenerate"] = form.get("regenerate") == "yes"
                 payload["note_ids"] = [key[5:] for key in form if key.startswith("note_")]
@@ -1045,10 +1286,19 @@ picker.addEventListener('change', () => {
                 "discover",
                 "test-model",
                 "save-assignment",
+                "save-transcription",
             }
             else "review"
             if action
-            in {"enqueue", "retry-job", "retry-all-failed", "reject", "approve", "resume-approval"}
+            in {
+                "enqueue",
+                "retry-job",
+                "retry-recording",
+                "retry-all-failed",
+                "reject",
+                "approve",
+                "resume-approval",
+            }
             else "calendar"
         )
         if form.get("return") == SEARCH_RETURN and tab == "models":

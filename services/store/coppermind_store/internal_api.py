@@ -11,7 +11,7 @@ from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from coppermind.api_keys import ApiKeySet
 from coppermind.errors import to_http
@@ -402,10 +402,11 @@ async def get_artifact_bytes(
         artifact = await _store(request).get_artifact_bytes(artifact_id, revision)
     except StoreError as error:
         return _failure(error)
-    return Response(
-        content=artifact.content,
+    return StreamingResponse(
+        artifact.content,
         media_type="application/octet-stream",
         headers={
+            "Content-Length": str(artifact.size_bytes),
             "X-Coppermind-Artifact-Id": artifact.id,
             "X-Coppermind-Revision": str(artifact.revision),
             "X-Coppermind-Filename": quote(artifact.filename, safe=""),

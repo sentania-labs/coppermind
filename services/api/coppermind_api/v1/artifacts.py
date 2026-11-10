@@ -24,7 +24,7 @@ from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException
@@ -337,10 +337,11 @@ async def get_artifact_bytes(
     disposition = f'attachment; filename="{ascii_name}"'
     if ascii_name != artifact.filename:
         disposition += f"; filename*=UTF-8''{quote(artifact.filename, safe='')}"
-    return Response(
-        content=artifact.content,
+    return StreamingResponse(
+        artifact.content,
         media_type=media,
         headers={
+            "Content-Length": str(artifact.size_bytes),
             "Content-Disposition": disposition,
             "X-Coppermind-SHA256": artifact.sha256,
             "X-Coppermind-Size-Bytes": str(artifact.size_bytes),

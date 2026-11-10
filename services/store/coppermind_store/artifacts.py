@@ -86,6 +86,8 @@ from coppermind_store.extraction import EXTRACTOR_VERSION, extract, media_type
 from coppermind_store.fs import resolve
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from coppermind_store.notes import LocalStore
 
 log = get_logger("coppermind-store")
@@ -180,13 +182,51 @@ def _revision_file(store: LocalStore, artifact_id: str, revision: dict[str, Any]
     return resolve(store.artifacts_root / artifact_id / f"r{number:04d}", str(revision["filename"]))
 
 
-def _verified_bytes(path: Path, sha256: str, size_bytes: int) -> bytes:
-    data = path.read_bytes()
-    if len(data) != size_bytes or hashlib.sha256(data).hexdigest() != sha256:
+def current_file(
+    store: LocalStore, artifact_id: str, revision: int | None = None
+) -> tuple[Path, dict[str, Any]]:
+    """The archived file of an artifact's current (or the named) revision, and its record.
+
+    For a reader that streams the file instead of loading it. A removed artifact and a
+    link, which has no file, both raise `ArtifactMissing`.
+    """
+    manifest = read_manifest(store, artifact_id)
+    if manifest.get("removed_at"):
+        raise ArtifactMissing(artifact_id)
+    if revision is None:
+        record = _current_revision(manifest)
+    else:
+        record = next(
+            (r for r in manifest.get("revisions", []) if r.get("revision") == revision), {}
+        )
+    if not record.get("filename"):
+        raise ArtifactMissing(artifact_id)
+    return _revision_file(store, artifact_id, record), record
+
+
+READ_CHUNK_BYTES = 1 << 20
+
+
+def _verify_file(path: Path, sha256: str, size_bytes: int) -> None:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as stream:
+        while chunk := stream.read(READ_CHUNK_BYTES):
+            size += len(chunk)
+            digest.update(chunk)
+    if size != size_bytes or digest.hexdigest() != sha256:
         raise ArtifactsFilesystemUnavailable(
             f"the archived artifact failed verification: {path.name}"
         )
-    return data
+
+
+async def _read_chunks(path: Path) -> AsyncIterator[bytes]:
+    stream = await asyncio.to_thread(path.open, "rb")
+    try:
+        while chunk := await asyncio.to_thread(stream.read, READ_CHUNK_BYTES):
+            yield chunk
+    finally:
+        stream.close()
 
 
 def _time(value: Any, field: str) -> datetime:
@@ -639,7 +679,7 @@ async def file_source_artifact(
     source_name: str,
     provider: str,
     mime_type: str,
-    data: bytes,
+    data: bytes | Path,
     received_at: datetime,
 ) -> tuple[str, str]:
     """Register a source's non-text artifact as an artifact and return `(id, path)`.
@@ -649,7 +689,11 @@ async def file_source_artifact(
     and the browsable path a note links stays where it is.
     """
     settings = store.control.settings()
-    sha = hashlib.sha256(data).hexdigest()
+    sha = (
+        await asyncio.to_thread(_file_sha256, data)
+        if isinstance(data, Path)
+        else hashlib.sha256(data).hexdigest()
+    )
     async with store._artifact_lock:
         try:
             async with store.session_factory() as session:
@@ -982,7 +1026,7 @@ def _size_of(data: bytes | Path | None) -> int:
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
-        while chunk := stream.read(1 << 20):
+        while chunk := stream.read(READ_CHUNK_BYTES):
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -1097,12 +1141,8 @@ async def get_artifact_bytes(
     if not item.get("filename"):
         raise ValidationFailed(["this artifact is a link; it has no bytes to serve"])
     try:
-        data = await asyncio.to_thread(
-            _verified_bytes,
-            _revision_file(store, artifact_id, item),
-            str(item["sha256"]),
-            int(item["size_bytes"]),
-        )
+        path = _revision_file(store, artifact_id, item)
+        await asyncio.to_thread(_verify_file, path, str(item["sha256"]), int(item["size_bytes"]))
     except (OSError, ValueError) as exc:
         raise ArtifactsFilesystemUnavailable("the archived artifact is unreadable") from exc
     return ArtifactBytes(
@@ -1112,7 +1152,7 @@ async def get_artifact_bytes(
         mime_type=str(item.get("mime_type") or "application/octet-stream"),
         sha256=str(item["sha256"]),
         size_bytes=int(item["size_bytes"]),
-        content=data,
+        content=_read_chunks(path),
     )
 
 
@@ -1319,11 +1359,9 @@ async def _retire(
             if isinstance(recorded, str) and recorded:
                 try:
                     target = resolve(store.notes_root, recorded)
-                    if target.is_file():
-                        data = target.read_bytes()
-                        if hashlib.sha256(data).hexdigest() == current.get("sha256"):
-                            target.unlink()
-                            sync_directory(target.parent)
+                    if target.is_file() and _file_sha256(target) == current.get("sha256"):
+                        target.unlink()
+                        sync_directory(target.parent)
                 except ValueError:
                     pass
                 except OSError as exc:
@@ -1491,15 +1529,15 @@ def _restore_moved_copy(store: LocalStore, manifest: dict[str, Any], others: set
                 info = found.lstat()
                 if stat.S_ISLNK(info.st_mode) or info.st_size != size or info.st_ctime < placed:
                     continue
-                data = found.read_bytes()
+                matches = _file_sha256(found) == current.get("sha256")
             except OSError:
                 complete = False
                 continue
-            if hashlib.sha256(data).hexdigest() != current.get("sha256"):
+            if not matches:
                 continue
             try:
                 filed.parent.mkdir(parents=True, exist_ok=True)
-                create_exclusive_bytes(filed, data)
+                create_exclusive_bytes(filed, found)
             except OSError:
                 return "unknown"
             try:
@@ -1569,7 +1607,7 @@ def _observe_browse(
         return "ok"
     current = _current_revision(manifest)
     try:
-        matches = hashlib.sha256(target.read_bytes()).hexdigest() == current.get("sha256")
+        matches = _file_sha256(target) == current.get("sha256")
     except OSError:
         return str(document.get("state", "ok"))
     document["browse"] = stat
@@ -1600,7 +1638,7 @@ async def recover_artifacts(store: LocalStore) -> dict[str, int]:
             raise ValueError("artifact manifest identity mismatch")
         for item in manifest.get("revisions", []):
             if item.get("filename"):
-                _verified_bytes(
+                _verify_file(
                     _revision_file(store, path.parent.name, item),
                     str(item["sha256"]),
                     int(item["size_bytes"]),
@@ -1683,20 +1721,19 @@ async def migrate_attachments(store: LocalStore) -> dict[str, int]:
         except (StoreError, OSError, KeyError, StopIteration, TypeError):
             log.warning("legacy attachment left in place: no source names it", path=path.name)
             continue
+        received_at = datetime.fromisoformat(revision["ingested_at"])
         try:
-            data = path.read_bytes()
+            artifact_id, new_path = await file_source_artifact(
+                store,
+                source_id=source_id,
+                source_name=name,
+                provider=str(manifest.get("provider", "")),
+                mime_type=str(artifact.get("mime_type", "application/octet-stream")),
+                data=path,
+                received_at=received_at,
+            )
         except OSError as exc:
             raise NotesFilesystemUnavailable(str(exc)) from exc
-        received_at = datetime.fromisoformat(revision["ingested_at"])
-        artifact_id, new_path = await file_source_artifact(
-            store,
-            source_id=source_id,
-            source_name=name,
-            provider=str(manifest.get("provider", "")),
-            mime_type=str(artifact.get("mime_type", "application/octet-stream")),
-            data=data,
-            received_at=received_at,
-        )
         old_relative = path.relative_to(store.notes_root).as_posix()
         repointed.append((source_id, name, new_path, old_relative))
         registered.append(path)

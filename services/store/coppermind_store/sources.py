@@ -1691,6 +1691,18 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         for item in store.context.dropbox.snapshot()["items"]
         if item["state"] in {"failed", "unsupported"} and not item["parts"]
     )
+    problems.extend(
+        ProblemInfo(
+            kind="recording",
+            reference=job.title,
+            reason=job.error or "The recording could not be transcribed.",
+            note_id=job.note_id or None,
+            source_id=job.source_id or None,
+            retry_available=store.context.recordings.enabled(),
+        )
+        for job in store.context.recordings.jobs()
+        if job.state == "failed"
+    )
     problems.extend(await artifact_problems(store))
     problems.extend(
         ProblemInfo(
