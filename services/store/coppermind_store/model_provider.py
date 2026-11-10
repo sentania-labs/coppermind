@@ -644,21 +644,30 @@ class ModelProvider:
                 )
             yield tail
 
-        result, stats = await self._exchange(
-            connection,
-            key,
-            "POST",
-            "/audio/transcriptions",
-            timeout=assignment.wait_s,
-            connect_timeout=TRANSCRIBE_CONNECT_SECONDS,
-            body=body(),
-            content_type=f"multipart/form-data; boundary={boundary}",
-            max_seconds=MAX_TRANSCRIBE_SECONDS,
-            max_reply_bytes=MAX_TRANSCRIPT_BYTES,
-            noun="transcription service",
-            limit_name="Transcription",
-            length=len(head) + size_bytes + len(tail),
-        )
+        try:
+            result, stats = await self._exchange(
+                connection,
+                key,
+                "POST",
+                "/audio/transcriptions",
+                timeout=assignment.wait_s,
+                connect_timeout=TRANSCRIBE_CONNECT_SECONDS,
+                body=body(),
+                content_type=f"multipart/form-data; boundary={boundary}",
+                max_seconds=MAX_TRANSCRIBE_SECONDS,
+                max_reply_bytes=MAX_TRANSCRIPT_BYTES,
+                noun="transcription service",
+                limit_name="Transcription",
+                length=len(head) + size_bytes + len(tail),
+            )
+        except ProviderError as exc:
+            if exc.rule:
+                raise
+            raise ProviderError(
+                f"The transcription service's answer could not be used ({exc}). Check the "
+                "connection address and key under Models, then Transcription.",
+                "transcription-provider",
+            ) from exc
         transcript = parse_transcript(result)
         reported = result.get("usage")
         usage: dict[str, Any] = {

@@ -212,6 +212,34 @@ async def test_an_http_failure_is_told_apart_and_only_a_server_fault_is_tried_ag
     assert phrase in str(caught.value) and "secret detail" not in str(caught.value)
 
 
+async def test_an_unusable_answer_is_a_refusal_the_same_upload_would_only_repeat(recording):
+    from coppermind_store.recordings import repeats_only
+
+    async with Service(reply=["not", "an", "object"]) as service:
+        with pytest.raises(ProviderError) as caught:
+            await send(service, recording)
+    assert caught.value.rule == "transcription-provider" and caught.value.waiting is False
+    assert "answer could not be used" in str(caught.value)
+    assert repeats_only(caught.value.rule)
+
+
+async def test_a_keyless_openai_connection_is_refused_as_a_connection_problem(recording):
+    from coppermind_store.recordings import repeats_only
+
+    connection = ModelConnection(id="o", name="O", provider="openai")
+    with pytest.raises(ProviderError) as caught:
+        await ModelProvider().transcribe(
+            connection,
+            "",
+            assignment(),
+            recording,
+            filename="a.m4a",
+            mime_type="audio/mp4",
+            size_bytes=recording.stat().st_size,
+        )
+    assert "requires an API key" in str(caught.value) and repeats_only(caught.value.rule)
+
+
 async def test_anthropic_is_refused_without_a_call(recording):
     connection = ModelConnection(id="a", name="A", provider="anthropic")
     with pytest.raises(ProviderError) as caught:
