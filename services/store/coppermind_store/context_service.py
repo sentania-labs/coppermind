@@ -1367,13 +1367,6 @@ class ContextService:
             if job.purpose == "dossier"
             else await self.queue_note(job.note_id, force=True)
         )
-        async with self.lock:
-            latest = self.load_job(identity)
-            if latest.state == "failed":
-                latest.config_hash, latest.schema_hash = self.config_hash(), self.schema_hash()
-                latest.state, latest.attempts = "queued", 0
-                latest.set_error()
-                self.save_job(latest)
         return {"job": identity}
 
     def newest_job_id(self, note_id: str) -> str:
@@ -1902,7 +1895,11 @@ class ContextService:
                         or known.source_versions != source_versions
                         or known.config_hash != self.config_hash()
                         or known.schema_hash != self.schema_hash()
-                        or known.evidence_hash != await self.note_evidence_hash(current, ledger)
+                        or (
+                            self.config().lifecycle_enabled
+                            and known.evidence_hash
+                            != await self.note_evidence_hash(current, ledger)
+                        )
                     ):
                         touched.append(await self.queue_note(note.id, force=True, ledger=ledger))
                     continue

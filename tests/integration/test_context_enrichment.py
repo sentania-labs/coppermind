@@ -1479,6 +1479,33 @@ async def test_an_edited_failed_note_gets_no_new_job_until_it_settles(store, mon
     assert len(context.jobs()) == 2
 
 
+async def test_a_calendar_change_does_not_requeue_failed_notes_when_lifecycle_is_off(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 2000
+    context.save_config(config)
+    assert not context.config().lifecycle_enabled
+    failed = []
+    for index in range(3):
+        note = await store.create_note(
+            CreateNote(
+                title=f"Large {index}", body="word " * 1000, frontmatter={"date": "2026-10-14"}
+            )
+        )
+        identity = await context.queue_note(note.id)
+        await context.run_job(context.load_job(identity))
+        assert context.load_job(identity).state == "failed"
+        failed.append(identity)
+    hash_before = context.evidence_hash()
+
+    context.write("contact_corrections", {"someone": {"same_as": "other"}})
+    assert context.evidence_hash() != hash_before
+    await context.tick()
+    await context.tick()
+
+    assert sorted(job.id for job in context.jobs()) == sorted(failed)
+
+
 async def test_a_renamed_failed_note_gets_a_new_job_at_its_new_path(store):
     context = await configure(store)
     config = context.config()
