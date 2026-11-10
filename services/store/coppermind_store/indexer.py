@@ -275,6 +275,7 @@ async def status(store: LocalStore) -> SearchIndexStatus:
         rebuild_started_at=state.rebuild_started_at if state else None,
         rebuild_completed_at=state.rebuild_completed_at if state else None,
         rebuild_error=state.rebuild_error if state else None,
+        embeddings=await store.embeddings.status(),
     )
 
 
@@ -820,10 +821,13 @@ def _walk(
 
 @writer
 async def rebuild(store: LocalStore) -> dict[str, int]:
-    """Throw the index away and read it back from the notes filesystem.
+    """Read the index back from the notes filesystem.
 
-    The one thing kept is the entry of a note the mirror holds as unparsed:
-    its file cannot be read again, so its last indexed text is all there is.
+    Every entry the walk reads again is replaced in place and any other is
+    removed, so an entry whose version is unchanged keeps its embeddings.
+    The one thing kept without a walk is the entry of a note the mirror holds
+    as unparsed: its file cannot be read again, so its last indexed text is
+    all there is. Dossier entries are the entity service's to refresh.
     """
     started = datetime.now(tz=UTC)
     settings = store.control.settings()
@@ -868,17 +872,39 @@ async def rebuild(store: LocalStore) -> dict[str, int]:
         async with transaction(store.session_factory) as session:
             # A note the mirror holds as unparsed stays findable by the text
             # it was last indexed with, which the walk could not read again.
+            # Entries the walk read again are replaced in place, so their
+            # embeddings, which go with the row, survive a rebuild.
             walked = [entry.ref_id for entry in entries if entry.kind == "note"]
-            unparsed = sa.select(Note.id).where(
-                Note.state == "unparsed", reviewed_note(notes_folder), Note.id.not_in(walked)
-            )
-            await session.execute(
-                sa.delete(SearchDocument).where(
-                    sa.not_(
-                        sa.and_(SearchDocument.kind == "note", SearchDocument.ref_id.in_(unparsed))
+            unparsed = set(
+                await session.scalars(
+                    sa.select(Note.id).where(
+                        Note.state == "unparsed",
+                        reviewed_note(notes_folder),
+                        Note.id.not_in(walked),
                     )
                 )
             )
+            kept = {(entry.kind, entry.ref_id) for entry in entries}
+            kept.update(("note", ref_id) for ref_id in unparsed)
+            held = (
+                await session.execute(
+                    sa.select(SearchDocument.kind, SearchDocument.ref_id).where(
+                        SearchDocument.kind.in_(["note", "source", "artifact"])
+                    )
+                )
+            ).all()
+            gone: dict[str, list[str]] = {}
+            for kind, ref_id in held:
+                if (kind, ref_id) not in kept:
+                    gone.setdefault(kind, []).append(ref_id)
+            for kind, ref_ids in gone.items():
+                for start in range(0, len(ref_ids), _REBUILD_BATCH):
+                    await session.execute(
+                        sa.delete(SearchDocument).where(
+                            SearchDocument.kind == kind,
+                            SearchDocument.ref_id.in_(ref_ids[start : start + _REBUILD_BATCH]),
+                        )
+                    )
             for start in range(0, len(entries), _REBUILD_BATCH):
                 batch = entries[start : start + _REBUILD_BATCH]
                 # A store write that commits while this runs has indexed newer

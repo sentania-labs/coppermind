@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from coppermind.atomicio import atomic_write_text
 from coppermind.context_config import (
     ContextConfig,
+    EmbeddingAssignment,
     FeatureAssignment,
     ModelConnection,
     read_context_config,
@@ -692,7 +693,11 @@ class ContextService:
             discovery.pop(config.connection_aliases.get(connection.id, connection.id), None)
             self.write("discovery", discovery)
             connection.credential_version = (old.credential_version if old else 0) + 1
-            for assignment in config.assignments.values():
+            assignments: list[FeatureAssignment | EmbeddingAssignment] = [
+                *config.assignments.values(),
+                config.embeddings,
+            ]
+            for assignment in assignments:
                 if assignment.connection == connection.id:
                     assignment.enabled = False
             config.connections = [
@@ -717,7 +722,11 @@ class ContextService:
             config.connection_aliases[identity] = config.connection_aliases.pop(old, old)
             config.automatic_connection_ids.append(identity)
             connection.id = identity
-            for assignment in config.assignments.values():
+            assignments: list[FeatureAssignment | EmbeddingAssignment] = [
+                *config.assignments.values(),
+                config.embeddings,
+            ]
+            for assignment in assignments:
                 if assignment.connection == old:
                     assignment.connection = identity
             # One atomic config replacement switches every reference. Credentials,
@@ -800,6 +809,12 @@ class ContextService:
         if not isinstance(tokens, int) or tokens < 20 or seconds < 0.5:
             return {}
         return {"tokens_per_s": round(tokens / seconds, 1), "streamed": streamed}
+
+    async def embeddings_view(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.store.embeddings.view(payload)
+
+    async def save_embeddings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.store.embeddings.save(payload)
 
     async def save_assignment(self, payload: dict[str, Any]) -> dict[str, Any]:
         assignment = FeatureAssignment.model_validate(payload["assignment"])

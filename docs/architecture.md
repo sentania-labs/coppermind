@@ -71,6 +71,10 @@ process rather than as a service of its own: it writes PostgreSQL full-text
 entries in the same transactions as the mirror rows they describe, catches up
 after each reconciliation pass, and rebuilds the whole index from the notes
 filesystem on request, so it needs no image, no port and no volume of its own.
+Search by meaning is a second, slower loop in the same process (see
+[data and settings](data-and-settings.md#search-by-meaning)): it embeds what the indexer
+wrote, in the background, and search combines its vectors with the full-text
+index only when an embeddings model is set up and answering.
 One more is designed but not built yet, and has no image or code in the tree:
 `curator` (files a reviewed note into the right folder by rule). Its absence
 is expected at this point in the build; see [roadmap.md](roadmap.md) for when
@@ -181,8 +185,6 @@ has a prepared place in the design for when it is actually needed:
   to starts empty on purpose; pointing the reconciler at years of existing
   notes would rewrite every one of them and push that all at once to every
   device. Import becomes a deliberate, later Admin action.
-- **Vector or hybrid search**, on top of the plain text search that ships
-  first.
 - **General note history browsing.** Arbitrary historical revisions still
   require Git access. Deleted-note preview and restore are a narrower
   capability, described in STATUS.md, with recovery evidence outside Git.

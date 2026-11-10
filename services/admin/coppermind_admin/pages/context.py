@@ -70,6 +70,10 @@ def _result_message(params: Any, data: dict[str, Any]) -> str:
     return action.replace("-", " ").capitalize() + " completed."
 
 
+# The one page that sends people to Connections and expects them back.
+SEARCH_RETURN = "/admin/search-index"
+
+
 def _input(name: str, label: str, value: str = "", *, kind: str = "text") -> str:
     return (
         f'<label>{e(label)}<input name="{e(name)}" type="{kind}" '
@@ -771,6 +775,15 @@ picker.addEventListener('change', () => {
         if data.get("next_offset") is not None:
             target = f"/admin/context?tab={quote(tab)}&amp;offset={data['next_offset']}"
             body += f'<a href="{target}">Next records</a>'
+        if tab == "models" and request.query_params.get("return") == SEARCH_RETURN:
+            # Opened from the Search index page: say how to get back, and make every form
+            # here carry the way back so saving a connection returns there.
+            body = body.replace(
+                '<input type="hidden" name="revision"',
+                f'<input type="hidden" name="return" value="{SEARCH_RETURN}">'
+                '<input type="hidden" name="revision"',
+            )
+            head = f'<p><a href="{SEARCH_RETURN}">Back to Search index</a></p>' + head
         return page(head + body, title=heading)
 
     @routes.get("/admin/context/jobs/{identity}", include_in_schema=False)
@@ -1038,6 +1051,13 @@ picker.addEventListener('change', () => {
             in {"enqueue", "retry-job", "retry-all-failed", "reject", "approve", "resume-approval"}
             else "calendar"
         )
+        if form.get("return") == SEARCH_RETURN and tab == "models":
+            if action == "save-connection":
+                return RedirectResponse(f"{SEARCH_RETURN}?notice=connection-saved", status_code=303)
+            return RedirectResponse(
+                f"/admin/context?tab=models&result={action}&return={SEARCH_RETURN}",
+                status_code=303,
+            )
         query = f"tab={tab}&result={action}"
         if action == "retry-job":
             query += "&job=" + quote(result["job"], safe="")

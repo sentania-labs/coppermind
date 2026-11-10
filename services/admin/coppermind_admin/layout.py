@@ -66,6 +66,7 @@ input[type=checkbox],input[type=radio] {width:auto;margin-right:.5rem}
 input:disabled,select:disabled,textarea:disabled {background:var(--surface-sunken);
   color:var(--ink-muted)}
 textarea {min-height:7rem;resize:vertical}
+[aria-invalid=true] {border-color:var(--bad);outline:2px solid var(--bad)}
 fieldset {margin:1.5rem 0;padding:1rem 1.3rem;border:1px solid var(--line);border-radius:.5rem}
 legend {font-weight:650;padding:0 .4rem}
 button,.button {display:inline-block;

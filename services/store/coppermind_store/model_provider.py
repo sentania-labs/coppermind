@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 from typing import Any
 
@@ -18,6 +19,8 @@ MAX_CALL_SECONDS = 3600
 # The most a streamed reply may send in total, framing included. Replies are held to
 # 2 MiB of text; this is the wire-size ceiling above that.
 MAX_STREAM_BYTES = 16 * 1024 * 1024
+# The longest vector accepted. pgvector stores up to 16,000 dimensions.
+MAX_EMBEDDING_DIMENSIONS = 8192
 # How much of a model's reply is kept on a failed job so Inspect can show why it failed.
 REPLY_KEPT_CHARS = 4000
 
@@ -330,6 +333,88 @@ class ModelProvider:
                 raise ProviderError("provider model pagination did not advance")
             params = {"after_id": cursor, "limit": 100}
         raise ProviderError("model list exceeded 20 pages; use a manual model ID")
+
+    async def embed(
+        self,
+        connection: ModelConnection,
+        key: str,
+        model: str,
+        texts: list[str],
+        *,
+        timeout: int = 60,
+    ) -> list[list[float]]:
+        """One vector per text, in order, from an OpenAI-compatible `/embeddings` endpoint.
+
+        The reply is checked before anything is trusted: one vector for each text, every
+        number finite, every vector the same length.
+        """
+        if connection.provider == "anthropic":
+            raise ProviderError(
+                "Anthropic offers no embeddings endpoint. Choose an OpenAI or "
+                "OpenAI-compatible connection.",
+                "provider-no-embeddings",
+            )
+        try:
+            result = await self.request(
+                connection,
+                key,
+                "POST",
+                "/embeddings",
+                timeout=timeout,
+                payload={"model": model, "input": texts, "encoding_format": "float"},
+            )
+        except ProviderError as exc:
+            # 400, 413 and 422 are about the text sent (too long, unusable), not about the
+            # service or the credentials; the caller sends less, then gives up on the text.
+            if not exc.rule and str(exc) in {
+                f"provider returned HTTP {code}" for code in (400, 413, 422)
+            }:
+                raise ProviderError(
+                    f"The embeddings service refused the text it was sent ({str(exc)[-3:]}).",
+                    "provider-rejected",
+                ) from exc
+            if not exc.rule and str(exc) == "provider returned HTTP 404":
+                raise ProviderError(
+                    "The embeddings service answered 404: no such model or address.",
+                    "provider-not-found",
+                ) from exc
+            raise
+        rows = result.get("data")
+        if not isinstance(rows, list) or len(rows) != len(texts):
+            raise ProviderError(
+                "The embeddings service did not return one vector for each text.",
+                "provider-bad-embeddings",
+            )
+        ordered: list[list[float]] = [[] for _ in texts]
+        seen: set[int] = set()
+        for position, row in enumerate(rows):
+            index = row.get("index", position) if isinstance(row, dict) else None
+            vector = row.get("embedding") if isinstance(row, dict) else None
+            if (
+                not isinstance(index, int)
+                or isinstance(index, bool)
+                or not 0 <= index < len(texts)
+                or index in seen
+                or not isinstance(vector, list)
+                or not vector
+                or len(vector) > MAX_EMBEDDING_DIMENSIONS
+                or not all(
+                    isinstance(x, int | float) and not isinstance(x, bool) and math.isfinite(x)
+                    for x in vector
+                )
+            ):
+                raise ProviderError(
+                    "The embeddings service returned a vector that could not be used.",
+                    "provider-bad-embeddings",
+                )
+            seen.add(index)
+            ordered[index] = [float(x) for x in vector]
+        if len({len(vector) for vector in ordered}) != 1:
+            raise ProviderError(
+                "The embeddings service returned vectors of different lengths.",
+                "provider-bad-embeddings",
+            )
+        return ordered
 
     async def suggest(
         self,

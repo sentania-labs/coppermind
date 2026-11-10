@@ -104,9 +104,8 @@ The order below follows issue 28's planning.
   page per person or company in the notes filesystem whose top section is
   the person's own notes and whose lower block, below a clear separator,
   Coppermind regenerates from the database; facts added when a note is
-  marked reviewed; entity pages indexed like any note (full text now, vectors
-  when A8 lands). The dossier rows in PostgreSQL are derived, not authored:
-  a rebuild job re-derives every fact from reviewed notes, so the mirror
+  marked reviewed; entity pages indexed like any note (full text and vectors). The dossier rows
+  in PostgreSQL are derived, not authored: a rebuild job re-derives every fact from reviewed notes, so the mirror
   stays regenerable from the notes filesystem like every other mirror. A
   correction an operator makes on the Admin dossier page is written
   file-first under `/data/state` (alongside settings and the schema) and
@@ -129,7 +128,6 @@ exhaustive; the full one is in [architecture.md](architecture.md)'s
 
 | Deferred | Why | Revisit when |
 |---|---|---|
-|| A8: Vectors and pgvector | Full-text search is built (wave 2 item 5); hybrid search is a follow-on to it; a second stateful system would break the one-volume restore and add a consistency problem for a few thousand notes that does not need it yet | A concrete search need plain text search cannot serve |
 || A9: Rebuild-everything job plus adoption control (issue 40) | Coppermind's remote vault (the Obsidian Sync target) starts empty on purpose; an import endpoint is unnecessary since `POST /v1/notes` with folder already serves a client-side import; a bulk import would rewrite and push all notes at once | After the notes filesystem has proven itself in real use, as a deliberate one-time Admin action, and whenever a mirror needs rebuilding from disk |
 | Redis for event delivery | The PostgreSQL outbox already gives correctness through reconciliation; Redis only helps an external consumer, and there is not one yet | Something outside this system needs to consume Coppermind's events |
 | Rewriting links when a note is renamed | Filing (a move) never breaks a link; only a rename can, and that gap is documented rather than patched around | The first real broken-link report |

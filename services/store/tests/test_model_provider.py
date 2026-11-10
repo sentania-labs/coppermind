@@ -375,8 +375,15 @@ async def test_admin_waits_for_a_slow_model_test_but_not_for_other_actions():
     client = HttpStoreClient("http://store", "t", timeout=30, transport=httpx.MockTransport(serve))
     await client.context_action("test-model", {})
     await client.context_action("snapshot", {})
-    assert waits == {"test-model": MODEL_TEST_TIMEOUT_S, "snapshot": 30}
+    await client.context_action("save-embeddings", {})
+    assert waits == {
+        "test-model": MODEL_TEST_TIMEOUT_S,
+        "snapshot": 30,
+        "save-embeddings": MODEL_TEST_TIMEOUT_S,
+    }
+    # The embeddings test may wait up to its largest allowed 600 s silence limit.
     assert MODEL_TEST_TIMEOUT_S > 120 + 30
+    assert MODEL_TEST_TIMEOUT_S > 600
 
 
 def _sse(events):

@@ -320,7 +320,7 @@ JSON request from stdin or a file path; never put credentials in its arguments.
 | `store` | the only process that writes the notes filesystem | `/data`, one replica always |
 | `git` | records the history of the notes filesystem; no network, no credential | `/data/notes/.git`, one replica always |
 | `obsidian-sync` | supervises the official sync client with guided Admin connection | `/data/state/sync`, one replica always |
-| `postgres` | mirrored and derived state, rebuildable from `/data` | `pgdata` volume |
+| `postgres` | mirrored and derived state (with pgvector for search by meaning), rebuildable from `/data` | `pgdata` volume |
 | `bootstrap`, `migrate` | one-shot, run on every `up` and exit | none |
 
 Health is honest. `/healthz` says the process is up; `/readyz` says the

@@ -76,7 +76,7 @@ services:
   # an external PostgreSQL through COPPERMIND_DATABASE_URL; expressing that
   # choice in compose arrives with the deployment work.
   postgres:
-    image: postgres:16@sha256:c1b3783309b6499c795eed7c20135a1a4d25cae1b575c3d52c6f536129a1b109
+    image: pgvector/pgvector:pg16@sha256:0dd3149a06e4579a0d70d8fef9945636cd514005e7237deb27f9b67886f8dc4f
     restart: unless-stopped
     environment:
       POSTGRES_DB: coppermind

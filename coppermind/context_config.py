@@ -107,6 +107,22 @@ class FeatureAssignment(ContextModel):
         return 120 if value == 45 else value
 
 
+class EmbeddingAssignment(ContextModel):
+    """Which embeddings model search by meaning uses, and how patiently.
+
+    Points at a connection like the enrichment assignment does, but names an
+    embeddings model (an OpenAI-compatible `/v1/embeddings` endpoint). Turned
+    off, search is full-text only and nothing is sent anywhere.
+    """
+
+    connection: str = ""
+    model: str = Field(default="", max_length=200)
+    enabled: bool = False
+    # How long the service may stay silent before one request is given up on.
+    timeout_s: int = Field(default=60, ge=5, le=600)
+    attempts: int = Field(default=3, ge=1, le=5)
+
+
 class ContextConfig(ContextModel):
     revision: int = 0
     dropbox_folder: str = "Dropbox"
@@ -125,6 +141,8 @@ class ContextConfig(ContextModel):
     assignments: dict[str, FeatureAssignment] = Field(
         default_factory=lambda: {"enrichment": FeatureAssignment()}
     )
+
+    embeddings: EmbeddingAssignment = Field(default_factory=EmbeddingAssignment)
 
     @model_validator(mode="after")
     def unique(self) -> ContextConfig:

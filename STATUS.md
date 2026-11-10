@@ -635,8 +635,8 @@ in the tree, so do not read the absence as a decision to leave it out.
   by rule) has no code or image in the tree yet (`docs/architecture.md`'s
   "moving parts" section says the same). A note marked `reviewed: true` is not
   filed anywhere by the system; it stays wherever it already is. The indexer
-  and `GET /v1/search` are built and are under Working above; vector search
-  (A8) is deferred.
+  and `GET /v1/search` are built and are under Working above; search by meaning
+  is built too (see [data and settings](docs/data-and-settings.md#search-by-meaning)).
 - **Remaining source capabilities.** Storing a correction to a field that
   describes a source (`captured_at`, `metadata`, `source_type`, `origin` or an
   artifact `mime_type`) when the artifacts are unchanged is not built; today

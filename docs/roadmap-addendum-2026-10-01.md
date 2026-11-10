@@ -96,7 +96,7 @@ The table in #28 is authoritative; this is the summary and the reasoning.
 | A5 | Digester hook: per-type interpretation that appends derived artifacts to the revision and rows to the mirror. First: ICS to calendar events with a structured query; PDF and PPTX text extraction | no | Calendar becomes a source type, not a second service and not notes |
 | A6 | Enricher: optional image, off by default, proposes frontmatter through a model endpoint named in one setting | no, and it strains the plan | The simple non-deterministic metadata work moves next to the data; rules below |
 | A7 | Attachments route | planned | Decks and PDFs reach devices |
-| A8 | pgvector in the same PostgreSQL, embeddings via an endpoint setting, default off, model version per row, re-embed job | deferred | Hybrid search over transcripts; full-text keeps working when the model is down |
+| A8 | pgvector in the same PostgreSQL, embeddings via an endpoint setting, default off, model version per row, re-embed job | built; see [data and settings](data-and-settings.md#search-by-meaning) | Hybrid search over transcripts; full-text keeps working when the model is down |
 | A9 | Import that is not the adopt-everything reconciler; the rebuild job | deferred, planned | Bulk migration of an existing corpus; on-demand rebuild |
 
 ## Calendar and other machine-readable data
@@ -141,8 +141,9 @@ enricher is the one place a model is allowed, and only under these rules:
 
 ## Search: one PostgreSQL, two indexes
 
-Full-text ships with the indexer as planned. Proposed (A8), not decided:
-vectors as a follow-on increment to the same component (pgvector column, HNSW
+Full-text ships with the indexer as planned. Vectors (A8, since built as described in
+[data and settings](data-and-settings.md#search-by-meaning)) were planned
+as a follow-on increment to the same component (pgvector column, HNSW
 index, a setting, a caller) rather than a separate vector database. A second stateful system would break the one-volume
 restore and add a consistency problem for a corpus of a few thousand notes that
 does not need it. Most real questions are entity plus topic, which frontmatter

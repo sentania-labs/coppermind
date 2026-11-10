@@ -26,13 +26,14 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import REGCONFIG
 from sqlalchemy.exc import SQLAlchemyError
 
-from coppermind.db.models import Artifact, EntityRecord, Note, SearchDocument
+from coppermind.db.models import Artifact, EntityRecord, Note, SearchDocument, SearchEmbedding
 from coppermind.store_protocol import (
     FilterCursorConflict,
     MetadataUnavailable,
@@ -40,10 +41,12 @@ from coppermind.store_protocol import (
     Page,
     SearchHit,
     SearchKind,
+    SearchMatch,
     SearchQuery,
     ValidationFailed,
 )
 from coppermind_store.eligibility import current_source, eligible
+from coppermind_store.embeddings import QueryVector, vector_value
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
@@ -67,6 +70,7 @@ class SearchCursor:
     kind: str
     ref_id: str
     filtered: bool = False
+    hybrid: bool = False
 
 
 def query_digest(q: str) -> str:
@@ -82,6 +86,7 @@ def encode_cursor(cursor: SearchCursor) -> str:
             "r": cursor.rank,
             "k": cursor.kind,
             "id": cursor.ref_id,
+            "m": "hybrid" if cursor.hybrid else "keyword",
         },
         separators=(",", ":"),
     )
@@ -96,6 +101,7 @@ def decode_cursor(value: str, q: str) -> SearchCursor:
         if not isinstance(payload, dict) or payload.get("v") not in (_CURSOR_VERSION, 2):
             raise ValueError
         digest, rank, kind, ref_id = (payload.get(key) for key in ("q", "r", "k", "id"))
+        scoring = payload.get("m", "keyword")
         if (
             not isinstance(digest, str)
             or isinstance(rank, bool)
@@ -103,6 +109,7 @@ def decode_cursor(value: str, q: str) -> SearchCursor:
             or not math.isfinite(rank)
             or kind not in ("note", "source", "artifact", "entity")
             or not isinstance(ref_id, str)
+            or scoring not in ("keyword", "hybrid")
         ):
             raise ValueError
     except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
@@ -111,7 +118,13 @@ def decode_cursor(value: str, q: str) -> SearchCursor:
         if payload["v"] == 2:
             raise FilterCursorConflict()
         raise ValidationFailed(["cursor: it pages a different q"])
-    return SearchCursor(query_digest=digest, rank=float(rank), kind=kind, ref_id=ref_id)
+    return SearchCursor(
+        query_digest=digest,
+        rank=float(rank),
+        kind=kind,
+        ref_id=ref_id,
+        hybrid=scoring == "hybrid",
+    )
 
 
 # A word or a quoted phrase, with the `-` that excludes it, as
@@ -152,10 +165,25 @@ def match_conditions(q: str) -> list[sa.ColumnElement[bool]]:
     Each exclusion is asked under both configurations, so a document holding
     the excluded word as written or any inflection of it is no hit.
     """
-    conditions: list[sa.ColumnElement[bool]] = [SearchDocument.search_vector.op("@@")(ts_query(q))]
-    for term in excluded_terms(q):
-        conditions.append(sa.not_(SearchDocument.search_vector.op("@@")(ts_query(term))))
-    return conditions
+    return [SearchDocument.search_vector.op("@@")(ts_query(q)), *exclusion_conditions(q)]
+
+
+def exclusion_conditions(q: str) -> list[sa.ColumnElement[bool]]:
+    """Only the question's exclusions, which a hit found by meaning must satisfy too."""
+    return [
+        sa.not_(SearchDocument.search_vector.op("@@")(ts_query(term))) for term in excluded_terms(q)
+    ]
+
+
+def meaning_text(q: str) -> str:
+    """What is embedded for a question: its words, without exclusions, quotes or `or`."""
+    dropped = set(excluded_terms(q))
+    words = [
+        match.group(2).strip('"')
+        for match in _TERM.finditer(q)
+        if match.group(2) not in dropped or not match.group(1)
+    ]
+    return " ".join(word for word in words if word and word.lower() != "or")
 
 
 def note_state() -> sa.ColumnElement[str]:
@@ -204,21 +232,20 @@ def filter_conditions(query: SearchQuery) -> list[sa.ColumnElement[bool]]:
     return conditions
 
 
-def build_search(
+def candidates(
     query: SearchQuery,
     notes_folder: str,
-    after: SearchCursor | None = None,
-    extra: list[Any] | None = None,
+    extra: list[Any] | None,
     *,
-    entities: bool = False,
+    entities: bool,
+    columns: list[Any],
 ) -> sa.Select[Any]:
-    """One page of hits plus one, so the caller knows whether another follows.
+    """The index joined to the mirror with every condition but the question itself.
 
-    The excerpt is computed in the outer query, over the page only, because
-    building a highlighted passage is the expensive part of the answer.
+    What may be shown at all, to this reader, under these filters: published, present,
+    not deleted, and permitted by kind. Full-text and meaning searches both start here,
+    so neither can surface what the other would hide.
     """
-    tsquery = ts_query(query.q)
-    rank = sa.func.ts_rank(SearchDocument.search_vector, tsquery)
     state = note_state()
     entity_allowed = sa.exists(
         sa.select(EntityRecord.id).where(
@@ -228,22 +255,14 @@ def build_search(
         )
     ).correlate_except(EntityRecord)
     permitted = ["note", "source", "artifact"] + (["entity"] if entities else [])
-    matches = (
-        sa.select(
-            SearchDocument.kind.label("kind"),
-            SearchDocument.ref_id.label("ref_id"),
-            SearchDocument.path.label("path"),
-            SearchDocument.title.label("title"),
-            rank.label("rank"),
-            state.label("state"),
-        )
+    return (
+        sa.select(*columns)
         .select_from(SearchDocument)
         .outerjoin(Note, sa.and_(SearchDocument.kind == "note", Note.id == SearchDocument.ref_id))
         .outerjoin(
             Artifact,
             sa.and_(SearchDocument.kind == "artifact", Artifact.id == SearchDocument.ref_id),
         )
-        .where(*match_conditions(query.q))
         .where(SearchDocument.kind.in_(permitted))
         .where(
             sa.or_(
@@ -264,6 +283,37 @@ def build_search(
         .where(*filter_conditions(query))
         .where(*(extra or []))
     )
+
+
+def build_search(
+    query: SearchQuery,
+    notes_folder: str,
+    after: SearchCursor | None = None,
+    extra: list[Any] | None = None,
+    *,
+    entities: bool = False,
+) -> sa.Select[Any]:
+    """One page of hits plus one, so the caller knows whether another follows.
+
+    The excerpt is computed in the outer query, over the page only, because
+    building a highlighted passage is the expensive part of the answer.
+    """
+    tsquery = ts_query(query.q)
+    rank = sa.func.ts_rank(SearchDocument.search_vector, tsquery)
+    matches = candidates(
+        query,
+        notes_folder,
+        extra,
+        entities=entities,
+        columns=[
+            SearchDocument.kind.label("kind"),
+            SearchDocument.ref_id.label("ref_id"),
+            SearchDocument.path.label("path"),
+            SearchDocument.title.label("title"),
+            rank.label("rank"),
+            note_state().label("state"),
+        ],
+    ).where(*match_conditions(query.q))
     if after is not None:
         matches = matches.where(
             sa.or_(
@@ -294,6 +344,177 @@ def build_search(
     )
 
 
+# Hybrid search fuses two ranked lists, the best keyword matches and the nearest
+# passages by meaning, by reciprocal rank: a hit scores 1 / (K + position) in each
+# list it is in. It needs no common scale between a text rank and a distance, and a
+# hit both lists like beats one only a list likes.
+RRF_K = 60
+KEYWORD_CANDIDATES = 500
+MEANING_CANDIDATES = 100
+MEANING_EXCERPT_CHARS = 400
+# A passage counts as near only when it is closer than unrelated (cosine distance
+# under 1) and within this much of the nearest one. The margin keeps the scale of
+# the model out of it: one whose unrelated text still scores 0.7 and one whose
+# unrelated text scores 0.1 both keep the best matches and drop the filler.
+MEANING_MARGIN = 0.25
+
+
+async def hybrid_rows(
+    session: Any,
+    query: SearchQuery,
+    notes_folder: str,
+    after: SearchCursor | None,
+    predicates: list[Any],
+    entities: bool,
+    wanted: QueryVector,
+) -> list[Any]:
+    """`limit + 1` rows of the fused answer, in the shape `page_of` reads."""
+    rank = sa.func.ts_rank(SearchDocument.search_vector, ts_query(query.q))
+    keyword = list(
+        (
+            await session.execute(
+                candidates(
+                    query,
+                    notes_folder,
+                    predicates,
+                    entities=entities,
+                    columns=[
+                        SearchDocument.kind.label("kind"),
+                        SearchDocument.ref_id.label("ref_id"),
+                        SearchDocument.path.label("path"),
+                        SearchDocument.title.label("title"),
+                        note_state().label("state"),
+                    ],
+                )
+                .where(*match_conditions(query.q))
+                .order_by(rank.desc(), SearchDocument.kind, SearchDocument.ref_id)
+                .limit(KEYWORD_CANDIDATES)
+            )
+        ).all()
+    )
+    distance = SearchEmbedding.embedding.cosine_distance(vector_value(wanted.vector))
+    nearest = (
+        candidates(
+            query,
+            notes_folder,
+            predicates,
+            entities=entities,
+            columns=[
+                SearchDocument.kind.label("kind"),
+                SearchDocument.ref_id.label("ref_id"),
+                SearchDocument.path.label("path"),
+                SearchDocument.title.label("title"),
+                note_state().label("state"),
+                SearchEmbedding.start_char.label("start_char"),
+                SearchEmbedding.end_char.label("end_char"),
+                distance.label("distance"),
+            ],
+        )
+        .join(
+            SearchEmbedding,
+            sa.and_(
+                SearchEmbedding.kind == SearchDocument.kind,
+                SearchEmbedding.ref_id == SearchDocument.ref_id,
+                SearchEmbedding.doc_version == SearchDocument.version,
+                SearchEmbedding.model == wanted.model,
+                sa.func.vector_dims(SearchEmbedding.embedding) == len(wanted.vector),
+            ),
+        )
+        .where(*exclusion_conditions(query.q))
+        .distinct(SearchDocument.kind, SearchDocument.ref_id)
+        .order_by(SearchDocument.kind, SearchDocument.ref_id, distance)
+        .subquery("nearest")
+    )
+    body = sa.select(SearchDocument.body).where(
+        SearchDocument.kind == nearest.c.kind, SearchDocument.ref_id == nearest.c.ref_id
+    )
+    passage = sa.func.substr(
+        body.scalar_subquery(),
+        nearest.c.start_char + 1,
+        sa.func.least(nearest.c.end_char - nearest.c.start_char, MEANING_EXCERPT_CHARS),
+    )
+    meaning = list(
+        (
+            await session.execute(
+                sa.select(nearest, passage.label("passage"))
+                .order_by(nearest.c.distance, nearest.c.kind, nearest.c.ref_id)
+                .limit(MEANING_CANDIDATES)
+            )
+        ).all()
+    )
+    if meaning:
+        limit = min(1.0, meaning[0].distance + MEANING_MARGIN)
+        meaning = [row for row in meaning if row.distance < limit]
+    return await _fused_page(session, query, after, keyword, meaning)
+
+
+async def _fused_page(
+    session: Any,
+    query: SearchQuery,
+    after: SearchCursor | None,
+    keyword: list[Any],
+    meaning: list[Any],
+) -> list[Any]:
+    scores: dict[tuple[str, str], float] = {}
+    found: dict[tuple[str, str], Any] = {}
+    in_keyword: set[tuple[str, str]] = set()
+    in_meaning: set[tuple[str, str]] = set()
+    for position, row in enumerate(keyword):
+        key = (row.kind, row.ref_id)
+        scores[key] = scores.get(key, 0.0) + 1 / (RRF_K + position + 1)
+        found[key] = row
+        in_keyword.add(key)
+    for position, row in enumerate(meaning):
+        key = (row.kind, row.ref_id)
+        scores[key] = scores.get(key, 0.0) + 1 / (RRF_K + position + 1)
+        found.setdefault(key, row)
+        in_meaning.add(key)
+    ordered = sorted(scores, key=lambda key: (-scores[key], key[0], key[1]))
+    if after is not None:
+        ordered = [
+            key
+            for key in ordered
+            if scores[key] < after.rank
+            or (scores[key] == after.rank and key > (after.kind, after.ref_id))
+        ]
+    chosen = ordered[: query.limit + 1]
+    headlines: dict[tuple[str, str], str] = {}
+    words = [key for key in chosen if key in in_keyword]
+    if words:
+        body = SearchDocument.body
+        rows = await session.execute(
+            sa.select(
+                SearchDocument.kind,
+                SearchDocument.ref_id,
+                sa.func.ts_headline(
+                    sa.cast("english", REGCONFIG), body, ts_query(query.q), EXCERPT_OPTIONS
+                ),
+            ).where(sa.tuple_(SearchDocument.kind, SearchDocument.ref_id).in_(words))
+        )
+        headlines = {(kind, ref_id): text for kind, ref_id, text in rows}
+    rows_out: list[Any] = []
+    for key in chosen:
+        row = found[key]
+        text = headlines.get(key) or getattr(row, "passage", "") or ""
+        rows_out.append(
+            SimpleNamespace(
+                kind=row.kind,
+                ref_id=row.ref_id,
+                path=row.path,
+                title=row.title,
+                state=row.state,
+                rank=scores[key],
+                excerpt=text,
+                match="both"
+                if key in in_keyword and key in in_meaning
+                else "keyword"
+                if key in in_keyword
+                else "meaning",
+            )
+        )
+    return rows_out
+
+
 def folder_of(path: str) -> str:
     """The folder a hit sits in, empty at the notes filesystem root."""
     return path.rpartition("/")[0]
@@ -304,7 +525,9 @@ def tidy_excerpt(text: str | None) -> str:
     return " ".join((text or "").split())
 
 
-def page_of(rows: list[Any], query: SearchQuery, context: str | None = None) -> Page[SearchHit]:
+def page_of(
+    rows: list[Any], query: SearchQuery, context: str | None = None, *, hybrid: bool = False
+) -> Page[SearchHit]:
     """Turn `limit + 1` rows into a page and the cursor for the next one."""
     hits = [
         SearchHit(
@@ -316,6 +539,7 @@ def page_of(rows: list[Any], query: SearchQuery, context: str | None = None) -> 
             excerpt=tidy_excerpt(row.excerpt),
             rank=float(row.rank),
             state=cast(NoteState, row.state),
+            match=cast(SearchMatch, getattr(row, "match", "keyword")),
         )
         for row in rows[: query.limit]
     ]
@@ -329,6 +553,7 @@ def page_of(rows: list[Any], query: SearchQuery, context: str | None = None) -> 
                 kind=last.kind,
                 ref_id=last.id,
                 filtered=context is not None,
+                hybrid=hybrid,
             )
         )
     return Page[SearchHit](items=hits, next_cursor=next_cursor)
@@ -353,6 +578,14 @@ async def search(
         if query.filter and "different q" in str(exc):
             raise FilterCursorConflict() from exc
         raise
+    # Asked before any transaction opens, and never fatal: with no embeddings model, or one
+    # that is not answering, the answer is the full-text answer.
+    wanted = None
+    if query.mode != "keyword":
+        words = meaning_text(query.q)
+        wanted = await store.embeddings.query_vector(words) if words else None
+    if after is not None and after.hybrid != (wanted is not None):
+        raise ValidationFailed(["cursor: the ranking changed since that page; search again"])
     try:
         async with store.session_factory() as session, session.begin():
             if query.filter:
@@ -360,16 +593,18 @@ async def search(
                     sa.text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 )
             predicates = await conditions(store, query, session)
-            statement = build_search(
-                query,
-                store.control.settings().notes.notes_folder,
-                after,
-                predicates,
-                entities=entities,
-            )
-            rows = list((await session.execute(statement)).all())
+            notes_folder = store.control.settings().notes.notes_folder
+            if wanted is not None:
+                rows = await hybrid_rows(
+                    session, query, notes_folder, after, predicates, entities, wanted
+                )
+            else:
+                statement = build_search(query, notes_folder, after, predicates, entities=entities)
+                rows = list((await session.execute(statement)).all())
     except (SQLAlchemyError, OSError) as exc:
+        if wanted is not None:
+            store.embeddings.forget_table()
         raise MetadataUnavailable(str(exc)) from exc
     if query.filter and store.control.schema_document().revision != revision:
         raise FilterCursorConflict()
-    return page_of(rows, query, context)
+    return page_of(rows, query, context, hybrid=wanted is not None)

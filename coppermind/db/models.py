@@ -13,6 +13,7 @@ from sqlalchemy import (
     Computed,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -25,6 +26,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import UserDefinedType
 
 
 class Base(DeclarativeBase):
@@ -260,6 +262,60 @@ class SearchDocument(Base):
             "kind IN ('note', 'source', 'artifact', 'entity')", name="ck_search_documents_kind"
         ),
         Index("ix_search_documents_vector", "search_vector", postgresql_using="gin"),
+    )
+
+
+class Vector(UserDefinedType[Any]):
+    """pgvector's `vector` with no fixed dimension.
+
+    Values travel as text (`[0.1,0.2,...]`) and are cast on the way in, so no
+    driver codec is needed. A column of no fixed dimension holds whatever the
+    configured embeddings model produces, and a model change needs no
+    migration; distances are exact, which suits a notes filesystem's scale.
+    """
+
+    cache_ok = True
+
+    def get_col_spec(self, **_: Any) -> str:
+        return "vector"
+
+    class comparator_factory(UserDefinedType.Comparator):  # noqa: N801 - SQLAlchemy hook name
+        def cosine_distance(self, other: Any) -> Any:
+            return self.op("<=>", return_type=Float())(other)
+
+
+class SearchEmbedding(Base):
+    """One embedded passage of a search document.
+
+    Derived, like the document: the embeddings worker rebuilds every row from
+    `search_documents` and can drop them all without losing anything. A row
+    belongs to the document version and model it was made from, so an edited
+    note or a changed model leaves stale rows the worker replaces. Deleting a
+    document deletes its passages with it, which is how a purge or a removed
+    note takes its vectors too. `start_char` and `end_char` locate the passage
+    in the document body for the excerpt a hit shows.
+    """
+
+    __tablename__ = "search_embeddings"
+
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    ref_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    doc_version: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    start_char: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_char: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[Any] = mapped_column(Vector(), nullable=False)
+    embedded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["kind", "ref_id"],
+            ["search_documents.kind", "search_documents.ref_id"],
+            ondelete="CASCADE",
+            name="fk_search_embeddings_document",
+        ),
+        Index("ix_search_embeddings_model", "model"),
     )
 
 
