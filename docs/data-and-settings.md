@@ -104,7 +104,9 @@ An artifact has three homes, each with one job:
 Recording audio submitted for transcription is an exception: after a nonempty transcript
 is reviewed and filed, its audio bytes are removed, while the manifest retains its hash
 and size. The note records the duration and optional `metadata.archive_url` location.
-This does not wait for the retention purge: if the owner already removed the recording artifact, its archived audio is still deleted once the note is reviewed and filed, and the purge never has to remove it.
+This does not wait for the retention purge: if the owner already removed the recording
+artifact, its archived audio is still deleted once the note is reviewed and filed, and the
+purge never has to remove it.
 
 Legacy `_Attachments/YYYY-MM/<source>-rNNNN-<name>` files are moved into the
 artifacts folder by the reconciler, registered as artifacts of their source

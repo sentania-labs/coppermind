@@ -197,7 +197,8 @@ succeeds. PDFs and other non-text, non-audio source material are filed as
 artifacts: the bytes join the artifact archive, a browsable copy lands under
 `Artifacts/YYYY/YYYY-MM/`, the note cites it, and image embeds in the note
 that name the file are rewritten to that copy. Immutable originals stay under
-`/data/sources`, and audio remains archive-only (a recording transcribed here is removed once its note is reviewed and filed). See
+`/data/sources`, and audio remains archive-only (a recording transcribed here
+is removed once its note is reviewed and filed). See
 [the n8n contract](docs/n8n-intake.md) for retry rules and the current
 upload-size limit.
 

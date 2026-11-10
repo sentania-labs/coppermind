@@ -77,7 +77,8 @@ has not been exercised by this slice.
   segments are kept as given and filed through the ordinary ingest as the
   note's source, so a draft lands in Review; the recording stays an artifact
   the note cites until the note is reviewed and filed, then its audio is removed
-  and a receipt (hash, size, duration, optional `metadata.archive_url`) replaces the link. Each intake is listed with its state and a Retry under Suggestions
+  and a receipt (hash, size, duration, optional `metadata.archive_url`) replaces
+  the link. Each intake is listed with its state and a Retry under Suggestions
   and backlog, and a failure also appears under Problems with its reason. Summary,
   speaker names and search by meaning are later steps. No
   transcription service was reachable while this was built, so it is proven
