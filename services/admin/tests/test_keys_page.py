@@ -206,3 +206,18 @@ def test_scope_choices_and_invalid_key_forms(signed_in):
     assert load_keys(StateStore(wiring.state_dir)).keys[0].revoked_at is None
     assert create(client, **{"scope:invented": "on"}).status_code == 422
     assert len(load_keys(StateStore(wiring.state_dir)).keys) == 1
+
+
+def test_key_creation_names_the_companion_permissions_in_plain_language(signed_in):
+    client, _ = signed_in
+    page = client.get("/admin/keys")
+    assert page.status_code == 200
+    labels = {
+        "notes:read": "Read notes",
+        "notes:write": "Update notes",
+        "sources:read": "Read sources",
+        "sources:write": "Update sources",
+        "entities:read": "Read people and companies",
+    }
+    for scope, label in labels.items():
+        assert f'name="scope:{scope}" value="on">{label}</label>' in page.text

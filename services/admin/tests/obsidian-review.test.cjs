@@ -14,7 +14,8 @@ class El {
 }
 class Setting {
   constructor(el){this.el=el;}
-  setName(){return this;} setDesc(){return this;}
+  setName(){return this;} setDesc(value){this.el.createEl('p',{text:value});return this;}
+  addComponent(fn){fn(this.el);return this;}
   addText(fn){const control={inputEl:{},setValue(){return control;},onChange(){return control;}};fn(control);return this;}
   addToggle(fn){const toggle=this.el.createEl("toggle");const control={setDisabled(v){toggle.disabled=v;return control;},onChange(fn){toggle.onchange=fn;return control;},setValue(){return control;}};fn(control);return this;}
   addButton(fn){const button=this.el.createEl('button');const control={setButtonText(v){button.text=v;return control;},onClick(fn){button.onclick=fn;return control;}};fn(control);return this;}
@@ -25,10 +26,10 @@ async function fixture(local, overrides={}){
   const requests=[];const notices=[];
   const file={basename:'Note',path:'Review/Note.md'};
   let factory;
-  class Plugin {registerView(type,fn){factory=fn;}addSettingTab(){}addCommand(){}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
+  class Plugin {registerView(type,fn){factory=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(){}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,PluginSettingTab:class{},SecretComponent:class{},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:403,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:403,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
@@ -116,7 +117,7 @@ test('empty candidates permit searching People and choosing a result',async()=>{
 });
 
 test('a key that cannot see people shows why speakers are missing',async()=>{
-  const f=await fixture(undefined,{state:'suggested',suggestions:[],manual_speaker_review:null,speakers_unavailable:'This API key cannot see people, so speakers cannot be named with it. In Coppermind Admin, open API keys and give this key permission to read people, or select a key with that permission in the companion settings.'});
+  const f=await fixture(undefined,{state:'suggested',suggestions:[],manual_speaker_review:null,speakers_unavailable:'This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, open Connected apps (API Keys) and create a new key with Read people and companies, then select that key in the companion settings.'});
   assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('cannot be named with it')));
   assert.ok(!f.view.contentEl.all().some(e=>e.tag==='select'));
 });
@@ -125,7 +126,15 @@ test('permission failures give plain recovery steps',async()=>{
   const f=await fixture(undefined,{state:'failed',rejectPeople:true,rejectReview:true,manual_speaker_review:{revision:1,speakers:['Speaker 1'],candidates:[]}});
   f.view.contentEl.all().find(e=>e.tag==='input').value='Alex';
   await f.view.contentEl.all().find(e=>e.text==='Find a person').onclick();
-  assert.ok(f.notices.some(n=>n.includes('API keys')&&n.includes('permission to read people')));
-  await assert.rejects(f.plugin.call('/v1/notes/test-note/review','POST',{manual_speakers:{'Speaker 1':'person:a'}}),/permission to read people and change sources/);
+  assert.ok(f.notices.some(n=>n.includes('Connected apps')&&n.includes('create a new key')&&n.includes('Read people and companies')));
+  await assert.rejects(f.plugin.call('/v1/notes/test-note/review','POST',{manual_speakers:{'Speaker 1':'person:a'}}),/create a new key with Read notes, Update notes, Read sources, Update sources, and Read people and companies/);
   assert.ok(f.notices.every(n=>!n.includes('entities:read')));
+});
+
+test('companion settings name the available key creation path',async()=>{
+  const f=await fixture();f.plugin.settingTab.display();
+  const text=f.plugin.settingTab.containerEl.all().map(e=>e.text||'').join(' ');
+  assert.match(text,/create a new key/);assert.match(text,/Read people and companies/);
+  assert.match(text,/Update notes/);assert.match(text,/Update sources/);
+  assert.doesNotMatch(text,/entities:read|sources:write|change its permissions/);
 });

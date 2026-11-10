@@ -13,6 +13,14 @@ from coppermind_admin.pages.search_index import local_time
 
 router = APIRouter()
 
+PERMISSION_LABELS = {
+    "notes:read": "Read notes",
+    "notes:write": "Update notes",
+    "sources:read": "Read sources",
+    "sources:write": "Update sources",
+    "entities:read": "Read people and companies",
+}
+
 
 def render(store: StateStore, message: str = "", status: int = 200) -> HTMLResponse:
     from coppermind_admin import main
@@ -38,7 +46,8 @@ def render(store: StateStore, message: str = "", status: int = 200) -> HTMLRespo
 <input type="hidden" name="revision" value="{keys.revision}">
 <label>Name<input name="name" required></label><fieldset><legend>Scopes</legend>"""
     for scope in API_SCOPES:
-        body += f'<label><input type="checkbox" name="scope:{scope}" value="on">{scope}</label>'
+        label = PERMISSION_LABELS.get(scope, scope)
+        body += f'<label><input type="checkbox" name="scope:{scope}" value="on">{label}</label>'
     body += "</fieldset><button>Create key</button></form>"
     return HTMLResponse(main.page("Connected apps", body), status_code=status)
 
