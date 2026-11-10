@@ -743,3 +743,49 @@ def test_reviewed_note_does_not_keep_old_initial_failure_on_home(signed_in):
     page = client.get("/admin").text
     assert "Nothing needs attention right now" in page
     assert "Old error" not in page
+
+
+def test_home_scans_later_snapshot_pages_even_when_jobs_fit_on_the_first(signed_in):
+    class PagedStore(ReadOnlyStore):
+        async def context_action(self, action, payload):
+            offset = payload.get("offset", 0)
+            failed = offset == 100
+            return {
+                "dropbox": {"items": []},
+                "calendar": {
+                    "imports": (
+                        [{"state": "failed", "filename": "late.ics", "error": "Bad calendar"}]
+                        if failed
+                        else []
+                    )
+                },
+                "jobs": [],
+                "totals": {"jobs": 0},
+                "next_offset": None if failed else 100,
+            }
+
+    client, _ = signed_in
+    store = _install(client, PagedStore())
+    store.problems = []
+    page = client.get("/admin").text
+    assert "late.ics" in page and "Bad calendar" in page
+    assert "Nothing needs attention right now" not in page
+
+
+def test_dismissing_from_home_returns_to_home(signed_in):
+    import re
+
+    client, _ = signed_in
+    _install(client, NoticeStore())
+    home = client.get("/admin").text
+    form = re.search(r"<form[^>]*dismiss[^>]*>(.*?)</form>", home, re.S)
+    assert form, "Home shows the dismiss form for a returned note"
+    back = re.search(r'name="back" value="([^"]*)"', form.group(1))
+    assert back
+    token = form_token(client, "/admin")
+    response = client.post(
+        f"/v1/admin/notices/{NOTE_ID}/dismiss",
+        data={"csrf": token, "back": back.group(1)},
+        follow_redirects=False,
+    )
+    assert response.headers["location"] == "/admin"

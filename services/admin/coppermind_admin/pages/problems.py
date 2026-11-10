@@ -88,10 +88,14 @@ KIND_LABELS = {
 }
 
 
-def _link(problem: ProblemInfo) -> str:
+def _link(problem: ProblemInfo, back: str = "/admin/problems") -> str:
     if problem.kind == "returned_note" and problem.note_id:
         action = f"/v1/admin/notices/{quote(problem.note_id, safe='')}/dismiss"
-        return f'<form method="post" action="{action}"><button>Dismiss notice</button></form>'
+        return (
+            f'<form method="post" action="{action}">'
+            f'<input type="hidden" name="back" value="{escape(back, quote=True)}">'
+            "<button>Dismiss notice</button></form>"
+        )
     if problem.kind == "purge_receipt":
         return (
             '<form method="post" action="/v1/admin/purge/abandon">'
@@ -338,6 +342,18 @@ def sync_status(wiring: Wiring) -> dict:
         return json.load(response)
 
 
+async def _reviewed_initial(client: StatusReader, job: dict) -> bool:
+    if job.get("purpose", "initial") != "initial" or not job.get("note_id"):
+        return False
+    try:
+        detail = await client.context_action("lifecycle", {"note_id": job["note_id"]})
+        reviewed_key = detail["roles"]["reviewed_key"]
+        return detail["note"]["frontmatter"].get(reviewed_key) is True
+    except (StoreError, OSError, KeyError, TypeError):
+        # A failed read must not silently hide a potentially active failure.
+        return False
+
+
 async def attention_html(request: Request, wiring: Wiring) -> str:
     """Read the live sources; a failed read is itself visible, never an all-clear."""
     try:
@@ -405,31 +421,23 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
                     job,
                 )
             next_offset = data.get("next_offset")
-            if next_offset is None or next_offset >= data.get("totals", {}).get("jobs", 0):
+            if next_offset is None:
                 break
             if next_offset <= offset:
                 incomplete = True
                 break
             offset = next_offset
-        for job in latest_jobs.values():
-            if job.get("state") == "failed":
-                if job.get("purpose", "initial") == "initial" and job.get("note_id"):
-                    try:
-                        detail = await client.context_action(
-                            "lifecycle", {"note_id": job["note_id"]}
-                        )
-                        reviewed_key = detail["roles"]["reviewed_key"]
-                        if detail["note"]["frontmatter"].get(reviewed_key) is True:
-                            continue
-                    except (StoreError, OSError, KeyError, TypeError):
-                        # A failed read must not silently hide a potentially active failure.
-                        pass
-                target = quote(str(job.get("id", "")), safe="")
-                rows.append(
-                    f"<li><strong>Suggestions: {escape(job.get('path', 'Note'))}</strong>"
-                    f"<p>{escape(job.get('error') or 'Suggestions could not be completed.')}</p>"
-                    f'<a href="/admin/context/jobs/{target}">See what to do</a></li>'
-                )
+        failed = [job for job in latest_jobs.values() if job.get("state") == "failed"]
+        reviewed = await asyncio.gather(*(_reviewed_initial(client, job) for job in failed))
+        for job, done in zip(failed, reviewed, strict=True):
+            if done:
+                continue
+            target = quote(str(job.get("id", "")), safe="")
+            rows.append(
+                f"<li><strong>Suggestions: {escape(job.get('path', 'Note'))}</strong>"
+                f"<p>{escape(job.get('error') or 'Suggestions could not be completed.')}</p>"
+                f'<a href="/admin/context/jobs/{target}">See what to do</a></li>'
+            )
     except (StoreError, OSError, AttributeError, KeyError, ValueError):
         incomplete = True
     if incomplete:
@@ -459,7 +467,7 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
         )
     recent = [
         f"<li><strong>{escape(KIND_LABELS.get(item.kind, 'Notice'))}</strong> "
-        f"{escape(_reason(item))}{_link(item)}</li>"
+        f"{escape(_reason(item))}{_link(item, '/admin')}</li>"
         for item in recent_notices
     ]
     for receipt in recent_imports[:5]:
