@@ -13,7 +13,7 @@ Read and correct the pages in Obsidian. The first section is Scott's Notes;
 the section after the hidden dossier marker is Coppermind's Notes. Properties
 include the name, emails, linked companies and aliases. Personal writing is
 retained when generated properties are refreshed.
-Below the delimiter, edit a fact
+Below the marker, edit a fact
 line to correct it or delete the line to withdraw it. The edit becomes a durable
 correction with that page and its hash as evidence. There is no conflict alarm
 for an ordinary edit, and no separate acceptance ceremony. Keep the marker when
