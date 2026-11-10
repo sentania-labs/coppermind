@@ -282,6 +282,9 @@ class LocalStore:
         from coppermind_store.field_index import FieldIndex
 
         self.field_index = FieldIndex(self)
+        from coppermind_store.embeddings import EmbeddingService
+
+        self.embeddings = EmbeddingService(self)
         # The one search index rebuild this process may be running.
         self._search_rebuild: asyncio.Task[None] | None = None
 

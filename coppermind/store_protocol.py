@@ -960,6 +960,8 @@ class Page[T](BaseModel):
 
 
 SearchKind = Literal["note", "source", "artifact", "entity"]
+SearchMode = Literal["hybrid", "meaning", "keyword"]
+SearchMatch = Literal["keyword", "meaning", "both"]
 """A note, a generated source page, an artifact, or a dossier."""
 
 
@@ -980,6 +982,10 @@ class SearchQuery(NoteQuery):
     """Only artifacts this note cites in its frontmatter."""
     include_artifacts: bool = True
     """`false` leaves artifact hits out; the API sets it for a key without `artifacts:read`."""
+    mode: SearchMode = "hybrid"
+    """`hybrid` (the default) adds matches by meaning to the keyword matches when an
+    embeddings model is set up and answering, and is plain full-text search when it is not.
+    `meaning` ranks by meaning alone, and `keyword` never uses the embeddings model."""
 
     @field_validator("q")
     @classmethod
@@ -1010,6 +1016,28 @@ class SearchHit(BaseModel):
     excerpt: str
     rank: float
     state: NoteState
+    match: SearchMatch = "keyword"
+    """How the hit was found: by its words, by its meaning, or both."""
+
+
+class EmbeddingStatus(BaseModel):
+    """How far embedding the index has got, for Admin.
+
+    `state` is `off` (no embeddings model is set up), `paused`, `unavailable` (the
+    database has no pgvector), `idle` (everything indexed is embedded), `working`,
+    or `waiting` (the model service is not answering; `error` says why and
+    `retry_at` when the next try is). `documents` counts index entries and
+    `embedded` those that have vectors from the current model.
+    """
+
+    state: Literal["off", "paused", "unavailable", "idle", "working", "waiting"] = "off"
+    model: str = ""
+    documents: int = 0
+    embedded: int = 0
+    passages: int = 0
+    skipped: int = 0
+    error: str = ""
+    retry_at: datetime | None = None
 
 
 class SearchIndexStatus(BaseModel):
@@ -1028,6 +1056,7 @@ class SearchIndexStatus(BaseModel):
     rebuild_started_at: datetime | None = None
     rebuild_completed_at: datetime | None = None
     rebuild_error: str | None = None
+    embeddings: EmbeddingStatus = Field(default_factory=EmbeddingStatus)
 
 
 class RebuildSearchIndexResult(BaseModel):

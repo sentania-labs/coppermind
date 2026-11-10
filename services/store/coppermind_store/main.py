@@ -75,6 +75,9 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         field_index_task = asyncio.create_task(
             app.state.store.field_index.run(), name="coppermind-field-index"
         )
+        embeddings_task = asyncio.create_task(
+            app.state.store.embeddings.run(), name="coppermind-embeddings"
+        )
         app.state.engine = engine
         log.info(
             "store started",
@@ -84,6 +87,9 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         try:
             yield
         finally:
+            embeddings_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await embeddings_task
             field_index_task.cancel()
             with suppress(asyncio.CancelledError):
                 await field_index_task

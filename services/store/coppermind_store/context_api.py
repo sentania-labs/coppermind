@@ -28,6 +28,8 @@ ACTIONS = {
     "discover": "discover",
     "test-model": "test_model",
     "save-assignment": "save_assignment",
+    "embeddings": "embeddings_view",
+    "save-embeddings": "save_embeddings",
     "upload": "upload",
     "retry-import": "retry_import",
     "dismiss-import": "dismiss_import",

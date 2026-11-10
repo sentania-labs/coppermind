@@ -250,11 +250,37 @@ of it from `/data`. Tables exist for: note metadata (path, hashes,
 frontmatter fields worth querying by, observed state), source and revision
 and artifact records, which note cites which source, the event outbox each
 consumer reads from and acknowledges, each consumer's own read cursor, the
-generated search index, a mirror of API key hashes, per-key last-used
+generated search index (full-text entries and, when an embeddings model is set up,
+pgvector passages), a mirror of API key hashes, per-key last-used
 timestamps, a mirror of every control-state file's current revision, job
 history, per-component status (as reported by the helpers' own status
 files), and admin sessions. None of it is the durable copy of anything; all
 of it is a cache that makes listing and search fast.
+
+### Search by meaning
+
+Optional and off until an operator sets it up on Admin's Search index page: an
+embeddings assignment names a connection (OpenAI or OpenAI-compatible, the same
+connections enrichment uses) and a model, stored with the other model
+assignments in `/data/state/context/config.json` under `embeddings`. The
+credential stays in the connection.
+
+A background worker in the store gives every search entry, newest first,
+passages of about 1,200 characters with the title, asks the connection's
+`/embeddings` endpoint for their vectors a few at a time, and stores them in
+`search_embeddings` (pgvector, no fixed dimension, exact cosine distance).
+Indexing and filing never wait on it. Vectors belong to the entry's version and
+the model: an edited note, or a changed model, is embedded again, and a deleted
+or purged entry takes its vectors with it (the table cascades from
+`search_documents`). A timeout halves the batch and a failing service is retried
+with a doubling wait up to 15 minutes; a text the service refuses repeatedly is
+left out until it changes. Existing content is the same loop, so the backfill
+needs no button and resumes after a restart. Dropping the table loses nothing.
+
+The compose stack runs the `pgvector/pgvector` image in place of plain
+`postgres`, same major version and data directory. On a PostgreSQL without the
+extension the migration skips the table, search stays full-text, and Admin says
+what is missing.
 
 ## Named tests this data model is proven against
 

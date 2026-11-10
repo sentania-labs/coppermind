@@ -275,6 +275,7 @@ async def status(store: LocalStore) -> SearchIndexStatus:
         rebuild_started_at=state.rebuild_started_at if state else None,
         rebuild_completed_at=state.rebuild_completed_at if state else None,
         rebuild_error=state.rebuild_error if state else None,
+        embeddings=await store.embeddings.status(),
     )
 
 

@@ -1,0 +1,216 @@
+"""Search by meaning against PostgreSQL with pgvector, and a stand-in embeddings service.
+
+The stand-in turns text into a vector with one axis per idea ("licensing" is the
+words licence, permit and royalty), so a test can ask for a note by an idea its
+words never state. Everything else is the real thing: the worker, the table, the
+distance query and the fusion with full-text search.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+
+import httpx
+import pytest
+import sqlalchemy as sa
+from coppermind_store import filing, indexer
+from coppermind_store.model_provider import ModelProvider
+from coppermind_store.notes import LocalStore
+
+from coppermind.context_config import ContextConfig, EmbeddingAssignment, ModelConnection
+from coppermind.db.models import SearchDocument, SearchEmbedding
+from coppermind.store_protocol import CreateNote, SearchQuery
+
+IDEAS = [
+    {"licensing", "license", "licence", "permit", "royalty", "royalties"},
+    {"lunch", "sandwich", "sandwiches", "soup"},
+    {"warehouse", "lease", "forklift"},
+]
+
+
+def embed_text(text: str) -> list[float]:
+    words = {word.strip(".,!?").lower() for word in text.split()}
+    vector = [float(len(words & idea)) for idea in IDEAS]
+    return vector if any(vector) else [0.01, 0.01, 0.01]
+
+
+class FakeService:
+    """The `/v1/embeddings` stand-in, with switches to make it slow or broken."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.status = 200
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        self.calls.append(body["input"])
+        if self.status != 200:
+            return httpx.Response(self.status, json={"error": "no"})
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": i, "embedding": embed_text(text)}
+                    for i, text in enumerate(body["input"])
+                ],
+                "model": body["model"],
+            },
+        )
+
+
+@pytest.fixture
+def service() -> FakeService:
+    return FakeService()
+
+
+@pytest.fixture
+def configured(store: LocalStore, service: FakeService) -> Callable[..., None]:
+    store.context.provider = ModelProvider(transport=httpx.MockTransport(service.handler))
+
+    def configure(model: str = "fake-embed", attempts: int = 3) -> None:
+        config = ContextConfig(
+            connections=[
+                ModelConnection(
+                    id="local", name="Local", provider="compatible", base_url="http://embed.test/v1"
+                )
+            ],
+            embeddings=EmbeddingAssignment(
+                connection="local", model=model, enabled=True, attempts=attempts
+            ),
+        )
+        store.context.save_config(config)
+
+    return configure
+
+
+def note(title: str, body: str) -> CreateNote:
+    return CreateNote(
+        title=title,
+        body=body,
+        folder="Notes/2026/2026-09",
+        frontmatter={
+            "date": "2026-09-08",
+            "type": "reference",
+            "context": "internal",
+            "reviewed": True,
+        },
+    )
+
+
+async def create(store: LocalStore, title: str, body: str):
+    created = await store.create_note(note(title, body))
+    await filing.file_reviewed(store)
+    await indexer.catch_up(store)
+    return created
+
+
+async def settle(store: LocalStore) -> None:
+    for _ in range(50):
+        await store.embeddings.step()
+        status = await store.embeddings.status()
+        if status.state in {"idle", "waiting"}:
+            return
+    raise AssertionError("embedding never settled")
+
+
+async def found(store: LocalStore, q: str, **options: object) -> list[tuple[str, str]]:
+    page = await store.search(SearchQuery.model_validate({"q": q, **options}))
+    return [(hit.title, hit.match) for hit in page.items]
+
+
+async def vectors(store: LocalStore) -> int:
+    async with store.session_factory() as session:
+        return int(
+            await session.scalar(sa.select(sa.func.count()).select_from(SearchEmbedding)) or 0
+        )
+
+
+async def test_meaning_finds_what_the_words_do_not(store, configured, service) -> None:
+    await create(store, "Vendor call", "We agreed the permit fees and royalty schedule.")
+    await create(store, "Team lunch", "Soup and sandwiches on Friday.")
+    configured()
+
+    # Before the worker has reached anything the answer is the full-text answer.
+    assert await found(store, "licensing") == []
+
+    await settle(store)
+    status = await store.embeddings.status()
+    assert (status.state, status.documents, status.embedded) == ("idle", 2, 2)
+
+    assert await found(store, "licensing") == [("Vendor call", "meaning")]
+    assert await found(store, "licensing", mode="keyword") == []
+    assert await found(store, "royalty") == [("Vendor call", "both")]
+
+
+async def test_without_a_connection_search_is_full_text(store, service) -> None:
+    await create(store, "Vendor call", "We agreed the permit fees and royalty schedule.")
+    assert await found(store, "royalty") == [("Vendor call", "keyword")]
+    assert (await store.embeddings.status()).state == "off"
+    assert service.calls == []
+
+
+async def test_a_dead_service_never_breaks_search_and_is_backed_off(
+    store, configured, service
+) -> None:
+    await create(store, "Vendor call", "We agreed the permit fees and royalty schedule.")
+    configured()
+    service.status = 503
+    delay = await store.embeddings.step()
+    assert delay > 0
+    status = await store.embeddings.status()
+    assert status.state == "waiting" and status.retry_at is not None and status.error
+    calls = len(service.calls)
+    # Search asks once, fails, answers from words, then leaves the service alone.
+    assert await found(store, "royalty") == [("Vendor call", "keyword")]
+    assert await found(store, "royalty") == [("Vendor call", "keyword")]
+    assert len(service.calls) == calls + 1
+
+
+async def test_edits_reembed_and_deletes_remove_vectors(store, configured, service) -> None:
+    await create(store, "Vendor call", "We agreed the permit fees.")
+    configured()
+    await settle(store)
+    assert await vectors(store) == 1
+
+    async with store.session_factory() as session, session.begin():
+        await session.execute(
+            sa.update(SearchDocument).values(body="Soup for lunch.", version="v2")
+        )
+    await settle(store)
+    assert await found(store, "sandwich") == [("Vendor call", "meaning")]
+
+    async with store.session_factory() as session, session.begin():
+        await session.execute(sa.delete(SearchDocument))
+    assert await vectors(store) == 0
+
+
+async def test_changing_the_model_reembeds_everything(store, configured, service) -> None:
+    await create(store, "Vendor call", "We agreed the permit fees.")
+    configured("model-a")
+    await settle(store)
+    first = len(service.calls)
+    configured("model-b")
+    await settle(store)
+    assert len(service.calls) > first
+    async with store.session_factory() as session:
+        models = set((await session.scalars(sa.select(SearchEmbedding.model))).all())
+    assert models == {"model-b"}
+
+
+async def test_a_text_the_service_refuses_is_set_aside(store, configured, service) -> None:
+    await create(store, "Vendor call", "We agreed the permit fees.")
+    await create(store, "Team lunch", "Soup and sandwiches on Friday.")
+    configured(attempts=1)
+    original = service.handler
+
+    def refuse_lunch(request: httpx.Request) -> httpx.Response:
+        if "sandwiches" in request.content.decode():
+            return httpx.Response(400, json={"error": "too long"})
+        return original(request)
+
+    store.context.provider = ModelProvider(transport=httpx.MockTransport(refuse_lunch))
+    await settle(store)
+    status = await store.embeddings.status()
+    assert (status.documents, status.embedded, status.skipped) == (2, 1, 1)
+    assert status.state == "idle"
