@@ -9,6 +9,7 @@ network.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -59,6 +60,7 @@ from coppermind.store_protocol import (
     PurgeConflict,
     RebuildMetadataResult,
     RebuildSearchIndexResult,
+    ReceiptMissing,
     ReconcilerNotice,
     RenameNote,
     ReplaceNote,
@@ -75,6 +77,9 @@ from coppermind.store_protocol import (
     SourceQuery,
     SourcesFilesystemUnavailable,
     SourceSummary,
+    StagedFileUnavailable,
+    StagedReceipt,
+    StagedReservation,
     StatusResponse,
     StoreError,
     StoreUnavailable,
@@ -401,6 +406,41 @@ class HttpStoreClient:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/artifacts/limit")
         return int(response.json()["limit_bytes"])
 
+    async def get_staged_limit(self) -> int:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/artifacts/staged-limit")
+        return int(response.json()["limit_bytes"])
+
+    async def reserve_staged_upload(self, request: StagedReservation) -> StagedReceipt:
+        response = await self._send(
+            "POST",
+            f"{INTERNAL_PREFIX}/staged",
+            json=request.model_dump(mode="json", exclude_none=True),
+        )
+        return StagedReceipt.model_validate(response.json())
+
+    async def put_staged_bytes(
+        self, receipt_id: str, data: AsyncIterator[bytes], *, declared_bytes: int | None = None
+    ) -> StagedReceipt:
+        headers = (
+            {"X-Coppermind-Payload-Bytes": str(declared_bytes)}
+            if declared_bytes is not None
+            else None
+        )
+        response = await self._send(
+            "PUT", f"{INTERNAL_PREFIX}/staged/{_segment(receipt_id)}", content=data, headers=headers
+        )
+        return StagedReceipt.model_validate(response.json())
+
+    async def finalize_staged_upload(self, receipt_id: str) -> StagedReceipt:
+        response = await self._send(
+            "POST", f"{INTERNAL_PREFIX}/staged/{_segment(receipt_id)}/finalize"
+        )
+        return StagedReceipt.model_validate(response.json())
+
+    async def get_staged_upload(self, receipt_id: str) -> StagedReceipt:
+        response = await self._send("GET", f"{INTERNAL_PREFIX}/staged/{_segment(receipt_id)}")
+        return StagedReceipt.model_validate(response.json())
+
     async def is_ready(self) -> bool:
         """True when the store reports itself ready. Never raises."""
         try:
@@ -434,6 +474,8 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         return SourceNotFound(payload.get("source_id", ""))
     if response.status_code == 404 and "artifact_id" in payload:
         return ArtifactMissing(payload.get("artifact_id", ""))
+    if response.status_code == 404 and "receipt_id" in payload:
+        return ReceiptMissing(payload.get("receipt_id", ""))
     if response.status_code == 404:
         return NotFound(payload.get("note_id", message))
     if code == "field_index_not_ready":
@@ -460,6 +502,8 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         return SourcesFilesystemUnavailable(payload.get("detail", message))
     if code == "artifacts_filesystem_unavailable":
         return ArtifactsFilesystemUnavailable(payload.get("detail", message))
+    if code == "staged_filesystem_unavailable":
+        return StagedFileUnavailable(payload.get("detail", message))
     if code == "version_conflict":
         return VersionConflict(payload.get("current_version", ""))
     if code == "precondition_required":

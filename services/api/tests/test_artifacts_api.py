@@ -331,8 +331,9 @@ def test_an_upload_that_announces_an_impossible_size_is_refused_before_parsing(a
 
 
 OVER_LIMIT = (
-    "This file is larger than the 10 MiB limit. Files over 10 MiB can't be added yet; "
-    "split or compress it, or add a link to it instead."
+    "This file is larger than the 10 MiB limit. Files over 10 MiB go through the staged "
+    "upload path: reserve with POST /v1/staged, PUT the bytes to the receipt, then "
+    "finalize it."
 )
 
 

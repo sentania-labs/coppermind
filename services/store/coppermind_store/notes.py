@@ -34,6 +34,7 @@ import json
 import os
 import re
 import time
+from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
 from math import isfinite
 from pathlib import Path
@@ -112,6 +113,8 @@ from coppermind.store_protocol import (
     SourceManifest,
     SourceQuery,
     SourceSummary,
+    StagedReceipt,
+    StagedReservation,
     StatusResponse,
     StoreError,
     TagCount,
@@ -418,6 +421,31 @@ class LocalStore:
 
     async def get_artifact_limit(self) -> int:
         return self.control.settings().limits.artifact_max_bytes
+
+    async def get_staged_limit(self) -> int:
+        return self.control.settings().limits.staged_max_bytes
+
+    async def reserve_staged_upload(self, request: StagedReservation) -> StagedReceipt:
+        from coppermind_store.staged import reserve
+
+        return await reserve(self, request)
+
+    async def put_staged_bytes(
+        self, receipt_id: str, data: AsyncIterator[bytes], *, declared_bytes: int | None = None
+    ) -> StagedReceipt:
+        from coppermind_store.staged import put_bytes
+
+        return await put_bytes(self, receipt_id, data, declared_bytes=declared_bytes)
+
+    async def finalize_staged_upload(self, receipt_id: str) -> StagedReceipt:
+        from coppermind_store.staged import finalize
+
+        return await finalize(self, receipt_id)
+
+    async def get_staged_upload(self, receipt_id: str) -> StagedReceipt:
+        from coppermind_store.staged import get_receipt
+
+        return await get_receipt(self, receipt_id)
 
     async def remove_artifact(
         self, artifact_id: ArtifactId, removal: ArtifactRemoval = "admin"

@@ -10,16 +10,29 @@ written one, which is what lets reconciliation treat the filesystem as truth.
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
+from typing import BinaryIO
+
+COPY_CHUNK_BYTES = 1 << 20
 
 
-def atomic_write_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> None:
+def _write_payload(handle: BinaryIO, data: bytes | Path) -> None:
+    """Write bytes, or copy a file in fixed-size chunks so its size never sets the memory used."""
+    if isinstance(data, Path):
+        with data.open("rb") as source:
+            shutil.copyfileobj(source, handle, COPY_CHUNK_BYTES)
+    else:
+        handle.write(data)
+
+
+def atomic_write_bytes(path: Path, data: bytes | Path, *, mode: int = 0o644) -> None:
     """Write `data` to `path` atomically, creating parent directories."""
     commit_staged(stage_bytes(path, data, mode=mode), path)
 
 
-def stage_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> Path:
+def stage_bytes(path: Path, data: bytes | Path, *, mode: int = 0o644) -> Path:
     """Write `data` durably to a temporary file beside `path` and return it.
 
     This is the slow half of an atomic write: when it returns, the new bytes
@@ -33,7 +46,7 @@ def stage_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> Path:
     temp = Path(temp_name)
     try:
         with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
+            _write_payload(handle, data)
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(temp, mode)
@@ -76,8 +89,10 @@ def atomic_write_text(path: Path, text: str, *, mode: int = 0o644) -> None:
     atomic_write_bytes(path, text.encode("utf-8"), mode=mode)
 
 
-def create_exclusive_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> None:
+def create_exclusive_bytes(path: Path, data: bytes | Path, *, mode: int = 0o644) -> None:
     """Create `path` with `data`, failing with FileExistsError if it exists.
+
+    `data` is the bytes themselves, or a file whose bytes are copied in chunks.
 
     Used where the caller has already chosen a free name and must not clobber
     a file that appeared in the meantime, for example one Obsidian Sync just
@@ -87,7 +102,7 @@ def create_exclusive_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> Non
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     try:
         with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
+            _write_payload(handle, data)
             handle.flush()
             os.fsync(handle.fileno())
         sync_directory(path.parent)

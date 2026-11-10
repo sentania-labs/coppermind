@@ -51,6 +51,8 @@ from coppermind.store_protocol import (
     SourceManifest,
     SourceQuery,
     SourceSummary,
+    StagedReceipt,
+    StagedReservation,
     StatusResponse,
     StoreError,
     etag_from_if_match,
@@ -362,6 +364,15 @@ async def get_artifact_limit(request: Request) -> Response:
     return JSONResponse({"limit_bytes": limit})
 
 
+@router.get("/artifacts/staged-limit")
+async def get_staged_limit(request: Request) -> Response:
+    try:
+        limit = await _store(request).get_staged_limit()
+    except StoreError as error:
+        return _failure(error)
+    return JSONResponse({"limit_bytes": limit})
+
+
 @router.get("/artifacts", response_model=Page[ArtifactSummary])
 async def list_artifacts(
     request: Request, query: Annotated[ArtifactQuery, Query()]
@@ -416,6 +427,46 @@ async def remove_artifact(
     except StoreError as error:
         return _failure(error)
     return Response(status_code=204)
+
+
+@router.post("/staged", status_code=201, response_model=StagedReceipt)
+async def reserve_staged_upload(payload: StagedReservation, request: Request) -> Response:
+    try:
+        receipt = await _store(request).reserve_staged_upload(payload)
+    except StoreError as error:
+        return _failure(error)
+    return JSONResponse(status_code=201, content=receipt.model_dump(mode="json"))
+
+
+@router.put("/staged/{receipt_id}", response_model=StagedReceipt)
+async def put_staged_bytes(
+    receipt_id: str,
+    request: Request,
+    declared_bytes: Annotated[int | None, Header(alias="X-Coppermind-Payload-Bytes")] = None,
+) -> StagedReceipt | JSONResponse:
+    """Take the body of this request as the file's bytes, a chunk at a time."""
+    try:
+        return await _store(request).put_staged_bytes(
+            receipt_id, request.stream(), declared_bytes=declared_bytes
+        )
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.post("/staged/{receipt_id}/finalize", response_model=StagedReceipt)
+async def finalize_staged_upload(receipt_id: str, request: Request) -> StagedReceipt | JSONResponse:
+    try:
+        return await _store(request).finalize_staged_upload(receipt_id)
+    except StoreError as error:
+        return _failure(error)
+
+
+@router.get("/staged/{receipt_id}", response_model=StagedReceipt)
+async def get_staged_upload(receipt_id: str, request: Request) -> StagedReceipt | JSONResponse:
+    try:
+        return await _store(request).get_staged_upload(receipt_id)
+    except StoreError as error:
+        return _failure(error)
 
 
 @router.get("/note-history", response_model=HistoryStatus)
