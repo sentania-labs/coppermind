@@ -723,8 +723,8 @@ assert json.load(open(sys.argv[2]))["next_cursor"] is None' \
 ok "two pages returned all five notes exactly once"
 
 step "move and rename a note on the volume, then find it by the same id"
-reconciled_path="Work/Operations Runbook.md"
-compose exec -T editor mkdir -p /data/notes/Work
+reconciled_path="Archive/Operations Runbook.md"
+compose exec -T editor mkdir -p /data/notes/Archive
 compose exec -T editor mv "/data/notes/$runbook_note_path" "/data/notes/$reconciled_path"
 wait_for_note_path "$runbook_note_id" "$reconciled_path"
 ok "the scheduled scan followed the identity while the API kept answering"
