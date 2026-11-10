@@ -217,7 +217,7 @@ async def test_a_refused_connection_is_a_distinct_error_that_does_not_wait():
         connection = engine.connection
     with pytest.raises(ProviderError) as caught:
         await ModelProvider().request(connection, "", "POST", "/chat/completions", timeout=1)
-    assert caught.value.rule == "provider-connect" and not caught.value.waiting
+    assert caught.value.rule == "provider-connect" and caught.value.waiting
     assert "Could not connect" in str(caught.value)
 
 
@@ -251,6 +251,19 @@ async def test_a_refused_reply_names_the_reason_and_keeps_the_start_of_it(
         )
     assert caught.value.rule == rule and caught.value.reply == kept
     assert not caught.value.waiting
+
+
+async def test_the_reply_kept_on_a_failure_is_bounded():
+    adapter = ModelProvider(httpx.MockTransport(lambda request: _completion("x" * 9000, "length")))
+    with pytest.raises(ProviderError) as caught:
+        await adapter.suggest(
+            ModelConnection(id="t", name="T", provider="openai"),
+            "k",
+            FeatureAssignment(model="m"),
+            "JSON",
+            {},
+        )
+    assert caught.value.reply == "x" * 4000
 
 
 async def test_a_gateway_that_ignores_streaming_still_works():
@@ -347,7 +360,7 @@ async def test_a_reply_that_never_ends_stops_at_the_longest_call_allowed(monkeyp
             await ModelProvider().request(
                 engine.connection, "", "POST", "/chat/completions", timeout=1, payload={}
             )
-    assert caught.value.rule == "provider-too-long" and caught.value.waiting
+    assert caught.value.rule == "provider-too-long" and not caught.value.waiting
 
 
 async def test_admin_waits_for_a_slow_model_test_but_not_for_other_actions():

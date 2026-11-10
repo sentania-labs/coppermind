@@ -1230,7 +1230,7 @@ class ContextService:
             elif isinstance(exc, ProviderError):
                 wait = (
                     ""
-                    if not exc.waiting
+                    if not exc.waiting or job.attempts >= job.attempt_limit
                     else (
                         datetime.now(UTC)
                         + timedelta(seconds=min(TIMEOUT_BACKOFF_S * 2 ** (job.attempts - 1), 1800))

@@ -248,7 +248,6 @@ class ModelProvider:
                 f"The model was still replying after {_seconds(stats.elapsed)}, the longest the "
                 "app waits for one call. Use a faster model or a shorter maximum response.",
                 "provider-too-long",
-                waiting=True,
             ) from exc
         except httpx.TimeoutException as exc:
             if isinstance(exc, httpx.ConnectTimeout):
@@ -288,6 +287,7 @@ class ModelProvider:
             f"Could not connect to the model provider (gave up after {_seconds(stats.elapsed)}). "
             "Check the connection address and that the model server is running.",
             "provider-connect",
+            waiting=True,
         )
 
     async def models(self, connection: ModelConnection, key: str) -> list[str]:

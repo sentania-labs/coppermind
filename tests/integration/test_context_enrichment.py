@@ -1252,11 +1252,27 @@ async def test_a_timeout_backs_off_instead_of_retrying_at_once(store):
     await context.tick()
     assert len(calls) == 2
 
-    # An owner's retry clears the wait.
+    # The last attempt promises no further automatic try, and an owner's retry still works.
     final = context.load_job(job_id)
-    assert final.retry_after
+    assert final.attempts == final.attempt_limit and final.retry_after == ""
     await context.retry_job({"id": job_id})
     assert context.load_job(job_id).retry_after == ""
+
+
+async def test_an_error_that_recurs_on_the_same_model_does_not_back_off(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+
+    async def too_long(*args):
+        raise ProviderError("still replying", "provider-too-long")
+
+    context.provider.suggest = too_long
+    await context.run_job(context.load_job(job_id))
+    failed = context.load_job(job_id)
+    assert failed.error_rule == "provider-too-long" and failed.retry_after == ""
 
 
 async def test_the_test_call_is_realistic_and_records_speed(store):

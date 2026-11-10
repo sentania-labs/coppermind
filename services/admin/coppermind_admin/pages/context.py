@@ -652,7 +652,11 @@ picker.addEventListener('change', () => {
             + "</p>"
             + _limit_link(job)
         )
-        if job.get("retry_after") and job["state"] in {"failed", "queued"}:
+        if (
+            job.get("retry_after")
+            and job["state"] in {"failed", "queued"}
+            and job["attempts"] < job["attempt_limit"]
+        ):
             body += (
                 "<p>The model was too slow, so the app is waiting. Next automatic try after "
                 + e(_calendar_time(job["retry_after"]))
