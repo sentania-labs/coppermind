@@ -255,6 +255,54 @@ async def test_a_note_deleted_after_review_does_not_keep_the_audio(store):
     assert not [p for p in await store.get_problems() if p.kind == "recording"]
 
 
+async def test_an_artifact_the_owner_removed_still_loses_its_audio_after_review(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    await store.remove_artifact(audio)
+    assert archive.read_bytes() == AUDIO
+    assert await context.recordings.tick() is False
+    assert archive.read_bytes() == AUDIO
+
+    await approve(store, done["note_id"])
+    assert await context.recordings.tick() is True
+    assert not archive.exists()
+    job = context.recordings.load(accepted["id"])
+    assert job.audio_removed and not job.audio_removal_error
+    assert not [p for p in await store.get_problems() if p.kind == "recording"]
+    manifest = json.loads((store.artifacts_root / audio / "manifest.json").read_text())
+    assert manifest["removed_reason"] != "recording removed after review"
+    assert manifest["revisions"][0]["sha256"] == hashlib.sha256(AUDIO).hexdigest()
+    await store.rebuild_metadata()
+
+
+async def test_a_recording_waiting_in_review_is_not_read_again_on_every_tick(store, monkeypatch):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    reads = []
+    original = type(context.recordings).saved_transcript
+
+    def counted(self, job):
+        reads.append(job.id)
+        return original(self, job)
+
+    monkeypatch.setattr(type(context.recordings), "saved_transcript", counted)
+    for _ in range(3):
+        assert await context.recordings.tick() is False
+    assert reads == []
+    done = await context.recording_status({"id": accepted["id"]})
+    await approve(store, done["note_id"])
+    assert await context.recordings.tick() is True
+    assert reads == [accepted["id"]]
+
+
 async def test_audio_shared_with_another_unfinished_recording_is_kept_until_the_last_is_done(
     store,
 ):

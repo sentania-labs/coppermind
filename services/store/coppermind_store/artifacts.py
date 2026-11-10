@@ -1357,8 +1357,6 @@ async def remove_recording_audio(store: LocalStore, artifact_id: str, revision: 
         item = versions[0]
         archived = _revision_file(store, artifact_id, item)
         removed = manifest.get("removed_at")
-        if removed and manifest.get("removed_reason") != REMOVED_AFTER_REVIEW:
-            raise ArtifactsFilesystemUnavailable("The recording was removed another way.")
         if archived.exists():
             await asyncio.to_thread(
                 _verify_file, archived, str(item["sha256"]), int(item["size_bytes"])
@@ -1375,7 +1373,8 @@ async def remove_recording_audio(store: LocalStore, artifact_id: str, revision: 
                     )
         # Also repair an interrupted retirement whose manifest was written before
         # its database transaction or record removal completed.
-        await _retire(store, manifest, reason=REMOVED_AFTER_REVIEW)
+        if not removed or manifest.get("removed_reason") == REMOVED_AFTER_REVIEW:
+            await _retire(store, manifest, reason=REMOVED_AFTER_REVIEW)
         if archived.exists():
             archived.unlink()
             sync_directory(archived.parent)
@@ -1675,17 +1674,14 @@ async def recover_artifacts(store: LocalStore) -> dict[str, int]:
         manifest = _read_json(path, "manifest")
         if manifest.get("artifact_id") != path.parent.name:
             raise ValueError("artifact manifest identity mismatch")
-        audio_removed = (
-            bool(manifest.get("removed_at"))
-            and manifest.get("removed_reason") == REMOVED_AFTER_REVIEW
-        )
+        retired = bool(manifest.get("removed_at"))
         for item in manifest.get("revisions", []):
-            if item.get("filename") and not audio_removed:
-                _verify_file(
-                    _revision_file(store, path.parent.name, item),
-                    str(item["sha256"]),
-                    int(item["size_bytes"]),
-                )
+            if not item.get("filename"):
+                continue
+            archived = _revision_file(store, path.parent.name, item)
+            if retired and not archived.exists():
+                continue
+            _verify_file(archived, str(item["sha256"]), int(item["size_bytes"]))
         verified.append(manifest)
     now = datetime.now(tz=UTC)
     recovered = 0

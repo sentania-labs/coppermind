@@ -408,7 +408,13 @@ def _recording_page(job: dict[str, Any], assignment: dict[str, Any] | None) -> s
         body += (
             f"<p>The note is at <strong>{e(job['note_path'])}</strong> in your vault. It reaches "
             "Obsidian when your vault next syncs, and stays unreviewed until you mark it "
-            "reviewed. The recording itself is kept as a stored file the note cites.</p>"
+            "reviewed.</p>"
+        )
+        body += (
+            "<p>The recording's audio has been removed. The note keeps its hash and size.</p>"
+            if job.get("audio_removed")
+            else "<p>The recording's audio is stored until the note is reviewed and filed, "
+            "then removed.</p>"
         )
     elif job["state"] == "failed":
         kept = "Your recording is still saved"

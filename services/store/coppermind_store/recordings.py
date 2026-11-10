@@ -400,7 +400,7 @@ class Recordings:
 
     async def tick(self) -> bool:
         """Run the oldest job that is due. True when one ran."""
-        for job in sorted(self.jobs(), key=lambda item: item.created_at):
+        for job in sorted(await asyncio.to_thread(self.jobs), key=lambda item: item.created_at):
             if job.state == "succeeded" and not job.audio_removed:
                 if job.audio_removal_stuck:
                     continue
@@ -411,7 +411,7 @@ class Recordings:
         assignment = self.assignment()
         if assignment is None or not assignment.enabled or assignment.paused:
             return False
-        for known in sorted(self.jobs(), key=lambda item: item.created_at):
+        for known in sorted(await asyncio.to_thread(self.jobs), key=lambda item: item.created_at):
             job = self.load(known.id)
             if job.state in {"succeeded"}:
                 continue
@@ -468,18 +468,25 @@ class Recordings:
     async def _remove_reviewed_audio(self, job: TranscriptionJob) -> bool:
         store = self.context.store
         try:
-            transcript = self.saved_transcript(job) if job.transcribed else None
-            if not transcript or not any(
+            if not job.transcribed:
+                return False
+            async with store.session_factory() as session:
+                row = await session.get(Note, job.note_id)
+            if row is None:
+                return False
+            deleted = row.state == "deleted"
+            if not deleted and not (row.filed and row.reviewed):
+                return False
+            if await self._shared_audio(job):
+                return self._keep_audio(job, AUDIO_KEPT_SHARED)
+            transcript = await asyncio.to_thread(self.saved_transcript, job)
+            if not any(
                 str(segment.get("text") or "").strip()
                 for segment in transcript.get("segments", [])
                 if isinstance(segment, dict)
             ):
                 return False
-            async with store.session_factory() as session:
-                row = await session.get(Note, job.note_id)
-            if row is not None and row.state == "deleted":
-                if await self._shared_audio(job):
-                    return self._keep_audio(job, AUDIO_KEPT_SHARED)
+            if deleted:
                 await artifacts.remove_recording_audio(
                     store, job.artifact_id, job.artifact_revision
                 )
@@ -488,8 +495,6 @@ class Recordings:
             reviewed_key = store.control.schema().role("reviewed_key")
             if note.frontmatter.get(reviewed_key) is not True or not note.filed:
                 return False
-            if await self._shared_audio(job):
-                return self._keep_audio(job, AUDIO_KEPT_SHARED)
             manifest = await asyncio.to_thread(artifacts.read_manifest, store, job.artifact_id)
             revision = artifacts._current_revision(manifest)
             if not job.artifact_revision or revision.get("revision") != job.artifact_revision:
@@ -589,7 +594,7 @@ class Recordings:
                 row = await session.get(Note, note_id)
             return row is None or row.state == "deleted" or bool(row.filed and row.reviewed)
 
-        for other in self.jobs():
+        for other in await asyncio.to_thread(self.jobs):
             if other.id == job.id or other.artifact_id != job.artifact_id or other.audio_removed:
                 continue
             if other.state != "succeeded" or not await finished(other.note_id):
