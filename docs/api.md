@@ -326,7 +326,10 @@ The status is `{id, state, artifact_id, attempts, attempt_limit, error, error_ru
 retry_after, created_at, succeeded_at, note_id, note_path, source_id}`. `state` is
 `queued`, `running`, `succeeded` (the note exists and `note_id`, `note_path` and
 `source_id` are set) or `failed` (`error` says why in plain words and `error_rule` is a
-stable name). A failure that is worth another try, such as a service that stayed silent
+stable name). A `running` intake can carry a short `error` with `error_rule`
+`transcription-recovering` while the service is lost or unreachable and the recording is
+being sent again; it is a progress note, not a failure, and it clears once the service
+answers. A failure that is worth another try, such as a service that stayed silent
 or answered 5xx, is retried by itself after a wait that starts at 30 minutes and doubles
 each time, because every attempt sends the whole recording again (`retry_after` says
 when), until the attempt limit is reached; a refusal the same request
@@ -341,8 +344,9 @@ else, so that is a wait and not a failure. The intake stays `queued` with `error
 one, after two to three minutes. After 24 hours
 of continuous busy answers it becomes a failed intake (`transcription-busy-limit`) in
 Problems, with Retry and no automatic try. A store restart in the middle of a
-transcription is not a failed attempt either: the recording is sent again under the same
-job id, which re-attaches on the jobs path or finds the service busy and waits.
+transcription is not a failed attempt either: on the jobs path the saved job is polled
+again, and if the service has lost it the recording is sent again under the same
+`Idempotency-Key`; if the service is busy the intake waits as above.
 
 A recording whose length is given as over two hours is posted to the jobs path. When the
 length is not given, or is wrong, and the service refuses the direct call as too long (its
@@ -350,10 +354,16 @@ length is not given, or is wrong, and the service refuses the direct call as too
 fallback, not a known limit. On the jobs path the app polls until the
 service says `done`. It waits at most 1.5 times the audio length (`metadata.duration_seconds`,
 when given; the service runs at about 0.4 times), never less than one hour, and eight
-hours when the length is not known. A service that is still `queued` or `running` after
-that, or that answers five times in a row with no status, ends the intake as failed with
-`transcription-unfinished`. That is waiting for a person to press Retry, and the worker
-moves on to the next recording.
+hours when the length is not known. A service that answers busy before it accepts the job
+uses none of that time: the intake waits as described above. Other trouble while sending
+the recording (a 5xx, a refused or dropped connection) is waited out inside the same
+limit. A job the service loses (a pod restart, or an id that answers 404) or fails for a
+reason that can pass is sent again under the same `Idempotency-Key`, at most three times,
+and each accepted job gets a fresh time. After a store restart a saved job is always
+polled at least once before the app gives up on it. A service that is still `queued` or
+`running` after that, that answers five times in a row with no status, or that loses or
+fails the job a fourth time, ends the intake as failed with `transcription-unfinished`.
+That is waiting for a person to press Retry, and the worker moves on to the next recording.
 
 The service is called as OpenAI-compatible `POST {base URL}/audio/transcriptions`, a
 multipart upload of the file with `model`, `response_format` (`diarized_json` or

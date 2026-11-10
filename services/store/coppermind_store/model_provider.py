@@ -7,7 +7,7 @@ import json
 import math
 import secrets
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -39,6 +39,7 @@ MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 1 << 20
 DIRECT_MAX_SECONDS = 2 * 60 * 60
 JOB_POLL_SECONDS = 10
+JOB_MAX_RESUBMITS = 3
 # The service runs at about 0.4 times the audio length. A job is given 1.5 times the audio
 # length, never less than an hour; with no length known, eight hours.
 JOB_PACE_HEADROOM = 1.5
@@ -98,7 +99,6 @@ class ProviderError(ValueError):
         reply: str = "",
         waiting: bool = False,
         retry_after: float | None = None,
-        job_failed: bool = False,
     ) -> None:
         super().__init__(message)
         self.rule = rule
@@ -106,8 +106,6 @@ class ProviderError(ValueError):
         self.waiting = waiting
         # Seconds the service asked to wait before it is asked again, when it said.
         self.retry_after = retry_after
-        # True when the service's own job ended in failure; that job id is spent.
-        self.job_failed = job_failed
 
 
 class InputLimitError(ProviderError):
@@ -296,13 +294,14 @@ class ModelProvider:
         limit_name: str = "Processing limits",
         length: int | None = None,
         connect_timeout: float | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> tuple[dict[str, Any], CallStats]:
         """One HTTP call. `timeout` is a silence limit: how long the provider may send nothing,
         before the first byte and between pieces of a streamed reply. `body` streams a request
         body of raw bytes (`content_type` says what it is) instead of sending `payload`."""
         if connection.provider != "compatible" and not key:
             raise ProviderError("this provider requires an API key")
-        headers = {"Content-Type": content_type}
+        headers = {"Content-Type": content_type, **(extra_headers or {})}
         if length is not None:
             headers["Content-Length"] = str(length)
         if connection.provider == "anthropic":
@@ -344,11 +343,18 @@ class ModelProvider:
                                 error_data = json.loads(raw_error[:65536])
                             except (ValueError, UnicodeDecodeError):
                                 error_data = {}
-                            reason = (
-                                error_data.get("reason") if isinstance(error_data, dict) else None
+                            error = (
+                                error_data.get("error", error_data)
+                                if isinstance(error_data, dict)
+                                else {}
                             )
-                            if isinstance(reason, str) and reason in TRANSCRIPTION_REASONS:
-                                refusal = transcription_error(reason)
+                            reason = error.get("reason") if isinstance(error, dict) else None
+                            if isinstance(reason, str) and (
+                                reason in TRANSCRIPTION_REASONS or response.status_code >= 500
+                            ):
+                                refusal = transcription_error(
+                                    reason if reason in TRANSCRIPTION_REASONS else "internal"
+                                )
                                 refusal.retry_after = retry_after_seconds(
                                     response.headers.get("retry-after")
                                 )
@@ -692,6 +698,10 @@ class ModelProvider:
         job_id: str = "",
         duration_seconds: float | None = None,
         num_speakers: int | None = None,
+        remote_job_id: str = "",
+        job_started: float = 0,
+        job_resubmits: int = 0,
+        job_update: Callable[[str, float, int, str], None] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Send one recording to `POST /audio/transcriptions`; return its speaker segments.
 
@@ -712,20 +722,19 @@ class ModelProvider:
         if num_speakers is not None:
             fields["num_speakers"] = str(num_speakers)
         use_job = bool(job_id) and (
-            duration_seconds is not None and duration_seconds > DIRECT_MAX_SECONDS
+            bool(job_started)
+            or bool(remote_job_id)
+            or (duration_seconds is not None and duration_seconds > DIRECT_MAX_SECONDS)
         )
 
-        def make_head(use_job_path: bool) -> bytes:
-            upload_fields = dict(fields)
-            if use_job_path:
-                upload_fields["id"] = job_id
+        def make_head() -> bytes:
             return (
                 b"".join(
                     (
                         f"--{boundary}\r\nContent-Disposition: form-data; "
                         f'name="{name}"\r\n\r\n{value}\r\n'
                     ).encode()
-                    for name, value in upload_fields.items()
+                    for name, value in fields.items()
                 )
                 + (
                     f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
@@ -751,7 +760,7 @@ class ModelProvider:
             yield tail
 
         async def upload(use_job_path: bool):
-            head = make_head(use_job_path)
+            head = make_head()
             return await self._exchange(
                 connection,
                 key,
@@ -766,96 +775,175 @@ class ModelProvider:
                 noun="transcription service",
                 limit_name="Transcription",
                 length=len(head) + size_bytes + len(tail),
+                extra_headers={"Idempotency-Key": job_id} if use_job_path else None,
+            )
+
+        noticed = False
+
+        def update(message: str = "") -> None:
+            nonlocal noticed
+            noticed = bool(message)
+            if job_update:
+                job_update(remote_job_id, job_started, job_resubmits, message)
+
+        def exhausted(lost: bool = False) -> ProviderError:
+            return ProviderError(
+                "The transcription service kept losing or failing the job. "
+                "Press Retry to try again."
+                if lost
+                else "The transcription service did not finish this recording. It stopped "
+                "answering with a result, so the app stopped waiting. "
+                "Check the service, then press Retry.",
+                "transcription-unfinished",
             )
 
         try:
-            try:
-                result, stats = await upload(use_job)
-            except ProviderError as exc:
-                if (
-                    not use_job
-                    and job_id
-                    and exc.rule in {"transcription-too_long", "transcription-http-413"}
-                ):
-                    use_job = True
-                    result, stats = await upload(True)
-                else:
-                    raise
+            if not use_job:
+                try:
+                    result, stats = await upload(False)
+                except ProviderError as exc:
+                    if job_id and exc.rule in {"transcription-too_long", "transcription-http-413"}:
+                        use_job = True
+                    else:
+                        raise
             if use_job:
-                remote_id = result.get("id")
-                if not isinstance(remote_id, str) or not remote_id or len(remote_id) > 500:
-                    raise ProviderError(
-                        "The transcription service did not return a job reference. "
-                        "Check the service and retry.",
-                        "transcription-provider",
-                    )
-                deadline = time.monotonic() + job_budget_seconds(duration_seconds)
+                remaining = job_budget_seconds(duration_seconds)
+                if job_started and remote_job_id:
+                    remaining = max(remaining - (time.time() - job_started), assignment.wait_s)
+                deadline = time.monotonic() + remaining
+                result = {"status": "running"} if remote_job_id else None
+                stats = CallStats()
                 empty_answers = 0
+                recovering = False
+                poll_immediately = bool(remote_job_id)
                 while True:
-                    state = result.get("status")
-                    if state is not None and not isinstance(state, str):
-                        raise ProviderError(
-                            "The transcription service returned an unknown job state. "
-                            "Check the service and retry.",
-                            "transcription-provider",
-                        )
-                    empty_answers = empty_answers + 1 if state is None else 0
-                    if empty_answers >= JOB_EMPTY_ANSWERS or (
-                        state in {"queued", "running", None} and time.monotonic() >= deadline
-                    ):
-                        raise ProviderError(
-                            "The transcription service did not finish this recording. It "
-                            "stopped answering with a result, so the app stopped waiting. "
-                            "Check the service, then press Retry.",
-                            "transcription-unfinished",
-                        )
-                    if state == "done":
-                        result = result.get("result")
-                        if not isinstance(result, dict):
-                            raise ProviderError(
-                                "The transcription service returned no job result. "
-                                "Check the service and retry.",
-                                "transcription-provider",
-                            )
-                        break
-                    if state == "failed":
-                        reason = result.get("reason")
-                        if isinstance(reason, str) and reason in TRANSCRIPTION_REASONS:
-                            failure = transcription_error(reason)
-                            failure.job_failed = True
-                            raise failure
-                        raise ProviderError(
-                            "The transcription job failed. Check the service and retry.",
-                            "transcription-http",
-                            waiting=True,
-                            job_failed=True,
-                        )
-                    if state not in {"queued", "running", None}:
-                        raise ProviderError(
-                            "The transcription service returned an unknown job state. "
-                            "Check the service and retry.",
-                            "transcription-provider",
-                        )
+                    if time.monotonic() >= deadline:
+                        raise exhausted()
                     try:
-                        # The overall job budget also bounds a slow or stalled individual poll.
-                        async with asyncio.timeout(max(0, deadline - time.monotonic())):
-                            await asyncio.sleep(JOB_POLL_SECONDS)
-                            result, stats = await self._exchange(
-                                connection,
-                                key,
-                                "GET",
-                                "/audio/transcriptions/jobs/" + quote(remote_id, safe=""),
-                                timeout=assignment.wait_s,
-                                noun="transcription service",
-                                max_reply_bytes=MAX_TRANSCRIPT_BYTES,
-                            )
+                        async with asyncio.timeout(max(0, deadline - time.monotonic())) as budget:
+                            if result is None:
+                                result, stats = await upload(True)
+                                remote_id = result.get("id")
+                                if (
+                                    not isinstance(remote_id, str)
+                                    or not remote_id
+                                    or len(remote_id) > 500
+                                ):
+                                    raise ProviderError(
+                                        "The transcription service did not return a job reference. "
+                                        "Check the service and retry.",
+                                        "transcription-provider",
+                                    )
+                                remote_job_id = remote_id
+                                job_started = time.time()
+                                deadline = time.monotonic() + job_budget_seconds(duration_seconds)
+                                update(
+                                    "The transcription service lost or failed the job; "
+                                    "the recording was sent again."
+                                    if recovering
+                                    else ""
+                                )
+                            else:
+                                state = result.get("status")
+                                if state == "done":
+                                    result = result.get("result")
+                                    if not isinstance(result, dict):
+                                        raise ProviderError(
+                                            "The transcription service returned no job result. "
+                                            "Check the service and retry.",
+                                            "transcription-provider",
+                                        )
+                                    break
+                                if state == "failed":
+                                    error = result.get("error", result)
+                                    reason = (
+                                        error.get("reason") if isinstance(error, dict) else None
+                                    )
+                                    if isinstance(reason, str) and reason in {
+                                        "audio_unreadable",
+                                        "no_speech",
+                                        "too_long",
+                                    }:
+                                        raise transcription_error(reason)
+                                    if job_resubmits >= JOB_MAX_RESUBMITS:
+                                        raise exhausted(True)
+                                    job_resubmits += 1
+                                    remote_job_id = ""
+                                    recovering = True
+                                    deadline = time.monotonic() + job_budget_seconds(
+                                        duration_seconds
+                                    )
+                                    budget.reschedule(deadline)
+                                    update(
+                                        "The transcription service failed the job; "
+                                        "the recording will be sent again."
+                                    )
+                                    await asyncio.sleep(
+                                        min(
+                                            MIN_RETRY_AFTER_SECONDS * 2 ** (job_resubmits - 1),
+                                            MAX_RETRY_AFTER_SECONDS,
+                                        )
+                                    )
+                                    result = None
+                                    continue
+                                if state not in {"queued", "running", None}:
+                                    raise ProviderError(
+                                        "The transcription service returned an unknown job state. "
+                                        "Check the service and retry.",
+                                        "transcription-provider",
+                                    )
+                                empty_answers = empty_answers + 1 if state is None else 0
+                                if empty_answers >= JOB_EMPTY_ANSWERS:
+                                    raise exhausted()
+                                if not poll_immediately:
+                                    await asyncio.sleep(JOB_POLL_SECONDS)
+                                poll_immediately = False
+                                result, stats = await self._exchange(
+                                    connection,
+                                    key,
+                                    "GET",
+                                    "/audio/transcriptions/jobs/" + quote(remote_job_id, safe=""),
+                                    timeout=assignment.wait_s,
+                                    noun="transcription service",
+                                    max_reply_bytes=MAX_TRANSCRIPT_BYTES,
+                                )
+                                if noticed:
+                                    update()
                     except TimeoutError as exc:
-                        raise ProviderError(
-                            "The transcription service did not finish this recording. It "
-                            "stopped answering with a result, so the app stopped waiting. "
-                            "Check the service, then press Retry.",
-                            "transcription-unfinished",
-                        ) from exc
+                        raise exhausted() from exc
+                    except ProviderError as exc:
+                        if exc.rule == "transcription-busy" and not remote_job_id:
+                            raise
+                        if exc.rule == "transcription-http-404" and remote_job_id:
+                            if job_resubmits >= JOB_MAX_RESUBMITS:
+                                raise exhausted(True) from exc
+                            job_resubmits += 1
+                            remote_job_id = ""
+                            recovering = True
+                            deadline = time.monotonic() + job_budget_seconds(duration_seconds)
+                            update(
+                                "The transcription service lost the job; "
+                                "the recording will be sent again."
+                            )
+                            result = None
+                            continue
+                        if exc.rule in {
+                            "transcription-busy",
+                            "transcription-internal",
+                            "transcription-http",
+                            "provider-connect",
+                            "provider-no-response",
+                            "provider-stalled",
+                            "provider-dropped",
+                        }:
+                            update("Waiting for the transcription service to recover.")
+                            try:
+                                async with asyncio.timeout(max(0, deadline - time.monotonic())):
+                                    await asyncio.sleep(exc.retry_after or MIN_RETRY_AFTER_SECONDS)
+                            except TimeoutError as timeout_exc:
+                                raise exhausted() from timeout_exc
+                            continue
+                        raise
         except ProviderError as exc:
             if exc.rule:
                 raise

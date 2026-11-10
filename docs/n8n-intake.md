@@ -221,9 +221,11 @@ the service is sent its bytes.
    status then names `note_path`) or `failed`. A recording can take a long time: an hour
    of audio is 10 to 20 minutes on a CPU service, and a queue of recordings runs one at a
    time. A busy transcription service is waited for, not counted as a failure (status
-   `queued`, `error_rule` `transcription-busy`). Send `duration_seconds` when you know it,
-   because it sets how long a long job is waited for; the
-   [API reference](api.md#recordings-audio-on-its-own) has the rules. Reaching `succeeded`
+   `queued`, `error_rule` `transcription-busy`). Long jobs lost during a service restart are
+   sent again automatically with the same recording identity, with a bounded number of
+   retries and an overall deadline. If recovery fails, Admin offers Retry. Send
+   `duration_seconds` when you know it because it sets how long a long job is waited for;
+   the [API reference](api.md#recordings-audio-on-its-own) has the rules. Reaching `succeeded`
    means a draft note is waiting in `Review/`, not that anyone
    has reviewed it.
 

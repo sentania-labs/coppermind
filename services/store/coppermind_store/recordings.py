@@ -107,7 +107,11 @@ class TranscriptionJob(ContextModel):
     # True once the service's transcript is saved. A retry then files it without sending
     # the recording again.
     transcribed: bool = False
+    # No longer used; kept so intake files saved by an earlier version still load.
     transcription_generation: int = 0
+    remote_job_id: str = ""
+    remote_job_started: float = 0
+    remote_job_resubmits: int = 0
     created_at: str
     started_at: str = ""
     succeeded_at: str = ""
@@ -392,6 +396,7 @@ class Recordings:
                 raise ValueError("only a failed recording can be retried")
             self.ready()
             job.state, job.attempts, job.busy_since = "queued", 0, ""
+            job.remote_job_id, job.remote_job_started, job.remote_job_resubmits = "", 0, 0
             job.set_error()
             self.save(job)
         return {"job": job.id}
@@ -432,9 +437,9 @@ class Recordings:
             if job.state in {"succeeded"}:
                 continue
             if job.state == "running":
-                # The store stopped mid-call. That is not a failed attempt: asking again either
-                # re-attaches to the job the service has under the same id, or finds the
-                # service still busy with the old upload and waits.
+                # The store stopped mid-call. That is not a failed attempt: asking again polls
+                # the saved remote job, or sends the recording again under the same
+                # Idempotency-Key if the service lost it or is still busy.
                 self.interrupt(job)
                 self.save(job)
             if job.state == "failed" and job.attempts < job.attempt_limit:
@@ -669,8 +674,6 @@ class Recordings:
             self.save(job)
             raise
         except ProviderError as exc:
-            if exc.job_failed:
-                job.transcription_generation += 1
             if exc.rule == BUSY_RULE:
                 busy = True
                 self.wait_for_service(job, exc)
@@ -784,6 +787,16 @@ class Recordings:
         speakers = job.metadata.get("num_speakers")
         if isinstance(speakers, bool) or not isinstance(speakers, int) or speakers < 1:
             speakers = None
+
+        def save_remote(remote_id: str, started: float, resubmits: int, message: str) -> None:
+            job.remote_job_id, job.remote_job_started, job.remote_job_resubmits = (
+                remote_id,
+                started,
+                resubmits,
+            )
+            job.set_error(message, "transcription-recovering" if message else "")
+            self.save(job)
+
         transcript, usage = await self.context.provider.transcribe(
             connection,
             self.context.key(connection.id),
@@ -792,12 +805,17 @@ class Recordings:
             filename=job.filename,
             mime_type=job.mime_type,
             size_bytes=int(revision["size_bytes"]),
-            job_id=f"{job.id}-{job.transcription_generation}",
+            job_id=job.id,
+            remote_job_id=job.remote_job_id,
+            job_started=job.remote_job_started,
+            job_resubmits=job.remote_job_resubmits,
+            job_update=save_remote,
             duration_seconds=duration,
             num_speakers=speakers,
         )
         transcript["model"] = assignment.model
         self.context.write(self.transcript_path(job), transcript)
+        job.remote_job_id, job.remote_job_started, job.remote_job_resubmits = "", 0, 0
         job.transcribed, job.usage = True, usage
         self.save(job)
         return transcript
