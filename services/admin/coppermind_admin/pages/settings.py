@@ -29,7 +29,8 @@ SECTIONS = {
     "schema_version": "Settings format",
 }
 UNAVAILABLE = {
-    "curator": "Automatic filing is not implemented. These settings do not affect notes yet.",
+    "curator": "Reviewed notes are filed automatically by year and month. "
+    "These extra controls are not connected yet.",
     "indexer": (
         "Search works, but these controls are not connected yet. Indexing is always on, "
         "uses English plus exact words, and catches up with filesystem reconciliation."
@@ -141,6 +142,7 @@ def render(
         + (' aria-current="page"' if name == section else "")
         + f">{label}</a>"
         for name, label in SECTIONS.items()
+        if name not in {"curator", "indexer", "events", "schema_version"}
     )
     body = f"""<h1>Settings</h1><p>Save one section at a time. Other settings stay unchanged.</p>
 {message}<div class="section-links" aria-label="Settings sections">{links}</div>"""
@@ -176,17 +178,22 @@ def render(
                 description = ""
                 key_note = ""
             else:
-                description = field.description or field.title or path
-                key_note = f'<span class="muted">Setting: <code>{path}</code></span>'
+                description = field.description or field.title or title
+                key_note = (
+                    "<details><summary>Technical details</summary>"
+                    f"<code>{escape(path)}</code></details>"
+                )
             body += f'''<div><label for="{path}">{title}</label>
 {control(path, field, defaults[path], text, disabled)}
 <p class="setting-help">{escape(help_text)}{escape(description)}<br>
-Default: <code>{escape(displayed(defaults[path]))}</code>.
-{key_note}</p></div>'''
+Default: <code>{escape(displayed(defaults[path]))}</code>.</p>
+{key_note}</div>'''
         body += '</div><div class="form-footer">'
         if not unavailable:
             body += "<button>Save this section</button>"
-        body += f'<p class="muted">Revision: {state.revision}. Concurrent changes are refused.</p>'
+        body += (
+            f"<details><summary>Technical details</summary>Revision: {state.revision}.</details>"
+        )
         body += "</div></form>"
     initial_dirty = "true" if submitted else "false"
     body += f"""<script type="module">

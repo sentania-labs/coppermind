@@ -15,7 +15,7 @@ CSS = """
   color:var(--ink)}
 * {box-sizing:border-box;min-width:0}
 body {margin:0;min-height:100vh}
-a {color:var(--accent);text-underline-offset:3px}
+a {color:var(--link);text-underline-offset:3px}
 button,input,select,textarea {font:inherit}
 :focus-visible {outline:3px solid var(--warn);outline-offset:3px}
 .skip {position:absolute;left:1rem;top:-10rem;background:var(--surface);padding:1rem;z-index:2}
@@ -31,8 +31,8 @@ button,input,select,textarea {font:inherit}
 nav {display:grid;gap:.35rem;margin:2rem 0}
 nav a {padding:.7rem .8rem;border-radius:.4rem;text-decoration:none}
 nav a:hover {background:var(--accent-soft)}
-nav a[aria-current=page] {background:var(--accent);color:#fff}
-.sidebar button {width:100%;background:transparent;color:var(--accent);border:1px solid var(--line)}
+nav a[aria-current=page] {background:var(--accent);color:var(--on-accent)}
+.sidebar button {width:100%;background:transparent;color:var(--link);border:1px solid var(--line)}
 .workspace {padding:2rem;max-width:100rem;width:100%;margin:0 auto}
 .breadcrumb {font-size:.8rem;color:var(--ink-muted);margin-bottom:1.5rem}
 main {background:var(--surface);border:1px solid var(--line);border-radius:.8rem;padding:2rem}
@@ -49,7 +49,7 @@ main {background:var(--surface);border:1px solid var(--line);border-radius:.8rem
 @media(max-width:700px){.property-row{grid-template-columns:1fr 1fr}
 .review-grid{grid-template-columns:1fr}}
 .connection-card {border:1px solid var(--line);border-radius:.5rem;padding:1rem;margin:1rem 0}
-.connection-card summary {cursor:pointer;font-weight:650;color:var(--accent)}
+.connection-card summary {cursor:pointer;font-weight:650;color:var(--link)}
 .connection-card summary small {font-weight:400;color:var(--ink-muted);margin-left:.75rem}
 .field-help {font-size:.9rem;color:var(--ink-muted);margin-top:.4rem}
 .public {display:grid;place-items:center;padding:1rem;min-height:100vh}
@@ -72,11 +72,11 @@ button,.button {display:inline-block;
   border:1px solid var(--accent);
   border-radius:.4rem;
 
-  padding:.7rem 1rem;background:var(--accent);color:#fff;font-weight:650;cursor:pointer;
+  padding:.7rem 1rem;background:var(--accent);color:var(--on-accent);font-weight:650;cursor:pointer;
   text-decoration:none}
-button.danger {background:var(--bad);border-color:var(--bad)}
-button.danger:hover {background:var(--bad)}
-button.secondary {background:var(--surface);color:var(--accent);margin-left:.5rem}
+button.danger {background:var(--bad-ink);border-color:var(--bad-ink)}
+button.danger:hover {background:var(--bad-ink)}
+button.secondary {background:var(--surface);color:var(--link);margin-left:.5rem}
 button.secondary:hover {background:var(--ok-soft)}
 button:hover,.button:hover {background:var(--accent-strong)} button:disabled {opacity:.55;
   cursor:default}
@@ -112,7 +112,8 @@ dt {font-weight:650} dd {margin:0;overflow-wrap:anywhere}
 .section-links {display:flex;flex-wrap:wrap;gap:.5rem;margin:1.5rem 0}
 .section-links a {padding:.55rem .85rem;border:1px solid var(--line);border-radius:2rem;
   text-decoration:none;background:var(--surface-sunken)}
-.section-links a[aria-current=page] {background:var(--accent);color:#fff;border-color:var(--accent)}
+.section-links a[aria-current=page] {background:var(--accent);color:var(--on-accent);
+  border-color:var(--accent)}
 .settings-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 2rem}
 .setting-help {margin:.6rem 0 1rem;font-size:.85rem;color:var(--ink-muted);line-height:1.6}
 .setting-help code {font-size:.75rem}

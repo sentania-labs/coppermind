@@ -240,3 +240,15 @@ def test_the_notes_folder_is_described_in_plain_words_without_its_internal_key(s
     assert "Reviewed notes are filed by year and month, like Notes/2026/2026-04/." in text
     assert "{notes_folder}" not in text and "{yyyy" not in text
     assert "notes.notes_folder</code>" not in text
+
+
+def test_settings_hides_placeholder_sections_but_keeps_direct_access(signed_in):
+    client, _ = signed_in
+    page = client.get("/admin/settings").text
+    for section in ("curator", "indexer", "events", "schema_version"):
+        assert f'href="/admin/settings?section={section}"' not in page
+        assert client.get(f"/admin/settings?section={section}").status_code == 200
+    assert "<summary>Technical details</summary>" in page
+    filing = client.get("/admin/settings?section=curator").text
+    assert "Reviewed notes are filed automatically by year and month" in filing
+    assert "Automatic filing is not implemented" not in filing

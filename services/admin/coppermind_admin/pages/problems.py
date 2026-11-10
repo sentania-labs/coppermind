@@ -295,12 +295,28 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
         item for item in problems if item.kind not in {"excluded", "returned_note", "folder_kept"}
     ]
     recent_notices = [item for item in problems if item.kind in {"returned_note", "folder_kept"}]
+    collisions: dict[str, list[str]] = {}
+    for item in active:
+        if item.kind == "collision":
+            suffix = " carries this note identity"
+            path = item.reason.removesuffix(suffix) if item.reason.endswith(suffix) else ""
+            collisions.setdefault(item.reference, []).append(path)
     rows = [
         f"<li><strong>{escape(KIND_LABELS.get(item.kind, 'Note or file'))}: "
         f"{'Source item' if item.kind == 'ingest' else _what(item)}</strong>"
         f"<p>{escape(_attention_reason(item))}</p>{_link(item)}</li>"
         for item in active
+        if item.kind != "collision"
     ]
+    for paths in collisions.values():
+        listed = "".join(
+            f"<li><code>{escape(path)}</code></li>" for path in dict.fromkeys(paths) if path
+        )
+        rows.append(
+            "<li><strong>Two files appear to be the same note</strong>"
+            f"<ul>{listed}</ul><p>Neither file was changed.</p>"
+            '<a href="/admin/problems#collisions">Compare and resolve</a></li>'
+        )
     incomplete = False
     recent_imports: list[dict] = []
     filenames: set[str] = {
@@ -385,6 +401,11 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
             rows.append(
                 "<li><strong>Device connection needs attention</strong><p>Check the "
                 'connection and reconnect if needed.</p><a href="/admin/sync">Open devices</a></li>'
+            )
+        elif device.get("state") == "not_connected" or device.get("configured") is False:
+            rows.append(
+                "<li><strong>Obsidian Sync isn't connected</strong>"
+                '<p>Connect a device to use Sync.</p><a href="/admin/sync">Connect devices</a></li>'
             )
         elif device.get("state") == "paused":
             paused = (
@@ -485,6 +506,10 @@ def router(wiring: Wiring) -> APIRouter:
             "Problems",
             "<h1>Note and filing details</h1>"
             '<p><a href="/admin#attention">All needs attention</a></p>'
+            '<section id="collisions"><h2>Files that appear to be the same note</h2>'
+            "<p>Compare the files in Obsidian. Move the unwanted duplicate out of the notes "
+            "folder or restore the correct file from a backup, then let Coppermind check again. "
+            "Neither file is changed automatically.</p></section>"
             + filing_status_html(status, _zone(request), self_page=True)
             + "<p>Start with the affected note and the action below. "
             "Filing retries automatically after the cause is fixed.</p>"

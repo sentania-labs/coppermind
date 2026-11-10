@@ -66,3 +66,40 @@ def test_public_claim_has_no_operator_navigation(tmp_path):
         response = client.get("/admin/claim")
     assert '<nav aria-label="Admin">' not in response.text
     assert 'action="/v1/admin/logout"' not in response.text
+
+
+def test_shell_palette_meets_normal_text_contrast():
+    """The delivered theme colors meet WCAG's 4.5:1 normal-text threshold."""
+    import re
+
+    from coppermind_admin.layout import render
+
+    document = render("Home", "<h1>Home</h1>", "/admin")
+    light = re.search(r':root, \[data-theme="light"\] \{(.*?)\}', document, re.S)
+    dark = re.search(r'\[data-theme="dark"\] \{(.*?)\}', document, re.S)
+    assert light and dark
+
+    def colors(block):
+        values = dict(re.findall(r"(--[\w-]+):\s*([^;]+);", block))
+
+        def resolve(name):
+            value = values[name].strip()
+            return resolve(value[4:-1]) if value.startswith("var(") else value
+
+        return resolve
+
+    def luminance(color):
+        channels = [int(color[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+        linear = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4 for v in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    for block in (light.group(1), dark.group(1)):
+        color = colors(block)
+        for foreground, background in (
+            ("--on-accent", "--accent"),
+            ("--on-accent", "--bad-ink"),
+            ("--link", "--surface"),
+            ("--link", "--surface-sunken"),
+        ):
+            a, b = luminance(color(foreground)), luminance(color(background))
+            assert (max(a, b) + 0.05) / (min(a, b) + 0.05) >= 4.5

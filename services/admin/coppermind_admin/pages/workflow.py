@@ -45,7 +45,7 @@ def router(wiring: Wiring) -> APIRouter:
                 for key, label in [
                     ("setup", "Workflow"),
                     ("intake", "Imports"),
-                    ("enrichment", "Enrichment"),
+                    ("enrichment", "Suggestions"),
                     ("review", "Review status"),
                     ("dossiers", "People"),
                 ]
@@ -178,7 +178,7 @@ def router(wiring: Wiring) -> APIRouter:
                     "a></details>"
                 )
             elif tab == "enrichment":
-                title = "Enrichment"
+                title = "Suggestions"
                 assignment = config["assignments"]["enrichment"]
                 body += (
                     "<p>Make suggestions once for each new unreviewed note. Editing a not"
@@ -385,13 +385,18 @@ def router(wiring: Wiring) -> APIRouter:
                 backlog = await client(request).context_action(
                     "backlog", {"cursor": request.query_params.get("cursor")}
                 )
+                if not backlog["notes"]:
+                    body += (
+                        "<p>No notes are waiting for review. "
+                        "New notes appear here after they arrive.</p>"
+                    )
                 if not config["assignments"]["enrichment"]["enabled"]:
                     body += (
                         '<p class="notice">Enrichment is off. <a href="/admin/workflow?tab=en'
                         'richment">Finish enrichment setup</a> to queue notes. You can still '
                         "review notes without suggestions.</p>"
                     )
-                else:
+                elif backlog["notes"]:
                     fields = "".join(_check("note_" + n["id"], n["path"]) for n in backlog["notes"])
                     fields += _check("confirm_send", "Send selected notes for enrichment")
                     body += _form("enqueue", fields, "Enrich selected notes")

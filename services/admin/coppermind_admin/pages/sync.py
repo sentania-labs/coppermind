@@ -216,7 +216,7 @@ def router(wiring: Wiring) -> APIRouter:
             product, revision = settings()
         except (OSError, ValueError):
             return HTMLResponse(
-                page("Sync", "<h1>Obsidian Sync</h1><p>Settings cannot be read.</p>"),
+                page("Devices", "<h1>Devices</h1><p>Obsidian Sync settings cannot be read.</p>"),
                 status_code=503,
             )
         try:
@@ -234,7 +234,7 @@ def router(wiring: Wiring) -> APIRouter:
             ]
         )
         body = (
-            f"<h1>Obsidian Sync</h1><p>{notice}</p><dl>{rows}</dl>"
+            f"<h1>Devices</h1><p>Obsidian Sync</p><p>{notice}</p><dl>{rows}</dl>"
             "<p>Liveness: child process only. "
             "A running process does not prove phone delivery.</p>"
         )
@@ -271,7 +271,7 @@ def router(wiring: Wiring) -> APIRouter:
                 )
         body += configuration_form(product, revision, status)
         body += '<p><a href="/admin">Admin overview</a></p>'
-        return HTMLResponse(page("Sync", body), headers={"Cache-Control": "no-store"})
+        return HTMLResponse(page("Devices", body), headers={"Cache-Control": "no-store"})
 
     @routes.post("/admin/sync/{action}")
     async def sync_action(action: str, request: Request) -> Response:

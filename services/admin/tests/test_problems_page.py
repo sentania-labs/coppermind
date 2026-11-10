@@ -746,3 +746,42 @@ def test_home_shows_sync_configuration_failure(signed_in, monkeypatch):
     page = client.get("/admin").text
     assert "Device connection needs attention" in page
     assert 'href="/admin/sync"' in page
+
+
+@pytest.mark.parametrize("device", [{"state": "not_connected"}, {"configured": False}])
+def test_home_flags_unconnected_sync(signed_in, monkeypatch, device):
+    from coppermind_admin.pages import problems
+
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = []
+    monkeypatch.setattr(problems, "sync_status", lambda wiring: device)
+    page = client.get("/admin").text
+    assert "Obsidian Sync isn&#x27;t connected" in page or "Obsidian Sync isn't connected" in page
+    assert '<a href="/admin/sync">Connect devices</a>' in page
+    assert "Nothing needs attention right now" not in page
+
+
+def test_home_groups_collision_without_exposing_identity(signed_in):
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = [
+        ProblemInfo(
+            kind="collision",
+            reference=NOTE_ID,
+            note_id=NOTE_ID,
+            reason="Review/Meeting.md carries this note identity",
+        ),
+        ProblemInfo(
+            kind="collision",
+            reference=NOTE_ID,
+            note_id=NOTE_ID,
+            reason="Meetings/Duplicate.md carries this note identity",
+        ),
+    ]
+    page = client.get("/admin").text
+    assert "Needs attention (1)" in page
+    assert page.count("Two files appear to be the same note") == 1
+    assert "Review/Meeting.md" in page and "Meetings/Duplicate.md" in page
+    assert "Neither file was changed" in page and "Compare and resolve" in page
+    assert NOTE_ID not in page
