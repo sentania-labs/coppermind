@@ -9,6 +9,8 @@ tests/integration/test_search_index.py.
 
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -20,6 +22,7 @@ import pytest
 from coppermind_admin.pages.search_index import local_time
 from coppermind_api.deps import store
 from coppermind_api.main import create_app
+from coppermind_store.embeddings import QueryVector
 from coppermind_store.indexer import MAX_INDEXED_CHARS, indexable
 from coppermind_store.search import (
     SearchCursor,
@@ -31,6 +34,7 @@ from coppermind_store.search import (
     folder_of,
     page_of,
     query_digest,
+    search,
     tidy_excerpt,
 )
 from fastapi.testclient import TestClient
@@ -245,6 +249,51 @@ def test_a_page_of_fused_rows_mints_a_cursor_that_pages_by_fused_scores():
 
     assert fused.next_cursor and decode_cursor(fused.next_cursor, query.q).hybrid is True
     assert keyword.next_cursor and decode_cursor(keyword.next_cursor, query.q).hybrid is False
+
+
+def test_a_cursor_minted_before_meaning_search_pages_by_keyword():
+    old = {"v": 1, "q": query_digest("budget"), "r": 0.4, "k": "note", "id": NOTE_ID}
+    wire = base64.urlsafe_b64encode(json.dumps(old).encode()).decode().rstrip("=")
+
+    assert decode_cursor(wire, "budget").hybrid is False
+
+
+def _store_answering(vector: QueryVector | None) -> Any:
+    async def query_vector(_: str) -> QueryVector | None:
+        return vector
+
+    return SimpleNamespace(
+        control=SimpleNamespace(schema_document=lambda: SimpleNamespace(revision=1)),
+        embeddings=SimpleNamespace(query_vector=query_vector),
+    )
+
+
+@pytest.mark.parametrize(
+    ("cursor_is_hybrid", "model_answers"), [(True, False), (False, True)], ids=["lost", "gained"]
+)
+async def test_a_page_after_the_ranking_changed_is_refused_not_misordered(
+    cursor_is_hybrid: bool, model_answers: bool
+):
+    query = _query(
+        cursor=encode_cursor(
+            SearchCursor(
+                query_digest("budget review"), 0.03, "note", NOTE_ID, hybrid=cursor_is_hybrid
+            )
+        )
+    )
+    store = _store_answering(QueryVector([1.0, 0.0], "m") if model_answers else None)
+
+    with pytest.raises(ValidationFailed) as refused:
+        await search(store, query)
+
+    assert "ranking changed" in str(refused.value)
+
+
+def test_meaning_only_ranking_is_not_a_search_mode():
+    with pytest.raises(ValidationError):
+        _query(mode="meaning")
+    assert _query().mode == "hybrid"
+    assert _query(mode="keyword").mode == "keyword"
 
 
 def test_a_cursor_from_another_question_is_refused():

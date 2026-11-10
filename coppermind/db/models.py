@@ -315,6 +315,7 @@ class SearchEmbedding(Base):
             ondelete="CASCADE",
             name="fk_search_embeddings_document",
         ),
+        Index("ix_search_embeddings_model", "model"),
     )
 
 

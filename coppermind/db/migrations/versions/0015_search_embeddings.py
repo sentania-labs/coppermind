@@ -2,9 +2,10 @@
 
 Vectors for semantic search, in the same PostgreSQL as the full-text index
 (pgvector). Every row is derived from `search_documents` and goes with its
-document. The table is created only where the server offers the extension, so
-an upgrade on a PostgreSQL without pgvector still starts and search stays
-full-text; Admin says what is missing.
+document. The table is created here only where the extension is offered and may be
+created, so an upgrade on a PostgreSQL without pgvector still starts and search stays
+full-text. The store creates the same table on its own once the server offers the
+extension, and Admin says what is missing.
 
 Revision ID: 0015
 Revises: 0014
@@ -29,7 +30,11 @@ def upgrade() -> None:
     ).first()
     if offered is None:
         return
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    try:
+        with bind.begin_nested():
+            op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    except sa.exc.DBAPIError:
+        return
     op.execute(
         """
         CREATE TABLE search_embeddings (

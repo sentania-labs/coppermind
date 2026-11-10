@@ -23,7 +23,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
 from coppermind.context_config import EmbeddingAssignment, ModelConnection
 from coppermind.db.models import SearchDocument, SearchEmbedding, Vector
@@ -57,6 +57,19 @@ BACKOFF_MAX_S = 900.0
 # A document the service refuses this many times is left alone until its text
 # changes or the configuration does.
 SKIP_AFTER = 3
+
+NO_PGVECTOR = (
+    "This PostgreSQL server does not have the pgvector extension, so meaning search cannot "
+    "store vectors. Use the PostgreSQL image the quickstart names (pgvector/pgvector), or "
+    "install pgvector on the server. Coppermind creates its table as soon as the server "
+    "offers the extension; reopen this page once it does."
+)
+NO_PRIVILEGE = (
+    "The database user is not allowed to create the pgvector extension. A database superuser "
+    "runs this once: psql -d coppermind -c 'CREATE EXTENSION IF NOT EXISTS vector'. Then "
+    "reopen this page."
+)
+INSUFFICIENT_PRIVILEGE = "42501"
 
 
 def passages(body: str) -> list[tuple[int, int]]:
@@ -133,6 +146,8 @@ class EmbeddingService:
         self._query_down_until = 0.0
         self._table_ok: bool | None = None
         self._table_checked = 0.0
+        self._table_error = NO_PGVECTOR
+        self._table_lock = asyncio.Lock()
 
     # --- configuration ---------------------------------------------------------------
 
@@ -145,12 +160,7 @@ class EmbeddingService:
 
     @staticmethod
     def active(assignment: EmbeddingAssignment) -> bool:
-        return bool(
-            assignment.enabled
-            and not assignment.paused
-            and assignment.connection
-            and assignment.model
-        )
+        return bool(assignment.enabled and assignment.connection and assignment.model)
 
     def _follow_config(self, assignment: EmbeddingAssignment) -> None:
         """A different connection or model starts over: what was refused may now be accepted."""
@@ -166,22 +176,54 @@ class EmbeddingService:
             self._queries.clear()
             self._query_down_until = 0.0
 
-    async def table_ready(self) -> bool:
-        """Whether the database has pgvector's table; checked again each minute while it has not."""
+    async def table_ready(self, *, refresh: bool = False) -> bool:
+        """Whether pgvector's table exists, creating it when the server offers the extension.
+
+        While it cannot be had this tries again each minute, and at once when `refresh`.
+        """
         now = time.monotonic()
-        if self._table_ok or (self._table_ok is False and now - self._table_checked < 60):
+        if self._table_ok or (
+            self._table_ok is False and not refresh and now - self._table_checked < 60
+        ):
             return bool(self._table_ok)
-        try:
-            async with self.store.session_factory() as session:
-                found = await session.scalar(sa.text("SELECT to_regclass('search_embeddings')"))
-        except (SQLAlchemyError, OSError):
+        async with self._table_lock:
+            try:
+                found = await self._ensure_table()
+            except (SQLAlchemyError, OSError):
+                return False
+            self._table_ok, self._table_checked = found, now
+        return found
+
+    async def _ensure_table(self) -> bool:
+        async with self.store.session_factory() as session:
+            if await session.scalar(sa.text("SELECT to_regclass('search_embeddings')")) is not None:
+                return True
+            offered = await session.scalar(
+                sa.text("SELECT 1 FROM pg_available_extensions WHERE name = 'vector'")
+            )
+        if offered is None:
+            self._table_error = NO_PGVECTOR
             return False
-        self._table_ok, self._table_checked = found is not None, now
-        return self._table_ok
+        try:
+            async with transaction(self.store.session_factory) as session:
+                await session.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
+                await session.run_sync(
+                    lambda sync: SearchEmbedding.__table__.create(
+                        sync.connection(), checkfirst=True
+                    )
+                )
+        except DBAPIError as exc:
+            code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+            if code != INSUFFICIENT_PRIVILEGE:
+                raise
+            self._table_error = NO_PRIVILEGE
+            return False
+        return True
 
     # --- the worker ------------------------------------------------------------------
 
     async def run(self) -> None:
+        await self.table_ready()
         while True:
             try:
                 delay = await self.step()
@@ -394,15 +436,9 @@ class EmbeddingService:
         assignment = self.assignment()
         if not assignment.enabled or not assignment.model:
             return EmbeddingStatus(state="off", model=assignment.model)
-        if not await self.table_ready():
+        if not await self.table_ready(refresh=True):
             return EmbeddingStatus(
-                state="unavailable",
-                model=assignment.model,
-                error=(
-                    "This database does not have the pgvector extension, so meaning search "
-                    "cannot store vectors. Use the PostgreSQL image the quickstart names, or "
-                    "install pgvector, then restart."
-                ),
+                state="unavailable", model=assignment.model, error=self._table_error
             )
         model = assignment.model
         try:
@@ -432,9 +468,7 @@ class EmbeddingService:
             return EmbeddingStatus(state="idle", model=model)
         documents, embedded = int(documents or 0), int(embedded or 0)
         waiting = self._retry_at is not None and self._retry_at > datetime.now(UTC)
-        if assignment.paused:
-            state = "paused"
-        elif waiting:
+        if waiting:
             state = "waiting"
         elif embedded + len(self._skipped) >= documents:
             state = "idle"
@@ -447,7 +481,7 @@ class EmbeddingService:
             embedded=embedded,
             passages=int(count or 0),
             skipped=len(self._skipped),
-            error=self._error if not assignment.paused else "",
+            error=self._error,
             retry_at=self._retry_at if waiting else None,
         )
 
@@ -474,9 +508,11 @@ class EmbeddingService:
 
     async def save(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Save the assignment. Turning it on first asks the service for one vector."""
-        assignment = EmbeddingAssignment.model_validate(payload["assignment"])
-        assignment.model = assignment.model.strip()
         context = self.store.context
+        assignment = EmbeddingAssignment.model_validate(
+            {**context.config().embeddings.model_dump(), **payload["assignment"]}
+        )
+        assignment.model = assignment.model.strip()
         if assignment.enabled:
             if not assignment.connection:
                 raise ValueError("Choose a connection before turning meaning search on.")
@@ -510,4 +546,5 @@ class EmbeddingService:
             config.embeddings = assignment
             context.save_config(config)
         self._follow_config(assignment)
+        await self.table_ready(refresh=True)
         return {"saved": "embeddings"}

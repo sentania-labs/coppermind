@@ -93,11 +93,6 @@ def embedding_status_html(status: EmbeddingStatus, zone: ZoneInfo) -> str:
         return "<p>Search by meaning is off. Searches use keywords only.</p>"
     if status.state == "unavailable":
         return f'<p class="error">{escape(status.error)}</p>'
-    if status.state == "paused":
-        return (
-            f"<p>Paused. {status.embedded} of {status.documents} entries are ready for meaning "
-            "search. Searches use keywords, plus meaning for those.</p>"
-        )
     lines = ""
     if status.state == "idle":
         lines = (
@@ -166,8 +161,6 @@ model list</a></p>
 <fieldset><legend>When to run</legend>
 <label><input type="checkbox" name="enabled"{checked(settings["enabled"])}>
 Search by meaning</label>
-<label><input type="checkbox" name="paused"{checked(settings["paused"])}>
-Pause embedding</label>
 <p class="muted">When this is on, the text of your notes, source pages and stored artifacts is
 sent to the connection chosen above so it can be embedded, a few at a time, in the background.
 Existing content is embedded first-in, newest first, and picks up where it left off after a
@@ -243,7 +236,6 @@ rebuilding it loses nothing.</p>
             "connection": form.get("connection", ""),
             "model": form.get("model", ""),
             "enabled": "enabled" in form,
-            "paused": "paused" in form,
         }
         client = _client(request, wiring)
         try:

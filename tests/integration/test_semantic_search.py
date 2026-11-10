@@ -15,11 +15,13 @@ import httpx
 import pytest
 import sqlalchemy as sa
 from coppermind_store import filing, indexer
+from coppermind_store.embeddings import EmbeddingService
 from coppermind_store.model_provider import ModelProvider
 from coppermind_store.notes import LocalStore
 
 from coppermind.context_config import ContextConfig, EmbeddingAssignment, ModelConnection
 from coppermind.db.models import SearchDocument, SearchEmbedding
+from coppermind.db.session import transaction
 from coppermind.store_protocol import CreateNote, SearchQuery
 
 IDEAS = [
@@ -214,3 +216,25 @@ async def test_a_text_the_service_refuses_is_set_aside(store, configured, servic
     status = await store.embeddings.status()
     assert (status.documents, status.embedded, status.skipped) == (2, 1, 1)
     assert status.state == "idle"
+
+
+async def test_a_missing_table_is_created_once_the_server_offers_pgvector(
+    store, configured, service
+) -> None:
+    async with store.session_factory() as session:
+        offered = await session.scalar(
+            sa.text("SELECT 1 FROM pg_available_extensions WHERE name = 'vector'")
+        )
+    if offered is None:
+        pytest.skip("this PostgreSQL does not offer pgvector")
+    await create(store, "Vendor call", "We agreed the permit fees and royalty schedule.")
+    async with transaction(store.session_factory) as session:
+        await session.execute(sa.text("DROP TABLE search_embeddings"))
+    store.embeddings = EmbeddingService(store)
+    configured()
+
+    status = await store.embeddings.status()
+
+    assert status.state != "unavailable"
+    await settle(store)
+    assert await found(store, "licensing") == [("Vendor call", "meaning")]

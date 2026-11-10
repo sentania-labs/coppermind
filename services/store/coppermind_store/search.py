@@ -100,9 +100,8 @@ def decode_cursor(value: str, q: str) -> SearchCursor:
         payload = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
         if not isinstance(payload, dict) or payload.get("v") not in (_CURSOR_VERSION, 2):
             raise ValueError
-        digest, rank, kind, ref_id, scoring = (
-            payload.get(key) for key in ("q", "r", "k", "id", "m")
-        )
+        digest, rank, kind, ref_id = (payload.get(key) for key in ("q", "r", "k", "id"))
+        scoring = payload.get("m", "keyword")
         if (
             not isinstance(digest, str)
             or isinstance(rank, bool)
@@ -370,31 +369,29 @@ async def hybrid_rows(
     wanted: QueryVector,
 ) -> list[Any]:
     """`limit + 1` rows of the fused answer, in the shape `page_of` reads."""
-    keyword: list[Any] = []
-    if query.mode != "meaning":
-        rank = sa.func.ts_rank(SearchDocument.search_vector, ts_query(query.q))
-        keyword = list(
-            (
-                await session.execute(
-                    candidates(
-                        query,
-                        notes_folder,
-                        predicates,
-                        entities=entities,
-                        columns=[
-                            SearchDocument.kind.label("kind"),
-                            SearchDocument.ref_id.label("ref_id"),
-                            SearchDocument.path.label("path"),
-                            SearchDocument.title.label("title"),
-                            note_state().label("state"),
-                        ],
-                    )
-                    .where(*match_conditions(query.q))
-                    .order_by(rank.desc(), SearchDocument.kind, SearchDocument.ref_id)
-                    .limit(KEYWORD_CANDIDATES)
+    rank = sa.func.ts_rank(SearchDocument.search_vector, ts_query(query.q))
+    keyword = list(
+        (
+            await session.execute(
+                candidates(
+                    query,
+                    notes_folder,
+                    predicates,
+                    entities=entities,
+                    columns=[
+                        SearchDocument.kind.label("kind"),
+                        SearchDocument.ref_id.label("ref_id"),
+                        SearchDocument.path.label("path"),
+                        SearchDocument.title.label("title"),
+                        note_state().label("state"),
+                    ],
                 )
-            ).all()
-        )
+                .where(*match_conditions(query.q))
+                .order_by(rank.desc(), SearchDocument.kind, SearchDocument.ref_id)
+                .limit(KEYWORD_CANDIDATES)
+            )
+        ).all()
+    )
     distance = SearchEmbedding.embedding.cosine_distance(vector_value(wanted.vector))
     nearest = (
         candidates(

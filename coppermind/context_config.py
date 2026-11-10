@@ -118,7 +118,6 @@ class EmbeddingAssignment(ContextModel):
     connection: str = ""
     model: str = Field(default="", max_length=200)
     enabled: bool = False
-    paused: bool = False
     # How long the service may stay silent before one request is given up on.
     timeout_s: int = Field(default=60, ge=5, le=600)
     attempts: int = Field(default=3, ge=1, le=5)

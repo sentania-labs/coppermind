@@ -1,10 +1,11 @@
 """Embedding: passages, the provider contract, and what a question turns into."""
 
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
-from coppermind_store.embeddings import PASSAGE_CHARS, passage_text, passages
+from coppermind_store.embeddings import PASSAGE_CHARS, EmbeddingService, passage_text, passages
 from coppermind_store.model_provider import ModelProvider, ProviderError
 from coppermind_store.search import meaning_text
 
@@ -156,3 +157,48 @@ def test_a_saved_configuration_without_embeddings_still_loads_with_them_off():
     assert old.embeddings.enabled is False
     # The enrichment assignment and its fingerprint are untouched by the new one.
     assert set(old.assignments) == {"enrichment"}
+
+
+async def test_saving_from_admin_keeps_the_timeout_and_attempts_an_operator_set():
+    asked: list[float] = []
+
+    async def embed(_connection, _key, _model, _texts, *, timeout):
+        asked.append(timeout)
+        return [[0.1]]
+
+    saved: list[ContextConfig] = []
+    config = ContextConfig(
+        connections=[connection()],
+        embeddings=EmbeddingAssignment(connection="lab", model="old", timeout_s=300, attempts=5),
+    )
+
+    class Lock:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *_):
+            return None
+
+    context = SimpleNamespace(
+        config=lambda: config,
+        connection=lambda _id: connection(),
+        key=lambda _id: "secret",
+        provider=SimpleNamespace(embed=embed),
+        lock=Lock(),
+        check_revision=lambda *_: None,
+        save_config=saved.append,
+    )
+    service = EmbeddingService(SimpleNamespace(context=context))
+
+    async def ready(*, refresh=False):
+        return True
+
+    service.table_ready = ready  # type: ignore[method-assign]
+
+    await service.save(
+        {"revision": 0, "assignment": {"connection": "lab", "model": " new ", "enabled": True}}
+    )
+
+    kept = saved[0].embeddings
+    assert (kept.model, kept.enabled, kept.timeout_s, kept.attempts) == ("new", True, 300, 5)
+    assert asked == [300]

@@ -960,7 +960,7 @@ class Page[T](BaseModel):
 
 
 SearchKind = Literal["note", "source", "artifact", "entity"]
-SearchMode = Literal["hybrid", "meaning", "keyword"]
+SearchMode = Literal["hybrid", "keyword"]
 SearchMatch = Literal["keyword", "meaning", "both"]
 """A note, a generated source page, an artifact, or a dossier."""
 
@@ -985,7 +985,7 @@ class SearchQuery(NoteQuery):
     mode: SearchMode = "hybrid"
     """`hybrid` (the default) adds matches by meaning to the keyword matches when an
     embeddings model is set up and answering, and is plain full-text search when it is not.
-    `meaning` ranks by meaning alone, and `keyword` never uses the embeddings model."""
+    `keyword` never uses the embeddings model."""
 
     @field_validator("q")
     @classmethod
@@ -1023,14 +1023,14 @@ class SearchHit(BaseModel):
 class EmbeddingStatus(BaseModel):
     """How far embedding the index has got, for Admin.
 
-    `state` is `off` (no embeddings model is set up), `paused`, `unavailable` (the
+    `state` is `off` (no embeddings model is set up), `unavailable` (the
     database has no pgvector), `idle` (everything indexed is embedded), `working`,
     or `waiting` (the model service is not answering; `error` says why and
     `retry_at` when the next try is). `documents` counts index entries and
     `embedded` those that have vectors from the current model.
     """
 
-    state: Literal["off", "paused", "unavailable", "idle", "working", "waiting"] = "off"
+    state: Literal["off", "unavailable", "idle", "working", "waiting"] = "off"
     model: str = ""
     documents: int = 0
     embedded: int = 0

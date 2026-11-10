@@ -76,7 +76,6 @@ class IndexStore:
                 "connection": "local",
                 "model": "nomic-embed",
                 "enabled": True,
-                "paused": False,
             },
             "connections": [{"id": "local", "name": "Lab embeddings", "provider": "compatible"}],
             "discovery": {"local": ["nomic-embed", "bge-small"]},
@@ -255,7 +254,6 @@ def test_saving_sends_the_choice_and_returns_to_the_page(signed_in):
             "connection": "local",
             "model": " nomic-embed ",
             "enabled": True,
-            "paused": False,
         },
     }
 

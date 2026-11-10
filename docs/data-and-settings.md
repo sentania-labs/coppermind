@@ -279,8 +279,12 @@ needs no button and resumes after a restart. Dropping the table loses nothing.
 
 The compose stack runs the `pgvector/pgvector` image in place of plain
 `postgres`, same major version and data directory. On a PostgreSQL without the
-extension the migration skips the table, search stays full-text, and Admin says
-what is missing.
+extension the migration skips the table and search stays full-text. The store
+creates the extension and the table itself, at startup and whenever Admin's Search
+index page is opened or saved, as soon as the server offers pgvector, so
+installing it later, or moving to the pgvector image, needs no migration. If the
+database user may not create extensions, Admin says so and gives the one
+`CREATE EXTENSION` command a superuser runs.
 
 ## Named tests this data model is proven against
 
