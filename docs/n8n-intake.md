@@ -215,10 +215,11 @@ the service is sent its bytes.
 3. Poll `GET /v1/recordings/{id}` with bounded backoff until `state` is `succeeded` (the
    status then names `note_path`) or `failed`. A recording can take a long time: an hour
    of audio is 10 to 20 minutes on a CPU service, and a queue of recordings runs one at a
-   time. A busy transcription service is waited for, not counted as a failure: the
-   status stays `queued` with `error_rule` `transcription-busy` (for up to 24 hours).
-   Send `duration_seconds` when you know it: a job is polled for at most 1.5 times that,
-   never less than one hour, and eight hours when it is unknown. Reaching `succeeded` means a draft note is waiting in `Review/`, not that anyone
+   time. A busy transcription service is waited for, not counted as a failure (status
+   `queued`, `error_rule` `transcription-busy`). Send `duration_seconds` when you know it,
+   because it sets how long a long job is waited for; the
+   [API reference](api.md#recordings-audio-on-its-own) has the rules. Reaching `succeeded`
+   means a draft note is waiting in `Review/`, not that anyone
    has reviewed it.
 
 The note's source is the transcript (`transcript.txt` with the speaker labels as the

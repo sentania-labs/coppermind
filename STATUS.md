@@ -70,7 +70,10 @@ has not been exercised by this slice.
   loop of its own sends it, streamed from disk, to the transcription service
   chosen under Admin Settings, Model connections, Transcription setup (OpenAI-compatible
   `/audio/transcriptions`, `diarized_json` or `verbose_json`), waiting on
-  silence rather than total time and backing off after a timeout. The speaker
+  silence rather than total time and backing off after a timeout. A busy
+  service (429) is waited for without using an attempt, recordings over two hours
+  go to the jobs path and are polled, and `metadata.num_speakers` is passed as a
+  hint (rules in `docs/api.md`). The speaker
   segments are kept as given and filed through the ordinary ingest as the
   note's source, so a draft lands in Review; the recording stays an artifact
   the note cites. Each intake is listed with its state and a Retry under Suggestions
