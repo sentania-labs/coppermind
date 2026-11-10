@@ -151,7 +151,7 @@ line ending as it was, and leaves a tag list with a comment inside it as the
 person wrote it.
 
 For workflow callers, see [n8n intake](n8n-intake.md) for the current JSON
-contract and the separately labeled staged-upload proposal. Review and filing
+contract and the separately labeled staged-bundle proposal. Review and filing
 requirements are recorded in [decision 002](decisions/002-review-and-organization.md).
 
 Note documents and list items include `filed`, `filing_error` (the last error,

@@ -1,7 +1,9 @@
 # n8n recording intake
 
-Status: the JSON ingest route below exists in v0.2.1. The staged upload
-contract is a proposed next increment, not an available endpoint. This branch implements monthly filing and reviewed-only indexing; those changes
+Status: the JSON ingest route below exists in v0.2.1. The staged bundle
+contract is a proposed next increment, not an available endpoint. (The
+single-file `/v1/staged` upload for large artifacts is a different, available
+route; see the [API reference](api.md#staged-uploads).) This branch implements monthly filing and reviewed-only indexing; those changes
 are not deployed yet. Validate the released version before connecting production intake.
 
 ## Where to send material
