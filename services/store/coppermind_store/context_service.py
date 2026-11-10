@@ -1469,22 +1469,19 @@ class ContextService:
                     )
             result.suggestions = self.usable_speakers(result.suggestions, speaker)
             seen_speakers = [s.field for s in result.suggestions if s.kind == "speaker"]
-            for label in speaker.get("speakers", []):
-                if label not in seen_speakers:
-                    result.suggestions.append(
-                        Suggestion(
-                            kind="speaker",
-                            field=label,
-                            value=None,
-                            reason="No confident match was suggested.",
-                        )
+            unnamed = [label for label in speaker.get("speakers", []) if label not in seen_speakers]
+            room = max(0, 30 - len(result.suggestions))
+            for label in unnamed[:room]:
+                result.suggestions.append(
+                    Suggestion(
+                        kind="speaker",
+                        field=label,
+                        value=None,
+                        reason="No confident match was suggested.",
                     )
-            if len(result.suggestions) > 30:
-                raise JobRejected(
-                    "too-many-speakers",
-                    "The recording has too many speakers and other suggestions to review at once",
-                    "Reduce the recording or other suggestions, then retry.",
                 )
+            left = len(unnamed) - min(room, len(unnamed))
+            job.notice = speaker_names.leftover_notice(left) if left else ""
             self.validate_result(result, evidence, await self.source_text(job.note_id))
             # A note or calendar can change during a slow model request.
             if not same_evidence(await self.evidence(job), evidence):
@@ -1558,7 +1555,9 @@ class ContextService:
                             "speaker refresh for job %s failed: %s", job.id, type(exc).__name__
                         )
                         job.state, job.reply = "suggested", first_reply
-                        job.notice = speaker_names.REFRESH_NOTICE
+                        job.notice = " ".join(
+                            filter(None, [job.notice, speaker_names.REFRESH_NOTICE])
+                        )
                         self.save_job(job)
         except (ValueError, StoreError, StopIteration) as exc:
             stale = str(exc).startswith("stale:")

@@ -605,6 +605,39 @@ async def test_speaker_evidence_too_big_is_dropped_and_other_suggestions_still_a
     assert detail["speaker_notice"].startswith("Speaker names could not be suggested")
 
 
+async def test_forty_speakers_keep_the_other_suggestions_and_leave_extras_to_the_manual_chooser(
+    store, standin
+):
+    transcript = {
+        "segments": [
+            {"start": i, "speaker": f"Speaker {i + 1}", "text": f"Turn {i}."} for i in range(40)
+        ]
+    }
+
+    def answer(evidence, event):
+        return [
+            {
+                "kind": "filename",
+                "value": "Planning",
+                "event_ids": [event["event_id"]],
+                "reason": "The calendar event",
+            }
+        ]
+
+    context, result, note, job_id, observed = await recorded(store, standin, transcript, answer)
+    job = context.load_job(job_id)
+    assert job.state == "suggested", job.error
+    kinds = [s.kind for s in job.result.suggestions]
+    assert kinds.count("filename") == 1
+    assert len(job.result.suggestions) == 30
+    detail = await context.lifecycle_detail({"note_id": note.id})
+    assert (
+        detail["speaker_notice"]
+        == "11 more speakers have no suggestion. You can name them by hand below."
+    )
+    assert len(detail["manual_speaker_review"]["speakers"]) == 40
+
+
 @pytest.mark.parametrize("action", ["rename", "retire"])
 async def test_calendar_contact_tracks_matched_dossier_changes(store, standin, action):
     from coppermind.entities import EntityChange

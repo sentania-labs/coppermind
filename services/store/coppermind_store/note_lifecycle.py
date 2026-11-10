@@ -95,8 +95,7 @@ class NoteLifecycle:
                 candidate_list = [
                     current
                     for candidate in saved
-                    if (current := speaker_names.current_person(people, candidate))
-                    is not None
+                    if (current := speaker_names.current_person(people, candidate)) is not None
                 ]
                 if suggestion["value"] and not any(
                     candidate["id"] == suggestion["value"] for candidate in candidate_list

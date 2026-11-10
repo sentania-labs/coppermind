@@ -42,6 +42,13 @@ TURN_CHARS = 300
 _ADDRESSING = re.compile(
     r"\b(?:[Hh]i|[Hh]ello|[Hh]ey|[Tt]hanks|[Tt]hank you),?\s+[A-Z][a-z]+|,\s+[A-Z][a-z]+\s*[?!.]"
 )
+
+
+def leftover_notice(count: int) -> str:
+    noun = "speaker has" if count == 1 else "speakers have"
+    return f"{count} more {noun} no suggestion. You can name them by hand below."
+
+
 OMITTED_NOTICE = (
     "Speaker names could not be suggested for this recording because it is too long; "
     "you can still name speakers yourself."
