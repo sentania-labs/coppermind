@@ -359,8 +359,8 @@ The calls it exposes, grouped by what they touch:
 - **Control state:** get and put a named state file (`settings`, `schema`,
   `rules`, `keys`, `admin`), each guarded by the revision the caller last
   read.
-- **Search:** full-text search with listing's filters (`GET
-  /internal/v1/search`), the index's counts and times (`GET
+- **Search:** search with listing's filters and a `mode` of `hybrid` or
+  `keyword` (`GET /internal/v1/search`), the index's counts and times (`GET
   /internal/v1/search/index`), and starting a rebuild of the index from the
   notes filesystem (`POST /internal/v1/jobs/rebuild_search_index`, 202 with
   `started: false` when one is already running).
