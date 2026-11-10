@@ -677,6 +677,19 @@ def shipped_key_upgrades() -> dict[str, tuple[list[KeyDefinition], KeyDefinition
             ],
             shipped["date"],
         ),
+        "type": (
+            [
+                KeyDefinition(
+                    name="type",
+                    kind="enum",
+                    required=True,
+                    default="reference",
+                    vocabulary=["work", "personal", "reference", "journal"],
+                    description="What the note is.",
+                )
+            ],
+            shipped["type"],
+        ),
         "time": (
             [
                 KeyDefinition(

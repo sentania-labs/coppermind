@@ -912,6 +912,18 @@ async def test_type_roots_search_refile_and_reserved_fallback(store):
     )
 
 
+async def test_journal_type_files_to_its_own_root_without_a_problem(store):
+    (store.notes_root / "Journal").mkdir()
+    result = await store.ingest(ingest_request("journal-type"))
+    note = await store.get_note(result.note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"type": "journal"}), note.content_hash
+    )
+    await approve(store, note.id)
+    assert (await store.get_note(note.id)).path.startswith("Journal/2026/2026-09/")
+    assert not any(p.kind == "reserved_type" for p in await store.get_problems())
+
+
 async def test_old_root_remains_searchable_until_type_upgrade(store):
     result = await store.ingest(ingest_request("old-root"))
     await approve(store, result.note.id)
