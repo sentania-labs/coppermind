@@ -190,7 +190,8 @@ settings and evidence. Without any click, an unreviewed note whose newest job
 failed or went stale gets a new job when the note changes (after it has been
 unedited for 60 seconds), when the evidence, schema or provider configuration
 changes, or when a model reported as unavailable becomes discovered. Reviewed
-notes' dossier jobs are retried only by hand.
+notes' failed dossier jobs are requeued automatically when the configuration
+or schema changes; otherwise they are retried by hand.
 
 In the configured review folder (`Review/` by default), validated suggestions with model-reported confidence of at least
 0.8 automatically fill blank configured fields. They never replace existing
