@@ -40,6 +40,12 @@ def test_workflow_setup_and_plugin_download_require_authentication(signed_in):
     for tab in ("setup", "enrichment", "intake", "review", "dossiers"):
         response = client.get("/admin/workflow?tab=" + tab)
         assert response.status_code == 200
+    setup = client.get("/admin/workflow?tab=setup").text
+    assert "folder named for their type, then year and month" in setup
+    assert "existing reviewed notes move once automatically" in setup
+    assert "Links by note name keep working" in setup
+    assert "full old folder path, update it by hand" in setup
+    assert "Changing a folder setting does not move existing files" in setup
     review = client.get("/admin/workflow?tab=review")
     assert "Finish enrichment setup" in review.text
     assert "Enrich selected notes" not in review.text

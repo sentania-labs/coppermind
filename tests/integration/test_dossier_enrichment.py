@@ -1,6 +1,7 @@
 """Reviewed-note knowledge feeds blank metadata through the real store write protocol."""
 
 import json
+import time
 
 import httpx
 import pytest
@@ -250,6 +251,9 @@ async def test_filing_preserves_extracted_frontmatter_evidence(store):
     filed = await store.get_note(note.id)
     assert filed.content_hash != note.content_hash
     assert filed.path.startswith("work/2026/2026-10/")
+    dossier = (store.notes_root / before.path).read_text()
+    assert f"[[{filed.path.removesuffix('.md')}]]" in dossier
+    assert f"[[{note.path.removesuffix('.md')}]]" not in dossier
     await store.entities.refresh()
     entity = store.entities.load().entities[before.id]
     assert {f.id for f in entity.facts} == {f.id for f in before.facts}
@@ -257,6 +261,16 @@ async def test_filing_preserves_extracted_frontmatter_evidence(store):
     assert all(f.evidence.note_hash == filed.content_hash for f in entity.facts)
     assert context.load_job(job.id).note_hash == filed.content_hash
     assert await context.queue_reviewed(note.id) == job.id
+    changed = await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"type": "personal"}), filed.content_hash
+    )
+    context.lifecycle.observed[changed.id] = (changed.content_hash, time.monotonic() - 31)
+    assert await file_note(store, changed.id)
+    moved = await store.get_note(note.id)
+    assert moved.path.startswith("personal/2026/2026-10/")
+    dossier = (store.notes_root / before.path).read_text()
+    assert f"[[{moved.path.removesuffix('.md')}]]" in dossier
+    assert f"[[{filed.path.removesuffix('.md')}]]" not in dossier
 
 
 async def test_review_extracts_projects_and_enriches_without_an_acceptance_step(store):

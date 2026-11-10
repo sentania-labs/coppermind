@@ -66,6 +66,14 @@ def router(wiring: Wiring) -> APIRouter:
             if tab == "setup":
                 title = "Workflow setup"
                 body += "<p>New note → suggestions → your review → filing and confirmed facts.</p>"
+                body += (
+                    "<p>Reviewed notes file under a folder named for their type, then year "
+                    "and month. After this upgrade, existing reviewed notes move once "
+                    "automatically from the old notes folder into their type folders as filing "
+                    "runs. Links by note name keep working, and Coppermind updates its own "
+                    "links. If you wrote a link with the full old folder path, update it by hand. "
+                    "Changing a folder setting does not move existing files.</p>"
+                )
                 if not config.get("lifecycle_enabled"):
                     body += (
                         "<h2>Set up the workflow</h2><p>Add optional attendees, invitees, cal"

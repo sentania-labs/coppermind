@@ -162,7 +162,13 @@ Other settings stay unchanged.</p>
         if unavailable:
             body += f'<p class="notice">{escape(unavailable)}</p>'
         if group == "notes":
-            body += '<p class="notice">Changing a folder setting does not move existing files.</p>'
+            body += (
+                '<p class="notice">After this upgrade, existing reviewed notes move once '
+                "automatically from the old notes folder into their type folders as filing runs. "
+                "Links by note name keep working, and Coppermind updates its own links. "
+                "If you wrote a link with the full old folder path, update it by hand. "
+                "Changing a folder setting does not move existing files.</p>"
+            )
         body += '<div class="settings-grid">'
         for path, field, value in fields(current):
             if path.split(".")[0] != group:

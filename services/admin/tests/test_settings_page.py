@@ -242,6 +242,10 @@ def test_the_notes_folder_is_described_in_plain_words_without_its_internal_key(s
         "then year and month, like work/2026/2026-04/. "
         "This folder is used when a note has no usable type."
     ) in text
+    assert "existing reviewed notes move once automatically" in text
+    assert "Links by note name keep working" in text
+    assert "full old folder path, update it by hand" in text
+    assert "Changing a folder setting does not move existing files" in text
     assert "{notes_folder}" not in text and "{yyyy" not in text
     assert "notes.notes_folder</code>" not in text
 
