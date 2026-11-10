@@ -658,7 +658,7 @@ picker.addEventListener('change', () => {
             and job["attempts"] < job["attempt_limit"]
         ):
             body += (
-                "<p>The model was too slow, so the app is waiting. Next automatic try after "
+                "<p>The app is waiting before it tries again. Next automatic try after "
                 + e(_calendar_time(job["retry_after"]))
                 + ".</p>"
             )
