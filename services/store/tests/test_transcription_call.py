@@ -741,9 +741,7 @@ async def test_job_recovers_with_same_key(recording, monkeypatch, failure):
     assert updates[-1][3] == ""
 
 
-async def test_a_poll_404_with_any_reason_is_a_lost_job_and_is_resubmitted(
-    recording, monkeypatch
-):
+async def test_a_poll_404_with_any_reason_is_a_lost_job_and_is_resubmitted(recording, monkeypatch):
     from coppermind_store import model_provider
 
     monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
