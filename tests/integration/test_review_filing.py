@@ -465,8 +465,9 @@ async def test_new_revision_repoints_embeds_to_the_current_attachments(store):
     artifact = (await store.list_artifacts(ArtifactQuery())).items[0]
     assert artifact.revision == 2 and artifact.path == filed
     assert (
-        await store.get_artifact_bytes(artifact.id, revision=1)
-    ).content == b"synthetic jpeg one"
+        await drain(await store.get_artifact_bytes(artifact.id, revision=1))
+        == b"synthetic jpeg one"
+    )
 
 
 async def _eligible_ids(store):
