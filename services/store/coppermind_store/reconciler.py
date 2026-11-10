@@ -1335,16 +1335,18 @@ def _choose_observations(
 
 
 def _journal_hashes(store: LocalStore, note_id: str) -> set[str]:
-    """Every hash filing recorded for this note's contents before it moved."""
+    """Every hash filing recorded for this note's contents, in flight or settled."""
     path = store.control.store.state_dir / "filing" / f"{note_id}.json"
     try:
         plan = json.loads(path.read_bytes())
-        return {
+        recorded = {h for h in plan.get("hashes", []) if isinstance(h, str)}
+        recorded.update(
             copy["hash"]
             for copy in plan.get("copies", [])
             if isinstance(copy, dict) and isinstance(copy.get("hash"), str)
-        }
-    except (OSError, ValueError, AttributeError):
+        )
+        return recorded
+    except (OSError, ValueError, AttributeError, TypeError):
         return set()
 
 

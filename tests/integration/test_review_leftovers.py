@@ -8,14 +8,14 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import sqlalchemy as sa
-from coppermind_store import reconciler
-from coppermind_store.fs import content_hash
+from coppermind_store import filing, reconciler
 from coppermind_store.notes import LocalStore
 from coppermind_store.reconciler import note_collisions, reconcile_once
 from structlog.testing import capture_logs
 
 from coppermind.db.models import Note
-from coppermind.store_protocol import CreateNote
+from coppermind.store_protocol import CreateNote, PatchFrontmatter
+from tests.integration.test_search_index import ingest_request
 
 FILED = "Notes/2026/2026-11/Monthly TAM call.md"
 LEFTOVER = "Review/Monthly TAM call.md"
@@ -64,21 +64,69 @@ async def test_an_identical_review_copy_of_a_filed_note_is_removed(store: LocalS
     assert await note_collisions(store, note_id) == []
 
 
-async def test_a_review_copy_matching_a_recorded_snapshot_is_removed(store: LocalStore):
-    note_id, data = await _filed_note(store)
-    filed = store.notes_root / FILED
-    filed.write_bytes(data + b"\nEdited after filing.\n")
-    await reconcile_once(store)
-    await _mark_filed(store, note_id, True)
-    journal = store.control.store.state_dir / "filing" / f"{note_id}.json"
-    journal.parent.mkdir(parents=True, exist_ok=True)
-    journal.write_text(json.dumps({"copies": [{"path": "x", "hash": content_hash(data)}]}))
-    _leftover(store, data)
+async def _really_filed(store: LocalStore) -> tuple[str, str, bytes]:
+    """File a note through the real filing pass, then let a second pass settle it."""
+    result = await store.ingest(ingest_request())
+    note_id = result.note.id
+    note = await store.get_note(note_id)
+    await store.patch_frontmatter(
+        note_id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
+    )
+    review_path = (await store.get_note(note_id)).path
+    before_filing = (store.notes_root / review_path).read_bytes()
+    assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+    assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 0}
+    filed = await store.get_note(note_id)
+    assert not filed.path.startswith("Review/")
+    assert (store.notes_root / filed.path).read_bytes() != before_filing
+    journal = json.loads(
+        (store.control.store.state_dir / "filing" / f"{note_id}.json").read_bytes()
+    )
+    assert "copies" not in journal
+    return note_id, review_path, before_filing
 
-    await reconcile_once(store)
 
-    assert not (store.notes_root / LEFTOVER).exists()
-    assert filed.read_bytes().endswith(b"Edited after filing.\n")
+async def test_a_pre_filing_copy_arriving_after_filing_settled_is_removed(store: LocalStore):
+    note_id, review_path, before_filing = await _really_filed(store)
+    leftover = store.notes_root / review_path
+    leftover.parent.mkdir(parents=True, exist_ok=True)
+    leftover.write_bytes(before_filing)
+
+    with capture_logs() as logged:
+        counts = await reconcile_once(store)
+
+    assert not leftover.exists()
+    assert counts["duplicates"] == 0
+    assert _warnings(logged) == []
+    assert await note_collisions(store, note_id) == []
+
+
+async def test_an_edited_pre_filing_copy_after_filing_settled_is_kept_and_reported(
+    store: LocalStore,
+):
+    note_id, review_path, before_filing = await _really_filed(store)
+    leftover = store.notes_root / review_path
+    leftover.parent.mkdir(parents=True, exist_ok=True)
+    edited = before_filing + b"\nWritten on the phone.\n"
+    leftover.write_bytes(edited)
+
+    counts = await reconcile_once(store)
+
+    assert leftover.read_bytes() == edited
+    assert counts["duplicates"] == 1
+    reasons = " ".join(await note_collisions(store, note_id))
+    assert review_path in reasons and "differ" in reasons
+
+
+def test_recorded_hashes_stay_bounded_and_keep_the_newest():
+    plan: dict = {}
+    digests = [f"sha256:{i:064d}" for i in range(filing.KEPT_HASHES * 2)]
+
+    for digest in digests:
+        filing._keep_hash(plan, digest)
+    filing._keep_hash(plan, digests[-1])
+
+    assert plan["hashes"] == digests[-filing.KEPT_HASHES :]
 
 
 async def test_a_differing_review_copy_is_kept_and_put_on_the_note(store: LocalStore):
