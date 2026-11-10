@@ -346,7 +346,11 @@ speaker label exactly as the service gave it (`[00:03:12] Speaker 2: text`), and
 has not been written yet. The recording stays stored as an artifact the note cites;
 nothing here deletes it, and it is kept whatever happens until a transcript exists. A
 transcript is saved before the note is filed, so a note that is refused (for example a
-schema problem in `frontmatter`) is retried without sending the recording again.
+schema problem in `frontmatter`) is retried without sending the recording again. The
+note's `frontmatter` and `title` are fixed when the recording is accepted, and posting
+the same `provider` and `external_source_id` again returns the same failed intake, so
+such a retry succeeds only after the schema is changed. Otherwise upload the recording
+again under a new `external_source_id`, which transcribes it again.
 
 ## Search and status
 

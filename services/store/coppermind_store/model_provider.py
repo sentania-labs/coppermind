@@ -570,14 +570,16 @@ class ModelProvider:
             422: "It could not use the request; the model name or the reply format may not be "
             "supported by this service.",
         }
+        retryable = status >= 500 or status in (408, 429)
         detail = hints.get(
-            status, "Check that the service is healthy." if status >= 500 else "The request failed."
+            status, "Check that the service is healthy." if retryable else "The request failed."
         )
         return ProviderError(
             f"The transcription service answered HTTP {status}. {detail}",
             f"transcription-http-{status}" if status in hints else "transcription-http",
-            # A server error is worth another try later; a refusal of the request is not.
-            waiting=status >= 500,
+            # A server error or a request to slow down is worth another try later; a refusal
+            # of the request is not.
+            waiting=retryable,
         )
 
     async def transcribe(

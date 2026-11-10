@@ -372,7 +372,9 @@ class Recordings:
             job.state = "failed"
             job.set_error(
                 "The note could not be filed: " + "; ".join(exc.errors)[:500] + ". The transcript "
-                "is kept; fix the note fields or the schema, then retry.",
+                "is kept. The note fields are fixed once the recording is accepted, so a retry "
+                "succeeds only after the schema is changed; otherwise upload the recording "
+                "again under a new external id, which transcribes it again.",
                 "note-rejected",
             )
         except (StoreError, OSError) as exc:

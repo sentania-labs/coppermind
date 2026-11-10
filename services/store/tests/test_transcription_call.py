@@ -197,6 +197,9 @@ async def test_a_refused_connection_does_not_wait_and_names_the_address(recordin
         (413, "transcription-http-413", False, "too large"),
         (422, "transcription-http-422", False, "model name or the reply format"),
         (503, "transcription-http", True, "healthy"),
+        (429, "transcription-http", True, "healthy"),
+        (408, "transcription-http", True, "healthy"),
+        (409, "transcription-http", False, "request failed"),
     ],
 )
 async def test_an_http_failure_is_told_apart_and_only_a_server_fault_is_tried_again(
