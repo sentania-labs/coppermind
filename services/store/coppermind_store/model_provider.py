@@ -793,10 +793,14 @@ class ModelProvider:
             if job_update:
                 job_update(remote_job_id, job_started, job_resubmits, message)
 
-        def exhausted() -> ProviderError:
+        def exhausted(lost: bool = False) -> ProviderError:
             return ProviderError(
                 "The transcription service kept losing or failing the job. "
-                "Press Retry to try again.",
+                "Press Retry to try again."
+                if lost
+                else "The transcription service did not finish this recording. It stopped "
+                "answering with a result, so the app stopped waiting. "
+                "Check the service, then press Retry.",
                 "transcription-unfinished",
             )
 
@@ -862,7 +866,7 @@ class ModelProvider:
                                     if reason in {"audio_unreadable", "no_speech", "too_long"}:
                                         raise transcription_error(reason)
                                     if job_resubmits >= JOB_MAX_RESUBMITS:
-                                        raise exhausted()
+                                        raise exhausted(True)
                                     job_resubmits += 1
                                     remote_job_id = ""
                                     recovering = True
@@ -906,7 +910,7 @@ class ModelProvider:
                             raise
                         if exc.rule == "transcription-http-404" and remote_job_id:
                             if job_resubmits >= JOB_MAX_RESUBMITS:
-                                raise exhausted() from exc
+                                raise exhausted(True) from exc
                             job_resubmits += 1
                             remote_job_id = ""
                             recovering = True

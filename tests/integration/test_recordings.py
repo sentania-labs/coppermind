@@ -410,6 +410,12 @@ async def test_a_restart_on_the_jobs_path_resumes_the_saved_job(store, monkeypat
     assert service.requests[0]["path"].startswith("GET /v1/audio/transcriptions/jobs/local-job ")
     done = await context.recording_status({"id": job["id"]})
     assert done["state"] == "succeeded" and done["attempts"] == 1
+    finished = context.recordings.load(job["id"])
+    assert (finished.remote_job_id, finished.remote_job_started, finished.remote_job_resubmits) == (
+        "",
+        0,
+        0,
+    )
 
 
 async def test_a_failed_job_retries_with_the_same_key_and_stops_at_the_cap(store, monkeypatch):
@@ -480,7 +486,7 @@ async def test_a_wedged_service_ends_as_a_retriable_problem_and_frees_the_worker
         await context.recordings.tick()
         failed = await context.recording_status({"id": wedged["id"]})
         assert failed["state"] == "failed" and failed["error_rule"] == "transcription-unfinished"
-        assert "kept losing or failing" in failed["error"]
+        assert "did not finish this recording" in failed["error"]
         # The worker is free for the next recording, and the failure waits for a person.
         other = await context.accept_recording(
             request(

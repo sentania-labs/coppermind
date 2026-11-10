@@ -588,6 +588,7 @@ class Recordings:
         )
         transcript["model"] = assignment.model
         self.context.write(self.transcript_path(job), transcript)
+        job.remote_job_id, job.remote_job_started, job.remote_job_resubmits = "", 0, 0
         job.transcribed, job.usage = True, usage
         self.save(job)
         return transcript

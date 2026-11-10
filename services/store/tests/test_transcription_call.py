@@ -588,7 +588,7 @@ async def test_a_job_that_never_finishes_ends_instead_of_holding_the_worker(
                 30,
             )
     assert caught.value.rule == "transcription-unfinished"
-    assert "kept losing or failing" in str(caught.value)
+    assert "did not finish this recording" in str(caught.value)
 
 
 async def test_an_empty_answer_repeated_ends_the_wait_before_the_deadline(recording, monkeypatch):
@@ -785,6 +785,7 @@ async def test_repeated_loss_hits_cap_and_restart_resumes_poll(recording, monkey
             job_update=lambda *args: updates.append(args),
         )
     assert exc.value.rule == "transcription-unfinished"
+    assert "kept losing or failing" in str(exc.value)
     assert requests[0][1].endswith("/prior-job")
     assert [key for method, _, key in requests if method == "POST"] == [
         "stable"
