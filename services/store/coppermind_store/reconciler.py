@@ -414,7 +414,9 @@ async def reconcile_once(
     purging = pending_ids(store, "note")
     by_id = {k: v for k, v in (await _mirror_index(store)).items() if k not in purging}
     by_path = _by_path(by_id)
-    schema = store.control.schema()
+    schema_doc = store.control.schema_document()
+    schema = schema_doc.frontmatter_schema
+    revision = schema_doc.revision
     settings = store.control.settings()
     quiet = (
         QuietWindow(
@@ -426,7 +428,6 @@ async def reconcile_once(
     )
     # A refused file is not read again until it changes, so a corrected schema
     # has to make every remembered refusal worth reading afresh.
-    revision = store.control.schema_document().revision
     if getattr(store, "_schema_revision_seen", revision) != revision:
         remembered.clear()
     store._schema_revision_seen = revision
@@ -1138,7 +1139,7 @@ _REFUSED_DEFAULTS = re.compile(r"the schema's own default is refused by the sche
 
 
 def _property_names(listed: str) -> list[str]:
-    return [name.strip()[:1].upper() + name.strip()[1:] for name in listed.split(",")]
+    return [name.strip() for name in listed.split(",")]
 
 
 def adoption_problem(cause: str) -> tuple[str, str]:
@@ -1154,7 +1155,7 @@ def adoption_problem(cause: str) -> tuple[str, str]:
     if default:
         names = _property_names(default.group(1))
         listed = " and ".join(names)
-        own = names[0].lower() if len(names) == 1 else None
+        own = names[0] if len(names) == 1 else None
         return (
             f"property:{own}" if own else "properties",
             f"Coppermind left this note unchanged. The note has no {listed} yet, and the "
