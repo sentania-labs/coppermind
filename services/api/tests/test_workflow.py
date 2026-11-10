@@ -92,3 +92,26 @@ def test_a_declared_drop_is_bounded_by_the_artifact_limit_before_it_is_buffered(
     assert refused.json()["limit_bytes"] == 1024
     assert accepted.status_code == 202
     assert [action for action, _ in fake.calls] == ["upload-drop"]
+
+
+def test_review_forwards_the_owner_speaker_choice():
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal(
+        "test", frozenset({"notes:read", "notes:write", "sources:read"})
+    )
+    with TestClient(app) as client:
+        result = client.post(
+            "/v1/notes/note/review",
+            json={
+                "if_match": "hash",
+                "confirmation": "Complete review",
+                "job_id": "job",
+                "selected": [2],
+                "speaker_choices": {"2": "person:chosen"},
+            },
+        )
+    assert result.status_code == 200
+    assert fake.calls[0][1]["speaker_choices"] == {"2": "person:chosen"}

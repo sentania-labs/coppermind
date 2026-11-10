@@ -223,7 +223,16 @@ class Recordings:
         """One intake in full, for its page: the readable transcript and the technical facts."""
         job = self.load(str(payload.get("id", "")))
         transcript = ""
-        if job.transcribed:
+        if job.source_id:
+            try:
+                source = await self.context.store.get_source(job.source_id)
+                document = await self.context.store.get_source_artifact(
+                    job.source_id, source.current_revision, "transcript.txt"
+                )
+                transcript = document.content or ""
+            except StoreError:
+                pass
+        if not transcript and job.transcribed:
             saved = self.context.read(self.transcript_path(job), None)
             if isinstance(saved, dict):
                 transcript = render_transcript(saved)

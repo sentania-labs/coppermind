@@ -353,11 +353,20 @@ class LocalStore:
 
     @writer
     async def ingest(
-        self, request: IngestRequest, *, payload_size_bytes: int | None = None
+        self,
+        request: IngestRequest,
+        *,
+        payload_size_bytes: int | None = None,
+        expected_revision: int | None = None,
     ) -> IngestResult:
         from coppermind_store.sources import ingest
 
-        result = await ingest(self, request, payload_size_bytes=payload_size_bytes)
+        result = await ingest(
+            self,
+            request,
+            payload_size_bytes=payload_size_bytes,
+            expected_revision=expected_revision,
+        )
         await self._index_after_ingest(result)
         return result
 

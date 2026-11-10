@@ -10,7 +10,7 @@ from coppermind.context_config import ContextModel
 
 
 class Suggestion(ContextModel):
-    kind: Literal["filename", "field", "event", "contact", "attendee", "invitee"]
+    kind: Literal["filename", "field", "event", "contact", "attendee", "invitee", "speaker"]
     confidence: float = Field(default=0, ge=0, le=1)
     entity_ids: list[str] = Field(default_factory=list, max_length=20)
     field: str = ""

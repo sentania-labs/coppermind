@@ -160,6 +160,7 @@ async def ingest(
     request: IngestRequest,
     *,
     payload_size_bytes: int | None = None,
+    expected_revision: int | None = None,
 ) -> IngestResult:
     settings = store.control.settings()
     schema = store.control.schema()
@@ -193,6 +194,8 @@ async def ingest(
             try:
                 claim_data = claim_path.read_bytes()
             except FileNotFoundError:
+                if expected_revision is not None:
+                    raise ValueError("source no longer exists") from None
                 result = await _ingest_new(
                     store,
                     session,
@@ -217,6 +220,7 @@ async def ingest(
                     claim_data,
                     schema,
                     settings,
+                    expected_revision,
                 )
     except BaseException as exc:
         typed = _metadata_failure(exc)
@@ -444,6 +448,7 @@ async def _ingest_existing(
     claim_data: bytes,
     schema: FrontmatterSchema,
     settings: ProductSettings,
+    expected_revision: int | None = None,
 ) -> IngestResult:
     claim = _claimed_source(claim_data, request)
     source_id = claim["source_id"]
@@ -458,6 +463,8 @@ async def _ingest_existing(
         raise StoreError("the external-id claim and source manifest disagree")
 
     current_revision = _positive_int(manifest.get("current_revision"), "current_revision")
+    if expected_revision is not None and current_revision != expected_revision:
+        raise ValueError("source changed during review")
     current = _manifest_revision(manifest, current_revision)
     current_artifacts = _manifest_artifacts(current)
     replaying = _content_identity(current_artifacts) == identity

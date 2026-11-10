@@ -65,11 +65,26 @@ class ReviewView extends ItemView {
       }
       el.createEl('p',{text:'Edit the note and its properties as usual. Finish here when you are ready.'});
       const selected=new Set();
+      const speakerChoices={};
+      if(!data.suggestions_enabled)el.createEl('p',{text:'Suggestions are off. Turn on enrichment in Model connections, then request suggestions.',cls:'coppermind-notice'});
+      else if(data.suggestion_error)el.createEl('p',{text:'Suggestions could not be completed. Open Problems in Admin for details, then request fresh suggestions.',cls:'coppermind-notice'});
+      else if(['queued','running'].includes(data.state))el.createEl('p',{text:'Suggestions are in progress. Refresh this panel when ready.',cls:'coppermind-notice'});
       if(data.stale)el.createEl('p',{text:'Suggestions are from an earlier version. Keep your edits and finish without them, or request fresh suggestions.',cls:'coppermind-notice'});
       for(const s of data.suggestions){
         const card=el.createDiv({cls:'coppermind-card'});
-        new Setting(card).setName(s.kind==='filename'?'Note title':s.field||s.kind).addToggle(t=>t.setDisabled(data.stale||!synced).onChange(v=>v?selected.add(s.index):selected.delete(s.index)));
+        new Setting(card).setName(s.kind==='filename'?'Note title':s.kind==='speaker'?s.field:s.field||s.kind).addToggle(t=>t.setDisabled(data.stale||!synced||(data.state&&data.state!=='suggested')).onChange(v=>v?selected.add(s.index):selected.delete(s.index)));
         card.createEl('p',{text:s.display_value||(Array.isArray(s.value)?s.value.join(', '):String(s.value??''))});
+        if(s.kind==='speaker'){
+          card.createEl('p',{text:'Model confidence: '+Math.round(s.confidence*100)+'%'});
+          if(!s.candidates.length)card.createEl('p',{text:'No people are available yet. Add a person or link a calendar event, then request fresh suggestions.'});
+          else if(!s.value)card.createEl('p',{text:'Choose a person or request fresh suggestions after linking the calendar event.'});
+          const chooser=card.createEl('select');
+          chooser.createEl('option',{text:'Leave as '+s.field, value:''});
+          for(const person of s.candidates)chooser.createEl('option',{text:person.name+(person.email?' ('+person.email+')':''), value:person.id});
+          chooser.value=s.value||''; speakerChoices[s.index]=chooser.value;
+          chooser.onchange=()=>{speakerChoices[s.index]=chooser.value;};
+          chooser.disabled=data.stale||!synced||(data.state&&data.state!=='suggested');
+        }
         card.createEl('p',{text:s.reason});if(s.quote)card.createEl('blockquote',{text:s.quote});
         if(s.contact_ids.length)card.createEl('small',{text:'Linked contact evidence is recorded with this suggestion.'});
       }
@@ -82,14 +97,14 @@ class ReviewView extends ItemView {
           const editor=this.app.workspace.getActiveViewOfType(MarkdownView);
           if(editor?.file?.path===file.path)await editor.save();
           if(await hash(await this.app.vault.read(file))!==data.note.content_hash)throw Error('The note changed. Refresh after sync before finishing.');
-          const payload={if_match:data.note.content_hash,job_id:data.job_id,selected:apply?[...selected]:[],accept_link_risk:acceptLinks,confirmation:'Complete review'};
+          const payload={if_match:data.note.content_hash,job_id:data.job_id,selected:apply?[...selected]:[],speaker_choices:apply?speakerChoices:{},accept_link_risk:acceptLinks,confirmation:'Complete review'};
           this.plugin.pending={id,payload};
           await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/review','POST',payload);
           this.plugin.pending=null;
           new Notice('Review recorded. Changes and filing will sync back to Obsidian.');await this.refresh();
         }catch(e){new Notice(e.message);}
       };
-      const apply=el.createEl('button',{text:'Apply selected & mark reviewed',cls:'mod-cta'});apply.disabled=!synced||data.stale;apply.onclick=()=>finish(true);
+      const apply=el.createEl('button',{text:'Apply selected & mark reviewed',cls:'mod-cta'});apply.disabled=!synced||data.stale||(data.state&&data.state!=='suggested');apply.onclick=()=>finish(true);
       const without=el.createEl('button',{text:'Mark reviewed without changes'});without.disabled=!synced;without.onclick=()=>finish(false);
       const refresh=el.createEl('button',{text:'Request fresh suggestions'});refresh.disabled=!synced;refresh.onclick=async()=>{
         try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/suggestions','POST',{});new Notice('Suggestions queued. Refresh when processing finishes.');}catch(e){new Notice(e.message);}

@@ -86,6 +86,16 @@ class NoteLifecycle:
                 for person in event.get("people", []):
                     if person["contact_id"] in suggestion["contact_ids"]:
                         labels.append(person["address"])
+            if suggestion["kind"] == "speaker":
+                candidate_list = (
+                    (job.evidence.get("speaker_review") or {}).get("candidates", []) if job else []
+                )
+                suggestion["candidates"] = candidate_list
+                suggestion["display_value"] = next(
+                    (c["name"] for c in candidate_list if c["id"] == suggestion["value"]),
+                    "No person suggested",
+                )
+                continue
             value = suggestion["value"]
             suggestion["display_value"] = (
                 ", ".join(dict.fromkeys(labels))
@@ -118,6 +128,8 @@ class NoteLifecycle:
             "note": note.model_dump(mode="json"),
             "job_id": job.id if job else None,
             "state": job.state if job else "awaiting_suggestions",
+            "suggestions_enabled": self.context.config().assignments["enrichment"].enabled,
+            "suggestion_error": job.error if job and job.state == "failed" else "",
             "stale": stale,
             "suggestions": suggestions,
             "unresolved": job.result.unresolved if job and job.result else [],
@@ -148,7 +160,14 @@ class NoteLifecycle:
             request_hash = fingerprint(
                 {
                     k: payload.get(k)
-                    for k in ("note_id", "if_match", "job_id", "selected", "accept_link_risk")
+                    for k in (
+                        "note_id",
+                        "if_match",
+                        "job_id",
+                        "selected",
+                        "speaker_choices",
+                        "accept_link_risk",
+                    )
                 }
             )
             note = await self.context.store.get_note(identity)
@@ -199,7 +218,39 @@ class NoteLifecycle:
                             job.result.suggestions[i].field in {schema.role("date_key"), "time"}
                         )
                     )
+                speaker_operation = None
+                if selected:
+                    speaker_indexes = [
+                        i for i in selected if job.result.suggestions[i].kind == "speaker"
+                    ]
+                    choices = payload.get("speaker_choices") or {}
+                    if not isinstance(choices, dict) or any(
+                        not isinstance(k, str) or not isinstance(v, str) for k, v in choices.items()
+                    ):
+                        raise ValueError("invalid speaker choices")
+                    speaker_data = job.evidence.get("speaker_review") or {}
+                    candidates = {c["id"]: c for c in speaker_data.get("candidates", [])}
+                    mapping = {}
+                    chosen = []
+                    for i in speaker_indexes:
+                        suggestion = job.result.suggestions[i]
+                        person_id = choices.get(str(i), suggestion.value or "")
+                        if not person_id:
+                            continue
+                        if person_id not in candidates:
+                            raise ValueError("choose a person from the supplied candidates")
+                        mapping[suggestion.field] = candidates[person_id]["name"]
+                        chosen.append(candidates[person_id])
+                    if mapping:
+                        speaker_operation = {
+                            "source_id": speaker_data["source_id"],
+                            "revision": speaker_data["revision"],
+                            "mapping": mapping,
+                            "people": chosen,
+                        }
+                    selected = [i for i in selected if i not in speaker_indexes]
                 receipt = {
+                    "speakers": speaker_operation,
                     "note_id": identity,
                     "request": request_hash,
                     "state": "applying",
@@ -245,6 +296,13 @@ class NoteLifecycle:
                     receipt["expected_hash"] = job.decisions[-1]["after_hash"]
                     self.context.write(name, receipt)
             current = await self.context.store.get_note(identity)
+            if receipt.get("speakers") and not receipt.get("speakers_applied"):
+                from coppermind_store import speaker_names
+
+                current = await speaker_names.apply(self.context, receipt, current)
+                receipt["expected_hash"] = current.content_hash
+                receipt["speakers_applied"] = True
+                self.context.write(name, receipt)
             validate_review(current, schema, self._default_timezone())
             reviewed_key = schema.role("reviewed_key")
             if current.frontmatter.get(reviewed_key) is not True:

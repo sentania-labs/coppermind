@@ -6,7 +6,7 @@ const path=require('node:path');
 const vm=require('node:vm');
 const {webcrypto}=require('node:crypto');
 class El {
-  constructor(tag='',options={}){this.tag=tag;this.text=options.text;this.children=[];this.disabled=false;}
+  constructor(tag='',options={}){this.tag=tag;this.text=options.text;this.value=options.value;this.children=[];this.disabled=false;}
   empty(){this.children=[];}
   createEl(tag,options){const el=new El(tag,options);this.children.push(el);return el;}
   createDiv(options){return this.createEl('div',options);}
@@ -16,7 +16,7 @@ class Setting {
   constructor(el){this.el=el;}
   setName(){return this;} setDesc(){return this;}
   addText(fn){const control={inputEl:{},setValue(){return control;},onChange(){return control;}};fn(control);return this;}
-  addToggle(fn){const control={setDisabled(){return control;},onChange(){return control;},setValue(){return control;}};fn(control);return this;}
+  addToggle(fn){const toggle=this.el.createEl("toggle");const control={setDisabled(v){toggle.disabled=v;return control;},onChange(fn){toggle.onchange=fn;return control;},setValue(){return control;}};fn(control);return this;}
   addButton(fn){const button=this.el.createEl('button');const control={setButtonText(v){button.text=v;return control;},onClick(fn){button.onclick=fn;return control;}};fn(control);return this;}
 }
 async function fixture(local, overrides={}){
@@ -64,4 +64,18 @@ test('reviewed flag does not hide interrupted completion recovery',async()=>{
 for(const type of ['work','personal','reference','journal'])test(type+' review shows meeting time only for work',async()=>{
   const f=await fixture(undefined,{note:{frontmatter:{type,reviewed:false}}});
   assert.equal(f.view.contentEl.all().some(e=>e.text==='Meeting time'),type==='work');
+});
+
+test('speaker choice is sent with the selected proposal',async()=>{
+  const speaker={kind:'speaker',field:'Speaker 2',index:3,value:'contact:a',display_value:'Casey',confidence:.87,reason:'Addressed by name.',quote:'',contact_ids:[],candidates:[{id:'contact:a',name:'Casey',email:'casey@example.test'},{id:'person:b',name:'Alex',email:'alex@example.test'}]};
+  const f=await fixture(undefined,{suggestions:[speaker],job_id:'job',suggestions_enabled:true});
+  const card=f.view.contentEl.all().find(e=>e.children.some(c=>c.text==='Casey'));
+  const choice=card.children.find(c=>c.tag==='select');
+  assert.equal(choice.value,'contact:a');
+  choice.value='person:b';choice.onchange();
+  card.children.find(c=>c.tag==='toggle').onchange(true);
+  await f.view.contentEl.all().find(e=>e.text==='Apply selected & mark reviewed').onclick();
+  const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
+  assert.deepEqual(body.selected,[3]);
+  assert.equal(body.speaker_choices['3'],'person:b');
 });

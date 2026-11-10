@@ -1093,7 +1093,7 @@ picker.addEventListener('change', () => {
                 + e(_calendar_time(job["retry_after"]))
                 + ".</p>"
             )
-        if job.get("reply"):
+        if job.get("reply") and not job.get("is_recording"):
             body += (
                 "<details><summary>What the model replied (the first 4,000 characters)"
                 "</summary><pre>" + e(job["reply"]) + "</pre></details>"
@@ -1110,6 +1110,24 @@ picker.addEventListener('change', () => {
             decided = {item.get("index") for item in job["decisions"]}
             for index, suggestion in enumerate(job["result"]["suggestions"]):
                 if index in decided:
+                    continue
+                if suggestion["kind"] == "speaker":
+                    candidates = (job["evidence"].get("speaker_review") or {}).get("candidates", [])
+                    person = next(
+                        (c["name"] for c in candidates if c["id"] == suggestion["value"]),
+                        "No person suggested",
+                    )
+                    body += (
+                        "<fieldset><legend>"
+                        + e(suggestion["field"])
+                        + "</legend><p>"
+                        + e(person)
+                        + "</p><p>"
+                        + e(suggestion["reason"])
+                        + f" (confidence: {suggestion.get('confidence', 0):.2f})</p>"
+                        + "<p>Open this note in the Coppermind companion to choose a person "
+                        + "and complete review.</p></fieldset>"
+                    )
                     continue
                 body += (
                     "<fieldset><legend>"
@@ -1193,7 +1211,9 @@ picker.addEventListener('change', () => {
                     )
                     + "</p>"
                 )
-        if job["state"] == "suggested":
+        if job["state"] == "suggested" and any(
+            item["kind"] != "speaker" for item in (job.get("result") or {}).get("suggestions", [])
+        ):
             body += (
                 "<p>Apply the suggestions you want. "
                 "A date change requires fresh calendar matching.</p>"

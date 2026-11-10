@@ -25,6 +25,7 @@ class ReviewCompletion(BaseModel):
     confirmation: str
     job_id: str | None = None
     selected: list[int] = Field(default_factory=list, max_length=30)
+    speaker_choices: dict[str, str] = Field(default_factory=dict, max_length=30)
     accept_link_risk: bool = False
 
 

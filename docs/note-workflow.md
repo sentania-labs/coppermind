@@ -50,6 +50,20 @@ empty list fails review the same way a missing account does. A reference note
 that applies to several customers lists them all, and a note found by any one of
 them.
 
+For a recording, the review panel also shows each diarized speaker with a proposed
+person, confidence and reason. Candidates come from linked calendar attendees and
+existing People dossiers. When enrichment links an event automatically, it asks the model
+again with that event's attendees. If you link an event yourself after the first pass, request
+fresh suggestions. Select a speaker suggestion and choose the
+suggested person, another candidate, or leave the speaker unnamed. Completing review
+replaces selected speaker labels throughout the transcript, adds confirmed attendees
+and links known dossiers. Unselected speakers keep their labels. Setting reviewed
+directly without the panel does not apply speaker suggestions. The review API accepts
+`speaker_choices`, an object mapping selected suggestion indexes to candidate IDs;
+an empty value leaves that speaker unnamed. The review response provides candidates.
+The transcript is sent only to the configured enrichment connection, under the same
+input limit and retry rules as other enrichment.
+
 Review completion is recorded durably before writes and can be resumed. Each
 selected change uses the existing version checks and approval receipts. The
 reviewed flag is written last. Unselected proposals are dismissed. If someone
