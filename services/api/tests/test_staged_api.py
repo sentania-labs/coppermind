@@ -261,20 +261,26 @@ def test_an_unknown_receipt_is_404_on_every_route(api):
     )
 
 
-def test_a_failed_upload_is_reported_without_becoming_an_artifact(api):
+def test_a_put_whose_bytes_disagree_is_a_422_and_the_receipt_reads_failed(api):
     client, fake = api
 
     async def mismatch(receipt_id, data, *, declared_bytes=None):
         fake.uploads.append((receipt_id, data, declared_bytes))
-        return _receipt(state="failed", failure="mismatch")
+        fake.receipt = _receipt(state="failed", failure="mismatch")
+        return fake.receipt
 
     fake.put_staged_bytes = mismatch
-    response = client.put(f"/v1/staged/{RECEIPT_ID}", content=b"quokka", headers=_as(fake, "write"))
-    assert response.status_code == 200
+    response = client.put(f"/v1/staged/{RECEIPT_ID}", content=b"QUOKKA", headers=_as(fake, "write"))
+    assert response.status_code == 422
     body = response.json()
-    assert body["state"] == "failed"
-    assert body["artifact"] is None
-    assert body["failure"] == "mismatch"
+    assert body["error"] == "validation_error"
+    assert "mismatch" in body["message"]
+    assert body["errors"] == ["body: mismatch"]
+    inspected = client.get(f"/v1/staged/{RECEIPT_ID}", headers=_as(fake, "read"))
+    assert inspected.status_code == 200
+    assert inspected.json()["state"] == "failed"
+    assert inspected.json()["failure"] == "mismatch"
+    assert inspected.json()["artifact"] is None
 
 
 def test_a_put_past_the_staged_maximum_is_refused_before_it_reaches_the_store(api):

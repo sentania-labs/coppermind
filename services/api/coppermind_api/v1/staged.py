@@ -162,6 +162,9 @@ async def put_staged_bytes(
         return _oversized("file", limit)
     except StoreError as error:
         return failure(error)
+    if receipt.state == "failed":
+        # The store has already marked the receipt failed; GET shows the same reason.
+        return _validation([f"body: {receipt.failure or 'the upload failed'}"])
     return JSONResponse(content=receipt.model_dump(mode="json"))
 
 
