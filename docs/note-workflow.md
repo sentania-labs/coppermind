@@ -65,7 +65,9 @@ suggestions. Confident names start selected, and the panel previews each change.
 Choose another candidate or leave a speaker unnamed. Search existing People from the
 panel, even if the model is unavailable or speaker suggestions were omitted. Completing
 review replaces selected speaker labels throughout the transcript, adds confirmed attendees
-and links known dossiers. Unselected speakers keep their labels. Setting reviewed
+and links known dossiers. Without an attendees property in Model
+connections, speakers are still renamed, the panel says attendees will not be updated, and
+attendees and contacts are left alone. Unselected speakers keep their labels. Setting reviewed
 directly without the panel does not apply speaker suggestions. The review API accepts
 `speaker_choices`, an object mapping selected suggestion indexes to candidate IDs;
 an empty value leaves that speaker unnamed. For manual names, pass `manual_speakers`

@@ -167,6 +167,9 @@ class NoteLifecycle:
             else job.notice
             if job
             else "",
+            "speaker_attendees_notice": ""
+            if self.context.config().assignments["enrichment"].attendees_field
+            else speaker_names.ATTENDEES_UNSET_NOTICE,
             "suggestions": suggestions,
             "unresolved": job.result.unresolved if job and job.result else [],
             "roles": self.context.store.control.schema().roles,

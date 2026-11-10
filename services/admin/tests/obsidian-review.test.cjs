@@ -82,6 +82,13 @@ test('speaker choice is sent with the selected proposal',async()=>{
 });
 
 const proposal=(index,confidence,value='person:a')=>({kind:'speaker',field:'Speaker '+(index+1),index,value,display_value:'Alex',confidence,reason:'Named.',quote:'',contact_ids:[],candidates:[{id:'person:a',name:'Alex',email:''},{id:'person:b',name:'Blair',email:''}]});
+test('preview says attendees will not be updated when no attendees property is set up',async()=>{
+  const notice='Attendees will not be updated because no attendees property is set up.';
+  const f=await fixture(undefined,{suggestions:[proposal(0,.9)],job_id:'job',speaker_attendees_notice:notice});
+  const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.match(text,/Speaker 1 → Alex/);assert.match(text,/Attendees will not be updated/);
+  assert.doesNotMatch(text,/note attendees and dossier links/);
+});
 test('preview shows selected speaker changes and dropdown correction selects the card',async()=>{
   const f=await fixture(undefined,{suggestions:[proposal(0,.9),proposal(1,.4)],job_id:'job'});
   let text=()=>f.view.contentEl.all().map(e=>e.text||'').join(' ');

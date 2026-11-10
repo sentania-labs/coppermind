@@ -305,7 +305,9 @@ async def test_review_corrects_a_speaker_and_replays_without_another_revision(
         assert not context.read("dossiers", {})
 
 
-async def recorded(store, standin, transcript, answer, *, max_input_chars=None):
+async def recorded(
+    store, standin, transcript, answer, *, max_input_chars=None, attendees_field=None
+):
     """A linked recording note in Review whose model replies with `answer(evidence)`."""
     context = await configure(store)
     await context.setup_lifecycle({"revision": context.config().revision})
@@ -375,6 +377,9 @@ async def recorded(store, standin, transcript, answer, *, max_input_chars=None):
     ).base_url = standin["url"]
     if max_input_chars:
         config.assignments["enrichment"].max_input_chars = max_input_chars
+    if attendees_field is not None:
+        config.assignments["enrichment"].attendees_field = attendees_field
+        config.assignments["enrichment"].contacts_field = ""
     context.save_config(config)
     context.provider = ModelProvider()
     job_id = await context.queue_note(note.id)
@@ -447,6 +452,24 @@ async def test_unrelated_and_renamed_people_do_not_invalidate_a_waiting_review(s
     assert len(observed) == 1
     text = (await store.get_source_artifact(result.source.id, 2, "transcript.txt")).content
     assert "Alexandra Morgan: Hello." in text and "Alex Morgan" not in text
+
+
+async def test_speakers_are_renamed_when_no_attendees_property_is_set_up(store, standin):
+    alex = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    context, result, note, job_id, _ = await recorded(
+        store, standin, SHORT, speaker_answer(alex_id), attendees_field=""
+    )
+    detail = await context.lifecycle_detail({"note_id": note.id})
+    assert "no attendees property is set up" in detail["speaker_attendees_notice"]
+    assert "Model connections" in detail["speaker_attendees_notice"]
+    completed = await context.complete_review(await completion(context, store, result, job_id))
+    assert completed["state"] == "complete"
+    text = (await store.get_source_artifact(result.source.id, 2, "transcript.txt")).content
+    assert "Alex Morgan: Hello." in text and "Speaker 2" not in text
+    reviewed = await store.get_note(note.id)
+    assert reviewed.frontmatter["reviewed"] is True
+    assert not reviewed.frontmatter.get("attendees")
+    assert alex["path"] not in str(reviewed.frontmatter)
 
 
 async def test_a_retired_person_is_reported_for_that_speaker_and_the_rest_stays_confirmable(

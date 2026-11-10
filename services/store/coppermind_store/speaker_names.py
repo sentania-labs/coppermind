@@ -46,6 +46,11 @@ OMITTED_NOTICE = (
     "Speaker names could not be suggested for this recording because it is too long; "
     "you can still name speakers yourself."
 )
+ATTENDEES_UNSET_NOTICE = (
+    "Attendees will not be updated because no attendees property is set up. Speaker names "
+    "are still written to the transcript. To update attendees too, open Coppermind Admin, "
+    "go to Model connections, and choose a property under Confirmed attendees."
+)
 REFRESH_NOTICE = (
     "Speaker suggestions could not be refreshed after the calendar event was linked; "
     "you can still choose people yourself."
@@ -248,7 +253,7 @@ def people_changes(
 
     assignment = context.config().assignments["enrichment"]
     if not assignment.attendees_field:
-        raise ValueError("set up attendee properties before confirming speakers")
+        return {}
     links = ["[[" + p["path"].removesuffix(".md") + "]]" for p in people if p["path"]]
     attendees = [
         p["email"] or ("[[" + p["path"].removesuffix(".md") + "]]" if p["path"] else p["name"])

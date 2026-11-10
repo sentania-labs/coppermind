@@ -83,7 +83,8 @@ class ReviewView extends ItemView {
         const changes=cards.filter(c=>c.active()&&c.chooser.value);
         if(!changes.length)preview.createEl('p',{text:'No speaker names selected.'});
         for(const c of changes){const person=c.people.find(p=>p.id===c.chooser.value);if(person)preview.createEl('p',{text:c.label+' → '+person.name});}
-        preview.createEl('p',{text:'Completing review updates transcript labels, note attendees and dossier links for selected people. Unnamed speakers stay as they are.'});
+        if(data.speaker_attendees_notice)preview.createEl('p',{text:data.speaker_attendees_notice});
+        preview.createEl('p',{text:data.speaker_attendees_notice?'Completing review updates transcript labels for selected people. Unnamed speakers stay as they are.':'Completing review updates transcript labels, note attendees and dossier links for selected people. Unnamed speakers stay as they are.'});
       };
       const makeChooser=(card,label,people,initial,onSelect,disabled)=>{
         const chooser=card.createEl('select');
