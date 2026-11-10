@@ -17,6 +17,58 @@ from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import StoreError
 from coppermind_admin.pages.problems import store_client
 
+ACTIONS = frozenset(
+    {
+        "setup-lifecycle",
+        "configure-property",
+        "dismiss-drop",
+        "save-connection",
+        "convert-connection",
+        "discover",
+        "test-model",
+        "save-assignment",
+        "retry-import",
+        "dismiss-import",
+        "dismiss-calendar-conflict",
+        "enqueue",
+        "retry-job",
+        "retry-all-failed",
+        "reject",
+        "approve",
+        "resume-approval",
+        "correct-contact",
+        "correct-association",
+        "resume-correction",
+    }
+)
+
+
+def _result_message(params: Any, data: dict[str, Any]) -> str:
+    action = params.get("result", "")
+    if action == "retry-refused":
+        return "Retry could not be queued. The note or settings may have changed; check Jobs below."
+    if action not in ACTIONS:
+        return ""
+    if action == "retry-job":
+        job = next((j for j in data["jobs"] if j["id"] == params.get("job")), None)
+        name = job.get("current_title", job["path"]) if job else "Note"
+        message = f"Retry queued for {name}."
+        if data["config"]["assignments"]["enrichment"]["paused"]:
+            message += " Processing is paused; resume it to start."
+        return message
+    if action == "retry-all-failed":
+        try:
+            queued, failed = int(params.get("queued", "0")), int(params.get("failed", "0"))
+        except ValueError:
+            return ""
+        message = f"Retry all failed: {queued} queued."
+        if failed:
+            message += f" {failed} could not be queued; retry them one at a time to see why."
+        if data["config"]["assignments"]["enrichment"]["paused"] and queued:
+            message += " Processing is paused; resume it to start."
+        return message
+    return action.replace("-", " ").capitalize() + " completed."
+
 
 def _input(name: str, label: str, value: str = "", *, kind: str = "text") -> str:
     return (
@@ -97,6 +149,31 @@ def _outcome_line(data: dict[str, Any]) -> str:
     else:
         text += " No job has succeeded yet."
     return "<p>" + e(text) + "</p>"
+
+
+def _stale_reason(error: str) -> str:
+    if "reviewed note changed" in error:
+        return "The reviewed note changed."
+    if "source" in error:
+        return "The supporting information changed."
+    if "date" in error.lower():
+        return "The note's date changed."
+    return "The note or its supporting information changed."
+
+
+def _job_status(job: dict[str, Any]) -> str:
+    if job["state"] == "stale":
+        reason = "Out of date: " + _stale_reason(job["error"])
+        next_step = (
+            "Retry to use the latest information."
+            if job.get("can_retry", True)
+            else job.get("retry_reason", "Open Inspect for details.")
+        )
+        return reason + " " + next_step
+    text = job["state"].capitalize() + (": " + job["error"] if job["error"] else "")
+    if not job.get("can_retry", True) and job["state"] == "failed":
+        text += " " + job.get("retry_reason", "Open Inspect for details.")
+    return text
 
 
 def _limit_link(job: dict[str, Any]) -> str:
@@ -205,8 +282,10 @@ def router(wiring: Wiring) -> APIRouter:
 <a href="/admin/context?tab=calendar">Calendar and contacts</a>
 <a href="/admin/context?tab=models">Connections and model</a>
 <a href="/admin/context?tab=review">Suggestions and backlog</a></p>"""
-        if request.query_params.get("saved"):
-            head += '<p class="success">Action completed.</p>'
+        message = _result_message(request.query_params, data)
+        if message:
+            style = "notice" if request.query_params.get("result") == "retry-refused" else "success"
+            head += f'<p class="{style}">' + e(message) + "</p>"
         if data["worker_error"]:
             head += '<p class="error">' + e(data["worker_error"]) + "</p>"
         for problem in data.get("eligibility_errors", {}).values():
@@ -569,7 +648,10 @@ def router(wiring: Wiring) -> APIRouter:
                 fields += _input(key, label, str(assignment[key]), kind="number")
                 fields += '<p class="field-help">' + help_text + "</p>"
             fields += _speed_note(data, assignment)
-            fields += "</details><fieldset><legend>4. Automatic processing</legend>"
+            fields += (
+                '</details><fieldset id="automatic-processing">'
+                "<legend>4. Automatic processing</legend>"
+            )
             fields += _check(
                 "enabled", "Enable enrichment for new unreviewed notes", assignment["enabled"]
             )
@@ -603,29 +685,70 @@ picker.addEventListener('change', () => {
                 "automatically. Other suggestions need your approval, and applying any "
                 "change leaves the note unreviewed.</p>"
             )
-            body += (
-                "<h2>Jobs</h2>"
-                + _outcome_line(data)
-                + "<table><tr><th>Note</th><th>Status</th><th>Open</th></tr>"
-            )
-            for job in data["jobs"]:
-                body += (
-                    f"<tr><td>{e(job['path'])}</td><td>{e(job['state'])}<br>{e(job['error'])}"
-                    f"{_limit_link(job)}</td>"
-                )
-                body += f'<td><a href="/admin/context/jobs/{job["id"]}">Inspect</a></td></tr>'
-            body += "</table><h2>Existing Review backlog</h2>"
+            assignment = config["assignments"]["enrichment"]
             try:
                 backlog = await client(request).context_action(
                     "backlog", {"cursor": request.query_params.get("cursor")}
                 )
             except StoreError as exc:
                 return error(exc)
-            fields = "".join(
-                _check("note_" + note["id"], note["path"]) for note in backlog["notes"]
-            )
-            fields += _check("confirm_send", "Send selected notes for enrichment")
-            body += _form("enqueue", fields, "Queue selected notes")
+            body += "<h2>Jobs</h2>"
+            if assignment["paused"]:
+                body += (
+                    '<p class="notice">Processing is paused. Queued retries will wait until '
+                    'you resume. <a href="/admin/context?tab=models#automatic-processing">'
+                    "Resume processing</a></p>"
+                )
+            if data["jobs"]:
+                body += _outcome_line(data)
+                if any(
+                    job["state"] == "failed" and job.get("can_retry", True) for job in data["jobs"]
+                ):
+                    body += (
+                        "<p>Retry all failed notes with current settings and evidence. "
+                        "A retry may repeat a request that was already billed.</p>"
+                    )
+                    body += _form("retry-all-failed", "", "Retry all failed")
+                body += "<table><tr><th>Note</th><th>Status</th><th>Actions</th></tr>"
+                for job in data["jobs"]:
+                    state = job["state"]
+                    path = job.get("current_path", job["path"])
+                    title = job.get("current_title", path.rsplit("/", 1)[-1].removesuffix(".md"))
+                    body += f"<tr><td>{e(title)}<br>{e(path)}"
+                    if path != job["path"]:
+                        body += "<br><small>Moved from " + e(job["path"]) + "</small>"
+                    body += "</td><td>"
+                    can_retry = job.get("can_retry", True)
+                    body += e(_job_status(job)) + _limit_link(job)
+                    body += "</td><td>"
+                    if state == "stale" and not assignment["enabled"]:
+                        body += (
+                            '<a href="/admin/context?tab=models#automatic-processing">'
+                            "Enable enrichment</a><br>"
+                        )
+                    if state in {"failed", "stale"} and can_retry:
+                        body += (
+                            "<p>Retry with the latest information. "
+                            "This may repeat a billed request.</p>"
+                        )
+                        body += _form("retry-job", _hidden("id", job["id"]), "Retry")
+                    body += f'<a href="/admin/context/jobs/{job["id"]}">Inspect</a></td></tr>'
+                body += "</table>"
+            else:
+                body += (
+                    "<p>No jobs yet; select notes below to enrich them.</p>"
+                    if backlog["notes"]
+                    else "<p>No jobs or unreviewed notes yet.</p>"
+                )
+            body += "<h2>Existing unreviewed notes</h2>"
+            if backlog["notes"]:
+                fields = "".join(
+                    _check("note_" + note["id"], note["path"]) for note in backlog["notes"]
+                )
+                fields += _check("confirm_send", "Send selected notes for enrichment")
+                body += _form("enqueue", fields, "Queue selected notes")
+            elif data["jobs"]:
+                body += "<p>No unreviewed notes available on this page.</p>"
             if backlog["cursor"]:
                 body += (
                     '<a href="/admin/context?tab=review&amp;cursor='
@@ -646,9 +769,9 @@ picker.addEventListener('change', () => {
             return error(exc)
         body = (
             "<h1>Review suggestions</h1><p>"
-            + e(job["path"])
+            + e(job["current"].get("path", job["path"]))
             + "</p><p>"
-            + e(job["state"] + ": " + job["error"])
+            + e(_job_status(job))
             + "</p>"
             + _limit_link(job)
         )
@@ -664,13 +787,15 @@ picker.addEventListener('change', () => {
             )
         if job.get("reply"):
             body += (
-                "<details open><summary>What the model replied (the first 4,000 characters)"
+                "<details><summary>What the model replied (the first 4,000 characters)"
                 "</summary><pre>" + e(job["reply"]) + "</pre></details>"
             )
         body += (
-            "<p>Current metadata</p><pre>"
+            "<details><summary>Technical details</summary><p>Current metadata</p><pre>"
             + e(json.dumps(job["current"]["frontmatter"], indent=2))
-            + "</pre>"
+            + "</pre><p>Job status: "
+            + e(job["state"] + ": " + job["error"])
+            + "</p></details>"
         )
         if job["result"]:
             body += "<p>Unresolved: " + e("; ".join(job["result"]["unresolved"])) + "</p>"
@@ -692,7 +817,7 @@ picker.addEventListener('change', () => {
                     + "</blockquote>"
                 )
                 body += (
-                    "<pre>"
+                    "<details><summary>Technical details</summary><pre>"
                     + e(
                         json.dumps(
                             {
@@ -702,7 +827,7 @@ picker.addEventListener('change', () => {
                             indent=2,
                         )
                     )
-                    + "</pre>"
+                    + "</pre></details>"
                 )
                 fields = _hidden("id", identity) + _hidden("index", str(index))
                 if suggestion["kind"] in {"filename", "field"}:
@@ -760,12 +885,13 @@ picker.addEventListener('change', () => {
                     )
                     + "</p>"
                 )
-        body += (
-            "<p>Apply the suggestions you want. A date change requires fresh calendar matching.</p>"
-        )
         if job["state"] == "suggested":
+            body += (
+                "<p>Apply the suggestions you want. "
+                "A date change requires fresh calendar matching.</p>"
+            )
             body += _form("reject", _hidden("id", identity), "Reject proposal")
-        if job["state"] in {"failed", "stale"}:
+        if job["state"] in {"failed", "stale"} and job["newest"] and job.get("can_retry", True):
             body += _form("retry-job", _hidden("id", identity), "Retry with current evidence")
         if job["state"] == "applying":
             body += _form("resume-approval", _hidden("id", identity), "Resume recorded approval")
@@ -777,7 +903,14 @@ picker.addEventListener('change', () => {
                 + _check("confirm_send", "Send selected notes for enrichment"),
                 "Generate fresh proposal",
             )
-        body += "<h2>Approved associations</h2>"
+        if job.get("history"):
+            body += "<details><summary>Earlier jobs</summary><ul>"
+            for earlier in job["history"]:
+                stamp = _calendar_time(earlier["created_at"])
+                label = f"{earlier['path']}: {earlier['state']} ({stamp})"
+                body += f'<li><a href="/admin/context/jobs/{earlier["id"]}">{e(label)}</a></li>'
+            body += "</ul></details>"
+        body += "<details><summary>Technical details: approved associations</summary>"
         for kind, targets in job.get("associations", {}).items():
             for target in targets:
                 fields = _hidden("note_id", job["note_id"]) + _hidden("kind", kind)
@@ -795,7 +928,7 @@ picker.addEventListener('change', () => {
                     _hidden("id", correction["id"]),
                     "Resume recorded association correction",
                 )
-        return page(body + '<p><a href="/admin/context?tab=review">Back to suggestions</a></p>')
+        return page(body + '</details><p><a href="/admin/context?tab=review">Back to Jobs</a></p>')
 
     @routes.post("/v1/admin/context/{action}", include_in_schema=False)
     async def action(action: str, request: Request) -> Response:
@@ -858,28 +991,7 @@ picker.addEventListener('change', () => {
                 payload["confirmation"] = (
                     "Remove mistaken association" if "confirm_remove" in form else ""
                 )
-            allowed = {
-                "setup-lifecycle",
-                "configure-property",
-                "dismiss-drop",
-                "save-connection",
-                "convert-connection",
-                "discover",
-                "test-model",
-                "save-assignment",
-                "retry-import",
-                "dismiss-import",
-                "dismiss-calendar-conflict",
-                "enqueue",
-                "retry-job",
-                "reject",
-                "approve",
-                "resume-approval",
-                "correct-contact",
-                "correct-association",
-                "resume-correction",
-            }
-            if action not in allowed:
+            if action not in ACTIONS:
                 raise ValueError("unknown action")
             result = await client(request).context_action(action, payload)
             if action == "retry-import" and result.get("state") == "failed":
@@ -890,6 +1002,10 @@ picker.addEventListener('change', () => {
                     )
                 )
         except (StoreError, ValueError, KeyError) as exc:
+            if action == "retry-job":
+                return RedirectResponse(
+                    "/admin/context?tab=review&result=retry-refused", status_code=303
+                )
             return error(exc)
         if action == "configure-property":
             return RedirectResponse("/admin/workflow?tab=enrichment&saved=1", status_code=303)
@@ -906,9 +1022,15 @@ picker.addEventListener('change', () => {
                 "save-assignment",
             }
             else "review"
-            if action in {"enqueue", "retry-job", "reject", "approve", "resume-approval"}
+            if action
+            in {"enqueue", "retry-job", "retry-all-failed", "reject", "approve", "resume-approval"}
             else "calendar"
         )
-        return RedirectResponse(f"/admin/context?tab={tab}&saved=1", status_code=303)
+        query = f"tab={tab}&result={action}"
+        if action == "retry-job":
+            query += "&job=" + quote(result["job"], safe="")
+        if action == "retry-all-failed":
+            query += f"&queued={int(result['queued'])}&failed={len(result['errors'])}"
+        return RedirectResponse(f"/admin/context?{query}", status_code=303)
 
     return routes

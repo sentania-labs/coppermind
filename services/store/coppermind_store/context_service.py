@@ -132,6 +132,9 @@ def fingerprint(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
 
 
+NOTE_QUIET_PERIOD = timedelta(seconds=60)
+
+
 def now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -443,7 +446,40 @@ class ContextService:
         ]
 
     async def snapshot(self, offset: int = 0) -> dict[str, Any]:
-        return await asyncio.to_thread(self._snapshot, offset)
+        snapshot = await asyncio.to_thread(self._snapshot, offset)
+        for job in snapshot["jobs"]:
+            try:
+                note = await self.store.get_note(job["note_id"])
+            except StoreError:
+                job["can_retry"] = False
+                job["retry_reason"] = "Restore the note to retry."
+                continue
+            job["current_path"] = note.path
+            job["current_title"] = note.title
+            job.update(self.retry_eligibility(job, note))
+
+        return snapshot
+
+    def retry_eligibility(self, job: dict[str, Any], note: Any) -> dict[str, Any]:
+        schema = self.store.control.schema()
+        reviewed = note.frontmatter.get(schema.role("reviewed_key")) is True
+        if reviewed and note.filed and job["purpose"] != "dossier":
+            return {
+                "can_retry": False,
+                "retry_reason": "This note is reviewed and filed; nothing more to do.",
+            }
+        if not self.config().assignments["enrichment"].enabled:
+            return {"can_retry": False, "retry_reason": "Enable enrichment to retry."}
+        if reviewed and job["purpose"] != "dossier":
+            return {
+                "can_retry": False,
+                "retry_reason": "This note is reviewed; mark it unreviewed to retry.",
+            }
+        if not reviewed and job["purpose"] == "dossier":
+            return {"can_retry": False, "retry_reason": "Mark the note reviewed to retry."}
+        if not reviewed and schema.validate_frontmatter(note.frontmatter):
+            return {"can_retry": False, "retry_reason": "Correct the note's metadata to retry."}
+        return {"can_retry": True, "retry_reason": ""}
 
     def _snapshot(self, offset: int) -> dict[str, Any]:
         """Materialize bounded mirror pages and counts outside the event loop."""
@@ -453,6 +489,8 @@ class ContextService:
         schema = self.store.control.schema()
         catalog = self.archive.catalog()
         jobs = sorted(self.jobs(), key=lambda job: job.created_at, reverse=True)
+        jobs = list({job.note_id: job for job in reversed(jobs)}.values())
+        jobs.sort(key=lambda job: job.created_at, reverse=True)
         events = catalog.events
         contacts = catalog.contacts()
         event_count, contact_count = len(events), len(contacts)
@@ -533,7 +571,7 @@ class ContextService:
             },
             "tests": self.read("model_tests", {}),
             "speed": self.read("model_speed", {}),
-            "outcomes": self.outcomes(self.jobs()),
+            "outcomes": self.outcomes(jobs),
         }
 
     @staticmethod
@@ -846,18 +884,17 @@ class ContextService:
                 (item.id, (await self.store.get_source(item.id)).current_revision)
                 for item in await self.store.get_note_sources(identity)
             ]
-            if not force:
-                for previous in self.jobs():
-                    if (
-                        previous.note_id == identity
-                        and previous.note_hash == note.content_hash
-                        and previous.path == note.path
-                        and previous.config_hash == config_hash
-                        and previous.evidence_hash == evidence_hash
-                        and previous.schema_hash == self.schema_hash()
-                        and previous.source_versions == dict(source_versions)
-                    ):
-                        return previous.id
+            previous = None if force else self.newest_job(identity)
+            if (
+                previous
+                and previous.note_hash == note.content_hash
+                and previous.path == note.path
+                and previous.config_hash == config_hash
+                and previous.evidence_hash == evidence_hash
+                and previous.schema_hash == self.schema_hash()
+                and previous.source_versions == dict(source_versions)
+            ):
+                return previous.id
             job_id = fingerprint(
                 [
                     identity,
@@ -867,25 +904,23 @@ class ContextService:
                     evidence_hash,
                     self.schema_hash(),
                     source_versions,
-                    new_id() if force else "",
+                    new_id(),
                 ]
             )
-            path = self.root / "jobs" / f"{job_id}.json"
-            if not path.exists():
-                self.save_job(
-                    EnrichmentJob(
-                        id=job_id,
-                        note_id=identity,
-                        note_hash=note.content_hash,
-                        evidence_hash=evidence_hash,
-                        config_hash=config_hash,
-                        schema_hash=self.schema_hash(),
-                        source_versions=dict(source_versions),
-                        path=note.path,
-                        created_at=now(),
-                        attempt_limit=assignment.attempts,
-                    )
+            self.save_job(
+                EnrichmentJob(
+                    id=job_id,
+                    note_id=identity,
+                    note_hash=note.content_hash,
+                    evidence_hash=evidence_hash,
+                    config_hash=config_hash,
+                    schema_hash=self.schema_hash(),
+                    source_versions=dict(source_versions),
+                    path=note.path,
+                    created_at=now(),
+                    attempt_limit=assignment.attempts,
                 )
+            )
             return job_id
 
     async def source_text(self, note_id: str) -> list[str]:
@@ -1355,19 +1390,42 @@ class ContextService:
             job = self.load_job(payload["id"])
             if job.state not in {"failed", "stale"}:
                 raise ValueError("only failed or stale jobs can be retried")
+            if self.newest_job_id(job.note_id) != job.id:
+                raise ValueError("only the newest job for a note can be retried")
         identity = (
-            await self.queue_reviewed(job.note_id)
+            await self.queue_reviewed(job.note_id, force=True)
             if job.purpose == "dossier"
-            else await self.queue_note(job.note_id, force=job.state == "stale")
+            else await self.queue_note(job.note_id, force=True)
         )
-        async with self.lock:
-            latest = self.load_job(identity)
-            if latest.state == "failed":
-                latest.config_hash, latest.schema_hash = self.config_hash(), self.schema_hash()
-                latest.state, latest.attempts = "queued", 0
-                latest.set_error()
-                self.save_job(latest)
         return {"job": identity}
+
+    def newest_job(
+        self, note_id: str, candidates: list[EnrichmentJob] | None = None
+    ) -> EnrichmentJob | None:
+        jobs = [
+            job
+            for job in (self.jobs() if candidates is None else candidates)
+            if job.note_id == note_id
+        ]
+        return max(jobs, key=lambda job: job.created_at, default=None)
+
+    def newest_job_id(self, note_id: str) -> str | None:
+        newest = self.newest_job(note_id)
+        return newest.id if newest else None
+
+    async def retry_all_failed(self, payload: dict[str, Any]) -> dict[str, Any]:
+        latest: dict[str, EnrichmentJob] = {}
+        for job in sorted(self.jobs(), key=lambda j: j.created_at):
+            latest[job.note_id] = job
+        queued, errors = 0, []
+        for job in latest.values():
+            if job.state == "failed":
+                try:
+                    await self.retry_job({"id": job.id})
+                    queued += 1
+                except (ValueError, StoreError) as exc:
+                    errors.append(f"{job.path}: {exc}")
+        return {"queued": queued, "errors": errors}
 
     def load_job(self, identity: str) -> EnrichmentJob:
         if len(identity) != 64 or any(c not in "0123456789abcdef" for c in identity):
@@ -1378,7 +1436,14 @@ class ContextService:
         job = self.load_job(payload["id"])
         result = job.model_dump()
         note = await self.store.get_note(job.note_id)
+        result["history"] = [
+            j.model_dump(exclude={"evidence", "pending_approval"})
+            for j in sorted(self.jobs(), key=lambda j: j.created_at, reverse=True)
+            if j.note_id == job.note_id and j.id != job.id
+        ]
+        result["newest"] = self.newest_job_id(job.note_id) == job.id
         result["current"] = note.model_dump(mode="json")
+        result.update(self.retry_eligibility(result, note))
         result["associations"] = self.read("associations", {}).get(note.id, {})
         result["associations_hash"] = fingerprint(result["associations"])
         result["corrections"] = [
@@ -1757,39 +1822,40 @@ class ContextService:
             self.write("one-calendar-event-ids", {"complete": True, "at": now()})
 
     async def queue_reviewed(
-        self, identity: str, prior_jobs: list[EnrichmentJob] | None = None
+        self, identity: str, prior_jobs: list[EnrichmentJob] | None = None, *, force: bool = False
     ) -> str:
         note = await self.store.get_note(identity)
         if note.frontmatter.get(self.store.control.schema().role("reviewed_key")) is not True:
             raise ValueError("only reviewed notes contribute facts")
-        for previous in self.jobs() if prior_jobs is None else prior_jobs:
-            if (
-                previous.purpose == "dossier"
-                and previous.note_id == identity
-                and previous.note_hash == note.content_hash
-            ):
-                if previous.state == "stale":
-                    previous.config_hash = self.config_hash()
-                    previous.schema_hash = self.schema_hash()
-                    previous.state, previous.attempts = "queued", 0
-                    previous.set_error()
-                    self.save_job(previous)
-                return previous.id
-        job_id = fingerprint([identity, note.content_hash, EXTRACTION_VERSION])
-        if not (self.root / "jobs" / f"{job_id}.json").exists():
-            self.save_job(
-                EnrichmentJob(
-                    id=job_id,
-                    note_id=identity,
-                    purpose="dossier",
-                    note_hash=note.content_hash,
-                    evidence_hash="",
-                    config_hash=self.config_hash(),
-                    schema_hash=self.schema_hash(),
-                    path=note.path,
-                    created_at=now(),
+        previous = None if force else self.newest_job(identity, prior_jobs)
+        if previous and previous.purpose == "dossier" and previous.note_hash == note.content_hash:
+            if previous.state == "stale" or (
+                previous.state == "failed"
+                and (
+                    previous.config_hash != self.config_hash()
+                    or previous.schema_hash != self.schema_hash()
                 )
+            ):
+                previous.config_hash = self.config_hash()
+                previous.schema_hash = self.schema_hash()
+                previous.state, previous.attempts = "queued", 0
+                previous.set_error()
+                self.save_job(previous)
+            return previous.id
+        job_id = fingerprint([identity, note.content_hash, EXTRACTION_VERSION, new_id()])
+        self.save_job(
+            EnrichmentJob(
+                id=job_id,
+                note_id=identity,
+                purpose="dossier",
+                note_hash=note.content_hash,
+                evidence_hash="",
+                config_hash=self.config_hash(),
+                schema_hash=self.schema_hash(),
+                path=note.path,
+                created_at=now(),
             )
+        )
         return job_id
 
     async def tick(self) -> None:
@@ -1838,6 +1904,38 @@ class ContextService:
                     (j for j in prior_jobs if j.note_id == note.id and j.purpose != "dossier"),
                     key=lambda j: j.created_at,
                 )
+                if previous and previous[-1].state in {"failed", "stale"}:
+                    current = await self.store.get_note(note.id)
+                    known = previous[-1]
+                    model_ready = False
+                    if known.error_rule == "model-not-available":
+                        try:
+                            self.require_discovered(assignment.connection, assignment.model)
+                            model_ready = True
+                        except ValueError:
+                            pass
+                    changed = known.note_hash != current.content_hash
+                    if changed and datetime.now(UTC) - current.updated_at < NOTE_QUIET_PERIOD:
+                        continue
+                    source_versions = {
+                        item.id: (await self.store.get_source(item.id)).current_revision
+                        for item in await self.store.get_note_sources(note.id)
+                    }
+                    if (
+                        changed
+                        or model_ready
+                        or known.path != current.path
+                        or known.source_versions != source_versions
+                        or known.config_hash != self.config_hash()
+                        or known.schema_hash != self.schema_hash()
+                        or (
+                            self.config().lifecycle_enabled
+                            and known.evidence_hash
+                            != await self.note_evidence_hash(current, ledger)
+                        )
+                    ):
+                        touched.append(await self.queue_note(note.id, force=True, ledger=ledger))
+                    continue
                 if self.config().lifecycle_enabled and previous:
                     current = await self.store.get_note(note.id)
                     if previous[-1].evidence_hash != await self.note_evidence_hash(current, ledger):
@@ -1871,7 +1969,12 @@ class ContextService:
         current_jobs = {job.id: job for job in prior_jobs}
         for identity in touched:
             current_jobs[identity] = self.load_job(identity)
+        latest_by_note: dict[str, EnrichmentJob] = {}
+        for candidate in sorted(current_jobs.values(), key=lambda item: item.created_at):
+            latest_by_note[candidate.note_id] = candidate
         for known in sorted(current_jobs.values(), key=lambda item: item.id):
+            if latest_by_note[known.note_id].id != known.id and known.state != "applying":
+                continue
             if known.state in {"applied", "rejected", "stale"}:
                 continue
             job = self.load_job(known.id)

@@ -7,12 +7,19 @@ from typing import Any
 
 import httpx
 import pytest
+from coppermind_store import context_service
 from coppermind_store.context_service import ContextService
 from coppermind_store.model_provider import ModelProvider, ProviderError
 from coppermind_store.reconciler import reconcile_once
 
 from coppermind.context_config import FeatureAssignment
-from coppermind.store_protocol import ArtifactQuery, CreateNote, NoteQuery, PatchFrontmatter
+from coppermind.store_protocol import (
+    ArtifactQuery,
+    CreateNote,
+    NoteQuery,
+    PatchFrontmatter,
+    RenameNote,
+)
 from services.store.tests.test_calendar_import import event, ics
 
 
@@ -1054,17 +1061,17 @@ async def test_a_later_success_or_retry_clears_the_earlier_failure_rule(store):
     await context.run_job(context.load_job(job_id))
     assert context.load_job(job_id).error_rule == "input-limit"
 
-    await context.retry_job({"id": job_id})
-    queued = context.load_job(job_id)
+    retry = await context.retry_job({"id": job_id})
+    queued = context.load_job(retry["job"])
     assert (queued.state, queued.error, queued.error_rule) == ("queued", "", "")
     assert queued.input_size is None and queued.input_limit is None
 
-    failed = context.load_job(job_id)
+    failed = context.load_job(retry["job"])
     failed.set_error("x", "input-limit", 5, 2)
     failed.attempts = failed.attempt_limit
     context.save_job(failed)
-    await context.run_job(context.load_job(job_id))
-    exhausted = context.load_job(job_id)
+    await context.run_job(context.load_job(retry["job"]))
+    exhausted = context.load_job(retry["job"])
     assert "Attempt limit reached" in exhausted.error
     assert exhausted.error_rule == "" and exhausted.input_limit is None
 
@@ -1313,3 +1320,357 @@ async def test_outcomes_count_every_state_and_the_last_success(store):
     outcomes = (await context.snapshot())["outcomes"]
     assert outcomes["counts"] == {"suggested": 1} and outcomes["answered"] == 1
     assert outcomes["last_success"] == context.load_job(job_id).succeeded_at != ""
+
+
+async def test_retry_history_and_automatic_recovery_after_limit_change(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 2000
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Large", body="word " * 1000, frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    await context.run_job(context.load_job(first))
+    retry = (await context.retry_job({"id": first}))["job"]
+    assert retry != first
+    assert context.load_job(first).state == "failed"
+    await context.run_job(context.load_job(retry))
+    assert [job["id"] for job in (await context.snapshot())["jobs"]] == [retry]
+    assert (await context.job_detail({"id": retry}))["history"][0]["id"] == first
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 10000
+    context.save_config(config)
+    await context.tick()
+    jobs = sorted(context.jobs(), key=lambda job: job.created_at)
+    assert len(jobs) == 3
+    assert jobs[-1].config_hash == context.config_hash()
+
+
+async def _two_failed_jobs(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 2000
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Large", body="word " * 1000, frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    await context.run_job(context.load_job(first))
+    second = (await context.retry_job({"id": first}))["job"]
+    await context.run_job(context.load_job(second))
+    assert {context.load_job(first).state, context.load_job(second).state} == {"failed"}
+    return context, first, second
+
+
+async def test_retry_all_failed_queues_one_job_per_note(store):
+    context, first, second = await _two_failed_jobs(store)
+
+    result = await context.retry_all_failed({})
+
+    assert result == {"queued": 1, "errors": []}
+    states = {job.id: job.state for job in context.jobs()}
+    assert len(states) == 3
+    assert states[first] == states[second] == "failed"
+    assert sorted(states.values()) == ["failed", "failed", "queued"]
+
+
+async def test_retry_job_rejects_a_job_that_is_not_the_newest_for_its_note(store):
+    context, first, second = await _two_failed_jobs(store)
+    older, newer = context.load_job(first), context.load_job(second)
+    assert older.created_at <= newer.created_at
+    jobs_before = len(context.jobs())
+
+    with pytest.raises(ValueError, match="newest"):
+        await context.retry_job({"id": older.id})
+
+    assert len(context.jobs()) == jobs_before
+    assert (await context.job_detail({"id": older.id}))["newest"] is False
+    assert (await context.job_detail({"id": newer.id}))["newest"] is True
+
+
+async def test_retry_all_failed_reports_notes_that_could_not_be_queued(store, monkeypatch):
+    context, first, second = await _two_failed_jobs(store)
+
+    async def refuse(*args, **kwargs):
+        raise ValueError("model is not available")
+
+    monkeypatch.setattr(context, "queue_note", refuse)
+
+    result = await context.retry_all_failed({})
+
+    assert result["queued"] == 0
+    assert len(result["errors"]) == 1 and "model is not available" in result["errors"][0]
+    assert len(context.jobs()) == 2
+
+
+async def test_tick_recovers_a_model_not_available_failure_after_the_model_is_fixed(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].model = "undiscovered-model"
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Notes", frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    await context.run_job(context.load_job(first))
+    failed = context.load_job(first)
+    assert (failed.state, failed.error_rule) == ("failed", "model-not-available")
+
+    config = context.config()
+    config.assignments["enrichment"].model = "test-model"
+    context.save_config(config)
+    await context.tick()
+
+    jobs = sorted(context.jobs(), key=lambda job: job.created_at)
+    assert [job.id for job in jobs][0] == first and len(jobs) == 2
+    assert jobs[0].state == "failed"
+    assert jobs[-1].state == "suggested"
+    assert jobs[-1].config_hash == context.config_hash()
+
+
+async def test_tick_recovers_a_model_not_available_failure_once_the_model_is_discovered(store):
+    context = await configure(store)
+    discovery = context.read("discovery", {})
+    connection = context.config().assignments["enrichment"].connection
+    identity = context.storage_identity(connection)
+    context.write("discovery", {**discovery, identity: []})
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Notes", frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    await context.run_job(context.load_job(first))
+    assert context.load_job(first).error_rule == "model-not-available"
+
+    await context.tick()
+    assert len(context.jobs()) == 1
+
+    context.write("discovery", {**discovery, identity: ["test-model"]})
+    await context.tick()
+
+    jobs = sorted(context.jobs(), key=lambda job: job.created_at)
+    assert len(jobs) == 2
+    assert jobs[0].id == first and jobs[0].state == "failed"
+    assert jobs[-1].state == "suggested"
+
+
+async def test_an_edited_failed_note_gets_no_new_job_until_it_settles(store, monkeypatch):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 2000
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Large", body="word " * 1000, frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    await context.run_job(context.load_job(first))
+    assert context.load_job(first).state == "failed"
+
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"account": "human correction"}), note.content_hash
+    )
+    await context.tick()
+    await context.tick()
+    assert [job.id for job in context.jobs()] == [first]
+
+    monkeypatch.setattr(context_service, "NOTE_QUIET_PERIOD", timedelta(0))
+    await context.tick()
+    await context.tick()
+    assert len(context.jobs()) == 2
+
+
+async def test_a_calendar_change_does_not_requeue_failed_notes_when_lifecycle_is_off(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 2000
+    context.save_config(config)
+    assert not context.config().lifecycle_enabled
+    failed = []
+    for index in range(3):
+        note = await store.create_note(
+            CreateNote(
+                title=f"Large {index}", body="word " * 1000, frontmatter={"date": "2026-10-14"}
+            )
+        )
+        identity = await context.queue_note(note.id)
+        await context.run_job(context.load_job(identity))
+        assert context.load_job(identity).state == "failed"
+        failed.append(identity)
+    hash_before = context.evidence_hash()
+
+    context.write("contact_corrections", {"someone": {"same_as": "other"}})
+    assert context.evidence_hash() != hash_before
+    await context.tick()
+    await context.tick()
+
+    assert sorted(job.id for job in context.jobs()) == sorted(failed)
+
+
+async def test_a_renamed_failed_note_gets_a_new_job_at_its_new_path(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 2000
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Large", body="word " * 1000, frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    await context.run_job(context.load_job(first))
+    assert context.load_job(first).state == "failed"
+    await context.tick()
+    assert [job.id for job in context.jobs()] == [first]
+
+    renamed = await store.rename_note(
+        note.id, RenameNote(title="Renamed", preserve_body=True), note.content_hash
+    )
+    assert renamed.content_hash == note.content_hash and renamed.path != note.path
+    await context.tick()
+
+    jobs = sorted(context.jobs(), key=lambda job: job.created_at)
+    assert len(jobs) == 2 and jobs[0].id == first
+    assert jobs[-1].path == renamed.path
+
+
+async def test_coppermind_own_writes_do_not_requeue_the_job(store, monkeypatch):
+    note = await store.create_note(
+        CreateNote(
+            title="Old name",
+            body="# Original heading\nCasey attended.",
+            frontmatter={"date": "2026-10-14"},
+        )
+    )
+    context = await configure(store)
+    queued = await context.enqueue(
+        {"note_ids": [note.id], "confirmation": "Send selected notes for enrichment"}
+    )
+    job = context.load_job(queued["jobs"][0])
+    await context.run_job(job)
+    assert job.state == "suggested", job.error
+    await context.approve(
+        {
+            "id": job.id,
+            "index": 0,
+            "confirmation": "Apply selected suggestion",
+            "accept_link_risk": True,
+        }
+    )
+    applied = context.load_job(job.id)
+    applied.state = "stale"
+    context.save_job(applied)
+
+    monkeypatch.setattr(context_service, "NOTE_QUIET_PERIOD", timedelta(0))
+    await context.tick()
+    await context.tick()
+    assert [item.id for item in context.jobs()] == [job.id]
+
+    written = await store.get_note(note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"account": "human correction"}), written.content_hash
+    )
+    await context.tick()
+    assert len(context.jobs()) == 2
+
+
+async def test_tick_recovers_when_transcript_revision_changes(store, monkeypatch):
+    from types import SimpleNamespace
+
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Notes", frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    failed = context.load_job(first)
+    failed.state = "failed"
+    failed.attempts = failed.attempt_limit
+    failed.source_versions = {"source": 1}
+    context.save_job(failed)
+
+    async def sources(identity):
+        return [SimpleNamespace(id="source")]
+
+    async def source(identity):
+        return SimpleNamespace(current_revision=2)
+
+    async def leave_queued(job):
+        pass
+
+    async def source_text(identity):
+        return []
+
+    monkeypatch.setattr(context, "source_text", source_text)
+    monkeypatch.setattr(store, "get_note_sources", sources)
+    monkeypatch.setattr(store, "get_source", source)
+    monkeypatch.setattr(context, "run_job", leave_queued)
+    await context.tick()
+    jobs = sorted(context.jobs(), key=lambda job: job.created_at)
+    assert len(jobs) == 2
+    assert jobs[0].id == first and jobs[0].state == "failed"
+    assert jobs[1].source_versions == {"source": 2}
+    assert jobs[1].state == "queued"
+
+
+async def test_jobs_snapshot_uses_current_note_and_latest_state(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Original", body="Notes", frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    failed = context.load_job(first)
+    failed.state = "failed"
+    context.save_job(failed)
+    renamed = await store.rename_note(
+        note.id, RenameNote(title="Renamed", preserve_body=True), note.content_hash
+    )
+    snapshot = await context.snapshot()
+    assert snapshot["jobs"][0]["current_path"] == renamed.path
+    assert snapshot["jobs"][0]["path"] == note.path
+    assert snapshot["outcomes"]["counts"] == {"failed": 1}
+    await context.retry_job({"id": first})
+    snapshot = await context.snapshot()
+    assert len(snapshot["jobs"]) == 1
+    assert snapshot["outcomes"]["counts"] == {"queued": 1}
+
+
+async def test_moved_reviewed_note_keeps_current_location_in_jobs(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Original", body="Notes", frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    job = context.load_job(first)
+    job.state = "stale"
+    context.save_job(job)
+    renamed = await store.rename_note(
+        note.id, RenameNote(title="Renamed", preserve_body=True), note.content_hash
+    )
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": True}), renamed.content_hash
+    )
+    snapshot = await context.snapshot()
+    assert snapshot["jobs"][0]["current_path"] == renamed.path
+    assert snapshot["jobs"][0]["path"] == note.path
+    assert snapshot["jobs"][0]["can_retry"] is False
+
+
+async def test_reviewed_filed_note_has_same_retry_eligibility_in_list_and_detail(store):
+    from coppermind_store.filing import file_note
+
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Meeting", body="Notes", frontmatter={"date": "2026-10-14"})
+    )
+    identity = await context.queue_note(note.id)
+    job = context.load_job(identity)
+    job.state = "stale"
+    context.save_job(job)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
+    )
+    assert await file_note(store, note.id)
+    filed = await store.get_note(note.id)
+    assert filed.filed
+    summary = (await context.snapshot())["jobs"][0]
+    detail = await context.job_detail({"id": identity})
+    for view in (summary, detail):
+        assert view["can_retry"] is False
+        assert view["retry_reason"] == "This note is reviewed and filed; nothing more to do."

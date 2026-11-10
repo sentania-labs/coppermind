@@ -1,5 +1,7 @@
 """Admin context forms stay authenticated, CSRF guarded and secret-free."""
 
+from typing import Any
+
 from coppermind.context_config import ContextConfig, ModelConnection
 from services.admin.tests.browser import admin_browser as admin_browser
 from services.admin.tests.test_admin import form_token
@@ -80,7 +82,8 @@ def test_calendar_models_and_review_render_and_escape(signed_in):
     assert "sample meeting text" in models.text
     review = client.get("/admin/context?tab=review")
     assert review.status_code == 200
-    assert "Send selected notes for enrichment" in review.text
+    assert "No jobs or unreviewed notes yet." in review.text
+    assert "Queue selected notes" not in review.text
 
 
 def test_configuration_and_backlog_are_csrf_guarded(signed_in):
@@ -176,6 +179,7 @@ def test_size_failure_shows_both_numbers_and_links_to_the_setting(signed_in):
         "input_limit": 40000,
         "result": None,
         "decisions": [],
+        "newest": True,
         "current": {"frontmatter": {}},
     }
 
@@ -468,3 +472,206 @@ def test_speed_note_and_outcome_line_speak_plainly():
     assert "not measured" in _speed_note({}, assignment)
     none = {"outcomes": {"counts": {"failed": 2}, "answered": 0, "last_success": ""}}
     assert "No job has succeeded yet" in _outcome_line(none)
+
+
+def test_failed_jobs_offer_retry_and_report_bulk_outcome(signed_in):
+    class FailedJobs(ContextStore):
+        async def context_action(self, action, payload):
+            data = await super().context_action(action, payload)
+            if action == "snapshot":
+                data["jobs"] = [
+                    {
+                        "id": "a" * 64,
+                        "path": "Review/Example.md",
+                        "state": "failed",
+                        "error": "Request failed",
+                        "input_limit": None,
+                    }
+                ]
+            if action == "retry-all-failed":
+                return {"queued": 1, "errors": []}
+            return data
+
+    client, _ = signed_in
+    client.app.state.store = FailedJobs()
+    page = client.get("/admin/context?tab=review")
+    assert "Retry all failed" in page.text
+    assert "may repeat a billed request" in page.text
+    assert ">Retry</button>" in page.text
+    csrf = form_token(client, "/admin/context?tab=review")
+    response = client.post("/v1/admin/context/retry-all-failed", data={"csrf": csrf})
+    assert "Retry all failed: 1 queued." in response.text
+
+
+def test_bulk_retry_banner_counts_failures_without_echoing_text(signed_in):
+    class ManyErrors(ContextStore):
+        async def context_action(self, action, payload):
+            if action == "retry-all-failed":
+                return {"queued": 2, "errors": [f"Review/N{i}.md: no model" for i in range(40)]}
+            return await super().context_action(action, payload)
+
+    client, _ = signed_in
+    client.app.state.store = ManyErrors()
+    csrf = form_token(client, "/admin/context?tab=review")
+    response = client.post(
+        "/v1/admin/context/retry-all-failed", data={"csrf": csrf}, follow_redirects=False
+    )
+    assert response.status_code == 303
+    page = client.get(response.headers["location"])
+    assert "Retry all failed: 2 queued." in page.text
+    assert "40 could not be queued" in page.text
+    assert "Review/N0.md" not in page.text
+
+
+def test_result_banner_ignores_arbitrary_query_text(signed_in):
+    client, _ = signed_in
+    client.app.state.store = ContextStore()
+    page = client.get("/admin/context?tab=review&result=Your+password+expired")
+    assert 'class="success"' not in page.text
+    assert "Your password expired" not in page.text
+    page = client.get("/admin/context?tab=review&result=retry-all-failed&queued=x")
+    assert 'class="success"' not in page.text
+
+
+def test_only_the_newest_job_offers_retry_on_inspect(signed_in):
+    client, _ = signed_in
+    base: dict[str, Any] = {
+        "id": "a" * 64,
+        "path": "Long.md",
+        "state": "failed",
+        "error": "Request failed",
+        "error_rule": "",
+        "input_size": None,
+        "input_limit": None,
+        "result": None,
+        "decisions": [],
+        "current": {"frontmatter": {}},
+    }
+
+    class JobStore(ContextStore):
+        newest = True
+
+        async def context_action(self, action, payload):
+            if action == "job":
+                return {**base, "newest": self.newest}
+            return await super().context_action(action, payload)
+
+    store = JobStore()
+    client.app.state.store = store
+    assert "Retry with current evidence" in client.get(f"/admin/context/jobs/{'a' * 64}").text
+    store.newest = False
+    assert "Retry with current evidence" not in client.get(f"/admin/context/jobs/{'a' * 64}").text
+
+
+def test_failed_job_that_cannot_retry_shows_reason_and_no_bulk_retry(signed_in):
+    class BlockedJobs(ContextStore):
+        async def context_action(self, action, payload):
+            data = await super().context_action(action, payload)
+            if action == "snapshot":
+                data["jobs"] = [
+                    {
+                        "id": "a" * 64,
+                        "path": "Review/Example.md",
+                        "state": "failed",
+                        "error": "Request failed",
+                        "input_limit": None,
+                        "can_retry": False,
+                        "retry_reason": "Enable enrichment to retry.",
+                    }
+                ]
+            return data
+
+    client, _ = signed_in
+    client.app.state.store = BlockedJobs()
+    page = client.get("/admin/context?tab=review")
+    assert "Enable enrichment to retry." in page.text
+    assert "Retry all failed" not in page.text
+    assert ">Retry</button>" not in page.text
+
+
+def test_jobs_explain_stale_pause_and_moved_note(signed_in):
+    class UXStore(ContextStore):
+        async def context_action(self, action, payload):
+            data = await super().context_action(action, payload)
+            if action == "snapshot":
+                data["config"]["assignments"]["enrichment"]["paused"] = True
+                data["jobs"] = [
+                    {
+                        "id": "a" * 64,
+                        "path": "Review/Old.md",
+                        "current_path": "Notes/New.md",
+                        "current_title": "New",
+                        "state": "stale",
+                        "error": "stale: associated source revisions changed",
+                        "input_limit": None,
+                        "can_retry": True,
+                    }
+                ]
+            return data
+
+    client, _ = signed_in
+    client.app.state.store = UXStore()
+    response = client.get("/admin/context?tab=review")
+    assert "Processing is paused. Queued retries will wait until you resume." in response.text
+    assert "Resume processing" in response.text
+    assert "Notes/New.md" in response.text and "Moved from Review/Old.md" in response.text
+    assert (
+        "Out of date: The supporting information changed. Retry to use the latest information."
+        in response.text
+    )
+    assert "stale: associated" not in response.text
+    assert ">Retry</button>" in response.text
+    assert "Existing Review backlog" not in response.text
+    retry = client.get("/admin/context?tab=review&result=retry-job&job=" + "a" * 64)
+    assert "Retry queued for New. Processing is paused; resume it to start." in retry.text
+
+
+def test_reviewed_filed_job_has_same_reason_in_list_and_inspect_and_no_retry(signed_in):
+    job: dict[str, Any] = {
+        "id": "a" * 64,
+        "path": "Review/Example.md",
+        "state": "stale",
+        "error": "stale: reviewed note changed",
+        "input_limit": None,
+        "result": None,
+        "decisions": [],
+        "newest": True,
+        "current": {"path": "Notes/Example.md", "frontmatter": {}},
+        "current_path": "Notes/Example.md",
+        "can_retry": False,
+        "retry_reason": "This note is reviewed and filed; nothing more to do.",
+    }
+
+    class FiledStore(ContextStore):
+        async def context_action(self, action, payload):
+            if action == "job":
+                return job
+            data = await super().context_action(action, payload)
+            if action == "snapshot":
+                data["jobs"] = [job]
+            return data
+
+    client, _ = signed_in
+    client.app.state.store = FiledStore()
+    for url in ("/admin/context?tab=review", f"/admin/context/jobs/{job['id']}"):
+        page = client.get(url)
+        assert "This note is reviewed and filed; nothing more to do." in page.text
+        assert "Retry to use the latest information" not in page.text
+        assert 'action="/v1/admin/context/retry-job"' not in page.text
+    assert "Back to Jobs" in client.get(f"/admin/context/jobs/{job['id']}").text
+
+
+def test_refused_retry_returns_plain_message_on_jobs(signed_in):
+    class RefusingStore(ContextStore):
+        async def context_action(self, action, payload):
+            if action == "retry-job":
+                raise ValueError("reviewed notes are not eligible")
+            return await super().context_action(action, payload)
+
+    client, _ = signed_in
+    client.app.state.store = RefusingStore()
+    csrf = form_token(client, "/admin/context?tab=review")
+    response = client.post("/v1/admin/context/retry-job", data={"csrf": csrf, "id": "a" * 64})
+    assert response.status_code == 200
+    assert "Retry could not be queued." in response.text
+    assert "Could not complete that action" not in response.text

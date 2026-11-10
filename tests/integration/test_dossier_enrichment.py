@@ -412,10 +412,12 @@ async def test_worker_queues_reviewed_facts_and_rejects_unsupported_quotes_atomi
     assert jobs[0].state == "failed"
     assert len(seen) == 1
     assert not store.entities.load().entities
-    await context.retry_job({"id": jobs[0].id})
+    retried = (await context.retry_job({"id": jobs[0].id}))["job"]
+    assert retried != jobs[0].id
     provider(context, extracted())
     await context.tick()
-    assert context.load_job(jobs[0].id).state == "applied"
+    assert context.load_job(retried).state == "applied"
+    assert context.load_job(jobs[0].id).state == "failed"
 
 
 async def test_automatic_write_receipt_resumes_after_file_write_before_acknowledgement(
@@ -955,3 +957,50 @@ async def test_tick_reads_the_dossier_catalog_once_however_many_notes_it_queues(
     one = await reads_during_tick(1)
     many = await reads_during_tick(5)
     assert many == one
+
+
+async def test_reviewed_recovery_selects_newest_matching_dossier_job(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Reviewed meeting", body=BODY, frontmatter={"reviewed": True})
+    )
+    first = context.load_job(await context.queue_reviewed(note.id))
+    first.state = "failed"
+    context.save_job(first)
+    second = context.load_job((await context.retry_job({"id": first.id}))["job"])
+    second.state = "failed"
+    context.save_job(second)
+    config = context.config()
+    config.assignments["enrichment"].timeout_s += 1
+    context.save_config(config)
+
+    selected = await context.queue_reviewed(note.id, [first, second])
+
+    assert selected == second.id
+    assert context.load_job(first.id).state == "failed"
+    assert context.load_job(second.id).state == "queued"
+
+
+async def test_reverted_edit_gets_a_new_newest_dossier_job_not_an_older_one(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Reviewed meeting", body=BODY, frontmatter={"reviewed": True})
+    )
+    first = context.load_job(await context.queue_reviewed(note.id))
+    first.state = "failed"
+    context.save_job(first)
+    edited = await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"mood": "b"}), note.content_hash
+    )
+    second = context.load_job(await context.queue_reviewed(note.id))
+    reverted = await store.patch_frontmatter(
+        note.id, PatchFrontmatter(unset=["mood"]), edited.content_hash
+    )
+    assert reverted.content_hash == note.content_hash
+
+    selected = await context.queue_reviewed(note.id)
+
+    assert selected not in {first.id, second.id}
+    assert context.newest_job_id(note.id) == selected
+    assert context.load_job(selected).note_hash == note.content_hash
+    assert context.load_job(first.id).state == "failed"

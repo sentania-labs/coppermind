@@ -151,7 +151,7 @@ and Admin shows the time of the next try. Each job records its
 attempt limit before processing. Interrupted requests consume an attempt, even
 when their outcome is unknown; restarting the worker never resets the budget.
 Unexpected provider-response errors also consume the recorded attempt. An explicit
-retry is required after exhaustion and may repeat a previously billed request.
+retry may repeat a previously billed request.
 Pause stops new calls;
 an already-running call can finish. Disablement does not affect calendar intake
 or ordinary note work. Usage is shown only when the provider supplies numeric
@@ -181,6 +181,20 @@ it; the next attempt clears it. Admin's Jobs list also counts jobs that got an
 answer, failed or went stale, and shows the time of the last answer.
 
 ## Human review and recovery
+
+The Admin Jobs table shows one row per note, its newest job; earlier jobs for the
+note are listed under Earlier jobs on Inspect. A failed row has a Retry button
+when it can be retried, or the reason it cannot. Retry all failed appears when at
+least one failed row can be retried, and queues every failed note's newest job,
+reporting how many were queued and how many could not be. A retry always creates
+a new job with current settings and evidence. Without any click, an unreviewed
+note whose newest job failed or went stale gets a new job when the note changes
+(after it has been unedited for 60 seconds), when the note is moved or renamed,
+when the schema or provider configuration changes, when calendar lifecycle is
+enabled and the note's calendar evidence changes, or when a model reported as
+unavailable becomes discovered. Reviewed notes' failed dossier jobs
+are requeued automatically when the configuration or schema changes; otherwise
+they are retried by hand.
 
 In the configured review folder (`Review/` by default), validated suggestions with model-reported confidence of at least
 0.8 automatically fill blank configured fields. They never replace existing
