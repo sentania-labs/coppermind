@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from coppermind.schema import FrontmatterSchema, KeyDefinition, default_schema
+from coppermind.schema import FrontmatterSchema, default_schema
 
 
 def _with(**changes: object) -> FrontmatterSchema:
@@ -45,6 +45,9 @@ def test_required_when_values_must_be_allowed_values_of_the_watched_key():
 
 
 def test_a_schema_file_with_a_bad_default_still_loads():
-    bad = KeyDefinition(name="kind", kind="enum", vocabulary=["a"], default="b")
+    document = _with(default="note").model_dump(mode="json")
 
-    assert bad.default == "b"
+    loaded = FrontmatterSchema.model_validate(document)
+
+    assert next(key for key in loaded.keys if key.name == "type").default == "note"
+    assert loaded.edit_problems()

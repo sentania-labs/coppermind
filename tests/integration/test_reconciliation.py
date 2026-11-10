@@ -1664,3 +1664,27 @@ async def test_a_refusal_of_the_schemas_own_default_points_at_the_schema(store: 
     assert "own default" in cause and "type" in cause and "Fields and tags" in cause
     assert "keys the schema refused" not in cause
     assert path.read_bytes() == data
+
+
+async def test_a_required_key_with_no_default_is_not_blamed_on_a_default(store: LocalStore):
+    """No default was supplied, so the operator has no default to fix."""
+    schema = store.control.schema()
+    keys = [
+        key.model_copy(update={"default": None, "required": True})
+        if key.name == "account"
+        else key
+        for key in schema.keys
+    ]
+    strict = schema.model_copy(update={"keys": keys})
+    data = b"# Bare note\n"
+    path = store.notes_root / "Review" / "Bare.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+    outcome, cause = await store.adopt_note(
+        "Review/Bare.md", content_hash(data), schema=strict, settings=store.control.settings()
+    )
+
+    assert outcome == "invalid"
+    assert "account" in cause
+    assert "own default" not in cause

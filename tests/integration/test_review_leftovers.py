@@ -9,6 +9,7 @@ from typing import Any
 import sqlalchemy as sa
 from coppermind_store.fs import content_hash
 from coppermind_store.notes import LocalStore
+from coppermind_store import reconciler
 from coppermind_store.reconciler import note_collisions, reconcile_once
 from structlog.testing import capture_logs
 
@@ -120,3 +121,18 @@ async def test_a_review_copy_of_a_note_not_yet_filed_is_never_removed(store: Loc
 
     assert (store.notes_root / LEFTOVER).read_bytes() == data
     assert counts["duplicates"] == 1
+
+
+async def test_an_identical_copy_that_cannot_be_removed_is_not_called_different(
+    store: LocalStore, monkeypatch
+):
+    note_id, data = await _filed_note(store)
+    _leftover(store, data)
+    monkeypatch.setattr(reconciler, "_remove_verified", lambda *args: False)
+
+    await reconcile_once(store)
+
+    reasons = " ".join(await note_collisions(store, note_id))
+    assert LEFTOVER in reasons
+    assert "could not be removed" in reasons
+    assert "differ" not in reasons

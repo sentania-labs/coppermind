@@ -1276,7 +1276,13 @@ async def _settle_leftovers(
             )
         )
         for copy in remaining:
-            if filed:
+            if filed and copy.content_hash in known:
+                reason = (
+                    f"{copy.path} is a copy of this note left in {copy.path.split('/')[0]} "
+                    f"after it was filed at {group.keeper_path}, and could not be removed. "
+                    "It holds nothing the filed note lacks. Delete it."
+                )
+            elif filed:
                 reason = (
                     f"{copy.path} is a copy of this note left in {copy.path.split('/')[0]} "
                     f"after it was filed at {group.keeper_path}, and the two differ. "

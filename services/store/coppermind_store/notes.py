@@ -1480,10 +1480,10 @@ class LocalStore:
         # and a parse however many times the scan rediscovers it.
         invalid = schema.invalid_keys(adopted_frontmatter)
         if invalid:
-            # A key the file did not carry was filled from the schema's own
-            # defaults, so the schema is what refuses it, not the person.
-            written = [name for name in invalid if frontmatter.get(name) is not None]
-            supplied = [name for name in invalid if name not in written]
+            # A key adoption filled in came from the schema's own defaults, so
+            # the schema is what refuses it, not the person.
+            supplied = [name for name in invalid if name in changes]
+            written = [name for name in invalid if name not in changes]
             causes = []
             if written:
                 causes.append(f"keys the schema refused: {', '.join(written)}")
