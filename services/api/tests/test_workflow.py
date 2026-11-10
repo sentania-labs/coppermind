@@ -235,6 +235,38 @@ def test_review_returns_people_only_to_a_key_that_can_read_entities():
     assert "cannot read people" in notice and "Connected apps" in notice
     assert "create a new key" in notice and "Read people and companies" in notice
     assert "entities:read" not in notice
+    assert wide.json()["people_access_notice"] == notice
     assert wide.json()["manual_speaker_review"]["candidates"] == [person]
     assert [s["index"] for s in wide.json()["suggestions"]] == [0, 1]
     assert not wide.json().get("speakers_unavailable")
+
+
+@pytest.mark.parametrize(
+    "missing,label",
+    [
+        ("notes:read", "Read notes"),
+        ("notes:write", "Update notes"),
+        ("sources:read", "Read sources"),
+        ("sources:write", "Update sources"),
+        ("entities:read", "Read people and companies"),
+    ],
+)
+def test_speaker_permission_notice_matches_required_review_scopes(missing, label):
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: Store()
+    scopes = {"notes:read", "notes:write", "sources:read", "sources:write", "entities:read"}
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    with TestClient(app) as client:
+        notice = client.get("/v1/notes/note/review").json()["people_access_notice"]
+        assert label in notice
+        scopes.remove(missing)
+        result = client.post(
+            "/v1/notes/note/review",
+            json={
+                "if_match": "hash",
+                "confirmation": "Complete review",
+                "manual_speakers": {"Speaker 1": "person:a"},
+            },
+        )
+        assert result.status_code == 403

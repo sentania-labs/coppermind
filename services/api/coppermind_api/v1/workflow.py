@@ -42,7 +42,8 @@ async def call(client: HttpStoreClient, action: str, payload: dict[str, Any]) ->
 
 PEOPLE_HIDDEN = (
     "This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, "
-    "open Connected apps (API Keys) and create a new key with Read people and companies, "
+    "open Connected apps (API Keys) and create a new key with Read notes, Update notes, "
+    "Read sources, Update sources, and Read people and companies, "
     "then select that key in the companion settings."
 )
 
@@ -57,6 +58,7 @@ async def review(
         detail = await client.context_action("lifecycle", {"note_id": note_id})
     except StoreError as exc:
         return failure(exc)
+    detail["people_access_notice"] = PEOPLE_HIDDEN
     if principal.has("entities:read"):
         return JSONResponse(detail)
     hidden = detail.get("manual_speaker_review") is not None or any(

@@ -135,10 +135,11 @@ test('a key that cannot see people shows why speakers are missing',async()=>{
 });
 
 test('permission failures give plain recovery steps',async()=>{
-  const f=await fixture(undefined,{state:'failed',rejectPeople:true,rejectReview:true,manual_speaker_review:{revision:1,speakers:['Speaker 1'],candidates:[]}});
+  const notice='This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, open Connected apps (API Keys) and create a new key with Read notes, Update notes, Read sources, Update sources, and Read people and companies, then select that key in the companion settings.';
+  const f=await fixture(undefined,{state:'failed',rejectPeople:true,rejectReview:true,people_access_notice:notice,manual_speaker_review:{revision:1,speakers:['Speaker 1'],candidates:[]}});
   f.view.contentEl.all().find(e=>e.tag==='input').value='Alex';
   await f.view.contentEl.all().find(e=>e.text==='Find a person').onclick();
-  assert.ok(f.notices.some(n=>n.includes('Connected apps')&&n.includes('create a new key')&&n.includes('Read people and companies')));
+  assert.ok(f.notices.includes(notice));
   await assert.rejects(f.plugin.call('/v1/notes/test-note/review','POST',{manual_speakers:{'Speaker 1':'person:a'}}),/create a new key with Read notes, Update notes, Read sources, Update sources, and Read people and companies/);
   assert.ok(f.notices.every(n=>!n.includes('entities:read')));
 });

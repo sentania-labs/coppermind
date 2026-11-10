@@ -104,7 +104,7 @@ class ReviewView extends ItemView {
             cursor=page.next_cursor||'';moreButton.disabled=!cursor;
             if(!(page.items||[]).length)new Notice('No matching people. Search for another name.');
             else new Notice('Choose a person from the list.');
-          }catch(e){new Notice('This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, open Connected apps (API Keys) and create a new key with Read people and companies, then select that key in the companion settings.');}
+          }catch(e){new Notice(data.people_access_notice||'Could not find people. Check your connection and API credential, then refresh this panel.');}
         };
         find.onclick=()=>lookup(false);
         const moreButton=card.createEl('button',{text:'More people'});moreButton.disabled=true;moreButton.onclick=()=>lookup(true);
