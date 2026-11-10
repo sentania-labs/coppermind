@@ -15,6 +15,9 @@ from coppermind.context_config import FeatureAssignment, ModelConnection
 # per-job wait limit is a silence limit; this stops a trickle from holding the single
 # worker forever.
 MAX_CALL_SECONDS = 3600
+# The most a streamed reply may send in total, framing included. Replies are held to
+# 2 MiB of text; this is the wire-size ceiling above that.
+MAX_STREAM_BYTES = 16 * 1024 * 1024
 # How much of a model's reply is kept on a failed job so Inspect can show why it failed.
 REPLY_KEPT_CHARS = 4000
 
@@ -83,8 +86,14 @@ class _Stream:
         self.finish: str | None = None
         self.usage: dict[str, Any] = {}
         self.model: Any = None
+        self.received = 0
 
     def feed(self, chunk: bytes) -> None:
+        # Every event repeats its framing, so a long reply is far larger on the wire than as
+        # text. The total still has to be bounded: it caps whatever else an event carries.
+        self.received += len(chunk)
+        if self.received > MAX_STREAM_BYTES:
+            raise ProviderError("provider response exceeded the stream size limit")
         self.buffer += chunk
         *lines, self.buffer = self.buffer.split(b"\n")
         if len(self.buffer) > 2 * 1024 * 1024:
@@ -107,11 +116,22 @@ class _Stream:
         if event.get("error") or event.get("type") == "error":
             raise ProviderError("the provider reported an error while replying", "provider-error")
         if isinstance(event.get("model"), str):
-            self.model = event["model"]
+            self.model = event["model"][:200]
         if self.provider == "anthropic":
             self.anthropic(event)
         else:
             self.completion(event)
+
+    def keep_usage(self, usage: Any) -> None:
+        # Only small numeric counters are ever used; nothing else the provider sends is kept.
+        if isinstance(usage, dict):
+            self.usage.update(
+                {
+                    k: v
+                    for k, v in list(usage.items())[:50]
+                    if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)
+                }
+            )
 
     def add(self, text: Any) -> None:
         if isinstance(text, str):
@@ -122,7 +142,7 @@ class _Stream:
 
     def completion(self, event: dict[str, Any]) -> None:
         if isinstance(event.get("usage"), dict):
-            self.usage.update(event["usage"])
+            self.keep_usage(event["usage"])
         for choice in event.get("choices") or []:
             if not isinstance(choice, dict):
                 continue
@@ -136,15 +156,15 @@ class _Stream:
         kind = event.get("type")
         if kind == "message_start" and isinstance(event.get("message"), dict):
             message = event["message"]
-            self.usage.update(message.get("usage") or {})
+            self.keep_usage(message.get("usage"))
             if isinstance(message.get("model"), str):
-                self.model = message["model"]
+                self.model = message["model"][:200]
         elif kind == "content_block_delta" and isinstance(event.get("delta"), dict):
             self.add(event["delta"].get("text"))
         elif kind == "message_delta":
             if isinstance(event.get("delta"), dict) and event["delta"].get("stop_reason"):
                 self.finish = event["delta"]["stop_reason"]
-            self.usage.update(event.get("usage") or {})
+            self.keep_usage(event.get("usage"))
 
     def result(self) -> dict[str, Any]:
         self.line(self.buffer.strip())

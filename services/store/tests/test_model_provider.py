@@ -377,3 +377,39 @@ async def test_admin_waits_for_a_slow_model_test_but_not_for_other_actions():
     await client.context_action("snapshot", {})
     assert waits == {"test-model": MODEL_TEST_TIMEOUT_S, "snapshot": 30}
     assert MODEL_TEST_TIMEOUT_S > 120 + 30
+
+
+def _sse(events):
+    body = b"".join(b"data: " + json.dumps(e).encode() + b"\n\n" for e in events)
+    return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+
+async def test_a_stream_of_oversized_metadata_events_is_cut_off_by_total_size():
+    pad = "x" * (1024 * 1024)
+    events = [{"choices": [], "usage": {"note": pad, "n": i}} for i in range(20)]
+    adapter = ModelProvider(httpx.MockTransport(lambda request: _sse(events)))
+    with pytest.raises(ProviderError, match="stream size limit"):
+        await adapter.suggest(
+            ModelConnection(id="t", name="T", provider="openai"),
+            "k",
+            FeatureAssignment(model="m"),
+            "JSON",
+            {},
+        )
+
+
+async def test_streamed_metadata_other_than_counters_is_not_kept():
+    events = [
+        {"choices": [{"delta": {"content": '{"ok": true}'}, "finish_reason": "stop"}]},
+        {"choices": [], "usage": {"completion_tokens": 7, "blob": "y" * 5000}, "model": "m" * 900},
+    ]
+    adapter = ModelProvider(httpx.MockTransport(lambda request: _sse(events)))
+    _, usage = await adapter.suggest(
+        ModelConnection(id="t", name="T", provider="openai"),
+        "k",
+        FeatureAssignment(model="m"),
+        "JSON",
+        {},
+    )
+    assert usage["completion_tokens"] == 7 and "blob" not in usage
+    assert len(usage["provider_model_version"]) == 200
