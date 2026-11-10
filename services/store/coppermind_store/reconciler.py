@@ -1191,13 +1191,53 @@ def _journal_hashes(store: LocalStore, note_id: str) -> set[str]:
         return set()
 
 
-def _remove_verified(root: Path, relative: str, expected: str) -> bool:
-    """Delete a file only if it still holds exactly the bytes that were judged."""
-    try:
-        target = resolve(root, relative)
-        if target.is_symlink():
+def _through_symlink(root: Path, relative: str) -> bool:
+    """Whether the file, or any folder on the way to it, is a symbolic link."""
+    current = root
+    for part in Path(relative).parts:
+        current = current / part
+        try:
+            if stat_module.S_ISLNK(current.lstat().st_mode):
+                return True
+        except OSError:
             return False
-        if content_hash(target.read_bytes()) != expected:
+    return False
+
+
+def _remove_verified(
+    root: Path, relative: str, review_folder: str, expected: str, keeper_relative: str
+) -> bool:
+    """Delete a review copy only if it is provably a separate file with the judged bytes.
+
+    Nothing here follows a link: the copy must be a regular file reached
+    through no symbolic link, inside the review folder, and a different file
+    (by device and inode) from the note's own, so a link or hard link to the
+    filed note can never make this delete the note itself.
+    """
+    parts = Path(relative).parts
+    if not _in_folder(relative, review_folder) or ".." in parts or Path(relative).is_absolute():
+        return False
+    if _through_symlink(root, relative):
+        return False
+    target = root / relative
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        before = target.lstat()
+        if not stat_module.S_ISREG(before.st_mode):
+            return False
+        descriptor = os.open(target, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                return False
+            keeper = (root / keeper_relative).stat()
+            if (opened.st_dev, opened.st_ino) == (keeper.st_dev, keeper.st_ino):
+                return False
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                data = handle.read()
+        finally:
+            os.close(descriptor)
+        if content_hash(data) != expected:
             return False
         target.unlink()
     except FileNotFoundError:
@@ -1237,6 +1277,7 @@ async def _settle_leftovers(
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
     unsettled = 0
+    review_folder = sanitize_folder(store.control.settings().notes.review_folder)
     for note_id, group in leftovers.items():
         row = rows.get(note_id)
         filed = row is not None and bool(row.filed)
@@ -1247,12 +1288,22 @@ async def _settle_leftovers(
             if group.keeper is not None and group.keeper.content_hash:
                 known.add(group.keeper.content_hash)
         remaining: list[Observation] = []
+        linked: set[str] = set()
         for copy in group.copies:
+            if await asyncio.to_thread(_through_symlink, store.notes_root, copy.path):
+                linked.add(copy.path)
+                remaining.append(copy)
+                continue
             if (
                 filed
                 and copy.content_hash in known
                 and await asyncio.to_thread(
-                    _remove_verified, store.notes_root, copy.path, copy.content_hash
+                    _remove_verified,
+                    store.notes_root,
+                    copy.path,
+                    review_folder,
+                    copy.content_hash,
+                    group.keeper_path,
                 )
             ):
                 log.info(
@@ -1276,7 +1327,12 @@ async def _settle_leftovers(
             )
         )
         for copy in remaining:
-            if filed and copy.content_hash in known:
+            if copy.path in linked:
+                reason = (
+                    f"{copy.path} is a symbolic link that reads as a copy of this note. "
+                    "It was not followed, changed or removed. Delete the link yourself."
+                )
+            elif filed and copy.content_hash in known:
                 reason = (
                     f"{copy.path} is a copy of this note left in {copy.path.split('/')[0]} "
                     f"after it was filed at {group.keeper_path}, and could not be removed. "

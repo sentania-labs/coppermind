@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -136,3 +137,60 @@ async def test_an_identical_copy_that_cannot_be_removed_is_not_called_different(
     assert LEFTOVER in reasons
     assert "could not be removed" in reasons
     assert "differ" not in reasons
+
+
+async def test_a_review_link_to_the_filed_note_is_reported_and_never_followed(store: LocalStore):
+    note_id, data = await _filed_note(store)
+    link = store.notes_root / LEFTOVER
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(store.notes_root / FILED)
+
+    await reconcile_once(store)
+
+    assert link.is_symlink()
+    assert (store.notes_root / FILED).read_bytes() == data
+    reasons = " ".join(await note_collisions(store, note_id))
+    assert LEFTOVER in reasons and "symbolic link" in reasons
+
+
+async def test_a_review_link_out_of_the_vault_is_never_followed(store: LocalStore, tmp_path):
+    note_id, data = await _filed_note(store)
+    outside = tmp_path / "outside" / "Elsewhere.md"
+    outside.parent.mkdir()
+    outside.write_bytes(data)
+    link = store.notes_root / LEFTOVER
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(outside)
+
+    await reconcile_once(store)
+
+    assert link.is_symlink()
+    assert outside.read_bytes() == data
+    assert (store.notes_root / FILED).read_bytes() == data
+
+
+async def test_a_review_folder_linked_elsewhere_is_never_deleted_through(store: LocalStore):
+    _, data = await _filed_note(store)
+    real = store.notes_root / "Elsewhere"
+    real.mkdir()
+    (real / "Monthly TAM call.md").write_bytes(data)
+    for leftover in (store.notes_root / "Review").glob("*"):
+        leftover.unlink()
+    (store.notes_root / "Review").rmdir()
+    (store.notes_root / "Review").symlink_to(real, target_is_directory=True)
+
+    await reconcile_once(store)
+
+    assert (real / "Monthly TAM call.md").read_bytes() == data
+
+
+async def test_a_hard_link_to_the_filed_note_is_not_removed(store: LocalStore):
+    _, data = await _filed_note(store)
+    copy = store.notes_root / LEFTOVER
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    os.link(store.notes_root / FILED, copy)
+
+    await reconcile_once(store)
+
+    assert (store.notes_root / FILED).read_bytes() == data
+    assert copy.read_bytes() == data
