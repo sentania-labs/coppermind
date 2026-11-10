@@ -1270,9 +1270,10 @@ async def get_status(store: LocalStore) -> StatusResponse:
                 await session.scalar(sa.select(sa.func.count()).select_from(SearchUnreadable)) or 0
             )
             notes_awaiting_review = await session.scalar(awaiting) or 0
+            type_key = store.control.schema().role("type_key")
             candidates = (
-                await session.scalars(
-                    sa.select(Note).where(
+                await session.execute(
+                    sa.select(Note.path, Note.date, Note.frontmatter[type_key]).where(
                         Note.reviewed.is_(True), Note.state == "ok", Note.date.is_not(None)
                     )
                 )
@@ -1283,16 +1284,11 @@ async def get_status(store: LocalStore) -> StatusResponse:
                 store.context.config().dropbox_folder,
                 store.control.store.state_dir,
             )
-            type_key = store.control.schema().role("type_key")
             notes_to_refile = sum(
-                not row.path.startswith(
-                    rendered_note_folder(
-                        roots.resolve(row.frontmatter.get(type_key))[0],
-                        row.date,
-                    )
-                    + "/"
+                not path.startswith(
+                    rendered_note_folder(roots.resolve(note_type)[0], note_date) + "/"
                 )
-                for row in candidates
+                for path, note_date, note_type in candidates
             )
             by_state = (
                 await session.execute(sa.select(Note.state, sa.func.count()).group_by(Note.state))
