@@ -36,6 +36,20 @@ def status(state="queued", **extra):
 def serve(tmp_path: Path, answer):
     app, fake = client_for(tmp_path)
     calls = []
+    created = datetime(2026, 9, 8, tzinfo=UTC)
+    fake.full_record, fake.full_key = create_key(
+        "recorder", ["sources:write", "notes:write", "artifacts:read"], created_at=created
+    )
+    fake.unreadable_record, fake.unreadable_key = create_key(
+        "writes but cannot read artifacts", ["sources:write", "notes:write"], created_at=created
+    )
+
+    async def keys():
+        return ApiKeySet(
+            keys=[fake.full_record, fake.sources_record, fake.notes_record, fake.unreadable_record]
+        )
+
+    fake.get_api_keys = keys
 
     async def context_action(action, payload):
         calls.append((action, payload))
@@ -47,13 +61,13 @@ def serve(tmp_path: Path, answer):
     return app, fake, calls
 
 
-def test_a_recording_needs_both_write_scopes_and_is_accepted_for_later(tmp_path):
+def test_a_recording_needs_all_three_scopes_and_is_accepted_for_later(tmp_path):
     app, fake, calls = serve(tmp_path, status())
     with TestClient(app) as client:
         app.state.store = fake
         app.state.api_key_auth._store = fake
         assert client.post("/v1/recordings", json=BODY).status_code == 401
-        for key in (fake.sources_key, fake.notes_key):
+        for key in (fake.sources_key, fake.notes_key, fake.unreadable_key):
             denied = client.post(
                 "/v1/recordings", json=BODY, headers={"Authorization": f"Bearer {key}"}
             )

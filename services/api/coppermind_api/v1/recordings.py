@@ -30,7 +30,7 @@ router = APIRouter(prefix="/v1/recordings", tags=["recordings"])
 async def accept_recording(
     payload: RecordingRequest,
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("sources:write", "notes:write")),
+    _: Principal = Depends(require_scopes("sources:write", "notes:write", "artifacts:read")),
 ) -> JSONResponse:
     try:
         result = await client.context_action("recording", payload.model_dump(mode="json"))

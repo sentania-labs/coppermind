@@ -66,7 +66,7 @@ has not been exercised by this slice.
   Proven by `tests/integration/test_artifacts.py` against PostgreSQL and the
   unit suites under the store, API and Admin.
 - A recording can be handed in on its own. Store it through the staged upload,
-  then `POST /v1/recordings` (`sources:write`, `notes:write`) names it; a worker
+  then `POST /v1/recordings` (`sources:write`, `notes:write`, `artifacts:read`) names it; a worker
   loop of its own sends it, streamed from disk, to the transcription service
   chosen under Admin Models, Transcription (OpenAI-compatible
   `/audio/transcriptions`, `diarized_json` or `verbose_json`), waiting on
