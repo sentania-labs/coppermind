@@ -15,6 +15,7 @@ import json
 import os
 from collections.abc import Sequence
 from html import escape
+from http.client import HTTPException
 from typing import Any, Protocol
 from urllib.parse import quote
 from urllib.request import Request as URLRequest
@@ -269,8 +270,14 @@ def sync_status(wiring: Wiring) -> dict:
         endpoint + "/status",
         headers={"Authorization": "Bearer " + wiring.read_internal_token()},
     )
-    with urlopen(req, timeout=2) as response:  # noqa: S310
-        return json.load(response)
+    try:
+        with urlopen(req, timeout=2) as response:  # noqa: S310
+            data = json.load(response)
+    except HTTPException as exc:
+        raise OSError(str(exc)) from exc
+    if not isinstance(data, dict):
+        raise ValueError("sync status is not an object")
+    return data
 
 
 async def attention_html(request: Request, wiring: Wiring) -> str:

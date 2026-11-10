@@ -9,9 +9,12 @@ is held: there is no call Admin could make here that would change one.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from http.client import BadStatusLine, IncompleteRead
 
 import pytest
+from coppermind_admin.pages.problems import sync_status as real_sync_status
 
+from coppermind.settings import Wiring
 from coppermind.store_protocol import (
     NoteSourceInfo,
     NotFound,
@@ -645,6 +648,48 @@ def test_home_flags_a_failed_device(signed_in, monkeypatch, status):
     page = client.get("/admin").text
     assert "Device connection needs attention" in page
     assert "Nothing needs attention right now" not in page
+
+
+class _Response:
+    def __init__(self, body: bytes, error: Exception | None = None) -> None:
+        self.body = body
+        self.error = error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, size: int = -1) -> bytes:
+        if self.error:
+            raise self.error
+        return self.body
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        _Response(b"", BadStatusLine("")),
+        _Response(b"", IncompleteRead(b"{")),
+        _Response(b"[]"),
+        _Response(b"null"),
+        _Response(b"not json"),
+    ],
+)
+def test_home_survives_a_bad_sync_helper_answer(signed_in, monkeypatch, response):
+    from coppermind_admin.pages import problems
+
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = []
+    monkeypatch.setattr(problems, "sync_status", real_sync_status)
+    monkeypatch.setattr(problems, "urlopen", lambda req, timeout: response)
+    monkeypatch.setattr(Wiring, "read_internal_token", lambda self: "token")
+    page = client.get("/admin")
+    assert page.status_code == 200
+    assert "Device connection could not be checked" in page.text
+    assert "Nothing needs attention right now" not in page.text
 
 
 def test_dismissing_from_home_returns_to_home(signed_in):
