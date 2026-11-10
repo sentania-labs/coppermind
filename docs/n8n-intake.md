@@ -179,7 +179,7 @@ Use a distinct submission ID for new material that needs its own reviewable note
 ## Available now: the recording on its own
 
 When no transcript or summary exists yet, send only the recording and let Coppermind
-transcribe it. This needs a transcription service set up in Admin (Connections and model, then
+transcribe it. This needs a transcription service set up in Admin (Settings, Model connections, then
 Transcription setup); without one the second call below is refused with a plain message.
 Use an API key with `artifacts:write`, `artifacts:read`, `sources:write`, `sources:read` and
 `notes:write`; naming a stored recording for transcription needs `artifacts:read` because
@@ -206,7 +206,7 @@ The note's source is the transcript (`transcript.txt` with the speaker labels as
 service gave them, `Speaker 1` and so on, and `transcript.json` with timings), and the
 recording is a stored artifact the note cites. The summary is not written yet, and the
 audio is not deleted afterwards. A failure appears in Admin under Problems with the
-reason, the recording stays stored, and a person can retry it from the Jobs tab. See
+reason, the recording stays stored, and a person can retry it under Suggestions and backlog. See
 [Recordings](api.md#recordings-audio-on-its-own) for every field and failure.
 
 ## Proposed next contract: staged bundles

@@ -68,13 +68,13 @@ has not been exercised by this slice.
 - A recording can be handed in on its own. Store it through the staged upload,
   then `POST /v1/recordings` (`sources:write`, `notes:write`, `artifacts:read`) names it; a worker
   loop of its own sends it, streamed from disk, to the transcription service
-  chosen under Admin Connections and model, Transcription setup (OpenAI-compatible
+  chosen under Admin Settings, Model connections, Transcription setup (OpenAI-compatible
   `/audio/transcriptions`, `diarized_json` or `verbose_json`), waiting on
   silence rather than total time and backing off after a timeout. The speaker
   segments are kept as given and filed through the ordinary ingest as the
   note's source, so a draft lands in Review; the recording stays an artifact
-  the note cites. Each intake is listed with its state and a Retry on the Jobs
-  tab, and a failure also appears under Problems with its reason. Summary,
+  the note cites. Each intake is listed with its state and a Retry under Suggestions
+  and backlog, and a failure also appears under Problems with its reason. Summary,
   speaker names, deleting the audio and search by meaning are later steps. No
   transcription service was reachable while this was built, so it is proven
   against a local stand-in that returns the documented shape slowly

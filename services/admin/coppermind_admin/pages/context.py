@@ -311,7 +311,7 @@ def _recording_state(job: dict[str, Any], assignment: dict[str, Any] | None) -> 
             return text + " Transcription is paused; a retry will start when you resume it."
         if job["retry_after"] and job["attempts"] < job["attempt_limit"]:
             return text + f" The app will try again after {_calendar_time(job['retry_after'])}."
-        return text + " Try again when you are ready."
+        return text
     if not on:
         return "Waiting. Transcription is off. Turn it on to start this recording."
     if paused:
@@ -369,7 +369,9 @@ def _recordings_section(data: dict[str, Any]) -> str:
 
 def _recording_page(job: dict[str, Any], assignment: dict[str, Any] | None) -> str:
     """One recording in full: what happened, the transcript, and the technical facts."""
-    body = f"<h2>{e(job['title'])}</h2><p>{e(_recording_state(job, assignment))}</p>"
+    body = (
+        f"<h1>Recording</h1><h2>{e(job['title'])}</h2><p>{e(_recording_state(job, assignment))}</p>"
+    )
     if job["state"] == "succeeded":
         body += (
             f"<p>The note is at <strong>{e(job['note_path'])}</strong> in your vault. It reaches "
@@ -401,7 +403,7 @@ def _recording_page(job: dict[str, Any], assignment: dict[str, Any] | None) -> s
     if job.get("usage"):
         body += "<p>Timing and usage: " + e(json.dumps(job["usage"], sort_keys=True)) + "</p>"
     body += "</details>"
-    return body + '<p><a href="/admin/context?tab=review">Back to Jobs</a></p>'
+    return body + '<p><a href="/admin/context?tab=review">Back to Suggestions and backlog</a></p>'
 
 
 def _proposal_value(value: Any) -> str:
@@ -505,7 +507,7 @@ def router(wiring: Wiring) -> APIRouter:
         }.get(tab, "Calendar and enrichment")
         head = f"""<h1>{heading}</h1><p class="section-links">
 <a href="/admin/context?tab=calendar">Calendar and contacts</a>
-<a href="/admin/context?tab=models">Connections and model</a>
+<a href="/admin/context?tab=models">Model connections</a>
 <a href="/admin/context?tab=review">Suggestions and backlog</a></p>"""
         message = _result_message(request.query_params, data)
         if message:
@@ -1010,7 +1012,7 @@ picker.addEventListener('change', () => {
         except (StoreError, ValueError) as exc:
             return error(exc)
         assignment = data["config"]["assignments"].get("transcription")
-        return page(_recording_page(job, assignment))
+        return page(_recording_page(job, assignment), title="Recording")
 
     @routes.get("/admin/context/jobs/{identity}", include_in_schema=False)
     async def job_page(identity: str, request: Request) -> Response:

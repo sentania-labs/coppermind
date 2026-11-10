@@ -669,7 +669,7 @@ class ModelProvider:
                 raise
             raise ProviderError(
                 f"The transcription service's answer could not be used ({exc}). Check the "
-                "connection address and key under Connections and model, then Transcription setup.",
+                "connection address and key under Model connections, then Transcription setup.",
                 "transcription-provider",
             ) from exc
         transcript = parse_transcript(result)

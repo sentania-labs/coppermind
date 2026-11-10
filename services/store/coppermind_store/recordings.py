@@ -57,7 +57,7 @@ REPLY_KEPT = 4000
 RETRY_BACKOFF_S = 1800
 NOT_SET_UP = (
     "No transcription service is set up, so a recording on its own cannot be accepted. "
-    "In Admin open Connections and model, find Transcription setup, choose a connection "
+    "In Admin open Model connections, find Transcription setup, choose a connection "
     "and a model and turn it on."
 )
 # How much of a transcript the recording page shows; the whole text is in the note's source.
@@ -487,7 +487,7 @@ class Recordings:
         except ValueError as exc:
             raise ProviderError(
                 "The Transcription connection is not set up: "
-                f"{exc}. Open Connections and model, find Transcription setup, and choose one.",
+                f"{exc}. Open Model connections, find Transcription setup, and choose one.",
                 "connection-missing",
             ) from exc
         path, revision = await asyncio.to_thread(

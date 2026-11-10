@@ -1,4 +1,4 @@
-"""Admin: set up transcription, watch recordings on the Jobs tab, retry a failed one."""
+"""Admin: set up transcription, watch recordings, retry a failed one."""
 
 from coppermind.context_config import ContextConfig, FeatureAssignment, ModelConnection
 from services.admin.tests.browser import admin_browser as admin_browser
@@ -186,7 +186,7 @@ def test_each_state_of_a_recording_reads_as_a_sentence(signed_in):
     # No raw-ID diagnostics page: the link goes to the recording's own page.
     assert "/admin/notes/N1" not in page and "Open note" not in page
     assert '<a href="/admin/context/recordings/' + "3" * 64 + '">Read the transcript</a>' in page
-    assert "could not find the endpoint or the model. Try again when you are ready." in page
+    assert "could not find the endpoint or the model." in page and "Try again when" not in page
     assert "HTTP 404" not in page
     # A settings failure links to the settings that can cure it, beside Retry.
     assert 'href="/admin/context?tab=models#transcription">Check the connection and model' in page
@@ -282,7 +282,7 @@ def test_the_recording_page_shows_the_note_and_transcript_with_ids_only_in_detai
     response = client.get(f"/admin/context/recordings/{'a' * 64}")
     assert response.status_code == 200
     page = response.text
-    head, details = page.split("<details>", 1)
+    head, details = page.split("<summary>Technical details</summary>", 1)
     assert "Transcript ready. Note in Review: Standup" in head
     assert "Review/Standup.md" in head and "Speaker 1: Hello &lt;b&gt;there&lt;/b&gt;." in head
     assert "01NOTEIDXXXXXXXXXXXXXXXXXX" not in head and "01SOURCEID" not in head

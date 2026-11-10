@@ -177,7 +177,7 @@ to a concurrent edit.
 ### Transcription service
 
 A recording handed in on its own is transcribed by a service chosen under **Admin >
-Connections and model > Transcription setup**. It uses the same connections as enrichment, any OpenAI-compatible
+Settings > Model connections > Transcription setup**. It uses the same connections as enrichment, any OpenAI-compatible
 one that offers `POST /audio/transcriptions` (Anthropic does not). The assignment holds the
 connection, the model name (typed, because a transcription service may not publish a model
 list), the reply format (`diarized_json`, the default, or `verbose_json`), the wait limit

@@ -833,6 +833,7 @@ def test_a_refused_note_says_what_happened_and_offers_a_working_action(signed_in
     assert re.search(r'name="key-\d+-default" value="[^"]*" autofocus', block)
     assert 'field-account" open' not in focused
 
+
 def test_a_recording_that_could_not_be_transcribed_is_listed_with_its_reason(signed_in):
     client, _ = signed_in
     store = ReadOnlyStore()
@@ -840,7 +841,7 @@ def test_a_recording_that_could_not_be_transcribed_is_listed_with_its_reason(sig
         ProblemInfo(
             kind="recording",
             reference="Standup <b>",
-            reason="The transcription service answered HTTP 404. It has no transcription endpoint.",
+            reason="The transcription service could not find the endpoint or the model.",
         )
     ]
     _install(client, store)
@@ -849,5 +850,6 @@ def test_a_recording_that_could_not_be_transcribed_is_listed_with_its_reason(sig
 
     assert "Recording transcription" in page
     assert "Standup &lt;b&gt;" in page
-    assert "It has no transcription endpoint." in page
-    assert '<a href="/admin/context?tab=review">Recording jobs</a>' in page
+    assert "could not find the endpoint or the model." in page
+    assert '<a href="/admin/context?tab=review">Retry or read the details</a>' in page
+    assert 'href="/admin/context?tab=models#transcription">Transcription settings' in page
