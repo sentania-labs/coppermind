@@ -105,6 +105,14 @@ class NoteLifecycle:
             validate_review(note, self.context.store.control.schema(), self._default_timezone())
         except ValueError as exc:
             problem = str(exc)
+        from coppermind_store.reconciler import note_collisions
+
+        copies = await note_collisions(self.context.store, note.id)
+        explained = [reason for reason in copies if "Compare them" in reason]
+        if explained or copies:
+            problem = " ".join(
+                dict.fromkeys([*([problem] if problem else []), *(explained or copies)])
+            )
         update = self.context.read("calendar-followups", {}).get(note.id)
         if update is not None:
             update = dict(update, candidates=await self.context.calendar_candidates(note))
