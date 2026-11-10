@@ -135,6 +135,17 @@ exhaustive; the full one is in [architecture.md](architecture.md)'s
 | Single sign-on for Admin | A local claimed password is enough while Admin is reachable only on the lab's loopback network | Admin is ever exposed outside that network |
 | Multi-arch images, per-component versions | The lab runs one architecture; one tag already stamps every image consistently | The org's practice changes, or an arm64 host appears |
 
+## Brainstorming
+
+These are ideas the owner has raised for someday, not committed work, in no particular order, and nothing here is scheduled.
+
+- **Re-transcription:** Trigger another transcription from the companion or Admin when a recording needs another pass. This depends on the audio still being present, so it is retained until the note is marked reviewed.
+- **Listen to recordings:** Ask the companion to listen to the audio and capture a quote or answer a question about it. This also depends on the audio still being present before the note is marked reviewed.
+- **Companion as the interface:** Evolve Coppermind from a datastore into a harness or agent, with the companion for finding notes, answering questions about past conversations, and building presentations. The broader workflow runs from audio through transcription, speaker identification, and review with suggestions; an external agent is sufficient for now.
+- **Meeting action items:** Identify action items in meeting notes without acting on them for now, with a summarizing prompt coming later.
+- **Transcription accuracy:** Compare transcription services against each other, then keep transcripts as received without a correction feature.
+- **Calendar context for transcription:** Find calendar candidates before transcription and give attendee names to the transcription service to help it recognize the meeting's participants.
+
 ## Workflow addendum
 
 The first real workflow was checked against v0.1.0 on a live instance on
