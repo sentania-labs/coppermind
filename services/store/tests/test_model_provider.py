@@ -263,3 +263,104 @@ async def test_a_gateway_that_ignores_streaming_still_works():
         {},
     )
     assert usage["streamed"] is False
+
+
+def _anthropic_events(*events):
+    return b"".join(
+        f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode() for event in events
+    )
+
+
+def _anthropic_stream(stop_reason="end_turn"):
+    # The event sequence is the one in Anthropic's streaming messages documentation.
+    return _anthropic_events(
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-test",
+                "content": [],
+                "usage": {"input_tokens": 25, "output_tokens": 1},
+            },
+        },
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "ping"},
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": '{"ok": tr'},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": "ue}"},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+            "usage": {"output_tokens": 15},
+        },
+        {"type": "message_stop"},
+    )
+
+
+def _anthropic_adapter(body):
+    def serve(request):
+        assert json.loads(request.content)["stream"] is True
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+    return ModelProvider(httpx.MockTransport(serve))
+
+
+async def _suggest_anthropic(adapter):
+    return await adapter.suggest(
+        ModelConnection(id="a", name="A", provider="anthropic"),
+        "k",
+        FeatureAssignment(model="claude-test"),
+        "JSON",
+        {},
+    )
+
+
+async def test_an_anthropic_event_stream_is_folded_into_one_reply():
+    result, usage = await _suggest_anthropic(_anthropic_adapter(_anthropic_stream()))
+    assert result == {"ok": True}
+    assert usage["streamed"] is True
+    assert usage["input_tokens"] == 25 and usage["output_tokens"] == 15
+
+
+async def test_an_anthropic_stream_cut_off_by_the_token_limit_is_incomplete():
+    with pytest.raises(ProviderError) as caught:
+        await _suggest_anthropic(_anthropic_adapter(_anthropic_stream("max_tokens")))
+    assert caught.value.rule == "provider-incomplete"
+    assert caught.value.reply == '{"ok": true}'
+
+
+async def test_a_reply_that_never_ends_stops_at_the_longest_call_allowed(monkeypatch):
+    monkeypatch.setattr("coppermind_store.model_provider.MAX_CALL_SECONDS", 0.5)
+    # Steady output, so the 1 s silence limit never fires; only the overall cap can.
+    async with SlowEngine(tokens=400, tps=25) as engine:
+        with pytest.raises(ProviderError) as caught:
+            await ModelProvider().request(
+                engine.connection, "", "POST", "/chat/completions", timeout=1, payload={}
+            )
+    assert caught.value.rule == "provider-too-long" and caught.value.waiting
+
+
+async def test_admin_waits_for_a_slow_model_test_but_not_for_other_actions():
+    from coppermind.store_client import MODEL_TEST_TIMEOUT_S, HttpStoreClient
+
+    waits = {}
+
+    def serve(request):
+        waits[request.url.path.rsplit("/", 1)[1]] = request.extensions["timeout"]["read"]
+        return httpx.Response(200, json={})
+
+    client = HttpStoreClient("http://store", "t", timeout=30, transport=httpx.MockTransport(serve))
+    await client.context_action("test-model", {})
+    await client.context_action("snapshot", {})
+    assert waits == {"test-model": MODEL_TEST_TIMEOUT_S, "snapshot": 30}
+    assert MODEL_TEST_TIMEOUT_S > 120 + 30

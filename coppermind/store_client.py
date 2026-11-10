@@ -85,6 +85,7 @@ from coppermind.store_protocol import (
 
 INTERNAL_PREFIX = "/internal/v1"
 PURGE_TIMEOUT_S = 600.0
+MODEL_TEST_TIMEOUT_S = 900.0
 _NOTE_SOURCES = TypeAdapter(list[NoteSourceInfo])
 _PROBLEMS = TypeAdapter(list[ProblemInfo])
 _RECONCILER_NOTICES = TypeAdapter(list[ReconcilerNotice])
@@ -123,6 +124,7 @@ class HttpStoreClient:
             "POST",
             f"{INTERNAL_PREFIX}/context/{_segment(action)}",
             json=payload,
+            timeout=MODEL_TEST_TIMEOUT_S if action == "test-model" else httpx.USE_CLIENT_DEFAULT,
         )
         return response.json()
 
