@@ -819,11 +819,12 @@ class ModelProvider:
                 stats = CallStats()
                 empty_answers = 0
                 recovering = False
+                poll_immediately = bool(remote_job_id)
                 while True:
                     if time.monotonic() >= deadline:
                         raise exhausted()
                     try:
-                        async with asyncio.timeout(max(0, deadline - time.monotonic())):
+                        async with asyncio.timeout(max(0, deadline - time.monotonic())) as budget:
                             if result is None:
                                 result, stats = await upload(True)
                                 remote_id = result.get("id")
@@ -869,6 +870,10 @@ class ModelProvider:
                                     job_resubmits += 1
                                     remote_job_id = ""
                                     recovering = True
+                                    deadline = time.monotonic() + job_budget_seconds(
+                                        duration_seconds
+                                    )
+                                    budget.reschedule(deadline)
                                     update(
                                         "The transcription service failed the job; "
                                         "the recording will be sent again."
@@ -890,7 +895,9 @@ class ModelProvider:
                                 empty_answers = empty_answers + 1 if state is None else 0
                                 if empty_answers >= JOB_EMPTY_ANSWERS:
                                     raise exhausted()
-                                await asyncio.sleep(JOB_POLL_SECONDS)
+                                if not poll_immediately:
+                                    await asyncio.sleep(JOB_POLL_SECONDS)
+                                poll_immediately = False
                                 result, stats = await self._exchange(
                                     connection,
                                     key,
@@ -913,6 +920,7 @@ class ModelProvider:
                             job_resubmits += 1
                             remote_job_id = ""
                             recovering = True
+                            deadline = time.monotonic() + job_budget_seconds(duration_seconds)
                             update(
                                 "The transcription service lost the job; "
                                 "the recording will be sent again."

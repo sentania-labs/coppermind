@@ -826,3 +826,84 @@ async def test_repeated_loss_hits_cap_and_restart_resumes_poll(recording, monkey
         "stable"
     ] * model_provider.JOB_MAX_RESUBMITS
     assert updates[-1][2] == model_provider.JOB_MAX_RESUBMITS
+
+
+async def test_expired_saved_job_is_polled_without_waiting_for_poll_interval(
+    recording, monkeypatch
+):
+    import time
+
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 1)
+    requests = []
+
+    async def handle(request):
+        requests.append(request.method)
+        return httpx.Response(200, json={"status": "done", "result": REPLY})
+
+    connection = ModelConnection(
+        id="stt", name="Speech", provider="compatible", base_url="http://127.0.0.1:1/v1"
+    )
+    result, _ = await ModelProvider(httpx.MockTransport(handle)).transcribe(
+        connection,
+        "",
+        assignment(wait_s=0.1),
+        recording,
+        filename=recording.name,
+        mime_type="audio/mp4",
+        size_bytes=recording.stat().st_size,
+        job_id="stable",
+        duration_seconds=7201,
+        remote_job_id="saved",
+        job_started=time.time() - 86400,
+    )
+    assert result["segments"]
+    assert requests == ["GET"]
+
+
+@pytest.mark.parametrize("failure", ["lost", "internal"])
+async def test_recovery_has_time_to_resubmit_when_old_deadline_is_near(
+    recording, monkeypatch, failure
+):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    monkeypatch.setattr(model_provider, "JOB_MIN_SECONDS", 0.2)
+    monkeypatch.setattr(model_provider, "JOB_PACE_HEADROOM", 0)
+    monkeypatch.setattr(model_provider, "MIN_RETRY_AFTER_SECONDS", 0.12)
+    requests = []
+
+    async def handle(request):
+        requests.append((request.method, request.headers.get("Idempotency-Key")))
+        if len(requests) == 1:
+            return httpx.Response(202, json={"id": "first", "status": "queued"})
+        if len(requests) == 2:
+            await asyncio.sleep(0.12)
+            if failure == "lost":
+                return httpx.Response(404, json={"error": {"reason": "not_found"}})
+            return httpx.Response(200, json={"status": "failed", "error": {"reason": "internal"}})
+        if request.method == "POST":
+            if failure == "lost":
+                await asyncio.sleep(0.12)
+            return httpx.Response(
+                202, json={"id": "replacement", "status": "done", "result": REPLY}
+            )
+        raise AssertionError("unexpected request")
+
+    connection = ModelConnection(
+        id="stt", name="Speech", provider="compatible", base_url="http://127.0.0.1:1/v1"
+    )
+    result, _ = await ModelProvider(httpx.MockTransport(handle)).transcribe(
+        connection,
+        "",
+        assignment(),
+        recording,
+        filename=recording.name,
+        mime_type="audio/mp4",
+        size_bytes=recording.stat().st_size,
+        job_id="stable",
+        duration_seconds=7201,
+    )
+    assert result["segments"]
+    assert requests == [("POST", "stable"), ("GET", None), ("POST", "stable")]
