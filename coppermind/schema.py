@@ -677,6 +677,19 @@ def shipped_key_upgrades() -> dict[str, tuple[list[KeyDefinition], KeyDefinition
             ],
             shipped["date"],
         ),
+        "type": (
+            [
+                KeyDefinition(
+                    name="type",
+                    kind="enum",
+                    required=True,
+                    default="reference",
+                    vocabulary=["work", "personal", "reference", "journal"],
+                    description="What the note is.",
+                )
+            ],
+            shipped["type"],
+        ),
         "time": (
             [
                 KeyDefinition(
@@ -739,11 +752,14 @@ def default_schema() -> FrontmatterSchema:
             ),
             KeyDefinition(
                 name="type",
-                kind="enum",
+                kind="string",
                 required=True,
                 default="reference",
                 vocabulary=["work", "personal", "reference", "journal"],
-                description="What the note is.",
+                description=(
+                    "What the note is. Reviewed notes file under a folder of this name; "
+                    "the listed values are suggestions and any other text is accepted."
+                ),
             ),
             KeyDefinition(
                 name="context",

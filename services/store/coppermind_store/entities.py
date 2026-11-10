@@ -943,6 +943,7 @@ class EntityService:
                 return
             ledger = self.load()
             changed = False
+            updated_entities: set[str] = set()
             metadata = [
                 json.dumps(value, ensure_ascii=False, default=str)
                 for value in note.frontmatter.values()
@@ -950,20 +951,29 @@ class EntityService:
             for entity in ledger.entities.values():
                 for fact in entity.facts:
                     ev = fact.evidence
+                    if ev.note_id != note.id:
+                        continue
                     texts = metadata if fact.origin == "metadata" else [note.body]
-                    if (
-                        ev.note_id == note.id
-                        and ev.note_hash == before_hash
-                        and (
-                            not ev.quote
-                            or ev.source_versions
-                            or any(ev.quote in text for text in texts)
-                        )
-                    ):
-                        ev.note_hash, ev.path = note.content_hash, note.path
+                    moved = ev.path != note.path
+                    rewritten = ev.note_hash == before_hash and (
+                        not ev.quote
+                        or ev.source_versions
+                        or any(ev.quote in text for text in texts)
+                    )
+                    if moved or rewritten:
+                        ev.path = note.path
+                        if rewritten:
+                            ev.note_hash = note.content_hash
                         entity.version += 1
                         changed = True
+                        updated_entities.add(entity.id)
             if changed:
+                self.save(ledger)
+                # Dossier pages carry path-qualified evidence links. Refresh
+                # them as part of filing, rather than leaving stale links until
+                # the next reconciliation pass.
+                for entity_id in sorted(updated_entities):
+                    self.project(ledger, ledger.entities[entity_id])
                 self.save(ledger)
             for job in self.store.context.jobs():
                 if (

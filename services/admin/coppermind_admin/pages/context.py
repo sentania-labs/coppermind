@@ -334,6 +334,8 @@ def _recording_state(job: dict[str, Any], assignment: dict[str, Any] | None) -> 
             return text + f" {job['audio_kept']}"
         return text
     if state == "running":
+        if job.get("error_rule") == "transcription-recovering":
+            return job["error"]
         return (
             f"Transcribing since {_calendar_time(job['started_at'])} "
             f"(attempt {job['attempts']} of {job['attempt_limit']}). This can take hours for "

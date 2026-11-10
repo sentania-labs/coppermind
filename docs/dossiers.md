@@ -1,7 +1,7 @@
 # People and company dossiers
 
 Dossiers are undated reference pages in `People/` and `Companies/`. Ordinary
-reviewed notes continue to file under `Notes/{yyyy}/{yyyy-mm}/`. Names and
+reviewed notes continue to file under `{type}/{yyyy}/{yyyy-mm}/`. Names and
 aliases are searchable through the entity API. Two people can have the same
 name; exact email addresses and explicit identity decisions distinguish them.
 A company has its own identity. A reviewed note's explicit `account` creates or

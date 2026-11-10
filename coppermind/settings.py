@@ -61,7 +61,11 @@ class NotesSettings(BaseModel):
 
     notes_folder: str = Field(
         default="Notes",
-        description="Reviewed notes are filed by year and month, like Notes/2026/2026-04/.",
+        description=(
+            "Reviewed notes are filed under a folder named for their type, "
+            "then year and month, like work/2026/2026-04/. "
+            "This folder is used when a note has no usable type."
+        ),
     )
     review_folder: str = Field(default="Review", description="Folder for notes awaiting review.")
     trash_folder: str = Field(default="_Trash", description="Folder for deleted notes.")

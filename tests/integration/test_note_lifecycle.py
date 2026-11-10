@@ -41,7 +41,7 @@ async def test_review_requires_meeting_time_and_records_final_human_metadata(sto
     await file_note(store, note.id)
     result = await store.get_note(note.id)
     assert result.body == note.body
-    assert result.path.startswith("Notes/2026/2026-10/")
+    assert result.path.startswith("work/2026/2026-10/")
     assert result.frontmatter["reviewed"] is True
     dossiers = store.context.read("dossiers", {})
     assert len(dossiers) == 1
@@ -409,7 +409,7 @@ async def test_target_frontmatter_and_stuck_work_note_file_into_month_folder(sto
     assert await store.get_problems() == []
 
     filed_stuck = await store.get_note(stuck_id)
-    assert filed_stuck.path.startswith("Notes/2026/2026-10/")
+    assert filed_stuck.path.startswith("work/2026/2026-10/")
     assert "time" not in filed_stuck.frontmatter
     assert "timezone" not in filed_stuck.frontmatter
     raw_stuck = (store.notes_root / filed_stuck.path).read_text(encoding="utf-8")
@@ -463,7 +463,7 @@ async def test_ingest_writes_date_as_a_datetime_and_files_without_edits(store):
     assert completed["state"] == "complete"
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
     filed = await store.get_note(note.id)
-    assert filed.path.startswith("Notes/2026/2026-10/")
+    assert filed.path.startswith("work/2026/2026-10/")
 
 
 async def test_legacy_date_and_hh_mm_time_keep_filing_and_a_legacy_timezone_is_ignored(store):
@@ -478,7 +478,7 @@ async def test_legacy_date_and_hh_mm_time_keep_filing_and_a_legacy_timezone_is_i
         {"note_id": legacy.id, "if_match": legacy.content_hash, "confirmation": "Complete review"}
     )
     assert await file_note(store, legacy.id) is True
-    assert (await store.get_note(legacy.id)).path.startswith("Notes/2026/2026-10/")
+    assert (await store.get_note(legacy.id)).path.startswith("work/2026/2026-10/")
 
     explicit_tz = await store.create_note(
         CreateNote(
@@ -498,7 +498,7 @@ async def test_legacy_date_and_hh_mm_time_keep_filing_and_a_legacy_timezone_is_i
         }
     )
     assert await file_note(store, explicit_tz.id) is True
-    assert (await store.get_note(explicit_tz.id)).path.startswith("Notes/2026/2026-10/")
+    assert (await store.get_note(explicit_tz.id)).path.startswith("work/2026/2026-10/")
 
     invalid_tz = await store.create_note(
         CreateNote(
@@ -537,7 +537,7 @@ async def test_legacy_date_and_hh_mm_time_keep_filing_and_a_legacy_timezone_is_i
         }
     )
     assert await file_note(store, unknown_with_time.id) is True
-    assert (await store.get_note(unknown_with_time.id)).path.startswith("Notes/2026/2026-10/")
+    assert (await store.get_note(unknown_with_time.id)).path.startswith("work/2026/2026-10/")
 
 
 async def test_time_with_utc_offset_is_rejected_with_clear_problems_message(store):
@@ -590,7 +590,7 @@ async def test_disagreeing_date_and_time_uses_date_and_flags_date_mismatch_probl
     await indexer.catch_up(store)
 
     filed = await store.get_note(note.id)
-    assert filed.path.startswith("Notes/2026/2026-09/")
+    assert filed.path.startswith("work/2026/2026-09/")
     assert filed.path.endswith("2026-09-15 Mismatch note.md")
 
     by_range = await store.list_notes(
@@ -686,7 +686,7 @@ async def test_persisted_schema_requiring_date_accepts_time_only_notes(store):
         }
     )
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
-    assert (await store.get_note(ingested_note.id)).path.startswith("Notes/2026/2026-10/")
+    assert (await store.get_note(ingested_note.id)).path.startswith("work/2026/2026-10/")
 
 
 def test_validate_review_rejects_offset_on_any_type_but_malformed_time_only_on_work(store):

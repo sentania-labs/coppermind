@@ -7,9 +7,11 @@ documented `diarized_json` shape after a delay, over a real socket.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -170,7 +172,10 @@ async def test_reviewed_recording_is_removed_with_a_receipt_and_transcript(store
     listed = next(item for item in listing if item["id"] == accepted["id"])
     assert detail["note_status"] == listed["note_status"] == "filed"
     assert detail["note_path"] == listed["note_path"] == note.path
-    assert note.path.startswith("Notes/")
+    assert note.frontmatter["type"] == "reference"
+    year, month = note.path.split("/")[1:3]
+    assert note.path == f"reference/{year}/{month}/Standup.md"
+    assert re.fullmatch(r"\d{4}", year) and re.fullmatch(rf"{year}-\d{{2}}", month)
     assert "Audio was removed after review" in note.body
     assert hashlib.sha256(AUDIO).hexdigest() in note.body
     assert str(len(AUDIO)) in note.body and "7.5" in note.body
@@ -830,7 +835,7 @@ async def test_a_non_finite_duration_is_treated_as_unknown(store, duration):
     assert (await context.recording_status({"id": job["id"]}))["state"] == "succeeded"
 
 
-async def test_a_restart_on_the_jobs_path_asks_again_under_the_same_id(store, monkeypatch):
+async def test_a_restart_on_the_jobs_path_resumes_the_saved_job(store, monkeypatch):
     from coppermind_store import model_provider
 
     monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
@@ -839,21 +844,32 @@ async def test_a_restart_on_the_jobs_path_asks_again_under_the_same_id(store, mo
         job = await context.accept_recording(
             request(await store_audio(store), metadata={"duration_seconds": 7500})
         )
+        rewind(
+            context,
+            job["id"],
+            state="running",
+            attempts=1,
+            remote_job_id="local-job",
+            remote_job_started=datetime.now(UTC).timestamp(),
+        )
         assert await context.recordings.tick() is True
-        first = service.requests[0]["body"]
-        rewind(context, job["id"], state="running", attempts=1, transcribed=False)
-        assert await context.recordings.tick() is True
-    ident = f"{job['id']}-0".encode()
-    assert b'name="id"\r\n\r\n' + ident in first
-    assert b'name="id"\r\n\r\n' + ident in service.requests[2]["body"]
+    assert len(service.requests) == 1
+    assert service.requests[0]["path"].startswith("GET /v1/audio/transcriptions/jobs/local-job ")
     done = await context.recording_status({"id": job["id"]})
     assert done["state"] == "succeeded" and done["attempts"] == 1
+    finished = context.recordings.load(job["id"])
+    assert (finished.remote_job_id, finished.remote_job_started, finished.remote_job_resubmits) == (
+        "",
+        0,
+        0,
+    )
 
 
-async def test_a_job_the_service_failed_is_asked_for_again_under_a_new_id(store, monkeypatch):
+async def test_a_failed_job_retries_with_the_same_key_and_stops_at_the_cap(store, monkeypatch):
     from coppermind_store import model_provider
 
     monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    monkeypatch.setattr(model_provider, "MIN_RETRY_AFTER_SECONDS", 0)
     async with Service(jobs=True, job_status="failed") as service:
         context = await setup_transcription(store, service)
         job = await context.accept_recording(
@@ -861,14 +877,43 @@ async def test_a_job_the_service_failed_is_asked_for_again_under_a_new_id(store,
         )
         await context.recordings.tick()
         failed = await context.recording_status({"id": job["id"]})
-        assert failed["state"] == "failed" and failed["attempts"] == 1
+        assert failed["state"] == "failed" and failed["error_rule"] == "transcription-unfinished"
         service.job_status = "done"
-        rewind(context, job["id"], retry_after="")
+        await context.retry_recording({"id": job["id"]})
         await context.recordings.tick()
-    first, second = (r["body"] for r in service.requests if r["path"].startswith("POST"))
-    assert b'name="id"\r\n\r\n' + f"{job['id']}-0".encode() in first
-    assert b'name="id"\r\n\r\n' + f"{job['id']}-1".encode() in second
+    keys = [
+        r["headers"]["idempotency-key"] for r in service.requests if r["path"].startswith("POST")
+    ]
+    assert keys == [job["id"]] * (model_provider.JOB_MAX_RESUBMITS + 2)
     assert (await context.recording_status({"id": job["id"]}))["state"] == "succeeded"
+
+
+async def test_a_service_busy_for_longer_than_the_job_budget_before_accepting_still_waits(
+    store, monkeypatch
+):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    monkeypatch.setattr(model_provider, "JOB_PACE_HEADROOM", 0)
+    monkeypatch.setattr(model_provider, "JOB_MIN_SECONDS", 0.3)
+    async with Service(jobs=True, status=429) as service:
+        context = await setup_transcription(store, service)
+        job = await context.accept_recording(
+            request(await store_audio(store), metadata={"duration_seconds": 7500})
+        )
+        for _ in range(2):
+            assert await context.recordings.tick() is True
+            waiting = await context.recording_status({"id": job["id"]})
+            assert waiting["state"] == "queued" and waiting["attempts"] == 0
+            assert waiting["error_rule"] == "transcription-busy"
+            assert context.recordings.load(job["id"]).remote_job_started == 0
+            await asyncio.sleep(0.4)
+            rewind(context, job["id"], retry_after=datetime.now(UTC).isoformat())
+        service.status = 200
+        assert await context.recordings.tick() is True
+    done = await context.recording_status({"id": job["id"]})
+    assert done["state"] == "succeeded" and done["attempts"] == 1
+    assert len([r for r in service.requests if r["path"].startswith("POST")]) == 3
 
 
 @pytest.mark.parametrize("job_status", ["running", None])
@@ -888,7 +933,7 @@ async def test_a_wedged_service_ends_as_a_retriable_problem_and_frees_the_worker
         await context.recordings.tick()
         failed = await context.recording_status({"id": wedged["id"]})
         assert failed["state"] == "failed" and failed["error_rule"] == "transcription-unfinished"
-        assert "did not finish" in failed["error"]
+        assert "did not finish this recording" in failed["error"]
         # The worker is free for the next recording, and the failure waits for a person.
         other = await context.accept_recording(
             request(
@@ -1027,3 +1072,55 @@ async def test_unmatched_recording_creates_review_note_with_capture_time(store):
     assert note.path.startswith("Review/")
     assert str(note.frontmatter["date"]).startswith("2026-11-09T09:30")
     assert not note.frontmatter.get("meeting")
+
+
+async def test_recovering_shared_recording_keeps_audio_until_its_note_is_reviewed(
+    store, monkeypatch
+):
+    import httpx
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        first = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+        second = await context.accept_recording(
+            request(audio, external_source_id="plaud/rec-2", metadata={"duration_seconds": 7500})
+        )
+        note = await store.get_note(
+            (await context.recording_status({"id": first["id"]}))["note_id"]
+        )
+        await store.patch_frontmatter(
+            note.id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
+        )
+        assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
+        rewind(
+            context,
+            second["id"],
+            state="running",
+            attempts=1,
+            remote_job_id="lost-job",
+            remote_job_started=datetime.now(UTC).timestamp(),
+        )
+        archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+        requests = []
+
+        async def handle(http_request):
+            requests.append(http_request.method)
+            assert archive.read_bytes() == AUDIO
+            if http_request.method == "GET":
+                return httpx.Response(404, json={"error": {"reason": "not_found"}})
+            assert http_request.headers["idempotency-key"] == second["id"]
+            assert AUDIO in await http_request.aread()
+            return httpx.Response(202, json={"id": "new-job", "status": "done", "result": REPLY})
+
+        context.provider.transport = httpx.MockTransport(handle)
+        assert await context.recordings.tick() is True
+        assert requests == ["GET", "POST"]
+        assert archive.read_bytes() == AUDIO
+        assert not context.recordings.load(first["id"]).audio_removed
+        assert (await context.recording_status({"id": second["id"]}))["state"] == "succeeded"
+        assert await context.recordings.tick() is False
+        assert archive.read_bytes() == AUDIO

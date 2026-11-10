@@ -413,7 +413,7 @@ step "edit the Review note, revise the source, and prove the note stays his"
 compose exec -T store python3 -c \
     'import sys; p = sys.argv[1]; t = open(p).read(); t = t.replace("reviewed: false", "reviewed: true", 1); open(p, "w").write(t.replace("Target architecture agreed", "Captain corrected the note", 1))' \
     "/data/notes/$ingest_note_path"
-ingest_month_path="Notes/2026/2026-09/${ingest_note_path##*/}"
+ingest_month_path="work/2026/2026-09/${ingest_note_path##*/}"
 wait_for_note_path "$ingest_note_id" "$ingest_month_path"
 ingest_note_path="$ingest_month_path"
 projection_path="_Sources/2026/2026-09/$source_id.md"
@@ -624,7 +624,7 @@ step "edit the file on the volume behind the store's back, as a device would"
 compose exec -T editor python3 -c \
     'import sys; p = sys.argv[1]; t = open(p).read(); open(p, "w").write(t.replace("reviewed: false", "reviewed: true", 1))' \
     "/data/notes/$note_path"
-month_path="Notes/2026/2026-09/${note_path##*/}"
+month_path="work/2026/2026-09/${note_path##*/}"
 wait_for_note_path "$note_id" "$month_path"
 note_path="$month_path"
 device_edit="$(compose exec -T editor cat "/data/notes/$note_path")"
@@ -723,8 +723,8 @@ assert json.load(open(sys.argv[2]))["next_cursor"] is None' \
 ok "two pages returned all five notes exactly once"
 
 step "move and rename a note on the volume, then find it by the same id"
-reconciled_path="Work/Operations Runbook.md"
-compose exec -T editor mkdir -p /data/notes/Work
+reconciled_path="Archive/Operations Runbook.md"
+compose exec -T editor mkdir -p /data/notes/Archive
 compose exec -T editor mv "/data/notes/$runbook_note_path" "/data/notes/$reconciled_path"
 wait_for_note_path "$runbook_note_id" "$reconciled_path"
 ok "the scheduled scan followed the identity while the API kept answering"

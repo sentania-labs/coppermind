@@ -677,13 +677,11 @@ async def test_an_invalid_frontmatter_patch_names_the_field_and_changes_nothing(
     with pytest.raises(ValidationFailed) as raised:
         await store.patch_frontmatter(
             created.id,
-            PatchFrontmatter(set={"type": "incident"}),
+            PatchFrontmatter(set={"context": "incident"}),
             created.content_hash,
         )
 
-    assert raised.value.errors == [
-        "type: 'incident' is not one of work, personal, reference, journal"
-    ]
+    assert raised.value.errors == ["context: 'incident' is not one of internal, external, personal"]
     assert path.read_bytes() == before
 
     with pytest.raises(ValidationFailed) as changed_id:
@@ -824,7 +822,10 @@ async def test_patching_source_associations_is_refused_and_changes_nothing(
     assert path.read_bytes() == before
 
 
-async def test_unsetting_a_required_field_is_refused_and_changes_nothing(store: LocalStore):
+@pytest.mark.parametrize("key", ["type", "context"])
+async def test_unsetting_a_required_field_is_refused_and_changes_nothing(
+    store: LocalStore, key: str
+):
     created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
     path = store.notes_root / created.path
     before = path.read_bytes()
@@ -832,11 +833,11 @@ async def test_unsetting_a_required_field_is_refused_and_changes_nothing(store: 
     with pytest.raises(ValidationFailed) as raised:
         await store.patch_frontmatter(
             created.id,
-            PatchFrontmatter(unset=["type"]),
+            PatchFrontmatter(unset=[key]),
             created.content_hash,
         )
 
-    assert raised.value.errors == ["type: required, so it cannot be removed"]
+    assert raised.value.errors == [f"{key}: required, so it cannot be removed"]
     assert path.read_bytes() == before
 
 

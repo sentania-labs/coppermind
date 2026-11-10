@@ -392,7 +392,7 @@ async def test_a_refusal_heavy_sweep_keeps_letting_other_work_run(
     root = store.notes_root / "Review"
     root.mkdir(parents=True, exist_ok=True)
     for index in range(5):
-        (root / f"Refused {index}.md").write_bytes(b"---\ntype: therapy-session\n---\n")
+        (root / f"Refused {index}.md").write_bytes(b"---\ncontext: therapy-session\n---\n")
     ticks = 0
     running = True
 
@@ -435,7 +435,7 @@ async def test_adoption_retains_nothing_per_path_it_was_offered(store: LocalStor
     root = store.notes_root / "Review"
     root.mkdir(parents=True, exist_ok=True)
     for index in range(3):
-        (root / f"Refused {index}.md").write_bytes(b"---\ntype: therapy-session\n---\n")
+        (root / f"Refused {index}.md").write_bytes(b"---\ncontext: therapy-session\n---\n")
     (root / "Healthy.md").write_bytes(b"# Healthy\n")
 
     counts = await reconcile_once(store)
@@ -471,7 +471,7 @@ async def test_an_invalid_device_created_file_is_reported_and_left_byte_exact(
 ):
     unknown = store.notes_root / "Review" / "Needs repair.md"
     unknown.parent.mkdir(parents=True, exist_ok=True)
-    original = b"---\ntype: not-a-real-type # keep this\n---\n# Needs repair\n"
+    original = b"---\ncontext: not-a-real-type # keep this\n---\n# Needs repair\n"
     unknown.write_bytes(original)
 
     counts = await reconcile_once(store)
@@ -522,7 +522,7 @@ async def test_a_broken_known_note_is_counted_apart_from_a_rejected_stranger(
     known = await store.create_note(CreateNote(title="Runbook", frontmatter={"type": "reference"}))
     (store.notes_root / known.path).write_bytes(b"---\nid: [\n---\n# Runbook\n")
     stranger = store.notes_root / "Review" / "Needs repair.md"
-    stranger.write_bytes(b"---\ntype: not-a-real-type\n---\n# Needs repair\n")
+    stranger.write_bytes(b"---\ncontext: not-a-real-type\n---\n# Needs repair\n")
 
     counts = await reconcile_once(store)
 
@@ -545,12 +545,12 @@ async def test_a_refusal_names_what_actually_happened(store: LocalStore):
         assert outcome == "invalid"
         return cause
 
-    bad_schema = await refusal("Bad schema.md", b"---\ntype: therapy-session\n---\n")
+    bad_schema = await refusal("Bad schema.md", b"---\ncontext: therapy-session\n---\n")
     bad_id = await refusal("Bad id.md", b"---\nid: not-a-ulid\n---\n# Hand edited\n")
     bad_endings = await refusal("Bad endings.md", b"---\rtags: [a]\r---\r# Phone\r")
     bad_block = await refusal("Bad block.md", b"---\nid: [\n---\n# Broken\n")
 
-    assert bad_schema == "keys the schema refused: type"
+    assert bad_schema == "keys the schema refused: context"
     assert bad_id == "the id it carries is not a valid identifier"
     assert bad_endings == "unsupported_line_endings"
     assert len({bad_schema, bad_id, bad_endings, bad_block}) == 4
@@ -560,7 +560,7 @@ async def test_a_refusal_never_carries_the_person_s_own_value(store: LocalStore)
     """Logs are collected and shipped, so a cause names keys, never content."""
     private = store.notes_root / "Personal" / "Journal.md"
     private.parent.mkdir(parents=True, exist_ok=True)
-    data = b"---\ntype: therapy-session\naccount: Acme\n---\n# Thursday\n"
+    data = b"---\ncontext: therapy-session\naccount: Acme\n---\n# Thursday\n"
     private.write_bytes(data)
 
     outcome, cause = await store.adopt_note(
@@ -570,7 +570,7 @@ async def test_a_refusal_never_carries_the_person_s_own_value(store: LocalStore)
     assert outcome == "invalid"
     assert "therapy-session" not in cause
     assert "Acme" not in cause
-    assert "type" in cause
+    assert "context" in cause
 
 
 async def test_the_schema_refuses_a_candidate_without_asking_for_a_connection(
@@ -579,7 +579,7 @@ async def test_the_schema_refuses_a_candidate_without_asking_for_a_connection(
     """An over-limit tree is rediscovered every pass, so a refusal stays cheap."""
     refused = store.notes_root / "Review" / "Out of vocabulary.md"
     refused.parent.mkdir(parents=True, exist_ok=True)
-    data = b"---\ntype: therapy-session\n---\n# Out of vocabulary\n"
+    data = b"---\ncontext: therapy-session\n---\n# Out of vocabulary\n"
     refused.write_bytes(data)
 
     def no_database(*args, **kwargs):
@@ -592,7 +592,7 @@ async def test_the_schema_refuses_a_candidate_without_asking_for_a_connection(
     )
 
     assert outcome == "invalid"
-    assert cause == "keys the schema refused: type"
+    assert cause == "keys the schema refused: context"
 
 
 async def test_a_property_left_blank_on_a_phone_is_filled_rather_than_refused(
@@ -1644,7 +1644,9 @@ async def test_a_refusal_of_the_schemas_own_default_points_at_the_schema(store: 
     """The person's file carries no such value, so the note is not what to fix."""
     schema = store.control.schema()
     keys = [
-        key.model_copy(update={"default": "note", "required": True}) if key.name == "type" else key
+        key.model_copy(update={"default": "note", "required": True})
+        if key.name == "context"
+        else key
         for key in schema.keys
     ]
     broken = schema.model_copy(update={"keys": keys})
@@ -1661,7 +1663,7 @@ async def test_a_refusal_of_the_schemas_own_default_points_at_the_schema(store: 
     )
 
     assert outcome == "invalid"
-    assert "own default" in cause and "type" in cause
+    assert "own default" in cause and "context" in cause
     assert "keys the schema refused" not in cause
     assert path.read_bytes() == data
 
@@ -1672,7 +1674,9 @@ async def test_a_refused_adoption_is_listed_on_problems_until_the_file_changes(
     """Admin Problems names the file and the cause; fixing the file clears it."""
     schema = store.control.schema()
     keys = [
-        key.model_copy(update={"default": "note", "required": True}) if key.name == "type" else key
+        key.model_copy(update={"default": "note", "required": True})
+        if key.name == "context"
+        else key
         for key in schema.keys
     ]
     state = store.control.store.read("schema")
@@ -1691,9 +1695,9 @@ async def test_a_refused_adoption_is_listed_on_problems_until_the_file_changes(
     await reconcile_once(store, unidentified=remembered)
 
     listed = [p for p in await store.get_problems() if p.kind == "adoption"]
-    assert [(p.reference, "no type yet" in p.reason and "default" in p.reason) for p in listed] == [
-        ("Review/Bare.md", True)
-    ]
+    assert [
+        (p.reference, "no context yet" in p.reason and "default" in p.reason) for p in listed
+    ] == [("Review/Bare.md", True)]
 
     path.unlink()
     await reconcile_once(store, unidentified=remembered)
@@ -1759,7 +1763,7 @@ async def test_a_refusal_clears_itself_when_the_default_is_corrected(store: Loca
         update={
             "keys": [
                 key.model_copy(update={"default": "note", "required": True})
-                if key.name == "type"
+                if key.name == "context"
                 else key
                 for key in schema.keys
             ]
@@ -1777,13 +1781,13 @@ async def test_a_refusal_clears_itself_when_the_default_is_corrected(store: Loca
     await reconcile_once(store, unidentified=remembered)
     await reconcile_once(store, unidentified=remembered)
     listed = [p for p in await store.get_problems() if p.kind == "adoption"]
-    assert [p.action for p in listed] == ["property:type"]
+    assert [p.action for p in listed] == ["property:context"]
     assert "Note properties" in listed[0].reason
 
     fixed = schema.model_copy(
         update={
             "keys": [
-                key.model_copy(update={"required": True}) if key.name == "type" else key
+                key.model_copy(update={"required": True}) if key.name == "context" else key
                 for key in schema.keys
             ]
         }
@@ -1792,4 +1796,4 @@ async def test_a_refusal_clears_itself_when_the_default_is_corrected(store: Loca
     await reconcile_once(store, unidentified=remembered)
 
     assert [p for p in await store.get_problems() if p.kind == "adoption"] == []
-    assert fm.parse(path.read_text())[0]["type"] == "reference"
+    assert fm.parse(path.read_text())[0]["context"] == "internal"

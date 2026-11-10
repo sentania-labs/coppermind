@@ -816,7 +816,9 @@ class RecordingStatus(BaseModel):
     """Where one recording intake stands. `note_id`, `note_path` and `source_id` are set once
     the transcript has been filed; `error` says why a failed intake stopped and `retry_after`
     when the worker will try again by itself. A `queued` intake whose `error_rule` is
-    `transcription-busy` is waiting for a busy service to be free and has used no attempt."""
+    `transcription-busy` is waiting for a busy service to be free and has used no attempt.
+    A `running` intake whose `error_rule` is `transcription-recovering` is sending a lost
+    job again; its `error` is a progress note, not a failure."""
 
     id: str
     state: RecordingState
@@ -1364,8 +1366,9 @@ class ProblemInfo(BaseModel):
     `time` are present and disagree, with `date` winning), `path_notice` (the index
     and the file disagree on a path), `returned_note` (a hand-moved reviewed note was
     returned to its filed folder), `folder_kept` (an old month folder still holds
-    files), `unreadable_note` (a listed note whose file
-    cannot be read), `artifact` (an artifact whose browsable copy no longer matches
+    files), `reserved_type` (a reviewed note whose type names a folder Coppermind
+    owns, so it files under the configured notes folder), `unreadable_note` (a listed
+    note whose file cannot be read), `artifact` (an artifact whose browsable copy no longer matches
     the archived bytes, or whose text could not be extracted), `recording` (a recording
     that could not be transcribed or filed) or `excluded`.
     `note_id` and `source_id` name what the problem is about when it exists.

@@ -148,7 +148,7 @@ async def test_refused_ingests_are_recorded_without_any_note_or_source(store: Lo
         await store.ingest(oversize)
     _set(store, "limits", "ingest_max_bytes", 10_000_000)
     invalid = _ingest("rec-bad")
-    invalid.note.frontmatter["type"] = "not-a-shipped-type"
+    invalid.note.frontmatter["context"] = "not-a-shipped-context"
     with pytest.raises(ValidationFailed):
         await store.ingest(invalid)
 

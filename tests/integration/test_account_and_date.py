@@ -146,7 +146,7 @@ async def test_date_only_datetime_and_legacy_time_file_to_the_same_month_folder(
     assert await filing.file_reviewed(store) == {"filed": 3, "filing_failed": 0}
     assert await store.get_problems() == []
     for note_id in ids:
-        assert (await store.get_note(note_id)).path.startswith("Notes/2026/2026-10/")
+        assert (await store.get_note(note_id)).path.startswith("work/2026/2026-10/")
     legacy = await store.get_note(ids[2])
     raw = (store.notes_root / legacy.path).read_text(encoding="utf-8")
     assert "time: '09:30'" in raw or 'time: "09:30"' in raw or "time: 09:30" in raw
@@ -203,7 +203,7 @@ async def test_a_stuck_review_note_with_an_unquoted_datetime_date_files_on_the_n
     monkeypatch.setattr(note_lifecycle.clock, "monotonic", lambda: stable)
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
     filed = await store.get_note(stuck)
-    assert filed.path.startswith("Notes/2026/2026-10/")
+    assert filed.path.startswith("work/2026/2026-10/")
     raw = (store.notes_root / filed.path).read_text(encoding="utf-8")
     assert "date: 2026-10-20T12:00:00\n" in raw
     assert "time:" not in raw and "timezone" not in raw
