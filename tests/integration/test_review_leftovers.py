@@ -98,7 +98,30 @@ async def test_a_differing_review_copy_is_kept_and_put_on_the_note(store: LocalS
     assert set(_warnings(first)[0]["paths"]) == {FILED, LEFTOVER}
     assert _warnings(second) == []
     reasons = " ".join(await note_collisions(store, note_id))
-    assert LEFTOVER in reasons and FILED in reasons and "Compare them" in reasons
+    assert LEFTOVER in reasons and FILED in reasons
+    problem = (await store.context.lifecycle_detail({"note_id": note_id}))["review_problem"]
+    assert LEFTOVER in problem and FILED in problem
+    assert f"{FILED} carries this note identity" not in problem
+
+
+async def test_a_filed_note_whose_file_moves_is_not_reported_as_removed_copy(
+    store: LocalStore, monkeypatch
+):
+    note_id, data = await _filed_note(store)
+    _leftover(store, data)
+    real = reconciler._remove_verified
+
+    def keeper_gone(root, relative, review_folder, expected, keeper_relative):
+        return real(root, relative, review_folder, expected, "Notes/Moved Away.md")
+
+    monkeypatch.setattr(reconciler, "_remove_verified", keeper_gone)
+
+    with capture_logs() as logged:
+        await reconcile_once(store)
+
+    assert (store.notes_root / LEFTOVER).read_bytes() == data
+    assert not [e for e in logged if e["event"] == "removed review copy of a note already filed"]
+    assert LEFTOVER in " ".join(await note_collisions(store, note_id))
 
 
 async def test_a_collision_is_logged_again_when_the_files_involved_change(store: LocalStore):
