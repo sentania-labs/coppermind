@@ -55,6 +55,7 @@ from coppermind_store.dossier_context import (
 )
 from coppermind_store.enrichment_models import EnrichmentJob, Suggestions
 from coppermind_store.model_provider import InputLimitError, ModelProvider, ProviderError
+from coppermind_store.transcript_search import passages, search_terms
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
@@ -926,7 +927,6 @@ class ContextService:
     async def source_text(self, note_id: str) -> list[str]:
         # The authored note often already contains the imported summary. Read sources only
         # when explicitly associated; never search across unreviewed notes for context.
-        assignment = self.config().assignments["enrichment"]
         transcripts = []
         sources = await self.store.get_note_sources(note_id)
         if len(sources) > 5:
@@ -935,10 +935,6 @@ class ContextService:
                 "The note has more than five associated sources",
                 "Remove sources from the note, then retry.",
             )
-        # Text is at most four bytes per character, so more than four times the limit in
-        # bytes is certainly over it. Anything smaller is read and counted exactly, in the
-        # characters the limit is applied to, by the provider before it sends anything.
-        text_bytes = 0
         for source in sources:
             manifest = await self.store.get_source(source.id)
             revision = next(
@@ -946,11 +942,6 @@ class ContextService:
             )
             for artifact in revision.artifacts:
                 if artifact.mime_type.startswith("text/"):
-                    text_bytes += artifact.size_bytes
-                    if text_bytes > 4 * assignment.max_input_chars:
-                        raise InputLimitError(
-                            -(-text_bytes // 4), assignment.max_input_chars, at_least=True
-                        )
                     document = await self.store.get_source_artifact(
                         source.id, manifest.current_revision, artifact.name
                     )
@@ -1019,7 +1010,22 @@ class ContextService:
                     person["name"] = (
                         selected_corrections.get(cursor, {}).get("name") or person["name"]
                     )
-        return {
+        dossiers = await relevant(self, note)
+        terms = search_terms(
+            note.frontmatter,
+            {
+                "attendees",
+                assignment.attendees_field,
+                assignment.contacts_field,
+                schema.role("account_key"),
+            }
+            - {"", None},
+            candidates,
+            dossiers,
+        )
+        budget = min(12000, assignment.max_input_chars)
+        excerpts, omitted = passages(transcripts, terms, budget)
+        result = {
             "note": {
                 "id": note.id,
                 "path": note.path,
@@ -1027,8 +1033,9 @@ class ContextService:
                 "frontmatter": note.frontmatter,
                 "body": note.body,
             },
-            "transcripts": transcripts,
-            "dossiers": await relevant(self, note, "\n".join(transcripts)),
+            "transcripts": excerpts,
+            "transcript_omitted_characters": omitted,
+            "dossiers": dossiers,
             "tags": schema.tags,
             "tag_aliases": schema.tag_aliases,
             "tag_mode": schema.tag_mode,
@@ -1040,6 +1047,12 @@ class ContextService:
             },
             "contact_corrections": selected_corrections,
         }
+        while budget and len(json.dumps(result, ensure_ascii=False)) > assignment.max_input_chars:
+            budget //= 2
+            result["transcripts"], result["transcript_omitted_characters"] = passages(
+                transcripts, terms, budget
+            )
+        return result
 
     def allowed_fields(self) -> set[str]:
         schema = self.store.control.schema()
@@ -1054,7 +1067,12 @@ class ContextService:
             assignment.contacts_field,
         } - {assignment.invitees_field, assignment.event_field}
 
-    def validate_result(self, result: Suggestions, evidence: dict[str, Any]) -> None:
+    def validate_result(
+        self,
+        result: Suggestions,
+        evidence: dict[str, Any],
+        full_transcripts: list[str] | None = None,
+    ) -> None:
         schema = self.store.control.schema()
         assignment = self.config().assignments["enrichment"]
         event_ids = {item["event_id"] for item in evidence["events"]}
@@ -1064,7 +1082,11 @@ class ContextService:
             for person in item["people"]
             if person["contact_id"]
         }
-        text = evidence["note"]["body"] + "\n" + "\n".join(evidence["transcripts"])
+        text = (
+            evidence["note"]["body"]
+            + "\n"
+            + "\n".join(evidence["transcripts"] if full_transcripts is None else full_transcripts)
+        )
         dossiers = {e["id"]: e for e in evidence.get("dossiers", [])}
         for item in result.suggestions:
             if not set(item.entity_ids) <= dossiers.keys():
@@ -1241,7 +1263,7 @@ class ContextService:
                     for s in result.suggestions
                     if s.kind in {"event", "contact", "attendee", "invitee"}
                 ]
-            self.validate_result(result, evidence)
+            self.validate_result(result, evidence, await self.source_text(job.note_id))
             # A note or calendar can change during a slow model request.
             if fingerprint(await self.evidence(job)) != fingerprint(evidence):
                 raise ValueError("stale: source evidence changed during model processing")
@@ -1827,8 +1849,18 @@ class ContextService:
         note = await self.store.get_note(identity)
         if note.frontmatter.get(self.store.control.schema().role("reviewed_key")) is not True:
             raise ValueError("only reviewed notes contribute facts")
+        source_versions = {
+            source.id: (await self.store.get_source(source.id)).current_revision
+            for source in await self.store.get_note_sources(identity)
+        }
         previous = None if force else self.newest_job(identity, prior_jobs)
-        if previous and previous.purpose == "dossier" and previous.note_hash == note.content_hash:
+        if (
+            previous
+            and previous.purpose == "dossier"
+            and previous.note_hash == note.content_hash
+            and previous.source_versions == source_versions
+            and previous.extraction_version == EXTRACTION_VERSION
+        ):
             if previous.state == "stale" or (
                 previous.state == "failed"
                 and (
@@ -1842,13 +1874,15 @@ class ContextService:
                 previous.set_error()
                 self.save_job(previous)
             return previous.id
-        job_id = fingerprint([identity, note.content_hash, EXTRACTION_VERSION, new_id()])
+        job_id = fingerprint([identity, note.content_hash, source_versions, EXTRACTION_VERSION, new_id()])
         self.save_job(
             EnrichmentJob(
                 id=job_id,
                 note_id=identity,
                 purpose="dossier",
+                extraction_version=EXTRACTION_VERSION,
                 note_hash=note.content_hash,
+                source_versions=source_versions,
                 evidence_hash="",
                 config_hash=self.config_hash(),
                 schema_hash=self.schema_hash(),

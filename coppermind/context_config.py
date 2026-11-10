@@ -89,7 +89,7 @@ class FeatureAssignment(ContextModel):
     # call is given up. It is not a cap on total time: a streamed reply may run longer.
     timeout_s: int = Field(default=120, ge=5, le=1800)
     max_output_tokens: int = Field(default=2048, ge=256, le=8192)
-    max_input_chars: int = Field(default=60000, ge=2000, le=200000)
+    max_input_chars: int = Field(default=200000, ge=2000, le=200000)
     # One worker serializes model calls and approvals. No unbounded fan-out.
     attempts: int = Field(default=2, ge=1, le=3)
     fields: list[str] = Field(default_factory=list, max_length=20)

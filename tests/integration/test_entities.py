@@ -31,6 +31,49 @@ async def reviewed_note(store, body="Casey is an engineer."):
     return note
 
 
+async def test_reviewed_accounts_create_companies_and_attendee_associations(store):
+    note = await store.create_note(
+        CreateNote(
+            title="Customer meeting",
+            body="A meeting.",
+            frontmatter={
+                "reviewed": True,
+                "date": "2026-11-01",
+                "account": ["Xcel Energy"],
+                "attendees": ["arthur.smith@xcelenergy.com"],
+            },
+        )
+    )
+    await store.entities.refresh()
+    ledger = store.entities.load()
+    people = [e for e in ledger.entities.values() if e.kind == "person"]
+    companies = [e for e in ledger.entities.values() if e.kind == "company"]
+    assert len(people) == len(companies) == 1
+    person, company = people[0], companies[0]
+    assert person.name == "Arthur Smith"
+    assert person.path == "People/Arthur Smith.md"
+    assert person.emails[0] in person.aliases
+    assert any(f.target == company.id and f.evidence.note_id == note.id for f in person.facts)
+    assert any(f.evidence.note_id == note.id for f in company.facts)
+    assert f"[[{company.path.removesuffix('.md')}]]" in (store.notes_root / person.path).read_text()
+    await store.entities.refresh()
+    assert len(store.entities.load().entities) == 2
+
+
+async def test_moved_dossier_follows_identity_and_respects_owner_name(store):
+    entity = await person(store, "Casey Smith")
+    old = store.notes_root / entity["path"]
+    moved = store.notes_root / "People" / "Casey Jones.md"
+    old.rename(moved)
+    await store.entities.refresh()
+    current = await store.entities.get(entity["id"])
+    assert current["path"] == "People/Casey Jones.md"
+    assert current["name"] == "Casey Jones"
+    assert not current["retired_at"]
+    await store.entities.refresh()
+    assert (await store.entities.get(entity["id"]))["name"] == "Casey Jones"
+
+
 async def claim(store, entity, note, **kwargs):
     current = await store.entities.get(entity["id"])
     return await store.entities.change(
