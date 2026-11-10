@@ -85,7 +85,7 @@ from coppermind.store_protocol import (
     artifact_text,
 )
 from coppermind_store.artifacts import artifact_problems, count_artifacts
-from coppermind_store.eligibility import filing_root, rendered_note_folder
+from coppermind_store.eligibility import FilingRoots, rendered_note_folder
 from coppermind_store.fs import NOTE_SUFFIX, content_hash, existing_stems, resolve
 from coppermind_store.notes import (
     _build_frontmatter,
@@ -1277,17 +1277,14 @@ async def get_status(store: LocalStore) -> StatusResponse:
                     )
                 )
             ).all()
-            settings = store.control.settings()
+            roots = FilingRoots(
+                store.control.settings(), store.notes_root, store.context.config().dropbox_folder
+            )
             type_key = store.control.schema().role("type_key")
             notes_to_refile = sum(
                 not row.path.startswith(
                     rendered_note_folder(
-                        filing_root(
-                            row.frontmatter.get(type_key),
-                            settings,
-                            store.notes_root,
-                            store.context.config().dropbox_folder,
-                        )[0],
+                        roots.resolve(row.frontmatter.get(type_key))[0],
                         row.date,
                     )
                     + "/"
@@ -1635,14 +1632,12 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
         for row in unparsed
     )
     schema = store.control.schema()
+    roots = FilingRoots(
+        store.control.settings(), store.notes_root, store.context.config().dropbox_folder
+    )
     for row in ok_notes:
         if row.reviewed:
-            root, reserved = filing_root(
-                row.frontmatter.get(schema.role("type_key")),
-                store.control.settings(),
-                store.notes_root,
-                store.context.config().dropbox_folder,
-            )
+            root, reserved = roots.resolve(row.frontmatter.get(schema.role("type_key")))
             if reserved:
                 problems.append(
                     ProblemInfo(

@@ -27,7 +27,7 @@ from coppermind.embeds import rewrite_embeds
 from coppermind.ids import is_valid_id
 from coppermind.schema import date_field_problem, note_date, parse_note_time
 from coppermind.store_protocol import MoveNote, ReplaceNote, StoreError
-from coppermind_store.eligibility import filing_root, rendered_note_folder
+from coppermind_store.eligibility import FilingRoots, rendered_note_folder
 from coppermind_store.fs import content_hash, resolve
 from coppermind_store.maintenance import writer
 
@@ -201,9 +201,8 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         raise ValueError("a note date is required in date")
     month = day.strftime("%Y-%m")
     dropbox = store.context.config().dropbox_folder
-    root, _ = filing_root(
-        note.frontmatter.get(schema.role("type_key")), settings, store.notes_root, dropbox
-    )
+    roots = FilingRoots(settings, store.notes_root, dropbox)
+    root, _ = roots.resolve(note.frontmatter.get(schema.role("type_key")))
     folder = rendered_note_folder(root, day)
     manifests = {}
     for source_id in sorted(set(note.sources)):
@@ -401,10 +400,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         note.frontmatter.get(schema.role("reviewed_key")) is not True
         or refreshed_day is None
         or refreshed_day.strftime("%Y-%m") != month
-        or filing_root(
-            note.frontmatter.get(schema.role("type_key")), settings, store.notes_root, dropbox
-        )[0]
-        != root
+        or roots.resolve(note.frontmatter.get(schema.role("type_key")))[0] != root
     ):
         raise ValueError("note review or date changed during filing")
     if set(note.sources) != {item["id"] for item in plan["sources"]}:

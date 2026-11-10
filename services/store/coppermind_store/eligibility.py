@@ -13,47 +13,52 @@ MONTH_PATH = r"^[0-9]{4}-(0[1-9]|1[0-2])/"
 NOTES_FOLDER_DEFAULT = "Notes"
 
 
-def filing_root(value, settings, notes_root, dropbox_folder="Dropbox"):
-    """Resolve a type to a portable root, preserving an existing spelling."""
-    fallback = sanitize_folder(settings.notes.notes_folder) or NOTES_FOLDER_DEFAULT
-    if isinstance(value, list):
-        value = next((item for item in value if isinstance(item, str)), None)
-    if not isinstance(value, str):
-        return fallback, None
-    candidate = sanitize_stem(value, fallback="")
-    if not candidate:
-        return fallback, None
-    reserved = [
-        "Review",
-        "People",
-        "Companies",
-        "Artifacts",
-        "_Sources",
-        "_Trash",
-        "_Attachments",
-        "Journal",
-        "Dropbox",
-        settings.notes.review_folder,
-        settings.notes.trash_folder,
-        settings.notes.sources_folder,
-        settings.notes.artifacts_folder,
-        settings.notes.attachments_folder,
-        settings.notes.journal_folder,
-        dropbox_folder,
-    ]
-    if candidate.casefold() in {
-        sanitize_folder(name).split("/")[0].casefold() for name in reserved
-    }:
-        return fallback, candidate
-    try:
-        matches = sorted(
-            p.name
-            for p in notes_root.iterdir()
-            if p.is_dir() and p.name.casefold() == candidate.casefold()
-        )
-    except FileNotFoundError:
-        matches = []
-    return (matches[0] if matches else candidate), None
+class FilingRoots:
+    """Resolve a type to a portable root, preserving an existing spelling.
+
+    Settings, configuration and the existing top-level folders are read once,
+    so resolving many notes costs no further disk or configuration reads.
+    """
+
+    def __init__(self, settings, notes_root, dropbox_folder="Dropbox"):
+        self.fallback = sanitize_folder(settings.notes.notes_folder) or NOTES_FOLDER_DEFAULT
+        owned = [
+            "Review",
+            "People",
+            "Companies",
+            "Artifacts",
+            "_Sources",
+            "_Trash",
+            "_Attachments",
+            "Journal",
+            "Dropbox",
+            settings.notes.review_folder,
+            settings.notes.trash_folder,
+            settings.notes.sources_folder,
+            settings.notes.artifacts_folder,
+            settings.notes.attachments_folder,
+            settings.notes.journal_folder,
+            dropbox_folder,
+            *settings.reconcile.excluded_folders,
+        ]
+        self.reserved = {sanitize_folder(name).split("/")[0].casefold() for name in owned}
+        try:
+            self.existing = sorted(p.name for p in notes_root.iterdir() if p.is_dir())
+        except FileNotFoundError:
+            self.existing = []
+
+    def resolve(self, value):
+        if isinstance(value, list):
+            value = next((item for item in value if isinstance(item, str)), None)
+        if not isinstance(value, str):
+            return self.fallback, None
+        candidate = sanitize_stem(value, fallback="")
+        if not candidate:
+            return self.fallback, None
+        if candidate.casefold() in self.reserved:
+            return self.fallback, candidate
+        matches = [name for name in self.existing if name.casefold() == candidate.casefold()]
+        return (matches[0] if matches else candidate), None
 
 
 def rendered_note_folder(root: str, day: date) -> str:

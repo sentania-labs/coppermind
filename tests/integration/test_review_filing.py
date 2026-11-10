@@ -895,6 +895,15 @@ async def test_type_roots_search_refile_and_reserved_fallback(store):
     assert any(
         p.kind == "reserved_type" and p.note_id == moved.id for p in await store.get_problems()
     )
+    await store.patch_frontmatter(
+        moved.id, PatchFrontmatter(set={"type": "templates"}), moved.content_hash
+    )
+    await filing.file_reviewed(store)
+    moved = await store.get_note(moved.id)
+    assert moved.path.startswith("Notes/2026/2026-09/")
+    assert any(
+        p.kind == "reserved_type" and p.note_id == moved.id for p in await store.get_problems()
+    )
     await store.patch_frontmatter(moved.id, PatchFrontmatter(unset=["type"]), moved.content_hash)
     await filing.file_reviewed(store)
     assert (await store.get_note(moved.id)).path.startswith("Notes/2026/2026-09/")
