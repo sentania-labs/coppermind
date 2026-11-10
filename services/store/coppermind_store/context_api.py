@@ -42,6 +42,7 @@ ACTIONS = {
     "recording": "accept_recording",
     "recording-status": "recording_status",
     "retry-recording": "retry_recording",
+    "recording-detail": "recording_detail",
     "retry-all-failed": "retry_all_failed",
     "attention": "attention",
     "reject": "reject",

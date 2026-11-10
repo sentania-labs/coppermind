@@ -229,12 +229,13 @@ def _transcription_setup(config: dict[str, Any], data: dict[str, Any], revision:
             "response_format",
             "Reply with",
             [
-                ("diarized_json", "A speaker on every segment (diarized_json)"),
-                ("verbose_json", "Whisper-style segments with a speaker added (verbose_json)"),
+                ("diarized_json", "Speaker on every segment"),
+                ("verbose_json", "Whisper-compatible segments with speaker names"),
             ],
             assignment["response_format"],
         )
-        + "</fieldset>"
+        + '<p class="field-help">Choose what your service supports. Technical names, for '
+        "the service's documentation: diarized_json and verbose_json.</p>" + "</fieldset>"
     )
     fields += "<fieldset><legend>2. How long to wait</legend>"
     for key, label, help_text in [
@@ -275,29 +276,67 @@ def _transcription_setup(config: dict[str, Any], data: dict[str, Any], revision:
     )
 
 
-def _recording_status(job: dict[str, Any], assignment: dict[str, Any] | None) -> str:
+SETUP_LINK = "/admin/context?tab=models#transcription"
+# Failures that setting a different connection, key or model can cure.
+SETTINGS_RULES = frozenset(
+    {
+        "transcription-http-401",
+        "transcription-http-403",
+        "transcription-http-404",
+        "transcription-http-422",
+        "transcription-provider",
+        "connection-missing",
+    }
+)
+
+
+def _recording_state(job: dict[str, Any], assignment: dict[str, Any] | None) -> str:
     """One plain sentence about where a recording stands."""
     state = job["state"]
+    on = bool(assignment and assignment["enabled"])
+    paused = bool(assignment and assignment["paused"])
     if state == "succeeded":
-        return "Transcript filed. The note is in Review."
+        return f"Transcript ready. Note in Review: {job['title']}"
     if state == "running":
         return (
             f"Transcribing since {_calendar_time(job['started_at'])} "
-            f"(attempt {job['attempts']} of {job['attempt_limit']}). A long recording can "
-            "take many minutes."
+            f"(attempt {job['attempts']} of {job['attempt_limit']}). This can take hours for "
+            "a long recording. It carries on by itself; this page does not need to stay open."
         )
     if state == "failed":
-        text = "Failed: " + job["error"]
+        text = job["error"]
+        if not on:
+            return text + " Transcription is off. Turn it on to retry this recording."
+        if paused:
+            return text + " Transcription is paused; a retry will start when you resume it."
         if job["retry_after"] and job["attempts"] < job["attempt_limit"]:
-            text += f" The app will try again after {_calendar_time(job['retry_after'])}."
-        elif job["attempts"] >= job["attempt_limit"] or not job["retry_after"]:
-            text += " Retry to try again."
-        return text
-    if not assignment or not assignment["enabled"]:
-        return "Waiting. Transcription is off; turn it on under Models to start."
-    if assignment["paused"]:
-        return "Waiting. Transcription is paused; resume it under Models to start."
+            return text + f" The app will try again after {_calendar_time(job['retry_after'])}."
+        return text + " Try again when you are ready."
+    if not on:
+        return "Waiting. Transcription is off. Turn it on to start this recording."
+    if paused:
+        return "Waiting. Transcription is paused; it starts when you resume it."
     return "Waiting for its turn. Recordings are transcribed one at a time."
+
+
+def _recording_actions(job: dict[str, Any], assignment: dict[str, Any] | None) -> str:
+    on = bool(assignment and assignment["enabled"])
+    paused = bool(assignment and assignment["paused"])
+    body = ""
+    if job["state"] == "failed":
+        if on:
+            body += (
+                "<p>Try again. A transcript already saved is reused, not asked for twice.</p>"
+                + _form("retry-recording", _hidden("id", job["id"]), "Retry")
+            )
+            if job["error_rule"] in SETTINGS_RULES:
+                body += f'<p><a href="{SETUP_LINK}">Check the connection and model</a></p>'
+        else:
+            body += f'<p><a href="{SETUP_LINK}">Turn on transcription</a></p>'
+    elif job["state"] == "queued" and (not on or paused):
+        label = "Turn on transcription" if not on else "Resume transcription"
+        body += f'<p><a href="{SETUP_LINK}">{label}</a></p>'
+    return body
 
 
 def _recordings_section(data: dict[str, Any]) -> str:
@@ -314,22 +353,55 @@ def _recordings_section(data: dict[str, Any]) -> str:
             )
         return body + (
             "<p>No recordings yet. To take a recording on its own, "
-            '<a href="/admin/context?tab=models#transcription">set up transcription</a>.</p>'
+            f'<a href="{SETUP_LINK}">set up transcription</a>.</p>'
         )
     body += "<table><tr><th>Recording</th><th>Status</th><th>Actions</th></tr>"
     for job in jobs:
         size = f"{job['size_bytes'] / (1024 * 1024):,.1f} MiB"
         body += f"<tr><td>{e(job['title'])}<br><small>{e(job['filename'])}, {size}</small></td><td>"
-        body += e(_recording_status(job, assignment)) + "</td><td>"
-        if job["state"] == "failed" and job["can_retry"]:
-            body += (
-                "<p>Try again. A transcript already saved is reused, not asked for twice.</p>"
-                + _form("retry-recording", _hidden("id", job["id"]), "Retry")
-            )
-        if job["note_id"]:
-            body += f'<a href="/admin/notes/{quote(job["note_id"], safe="")}">Open note</a>'
+        body += e(_recording_state(job, assignment)) + "</td><td>"
+        body += _recording_actions(job, assignment)
+        label = "Read the transcript" if job["state"] == "succeeded" else "Details"
+        body += f'<a href="/admin/context/recordings/{quote(job["id"], safe="")}">{label}</a>'
         body += "</td></tr>"
     return body + "</table>"
+
+
+def _recording_page(job: dict[str, Any], assignment: dict[str, Any] | None) -> str:
+    """One recording in full: what happened, the transcript, and the technical facts."""
+    body = f"<h2>{e(job['title'])}</h2><p>{e(_recording_state(job, assignment))}</p>"
+    if job["state"] == "succeeded":
+        body += (
+            f"<p>The note is at <strong>{e(job['note_path'])}</strong> in your vault. It reaches "
+            "Obsidian when your vault next syncs, and stays unreviewed until you mark it "
+            "reviewed. The recording itself is kept as a stored file the note cites.</p>"
+        )
+    elif job["state"] == "failed":
+        kept = "Your recording is still saved"
+        kept += " and so is its transcript." if job["transcribed"] else "."
+        body += f"<p>{kept}</p>" + _recording_actions(job, assignment)
+    if job["transcript"]:
+        body += "<h3>Transcript</h3><pre>" + e(job["transcript"]) + "</pre>"
+        if job["transcript_cut"]:
+            body += "<p>Only the start is shown here. The whole text is in the note's source.</p>"
+    facts = {
+        "Recording file": f"{job['filename']} ({job['size_bytes']:,} bytes)",
+        "Attempts": f"{job['attempts']} of {job['attempt_limit']}",
+        "Failure rule": job["error_rule"] or "none",
+        "Recording id": job["artifact_id"],
+        "Intake id": job["id"],
+        "Note id": job["note_id"] or "not filed yet",
+        "Source id": job["source_id"] or "not filed yet",
+    }
+    body += "<details><summary>Technical details</summary><ul>"
+    body += "".join(f"<li>{e(k)}: {e(str(v))}</li>" for k, v in facts.items())
+    body += "</ul>"
+    if job.get("reply"):
+        body += "<p>What the service last sent back:</p><pre>" + e(job["reply"]) + "</pre>"
+    if job.get("usage"):
+        body += "<p>Timing and usage: " + e(json.dumps(job["usage"], sort_keys=True)) + "</p>"
+    body += "</details>"
+    return body + '<p><a href="/admin/context?tab=review">Back to Jobs</a></p>'
 
 
 def _proposal_value(value: Any) -> str:
@@ -929,6 +1001,16 @@ picker.addEventListener('change', () => {
             )
             head = f'<p><a href="{SEARCH_RETURN}">Back to Search index</a></p>' + head
         return page(head + body, title=heading)
+
+    @routes.get("/admin/context/recordings/{identity}", include_in_schema=False)
+    async def recording_page(identity: str, request: Request) -> Response:
+        try:
+            job = await client(request).context_action("recording-detail", {"id": identity})
+            data = await client(request).context_action("snapshot", {"offset": 0})
+        except (StoreError, ValueError) as exc:
+            return error(exc)
+        assignment = data["config"]["assignments"].get("transcription")
+        return page(_recording_page(job, assignment))
 
     @routes.get("/admin/context/jobs/{identity}", include_in_schema=False)
     async def job_page(identity: str, request: Request) -> Response:

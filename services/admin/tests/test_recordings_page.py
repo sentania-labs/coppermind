@@ -62,7 +62,11 @@ def test_the_models_tab_sets_up_transcription_with_plain_words_and_no_anthropic(
     # Only connections that can transcribe are offered; the raw reply format is explained.
     section = page.text.split("Transcription setup")[1]
     assert ">Local</option>" in section and ">Claude</option>" not in section
-    assert "A speaker on every segment (diarized_json)" in section
+    # Plain words on the choices; the protocol names are only in the optional help line.
+    assert ">Speaker on every segment</option>" in section
+    assert ">Whisper-compatible segments with speaker names</option>" in section
+    assert "(diarized_json)" not in section and ">diarized_json<" not in section
+    assert "Technical names" in section
     assert "Transcribe recordings that are handed in" in section
 
 
@@ -157,7 +161,7 @@ def test_each_state_of_a_recording_reads_as_a_sentence(signed_in):
             "title": "Failed one",
             "state": "failed",
             "attempts": 2,
-            "error": "The transcription service answered HTTP 404.",
+            "error": "The transcription service could not find the endpoint or the model.",
             "error_rule": "transcription-http-404",
             "can_retry": True,
         },
@@ -178,9 +182,14 @@ def test_each_state_of_a_recording_reads_as_a_sentence(signed_in):
     assert "standup.m4a, 300.0 MiB" in page
     assert "Waiting for its turn" in page
     assert "Transcribing since" in page and "(attempt 1 of 2)" in page
-    assert "Transcript filed. The note is in Review." in page
-    assert '<a href="/admin/notes/N1">Open note</a>' in page
-    assert "Failed: The transcription service answered HTTP 404. Retry to try again." in page
+    assert "Transcript ready. Note in Review: Done one" in page
+    # No raw-ID diagnostics page: the link goes to the recording's own page.
+    assert "/admin/notes/N1" not in page and "Open note" not in page
+    assert '<a href="/admin/context/recordings/' + "3" * 64 + '">Read the transcript</a>' in page
+    assert "could not find the endpoint or the model. Try again when you are ready." in page
+    assert "HTTP 404" not in page
+    # A settings failure links to the settings that can cure it, beside Retry.
+    assert 'href="/admin/context?tab=models#transcription">Check the connection and model' in page
     assert "The app will try again after" in page
     assert page.count(">Retry</button>") == 2
     assert "A transcript already saved is reused" in page
@@ -189,14 +198,95 @@ def test_each_state_of_a_recording_reads_as_a_sentence(signed_in):
 def test_a_waiting_recording_explains_when_transcription_is_off_or_paused(signed_in):
     client, _ = signed_in
     client.app.state.store = store_with([JOB])
-    assert "Transcription is off; turn it on under Models" in (
-        client.get("/admin/context?tab=review").text
-    )
+    off = client.get("/admin/context?tab=review").text
+    assert "Transcription is off. Turn it on to start this recording." in off
+    assert 'href="/admin/context?tab=models#transcription">Turn on transcription' in off
+    assert "under Models" not in off
     paused = FeatureAssignment(connection="local", model="m", enabled=True, paused=True)
     client.app.state.store = store_with([JOB], paused)
-    assert "Transcription is paused; resume it under Models" in (
-        client.get("/admin/context?tab=review").text
+    page = client.get("/admin/context?tab=review").text
+    assert "Transcription is paused; it starts when you resume it." in page
+    assert 'tab=models#transcription">Resume transcription' in page
+
+
+FAILED = {
+    **JOB,
+    "state": "failed",
+    "attempts": 1,
+    "error": "The transcription service reported an error or is busy.",
+    "error_rule": "transcription-http",
+    "retry_after": "2099-01-01T12:00:00+00:00",
+    "can_retry": True,
+}
+
+
+def test_a_failed_recording_while_transcription_is_off_offers_no_retry_and_no_timer(signed_in):
+    client, _ = signed_in
+    client.app.state.store = store_with([FAILED])
+    page = client.get("/admin/context?tab=review").text
+    assert "Transcription is off. Turn it on to retry this recording." in page
+    assert ">Retry</button>" not in page and "will try again after" not in page
+    assert 'href="/admin/context?tab=models#transcription">Turn on transcription' in page
+
+
+def test_a_failed_recording_while_paused_can_be_queued_and_says_it_starts_on_resume(signed_in):
+    client, _ = signed_in
+    paused = FeatureAssignment(connection="local", model="m", enabled=True, paused=True)
+    client.app.state.store = store_with([FAILED], paused)
+    page = client.get("/admin/context?tab=review").text
+    assert "a retry will start when you resume it." in page
+    assert ">Retry</button>" in page and "will try again after" not in page
+
+
+def test_an_unexpected_failure_says_the_recording_is_safe_and_never_sends_you_to_a_log(
+    signed_in,
+):
+    message = (
+        "Transcription stopped unexpectedly. Your recording is still saved. Try again; if it "
+        "fails again, open details."
     )
+    failed = {**FAILED, "error": message, "error_rule": "job-error", "retry_after": ""}
+    saved = FeatureAssignment(connection="local", model="m", enabled=True)
+    client, _ = signed_in
+    client.app.state.store = store_with([failed], saved)
+    page = client.get("/admin/context?tab=review").text
+    assert message in page and "store log" not in page
+    assert ">Retry</button>" in page
+    assert f'/admin/context/recordings/{"a" * 64}">Details</a>' in page
+
+
+def test_the_recording_page_shows_the_note_and_transcript_with_ids_only_in_details(signed_in):
+    client, _ = signed_in
+    done = {
+        **JOB,
+        "state": "succeeded",
+        "transcribed": True,
+        "note_id": "01NOTEIDXXXXXXXXXXXXXXXXXX",
+        "source_id": "01SOURCEIDXXXXXXXXXXXXXXX",
+        "artifact_id": "01ARTIFACTXXXXXXXXXXXXXXX",
+        "note_path": "Review/Standup.md",
+        "error_rule": "",
+        "reply": "",
+        "usage": {"elapsed_ms": 5},
+        "transcript": "[00:00:00] Speaker 1: Hello <b>there</b>.\n",
+        "transcript_cut": False,
+    }
+    store = store_with([done], FeatureAssignment(connection="local", model="m", enabled=True))
+    base = store.context_action
+
+    async def with_detail(action, payload):
+        return done if action == "recording-detail" else await base(action, payload)
+
+    store.context_action = with_detail
+    client.app.state.store = store
+    response = client.get(f"/admin/context/recordings/{'a' * 64}")
+    assert response.status_code == 200
+    page = response.text
+    head, details = page.split("<details>", 1)
+    assert "Transcript ready. Note in Review: Standup" in head
+    assert "Review/Standup.md" in head and "Speaker 1: Hello &lt;b&gt;there&lt;/b&gt;." in head
+    assert "01NOTEIDXXXXXXXXXXXXXXXXXX" not in head and "01SOURCEID" not in head
+    assert "01NOTEIDXXXXXXXXXXXXXXXXXX" in details and "Technical details" in page
 
 
 def test_retrying_a_recording_is_a_guarded_form_that_confirms_in_words(signed_in):

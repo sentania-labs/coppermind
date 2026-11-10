@@ -68,7 +68,7 @@ has not been exercised by this slice.
 - A recording can be handed in on its own. Store it through the staged upload,
   then `POST /v1/recordings` (`sources:write`, `notes:write`, `artifacts:read`) names it; a worker
   loop of its own sends it, streamed from disk, to the transcription service
-  chosen under Admin Models, Transcription (OpenAI-compatible
+  chosen under Admin Connections and model, Transcription setup (OpenAI-compatible
   `/audio/transcriptions`, `diarized_json` or `verbose_json`), waiting on
   silence rather than total time and backing off after a timeout. The speaker
   segments are kept as given and filed through the ordinary ingest as the

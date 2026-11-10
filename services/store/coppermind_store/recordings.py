@@ -57,8 +57,11 @@ REPLY_KEPT = 4000
 RETRY_BACKOFF_S = 1800
 NOT_SET_UP = (
     "No transcription service is set up, so a recording on its own cannot be accepted. "
-    "In Admin open Models, then Transcription: choose a connection and a model and turn it on."
+    "In Admin open Connections and model, find Transcription setup, choose a connection "
+    "and a model and turn it on."
 )
+# How much of a transcript the recording page shows; the whole text is in the note's source.
+DETAIL_TRANSCRIPT_CHARS = 200_000
 SUMMARY_PENDING = "_Transcribed from a recording. The summary has not been written yet._"
 
 
@@ -182,6 +185,25 @@ class Recordings:
             raise ValueError(NOT_SET_UP)
         return assignment
 
+    def enabled(self) -> bool:
+        assignment = self.assignment()
+        return bool(assignment and assignment.enabled)
+
+    async def detail(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """One intake in full, for its page: the readable transcript and the technical facts."""
+        job = self.load(str(payload.get("id", "")))
+        transcript = ""
+        if job.transcribed:
+            saved = self.context.read(self.transcript_path(job), None)
+            if isinstance(saved, dict):
+                transcript = render_transcript(saved)
+        return {
+            **job.model_dump(mode="json", exclude={"frontmatter", "metadata"}),
+            "can_retry": job.state == "failed" and self.enabled(),
+            "transcript": transcript[:DETAIL_TRANSCRIPT_CHARS],
+            "transcript_cut": len(transcript) > DETAIL_TRANSCRIPT_CHARS,
+        }
+
     def listing(self) -> list[dict[str, Any]]:
         """The newest intakes for the Jobs list: what each is, where it stands and why."""
         newest = sorted(self.jobs(), key=lambda item: item.created_at, reverse=True)[:100]
@@ -191,7 +213,7 @@ class Recordings:
                     mode="json",
                     exclude={"metadata", "frontmatter", "usage", "reply", "mime_type"},
                 ),
-                "can_retry": item.state == "failed",
+                "can_retry": item.state == "failed" and self.enabled(),
             }
             for item in newest
         ]
@@ -322,7 +344,9 @@ class Recordings:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                self.worker_error = "The recording worker failed; check the store log."
+                self.worker_error = (
+                    "The recording worker stopped unexpectedly and will try again shortly."
+                )
                 log.exception("recording worker failed")
             if not worked:
                 await asyncio.sleep(10)
@@ -427,12 +451,9 @@ class Recordings:
         except Exception:
             job.state = "failed"
             job.set_error(
-                (
-                    "The note could not be filed unexpectedly. The transcript is kept. "
-                    if job.transcribed
-                    else "The recording could not be transcribed unexpectedly. "
-                )
-                + "See the store log.",
+                "Transcription stopped unexpectedly. Your recording is still saved"
+                + (" and so is its transcript" if job.transcribed else "")
+                + ". Try again; if it fails again, open details.",
                 "job-error",
                 retry_after=later(),
             )
@@ -466,7 +487,7 @@ class Recordings:
         except ValueError as exc:
             raise ProviderError(
                 "The Transcription connection is not set up: "
-                f"{exc}. Open Models, then Transcription, and choose one.",
+                f"{exc}. Open Connections and model, find Transcription setup, and choose one.",
                 "connection-missing",
             ) from exc
         path, revision = await asyncio.to_thread(

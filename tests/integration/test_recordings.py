@@ -177,13 +177,13 @@ async def test_a_refusal_lands_in_problems_keeps_the_audio_and_retries_on_reques
         await context.recordings.tick()
         failed = await context.recording_status({"id": job["id"]})
         assert failed["state"] == "failed" and failed["error_rule"] == "transcription-http-404"
-        assert "no transcription endpoint" in failed["error"]
+        assert "could not find the endpoint" in failed["error"]
         # A refusal the same request would only repeat is not tried again by itself.
         assert await context.recordings.tick() is False
         assert len(service.requests) == 1
 
         problems = [p for p in await store.get_problems() if p.kind == "recording"]
-        assert len(problems) == 1 and "no transcription endpoint" in problems[0].reason
+        assert len(problems) == 1 and "could not find the endpoint" in problems[0].reason
         assert problems[0].reference == "Standup"
         assert await drain(await store.get_artifact_bytes(audio)) == AUDIO
 
@@ -230,7 +230,10 @@ async def test_an_unexpected_failure_before_a_transcript_backs_off_instead_of_re
         monkeypatch.setattr(context.provider, "transcribe", broken)
         await context.recordings.tick()
         failed = await context.recording_status({"id": job["id"]})
-        assert failed["error_rule"] == "job-error" and "transcribed unexpectedly" in failed["error"]
+        assert (
+            failed["error_rule"] == "job-error"
+            and "Transcription stopped unexpectedly" in failed["error"]
+        )
         assert datetime.fromisoformat(failed["retry_after"]) > datetime.now(UTC)
         assert await context.recordings.tick() is False
     assert not service.requests
@@ -329,3 +332,27 @@ async def test_a_retried_request_still_finds_its_intake_after_transcription_is_o
         # A new request still needs the service.
         with pytest.raises(ValueError, match="No transcription service is set up"):
             await context.accept_recording(request(audio, external_source_id="plaud/rec-2"))
+
+
+async def test_the_recording_page_reads_the_transcript_and_a_retry_needs_transcription_on(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        job = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+        detail = await context.recording_detail({"id": job["id"]})
+        assert detail["state"] == "succeeded" and detail["note_path"].startswith("Review/")
+        assert detail["transcript"].startswith("[00:00:00] Speaker 1: Hello there.")
+        assert "frontmatter" not in detail and detail["can_retry"] is False
+
+        # A failed intake only offers a retry while transcription is switched on.
+        stored = context.recordings.load(job["id"])
+        stored.state = "failed"
+        context.recordings.save(stored)
+        assert (await context.recording_detail({"id": job["id"]}))["can_retry"] is True
+        assert context.recordings.listing()[0]["can_retry"] is True
+        config = context.config()
+        config.assignments["transcription"].enabled = False
+        context.save_config(config)
+        assert (await context.recording_detail({"id": job["id"]}))["can_retry"] is False
+        assert context.recordings.listing()[0]["can_retry"] is False

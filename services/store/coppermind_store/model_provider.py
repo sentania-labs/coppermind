@@ -567,22 +567,26 @@ class ModelProvider:
         if not upload:
             return ProviderError(f"provider returned HTTP {status}")
         hints = {
-            400: "It refused the request; the recording may be in a format it cannot read.",
-            401: "It refused the key. Check the connection's key.",
-            403: "It refused the key. Check the connection's key.",
-            404: "It has no transcription endpoint at that address, or does not know the model. "
-            "Check the connection address and the model name.",
-            413: "It refused the recording as too large.",
-            415: "It cannot read this kind of recording.",
-            422: "It could not use the request; the model name or the reply format may not be "
-            "supported by this service.",
+            400: "The transcription service refused the request; the recording may be in a "
+            "format it cannot read.",
+            401: "The transcription service refused the key. Check the connection's key.",
+            403: "The transcription service refused the key. Check the connection's key.",
+            404: "The transcription service could not find the endpoint or the model. Check the "
+            "connection address and the model name.",
+            413: "The transcription service refused the recording as too large.",
+            415: "The transcription service cannot read this kind of recording.",
+            422: "The transcription service could not use the request; the model name or the "
+            "reply format may not be supported by it.",
         }
         retryable = status >= 500 or status in (408, 429)
         detail = hints.get(
-            status, "Check that the service is healthy." if retryable else "The request failed."
+            status,
+            "The transcription service reported an error or is busy. Check that it is healthy."
+            if retryable
+            else "The transcription service refused the request.",
         )
         return ProviderError(
-            f"The transcription service answered HTTP {status}. {detail}",
+            detail,
             "transcription-http" if retryable else f"transcription-http-{status}",
             # A server error or a request to slow down is worth another try later; a refusal
             # of the request is not.
@@ -665,7 +669,7 @@ class ModelProvider:
                 raise
             raise ProviderError(
                 f"The transcription service's answer could not be used ({exc}). Check the "
-                "connection address and key under Models, then Transcription.",
+                "connection address and key under Connections and model, then Transcription setup.",
                 "transcription-provider",
             ) from exc
         transcript = parse_transcript(result)

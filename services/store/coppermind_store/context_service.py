@@ -910,6 +910,9 @@ class ContextService:
     async def save_transcription(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.recordings.save_assignment(payload)
 
+    async def recording_detail(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.recordings.detail(payload)
+
     async def retry_recording(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.recordings.retry(payload)
 

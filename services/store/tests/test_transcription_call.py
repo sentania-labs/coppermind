@@ -192,12 +192,12 @@ async def test_a_refused_connection_does_not_wait_and_names_the_address(recordin
 @pytest.mark.parametrize(
     ("status", "rule", "waiting", "phrase"),
     [
-        (404, "transcription-http-404", False, "no transcription endpoint"),
+        (404, "transcription-http-404", False, "could not find the endpoint"),
         (401, "transcription-http-401", False, "refused the key"),
         (413, "transcription-http-413", False, "too large"),
         (422, "transcription-http-422", False, "model name or the reply format"),
         (503, "transcription-http", True, "healthy"),
-        (409, "transcription-http-409", False, "request failed"),
+        (409, "transcription-http-409", False, "refused the request"),
         (429, "transcription-http", True, "healthy"),
         (408, "transcription-http", True, "healthy"),
     ],

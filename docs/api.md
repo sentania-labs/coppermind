@@ -302,7 +302,7 @@ is stored again, and identical bytes under the same filename replay as for the A
 A recording can be handed in without a transcript or a summary. Coppermind sends it to
 a transcription service, files the speaker-labelled text as the note's source, and
 lands the note in Review like any other intake. This needs a transcription service set
-up under Models, then Transcription in Admin (see
+up under Connections and model, then Transcription setup in Admin (see
 [Transcription service](data-and-settings.md#transcription-service)); without one the
 route refuses with a plain message.
 
