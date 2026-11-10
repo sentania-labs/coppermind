@@ -157,10 +157,16 @@ an already-running call can finish. Disablement does not affect calendar intake
 or ordinary note work. Usage is shown only when the provider supplies numeric
 usage fields; currency budgets and billing estimates are not provided.
 
-Only the selected note, explicitly associated text sources (maximum five),
-nearby calendar events, relevant contact corrections, matching active dossiers
-and selected field/tag guidance are sent. Dossier selection is bounded and includes
-only direct relationship targets, never the whole corpus. Oversized input fails before transmission; the job states the
+Only the selected note, short passages from explicitly associated text sources
+(maximum five), nearby calendar events, relevant contact corrections, matching
+active dossiers and selected field/tag guidance are sent. Transcripts are never
+sent whole: at most 12,000 characters are chosen around known attendees,
+accounts and dossier names, and the job records how many characters were
+omitted. Dossier selection is bounded and includes
+only direct relationship targets, never the whole corpus. The maximum input
+defaults to 60,000 characters and can be raised to 200,000; existing configured
+limits stay in force. Other input that is still oversized fails before
+transmission; the job states the
 actual size against the limit and links to Maximum note and transcript
 characters under Processing limits. The model has
 no tools, URL fetches, or write access. It returns structured suggestions;
