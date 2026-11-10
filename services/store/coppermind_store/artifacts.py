@@ -1675,8 +1675,12 @@ async def recover_artifacts(store: LocalStore) -> dict[str, int]:
         manifest = _read_json(path, "manifest")
         if manifest.get("artifact_id") != path.parent.name:
             raise ValueError("artifact manifest identity mismatch")
+        audio_removed = (
+            bool(manifest.get("removed_at"))
+            and manifest.get("removed_reason") == REMOVED_AFTER_REVIEW
+        )
         for item in manifest.get("revisions", []):
-            if item.get("filename"):
+            if item.get("filename") and not audio_removed:
                 _verify_file(
                     _revision_file(store, path.parent.name, item),
                     str(item["sha256"]),

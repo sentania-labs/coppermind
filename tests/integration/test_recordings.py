@@ -170,6 +170,23 @@ async def test_reviewed_recording_is_removed_with_a_receipt_and_transcript(store
     assert await context.recordings.tick() is False
 
 
+async def test_rebuilding_metadata_after_audio_removal_keeps_the_receipt(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    await approve(store, done["note_id"])
+    assert await context.recordings.tick() is True
+    assert not (store.artifacts_root / audio / "r0001" / "standup.m4a").exists()
+    await store.rebuild_metadata()
+    manifest = json.loads((store.artifacts_root / audio / "manifest.json").read_text())
+    assert manifest["removed_at"]
+    assert manifest["revisions"][0]["sha256"] == hashlib.sha256(AUDIO).hexdigest()
+    assert (await store.get_source_artifact(done["source_id"], 1, "transcript.txt")).content
+
+
 async def test_audio_removal_failure_is_reported_and_retried(store, monkeypatch):
     from coppermind_store import artifacts
 
