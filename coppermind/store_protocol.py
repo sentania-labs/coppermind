@@ -825,6 +825,7 @@ class RecordingStatus(BaseModel):
     error: str = ""
     error_rule: str = ""
     retry_after: str = ""
+    transcription_progress: str = ""
     created_at: str
     succeeded_at: str = ""
     note_id: str = ""

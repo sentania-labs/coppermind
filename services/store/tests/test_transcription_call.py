@@ -29,7 +29,8 @@ REPLY = {
 class Service:
     """An OpenAI-compatible `POST /v1/audio/transcriptions` that takes its time."""
 
-    def __init__(self, *, delay=0.0, keepalive=0.0, status=200, reply=None):
+    def __init__(self, *, delay=0.0, keepalive=0.0, status=200, reply=None, jobs=False):
+        self.jobs = jobs
         self.delay, self.keepalive, self.status = delay, keepalive, status
         self.reply = REPLY if reply is None else reply
         self.requests: list[dict] = []
@@ -60,7 +61,7 @@ class Service:
             for line in lines[1:]
             if b":" in line
         }
-        length = int(headers["content-length"])
+        length = int(headers.get("content-length", "0"))
         body = b""
         while len(body) < length:
             piece = await reader.read(min(65536, length - len(body)))
@@ -82,7 +83,13 @@ class Service:
                 writer.write(f"{len(payload):x}\r\n".encode() + payload + b"\r\n0\r\n\r\n")
             else:
                 await asyncio.sleep(self.delay)
-                payload = json.dumps(self.reply).encode()
+                answer = self.reply
+                if self.jobs and self.status == 200:
+                    if lines[0].startswith(b"POST "):
+                        answer = {"id": "local-job", "status": "queued"}
+                    else:
+                        answer = {"status": "done", "result": self.reply}
+                payload = json.dumps(answer).encode()
                 writer.write(
                     f"HTTP/1.1 {self.status} X\r\ncontent-type: application/json\r\n"
                     f"content-length: {len(payload)}\r\n\r\n".encode()
@@ -132,6 +139,7 @@ async def test_the_recording_is_sent_whole_as_a_multipart_upload_and_segments_co
     assert request["headers"]["content-type"].startswith("multipart/form-data; boundary=")
     body = request["body"]
     assert recording.read_bytes() in body
+    assert b'name="num_speakers"' not in body
     assert b'name="model"\r\n\r\nwhisper-diarize' in body
     assert b'name="response_format"\r\n\r\ndiarized_json' in body
     assert b'name="chunking_strategy"\r\n\r\nauto' in body
@@ -378,3 +386,127 @@ async def test_only_a_failure_that_can_pass_is_sent_again_by_itself(recording, s
         with pytest.raises(ProviderError) as caught:
             await send(service, recording)
     assert repeats_only(caught.value.rule) is not tried_again
+
+
+async def test_job_path_polls_and_submits_stable_identity_and_hint(recording, monkeypatch):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    requests = []
+
+    async def handle(request):
+        requests.append((request.method, request.url.path, await request.aread()))
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "job-1", "status": "queued"})
+        if len(requests) == 2:
+            return httpx.Response(200, json={"status": "running"})
+        return httpx.Response(200, json={"status": "done", "result": REPLY})
+
+    progress: list[str] = []
+    provider = ModelProvider(httpx.MockTransport(handle))
+    connection = ModelConnection(
+        id="stt", name="Speech", provider="compatible", base_url="http://127.0.0.1:1/v1"
+    )
+    result, _ = await provider.transcribe(
+        connection,
+        "",
+        assignment(),
+        recording,
+        filename=recording.name,
+        mime_type="audio/mp4",
+        size_bytes=recording.stat().st_size,
+        job_id="stable-id",
+        duration_seconds=7201,
+        num_speakers=3,
+        progress=progress.append,
+    )
+    assert result["segments"]
+    assert requests[0][1] == "/v1/audio/transcriptions/jobs"
+    assert b'name="id"\r\n\r\nstable-id' in requests[0][2]
+    assert b'name="num_speakers"\r\n\r\n3' in requests[0][2]
+    assert requests[1][1] == "/v1/audio/transcriptions/jobs/job-1"
+    assert progress == ["queued", "running", "done"]
+
+
+@pytest.mark.parametrize(
+    "reason", ["busy", "internal", "audio_unreadable", "no_speech", "too_long"]
+)
+async def test_service_reason_codes_override_http_status(recording, reason):
+    async def handle(request):
+        return httpx.Response(400, json={"reason": reason})
+
+    provider = ModelProvider(httpx.MockTransport(handle))
+    connection = ModelConnection(
+        id="stt", name="Speech", provider="compatible", base_url="http://127.0.0.1:1/v1"
+    )
+    with pytest.raises(ProviderError) as error:
+        await provider.transcribe(
+            connection,
+            "",
+            assignment(),
+            recording,
+            filename=recording.name,
+            mime_type="audio/mp4",
+            size_bytes=recording.stat().st_size,
+        )
+    assert error.value.rule == "transcription-" + reason
+    assert error.value.waiting == (reason in {"busy", "internal"})
+
+
+async def test_direct_too_long_falls_back_to_job_path(recording, monkeypatch):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    paths = []
+
+    async def handle(request):
+        paths.append(request.url.path)
+        if len(paths) == 1:
+            return httpx.Response(413, json={"reason": "too_long"})
+        return httpx.Response(200, json={"id": "job-1", "status": "done", "result": REPLY})
+
+    provider = ModelProvider(httpx.MockTransport(handle))
+    connection = ModelConnection(
+        id="stt", name="Speech", provider="compatible", base_url="http://127.0.0.1:1/v1"
+    )
+    await provider.transcribe(
+        connection,
+        "",
+        assignment(),
+        recording,
+        filename=recording.name,
+        mime_type="audio/mp4",
+        size_bytes=recording.stat().st_size,
+        job_id="stable-id",
+    )
+    assert paths == ["/v1/audio/transcriptions", "/v1/audio/transcriptions/jobs"]
+
+
+async def test_long_recording_against_local_job_service(recording, monkeypatch):
+    from coppermind_store import model_provider
+
+    monkeypatch.setattr(model_provider, "JOB_POLL_SECONDS", 0)
+    async with Service(jobs=True) as service:
+        transcript, _ = await ModelProvider().transcribe(
+            service.connection,
+            "",
+            assignment(),
+            recording,
+            filename=recording.name,
+            mime_type="audio/mp4",
+            size_bytes=recording.stat().st_size,
+            job_id="stable",
+            duration_seconds=7201,
+        )
+    assert transcript["segments"]
+    assert service.requests[0]["path"].startswith("POST /v1/audio/transcriptions/jobs ")
+    assert service.requests[1]["path"].startswith("GET /v1/audio/transcriptions/jobs/local-job ")
+
+
+def test_reason_codes_choose_retry_policy():
+    from coppermind_store.recordings import repeats_only
+
+    for reason in ("audio_unreadable", "no_speech", "too_long"):
+        assert repeats_only("transcription-" + reason)
+    for reason in ("busy", "internal"):
+        assert not repeats_only("transcription-" + reason)

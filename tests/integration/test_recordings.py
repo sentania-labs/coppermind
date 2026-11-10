@@ -393,3 +393,18 @@ async def test_a_recording_removed_during_transcription_is_reported_as_removed(s
     assert "removed before the note could cite it" in failed["error"]
     assert "new external id" not in failed["error"]
     assert await context.recordings.tick() is False
+
+
+async def test_unmatched_recording_creates_review_note_with_capture_time(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        payload = request(audio, frontmatter={})
+        accepted = await context.accept_recording(payload)
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    assert done["state"] == "succeeded"
+    note = await store.get_note(done["note_id"])
+    assert note.path.startswith("Review/")
+    assert str(note.frontmatter["date"]).startswith("2026-11-09T09:30")
+    assert not note.frontmatter.get("meeting")

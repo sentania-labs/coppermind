@@ -7,9 +7,10 @@ import json
 import math
 import secrets
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -36,6 +37,26 @@ TRANSCRIBE_CONNECT_SECONDS = 60
 # The largest transcript reply read: speaker segments with timings run to a few MiB for hours.
 MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 1 << 20
+DIRECT_MAX_BYTES = 100 * 1024 * 1024
+DIRECT_MAX_SECONDS = 2 * 60 * 60
+JOB_POLL_SECONDS = 10
+TRANSCRIPTION_REASONS = {"busy", "internal", "audio_unreadable", "no_speech", "too_long"}
+
+
+def transcription_error(reason: str) -> ProviderError:
+    messages = {
+        "busy": "The transcription service is busy. It will be tried again later.",
+        "internal": "The transcription service had a problem. It will be tried again later.",
+        "audio_unreadable": "The recording could not be read. "
+        "Upload a readable audio file and try again.",
+        "no_speech": "No speech was found. "
+        "Check the recording and upload a corrected file if needed.",
+        "too_long": "The recording is too long or large for the transcription service. "
+        "Split it and upload the parts.",
+    }
+    return ProviderError(
+        messages[reason], "transcription-" + reason, waiting=reason in {"busy", "internal"}
+    )
 
 
 class ProviderError(ValueError):
@@ -275,7 +296,25 @@ class ModelProvider:
                     ) as response,
                 ):
                     if not response.is_success:
-                        raise self._http_error(response.status_code, upload=body is not None)
+                        if noun == "transcription service":
+                            raw_error = bytearray()
+                            async for part in response.aiter_bytes():
+                                raw_error.extend(part)
+                                if len(raw_error) > 65536:
+                                    break
+                            try:
+                                error_data = json.loads(raw_error[:65536])
+                            except (ValueError, UnicodeDecodeError):
+                                error_data = {}
+                            reason = (
+                                error_data.get("reason") if isinstance(error_data, dict) else None
+                            )
+                            if isinstance(reason, str) and reason in TRANSCRIPTION_REASONS:
+                                raise transcription_error(reason)
+                        raise self._http_error(
+                            response.status_code,
+                            upload=body is not None or noun == "transcription service",
+                        )
                     event_stream = "text/event-stream" in response.headers.get("content-type", "")
                     stats.streamed = event_stream
                     data = bytearray()
@@ -603,6 +642,10 @@ class ModelProvider:
         filename: str,
         mime_type: str,
         size_bytes: int,
+        job_id: str = "",
+        duration_seconds: float | None = None,
+        num_speakers: int | None = None,
+        progress: Callable[[str], None] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Send one recording to `POST /audio/transcriptions`; return its speaker segments.
 
@@ -619,23 +662,36 @@ class ModelProvider:
         fields = {"model": assignment.model, "response_format": assignment.response_format}
         if assignment.response_format == "diarized_json":
             fields["chunking_strategy"] = "auto"
-        head = (
-            b"".join(
-                (
-                    f"--{boundary}\r\nContent-Disposition: form-data; "
-                    f'name="{name}"\r\n\r\n{value}\r\n'
-                ).encode()
-                for name, value in fields.items()
-            )
-            + (
-                f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
-                f'filename="{_header_safe(filename)}"\r\nContent-Type: {_header_safe(mime_type)}'
-                "\r\n\r\n"
-            ).encode()
+        if num_speakers is not None:
+            fields["num_speakers"] = str(num_speakers)
+        use_job = bool(job_id) and (
+            size_bytes > DIRECT_MAX_BYTES
+            or (duration_seconds is not None and duration_seconds > DIRECT_MAX_SECONDS)
         )
+
+        def make_head(use_job_path: bool) -> bytes:
+            upload_fields = dict(fields)
+            if use_job_path:
+                upload_fields["id"] = job_id
+            return (
+                b"".join(
+                    (
+                        f"--{boundary}\r\nContent-Disposition: form-data; "
+                        f'name="{name}"\r\n\r\n{value}\r\n'
+                    ).encode()
+                    for name, value in upload_fields.items()
+                )
+                + (
+                    f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+                    f'filename="{_header_safe(filename)}"\r\n'
+                    f"Content-Type: {_header_safe(mime_type)}"
+                    "\r\n\r\n"
+                ).encode()
+            )
+
         tail = f"\r\n--{boundary}--\r\n".encode()
 
-        async def body() -> AsyncIterator[bytes]:
+        async def body(head: bytes) -> AsyncIterator[bytes]:
             yield head
             sent = 0
             with audio.open("rb") as stream:
@@ -648,15 +704,16 @@ class ModelProvider:
                 )
             yield tail
 
-        try:
-            result, stats = await self._exchange(
+        async def upload(use_job_path: bool):
+            head = make_head(use_job_path)
+            return await self._exchange(
                 connection,
                 key,
                 "POST",
-                "/audio/transcriptions",
+                "/audio/transcriptions/jobs" if use_job_path else "/audio/transcriptions",
                 timeout=assignment.wait_s,
                 connect_timeout=TRANSCRIBE_CONNECT_SECONDS,
-                body=body(),
+                body=body(head),
                 content_type=f"multipart/form-data; boundary={boundary}",
                 max_seconds=MAX_TRANSCRIBE_SECONDS,
                 max_reply_bytes=MAX_TRANSCRIPT_BYTES,
@@ -664,6 +721,72 @@ class ModelProvider:
                 limit_name="Transcription",
                 length=len(head) + size_bytes + len(tail),
             )
+
+        try:
+            try:
+                result, stats = await upload(use_job)
+            except ProviderError as exc:
+                if (
+                    not use_job
+                    and job_id
+                    and exc.rule in {"transcription-too_long", "transcription-http-413"}
+                ):
+                    use_job = True
+                    result, stats = await upload(True)
+                else:
+                    raise
+            if use_job:
+                remote_id = result.get("id")
+                if not isinstance(remote_id, str) or not remote_id or len(remote_id) > 500:
+                    raise ProviderError(
+                        "The transcription service did not return a job reference. "
+                        "Check the service and retry.",
+                        "transcription-provider",
+                    )
+                while True:
+                    state = result.get("status")
+                    if state is not None and not isinstance(state, str):
+                        raise ProviderError(
+                            "The transcription service returned an unknown job state. "
+                            "Check the service and retry.",
+                            "transcription-provider",
+                        )
+                    if progress and state in {"queued", "running", "done", "failed"}:
+                        progress(state)
+                    if state == "done":
+                        result = result.get("result")
+                        if not isinstance(result, dict):
+                            raise ProviderError(
+                                "The transcription service returned no job result. "
+                                "Check the service and retry.",
+                                "transcription-provider",
+                            )
+                        break
+                    if state == "failed":
+                        reason = result.get("reason")
+                        if isinstance(reason, str) and reason in TRANSCRIPTION_REASONS:
+                            raise transcription_error(reason)
+                        raise ProviderError(
+                            "The transcription job failed. Check the service and retry.",
+                            "transcription-http",
+                            waiting=True,
+                        )
+                    if state not in {"queued", "running", None}:
+                        raise ProviderError(
+                            "The transcription service returned an unknown job state. "
+                            "Check the service and retry.",
+                            "transcription-provider",
+                        )
+                    await asyncio.sleep(JOB_POLL_SECONDS)
+                    result, stats = await self._exchange(
+                        connection,
+                        key,
+                        "GET",
+                        "/audio/transcriptions/jobs/" + quote(remote_id, safe=""),
+                        timeout=assignment.wait_s,
+                        noun="transcription service",
+                        max_reply_bytes=MAX_TRANSCRIPT_BYTES,
+                    )
         except ProviderError as exc:
             if exc.rule:
                 raise

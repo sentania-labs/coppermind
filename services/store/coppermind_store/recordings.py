@@ -91,6 +91,8 @@ class TranscriptionJob(ContextModel):
     # True once the service's transcript is saved. A retry then files it without sending
     # the recording again.
     transcribed: bool = False
+    transcription_progress: str = ""
+    transcription_generation: int = 0
     created_at: str
     started_at: str = ""
     succeeded_at: str = ""
@@ -115,6 +117,7 @@ class TranscriptionJob(ContextModel):
             error=self.error,
             error_rule=self.error_rule,
             retry_after=self.retry_after,
+            transcription_progress=self.transcription_progress,
             created_at=self.created_at,
             succeeded_at=self.succeeded_at,
             note_id=self.note_id,
@@ -496,6 +499,19 @@ class Recordings:
             job.artifact_id,
             job.artifact_revision or None,
         )
+
+        def progress(state: str) -> None:
+            job.transcription_progress = state
+            if state == "failed":
+                job.transcription_generation += 1
+            self.save(job)
+
+        duration = job.metadata.get("duration_seconds")
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration <= 0:
+            duration = None
+        speakers = job.metadata.get("num_speakers")
+        if isinstance(speakers, bool) or not isinstance(speakers, int) or speakers < 1:
+            speakers = None
         transcript, usage = await self.context.provider.transcribe(
             connection,
             self.context.key(connection.id),
@@ -504,6 +520,10 @@ class Recordings:
             filename=job.filename,
             mime_type=job.mime_type,
             size_bytes=int(revision["size_bytes"]),
+            job_id=f"{job.id}-{job.transcription_generation}",
+            duration_seconds=duration,
+            num_speakers=speakers,
+            progress=progress,
         )
         transcript["model"] = assignment.model
         self.context.write(self.transcript_path(job), transcript)
@@ -560,6 +580,9 @@ class Recordings:
 NO_AUTOMATIC_RETRY = frozenset(
     {
         "provider-too-long",
+        "transcription-audio_unreadable",
+        "transcription-no_speech",
+        "transcription-too_long",
         "transcription-provider",
         "transcript-empty",
         "transcript-flat",
