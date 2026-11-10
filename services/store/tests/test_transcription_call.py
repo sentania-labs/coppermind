@@ -601,3 +601,39 @@ async def test_an_empty_answer_repeated_ends_the_wait_before_the_deadline(record
             )
     assert caught.value.rule == "transcription-unfinished"
     assert len(service.requests) == 1 + model_provider.JOB_EMPTY_ANSWERS
+
+
+@pytest.mark.parametrize(
+    ("duration", "path"),
+    [
+        (None, "/v1/audio/transcriptions"),
+        (600, "/v1/audio/transcriptions"),
+        (7200, "/v1/audio/transcriptions"),
+        (7201, "/v1/audio/transcriptions/jobs"),
+    ],
+)
+async def test_only_a_recording_known_to_be_over_two_hours_starts_on_the_jobs_path(
+    recording, duration, path
+):
+    paths = []
+
+    async def handle(request):
+        paths.append(request.url.path)
+        await request.aread()
+        return httpx.Response(200, json={"id": "j", "status": "done", "result": REPLY, **REPLY})
+
+    connection = ModelConnection(
+        id="stt", name="Speech", provider="compatible", base_url="http://127.0.0.1:1/v1"
+    )
+    await ModelProvider(httpx.MockTransport(handle)).transcribe(
+        connection,
+        "",
+        assignment(),
+        recording,
+        filename=recording.name,
+        mime_type="audio/mp4",
+        size_bytes=recording.stat().st_size,
+        job_id="stable-id",
+        duration_seconds=duration,
+    )
+    assert paths == [path]

@@ -344,7 +344,10 @@ Problems, with Retry and no automatic try. A store restart in the middle of a
 transcription is not a failed attempt either: the recording is sent again under the same
 job id, which re-attaches on the jobs path or finds the service busy and waits.
 
-On the jobs path (recordings over about two hours or 100 MiB) the app polls until the
+A recording whose length is given as over two hours is posted to the jobs path. When the
+length is not given, or is wrong, and the service refuses the direct call as too long (its
+`too_long` reason or HTTP 413), the app sends it again to the jobs path; that is a
+fallback, not a known limit. On the jobs path the app polls until the
 service says `done`. It waits at most 1.5 times the audio length (`metadata.duration_seconds`,
 when given; the service runs at about 0.4 times), never less than one hour, and eight
 hours when the length is not known. A service that is still `queued` or `running` after

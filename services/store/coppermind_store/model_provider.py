@@ -37,7 +37,6 @@ TRANSCRIBE_CONNECT_SECONDS = 60
 # The largest transcript reply read: speaker segments with timings run to a few MiB for hours.
 MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 1 << 20
-DIRECT_MAX_BYTES = 100 * 1024 * 1024
 DIRECT_MAX_SECONDS = 2 * 60 * 60
 JOB_POLL_SECONDS = 10
 # The service runs at about 0.4 times the audio length. A job is given 1.5 times the audio
@@ -713,8 +712,7 @@ class ModelProvider:
         if num_speakers is not None:
             fields["num_speakers"] = str(num_speakers)
         use_job = bool(job_id) and (
-            size_bytes > DIRECT_MAX_BYTES
-            or (duration_seconds is not None and duration_seconds > DIRECT_MAX_SECONDS)
+            duration_seconds is not None and duration_seconds > DIRECT_MAX_SECONDS
         )
 
         def make_head(use_job_path: bool) -> bytes:
