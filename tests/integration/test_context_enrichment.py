@@ -1381,3 +1381,28 @@ async def test_retry_all_failed_reports_notes_that_could_not_be_queued(store, mo
     assert result["queued"] == 0
     assert len(result["errors"]) == 1 and "model is not available" in result["errors"][0]
     assert len(context.jobs()) == 2
+
+
+async def test_tick_recovers_a_model_not_available_failure_after_the_model_is_fixed(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].model = "undiscovered-model"
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Notes", frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    await context.run_job(context.load_job(first))
+    failed = context.load_job(first)
+    assert (failed.state, failed.error_rule) == ("failed", "model-not-available")
+
+    config = context.config()
+    config.assignments["enrichment"].model = "test-model"
+    context.save_config(config)
+    await context.tick()
+
+    jobs = sorted(context.jobs(), key=lambda job: job.created_at)
+    assert [job.id for job in jobs][0] == first and len(jobs) == 2
+    assert jobs[0].state == "failed"
+    assert jobs[-1].state == "suggested"
+    assert jobs[-1].config_hash == context.config_hash()

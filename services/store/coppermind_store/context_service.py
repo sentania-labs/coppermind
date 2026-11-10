@@ -765,15 +765,6 @@ class ContextService:
             assignment.automatic_after = old.automatic_after or now()
             config.assignments["enrichment"] = assignment
             self.save_config(config)
-            if assignment.enabled and not old.enabled:
-                latest: dict[str, EnrichmentJob] = {}
-                for job in sorted(self.jobs(), key=lambda j: j.created_at):
-                    latest[job.note_id] = job
-                for job in latest.values():
-                    if job.state == "failed" and job.error_rule == "model-not-available":
-                        job.state, job.attempts = "queued", 0
-                        job.set_error()
-                        self.save_job(job)
         return {"saved": "enrichment"}
 
     async def upload(self, payload: dict[str, Any]) -> dict[str, Any]:
