@@ -89,6 +89,11 @@ test('preview says attendees will not be updated when no attendees property is s
   assert.match(text,/Speaker 1 → Alex/);assert.match(text,/Attendees will not be updated/);
   assert.doesNotMatch(text,/note attendees and dossier links/);
 });
+test('attendees notice stays out of the preview when the note has no speakers',async()=>{
+  const f=await fixture(undefined,{suggestions:[],job_id:'job',speaker_attendees_notice:'Attendees will not be updated because no attendees property is set up.'});
+  const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.doesNotMatch(text,/Attendees will not be updated/);
+});
 test('preview shows selected speaker changes and dropdown correction selects the card',async()=>{
   const f=await fixture(undefined,{suggestions:[proposal(0,.9),proposal(1,.4)],job_id:'job'});
   let text=()=>f.view.contentEl.all().map(e=>e.text||'').join(' ');
