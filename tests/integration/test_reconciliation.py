@@ -1670,9 +1670,7 @@ async def test_a_required_key_with_no_default_is_not_blamed_on_a_default(store: 
     """No default was supplied, so the operator has no default to fix."""
     schema = store.control.schema()
     keys = [
-        key.model_copy(update={"default": None, "required": True})
-        if key.name == "account"
-        else key
+        key.model_copy(update={"default": None, "required": True}) if key.name == "account" else key
         for key in schema.keys
     ]
     strict = schema.model_copy(update={"keys": keys})

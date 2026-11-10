@@ -7,9 +7,9 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import sqlalchemy as sa
+from coppermind_store import reconciler
 from coppermind_store.fs import content_hash
 from coppermind_store.notes import LocalStore
-from coppermind_store import reconciler
 from coppermind_store.reconciler import note_collisions, reconcile_once
 from structlog.testing import capture_logs
 
