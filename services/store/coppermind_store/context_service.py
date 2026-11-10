@@ -1898,6 +1898,7 @@ class ContextService:
                     if (
                         changed
                         or model_ready
+                        or known.path != current.path
                         or known.source_versions != source_versions
                         or known.config_hash != self.config_hash()
                         or known.schema_hash != self.schema_hash()

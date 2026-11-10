@@ -13,7 +13,13 @@ from coppermind_store.model_provider import ModelProvider, ProviderError
 from coppermind_store.reconciler import reconcile_once
 
 from coppermind.context_config import FeatureAssignment
-from coppermind.store_protocol import ArtifactQuery, CreateNote, NoteQuery, PatchFrontmatter
+from coppermind.store_protocol import (
+    ArtifactQuery,
+    CreateNote,
+    NoteQuery,
+    PatchFrontmatter,
+    RenameNote,
+)
 from services.store.tests.test_calendar_import import event, ics
 
 
@@ -1471,6 +1477,31 @@ async def test_an_edited_failed_note_gets_no_new_job_until_it_settles(store, mon
     await context.tick()
     await context.tick()
     assert len(context.jobs()) == 2
+
+
+async def test_a_renamed_failed_note_gets_a_new_job_at_its_new_path(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].max_input_chars = 2000
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="Large", body="word " * 1000, frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    await context.run_job(context.load_job(first))
+    assert context.load_job(first).state == "failed"
+    await context.tick()
+    assert [job.id for job in context.jobs()] == [first]
+
+    renamed = await store.rename_note(
+        note.id, RenameNote(title="Renamed", preserve_body=True), note.content_hash
+    )
+    assert renamed.content_hash == note.content_hash and renamed.path != note.path
+    await context.tick()
+
+    jobs = sorted(context.jobs(), key=lambda job: job.created_at)
+    assert len(jobs) == 2 and jobs[0].id == first
+    assert jobs[-1].path == renamed.path
 
 
 async def test_coppermind_own_writes_do_not_requeue_the_job(store, monkeypatch):

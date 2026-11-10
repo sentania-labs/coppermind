@@ -188,8 +188,8 @@ Retry all failed queues every failed note's newest job, reporting how many were
 queued and which could not be. A retry always creates a new job with current
 settings and evidence. Without any click, an unreviewed note whose newest job
 failed or went stale gets a new job when the note changes (after it has been
-unedited for 60 seconds), when the evidence, schema or provider configuration
-changes, or when a model reported as unavailable becomes discovered. Reviewed
+unedited for 60 seconds), when the note is moved or renamed, when the evidence,
+schema or provider configuration changes, or when a model reported as unavailable becomes discovered. Reviewed
 notes' failed dossier jobs are requeued automatically when the configuration
 or schema changes; otherwise they are retried by hand.
 
