@@ -1719,7 +1719,6 @@ async def test_attention_reports_only_open_failures_in_one_read(store):
 
 async def test_attention_caps_open_failures_and_says_when_it_stopped_checking(store):
     context = await configure(store)
-    template = None
     for index in range(55):
         note = await store.create_note(
             CreateNote(title=f"Note {index}", body="x", frontmatter={"date": "2026-10-14"})
@@ -1728,10 +1727,9 @@ async def test_attention_caps_open_failures_and_says_when_it_stopped_checking(st
         job.state, job.error = "failed", "Too large"
         job.created_at = f"2026-03-01T00:{index:02}:00+00:00"
         context.save_job(job)
-        template = job
     for index in range(5):
         context.save_job(
-            template.model_copy(
+            job.model_copy(
                 update={
                     "id": f"gone{index}",
                     "note_id": f"no-such-note-{index}",

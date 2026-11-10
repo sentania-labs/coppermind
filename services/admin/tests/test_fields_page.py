@@ -127,7 +127,7 @@ def test_the_page_renders_every_field_and_the_tags_in_use(page):
     assert f"tag-{work}-listed" not in values
     assert "Notes: 3." in response.text
     assert "Notes: 2." in response.text
-    assert 'href="/admin/properties"' in client.get("/admin").text
+    assert 'href="/admin/properties"' in client.get("/admin/settings").text
 
 
 def test_the_page_still_edits_when_the_store_cannot_count(page):

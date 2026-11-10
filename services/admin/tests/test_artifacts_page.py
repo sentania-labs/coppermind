@@ -136,7 +136,7 @@ class ArtifactStore:
 
 def test_the_navigation_links_to_artifacts(signed_in):
     client, _ = signed_in
-    assert 'href="/admin/artifacts"' in client.get("/admin").text
+    assert 'href="/admin/artifacts"' in client.get("/admin/settings").text
 
 
 def test_the_list_names_citing_notes_by_title_and_keeps_dates_and_buttons_on_one_line(signed_in):

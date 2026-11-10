@@ -10,8 +10,10 @@ def test_navigation_and_saved_section(signed_in):
     for name in ("keys", "properties", "settings"):
         response = client.get(f"/admin/{name}")
         assert response.status_code == 200
-        assert f'<a href="/admin/{name}" aria-current="page">' in response.text
-        assert response.text.count('action="/v1/admin/logout"') == 1
+        # One form in the compact mobile menu, one in the desktop controls.
+        assert response.text.count('action="/v1/admin/logout"') == 2
+    assert '<a href="/admin/settings" aria-current="page">' in response.text
+    assert '<a href="/admin/keys">Connected apps</a>' in response.text
     response = client.post("/v1/admin/settings?section=git", data=section_form(client, "git"))
     assert response.status_code == 200
     assert '<a href="/admin/settings" aria-current="page">' in response.text
