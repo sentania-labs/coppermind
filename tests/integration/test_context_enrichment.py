@@ -1406,3 +1406,28 @@ async def test_tick_recovers_a_model_not_available_failure_after_the_model_is_fi
     assert jobs[0].state == "failed"
     assert jobs[-1].state == "suggested"
     assert jobs[-1].config_hash == context.config_hash()
+
+
+async def test_tick_recovers_a_model_not_available_failure_once_the_model_is_discovered(store):
+    context = await configure(store)
+    discovery = context.read("discovery", {})
+    connection = context.config().assignments["enrichment"].connection
+    identity = context.storage_identity(connection)
+    context.write("discovery", {**discovery, identity: []})
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Notes", frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    await context.run_job(context.load_job(first))
+    assert context.load_job(first).error_rule == "model-not-available"
+
+    await context.tick()
+    assert len(context.jobs()) == 1
+
+    context.write("discovery", {**discovery, identity: ["test-model"]})
+    await context.tick()
+
+    jobs = sorted(context.jobs(), key=lambda job: job.created_at)
+    assert len(jobs) == 2
+    assert jobs[0].id == first and jobs[0].state == "failed"
+    assert jobs[-1].state == "suggested"

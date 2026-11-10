@@ -1870,8 +1870,16 @@ class ContextService:
                 if previous and previous[-1].state in {"failed", "stale"}:
                     current = await self.store.get_note(note.id)
                     known = previous[-1]
+                    model_ready = False
+                    if known.error_rule == "model-not-available":
+                        try:
+                            self.require_discovered(assignment.connection, assignment.model)
+                            model_ready = True
+                        except ValueError:
+                            pass
                     if (
-                        known.state == "stale"
+                        model_ready
+                        or known.state == "stale"
                         or known.note_hash != current.content_hash
                         or known.config_hash != self.config_hash()
                         or known.schema_hash != self.schema_hash()
@@ -1879,7 +1887,9 @@ class ContextService:
                     ):
                         touched.append(
                             await self.queue_note(
-                                note.id, force=known.state == "stale", ledger=ledger
+                                note.id,
+                                force=model_ready or known.state == "stale",
+                                ledger=ledger,
                             )
                         )
                     continue
