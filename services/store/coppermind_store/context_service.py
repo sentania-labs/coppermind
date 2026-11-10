@@ -1786,7 +1786,8 @@ class ContextService:
         note = await self.store.get_note(identity)
         if note.frontmatter.get(self.store.control.schema().role("reviewed_key")) is not True:
             raise ValueError("only reviewed notes contribute facts")
-        for previous in self.jobs() if prior_jobs is None else prior_jobs:
+        candidates = self.jobs() if prior_jobs is None else prior_jobs
+        for previous in sorted(candidates, key=lambda job: job.created_at, reverse=True):
             if (
                 not force
                 and previous.purpose == "dossier"
@@ -1883,9 +1884,14 @@ class ContextService:
                     changed = known.note_hash != current.content_hash
                     if changed and datetime.now(UTC) - current.updated_at < NOTE_QUIET_PERIOD:
                         continue
+                    source_versions = {
+                        item.id: (await self.store.get_source(item.id)).current_revision
+                        for item in await self.store.get_note_sources(note.id)
+                    }
                     if (
                         changed
                         or model_ready
+                        or known.source_versions != source_versions
                         or known.config_hash != self.config_hash()
                         or known.schema_hash != self.schema_hash()
                         or known.evidence_hash != await self.note_evidence_hash(current, ledger)

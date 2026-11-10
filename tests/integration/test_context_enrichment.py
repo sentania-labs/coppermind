@@ -1490,3 +1490,41 @@ async def test_coppermind_own_writes_do_not_requeue_the_job(store):
     await context.tick()
 
     assert [item.id for item in context.jobs()] == [job.id]
+
+
+async def test_tick_recovers_when_transcript_revision_changes(store, monkeypatch):
+    from types import SimpleNamespace
+
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Notes", frontmatter={"date": "2026-10-14"})
+    )
+    first = await context.queue_note(note.id)
+    failed = context.load_job(first)
+    failed.state = "failed"
+    failed.attempts = failed.attempt_limit
+    failed.source_versions = {"source": 1}
+    context.save_job(failed)
+
+    async def sources(identity):
+        return [SimpleNamespace(id="source")]
+
+    async def source(identity):
+        return SimpleNamespace(current_revision=2)
+
+    async def leave_queued(job):
+        pass
+
+    async def source_text(identity):
+        return []
+
+    monkeypatch.setattr(context, "source_text", source_text)
+    monkeypatch.setattr(store, "get_note_sources", sources)
+    monkeypatch.setattr(store, "get_source", source)
+    monkeypatch.setattr(context, "run_job", leave_queued)
+    await context.tick()
+    jobs = sorted(context.jobs(), key=lambda job: job.created_at)
+    assert len(jobs) == 2
+    assert jobs[0].id == first and jobs[0].state == "failed"
+    assert jobs[1].source_versions == {"source": 2}
+    assert jobs[1].state == "queued"

@@ -957,3 +957,25 @@ async def test_tick_reads_the_dossier_catalog_once_however_many_notes_it_queues(
     one = await reads_during_tick(1)
     many = await reads_during_tick(5)
     assert many == one
+
+
+async def test_reviewed_recovery_selects_newest_matching_dossier_job(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Reviewed meeting", body=BODY, frontmatter={"reviewed": True})
+    )
+    first = context.load_job(await context.queue_reviewed(note.id))
+    first.state = "failed"
+    context.save_job(first)
+    second = context.load_job((await context.retry_job({"id": first.id}))["job"])
+    second.state = "failed"
+    context.save_job(second)
+    config = context.config()
+    config.assignments["enrichment"].timeout_s += 1
+    context.save_config(config)
+
+    selected = await context.queue_reviewed(note.id, [first, second])
+
+    assert selected == second.id
+    assert context.load_job(first.id).state == "failed"
+    assert context.load_job(second.id).state == "queued"
