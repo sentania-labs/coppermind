@@ -675,6 +675,61 @@ async def test_old_exhausted_extraction_is_retried_once_under_new_version(store)
     assert len(seen) == 1
 
 
+async def test_applied_legacy_extraction_is_requeued_under_current_version(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Reviewed", body=BODY, frontmatter={"reviewed": True})
+    )
+    legacy = context.load_job(await context.queue_reviewed(note.id))
+    (context.root / "jobs" / (legacy.id + ".json")).unlink()
+    legacy.id = "a" * 64
+    legacy.extraction_version = ""
+    legacy.state = "applied"
+    context.save_job(legacy)
+    current_id = await context.queue_reviewed(note.id)
+    assert current_id != legacy.id
+    current = context.load_job(current_id)
+    assert current.state == "queued" and current.extraction_version
+
+
+async def test_source_only_rerun_does_not_duplicate_note_backed_facts(store, monkeypatch):
+    from types import SimpleNamespace as NS
+
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Reviewed", body=BODY, frontmatter={"reviewed": True})
+    )
+    _fake_transcript(store, monkeypatch, "unrelated transcript")
+    revision = 1
+    artifact = NS(name="t.txt", mime_type="text/plain", size_bytes=20)
+
+    async def source(_identity):
+        return NS(
+            current_revision=revision,
+            revisions=[NS(revision=revision, artifacts=[artifact])],
+        )
+
+    monkeypatch.setattr(store, "get_source", source)
+    provider(context, extracted())
+    first = context.load_job(await context.queue_reviewed(note.id))
+    await context.run_job(first)
+    assert first.state == "applied", first.error
+    before = {
+        entity.id: [fact.id for fact in entity.facts if fact.evidence.note_id == note.id]
+        for entity in store.entities.load().entities.values()
+    }
+    revision = 2
+    second = context.load_job(await context.queue_reviewed(note.id))
+    assert second.id != first.id
+    await context.run_job(second)
+    assert second.state == "applied", second.error
+    after = {
+        entity.id: [fact.id for fact in entity.facts if fact.evidence.note_id == note.id]
+        for entity in store.entities.load().entities.values()
+    }
+    assert after == before
+
+
 async def test_dossier_job_made_stale_by_a_settings_change_is_requeued(store):
     context = await configure(store)
     note = await store.create_note(

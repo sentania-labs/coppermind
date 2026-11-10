@@ -1869,8 +1869,11 @@ class ContextService:
                 (
                     not previous.extraction_version
                     and (
-                        previous.state != "failed"
-                        or previous.attempts < (previous.attempt_limit or 0)
+                        previous.state in {"queued", "running", "stale"}
+                        or (
+                            previous.state == "failed"
+                            and previous.attempts < (previous.attempt_limit or 0)
+                        )
                     )
                 )
                 or (
