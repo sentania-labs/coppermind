@@ -179,13 +179,12 @@ class EmbeddingService:
     async def table_ready(self, *, refresh: bool = False) -> bool:
         """Whether pgvector's table exists, creating it when the server offers the extension.
 
-        While it cannot be had this tries again each minute, and at once when `refresh`.
+        An answer is kept for a minute, so a dropped table is made again within one; `refresh`
+        asks at once.
         """
         now = time.monotonic()
-        if self._table_ok or (
-            self._table_ok is False and not refresh and now - self._table_checked < 60
-        ):
-            return bool(self._table_ok)
+        if self._table_ok is not None and not refresh and now - self._table_checked < 60:
+            return self._table_ok
         async with self._table_lock:
             try:
                 found = await self._ensure_table()

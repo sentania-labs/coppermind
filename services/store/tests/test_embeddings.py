@@ -202,3 +202,26 @@ async def test_saving_from_admin_keeps_the_timeout_and_attempts_an_operator_set(
     kept = saved[0].embeddings
     assert (kept.model, kept.enabled, kept.timeout_s, kept.attempts) == ("new", True, 300, 5)
     assert asked == [300]
+
+
+async def test_a_table_that_disappears_is_noticed_and_made_again(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("coppermind_store.embeddings.time.monotonic", lambda: now[0])
+    service = EmbeddingService(SimpleNamespace())
+    answers = [True, False, True]
+    asked = []
+
+    async def ensure() -> bool:
+        asked.append(now[0])
+        return answers.pop(0)
+
+    service._ensure_table = ensure  # type: ignore[method-assign]
+
+    assert await service.table_ready() is True
+    assert await service.table_ready() is True
+    assert len(asked) == 1
+    now[0] += 61
+    assert await service.table_ready() is False
+    assert await service.table_ready() is False
+    assert await service.table_ready(refresh=True) is True
+    assert len(asked) == 3
