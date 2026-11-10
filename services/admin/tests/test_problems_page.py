@@ -58,6 +58,10 @@ class ReadOnlyStore:
         if not self.reachable:
             raise StoreUnavailable("the store is down")
 
+    async def context_action(self, action, payload):
+        self._check("context_action")
+        return {"dropbox": {"items": []}, "calendar": {"imports": []}, "jobs": [], "next_offset": None}
+
     async def get_status(self) -> StatusResponse:
         self._check("get_status")
         return StatusResponse(

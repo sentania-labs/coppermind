@@ -10,10 +10,15 @@ no file.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import os
 from collections.abc import Sequence
 from html import escape
 from typing import Protocol
 from urllib.parse import quote
+from urllib.request import Request as URLRequest
+from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
@@ -313,18 +318,123 @@ Artifacts<strong>{counters.artifacts}</strong>
 <p><a href="/admin/problems">Problems ({problems})</a></p>"""
 
 
-async def overview_counters(request: Request, wiring: Wiring) -> str:
-    from coppermind_admin.pages.search_index import _zone
-
+async def attention_html(request: Request, wiring: Wiring) -> str:
+    """Read the live sources; a failed read is itself visible, never an all-clear."""
+    client = store_client(request, wiring)
     try:
-        client = store_client(request, wiring)
+        problems = await client.get_problems()
         status = await client.get_status()
-        notices = (
-            await client.list_reconciler_notices() if status.counters.artifacts_returned else []
-        )
     except (StoreError, OSError):
         return f'<p class="error">{UNREACHABLE}</p>'
-    return counters_html(status, notices, _zone(request))
+
+    active = [item for item in problems if item.kind != "excluded"]
+    rows = [
+        f"<li><strong>{escape(KIND_LABELS.get(item.kind, 'Note or file'))}: "
+        f"{_what(item)}</strong><p>{escape(_reason(item))}</p>{_link(item)}</li>"
+        for item in active
+    ]
+    incomplete = False
+    latest_jobs: dict[str, dict] = {}
+    filenames: set[str] = {
+        item.reference for item in active if item.kind in {"dropbox", "calendar_import"}
+    }
+    offset = 0
+    try:
+        while True:
+            data = await client.context_action("snapshot", {"offset": offset})
+            if offset == 0:
+                for item in data.get("dropbox", {}).get("items", []):
+                    if item.get("state") in {"failed", "unsupported", "needs_identity"}:
+                        name = item.get("filename", "Import")
+                        if name in filenames:
+                            continue
+                        filenames.add(name)
+                        reason = item.get("error") or "This file needs your attention."
+                        rows.append(
+                            f"<li><strong>Import: {escape(name)}</strong><p>{escape(reason)}</p>"
+                            '<a href="/admin/workflow?tab=intake">Open import</a></li>'
+                        )
+                if data.get("worker_error"):
+                    rows.append(
+                        "<li><strong>Suggestions stopped</strong><p>Check suggestion settings "
+                        'and try again.</p><a href="/admin/context?tab=models">Open settings</a></li>'
+                    )
+            for receipt in data.get("calendar", {}).get("imports", []):
+                if (
+                    receipt.get("state") == "failed"
+                    and not receipt.get("dismissed")
+                    and receipt.get("filename") not in filenames
+                ):
+                    name = receipt.get("filename", "Import")
+                    filenames.add(name)
+                    rows.append(
+                        f"<li><strong>Import: {escape(name)}</strong><p>{escape(receipt.get('error') or 'Import failed.')}</p>"
+                        '<a href="/admin/context?tab=calendar">Open import history</a></li>'
+                    )
+            for job in data.get("jobs", []):
+                latest_jobs.setdefault(job.get("note_id") or job.get("path", ""), job)
+            next_offset = data.get("next_offset")
+            if next_offset is None:
+                break
+            if next_offset <= offset:
+                incomplete = True
+                break
+            offset = next_offset
+        for job in latest_jobs.values():
+            if job.get("state") == "failed":
+                target = quote(str(job.get("id", "")), safe="")
+                rows.append(
+                    f"<li><strong>Suggestions: {escape(job.get('path', 'Note'))}</strong>"
+                    f"<p>{escape(job.get('error') or 'Suggestions could not be completed.')}</p>"
+                    f'<a href="/admin/context/jobs/{target}">See what to do</a></li>'
+                )
+    except (StoreError, OSError, AttributeError, KeyError, ValueError):
+        incomplete = True
+    if incomplete:
+        rows.append(
+            "<li><strong>Some attention items could not be checked.</strong><p>Try again, "
+            'or check imports and suggestions directly.</p><a href="/admin/workflow?tab=intake">Imports</a> · '
+            '<a href="/admin/context?tab=review">Suggestions</a></li>'
+        )
+
+    def sync_status() -> dict:
+        endpoint = os.environ.get("COPPERMIND_SYNC_URL", "http://obsidian-sync:8092").rstrip("/")
+        req = URLRequest(
+            endpoint + "/status",
+            headers={"Authorization": "Bearer " + wiring.read_internal_token()},
+        )
+        with urlopen(req, timeout=2) as response:  # noqa: S310
+            return json.load(response)
+
+    try:
+        device = await asyncio.to_thread(sync_status)
+        if device.get("last_error") or device.get("state") == "error":
+            rows.append(
+                "<li><strong>Device connection needs attention</strong><p>Check the "
+                'connection and reconnect if needed.</p><a href="/admin/sync">Open devices</a></li>'
+            )
+    except (OSError, ValueError):
+        rows.append(
+            "<li><strong>Device connection could not be checked</strong><p>Check "
+            'the connection status.</p><a href="/admin/sync">Open devices</a></li>'
+        )
+    review = status.counters.notes_awaiting_review
+    content = (
+        '<ul class="attention-list">' + "".join(rows) + "</ul>"
+        if rows
+        else '<p class="success">Nothing needs attention right now.</p>'
+    )
+    return (
+        f'<p><a href="/admin/workflow?tab=review">{review} notes awaiting review</a>. '
+        "Review in Obsidian and check Reviewed to file each note.</p>"
+        f"<section><h2>Needs attention ({len(rows)})</h2>{content}</section>"
+        '<p><a href="/admin/problems">Filing details and exclusions</a> · '
+        '<a href="/admin/sync">Check devices</a></p>'
+    )
+
+
+async def overview_counters(request: Request, wiring: Wiring) -> str:
+    return await attention_html(request, wiring)
 
 
 def router(wiring: Wiring) -> APIRouter:
