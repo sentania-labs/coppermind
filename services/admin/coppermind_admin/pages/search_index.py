@@ -122,7 +122,22 @@ def embedding_status_html(status: EmbeddingStatus, zone: ZoneInfo) -> str:
     return lines
 
 
+# The store's generic message for a save made against an out-of-date configuration. Here the
+# draft is kept and the form already carries the current revision, so "reload" would only
+# throw the draft away; this page says what actually happened and what to do.
+STALE_REVISION = "configuration changed; reload before saving"
+STALE_MESSAGE = (
+    "Settings changed in another session. Nothing was saved. Your entries are still here; "
+    "review them and save again."
+)
 CONNECTIONS_LINK = "/admin/context?tab=models&return=/admin/search-index"
+
+
+def _wait_ok(value: object) -> bool:
+    try:
+        return 5 <= int(str(value)) <= 600
+    except ValueError:
+        return False
 
 
 def saved_notice(enabled: bool, status: EmbeddingStatus) -> str:
@@ -156,6 +171,7 @@ def embeddings_html(
         for item in connections
     )
     datalist = "".join(f'<option value="{escape(name, quote=True)}">' for name in models)
+    wait_invalid = "" if _wait_ok(settings["timeout_s"]) else ' aria-invalid="true"'
     checked = lambda flag: " checked" if flag else ""  # noqa: E731
     where_from = (
         "<p>There is no OpenAI or OpenAI-compatible connection yet. A connection is a service "
@@ -174,15 +190,16 @@ keyword search and falls back to it whenever the model is off or not answering.<
 <fieldset><legend>Embeddings model</legend>
 {where_from}
 <label>Connection<select name="connection" class="lat-select">{choices}</select></label>
-<p class="muted"><a href="{CONNECTIONS_LINK}">Add or edit connection</a>
-(you come back to this page after saving one)</p>
+<p class="muted"><a href="{CONNECTIONS_LINK}" id="connections-link">Add or edit connection</a>
+(you come back to this page after saving a connection; unsaved changes to the settings
+below are lost when you leave, so save them first)</p>
 <label>Model<input class="lat-input" name="model" list="embedding-models"
 value="{escape(settings["model"], quote=True)}"
 placeholder="for example text-embedding-3-small"></label>
 <datalist id="embedding-models">{datalist}</datalist>
 <p class="muted">The model list comes from the connection; refresh it on the Connections page.</p>
 <label>Wait limit (seconds)<input class="lat-input" name="timeout_s" type="number" min="5" max="600"
-value="{int(settings["timeout_s"])}"></label>
+value="{escape(str(settings["timeout_s"]), quote=True)}"{wait_invalid}></label>
 <p class="muted">How long the service may stay silent before one request is given up on,
 including the test when you save.</p>
 </fieldset>
@@ -199,6 +216,15 @@ again; keyword search remains available while it does.</p>
 <button class="lat-btn lat-btn--primary">Save search by meaning</button>
 </form>
 <script>
+const meaningForm = document.getElementById("meaning-form");
+let meaningDirty = false;
+meaningForm.addEventListener("input", () => {{ meaningDirty = true; }});
+document.getElementById("connections-link").addEventListener("click", (event) => {{
+  if (meaningDirty && !confirm(
+    "Your changes to the search by meaning settings are not saved and will be lost if you " +
+    "leave. Leave anyway?")) event.preventDefault();
+}});
+meaningForm.addEventListener("submit", () => {{ meaningDirty = false; }});
 document.getElementById("meaning-form").addEventListener("submit", (event) => {{
   const form = event.target;
   if (!form.elements.enabled.checked) return;
@@ -306,7 +332,10 @@ rebuilding it loses nothing.</p>
             problem = (
                 str(exc) if isinstance(exc, StoreError | ValueError) else UNREACHABLE
             ) or "That could not be saved."
-            shown = {**assignment, "timeout_s": wait if 5 <= wait <= 600 else 60}
+            if problem == STALE_REVISION:
+                problem = STALE_MESSAGE
+            # What was typed stays as typed, even a wait limit that was refused.
+            shown = {**assignment, "timeout_s": form.get("timeout_s", "60")}
             return page(heading + await meaning_section(request, status, problem, shown), 422)
         notice = "embeddings-on" if assignment["enabled"] else "embeddings-off"
         return RedirectResponse(f"/admin/search-index?notice={notice}", status_code=303)

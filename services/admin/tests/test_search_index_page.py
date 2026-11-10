@@ -442,3 +442,86 @@ def test_connections_opened_from_search_offer_the_way_back_and_return_after_savi
         follow_redirects=False,
     )
     assert elsewhere.headers["location"].startswith("/admin/context?tab=models")
+
+
+def test_a_stale_save_says_what_happened_keeps_the_draft_and_carries_the_current_revision(
+    signed_in,
+):
+    client, _ = signed_in
+    store = IndexStore(refuse="configuration changed; reload before saving")
+    client.app.state.store = store
+    token = form_token(client, "/admin/search-index")
+
+    response = client.post(
+        "/v1/admin/search-index/embeddings",
+        data={
+            "csrf": token,
+            "revision": "2",
+            "connection": "local",
+            "model": "my-draft-model",
+            "timeout_s": "75",
+            "enabled": "on",
+        },
+    )
+
+    assert response.status_code == 422
+    assert (
+        "Settings changed in another session. Nothing was saved. Your entries are still here; "
+        "review them and save again." in response.text
+    )
+    assert "reload" not in response.text.lower().split("<main")[1]
+    assert 'value="my-draft-model"' in response.text
+    assert 'value="75"' in response.text
+    # The stand-in's current revision is 4; saving again must use it, not the stale 2.
+    assert 'name="revision" value="4"' in response.text
+
+
+def test_other_refusals_keep_the_stores_own_words(signed_in):
+    client, _ = signed_in
+    client.app.state.store = IndexStore(refuse="Some other refusal. Nothing was saved.")
+    token = form_token(client, "/admin/search-index")
+
+    response = client.post(
+        "/v1/admin/search-index/embeddings",
+        data={"csrf": token, "revision": "4", "connection": "local", "model": "m"},
+    )
+
+    assert "Some other refusal. Nothing was saved." in response.text
+    assert "Settings changed in another session" not in response.text
+
+
+def test_a_refused_wait_limit_stays_as_typed_and_is_marked_invalid(signed_in):
+    client, _ = signed_in
+    client.app.state.store = IndexStore()
+    token = form_token(client, "/admin/search-index")
+
+    response = client.post(
+        "/v1/admin/search-index/embeddings",
+        data={"csrf": token, "revision": "4", "connection": "local", "timeout_s": "9000"},
+    )
+
+    assert response.status_code == 422
+    assert 'value="9000" aria-invalid="true"' in response.text
+    assert 'value="60"' not in response.text.split('name="timeout_s"')[1].split(">")[0]
+
+    garbled = client.post(
+        "/v1/admin/search-index/embeddings",
+        data={"csrf": token, "revision": "4", "connection": "local", "timeout_s": "soon"},
+    )
+    assert 'value="soon" aria-invalid="true"' in garbled.text
+
+    fine = client.get("/admin/search-index").text
+    assert 'aria-invalid="true"' not in fine
+
+
+def test_leaving_for_connections_warns_that_unsaved_settings_are_lost(signed_in):
+    client, _ = signed_in
+    client.app.state.store = IndexStore()
+
+    shown = " ".join(client.get("/admin/search-index").text.split())
+
+    assert (
+        "unsaved changes to the settings below are lost when you leave, so save them first" in shown
+    )
+    assert 'id="connections-link"' in shown
+    assert "Leave anyway?" in shown
