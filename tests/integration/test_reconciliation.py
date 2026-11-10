@@ -1720,7 +1720,7 @@ async def test_a_required_key_with_no_default_is_not_blamed_on_a_default(store: 
 
 def test_each_adoption_refusal_is_put_in_plain_words_with_an_action():
     cases = {
-        "keys the schema refused: type": ("properties", "Its Type is not an allowed choice"),
+        "keys the schema refused: type": ("properties", "Its type is not an allowed choice"),
         "the schema's own default is refused by the schema for: type": (
             "property:type",
             "default Coppermind would fill in is not one of the allowed choices",
@@ -1736,6 +1736,15 @@ def test_each_adoption_refusal_is_put_in_plain_words_with_an_action():
         assert "checks again" in text or "next check" in text
         for internal in ("schema", "keys the", "Fields and tags"):
             assert internal not in text
+
+
+def test_a_refused_default_links_to_the_property_under_its_real_spelling():
+    action, text = reconciler.adoption_problem(
+        "the schema's own default is refused by the schema for: dueDate"
+    )
+
+    assert action == "property:dueDate"
+    assert "dueDate" in text
 
 
 async def test_a_refusal_clears_itself_when_the_default_is_corrected(store: LocalStore):
