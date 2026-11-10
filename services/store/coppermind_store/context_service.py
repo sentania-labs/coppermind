@@ -474,7 +474,7 @@ class ContextService:
             except StoreError:
                 return False
             return (
-                job.purpose == "initial"
+                job.purpose != "dossier"
                 and note.frontmatter.get(schema.role("reviewed_key")) is True
             )
 

@@ -439,7 +439,11 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
 
     try:
         device = await asyncio.wait_for(probe, PROBE_WAIT_S)
-        if device.get("last_error") or device.get("state") in {"error", "paused", "stopped"}:
+        if (
+            device.get("last_error")
+            or device.get("config_error")
+            or device.get("state") in {"error", "paused", "stopped"}
+        ):
             rows.append(
                 "<li><strong>Device connection needs attention</strong><p>Check the "
                 'connection and reconnect if needed.</p><a href="/admin/sync">Open devices</a></li>'

@@ -752,3 +752,18 @@ def test_home_says_more_may_be_failing_when_the_store_stopped_checking(signed_in
     assert "More notes may have failed suggestions" in page
     assert "Needs attention (51)" in page
     assert "250 more" not in page
+
+
+def test_home_shows_sync_configuration_failure(signed_in, monkeypatch):
+    from coppermind_admin.pages import problems
+
+    client, _ = signed_in
+    store = _install(client, ReadOnlyStore())
+    store.problems = []
+    monkeypatch.setattr(
+        problems, "sync_status", lambda wiring: {"state": "configuring", "config_error": "Failed"}
+    )
+    page = client.get("/admin").text
+    assert "Device connection needs attention" in page
+    assert 'href="/admin/sync"' in page
+    assert "Nothing needs attention right now" not in page

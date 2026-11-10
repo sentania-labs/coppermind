@@ -1699,6 +1699,14 @@ async def test_attention_reports_only_open_failures_in_one_read(store):
         update={"id": "dossier", "purpose": "dossier", "error": "Dossier failed"}
     )
     context.save_job(dossier)
+    reviewed_calendar = reviewed_job.model_copy(
+        update={"id": "reviewed-calendar", "purpose": "calendar", "error": "Old calendar error"}
+    )
+    context.save_job(reviewed_calendar)
+    open_calendar = open_job.model_copy(
+        update={"id": "open-calendar", "purpose": "calendar", "error": "Calendar failed"}
+    )
+    context.save_job(open_calendar)
     gone = open_job.model_copy(update={"id": "gone", "note_id": "no-such-note"})
     context.save_job(gone)
     _, old = await failed_job("Fixed", error="Old failure", created_at="2026-01-01T00:00:00+00:00")
@@ -1709,9 +1717,9 @@ async def test_attention_reports_only_open_failures_in_one_read(store):
 
     data = await context.attention({})
 
-    assert data["failed_jobs"]["total"] == 2
+    assert data["failed_jobs"]["total"] == 3
     assert sorted(item["id"] for item in data["failed_jobs"]["items"]) == sorted(
-        [open_job.id, "dossier"]
+        [open_job.id, "open-calendar", "dossier"]
     )
     assert data["failed_imports"] == {"total": 0, "items": []}
     assert data["worker_error"] == ""
