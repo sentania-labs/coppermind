@@ -1,5 +1,7 @@
 """Admin: set up transcription, watch recordings, retry a failed one."""
 
+import pytest
+
 from coppermind.context_config import ContextConfig, FeatureAssignment, ModelConnection
 from services.admin.tests.browser import admin_browser as admin_browser
 from services.admin.tests.test_admin import form_token
@@ -334,3 +336,48 @@ def test_a_worker_fault_is_shown_on_the_jobs_tab(signed_in):
     client, _ = signed_in
     client.app.state.store = store_with([], worker_error="The recording worker failed.")
     assert "The recording worker failed." in client.get("/admin/context?tab=review").text
+
+
+@pytest.mark.parametrize(
+    ("rule", "message"),
+    [
+        (
+            "transcription-audio_unreadable",
+            "The recording could not be read. Send a readable audio file again",
+        ),
+        ("transcription-no_speech", "No speech was found. Send a corrected recording again"),
+    ],
+)
+@pytest.mark.parametrize("enabled", [True, False])
+def test_audio_needing_replacement_has_no_retry(signed_in, rule, message, enabled):
+    client, _ = signed_in
+    failed = {
+        **JOB,
+        "state": "failed",
+        "error_rule": rule,
+        "error": "Old message",
+        "can_retry": True,
+    }
+    saved = FeatureAssignment(connection="local", model="m", enabled=enabled)
+    client.app.state.store = store_with([failed], saved)
+    page = client.get("/admin/context?tab=review").text
+    assert message in page
+    assert "the same way recordings normally arrive" in page
+    assert ">Retry</button>" not in page
+    assert "Turn it on to retry" not in page
+
+
+@pytest.mark.parametrize("rule", ["transcription-unfinished", "transcription-internal"])
+def test_transient_transcription_failure_keeps_retry(signed_in, rule):
+    client, _ = signed_in
+    failed = {
+        **JOB,
+        "state": "failed",
+        "error_rule": rule,
+        "error": "Service problem",
+        "can_retry": True,
+    }
+    saved = FeatureAssignment(connection="local", model="m", enabled=True)
+    client.app.state.store = store_with([failed], saved)
+    page = client.get("/admin/context?tab=review").text
+    assert ">Retry</button>" in page
