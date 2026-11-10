@@ -268,8 +268,8 @@ has not been exercised by this slice.
   the next pass without restart, including removal of a rule for an unchanged
   file. Excluded files are reread each pass to keep this true.
   Admin Problems shows the skipped count and each path with its first matching
-  rule (folder, then pattern, then plugin marker); Home also shows the
-  count. One atomic state snapshot records the last completed pass, survives a
+  rule (folder, then pattern, then plugin marker); Home links to that page.
+  One atomic state snapshot records the last completed pass, survives a
   restart, and is rebuilt by reconciliation. Verification for this change uses
   rendered Admin tests and PostgreSQL reconciliation tests; Compose was not
   available in the worker.
