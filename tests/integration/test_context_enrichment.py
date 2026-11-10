@@ -1715,3 +1715,33 @@ async def test_attention_reports_only_open_failures_in_one_read(store):
     )
     assert data["failed_imports"] == {"total": 0, "items": []}
     assert data["worker_error"] == ""
+
+
+async def test_attention_caps_open_failures_and_says_when_it_stopped_checking(store):
+    context = await configure(store)
+    template = None
+    for index in range(55):
+        note = await store.create_note(
+            CreateNote(title=f"Note {index}", body="x", frontmatter={"date": "2026-10-14"})
+        )
+        job = context.load_job(await context.queue_note(note.id))
+        job.state, job.error = "failed", "Too large"
+        job.created_at = f"2026-03-01T00:{index:02}:00+00:00"
+        context.save_job(job)
+        template = job
+    for index in range(5):
+        context.save_job(
+            template.model_copy(
+                update={
+                    "id": f"gone{index}",
+                    "note_id": f"no-such-note-{index}",
+                    "created_at": f"2026-01-01T00:0{index}:00+00:00",
+                }
+            )
+        )
+
+    jobs = (await context.attention({}))["failed_jobs"]
+
+    assert len(jobs["items"]) == 50
+    assert jobs["total"] == 50
+    assert jobs["unchecked"] == 10

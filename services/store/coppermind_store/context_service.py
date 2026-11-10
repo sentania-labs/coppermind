@@ -510,7 +510,8 @@ class ContextService:
                 for r in receipts[:5]
             ],
             "failed_jobs": {
-                "total": len(open_jobs) + unchecked,
+                "total": len(open_jobs),
+                "unchecked": unchecked,
                 "items": [
                     {"id": job.id, "path": job.path, "error": job.error}
                     for job in open_jobs[:ATTENTION_LIMIT]

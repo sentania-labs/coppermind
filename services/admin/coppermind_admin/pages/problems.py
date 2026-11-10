@@ -415,9 +415,15 @@ async def attention_html(request: Request, wiring: Wiring) -> str:
                 f'<a href="/admin/context/jobs/{target}">See what to do</a></li>'
             )
         hidden = failed_jobs["total"] - len(failed_jobs["items"])
-        if hidden > 0:
+        if failed_jobs["unchecked"] > 0:
+            heading = "More notes may have failed suggestions"
+        elif hidden > 0:
+            heading = f"{hidden} more notes with failed suggestions"
+        else:
+            heading = ""
+        if heading:
             rows.append(
-                f"<li><strong>{hidden} more notes with failed suggestions</strong>"
+                f"<li><strong>{heading}</strong>"
                 "<p>Open suggestions to see them all.</p>"
                 '<a href="/admin/context?tab=review">Suggestions</a></li>'
             )

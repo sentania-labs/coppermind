@@ -64,7 +64,7 @@ class ReadOnlyStore:
             "dropbox": [],
             "failed_imports": {"total": 0, "items": []},
             "recent_imports": [],
-            "failed_jobs": {"total": 0, "items": []},
+            "failed_jobs": {"total": 0, "unchecked": 0, "items": []},
             "worker_error": "",
         }
 
@@ -649,6 +649,7 @@ def test_home_lists_what_the_store_reports_and_notes_overflow(signed_in):
                 ],
                 "failed_jobs": {
                     "total": 1,
+                    "unchecked": 0,
                     "items": [{"id": "failed", "path": "Review/two.md", "error": "Too large"}],
                 },
                 "worker_error": "",
@@ -728,3 +729,26 @@ def test_dismissing_from_home_returns_to_home(signed_in):
         follow_redirects=False,
     )
     assert response.headers["location"] == "/admin"
+
+
+def test_home_says_more_may_be_failing_when_the_store_stopped_checking(signed_in):
+    class CappedStore(ReadOnlyStore):
+        async def context_action(self, action, payload):
+            data = await super().context_action(action, payload)
+            data["failed_jobs"] = {
+                "total": 50,
+                "unchecked": 250,
+                "items": [
+                    {"id": f"job{i}", "path": f"Review/{i}.md", "error": "Too large"}
+                    for i in range(50)
+                ],
+            }
+            return data
+
+    client, _ = signed_in
+    store = _install(client, CappedStore())
+    store.problems = []
+    page = client.get("/admin").text
+    assert "More notes may have failed suggestions" in page
+    assert "Needs attention (51)" in page
+    assert "250 more" not in page
