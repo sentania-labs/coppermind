@@ -230,7 +230,8 @@ has not been exercised by this slice.
   identifier alone, and logs each collision once, again only when its paths
   change. The one exception is a copy left in the review folder after its note
   was filed elsewhere: it is removed when its bytes equal the filed note's or a
-  snapshot filing recorded of it, and otherwise left alone and named, with the
+  version filing recorded of it (hashes only, the newest 16 per note, kept
+  in the filing receipt after it settles), and otherwise left alone and named, with the
   filed path, in `review_problem` on the note's review response and on
   Problems. The process remembers up
   to 10,000 rejected paths by stat, so an unchanged rejected tree costs one
