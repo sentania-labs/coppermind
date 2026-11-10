@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Annotated
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Depends, Header, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from coppermind.api_keys import ApiKeySet
@@ -433,14 +433,12 @@ async def reserve_staged_upload(payload: StagedReservation, request: Request) ->
 async def put_staged_bytes(
     receipt_id: str,
     request: Request,
-    payload: Annotated[bytes | None, Body()] = None,
     declared_bytes: Annotated[int | None, Header(alias="X-Coppermind-Payload-Bytes")] = None,
 ) -> StagedReceipt | JSONResponse:
-    """Take the whole body of this request as the file's bytes."""
-    data = payload if payload is not None else await request.body()
+    """Take the body of this request as the file's bytes, a chunk at a time."""
     try:
         return await _store(request).put_staged_bytes(
-            receipt_id, data, declared_bytes=declared_bytes
+            receipt_id, request.stream(), declared_bytes=declared_bytes
         )
     except StoreError as error:
         return _failure(error)

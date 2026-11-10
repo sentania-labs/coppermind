@@ -34,6 +34,7 @@ import json
 import os
 import re
 import time
+from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
 from math import isfinite
 from pathlib import Path
@@ -427,7 +428,7 @@ class LocalStore:
         return await reserve(self, request)
 
     async def put_staged_bytes(
-        self, receipt_id: str, data: bytes, *, declared_bytes: int | None = None
+        self, receipt_id: str, data: AsyncIterator[bytes], *, declared_bytes: int | None = None
     ) -> StagedReceipt:
         from coppermind_store.staged import put_bytes
 

@@ -30,15 +30,22 @@ from coppermind.store_protocol import (
 )
 
 DIGEST = hashlib.sha256(b"quokka").hexdigest()
+PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 STAGED_MAX = 50 * 1024 * 1024
+
+
+async def chunks(data: bytes, size: int = 4):
+    """A body as an async iterator of small pieces, the way a request stream delivers it."""
+    for start in range(0, len(data), size):
+        yield data[start : start + size]
 
 
 def declaration(**overrides) -> StagedReservation:
     payload = {
         "filename": "deck.pptx",
-        "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "size_bytes": 6,
         "sha256": DIGEST,
+        "fields": {"mime_type": PPTX},
     }
     payload.update(overrides)
     return StagedReservation.model_validate(payload)
@@ -50,7 +57,7 @@ def _staged(store, receipt_id: str) -> Path:
 
 async def test_a_file_over_the_inline_limit_ends_up_as_an_ordinary_artifact(store):
     receipt = await staged.reserve(store, declaration(fields={"title": "Deck", "tags": ["ref"]}))
-    uploaded = await staged.put_bytes(store, receipt.id, b"quokka", declared_bytes=6)
+    uploaded = await staged.put_bytes(store, receipt.id, chunks(b"quokka"), declared_bytes=6)
     assert uploaded.upload_bytes == 6
     done = await staged.finalize(store, receipt.id)
     assert done.state == "stored"
@@ -87,7 +94,7 @@ async def test_a_file_over_the_inline_limit_ends_up_as_an_ordinary_artifact(stor
 
 async def test_a_staged_upload_replays_the_same_artifact_as_the_inline_one(store):
     receipt = await staged.reserve(store, declaration())
-    await staged.put_bytes(store, receipt.id, b"quokka", declared_bytes=6)
+    await staged.put_bytes(store, receipt.id, chunks(b"quokka"), declared_bytes=6)
     staged_result = await staged.finalize(store, receipt.id)
     inline = await store.create_artifact(
         CreateArtifact(
@@ -104,12 +111,12 @@ async def test_a_staged_upload_replays_the_same_artifact_as_the_inline_one(store
 
 async def test_a_hash_mismatch_fails_the_receipt_and_a_retry_of_it_lands(store):
     receipt = await staged.reserve(store, declaration())
-    failed = await staged.put_bytes(store, receipt.id, b"QUOKKA", declared_bytes=6)
+    failed = await staged.put_bytes(store, receipt.id, chunks(b"QUOKKA"), declared_bytes=6)
     assert failed.state == "failed"
     assert "hashed" in str(failed.failure)
     assert failed.artifact is None
     assert not _staged(store, receipt.id).exists()
-    recovered = await staged.put_bytes(store, receipt.id, b"quokka", declared_bytes=6)
+    recovered = await staged.put_bytes(store, receipt.id, chunks(b"quokka"), declared_bytes=6)
     assert recovered.state == "uploading" and recovered.upload_bytes == 6
     done = await staged.finalize(store, receipt.id)
     assert done.state == "stored" and done.artifact is not None
@@ -117,9 +124,9 @@ async def test_a_hash_mismatch_fails_the_receipt_and_a_retry_of_it_lands(store):
 
 async def test_a_size_mismatch_fails_the_receipt_with_the_two_counts(store):
     receipt = await staged.reserve(store, declaration())
-    longer = await staged.put_bytes(store, receipt.id, b"quokkaX", declared_bytes=7)
+    longer = await staged.put_bytes(store, receipt.id, chunks(b"quokkaX"), declared_bytes=7)
     assert longer.state == "failed" and "7 bytes" in str(longer.failure)
-    shorter = await staged.put_bytes(store, receipt.id, b"quok", declared_bytes=4)
+    shorter = await staged.put_bytes(store, receipt.id, chunks(b"quok"), declared_bytes=4)
     assert shorter.state == "failed" and "4 bytes" in str(shorter.failure)
     with pytest.raises(ValidationFailed):
         await staged.finalize(store, receipt.id)
@@ -127,7 +134,7 @@ async def test_a_size_mismatch_fails_the_receipt_with_the_two_counts(store):
 
 async def test_an_identical_retry_succeeds_and_conflicting_bytes_do_not(store):
     receipt = await staged.reserve(store, declaration())
-    await staged.put_bytes(store, receipt.id, b"quokka", declared_bytes=6)
+    await staged.put_bytes(store, receipt.id, chunks(b"quokka"), declared_bytes=6)
     first = await staged.finalize(store, receipt.id)
     replay = await staged.finalize(store, receipt.id)
     assert replay.state == "stored" and replay.artifact == first.artifact
@@ -135,8 +142,10 @@ async def test_an_identical_retry_succeeds_and_conflicting_bytes_do_not(store):
     assert (await staged.reserve(store, declaration())).id == receipt.id
     # Different bytes under that receipt are a conflict on the receipt.
     with pytest.raises(ValidationFailed):
-        await staged.put_bytes(store, receipt.id, b"other!", declared_bytes=6)
+        await staged.put_bytes(store, receipt.id, chunks(b"other!"), declared_bytes=6)
     assert (await staged.get_receipt(store, receipt.id)).state == "stored"
+    same = await staged.put_bytes(store, receipt.id, chunks(b"quokka"), declared_bytes=6)
+    assert same.state == "stored" and same.artifact == first.artifact
     async with store.session_factory() as session:
         rows = (
             await session.execute(sa.select(Artifact).where(Artifact.filename == "deck.pptx"))
@@ -147,7 +156,7 @@ async def test_an_identical_retry_succeeds_and_conflicting_bytes_do_not(store):
 
 async def test_an_abandoned_reservation_is_swept_once_the_window_passes(store):
     receipt = await staged.reserve(store, declaration())
-    await staged.put_bytes(store, receipt.id, b"quokka", declared_bytes=6)
+    await staged.put_bytes(store, receipt.id, chunks(b"quokka"), declared_bytes=6)
     path = store.control.store.state_dir / "staged" / f"{receipt.id}.json"
     document = json.loads(path.read_text(encoding="utf-8"))
     document["reserved_at"] = "2020-01-01T00:00:00+00:00"
@@ -188,7 +197,7 @@ async def test_the_staged_maximum_is_configurable_and_stops_a_long_stream(store,
     """A stream longer than the declaration stops being hashed, and the receipt says so."""
     assert said == size
     receipt = await staged.reserve(store, declaration())
-    result = await staged.put_bytes(store, receipt.id, b"x" * (6 + 1), declared_bytes=6)
+    result = await staged.put_bytes(store, receipt.id, chunks(b"x" * (6 + 1)), declared_bytes=6)
     assert result.state == "failed"
     assert "7 bytes" in str(result.failure)
 
@@ -200,7 +209,7 @@ async def test_a_file_over_the_inline_limit_is_stored_by_finalize(store):
     receipt = await staged.reserve(
         store, declaration(filename="big.bin", size_bytes=len(data), sha256=digest)
     )
-    await staged.put_bytes(store, receipt.id, data, declared_bytes=len(data))
+    await staged.put_bytes(store, receipt.id, chunks(data), declared_bytes=len(data))
     done = await staged.finalize(store, receipt.id)
     assert done.state == "stored" and done.artifact is not None
     archived = store.artifacts_root / done.artifact.id / "r0001" / "big.bin"

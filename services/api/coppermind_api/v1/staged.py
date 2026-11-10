@@ -22,6 +22,7 @@ declaration fail on that receipt rather than becoming a second revision.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
@@ -29,6 +30,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from pydantic_core import ErrorDetails
 
+from coppermind.settings import ProductSettings
 from coppermind.store_protocol import (
     StagedReceipt,
     StagedReservation,
@@ -37,6 +39,7 @@ from coppermind.store_protocol import (
 from coppermind_api.auth import Principal
 from coppermind_api.deps import require_scopes, store
 from coppermind_api.errors import failure
+from coppermind_api.v1.artifacts import human_limit
 
 router = APIRouter(prefix="/v1/staged", tags=["staged"])
 
@@ -51,9 +54,11 @@ def _validation(problems: list[str]) -> JSONResponse:
     )
 
 
-def _oversized(subject: str, limit: int) -> JSONResponse:
-    from coppermind_api.v1.artifacts import human_limit
+class _TooLarge(Exception):
+    """The request body passed its limit while it was still arriving."""
 
+
+def _oversized(subject: str, limit: int) -> JSONResponse:
     return JSONResponse(
         status_code=413,
         content={
@@ -64,22 +69,26 @@ def _oversized(subject: str, limit: int) -> JSONResponse:
     )
 
 
-async def _read_body(request: Request, limit: int) -> bytes | None:
-    """The request body, or None as soon as it passes `limit` bytes.
+async def _limited(request: Request, limit: int) -> AsyncIterator[bytes]:
+    """The request body a chunk at a time, stopping with `_TooLarge` once it passes `limit`.
 
     The header is checked first so an honest oversize is refused unread, and the
     stream is counted as it arrives so a body with no header or a false one is
-    stopped at the limit instead of being buffered whole.
+    stopped at the limit instead of being carried on.
     """
     announced = request.headers.get("content-length", "")
     if announced.isdigit() and int(announced) > limit:
-        return None
-    body = bytearray()
+        raise _TooLarge
+    seen = 0
     async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > limit:
-            return None
-    return bytes(body)
+        seen += len(chunk)
+        if seen > limit:
+            raise _TooLarge
+        yield chunk
+
+
+async def _read_body(request: Request, limit: int) -> bytes:
+    return b"".join([chunk async for chunk in _limited(request, limit)])
 
 
 @router.post("", status_code=201, response_model=StagedReceipt)
@@ -94,8 +103,9 @@ async def reserve_staged_upload(
     fields an inline submission accepts. An identical reservation replays the
     same receipt; a declared size above the staged maximum is refused at once.
     """
-    body = await _read_body(request, FRAMING_BYTES)
-    if body is None:
+    try:
+        body = await _read_body(request, FRAMING_BYTES)
+    except _TooLarge:
         return _oversized("declaration", FRAMING_BYTES)
     try:
         payload = json.loads(body or b"{}")
@@ -103,12 +113,12 @@ async def reserve_staged_upload(
         return _validation(["body: must be a JSON object"])
     if not isinstance(payload, dict):
         return _validation(["body: must be a JSON object"])
-    staged_limit = settings_limit()
-    problems = _declaration_problems(payload, staged_limit)
-    if problems:
-        return _validation(problems)
     try:
-        receipt = await client.reserve_staged_upload(StagedReservation.model_validate(payload))
+        declaration = StagedReservation.model_validate(payload)
+    except ValidationError as invalid:
+        return _validation([_problem(item) for item in invalid.errors(include_url=False)])
+    try:
+        receipt = await client.reserve_staged_upload(declaration)
     except StoreError as error:
         return failure(error)
     return JSONResponse(status_code=201, content=receipt.model_dump(mode="json"))
@@ -130,28 +140,7 @@ def _problem(item: ErrorDetails) -> str:
     return f"{location}: {message}"
 
 
-def _declaration_problems(payload: dict[str, Any], staged_limit: int) -> list[str]:
-    """Why this declaration cannot be reserved, in field order, or an empty list.
-
-    `loc[0]` is the model's own name, so the field is what a caller needs. The
-    one question pydantic leaves unanswered is which field was missing, so that
-    case is named here rather than repeated by every model.
-    """
-    try:
-        declaration = StagedReservation.model_validate(payload)
-    except ValidationError as failure:
-        return [_problem(item) for item in failure.errors(include_url=False)]
-    if declaration.size_bytes > staged_limit:
-        return [
-            f"size_bytes: above the staged maximum of {staged_limit} bytes; "
-            "split or compress the file"
-        ]
-    return []
-
-
 def settings_limit() -> int:
-    from coppermind.settings import ProductSettings
-
     return ProductSettings().limits.staged_max_bytes
 
 
@@ -164,16 +153,15 @@ async def put_staged_bytes(
 ) -> JSONResponse:
     """Stream the file's bytes for one receipt into durable staging."""
     limit = settings_limit()
-    data = await _read_body(request, limit)
-    if data is None:
-        return _oversized("file", limit)
     declared = request.headers.get("content-length", "")
     try:
         receipt = await client.put_staged_bytes(
             receipt_id,
-            data,
+            _limited(request, limit),
             declared_bytes=int(declared) if declared.isdigit() else None,
         )
+    except _TooLarge:
+        return _oversized("file", limit)
     except StoreError as error:
         return failure(error)
     return JSONResponse(content=receipt.model_dump(mode="json"))

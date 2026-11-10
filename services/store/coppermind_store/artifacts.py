@@ -78,6 +78,7 @@ from coppermind.store_protocol import (
     PayloadTooLarge,
     ProblemInfo,
     ReplaceNote,
+    StagedReservation,
     StoreError,
     ValidationFailed,
 )
@@ -522,27 +523,16 @@ def body_with_links(body: str, links: list[str]) -> str:
 # Writes
 
 
-def _size_limit(
-    store: LocalStore, size: int, payload_size_bytes: int | None, max_bytes: int | None
-) -> None:
-    limit = max_bytes or store.control.settings().limits.artifact_max_bytes
+def _size_limit(store: LocalStore, size: int, payload_size_bytes: int | None) -> None:
+    limit = store.control.settings().limits.artifact_max_bytes
     if max(size, payload_size_bytes or 0) > limit:
         raise PayloadTooLarge(limit)
 
 
 async def create_artifact(
-    store: LocalStore,
-    request: CreateArtifact,
-    *,
-    payload_size_bytes: int | None = None,
-    max_bytes: int | None = None,
+    store: LocalStore, request: CreateArtifact, *, payload_size_bytes: int | None = None
 ) -> CreatedArtifact:
-    """Store a file or a link as a new artifact, a new revision, or a replay.
-
-    `max_bytes` replaces the inline ceiling for a caller that has already
-    bounded the file another way, which is the staged upload path.
-    """
-    settings = store.control.settings()
+    """Store a file or a link as a new artifact, a new revision, or a replay."""
     data: bytes | None = None
     mime: str | None = None
     filename: str | None = None
@@ -552,34 +542,93 @@ async def create_artifact(
             data = request.bytes()
         except (binascii.Error, ValueError) as exc:
             raise ValidationFailed(["content_base64 is not valid base64"]) from exc
-        _size_limit(store, len(data), payload_size_bytes, max_bytes)
+        _size_limit(store, len(data), payload_size_bytes)
         filename = artifact_filename(cast(str, request.filename))
         mime = media_type(filename, request.mime_type, data)
         sha = hashlib.sha256(data).hexdigest()
-    title = request.title or (Path(filename).stem if filename else cast(str, request.url))
-    if request.note_id is not None:
+    return await _file_artifact(
+        store,
+        title=request.title or (Path(filename).stem if filename else cast(str, request.url)),
+        origin=request.origin,
+        received=request.date,
+        tags=request.tags,
+        note_id=request.note_id,
+        artifact_id=request.artifact_id,
+        url=request.url,
+        filename=filename,
+        mime_type=mime,
+        content=data,
+        sha256=sha,
+    )
+
+
+async def create_staged_artifact(
+    store: LocalStore, staged: Path, declaration: StagedReservation, *, sha256: str
+) -> CreatedArtifact:
+    """Store a staged file as an artifact by the same path an inline upload takes.
+
+    The file is copied into the archive and the browsable copy in fixed-size
+    chunks, never read whole. The caller has verified `sha256` against it.
+    """
+    filename = artifact_filename(declaration.filename)
+    fields = declaration.fields
+    with staged.open("rb") as stream:
+        head = stream.read(8)
+    return await _file_artifact(
+        store,
+        title=fields.title or Path(filename).stem,
+        origin=fields.origin,
+        received=fields.date,
+        tags=fields.tags,
+        note_id=fields.note_id,
+        artifact_id=fields.artifact_id,
+        url=None,
+        filename=filename,
+        mime_type=media_type(filename, fields.mime_type, head),
+        content=staged,
+        sha256=sha256,
+    )
+
+
+async def _file_artifact(
+    store: LocalStore,
+    *,
+    title: str,
+    origin: str,
+    received: date | None,
+    tags: list[str],
+    note_id: str | None,
+    artifact_id: str | None,
+    url: str | None,
+    filename: str | None,
+    mime_type: str | None,
+    content: bytes | Path | None,
+    sha256: str | None,
+) -> CreatedArtifact:
+    settings = store.control.settings()
+    if note_id is not None:
         # The citing note must exist before anything is written: a typo in a
         # note id is refused rather than storing an artifact nothing cites.
-        await store._locate(request.note_id)
+        await store._locate(note_id)
     async with store._artifact_lock:
         result = await _store_revision(
             store,
             settings,
-            artifact_id=request.artifact_id,
+            artifact_id=artifact_id,
             title=title,
-            origin=request.origin,
-            received_at=_received_at(request.date, settings),
-            tags=list(request.tags),
-            url=request.url,
+            origin=origin,
+            received_at=_received_at(received, settings),
+            tags=list(tags),
+            url=url,
             filename=filename,
-            mime_type=mime,
-            data=data,
-            sha256=sha,
+            mime_type=mime_type,
+            data=content,
+            sha256=sha256,
             source=None,
         )
-    if request.note_id is not None:
-        await cite(store, request.note_id, [result.id])
-        result = result.model_copy(update={"note_id": request.note_id})
+    if note_id is not None:
+        await cite(store, note_id, [result.id])
+        result = result.model_copy(update={"note_id": note_id})
     return result
 
 
@@ -663,7 +712,7 @@ async def _store_revision(
     url: str | None,
     filename: str | None,
     mime_type: str | None,
-    data: bytes | None,
+    data: bytes | Path | None,
     sha256: str | None,
     source: tuple[str, str] | None,
 ) -> CreatedArtifact:
@@ -773,7 +822,7 @@ async def _create_new(
     url: str | None,
     filename: str | None,
     mime_type: str | None,
-    data: bytes | None,
+    data: bytes | Path | None,
     sha256: str | None,
     source: tuple[str, str] | None,
 ) -> CreatedArtifact:
@@ -793,7 +842,7 @@ async def _create_new(
         "filename": filename,
         "mime_type": mime_type,
         "sha256": sha256,
-        "size_bytes": len(data) if data is not None else 0,
+        "size_bytes": _size_of(data),
         "url": url,
     }
     manifest = {
@@ -817,12 +866,12 @@ async def _create_new(
     try:
         if data is not None and filename is not None:
             (archive / "r0001").mkdir(parents=True, exist_ok=False)
-            create_exclusive_bytes(archive / "r0001" / filename, data)
+            await asyncio.to_thread(create_exclusive_bytes, archive / "r0001" / filename, data)
         else:
             archive.mkdir(parents=True, exist_ok=False)
         if browse_path is not None and data is not None:
             try:
-                create_exclusive_bytes(browse_path, data)
+                await asyncio.to_thread(create_exclusive_bytes, browse_path, data)
             except FileExistsError:
                 # Something landed at the name between the listing and now;
                 # take the next free one rather than write over it.
@@ -832,7 +881,7 @@ async def _create_new(
                 )
                 browse_path = browse_path.parent / name
                 manifest["path"] = browse_relative
-                create_exclusive_bytes(browse_path, data)
+                await asyncio.to_thread(create_exclusive_bytes, browse_path, data)
             except OSError as exc:
                 raise NotesFilesystemUnavailable(str(exc)) from exc
             browse_created = True
@@ -863,7 +912,7 @@ async def _add_revision(
     now: datetime,
     filename: str | None,
     mime_type: str | None,
-    data: bytes | None,
+    data: bytes | Path | None,
     sha256: str | None,
     url: str | None,
 ) -> CreatedArtifact:
@@ -886,9 +935,9 @@ async def _add_revision(
                     "record; inspect that directory, remove it, then retry"
                 ) from exc
             created_dir = True
-            create_exclusive_bytes(revision_dir / filename, data)
-            manifest["path"] = _bring_browse_current(
-                store, settings, manifest, previous, filename, data
+            await asyncio.to_thread(create_exclusive_bytes, revision_dir / filename, data)
+            manifest["path"] = await asyncio.to_thread(
+                _bring_browse_current, store, settings, manifest, previous, filename, data
             )
         revisions = list(manifest.get("revisions", []))
         revisions.append(
@@ -898,7 +947,7 @@ async def _add_revision(
                 "filename": filename,
                 "mime_type": mime_type,
                 "sha256": sha256,
-                "size_bytes": len(data) if data is not None else 0,
+                "size_bytes": _size_of(data),
                 "url": url,
             }
         )
@@ -924,13 +973,27 @@ async def _add_revision(
     )
 
 
+def _size_of(data: bytes | Path | None) -> int:
+    if data is None:
+        return 0
+    return data.stat().st_size if isinstance(data, Path) else len(data)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _bring_browse_current(
     store: LocalStore,
     settings: ProductSettings,
     manifest: dict[str, Any],
     previous: dict[str, Any],
     filename: str,
-    data: bytes,
+    data: bytes | Path,
 ) -> str:
     """Make the browsable copy the new revision, never writing over a person's edit.
 
@@ -950,8 +1013,7 @@ def _bring_browse_current(
         except ValueError:
             target = None
     if target is not None and target.is_file():
-        current = target.read_bytes()
-        if hashlib.sha256(current).hexdigest() == previous.get("sha256"):
+        if _file_sha256(target) == previous.get("sha256"):
             atomic_write_bytes(target, data)
             return cast(str, recorded)
         log.info("artifact browse copy was edited on a device; new revision placed beside it")

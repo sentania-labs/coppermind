@@ -240,18 +240,22 @@ artifact, and deleting a note leaves the artifact uncited.
 `POST /v1/artifacts` holds its whole body in memory, so it stops at
 `limits.artifact_max_bytes`. A bigger file goes through three requests instead, so
 that no single request has to be buffered whole: reserve, stream the bytes,
-finalize. Finalize stores the artifact through the same code path an inline upload
-takes, so the archive, immutability, revisions, citations and replay behaviour
-match. The staged copy lives under `/data/state/staged/` beside the other control
+finalize. The bytes are hashed and written to disk a chunk at a time from the API
+through the store, and finalize copies the staged file into the archive in chunks,
+so memory use does not grow with the file. Finalize stores the artifact through the
+same write path an inline upload takes, so the archive, immutability, revisions,
+citations and replay behaviour match. The staged copy lives under `/data/state/staged/` beside the other control
 state, outside the browsable notes filesystem, and goes once the artifact is
 stored; the receipt stays as the durable answer. Bytes that disagree with the
-declaration fail that receipt rather than becoming a second revision. A receipt
-that is never finalized is swept once `retention.days` passes its reservation.
+declaration fail that receipt rather than becoming a second revision. A receipt is
+swept, with its staged copy, once `retention.days` has passed since it was reserved
+(an upload never finalized) or last changed (`stored` or `failed`); the same sweep
+removes temporary files a crash left behind. It runs on the next reservation.
 
 | Method and path | Scope | What it does | Success | Failure |
 |---|---|---|---|---|
-| `POST /v1/staged` | `artifacts:write` | Reserve one file. The JSON body declares `filename`, `size_bytes` and lowercase `sha256` of the file's own bytes, an optional `mime_type`, and a `fields` object holding the same fields the inline route accepts (`title`, `date`, `tags`, `origin`, `note_id`, `artifact_id`, `url`) | 201, the receipt: `{id, state, filename, mime_type, size_bytes, sha256, upload_bytes, limits, failure, artifact, reserved_at, updated_at}`; an identical declaration replays the same receipt | 422 `validation_error` naming each field at fault; 413 `payload_too_large` over `limits.staged_max_bytes` (50 MiB by default); 503 |
-| `PUT /v1/staged/{receipt_id}` | `artifacts:write` | The file's bytes as the whole body, streamed to staging. `Content-Length` must agree with the declared size; the count and digest are verified from the staged file | 200, the receipt with `state: "uploading"` and `upload_bytes` filled in; an identical retry answers the same count | 404 for an unknown receipt; 422 when the bytes or the length disagree with the declaration, which marks the receipt `failed` with the reason in `failure`; 413 over the staged maximum; 503 |
+| `POST /v1/staged` | `artifacts:write` | Reserve one file. The JSON body declares `filename`, `size_bytes` and lowercase `sha256` of the file's own bytes, and a `fields` object holding the same fields the inline route accepts (`title`, `date`, `tags`, `origin`, `note_id`, `artifact_id`, `mime_type`); a staged upload carries a file, so `fields.url` is refused | 201, the receipt: `{id, state, filename, size_bytes, sha256, upload_bytes, limits, failure, artifact, reserved_at, updated_at}`; an identical declaration replays the same receipt | 422 `validation_error` naming each field at fault; 413 `payload_too_large` over `limits.staged_max_bytes` (50 MiB by default); 503 |
+| `PUT /v1/staged/{receipt_id}` | `artifacts:write` | The file's bytes as the whole body, streamed to staging. `Content-Length` must agree with the declared size; the count and digest are verified from the staged file | 200, the receipt with `state: "uploading"` and `upload_bytes` filled in; an identical retry answers the same count, and so does one to a receipt that is already `stored` | 404 for an unknown receipt; 422 when the bytes or the length disagree with the declaration, which marks the receipt `failed` with the reason in `failure` (a `stored` receipt is left as it is and the request is refused); 413 over the staged maximum; 503 |
 | `POST /v1/staged/{receipt_id}/finalize` | `artifacts:write` | Verify the staged bytes and store the artifact, then drop the staged copy | 200, the receipt with `state: "stored"` and `artifact` holding what an inline upload would have returned; finalizing twice answers the same stored artifact | 404; 422 when no bytes are staged, the receipt is `failed`, or the digest or count disagrees; 503 |
 | `GET /v1/staged/{receipt_id}` | `artifacts:read` | One receipt's state, for a caller deciding whether to retry | 200, the receipt | 404 for an unknown receipt; 503 `staged_filesystem_unavailable` when the state tree cannot be read |
 

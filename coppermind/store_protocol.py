@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from collections.abc import AsyncIterator
 from datetime import date as date_type
 from datetime import datetime
 from pathlib import PurePath
@@ -722,7 +723,6 @@ class StagedReservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     filename: str
-    mime_type: str | None = Field(default=None, max_length=255)
     size_bytes: int = Field(ge=1)
     sha256: str
     fields: StagedDeclaration = Field(default_factory=StagedDeclaration)
@@ -732,15 +732,11 @@ class StagedReservation(BaseModel):
     def filename_is_a_name(cls, value: str) -> str:
         return safe_filename(value)
 
-    @field_validator("mime_type")
-    @classmethod
-    def mime_type_is_a_token(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        token = value.strip()
-        if not token or "/" not in token or any(ord(c) < 33 or ord(c) > 126 for c in token):
-            raise ValueError("must be a media type such as application/pdf")
-        return token.lower()
+    @model_validator(mode="after")
+    def a_staged_upload_is_a_file(self) -> StagedReservation:
+        if self.fields.url is not None:
+            raise ValueError("fields.url: a staged upload carries a file, not a link")
+        return self
 
     @field_validator("sha256")
     @classmethod
@@ -757,7 +753,6 @@ class StagedReceipt(BaseModel):
     id: str
     state: StagedState
     filename: str
-    mime_type: str | None = None
     size_bytes: int = Field(ge=0)
     sha256: str
     upload_bytes: int = Field(default=0, ge=0)
@@ -1229,7 +1224,7 @@ class Store(Protocol):
     async def reserve_staged_upload(self, request: StagedReservation) -> StagedReceipt: ...
 
     async def put_staged_bytes(
-        self, receipt_id: str, data: bytes, *, declared_bytes: int | None = None
+        self, receipt_id: str, data: AsyncIterator[bytes], *, declared_bytes: int | None = None
     ) -> StagedReceipt: ...
 
     async def finalize_staged_upload(self, receipt_id: str) -> StagedReceipt: ...

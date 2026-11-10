@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,7 +51,6 @@ def _receipt(state="uploading", upload_bytes=0, artifact=None, failure=None) -> 
         id=RECEIPT_ID,
         state=state,
         filename="deck.pptx",
-        mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         size_bytes=6,
         sha256=DIGEST,
         upload_bytes=upload_bytes,
@@ -66,6 +66,7 @@ class FakeStore:
     def __init__(self) -> None:
         self.reserved: list[StagedReservation] = []
         self.uploads: list[tuple[str, bytes, int | None]] = []
+        self.pieces: list[int] = []
         self.finalized: list[str] = []
         self.receipt = _receipt()
         self.write_record, self.write_key = create_key(
@@ -88,10 +89,13 @@ class FakeStore:
         return self.receipt
 
     async def put_staged_bytes(
-        self, receipt_id: str, data: bytes, *, declared_bytes: int | None = None
+        self, receipt_id: str, data: AsyncIterator[bytes], *, declared_bytes: int | None = None
     ) -> StagedReceipt:
-        self.uploads.append((receipt_id, data, declared_bytes))
-        self.receipt = _receipt(state="uploading", upload_bytes=len(data))
+        pieces = [piece async for piece in data]
+        self.pieces.append(len(pieces))
+        body = b"".join(pieces)
+        self.uploads.append((receipt_id, body, declared_bytes))
+        self.receipt = _receipt(state="uploading", upload_bytes=len(body))
         return self.receipt
 
     async def finalize_staged_upload(self, receipt_id: str) -> StagedReceipt:
@@ -137,10 +141,14 @@ def api(tmp_path):
 
 DECLARATION = {
     "filename": "deck.pptx",
-    "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "size_bytes": 6,
     "sha256": DIGEST,
-    "fields": {"title": "Deck", "tags": ["reference"], "origin": "n8n"},
+    "fields": {
+        "title": "Deck",
+        "tags": ["reference"],
+        "origin": "n8n",
+        "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    },
 }
 
 
@@ -190,7 +198,7 @@ def test_an_oversize_declaration_is_refused_with_the_staged_maximum(api):
     body = response.json()
     assert body["error"] == "validation_error"
     assert "staged maximum" in body["message"]
-    assert fake.reserved == []
+    assert fake.reserved[0].size_bytes == 50 * 1024 * 1024 + 1
 
 
 def test_a_declaration_without_a_hash_or_a_size_is_refused_with_the_reason(api):
@@ -293,4 +301,26 @@ def test_a_declaration_far_larger_than_its_framing_is_refused_unparsed(api):
         headers={**_as(fake, "write"), "Content-Type": "application/json"},
     )
     assert response.status_code == 413
+    assert fake.reserved == []
+
+
+def test_a_body_arrives_at_the_store_a_chunk_at_a_time(api):
+    client, fake = api
+
+    def body():
+        for _ in range(4):
+            yield b"ab"
+
+    response = client.put(f"/v1/staged/{RECEIPT_ID}", content=body(), headers=_as(fake, "write"))
+    assert response.status_code == 200
+    assert fake.uploads[0][1] == b"abababab"
+    assert fake.pieces[0] > 1
+
+
+def test_a_link_is_refused_as_a_staged_declaration(api):
+    client, fake = api
+    declared = dict(DECLARATION, fields={"url": "https://example.test/deck"})
+    response = client.post("/v1/staged", json=declared, headers=_as(fake, "write"))
+    assert response.status_code == 422
+    assert "url" in response.json()["message"]
     assert fake.reserved == []

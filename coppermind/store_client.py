@@ -9,6 +9,7 @@ network.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -414,7 +415,7 @@ class HttpStoreClient:
         return StagedReceipt.model_validate(response.json())
 
     async def put_staged_bytes(
-        self, receipt_id: str, data: bytes, *, declared_bytes: int | None = None
+        self, receipt_id: str, data: AsyncIterator[bytes], *, declared_bytes: int | None = None
     ) -> StagedReceipt:
         headers = (
             {"X-Coppermind-Payload-Bytes": str(declared_bytes)}
