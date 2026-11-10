@@ -89,7 +89,8 @@ def _link(problem: ProblemInfo) -> str:
             target = f"/admin/properties/new?edit={quote(key, safe='')}"
             return (
                 f'<a href="{escape(target)}">Open the {escape(key)} property</a><br>'
-                f'<a href="/admin/fields?advanced=1">Open Tags and advanced rules</a>'
+                f'<a href="/admin/fields?advanced=1&amp;open={quote(key, safe="")}">'
+                "Open Tags and advanced rules</a>"
             )
         if problem.action == "defaults":
             return (

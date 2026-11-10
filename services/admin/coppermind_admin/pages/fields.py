@@ -353,11 +353,14 @@ def checkbox(name: str, checked: bool, label: str) -> str:
     return f'<label><input type="checkbox" name="{name}" value="on"{state}>{escape(label)}</label>'
 
 
-def text_input(name: str, label: str, value: str, help_text: str = "") -> str:
+def text_input(
+    name: str, label: str, value: str, help_text: str = "", *, autofocus: bool = False
+) -> str:
     hint = f'<span class="muted">{escape(help_text)}</span>' if help_text else ""
+    focus = " autofocus" if autofocus else ""
     return (
         f'<label for="{name}">{escape(label)}</label>{hint}'
-        f'<input id="{name}" name="{name}" value="{escape(value, quote=True)}">'
+        f'<input id="{name}" name="{name}" value="{escape(value, quote=True)}"{focus}>'
     )
 
 
@@ -408,6 +411,7 @@ def render_key(
     row: dict[str, Any],
     roles: dict[str, list[str]],
     problems: list[str] | None = None,
+    focus: str = "",
 ) -> str:
     prefix = f"key-{index}"
     name = row["name"]
@@ -429,8 +433,9 @@ def render_key(
             row["retire"],
             "Retire this key (notes keep their values; the schema stops checking it)",
         )
-    expanded = " open" if row["new"] or any(errors.values()) else ""
-    return f"""<details class="field-definition"{expanded}>
+    wanted = bool(focus) and not row["new"] and name == focus
+    expanded = " open" if row["new"] or any(errors.values()) or wanted else ""
+    return f"""<details class="field-definition" id="field-{escape(name, quote=True)}"{expanded}>
 <summary>{escape(heading)} <span class="muted">({escape(row["kind"])})</span></summary>
 <fieldset><legend>Edit {escape(heading)}</legend>{errors["top"]}{identity}
 {select(f"{prefix}-kind", "Kind", KINDS, row["kind"])}
@@ -466,6 +471,7 @@ def render_key(
             "Default",
             row["default"],
             "Text for string, enum and date keys; JSON otherwise. Blank for none.",
+            autofocus=wanted,
         )
     }{errors["default"]}
 {text_input(f"{prefix}-description", "Description", row["description"])}
@@ -526,6 +532,7 @@ def render(
     message: str = "",
     status: int = 200,
     problems: list[str] | None = None,
+    focus: str = "",
 ) -> HTMLResponse:
     from coppermind_admin import main
 
@@ -541,7 +548,9 @@ read from <code>GET /v1/schema</code>. Nothing here rewrites a note.</p>
 <input type="hidden" name="key-count" value="{len(keys)}">
 <input type="hidden" name="tag-count" value="{len(tags)}">
 <h2>Fields</h2>"""
-    body += "".join(render_key(index, row, roles, problems) for index, row in enumerate(keys))
+    body += "".join(
+        render_key(index, row, roles, problems, focus) for index, row in enumerate(keys)
+    )
     body += f"""<h2>Tags</h2>
 {select("tag_mode", "Tag mode", TAG_MODES, tag_mode)}
 <p class="muted">Open: any tag is accepted and counted. Closed: a write that adds a tag that is
@@ -593,6 +602,7 @@ async def fields_page(request: Request) -> Response:
         tag_mode=schema.tag_mode,
         revision=str(state.revision),
         counts=counts,
+        focus=request.query_params.get("open", ""),
     )
 
 

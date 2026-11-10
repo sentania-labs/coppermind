@@ -1134,12 +1134,34 @@ class _Leftovers:
     copies: list[Observation]
 
 
-_REFUSED_VALUES = re.compile(r"keys the schema refused: ([^;]+)")
-_REFUSED_DEFAULTS = re.compile(r"the schema's own default is refused by the schema for: ([^;]+)")
+def _clause(prefix: str, cause: str) -> list[str]:
+    found = re.search(re.escape(prefix) + r"([^;]+)", cause)
+    if found is None:
+        return []
+    return [name.strip() for name in found.group(1).split(",")]
 
 
-def _property_names(listed: str) -> list[str]:
-    return [name.strip() for name in listed.split(",")]
+def _first_key(prefix: str, cause: str) -> str | None:
+    found = re.search(re.escape(prefix) + r"([^;,]+)", cause)
+    return found.group(1).strip() if found else None
+
+
+_CHECKS_AGAIN = "Coppermind checks again on its own."
+_UNCHANGED = "Coppermind left this note unchanged"
+_FRONTMATTER_CATEGORIES = {
+    "unterminated_block": (
+        "the properties block at the top is never closed. Add a line with three dashes "
+        "(---) after the last property"
+    ),
+    "not_a_mapping": (
+        "the properties block at the top is not a list of name: value lines. Rewrite it "
+        "that way, or remove it"
+    ),
+    "unsupported_line_endings": (
+        "its line endings aren't supported. Open it in a text editor and save it with "
+        "standard line endings (LF or CRLF)"
+    ),
+}
 
 
 def adoption_problem(cause: str) -> tuple[str, str]:
@@ -1148,30 +1170,49 @@ def adoption_problem(cause: str) -> tuple[str, str]:
     The cause is written for logs, in the store's own words. This is the same
     fact for the person who owns the note: that it was left unchanged, why, and
     what to do about it, in the names the Admin navigation uses. The first value
-    is the action Admin offers beside it.
+    is the action Admin offers beside it. Every cause gets a plain sentence,
+    including one this function has never seen, and none ever quotes a code.
     """
-    default = _REFUSED_DEFAULTS.search(cause)
-    written = _REFUSED_VALUES.search(cause)
+    from coppermind_store import notes as causes
+
+    parts: list[str] = []
+    action = "obsidian"
+    default = _clause(causes.CLAUSE_DEFAULT, cause)
     if default:
-        names = _property_names(default.group(1))
-        listed = " and ".join(names)
-        own = names[0] if len(names) == 1 else None
+        listed = " and ".join(default)
+        own = _first_key(causes.CLAUSE_DEFAULT, cause) if len(default) == 1 else None
         return (
             f"property:{own}" if own else "defaults",
-            f"Coppermind left this note unchanged. The note has no {listed} yet, and the "
-            f"default Coppermind would fill in is not one of the allowed choices. Change "
-            f"the default in Tags and advanced rules, or add it to the allowed choices in "
-            f"Note properties. Coppermind checks again on its own after you save the change.",
+            f"{_UNCHANGED}. The note has no {listed} yet, and the default Coppermind "
+            "would fill in is not one of the allowed choices. Change the default in Tags "
+            "and advanced rules, or add it to the allowed choices in Note properties. "
+            "Coppermind checks again on its own after you save the change.",
         )
-    if written:
-        listed = " and ".join(_property_names(written.group(1)))
-        return (
-            "properties",
-            f"Coppermind left this note unchanged. Its {listed} is not an allowed choice. "
-            f"Open the note in Obsidian and choose an allowed one (the choices are listed "
-            f"in Note properties). Coppermind checks again on its own once the note is saved.",
+    missing = _clause(causes.CLAUSE_MISSING, cause)
+    if missing:
+        parts.append(
+            f"This note needs {_a(missing)}. Add "
+            f"{'it' if len(missing) == 1 else 'them'} as "
+            f"{'a property' if len(missing) == 1 else 'properties'} in Obsidian and save "
+            "the note."
         )
-    if "not a valid identifier" in cause:
+    choices = _clause(causes.CLAUSE_REFUSED_CHOICE, cause)
+    if choices:
+        action = "properties"
+        parts.append(
+            f"Its {' and '.join(choices)} is not an allowed choice. Open the note in "
+            "Obsidian and choose an allowed one (the choices are listed in Note "
+            "properties)."
+        )
+    wrong = _clause(causes.CLAUSE_REFUSED_VALUE, cause)
+    if wrong:
+        parts.append(
+            f"Its {' and '.join(wrong)} holds a value of the wrong kind. Open the note "
+            "in Obsidian and correct it."
+        )
+    if parts:
+        return action, f"{_UNCHANGED}. {' '.join(parts)} {_CHECKS_AGAIN}"
+    if cause == causes.CAUSE_BAD_ID:
         return (
             "obsidian",
             "Coppermind could not identify this note, so it left it unchanged. The "
@@ -1179,11 +1220,46 @@ def adoption_problem(cause: str) -> tuple[str, str]:
             "note in Obsidian and delete that property. Coppermind gives the note a new "
             "identifier on its next check, and the note itself stays as it is.",
         )
+    reasons = {
+        causes.CAUSE_OUTSIDE: (
+            "its location is outside the notes folder. Move it into the notes folder in Obsidian"
+        ),
+        causes.CAUSE_NOT_UTF8: (
+            "its text is not saved as UTF-8. Open it in a text editor and save it as UTF-8"
+        ),
+        causes.CAUSE_GENERATED: (
+            "Coppermind produced this file itself from a source, so it is not a note "
+            "to add. Leave it where it is"
+        ),
+        causes.CAUSE_UNSTORABLE: (
+            "one of its properties holds a value Coppermind cannot keep. Open the note "
+            "in Obsidian and simplify that property"
+        ),
+        causes.CAUSE_ID_TAKEN: (
+            "another note already uses the same identifier, which usually means this "
+            "is a copy. Delete the copy, or delete the identifier property from it and "
+            "Coppermind will give it a new one"
+        ),
+        causes.CAUSE_PATH_TAKEN: (
+            "another note is already recorded at this location. Rename this file in Obsidian"
+        ),
+    }
+    if cause in reasons:
+        return "obsidian", f"{_UNCHANGED} because {reasons[cause]}. {_CHECKS_AGAIN}"
+    if cause in _FRONTMATTER_CATEGORIES:
+        return "obsidian", f"{_UNCHANGED} because {_FRONTMATTER_CATEGORIES[cause]}. {_CHECKS_AGAIN}"
     return (
         "obsidian",
-        f"Coppermind left this note unchanged: {cause}. Coppermind checks again on its "
-        "own once the file is changed.",
+        f"{_UNCHANGED} because it could not be read as a note. Open it in Obsidian, "
+        f"check the properties block at the top of the file, and save it. {_CHECKS_AGAIN}",
     )
+
+
+def _a(names: list[str]) -> str:
+    lowered = [name.lower() for name in names]
+    if len(lowered) == 1:
+        return f"{'an' if lowered[0][:1] in 'aeiou' else 'a'} {lowered[0]}"
+    return " and ".join(lowered)
 
 
 def _in_folder(path: str, folder: str) -> bool:

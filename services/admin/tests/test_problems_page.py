@@ -650,9 +650,17 @@ def test_a_refused_note_says_what_happened_and_offers_a_working_action(signed_in
     assert "checks again on its own" in page
     for internal in ("Fields and tags", "keys the schema", "the schema"):
         assert internal not in page
-    assert '<a href="/admin/fields?advanced=1">Open Tags and advanced rules</a>' in page
+    assert (
+        '<a href="/admin/fields?advanced=1&amp;open=type">Open Tags and advanced rules</a>' in page
+    )
     # Each remedy the refused-default copy offers is a page that has the control.
     choices = client.get("/admin/properties/new?edit=type").text
     assert 'name="choices"' in choices and "work" in choices
     advanced = client.get("/admin/fields?advanced=1").text
     assert re.search(r'name="key-\d+-default"', advanced)
+    # The link lands with that property expanded and the Default input focused.
+    focused = client.get("/admin/fields?advanced=1&open=type").text
+    block = focused[focused.index('id="field-type"') :]
+    assert block.startswith('id="field-type" open>')
+    assert re.search(r'name="key-\d+-default" value="[^"]*" autofocus', block)
+    assert 'field-account" open' not in focused
