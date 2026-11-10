@@ -62,7 +62,7 @@ with a notice and the other suggestions still arrive. A person renamed after sug
 were made is written under the current name; one retired is refused for that speaker only. When enrichment links an event automatically, it asks the model
 again with that event's attendees. If you link an event yourself after the first pass, request
 fresh suggestions. Confident names start selected, and the panel previews each change.
-Choose another candidate or leave a speaker unnamed. Search People or add a person from
+Choose another candidate or leave a speaker unnamed. Search existing People from
 the panel, even if the model is unavailable or speaker suggestions were omitted. Completing review
 replaces selected speaker labels throughout the transcript, adds confirmed attendees
 and links known dossiers. Unselected speakers keep their labels. Setting reviewed
