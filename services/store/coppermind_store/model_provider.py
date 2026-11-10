@@ -99,7 +99,6 @@ class ProviderError(ValueError):
         reply: str = "",
         waiting: bool = False,
         retry_after: float | None = None,
-        job_failed: bool = False,
     ) -> None:
         super().__init__(message)
         self.rule = rule
@@ -107,8 +106,6 @@ class ProviderError(ValueError):
         self.waiting = waiting
         # Seconds the service asked to wait before it is asked again, when it said.
         self.retry_after = retry_after
-        # True when the service's own job ended in failure; that job id is spent.
-        self.job_failed = job_failed
 
 
 class InputLimitError(ProviderError):

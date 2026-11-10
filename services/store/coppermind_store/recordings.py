@@ -102,6 +102,7 @@ class TranscriptionJob(ContextModel):
     # True once the service's transcript is saved. A retry then files it without sending
     # the recording again.
     transcribed: bool = False
+    # No longer used; kept so intake files saved by an earlier version still load.
     transcription_generation: int = 0
     remote_job_id: str = ""
     remote_job_started: float = 0
@@ -377,9 +378,9 @@ class Recordings:
             if job.state in {"succeeded"}:
                 continue
             if job.state == "running":
-                # The store stopped mid-call. That is not a failed attempt: asking again either
-                # re-attaches to the job the service has under the same id, or finds the
-                # service still busy with the old upload and waits.
+                # The store stopped mid-call. That is not a failed attempt: asking again polls
+                # the saved remote job, or sends the recording again under the same
+                # Idempotency-Key if the service lost it or is still busy.
                 self.interrupt(job)
                 self.save(job)
             if job.state == "failed" and job.attempts < job.attempt_limit:
