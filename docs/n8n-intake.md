@@ -161,7 +161,8 @@ only after successful filing. A source keeps the month chosen when it was first
 filed, including when another note cites it or a note's date is later
 corrected. All citing notes retain the same source link. Earlier revisions of a
 filed artifact stay in the artifact archive.
-Audio stays in the immutable archive. Filing errors appear in Admin Problems
+Audio submitted through the recordings API is removed after its transcript is reviewed
+and filed; other source audio remains in the source archive. Filing errors appear in Admin Problems
 and retry automatically. Human edits of a filed note retain review and update search.
 
 A changed payload under the same external ID creates an archive revision and

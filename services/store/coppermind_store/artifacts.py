@@ -105,6 +105,7 @@ MIGRATE_PER_PASS = 50
 # archive eligible for the retention purge; nothing else does.
 REMOVED_IN_ADMIN = "removed in Admin"
 REMOVED_THROUGH_API = "removed through the API"
+REMOVED_AFTER_REVIEW = "recording removed after review"
 DELETED_IN_OBSIDIAN = "deleted in Obsidian"
 OWNER_REMOVAL_REASONS = frozenset({REMOVED_IN_ADMIN, REMOVED_THROUGH_API, DELETED_IN_OBSIDIAN})
 REMOVAL_REASONS = {"admin": REMOVED_IN_ADMIN, "api": REMOVED_THROUGH_API}
@@ -1340,6 +1341,44 @@ async def remove_artifact(
         if manifest.get("removed_at"):
             raise ArtifactMissing(artifact_id)
         await _retire(store, manifest, reason=reason)
+
+
+async def remove_recording_audio(store: LocalStore, artifact_id: str, revision: int) -> None:
+    """Retire a recording and remove its verified archive, safely resumable after a crash.
+
+    A revised or externally modified artifact is deliberately left for inspection.
+    Its manifest remains as the receipt, including the original hash and size.
+    """
+    async with store._artifact_lock:
+        manifest = await asyncio.to_thread(read_manifest, store, artifact_id)
+        versions = manifest.get("revisions", [])
+        if len(versions) != 1 or manifest.get("current_revision") != revision:
+            raise ArtifactsFilesystemUnavailable("The recording has changed since it was accepted.")
+        item = versions[0]
+        archived = _revision_file(store, artifact_id, item)
+        removed = manifest.get("removed_at")
+        if removed and manifest.get("removed_reason") != REMOVED_AFTER_REVIEW:
+            raise ArtifactsFilesystemUnavailable("The recording was removed another way.")
+        if archived.exists():
+            await asyncio.to_thread(
+                _verify_file, archived, str(item["sha256"]), int(item["size_bytes"])
+            )
+        elif not removed:
+            raise ArtifactsFilesystemUnavailable("The archived recording is missing.")
+        if not removed:
+            recorded = manifest.get("path")
+            if recorded:
+                target = resolve(store.notes_root, str(recorded))
+                if target.exists():
+                    await asyncio.to_thread(
+                        _verify_file, target, str(item["sha256"]), int(item["size_bytes"])
+                    )
+        # Also repair an interrupted retirement whose manifest was written before
+        # its database transaction or record removal completed.
+        await _retire(store, manifest, reason=REMOVED_AFTER_REVIEW)
+        if archived.exists():
+            archived.unlink()
+            sync_directory(archived.parent)
 
 
 async def _retire(
