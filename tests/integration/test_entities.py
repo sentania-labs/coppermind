@@ -180,17 +180,53 @@ async def test_legacy_marker_migration_preserves_owner_frontmatter_and_body_byte
     assert path.read_text().split(marker)[0] == expected
 
 
-async def test_markerless_dossier_moved_outside_reserved_folders_is_not_adopted_as_note(store):
+async def test_markerless_dossier_moved_outside_reserved_folders_is_not_claimed(store):
     p = await person(store, "Casey Smith")
     old = store.notes_root / p["path"]
     old.write_text(old.read_text().replace(dossier_marker(p["id"]), ""))
     moved = store.notes_root / "Casey Moved.md"
     old.rename(moved)
     await reconcile_once(store, full=True)
+    await store.entities.refresh()
     current = await store.entities.get(p["id"])
-    assert current["path"] == "Casey Moved.md" and not current["retired_at"]
-    assert dossier_marker(p["id"]) in moved.read_text()
-    assert "\nid:" not in moved.read_text().split("---", 2)[1]
+    assert current["path"] == p["path"] and current["retired_at"]
+    assert dossier_marker(p["id"]) not in moved.read_text()
+
+
+@pytest.mark.parametrize(
+    "folder,front",
+    [
+        ("Contacts", "email: [casey@example.test]\nname: Casey Smith\naliases: []\n"),
+        ("Contacts", "name: Casey Smith\n"),
+        ("People", "name: Casey Smith\n"),
+        ("People", "email: [casey@example.test]\nname: Casey Smith\n"),
+    ],
+)
+async def test_owner_note_sharing_email_or_name_is_never_claimed_or_written(store, folder, front):
+    p = await person(store, "Casey Smith")
+    (store.notes_root / p["path"]).unlink()
+    (store.notes_root / folder).mkdir(exist_ok=True)
+    owner = store.notes_root / folder / "Casey Contact.md"
+    text = f"---\n{front}---\nMy own contact note.\n"
+    owner.write_text(text)
+    await store.entities.refresh()
+    await reconcile_once(store, full=True)
+    await store.entities.refresh()
+    current = await store.entities.get(p["id"])
+    assert current["path"] == p["path"]
+    assert "My own contact note." in owner.read_text()
+    assert "coppermind:dossier" not in owner.read_text()
+    assert "## Coppermind's Notes" not in owner.read_text()
+
+
+async def test_owner_note_in_another_folder_is_adopted_not_withheld(store):
+    p = await person(store, "Casey Smith")
+    (store.notes_root / p["path"]).unlink()
+    owner = store.notes_root / "Casey Contact.md"
+    owner.write_text("---\nemail: casey@example.test\n---\nMy own contact note.\n")
+    await store.entities.refresh()
+    await reconcile_once(store, full=True)
+    assert "\nid:" in owner.read_text().split("---", 2)[1]
 
 
 def customer_note(**extra):

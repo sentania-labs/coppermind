@@ -74,35 +74,30 @@ def dossier_parts(text: str, entity: Entity) -> tuple[str, str]:
         if found.group(1) and found.group(1) != entity.id:
             raise ValueError("dossier marker belongs to another entity")
         return text[: found.start()], text[found.end() :]
-    if not entity.generated:
-        return text, ""
-    if text.endswith(entity.generated):
+    if entity.generated and text.endswith(entity.generated):
         return text[: -len(entity.generated)], entity.generated
     raise ValueError("dossier marker is missing; restore it to resume")
 
 
-def matches_identity(fields: dict[str, Any], entity: Entity) -> bool:
-    addresses = fields.get("email", [])
-    if isinstance(addresses, str):
-        addresses = [addresses]
-    if isinstance(addresses, list) and {a for a in addresses if isinstance(a, str)} & set(
-        entity.emails
-    ):
+def matches_identity(fields: dict[str, Any], entity: Entity, domains: list[str]) -> bool:
+    """Exact identity of a page in a store-owned folder: email, or domains, or name with aliases."""
+
+    def strings(key: str) -> set[str]:
+        value = fields.get(key, [])
+        value = [value] if isinstance(value, str) else value
+        return {v for v in value if isinstance(v, str)} if isinstance(value, list) else set()
+
+    if entity.kind == "person":
+        return bool((strings("email") | strings("aliases")) & set(entity.emails))
+    names = {entity.name, *entity.aliases}
+    aliases = fields.get("aliases")
+    if domains and strings("domains") == set(domains):
         return True
-    aliases = fields.get("aliases", [])
-    if isinstance(aliases, str):
-        aliases = [aliases]
-    if isinstance(aliases, list) and {a for a in aliases if isinstance(a, str)} & set(
-        entity.emails
-    ):
-        return True
-    name = fields.get("name")
     return (
-        isinstance(name, str)
-        and name in {entity.name, *entity.aliases}
+        fields.get("name") in names
         and isinstance(aliases, list)
         and all(isinstance(a, str) for a in aliases)
-        and set(aliases) <= {entity.name, *entity.aliases}
+        and set(aliases) <= names
     )
 
 
@@ -503,13 +498,9 @@ class EntityService:
         if "\0" in text:
             raise ValueError("dossier contains NUL characters")
         fields, _ = fm.parse(text)
-        markers = list(MARKER.finditer(text))
-        marker_id = markers[0].group(1) if len(markers) == 1 else None
         legacy_id = fields.get("entity_id")
         if legacy_id and legacy_id != entity.id:
             raise ValueError("dossier frontmatter belongs to another entity")
-        if not marker_id and legacy_id != entity.id and not matches_identity(fields, entity):
-            raise ValueError("dossier identity cannot be recovered unambiguously")
         head, block = dossier_parts(text, entity)
         prior = entity.projection_fields or {}
         name = fields.get("name")
@@ -1247,6 +1238,7 @@ class EntityService:
             and not safe_path(self.store.notes_root, e.path).exists()
         }
         found: dict[str, list[str]] = {identity: [] for identity in missing}
+        guessed: dict[str, list[str]] = {identity: [] for identity in missing}
         ambiguous: set[str] = set()
         if missing:
             from coppermind_store.reconciler import _IGNORED_DIRECTORIES
@@ -1278,20 +1270,29 @@ class EntityService:
                         if identity and legacy_id and identity != legacy_id:
                             continue
                         identity = identity or legacy_id
-                        if not identity:
+                        relative = path.relative_to(root)
+                        if isinstance(identity, str) and identity in found:
+                            found[identity].append(relative.as_posix())
+                        elif not identity and relative.parts[0] in FOLDERS:
                             matches = [
                                 e.id
                                 for e in ledger.entities.values()
-                                if matches_identity(fields, e)
+                                if e.generated
+                                and text.endswith(e.generated)
+                                and matches_identity(
+                                    fields,
+                                    e,
+                                    company_domains(e, ledger) if e.kind == "company" else [],
+                                )
                             ]
-                            identity = matches[0] if len(matches) == 1 else None
                             if len(matches) > 1:
                                 ambiguous.update(i for i in matches if i in found)
-                        if isinstance(identity, str) and identity in found:
-                            found[identity].append(path.relative_to(root).as_posix())
+                            elif matches and matches[0] in guessed:
+                                guessed[matches[0]].append(relative.as_posix())
                     except (OSError, UnicodeError, fm.FrontmatterError):
                         continue
             for identity, paths in found.items():
+                paths[:] = paths or guessed[identity]
                 entity = missing[identity]
                 if identity in ambiguous:
                     entity.problem = (
@@ -1376,13 +1377,7 @@ class EntityService:
         try:
             text = safe_path(self.store.notes_root, entity.path).read_text()
             fields, _ = fm.parse(text)
-            markers = list(MARKER.finditer(text))
-            marker_id = markers[0].group(1) if len(markers) == 1 else None
-            if (
-                marker_id != entity.id
-                and fields.get("entity_id") != entity.id
-                and not matches_identity(fields, entity)
-            ):
+            if fields.get("entity_id") not in (None, entity.id):
                 return ""
             _, body = fm.parse(dossier_parts(text, entity)[0])
             return body

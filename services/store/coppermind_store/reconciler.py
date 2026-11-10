@@ -414,20 +414,6 @@ async def reconcile_once(
     by_path = _by_path(by_id)
     schema = store.control.schema()
     settings = store.control.settings()
-    dossier_candidates = []
-    try:
-        from coppermind_store.entities import safe_path
-
-        ledger = store.entities.load()
-        if any(
-            e.generated is not None
-            and not e.retired_at
-            and not safe_path(store.notes_root, e.path).exists()
-            for e in ledger.entities.values()
-        ):
-            dossier_candidates = list(ledger.entities.values())
-    except (OSError, ValueError):
-        pass  # Dossier reconciliation is independent of ordinary note filing.
     quiet = (
         QuietWindow(
             earliest=scan_started - timedelta(seconds=quiet_period_s),
@@ -448,7 +434,6 @@ async def reconcile_once(
         unadoptable=_unadoptable_folders(settings),
         excluded_folders=settings.reconcile.excluded_folders,
         excluded_patterns=settings.reconcile.excluded_patterns,
-        dossier_candidates=dossier_candidates,
     )
     remembered.clear()
     remembered.update(scan.unidentified)
@@ -753,7 +738,6 @@ def _scan(
     quiet: QuietWindow | None,
     unidentified: UnidentifiedStats,
     unadoptable: frozenset[tuple[str, ...]],
-    dossier_candidates: list | None = None,
     excluded_folders: list[str],
     excluded_patterns: list[str],
 ) -> ScanResult:
@@ -880,21 +864,6 @@ def _scan(
             # Identity observation always wins over an adoption exclusion, even
             # for a broken note whose known identity can still be recovered.
             rule = path_rule or _frontmatter_exclusion(data)
-            if not rule and isinstance(result, AdoptionCandidate) and dossier_candidates:
-                from coppermind_store.entities import matches_identity
-                from coppermind_store.entities import safe_path as dossier_path
-
-                try:
-                    fields, _ = fm.parse(data.decode("utf-8"))
-                    matches = [
-                        e
-                        for e in dossier_candidates
-                        if not e.retired_at and matches_identity(fields, e)
-                    ]
-                    if any(not dossier_path(root, e.path).exists() for e in matches):
-                        rule = "dossier identity pending recovery"
-                except (OSError, UnicodeError, ValueError, fm.FrontmatterError):
-                    pass
             if not isinstance(result, Observation) and rule:
                 exclusions[relative] = rule
                 if settling:

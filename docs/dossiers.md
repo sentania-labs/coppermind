@@ -17,8 +17,11 @@ Below the delimiter, edit a fact
 line to correct it or delete the line to withdraw it. The edit becomes a durable
 correction with that page and its hash as evidence. There is no conflict alarm
 for an ordinary edit, and no separate acceptance ceremony. Keep the marker when
-possible; a missing marker or marker ID can be recovered from matching page
-properties and the ledger. Malformed or unrelated files are preserved and reported
+possible; a page that lost its marker ID, or its whole marker while the generated
+section is intact, is recovered at its own path. A page moved without its marker is
+found only inside `People/` or `Companies/`, by an exact email (person) or domains
+or name with aliases (company), and only when one page matches. Notes elsewhere are
+never claimed, even when they share an email or name. Malformed or unrelated files are preserved and reported
 in Admin Problems. Generated pages never overwrite an unrelated occupied path.
 Names can be changed through the API. Moving or renaming a page in Obsidian keeps
 its identity via the hidden `<!-- coppermind:dossier id=… -->` marker and adopts
