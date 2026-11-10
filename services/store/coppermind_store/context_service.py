@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import time
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
@@ -130,9 +131,9 @@ from first names. Explain uncertainty in unresolved, not in a note field.
 Filename value is a short single-line title without a path or .md extension. Event and contact
 proposals link supplied records. Every proposal needs a reason and supplied event evidence or
 an exact quote. For recording speakers, propose kind speaker with field set to the exact supplied
-speaker label and value set to one supplied candidate id. Use transcript clues and give confidence
-and a short reason. Do not invent candidates or assert unsupported identities. Existing values
-are human-owned; never propose replacing them.
+speaker label and value set to one supplied candidate id, or to null when no candidate fits.
+Use transcript clues and give confidence and a short reason. Do not invent candidates or assert unsupported identities.
+Existing values are human-owned; never propose replacing them.
 """
 
 
@@ -1206,6 +1207,25 @@ class ContextService:
         )
 
     @staticmethod
+    def usable_speakers(
+        suggestions: list[Suggestion], speaker_review: dict[str, Any]
+    ) -> list[Suggestion]:
+        """Drop speaker proposals the model got wrong; those speakers stay unnamed."""
+        labels = speaker_review.get("speakers", [])
+        candidates = {c["id"] for c in speaker_review.get("candidates", [])}
+        counts = Counter(s.field for s in suggestions if s.kind == "speaker")
+        return [
+            s
+            for s in suggestions
+            if s.kind != "speaker"
+            or (
+                s.field in labels
+                and counts[s.field] == 1
+                and (s.value is None or (isinstance(s.value, str) and s.value in candidates))
+            )
+        ]
+
+    @staticmethod
     def proposed_people(job: EnrichmentJob) -> set[str]:
         return {
             s.value
@@ -1441,11 +1461,8 @@ class ContextService:
                     suggestion.reason = (
                         " ".join(suggestion.reason.split())[:250] or "No reason given."
                     )
+            result.suggestions = self.usable_speakers(result.suggestions, speaker)
             seen_speakers = [s.field for s in result.suggestions if s.kind == "speaker"]
-            if len(seen_speakers) != len(set(seen_speakers)):
-                raise JobRejected(
-                    "duplicate-speaker", "The model suggested a speaker more than once", RETRY
-                )
             for label in speaker.get("speakers", []):
                 if label not in seen_speakers:
                     result.suggestions.append(
@@ -1498,16 +1515,10 @@ class ContextService:
                         )
                         job.reply = json.dumps(reply, ensure_ascii=False)[:4000]
                         proposed = Suggestions.model_validate(reply)
-                        proposed.suggestions = [
-                            s for s in proposed.suggestions if s.kind == "speaker"
-                        ]
-                        labels = [s.field for s in proposed.suggestions]
-                        if len(labels) != len(set(labels)):
-                            raise JobRejected(
-                                "duplicate-speaker",
-                                "The model suggested a speaker more than once",
-                                RETRY,
-                            )
+                        proposed.suggestions = self.usable_speakers(
+                            [s for s in proposed.suggestions if s.kind == "speaker"],
+                            current_evidence.get("speaker_review") or {},
+                        )
                         self.validate_result(proposed, current_evidence)
                         if not same_evidence(await self.evidence(job), current_evidence):
                             raise ValueError(
