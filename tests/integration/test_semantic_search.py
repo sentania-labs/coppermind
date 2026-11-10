@@ -70,15 +70,19 @@ def service() -> FakeService:
 def configured(store: LocalStore, service: FakeService) -> Callable[..., None]:
     store.context.provider = ModelProvider(transport=httpx.MockTransport(service.handler))
 
-    def configure(model: str = "fake-embed", attempts: int = 3) -> None:
+    def configure(model: str = "fake-embed", attempts: int = 3, connection: str = "local") -> None:
         config = ContextConfig(
             connections=[
                 ModelConnection(
-                    id="local", name="Local", provider="compatible", base_url="http://embed.test/v1"
+                    id=name,
+                    name=name,
+                    provider="compatible",
+                    base_url=f"http://{name}.test/v1",
                 )
+                for name in ("local", "other")
             ],
             embeddings=EmbeddingAssignment(
-                connection="local", model=model, enabled=True, attempts=attempts
+                connection=connection, model=model, enabled=True, attempts=attempts
             ),
         )
         store.context.save_config(config)
@@ -197,7 +201,7 @@ async def test_changing_the_model_reembeds_everything(store, configured, service
     assert len(service.calls) > first
     async with store.session_factory() as session:
         models = set((await session.scalars(sa.select(SearchEmbedding.model))).all())
-    assert models == {"model-b"}
+    assert {tag.rsplit("|", 1)[1] for tag in models} == {"model-b"}
 
 
 async def test_a_text_the_service_refuses_is_set_aside(store, configured, service) -> None:
@@ -238,3 +242,22 @@ async def test_a_missing_table_is_created_once_the_server_offers_pgvector(
     assert status.state != "unavailable"
     await settle(store)
     assert await found(store, "licensing") == [("Vendor call", "meaning")]
+
+
+async def test_another_connection_serving_the_same_model_name_is_embedded_again(
+    store, configured, service
+) -> None:
+    await create(store, "Vendor call", "We agreed the permit fees.")
+    configured(connection="local")
+    await settle(store)
+    first = len(service.calls)
+
+    configured(connection="other")
+    await settle(store)
+
+    assert len(service.calls) > first
+    status = await store.embeddings.status()
+    assert (status.documents, status.embedded) == (1, 1)
+    async with store.session_factory() as session:
+        tags = set((await session.scalars(sa.select(SearchEmbedding.model))).all())
+    assert len(tags) == 1 and next(iter(tags)).startswith("other|")

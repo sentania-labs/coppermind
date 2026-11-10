@@ -16,6 +16,7 @@ itself after a restart: what is embedded is read from the table, not remembered.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -162,6 +163,21 @@ class EmbeddingService:
     def active(assignment: EmbeddingAssignment) -> bool:
         return bool(assignment.enabled and assignment.connection and assignment.model)
 
+    def provenance(self, assignment: EmbeddingAssignment) -> str:
+        """What stored vectors are tagged with: the connection (and its address) and the model.
+
+        Two connections can serve different models under one model name, and vectors from
+        different models must never be compared, so a new connection embeds everything again.
+        """
+        context = self.store.context
+        try:
+            connection = context.connection(assignment.connection)
+            address = hashlib.sha256(connection.endpoint_url.encode()).hexdigest()[:8]
+            identity = context.storage_identity(connection.id)
+        except ValueError:
+            address = identity = ""
+        return f"{identity}|{address}|{assignment.model}"
+
     def _follow_config(self, assignment: EmbeddingAssignment) -> None:
         """A different connection or model starts over: what was refused may now be accepted."""
         key = (assignment.connection, assignment.model)
@@ -250,17 +266,18 @@ class EmbeddingService:
             return 60.0
         if self._retry_at is not None and self._retry_at > datetime.now(UTC):
             return min(IDLE_S, (self._retry_at - datetime.now(UTC)).total_seconds())
-        pending = await self._next(assignment.model)
+        tag = self.provenance(assignment)
+        pending = await self._next(tag)
         if pending is None:
             self._error, self._retry_at, self._failures = "", None, 0
-            await self._forget_other_models(assignment.model)
+            await self._forget_other_models(tag)
             return IDLE_S
         self._working = True
         try:
             vectors = await self._embed(pending, connection, key, assignment)
         except ProviderError as exc:
             return self._failed(pending, exc, assignment)
-        if await self._save(pending, assignment.model, vectors):
+        if await self._save(pending, tag, vectors):
             self._error, self._retry_at, self._failures = "", None, 0
             self._refused.pop(pending.key, None)
             self._batch = min(BATCH_MAX, self._batch * 2)
@@ -405,10 +422,11 @@ class EmbeddingService:
         if not self.active(assignment) or not text.strip():
             return None
         self._follow_config(assignment)
-        cached = self._queries.get((assignment.model, text))
+        tag = self.provenance(assignment)
+        cached = self._queries.get((tag, text))
         if cached is not None:
-            self._queries.move_to_end((assignment.model, text))
-            return QueryVector(cached, assignment.model)
+            self._queries.move_to_end((tag, text))
+            return QueryVector(cached, tag)
         if time.monotonic() < self._query_down_until or not await self.table_ready():
             return None
         try:
@@ -424,10 +442,10 @@ class EmbeddingService:
             self._query_down_until = time.monotonic() + QUERY_COOLDOWN_S
             log.warning("could not embed the question; answering from words alone", error=str(exc))
             return None
-        self._queries[(assignment.model, text)] = vector
+        self._queries[(tag, text)] = vector
         while len(self._queries) > QUERY_CACHE_SIZE:
             self._queries.popitem(last=False)
-        return QueryVector(vector, assignment.model)
+        return QueryVector(vector, tag)
 
     # --- what Admin shows ------------------------------------------------------------
 
@@ -439,7 +457,7 @@ class EmbeddingService:
             return EmbeddingStatus(
                 state="unavailable", model=assignment.model, error=self._table_error
             )
-        model = assignment.model
+        model = self.provenance(assignment)
         try:
             async with self.store.session_factory() as session:
                 documents = await session.scalar(
@@ -464,7 +482,7 @@ class EmbeddingService:
                     .where(SearchEmbedding.model == model)
                 )
         except (SQLAlchemyError, OSError):
-            return EmbeddingStatus(state="idle", model=model)
+            return EmbeddingStatus(state="idle", model=assignment.model)
         documents, embedded = int(documents or 0), int(embedded or 0)
         waiting = self._retry_at is not None and self._retry_at > datetime.now(UTC)
         if waiting:
@@ -475,7 +493,7 @@ class EmbeddingService:
             state = "working"
         return EmbeddingStatus(
             state=state,  # type: ignore[arg-type]
-            model=model,
+            model=assignment.model,
             documents=documents,
             embedded=embedded,
             passages=int(count or 0),

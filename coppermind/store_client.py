@@ -129,7 +129,11 @@ class HttpStoreClient:
             "POST",
             f"{INTERNAL_PREFIX}/context/{_segment(action)}",
             json=payload,
-            timeout=MODEL_TEST_TIMEOUT_S if action == "test-model" else httpx.USE_CLIENT_DEFAULT,
+            timeout=(
+                MODEL_TEST_TIMEOUT_S
+                if action in {"test-model", "save-embeddings"}
+                else httpx.USE_CLIENT_DEFAULT
+            ),
         )
         return response.json()
 
