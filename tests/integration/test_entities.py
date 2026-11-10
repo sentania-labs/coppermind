@@ -348,6 +348,40 @@ async def test_editing_a_note_keeps_its_domain_without_a_gap(store):
     ]
 
 
+@pytest.mark.parametrize("change", ["edit", "unreview"])
+async def test_domain_survives_when_the_note_that_first_held_it_goes_stale(store, change):
+    first = await store.create_note(
+        customer_note(
+            title="First",
+            account=["Xcel Energy"],
+            attendees=["arthur.smith@xcelenergy.com"],
+        )
+    )
+    await store.entities.refresh()
+    await store.create_note(
+        customer_note(
+            title="Second",
+            account=["Xcel Energy"],
+            attendees=["jo.lee@xcelenergy.com"],
+        )
+    )
+    await store.entities.refresh()
+    held = [f for f in named(store, "Xcel Energy").facts if f.predicate == "domain"]
+    assert [f.evidence.note_id for f in held if f.state == "confirmed"] == [first.id]
+    path = store.notes_root / first.path
+    if change == "edit":
+        path.write_text(path.read_text() + "More discussion.\n")
+    else:
+        path.write_text(path.read_text().replace("reviewed: true", "reviewed: false"))
+    await reconcile_once(store, full=True)
+    company = named(store, "Xcel Energy")
+    live = [f for f in company.facts if f.predicate == "domain" and f.state == "confirmed"]
+    assert [f.value for f in live] == ["xcelenergy.com"]
+    assert fm.parse((store.notes_root / company.path).read_text())[0]["domains"] == [
+        "xcelenergy.com"
+    ]
+
+
 async def test_removed_domain_stays_removed_after_its_note_is_edited(store):
     note = await store.create_note(
         customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])

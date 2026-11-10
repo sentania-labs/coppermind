@@ -791,8 +791,12 @@ class EntityService:
                                 and (f.state == "confirmed" or f.withdrawn_for is None)
                                 and not (
                                     f.state == "confirmed"
-                                    and f.evidence.note_id == note.id
-                                    and f.evidence.note_hash != note.content_hash
+                                    and f.evidence.note_id
+                                    and (
+                                        f.evidence.note_id not in notes
+                                        or notes[f.evidence.note_id].content_hash
+                                        != f.evidence.note_hash
+                                    )
                                 )
                             )
                             for f in company.facts
