@@ -785,7 +785,11 @@ class ModelProvider:
                 extra_headers={"Idempotency-Key": job_id} if use_job_path else None,
             )
 
+        noticed = False
+
         def update(message: str = "") -> None:
+            nonlocal noticed
+            noticed = bool(message)
             if job_update:
                 job_update(remote_job_id, job_started, job_resubmits, message)
 
@@ -894,6 +898,8 @@ class ModelProvider:
                                     noun="transcription service",
                                     max_reply_bytes=MAX_TRANSCRIPT_BYTES,
                                 )
+                                if noticed:
+                                    update()
                     except TimeoutError as exc:
                         raise exhausted() from exc
                     except ProviderError as exc:

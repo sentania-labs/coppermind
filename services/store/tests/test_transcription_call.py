@@ -719,6 +719,7 @@ async def test_job_recovers_with_same_key(recording, monkeypatch, failure):
     posts = [key for method, key in requests if method == "POST"]
     assert posts == ["stable-id"] * (1 if failure in {"outage", "disconnected"} else 2)
     assert any(update[3] for update in updates)
+    assert updates[-1][3] == ""
 
 
 @pytest.mark.parametrize("reason", ["audio_unreadable", "no_speech", "too_long"])
