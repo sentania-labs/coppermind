@@ -206,10 +206,14 @@ has not been exercised by this slice.
   carriage return that the shared parser reads as having no body, is left byte
   exact and counted rejected. The reason names the parser category, the schema
   keys at fault or the kind of fault, and never the person's own values,
-  because logs are collected and shipped. A carriage return in the body is the
-  person's own byte and never blocks adoption, and neither does a NUL inside a
-  value: the file keeps that byte and the mirror, which is the rebuildable
-  copy, drops it.
+  because logs are collected and shipped. When the key at fault was filled in
+  from the schema's own default, the reason says so, and Problems offers both
+  remedies, changing the default under Tags and advanced rules or adding it to
+  the allowed choices in Note properties. Each refused file is listed on
+  Problems as `adoption` until it changes or is adopted. A carriage return in
+  the body is the person's own byte and never blocks adoption, and neither
+  does a NUL inside a value: the file keeps that byte and the mirror, which is
+  the rebuildable copy, drops it.
   Everything a file is judged on is decided before a database connection is
   asked for, so a note the schema refuses costs a read
   and a parse however often the scan rediscovers it. A file the store cannot
@@ -223,9 +227,15 @@ has not been exercised by this slice.
   move whose delete has not arrived yet, and the service will not guess. The
   pass counts that collision and names every path claiming the identity, beside
   the files it refused, so an operator sees both sides rather than an
-  identifier alone. The process remembers up
-  to 10,000 rejected paths by stat, so an unchanged rejected tree costs one
-  stat per file per pass rather than repeated reads and parses. Only a durable
+  identifier alone, and logs each collision once, again only when its paths
+  change. The one exception is a copy left in the review folder after its note
+  was filed elsewhere: it is removed when its bytes equal the filed note's or a
+  version filing recorded of it (hashes only, the newest 16 per note, kept in
+  the filing receipt after it settles), and otherwise left alone and named,
+  with the filed path, in `review_problem` on the note's review response and on
+  Problems. The process remembers up to 10,000 rejected paths by stat, so an
+  unchanged rejected tree costs one stat per file per pass rather than
+  repeated reads and parses. Only a durable
   rejection is remembered; a file still inside the quiet period is read again
   on the next pass instead, so a whole notes filesystem arriving at once
   cannot fill that memory with paths that are about to settle. A file changed

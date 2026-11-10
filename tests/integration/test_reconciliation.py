@@ -403,12 +403,12 @@ async def test_a_refusal_heavy_sweep_keeps_letting_other_work_run(
             await asyncio.sleep(0)
 
     read_schema = 0
-    real_schema = store.control.schema
+    real_schema_document = store.control.schema_document
 
-    def counted_schema():
+    def counted_schema_document():
         nonlocal read_schema
         read_schema += 1
-        return real_schema()
+        return real_schema_document()
 
     seen: list[int] = []
     real_adopt = store.adopt_note
@@ -417,7 +417,7 @@ async def test_a_refusal_heavy_sweep_keeps_letting_other_work_run(
         seen.append(ticks)
         return await real_adopt(relative, expected_hash, **control)
 
-    monkeypatch.setattr(store.control, "schema", counted_schema)
+    monkeypatch.setattr(store.control, "schema_document", counted_schema_document)
     monkeypatch.setattr(store, "adopt_note", note_the_tick)
     ticker = asyncio.create_task(other_work())
     counts = await reconcile_once(store)
@@ -1638,3 +1638,158 @@ async def test_a_known_note_moved_to_an_unremembered_path_is_still_identified(
     assert counts["moved"] == 1
     assert (await _row(store, note.id)).path == "Work/Operations Runbook.md"
     assert (await store.get_note(note.id)).path == "Work/Operations Runbook.md"
+
+
+async def test_a_refusal_of_the_schemas_own_default_points_at_the_schema(store: LocalStore):
+    """The person's file carries no such value, so the note is not what to fix."""
+    schema = store.control.schema()
+    keys = [
+        key.model_copy(update={"default": "note", "required": True}) if key.name == "type" else key
+        for key in schema.keys
+    ]
+    broken = schema.model_copy(update={"keys": keys})
+    data = b"# Bare note\n"
+    path = store.notes_root / "Review" / "Bare.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+    outcome, cause = await store.adopt_note(
+        "Review/Bare.md",
+        content_hash(data),
+        schema=broken,
+        settings=store.control.settings(),
+    )
+
+    assert outcome == "invalid"
+    assert "own default" in cause and "type" in cause
+    assert "keys the schema refused" not in cause
+    assert path.read_bytes() == data
+
+
+async def test_a_refused_adoption_is_listed_on_problems_until_the_file_changes(
+    store: LocalStore,
+):
+    """Admin Problems names the file and the cause; fixing the file clears it."""
+    schema = store.control.schema()
+    keys = [
+        key.model_copy(update={"default": "note", "required": True}) if key.name == "type" else key
+        for key in schema.keys
+    ]
+    state = store.control.store.read("schema")
+    store.control.store.write(
+        "schema",
+        schema.model_copy(update={"keys": keys}).model_dump(mode="json"),
+        if_revision=state.revision,
+    )
+    path = store.notes_root / "Review" / "Bare.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"# Bare note\n")
+    remembered: reconciler.UnidentifiedStats = {}
+
+    await reconcile_once(store, unidentified=remembered)
+    # A second pass does not look at the unchanged file; the entry must stay.
+    await reconcile_once(store, unidentified=remembered)
+
+    listed = [p for p in await store.get_problems() if p.kind == "adoption"]
+    assert [(p.reference, "no type yet" in p.reason and "default" in p.reason) for p in listed] == [
+        ("Review/Bare.md", True)
+    ]
+
+    path.unlink()
+    await reconcile_once(store, unidentified=remembered)
+
+    assert [p for p in await store.get_problems() if p.kind == "adoption"] == []
+
+
+async def test_a_required_key_with_no_default_is_not_blamed_on_a_default(store: LocalStore):
+    """No default was supplied, so the operator has no default to fix."""
+    schema = store.control.schema()
+    keys = [
+        key.model_copy(update={"default": None, "required": True}) if key.name == "account" else key
+        for key in schema.keys
+    ]
+    strict = schema.model_copy(update={"keys": keys})
+    data = b"# Bare note\n"
+    path = store.notes_root / "Review" / "Bare.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+    outcome, cause = await store.adopt_note(
+        "Review/Bare.md", content_hash(data), schema=strict, settings=store.control.settings()
+    )
+
+    assert outcome == "invalid"
+    assert "account" in cause
+    assert "own default" not in cause
+
+
+def test_each_adoption_refusal_is_put_in_plain_words_with_an_action():
+    cases = {
+        "keys the schema refused: type": ("properties", "Its type is not an allowed choice"),
+        "the schema's own default is refused by the schema for: type": (
+            "property:type",
+            "default Coppermind would fill in is not one of the allowed choices",
+        ),
+        "the id it carries is not a valid identifier": ("obsidian", "could not identify"),
+        "the file is not valid UTF-8": ("obsidian", "not saved as UTF-8"),
+    }
+    for cause, (action, phrase) in cases.items():
+        got_action, text = reconciler.adoption_problem(cause)
+        assert got_action == action
+        assert phrase in text
+        assert "left this note unchanged" in text or "left it unchanged" in text
+        assert "checks again" in text or "next check" in text
+        for internal in ("schema", "keys the", "Fields and tags"):
+            assert internal not in text
+
+
+def test_a_refused_default_links_to_the_property_under_its_real_spelling():
+    action, text = reconciler.adoption_problem(
+        "the schema's own default is refused by the schema for: dueDate"
+    )
+
+    assert action == "property:dueDate"
+    assert "dueDate" in text
+
+
+async def test_a_refusal_clears_itself_when_the_default_is_corrected(store: LocalStore):
+    """No retry is needed: a corrected schema makes the refused note worth reading again."""
+    schema = store.control.schema()
+    broken = schema.model_copy(
+        update={
+            "keys": [
+                key.model_copy(update={"default": "note", "required": True})
+                if key.name == "type"
+                else key
+                for key in schema.keys
+            ]
+        }
+    )
+    state = store.control.store.read("schema")
+    saved = store.control.store.write(
+        "schema", broken.model_dump(mode="json"), if_revision=state.revision
+    )
+    path = store.notes_root / "Review" / "Bare.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"# Bare note\n")
+    remembered: reconciler.UnidentifiedStats = {}
+
+    await reconcile_once(store, unidentified=remembered)
+    await reconcile_once(store, unidentified=remembered)
+    listed = [p for p in await store.get_problems() if p.kind == "adoption"]
+    assert [p.action for p in listed] == ["property:type"]
+    assert "Note properties" in listed[0].reason
+
+    fixed = schema.model_copy(
+        update={
+            "keys": [
+                key.model_copy(update={"required": True}) if key.name == "type" else key
+                for key in schema.keys
+            ]
+        }
+    )
+    store.control.store.write("schema", fixed.model_dump(mode="json"), if_revision=saved.revision)
+    await reconcile_once(store, unidentified=remembered)
+
+    assert [p for p in await store.get_problems() if p.kind == "adoption"] == []
+    assert fm.parse(path.read_text())[0]["type"] == "reference"

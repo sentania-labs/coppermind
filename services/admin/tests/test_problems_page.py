@@ -8,6 +8,7 @@ is held: there is no call Admin could make here that would change one.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from http.client import BadStatusLine, IncompleteRead
 
@@ -785,3 +786,49 @@ def test_home_groups_collision_without_exposing_identity(signed_in):
     assert "Review/Meeting.md" in page and "Meetings/Duplicate.md" in page
     assert "Neither file was changed" in page and "Compare and resolve" in page
     assert NOTE_ID not in page
+
+
+def test_a_refused_note_says_what_happened_and_offers_a_working_action(signed_in):
+    from coppermind_store.reconciler import adoption_problem
+
+    from coppermind.schema import default_schema
+    from coppermind.statefiles import StateStore
+
+    client, wiring = signed_in
+    StateStore(wiring.state_dir).ensure("schema", default_schema().model_dump(mode="json"))
+    store = ReadOnlyStore()
+    store.problems = []
+    for path, cause in (
+        ("Review/Wrong type.md", "keys the schema refused: type"),
+        ("Review/Bare.md", "the schema's own default is refused by the schema for: type"),
+        ("Review/Odd.md", "the id it carries is not a valid identifier"),
+    ):
+        action, text = adoption_problem(cause)
+        store.problems.append(
+            ProblemInfo(kind="adoption", reference=path, reason=text, action=action)
+        )
+    client.app.state.store = store
+
+    page = client.get("/admin/problems").text
+
+    assert "Could not add note" in page
+    assert "Coppermind left this note unchanged" in page
+    assert '<a href="/admin/properties">Open Note properties</a>' in page
+    assert '<a href="/admin/properties/new?edit=type">Open the type property</a>' in page
+    assert "checks again on its own" in page
+    for internal in ("Fields and tags", "keys the schema", "the schema"):
+        assert internal not in page
+    assert (
+        '<a href="/admin/fields?advanced=1&amp;open=type">Open Tags and advanced rules</a>' in page
+    )
+    # Each remedy the refused-default copy offers is a page that has the control.
+    choices = client.get("/admin/properties/new?edit=type").text
+    assert 'name="choices"' in choices and "work" in choices
+    advanced = client.get("/admin/fields?advanced=1").text
+    assert re.search(r'name="key-\d+-default"', advanced)
+    # The link lands with that property expanded and the Default input focused.
+    focused = client.get("/admin/fields?advanced=1&open=type").text
+    block = focused[focused.index('id="field-type"') :]
+    assert block.startswith('id="field-type" open>')
+    assert re.search(r'name="key-\d+-default" value="[^"]*" autofocus', block)
+    assert 'field-account" open' not in focused

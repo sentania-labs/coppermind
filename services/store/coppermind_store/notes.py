@@ -133,6 +133,31 @@ log = get_logger("coppermind-store")
 _SCAN_BATCH = 200
 
 AdoptionOutcome = Literal["adopted", "changed", "invalid", "collision"]
+
+# Every fixed reason adoption can refuse a file. They are written for logs; the
+# reconciler turns each into a sentence for the person who owns the note, and a
+# test walks this list so a new reason cannot reach Problems as a bare code.
+CAUSE_OUTSIDE = "path is not inside the notes filesystem"
+CAUSE_NOT_UTF8 = "the file is not valid UTF-8"
+CAUSE_GENERATED = "the store generated this file, so it is not a note to adopt"
+CAUSE_BAD_ID = "the id it carries is not a valid identifier"
+CAUSE_UNSTORABLE = "a value it carries is one the mirror cannot store"
+CAUSE_ID_TAKEN = "the id it carries is already a note"
+CAUSE_PATH_TAKEN = "another note already claims this path"
+FIXED_ADOPTION_CAUSES = (
+    CAUSE_OUTSIDE,
+    CAUSE_NOT_UTF8,
+    CAUSE_GENERATED,
+    CAUSE_BAD_ID,
+    CAUSE_UNSTORABLE,
+    CAUSE_ID_TAKEN,
+    CAUSE_PATH_TAKEN,
+)
+# Clause prefixes, each followed by a comma separated list of key names.
+CLAUSE_REFUSED_CHOICE = "keys the schema refused: "
+CLAUSE_REFUSED_VALUE = "keys with a value of the wrong kind: "
+CLAUSE_MISSING = "keys the note is missing: "
+CLAUSE_DEFAULT = "the schema's own default is refused by the schema for: "
 # The outcome and why it happened. "invalid" alone names five different
 # refusals, and the reconciler's log line is the only thing that surfaces a
 # file the store has decided not to adopt. The cause is content free by
@@ -1442,7 +1467,7 @@ class LocalStore:
         try:
             path = resolve(self.notes_root, relative)
         except ValueError:
-            return "invalid", "path is not inside the notes filesystem"
+            return "invalid", CAUSE_OUTSIDE
         try:
             current, _ = _read(relative, path)
         except NotFound:
@@ -1453,13 +1478,13 @@ class LocalStore:
             text = current.decode("utf-8")
             frontmatter, body = fm.parse(text)
         except UnicodeDecodeError:
-            return "invalid", "the file is not valid UTF-8"
+            return "invalid", CAUSE_NOT_UTF8
         except fm.FrontmatterError as exc:
             return "invalid", exc.category
 
         sources = frontmatter.get(schema.role("sources_key"))
         if isinstance(sources, list) and sources:
-            return "invalid", "the store generated this file, so it is not a note to adopt"
+            return "invalid", CAUSE_GENERATED
 
         carried_id = frontmatter.get(schema.role("id_key"))
         if carried_id is None:
@@ -1467,7 +1492,7 @@ class LocalStore:
         elif is_valid_id(carried_id):
             note_id = carried_id
         else:
-            return "invalid", "the id it carries is not a valid identifier"
+            return "invalid", CAUSE_BAD_ID
 
         changes = _adoption_changes(frontmatter, schema, settings, note_id)
         try:
@@ -1480,10 +1505,34 @@ class LocalStore:
         # and a parse however many times the scan rediscovers it.
         invalid = schema.invalid_keys(adopted_frontmatter)
         if invalid:
-            return "invalid", f"keys the schema refused: {', '.join(invalid)}"
+            # A key adoption filled in came from the schema's own defaults, so
+            # the schema is what refuses it, not the person.
+            supplied = [name for name in invalid if name in changes]
+            written = [name for name in invalid if name not in changes]
+            definitions = {definition.name: definition for definition in schema.keys}
+            missing = [n for n in written if adopted_frontmatter.get(n) is None]
+            choices = [
+                n
+                for n in written
+                if n not in missing
+                and definitions.get(n) is not None
+                and definitions[n].kind == "enum"
+                and definitions[n].vocabulary
+            ]
+            wrong = [n for n in written if n not in missing and n not in choices]
+            causes = []
+            for clause, names in (
+                (CLAUSE_MISSING, missing),
+                (CLAUSE_REFUSED_CHOICE, choices),
+                (CLAUSE_REFUSED_VALUE, wrong),
+                (CLAUSE_DEFAULT, supplied),
+            ):
+                if names:
+                    causes.append(clause + ", ".join(names))
+            return "invalid", "; ".join(causes)
         mirrored = _jsonable(adopted_frontmatter)
         if _unstorable(mirrored):
-            return "invalid", "a value it carries is one the mirror cannot store"
+            return "invalid", CAUSE_UNSTORABLE
         data = adopted_text.encode("utf-8")
         now = datetime.now(tz=UTC)
 
@@ -1491,14 +1540,14 @@ class LocalStore:
             async with transaction(self.session_factory) as session:
                 await session.execute(sa.text("SELECT 1"))
                 if await session.scalar(sa.select(Note.id).where(Note.id == note_id)):
-                    return "collision", "the id it carries is already a note"
+                    return "collision", CAUSE_ID_TAKEN
                 occupied = await session.scalar(
                     sa.select(Note.id)
                     .where(Note.path == relative, Note.state.not_in(("missing", "deleted")))
                     .limit(1)
                 )
                 if occupied is not None:
-                    return "collision", "another note already claims this path"
+                    return "collision", CAUSE_PATH_TAKEN
 
                 if data != current:
                     try:
