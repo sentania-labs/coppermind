@@ -730,6 +730,51 @@ async def test_source_only_rerun_does_not_duplicate_note_backed_facts(store, mon
     assert after == before
 
 
+async def test_rerun_with_a_different_valid_quote_does_not_duplicate_note_backed_facts(
+    store, monkeypatch
+):
+    from types import SimpleNamespace as NS
+
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Reviewed", body=BODY, frontmatter={"reviewed": True})
+    )
+    _fake_transcript(store, monkeypatch, "unrelated transcript")
+    revision = 1
+    artifact = NS(name="t.txt", mime_type="text/plain", size_bytes=20)
+
+    async def source(_identity):
+        return NS(
+            current_revision=revision,
+            revisions=[NS(revision=revision, artifacts=[artifact])],
+        )
+
+    monkeypatch.setattr(store, "get_source", source)
+    provider(context, extracted())
+    first = context.load_job(await context.queue_reviewed(note.id))
+    await context.run_job(first)
+    assert first.state == "applied", first.error
+
+    def count():
+        return sum(
+            1
+            for entity in store.entities.load().entities.values()
+            for fact in entity.facts
+            if fact.evidence.note_id == note.id and fact.state == "confirmed"
+        )
+
+    before = count()
+    narrower = extracted()
+    for item in [*narrower["entities"], *narrower["claims"]]:
+        item["quote"] = "Casey Doe (casey@example.test)"
+    revision = 2
+    provider(context, narrower)
+    second = context.load_job(await context.queue_reviewed(note.id))
+    await context.run_job(second)
+    assert second.state == "applied", second.error
+    assert count() == before
+
+
 async def test_dossier_job_made_stale_by_a_settings_change_is_requeued(store):
     context = await configure(store)
     note = await store.create_note(

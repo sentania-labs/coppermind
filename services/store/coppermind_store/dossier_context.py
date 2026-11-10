@@ -237,7 +237,7 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
         refused: set[str] = set()
 
         def note_fact_exists(
-            entity: Entity, predicate: str, value: str, target: str | None, quote: str
+            entity: Entity, predicate: str, value: str, target: str | None
         ) -> bool:
             return any(
                 fact.origin != "correction"
@@ -247,7 +247,6 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
                 and fact.predicate == predicate
                 and fact.value == value
                 and fact.target == target
-                and fact.evidence.quote == quote
                 for fact in entity.facts
             )
 
@@ -320,9 +319,7 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
             )
             if not any(
                 f.id == mention_id for e in ledger.entities.values() for f in e.facts
-            ) and not (
-                note_backed and note_fact_exists(entity, "mentioned", note.title, None, item.quote)
-            ):
+            ) and not (note_backed and note_fact_exists(entity, "mentioned", note.title, None)):
                 entity.facts.append(
                     Fact(
                         id=mention_id,
@@ -360,7 +357,7 @@ async def extract(context: ContextService, job: EnrichmentJob) -> None:
             if any(f.id == identity for e in ledger.entities.values() for f in e.facts):
                 continue
             if claim.field != "transcript" and note_fact_exists(
-                entity, claim.predicate, claim.value, target, claim.quote
+                entity, claim.predicate, claim.value, target
             ):
                 continue
             if any(
