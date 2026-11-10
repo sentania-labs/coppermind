@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
 
 DELIMITER = "<!-- coppermind:dossier -->\n"
+WIKI_TARGET = re.compile(r"!?\[\[([^\]#|]+)")
 FACT_LINE = re.compile(r"^- (.*?) <!-- fact:([A-Za-z0-9_-]+) -->$", re.MULTILINE)
 FOLDERS = ("People", "Companies")
 
@@ -160,7 +161,18 @@ def company_domains(entity: Entity, ledger: EntityLedger) -> list[str]:
     return sorted({f.value for f in active_facts(entity, ledger) if f.predicate == "domain"})
 
 
-def properties(entity: Entity, ledger: EntityLedger) -> dict[str, Any]:
+def domain_owners(ledger: EntityLedger) -> dict[str, set[str]]:
+    owners: dict[str, set[str]] = {}
+    for company in ledger.entities.values():
+        if company.kind == "company" and not company.retired_at and not company.redirect:
+            for domain in company_domains(company, ledger):
+                owners.setdefault(domain, set()).add(company.id)
+    return owners
+
+
+def properties(
+    entity: Entity, ledger: EntityLedger, owners: dict[str, set[str]] | None = None
+) -> dict[str, Any]:
     result: dict[str, Any] = {
         "entity_id": entity.id,
         "type": entity.kind,
@@ -179,11 +191,7 @@ def properties(entity: Entity, ledger: EntityLedger) -> dict[str, Any]:
             and f.target
             and ledger.entities[f.target].kind == "company"
         }
-        owners: dict[str, set[str]] = {}
-        for other in ledger.entities.values():
-            if other.kind == "company" and not other.retired_at and not other.redirect:
-                for domain in company_domains(other, ledger):
-                    owners.setdefault(domain, set()).add(other.id)
+        owners = domain_owners(ledger) if owners is None else owners
         for address in entity.emails:
             matched = owners.get(address.rpartition("@")[2].lower(), set())
             if len(matched) == 1:
@@ -194,10 +202,10 @@ def properties(entity: Entity, ledger: EntityLedger) -> dict[str, Any]:
     return result
 
 
-def header(entity: Entity, ledger: EntityLedger) -> str:
+def header(entity: Entity, ledger: EntityLedger, owners: dict[str, set[str]] | None = None) -> str:
     return (
         fm.compose(
-            properties(entity, ledger),
+            properties(entity, ledger, owners),
             f"# {label(entity.name)}\n\n## Scott's Notes\n\n",
         )
         + DELIMITER
@@ -439,17 +447,21 @@ class EntityService:
             held = {f.value for f in active_facts(entity, ledger) if f.predicate == "domain"}
             shown = prior.get("domains")
             shown = set(shown) if isinstance(shown, list) else set()
-            for value in sorted(wanted - held):
+            added = sorted(wanted - held)
+            for value in added:
                 self.correction(entity, "domain", value, raw)
-            for fact in entity.facts:
-                if (
-                    fact.predicate == "domain"
-                    and fact.state == "confirmed"
-                    and fact.value in shown
-                    and fact.value not in wanted
-                ):
-                    fact.state, fact.withdrawn_for = "withdrawn", None
-            self.receipt(ledger, entity, "page domains")
+            removed = [
+                fact
+                for fact in entity.facts
+                if fact.predicate == "domain"
+                and fact.state == "confirmed"
+                and fact.value in shown
+                and fact.value not in wanted
+            ]
+            for fact in removed:
+                fact.state, fact.withdrawn_for = "withdrawn", None
+            if added or removed:
+                self.receipt(ledger, entity, "page domains")
         entity.personal = owner_wrote(head)
         if block == entity.pending:
             entity.generated, entity.pending = block, None
@@ -489,13 +501,19 @@ class EntityService:
             self.receipt(ledger, entity, "page correction", note_hash=content_hash(raw))
         return raw
 
-    def prefix(self, entity: Entity, raw: bytes | None, ledger: EntityLedger) -> str:
+    def prefix(
+        self,
+        entity: Entity,
+        raw: bytes | None,
+        ledger: EntityLedger,
+        owners: dict[str, set[str]] | None = None,
+    ) -> str:
         if raw is None:
-            return header(entity, ledger)
+            return header(entity, ledger, owners)
         head = regenerate(entity, raw.decode().split(DELIMITER)[0])
         fields, _ = fm.parse(head)
         prior = entity.projection_fields or {}
-        wanted = properties(entity, ledger)
+        wanted = properties(entity, ledger, owners)
         patch = {
             key: value
             for key, value in wanted.items()
@@ -512,7 +530,9 @@ class EntityService:
         ledger: EntityLedger,
         entity: Entity,
         seen: dict[str, bytes | None] | None = None,
+        owners: dict[str, set[str]] | None = None,
     ) -> None:
+        owners = domain_owners(ledger) if owners is None else owners
         try:
             if seen is not None and entity.id in seen:
                 raw = seen[entity.id]
@@ -523,10 +543,10 @@ class EntityService:
             if entity.retired_at and raw is None:
                 return
             block = render(entity, ledger)
-            wanted = (self.prefix(entity, raw, ledger) + block).encode()
+            wanted = (self.prefix(entity, raw, ledger, owners) + block).encode()
             if raw == wanted:
                 entity.problem = None
-                entity.projection_fields = properties(entity, ledger)
+                entity.projection_fields = properties(entity, ledger, owners)
                 return
             entity.pending = block
             self.save(ledger)  # Persist corrections and the expected replacement before writing.
@@ -542,7 +562,7 @@ class EntityService:
                 finally:
                     staged.unlink(missing_ok=True)
             entity.generated, entity.pending, entity.problem = block, None, None
-            entity.projection_fields = properties(entity, ledger)
+            entity.projection_fields = properties(entity, ledger, owners)
         except (OSError, ValueError, UnicodeError, fm.FrontmatterError):
             entity.problem = (
                 "Dossier page could not be projected; check its identity, delimiter and path"
@@ -842,8 +862,11 @@ class EntityService:
     def move_checkpoint(self, step: str) -> None:
         """Test seam for interruption between durable migration steps."""
 
-    async def migrate_page_paths(self, ledger: EntityLedger) -> None:
+    async def migrate_page_paths(self, ledger: EntityLedger) -> dict[str, str]:
         """Resume journaled email-page moves while the filing lock is held."""
+        index: dict[str, dict[str, set[str]]] | None = None
+        unreadable: list[str] = []
+        blocked: dict[str, str] = {}
         for entity in list(ledger.entities.values()):
             if entity.retired_at or entity.redirect:
                 continue
@@ -875,7 +898,22 @@ class EntityService:
                 if not old_file.exists():
                     continue
                 original = old_file.read_bytes()
-                linked_notes, linked_dossiers = await self.linking_pages(ledger, entity, new)
+                if index is None:
+                    index, unreadable = await self.link_index(ledger)
+                if unreadable:
+                    blocked[entity.id] = (
+                        "A page could not be scanned for links to this dossier; "
+                        "resolve it and the move resumes"
+                    )
+                    continue
+                old_target = entity.path.removesuffix(".md")
+                holders = [
+                    index[target]
+                    for target in (old_target, Path(old_target).name)
+                    if target in index
+                ]
+                linked_notes = set().union(*(h["note"] for h in holders))
+                linked_dossiers = set().union(*(h["dossier"] for h in holders)) - {entity.id}
                 notes = sorted(
                     {f.evidence.note_id for f in entity.facts if f.evidence.note_id}
                     | set(linked_notes)
@@ -936,31 +974,36 @@ class EntityService:
             self.receipt(ledger, entity, "email page migrated", old_path=old)
             self.save(ledger)
             self.move_checkpoint("complete")
+        return blocked
 
-    async def linking_pages(
-        self, ledger: EntityLedger, entity: Entity, new: str
-    ) -> tuple[list[str], list[str]]:
-        old, root = entity.path, self.store.notes_root
+    async def link_index(
+        self, ledger: EntityLedger
+    ) -> tuple[dict[str, dict[str, set[str]]], list[str]]:
+        root = self.store.notes_root
         async with self.store.session_factory() as session:
             rows = (
                 await session.execute(sa.select(Note.id, Note.path).where(Note.state == "ok"))
             ).all()
         candidates = [("note", row.id, row.path) for row in rows] + [
-            ("dossier", e.id, e.path)
-            for e in ledger.entities.values()
-            if e.id != entity.id and not e.retired_at
+            ("dossier", e.id, e.path) for e in ledger.entities.values() if not e.retired_at
         ]
 
-        def scan() -> tuple[list[str], list[str]]:
-            found: dict[str, set[str]] = {"note": set(), "dossier": set()}
+        def scan() -> tuple[dict[str, dict[str, set[str]]], list[str]]:
+            index: dict[str, dict[str, set[str]]] = {}
+            unreadable: list[str] = []
             for kind, identity, relative in candidates:
                 try:
                     text = safe_path(root, relative).read_text(encoding="utf-8")
-                except (OSError, ValueError, UnicodeError):
+                except FileNotFoundError:
                     continue
-                if rewrite_dossier_links(text, old, new) != text:
-                    found[kind].add(identity)
-            return sorted(found["note"]), sorted(found["dossier"])
+                except (OSError, UnicodeError):
+                    unreadable.append(relative)
+                    continue
+                except ValueError:
+                    continue
+                for target in {item.removesuffix(".md") for item in WIKI_TARGET.findall(text)}:
+                    index.setdefault(target, {"note": set(), "dossier": set()})[kind].add(identity)
+            return index, unreadable
 
         return await asyncio.to_thread(scan)
 
@@ -1169,12 +1212,13 @@ class EntityService:
                 continue
         self.contribute(ledger, notes, versions)
         await self.migrate(ledger)
+        owners = domain_owners(ledger)
         for entity in ledger.entities.values():
             if entity.page_move is not None:
                 continue
             if entity.id in found and len(found[entity.id]) > 1:
                 continue
-            self.project(ledger, entity, seen)
+            self.project(ledger, entity, seen, owners)
         if ledger.model_dump_json() != before:
             self.save(ledger)
         await self.mirror(ledger, seen)
@@ -1186,9 +1230,13 @@ class EntityService:
             ledger = self.load()
             await self.refresh_locked(ledger)
             revision = ledger.revision
-            await self.migrate_page_paths(ledger)
+            blocked = await self.migrate_page_paths(ledger)
             if ledger.revision != revision:
                 await self.refresh_locked(ledger)
+            if blocked:
+                for identity, problem in blocked.items():
+                    ledger.entities[identity].problem = problem
+                self.save(ledger)
 
     def personal_text(self, entity: Entity, seen: dict[str, bytes | None] | None = None) -> str:
         if seen is not None and entity.id in seen:

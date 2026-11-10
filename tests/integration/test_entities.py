@@ -193,6 +193,28 @@ async def test_owner_set_company_and_domains_always_win(store):
     assert domains == ["xcel-partner.test"]
 
 
+async def test_unsorted_mixed_case_domains_settle_without_new_receipts(store):
+    await store.create_note(customer_note(account=["Xcel Energy"]))
+    await store.entities.refresh()
+    company = named(store, "Xcel Energy")
+    page = store.notes_root / company.path
+    page.write_text(
+        page.read_text().replace(
+            "domains: []",
+            "domains:\n  - Zeta.test\n  - alpha.test\n  - ALPHA.test\n  - not a domain",
+        )
+    )
+    await store.entities.refresh()
+    settled = store.entities.load()
+    held = sorted(f.value for f in settled.entities[company.id].facts if f.predicate == "domain")
+    assert held == ["alpha.test", "zeta.test"]
+    for _ in range(2):
+        await store.entities.refresh()
+    again = store.entities.load()
+    assert len(again.receipts) == len(settled.receipts)
+    assert again.entities[company.id].version == settled.entities[company.id].version
+
+
 async def test_deleted_company_page_is_not_recreated(store):
     await store.create_note(
         CreateNote(
@@ -366,6 +388,34 @@ async def test_legacy_page_move_resumes_after_interruption(store, monkeypatch, s
     assert "[[People/Arthur Smith|Arthur]]" in (store.notes_root / note.path).read_text()
     assert "[[People/Arthur Smith|Hand link]]" in (store.notes_root / hand.path).read_text()
     assert "Keep [[Elsewhere]] and this text. See" in (store.notes_root / hand.path).read_text()
+
+
+async def test_unscannable_page_keeps_the_old_dossier_until_it_can_be_checked(store, monkeypatch):
+    address = "arthur.smith@example.test"
+    entity = await person(store, address, address)
+    ledger = store.entities.load()
+    subject = ledger.entities[entity["id"]]
+    old = f"People/{address} {subject.id}.md"
+    (store.notes_root / subject.path).rename(store.notes_root / old)
+    subject.path, subject.automatic = old, True
+    store.entities.save(ledger)
+    hand = await store.create_note(
+        CreateNote(title="Hand written", body=f"See [[{old.removesuffix('.md')}|Hand link]].")
+    )
+    hand_file = store.notes_root / hand.path
+    good = hand_file.read_bytes()
+    hand_file.write_bytes(b"\xff\xfe not utf-8 \xff")
+    await store.entities.refresh()
+    current = await store.entities.get(subject.id)
+    assert current["path"] == old
+    assert (store.notes_root / old).exists()
+    assert current["problem"]
+    hand_file.write_bytes(good)
+    await store.entities.refresh()
+    current = await store.entities.get(subject.id)
+    assert current["path"] == "People/Arthur Smith.md"
+    assert not (store.notes_root / old).exists()
+    assert "[[People/Arthur Smith|Hand link]]" in hand_file.read_text()
 
 
 async def test_move_retries_a_concurrent_note_edit(store, monkeypatch):
