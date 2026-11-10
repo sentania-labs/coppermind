@@ -1,5 +1,7 @@
 """Admin context forms stay authenticated, CSRF guarded and secret-free."""
 
+from typing import Any
+
 from coppermind.context_config import ContextConfig, ModelConnection
 from services.admin.tests.browser import admin_browser as admin_browser
 from services.admin.tests.test_admin import form_token
@@ -532,7 +534,7 @@ def test_result_banner_ignores_arbitrary_query_text(signed_in):
 
 def test_only_the_newest_job_offers_retry_on_inspect(signed_in):
     client, _ = signed_in
-    base = {
+    base: dict[str, Any] = {
         "id": "a" * 64,
         "path": "Long.md",
         "state": "failed",
