@@ -21,6 +21,7 @@ the note is filed, so a failure after that point retries without transcribing ag
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -64,6 +65,9 @@ SUMMARY_PENDING = "_Transcribed from a recording. The summary has not been writt
 class TranscriptionJob(ContextModel):
     id: str
     artifact_id: str
+    # The revision accepted. A newer revision of the artifact is a different recording and
+    # is never substituted for it; 0 marks a job saved before revisions were pinned.
+    artifact_revision: int = 0
     filename: str
     mime_type: str
     size_bytes: int
@@ -231,6 +235,16 @@ class Recordings:
             raise ValueError(
                 "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
             ) from exc
+        identity = job_id(request.provider, request.external_source_id)
+        # An intake already accepted answers first: replaying a request must still find its job
+        # after transcription is switched off or the recording is removed.
+        async with self.context.lock:
+            try:
+                existing = self.load(identity)
+            except ValueError:
+                existing = None
+        if existing is not None:
+            return self.replay(existing, request)
         assignment = self.ready()
         try:
             _, revision = await asyncio.to_thread(
@@ -247,22 +261,16 @@ class Recordings:
                 f"artifact_id: this file is {mime or 'of an unknown type'}, not a recording. "
                 "Send the audio with an audio media type."
             )
-        identity = job_id(request.provider, request.external_source_id)
         async with self.context.lock:
-            try:
+            existing = None
+            with contextlib.suppress(ValueError):
                 existing = self.load(identity)
-            except ValueError:
-                existing = None
             if existing is not None:
-                if existing.artifact_id != request.artifact_id:
-                    raise ValueError(
-                        "external_source_id: this provider and id already belong to a different "
-                        "recording. Use a new external_source_id for new material."
-                    )
-                return existing.status().model_dump(mode="json")
+                return self.replay(existing, request)
             job = TranscriptionJob(
                 id=identity,
                 artifact_id=request.artifact_id,
+                artifact_revision=int(revision["revision"]),
                 filename=str(revision["filename"]),
                 mime_type=mime,
                 size_bytes=int(revision["size_bytes"]),
@@ -278,6 +286,15 @@ class Recordings:
             )
             self.save(job)
         return job.status().model_dump(mode="json")
+
+    @staticmethod
+    def replay(existing: TranscriptionJob, request: RecordingRequest) -> dict[str, Any]:
+        if existing.artifact_id != request.artifact_id:
+            raise ValueError(
+                "external_source_id: this provider and id already belong to a different "
+                "recording. Use a new external_source_id for new material."
+            )
+        return existing.status().model_dump(mode="json")
 
     async def status(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.load(str(payload.get("id", ""))).status().model_dump(mode="json")
@@ -433,7 +450,10 @@ class Recordings:
                 "connection-missing",
             ) from exc
         path, revision = await asyncio.to_thread(
-            artifacts.current_file, self.context.store, job.artifact_id
+            artifacts.current_file,
+            self.context.store,
+            job.artifact_id,
+            job.artifact_revision or None,
         )
         transcript, usage = await self.context.provider.transcribe(
             connection,

@@ -50,6 +50,22 @@ async def store_audio(store, name="standup.m4a", data=AUDIO, mime="audio/mp4"):
     return done.artifact.id
 
 
+async def store_audio_revision(store, artifact_id, data, name="standup.m4a"):
+    receipt = await staged.reserve(
+        store,
+        StagedReservation.model_validate(
+            {
+                "filename": name,
+                "size_bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "fields": {"mime_type": "audio/mp4", "artifact_id": artifact_id},
+            }
+        ),
+    )
+    await staged.put_bytes(store, receipt.id, chunks(data), declared_bytes=len(data))
+    await staged.finalize(store, receipt.id)
+
+
 async def setup_transcription(store, service, *, enabled=True, wait_s=30, **extra):
     context = store.context
     saved = await context.save_connection(
@@ -236,3 +252,39 @@ def test_the_transcript_text_keeps_each_label_and_marks_a_missing_one():
         }
     )
     assert text == "[01:02:05] Speaker 1: Late.\nUnknown speaker: No label.\n"
+
+
+async def test_a_newer_revision_of_the_artifact_is_not_transcribed_in_place_of_the_accepted_one(
+    store,
+):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        job = await context.accept_recording(request(audio))
+        newer = AUDIO[::-1][:9000]
+        await store_audio_revision(store, audio, newer)
+        assert (await store.get_artifact(audio)).revision == 2
+        await context.recordings.tick()
+    assert (await context.recording_status({"id": job["id"]}))["state"] == "succeeded"
+    assert AUDIO in service.requests[0]["body"] and newer not in service.requests[0]["body"]
+
+
+async def test_a_retried_request_still_finds_its_intake_after_transcription_is_off(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        first = await context.accept_recording(request(audio))
+        # Routine connection maintenance switches the assignment off.
+        saved = context.config().connections[0]
+        await context.save_connection(
+            {
+                "revision": context.config().revision,
+                "connection": {**saved.model_dump(), "id": saved.id},
+            }
+        )
+        assert context.config().assignments["transcription"].enabled is False
+        again = await context.accept_recording(request(audio))
+        assert again["id"] == first["id"]
+        # A new request still needs the service.
+        with pytest.raises(ValueError, match="No transcription service is set up"):
+            await context.accept_recording(request(audio, external_source_id="plaud/rec-2"))
