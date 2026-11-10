@@ -418,6 +418,49 @@ async def test_unscannable_page_keeps_the_old_dossier_until_it_can_be_checked(st
     assert "[[People/Arthur Smith|Hand link]]" in hand_file.read_text()
 
 
+async def legacy_person(store):
+    address = "arthur.smith@example.test"
+    entity = await person(store, address, address)
+    ledger = store.entities.load()
+    subject = ledger.entities[entity["id"]]
+    old = f"People/{address} {subject.id}.md"
+    (store.notes_root / subject.path).rename(store.notes_root / old)
+    subject.path, subject.automatic = old, True
+    store.entities.save(ledger)
+    return subject.id, old
+
+
+async def test_table_escaped_alias_links_follow_the_move(store):
+    identity, old = await legacy_person(store)
+    target = old.removesuffix(".md")
+    hand = await store.create_note(
+        CreateNote(title="Table", body=f"| who |\n| --- |\n| [[{target}\\|Arthur]] |\n")
+    )
+    await store.entities.refresh()
+    assert (await store.entities.get(identity))["path"] == "People/Arthur Smith.md"
+    assert "[[People/Arthur Smith\\|Arthur]]" in (store.notes_root / hand.path).read_text()
+
+
+async def test_unparsed_note_linking_the_old_page_blocks_the_move_and_is_named(store):
+    from coppermind.db.models import Note
+
+    identity, old = await legacy_person(store)
+    hand = await store.create_note(
+        CreateNote(title="Broken", body=f"See [[{old.removesuffix('.md')}|Arthur]].")
+    )
+    async with store.session_factory() as session, session.begin():
+        await session.execute(sa.update(Note).where(Note.id == hand.id).values(state="unparsed"))
+    await store.entities.refresh()
+    current = await store.entities.get(identity)
+    assert current["path"] == old and (store.notes_root / old).exists()
+    assert hand.path in current["problem"]
+    async with store.session_factory() as session, session.begin():
+        await session.execute(sa.update(Note).where(Note.id == hand.id).values(state="ok"))
+    await store.entities.refresh()
+    assert (await store.entities.get(identity))["path"] == "People/Arthur Smith.md"
+    assert "[[People/Arthur Smith|Arthur]]" in (store.notes_root / hand.path).read_text()
+
+
 async def test_move_retries_a_concurrent_note_edit(store, monkeypatch):
     import coppermind_store.entities as module
 

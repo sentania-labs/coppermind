@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
 
 DELIMITER = "<!-- coppermind:dossier -->\n"
-WIKI_TARGET = re.compile(r"!?\[\[([^\]#|]+)")
+WIKI_TARGET = re.compile(r"!?\[\[([^\]#|\\]+)")
 FACT_LINE = re.compile(r"^- (.*?) <!-- fact:([A-Za-z0-9_-]+) -->$", re.MULTILINE)
 FOLDERS = ("People", "Companies")
 
@@ -92,7 +92,7 @@ def rewrite_dossier_links(text: str, old: str, new: str) -> str:
     """Change exact wiki targets and preserve every other character."""
     old_path, new_path = old.removesuffix(".md"), new.removesuffix(".md")
     names = {old_path: new_path, Path(old_path).name: Path(new_path).name}
-    pattern = re.compile(r"(!?\[\[)([^\]#|]+)([^\]]*\]\])")
+    pattern = re.compile(r"(!?\[\[)([^\]#|\\]+)([^\]]*\]\])")
 
     def replace(match: re.Match[str]) -> str:
         target = match.group(2)
@@ -900,18 +900,21 @@ class EntityService:
                 original = old_file.read_bytes()
                 if index is None:
                     index, unreadable = await self.link_index(ledger)
-                if unreadable:
-                    blocked[entity.id] = (
-                        "A page could not be scanned for links to this dossier; "
-                        "resolve it and the move resumes"
-                    )
-                    continue
                 old_target = entity.path.removesuffix(".md")
                 holders = [
                     index[target]
                     for target in (old_target, Path(old_target).name)
                     if target in index
                 ]
+                pages = sorted(set(unreadable).union(*(h["blocked"] for h in holders)))
+                if pages:
+                    blocked[entity.id] = (
+                        "These pages could not be updated or scanned for links to this dossier: "
+                        + ", ".join(pages[:3])
+                        + (f" and {len(pages) - 3} more" if len(pages) > 3 else "")
+                        + "; resolve them and the move resumes"
+                    )
+                    continue
                 linked_notes = set().union(*(h["note"] for h in holders))
                 linked_dossiers = set().union(*(h["dossier"] for h in holders)) - {entity.id}
                 notes = sorted(
@@ -981,12 +984,10 @@ class EntityService:
     ) -> tuple[dict[str, dict[str, set[str]]], list[str]]:
         root = self.store.notes_root
         async with self.store.session_factory() as session:
-            rows = (
-                await session.execute(sa.select(Note.id, Note.path).where(Note.state == "ok"))
-            ).all()
-        candidates = [("note", row.id, row.path) for row in rows] + [
-            ("dossier", e.id, e.path) for e in ledger.entities.values() if not e.retired_at
-        ]
+            rows = (await session.execute(sa.select(Note.id, Note.path, Note.state))).all()
+        candidates = [
+            ("note" if row.state == "ok" else "blocked", row.id, row.path) for row in rows
+        ] + [("dossier", e.id, e.path) for e in ledger.entities.values() if not e.retired_at]
 
         def scan() -> tuple[dict[str, dict[str, set[str]]], list[str]]:
             index: dict[str, dict[str, set[str]]] = {}
@@ -1002,7 +1003,9 @@ class EntityService:
                 except ValueError:
                     continue
                 for target in {item.removesuffix(".md") for item in WIKI_TARGET.findall(text)}:
-                    index.setdefault(target, {"note": set(), "dossier": set()})[kind].add(identity)
+                    index.setdefault(target, {"note": set(), "dossier": set(), "blocked": set()})[
+                        kind
+                    ].add(relative if kind == "blocked" else identity)
             return index, unreadable
 
         return await asyncio.to_thread(scan)
