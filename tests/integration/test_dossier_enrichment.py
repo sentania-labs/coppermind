@@ -767,6 +767,7 @@ async def test_rerun_with_a_different_valid_quote_does_not_duplicate_note_backed
     narrower = extracted()
     for item in [*narrower["entities"], *narrower["claims"]]:
         item["quote"] = "Casey Doe (casey@example.test)"
+    narrower["entities"][1]["quote"] = "Acme Company"
     revision = 2
     provider(context, narrower)
     second = context.load_job(await context.queue_reviewed(note.id))
