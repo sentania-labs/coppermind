@@ -311,7 +311,12 @@ def _recording_state(job: dict[str, Any], assignment: dict[str, Any] | None) -> 
     on = bool(assignment and assignment["enabled"])
     paused = bool(assignment and assignment["paused"])
     if state == "succeeded":
-        return f"Transcript ready. Note in Review: {job['title']}"
+        text = f"Transcript ready. Note in Review: {job['title']}"
+        if job.get("audio_removal_stuck"):
+            return text + f" {job['audio_removal_error']} Retry to remove it again."
+        if job.get("audio_kept"):
+            return text + f" {job['audio_kept']}"
+        return text
     if state == "running":
         return (
             f"Transcribing since {_calendar_time(job['started_at'])} "
@@ -345,7 +350,9 @@ def _recording_actions(job: dict[str, Any], assignment: dict[str, Any] | None) -
     on = bool(assignment and assignment["enabled"])
     paused = bool(assignment and assignment["paused"])
     body = ""
-    if job["state"] == "failed":
+    if job.get("audio_removal_stuck"):
+        body += _form("retry-recording", _hidden("id", job["id"]), "Retry")
+    elif job["state"] == "failed":
         if job.get("error_rule") in REPLACEMENT_AUDIO_MESSAGES:
             return ""
         if on:
@@ -397,6 +404,7 @@ def _recording_page(job: dict[str, Any], assignment: dict[str, Any] | None) -> s
         f"<h1>Recording</h1><h2>{e(job['title'])}</h2><p>{e(_recording_state(job, assignment))}</p>"
     )
     if job["state"] == "succeeded":
+        body += _recording_actions(job, assignment)
         body += (
             f"<p>The note is at <strong>{e(job['note_path'])}</strong> in your vault. It reaches "
             "Obsidian when your vault next syncs, and stays unreviewed until you mark it "

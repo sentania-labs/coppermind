@@ -73,6 +73,8 @@ NOT_SET_UP = (
 )
 # How much of a transcript the recording page shows; the whole text is in the note's source.
 DETAIL_TRANSCRIPT_CHARS = 200_000
+AUDIO_REMOVAL_ATTEMPTS = 3
+AUDIO_KEPT_SHARED = "Kept because another note still uses this recording."
 SUMMARY_PENDING = "_Transcribed from a recording. The summary has not been written yet._"
 
 
@@ -115,6 +117,16 @@ class TranscriptionJob(ContextModel):
     audio_removed: bool = False
     audio_removal_error: str = ""
     audio_removal_retry_after: str = ""
+    audio_removal_attempts: int = 0
+    audio_kept: str = ""
+
+    @property
+    def audio_removal_stuck(self) -> bool:
+        return (
+            self.state == "succeeded"
+            and not self.audio_removed
+            and self.audio_removal_attempts >= AUDIO_REMOVAL_ATTEMPTS
+        )
 
     def set_error(
         self, message: str = "", rule: str = "", *, reply: str = "", retry_after: str = ""
@@ -216,7 +228,8 @@ class Recordings:
                 transcript = render_transcript(saved)
         return {
             **job.model_dump(mode="json", exclude={"frontmatter", "metadata"}),
-            "can_retry": job.state == "failed" and self.enabled(),
+            "can_retry": (job.state == "failed" and self.enabled()) or job.audio_removal_stuck,
+            "audio_removal_stuck": job.audio_removal_stuck,
             "transcript": transcript[:DETAIL_TRANSCRIPT_CHARS],
             "transcript_cut": len(transcript) > DETAIL_TRANSCRIPT_CHARS,
         }
@@ -230,7 +243,9 @@ class Recordings:
                     mode="json",
                     exclude={"metadata", "frontmatter", "usage", "reply", "mime_type"},
                 ),
-                "can_retry": item.state == "failed" and self.enabled(),
+                "can_retry": (item.state == "failed" and self.enabled())
+                or item.audio_removal_stuck,
+                "audio_removal_stuck": item.audio_removal_stuck,
             }
             for item in newest
         ]
@@ -352,6 +367,11 @@ class Recordings:
         """Queue a failed intake again with fresh attempts; a saved transcript is reused."""
         async with self.context.lock:
             job = self.load(str(payload.get("id", "")))
+            if job.audio_removal_stuck:
+                job.audio_removal_attempts, job.audio_removal_retry_after = 0, ""
+                job.audio_removal_error = ""
+                self.save(job)
+                return {"job": job.id}
             if job.state != "failed":
                 raise ValueError("only a failed recording can be retried")
             self.ready()
@@ -382,6 +402,8 @@ class Recordings:
         """Run the oldest job that is due. True when one ran."""
         for job in sorted(self.jobs(), key=lambda item: item.created_at):
             if job.state == "succeeded" and not job.audio_removed:
+                if job.audio_removal_stuck:
+                    continue
                 if job.audio_removal_retry_after and job.audio_removal_retry_after > _now():
                     continue
                 if await self.remove_reviewed_audio(job):
@@ -453,18 +475,21 @@ class Recordings:
                 if isinstance(segment, dict)
             ):
                 return False
+            async with store.session_factory() as session:
+                row = await session.get(Note, job.note_id)
+            if row is not None and row.state == "deleted":
+                if await self._shared_audio(job):
+                    return self._keep_audio(job, AUDIO_KEPT_SHARED)
+                await artifacts.remove_recording_audio(
+                    store, job.artifact_id, job.artifact_revision
+                )
+                return self._audio_removed(job)
             note = await store.get_note(job.note_id)
             reviewed_key = store.control.schema().role("reviewed_key")
             if note.frontmatter.get(reviewed_key) is not True or not note.filed:
                 return False
-            if any(
-                other.id != job.id and other.artifact_id == job.artifact_id for other in self.jobs()
-            ):
-                raise ValueError("The recording is used by another intake.")
-            async with store.session_factory() as session:
-                citing = await artifacts.citing_notes(session, [job.artifact_id])
-            if any(item.id != job.note_id for item in citing.get(job.artifact_id, [])):
-                raise ValueError("The recording is also cited by another note.")
+            if await self._shared_audio(job):
+                return self._keep_audio(job, AUDIO_KEPT_SHARED)
             manifest = await asyncio.to_thread(artifacts.read_manifest, store, job.artifact_id)
             revision = artifacts._current_revision(manifest)
             if not job.artifact_revision or revision.get("revision") != job.artifact_revision:
@@ -528,19 +553,53 @@ class Recordings:
                     ),
                     note.content_hash,
                 )
-            job.audio_removed, job.audio_removal_error, job.audio_removal_retry_after = True, "", ""
-            self.save(job)
-            return True
+            return self._audio_removed(job)
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("recording audio removal failed for %s", job.id)
-            job.audio_removal_error = (
-                "The reviewed recording could not be removed. Coppermind will try again."
-            )
-            job.audio_removal_retry_after = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+            job.audio_removal_attempts += 1
+            job.audio_removal_error = "The reviewed recording could not be removed."
+            job.audio_removal_retry_after = (
+                datetime.now(UTC) + timedelta(minutes=5 * job.audio_removal_attempts)
+            ).isoformat()
             self.save(job)
             return True
+
+    def _audio_removed(self, job: TranscriptionJob) -> bool:
+        job.audio_removed, job.audio_kept = True, ""
+        job.audio_removal_error, job.audio_removal_retry_after = "", ""
+        job.audio_removal_attempts = 0
+        self.save(job)
+        return True
+
+    def _keep_audio(self, job: TranscriptionJob, reason: str) -> bool:
+        if job.audio_kept != reason or job.audio_removal_error or job.audio_removal_attempts:
+            job.audio_kept, job.audio_removal_error = reason, ""
+            job.audio_removal_retry_after, job.audio_removal_attempts = "", 0
+            self.save(job)
+        return False
+
+    async def _shared_audio(self, job: TranscriptionJob) -> bool:
+        """Whether another intake or note that is not yet finished still needs this audio."""
+        store = self.context.store
+
+        async def finished(note_id: str) -> bool:
+            async with store.session_factory() as session:
+                row = await session.get(Note, note_id)
+            return row is None or row.state == "deleted" or bool(row.filed and row.reviewed)
+
+        for other in self.jobs():
+            if other.id == job.id or other.artifact_id != job.artifact_id or other.audio_removed:
+                continue
+            if other.state != "succeeded" or not await finished(other.note_id):
+                return True
+        async with store.session_factory() as session:
+            citing = await artifacts.citing_notes(session, [job.artifact_id])
+        for item in citing.get(job.artifact_id, []):
+            if item.id != job.note_id and not await finished(item.id):
+                return True
+        return False
 
     async def run_job(self, job: TranscriptionJob, assignment: FeatureAssignment) -> None:
         from coppermind_store.context_service import TIMEOUT_BACKOFF_S
