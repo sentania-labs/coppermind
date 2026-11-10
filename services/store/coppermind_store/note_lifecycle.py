@@ -350,6 +350,14 @@ class NoteLifecycle:
                         prospective.frontmatter if selected else note.frontmatter,
                         speaker_operation["people"],
                     )
+                if speaker_operation:
+                    taken: dict[str, str] = {}
+                    for label, name in speaker_operation["mapping"].items():
+                        if (earlier := taken.setdefault(name.casefold(), label)) != label:
+                            raise ValueError(
+                                f"{name} is already chosen for {earlier}. Choose someone "
+                                "else or leave this speaker unnamed."
+                            )
                 receipt = {
                     "speakers": speaker_operation,
                     "note_id": identity,

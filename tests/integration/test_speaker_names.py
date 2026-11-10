@@ -709,6 +709,27 @@ async def test_public_review_api_approves_corrects_and_leaves_a_speaker_unknown(
     assert reviewed.frontmatter["reviewed"] is True
 
 
+async def test_one_person_cannot_name_two_speakers(store, standin):
+    alex = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    context, result, note, job_id, _ = await recorded(
+        store, standin, SHORT, speaker_answer(alex_id)
+    )
+    detail = await context.lifecycle_detail({"note_id": note.id})
+    payload = {
+        **await completion(context, store, result, job_id),
+        "manual_source_id": detail["manual_speaker_review"]["source_id"],
+        "manual_source_revision": detail["manual_speaker_review"]["revision"],
+        "manual_speakers": {"Speaker 1": "person:" + alex["id"]},
+    }
+    with pytest.raises(ValueError, match="Alex Morgan is already chosen for Speaker"):
+        await context.complete_review(payload)
+    assert (await store.get_source(result.source.id)).current_revision == 1
+    payload["manual_speakers"] = {}
+    assert (await context.complete_review(payload))["state"] == "complete"
+    text = (await store.get_source_artifact(result.source.id, 2, "transcript.txt")).content
+    assert "Alex Morgan: Hello." in text and "Speaker 1: Thanks, Alex." in text
+
+
 @pytest.mark.parametrize("state", ["failed", "omitted", "disabled"])
 async def test_manual_speaker_works_after_model_failure_and_can_pick_any_person(
     store, standin, state
