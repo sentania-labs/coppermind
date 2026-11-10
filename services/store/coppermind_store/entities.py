@@ -218,9 +218,10 @@ def squash(value: str) -> str:
 
 
 def domain_belongs(domain: str, company: Entity) -> bool:
-    label = squash(domain.rpartition(".")[0])
+    parts = domain.rpartition(".")[0]
+    labels = {squash(parts.rpartition(".")[2]), *map(squash, re.split(r"[.-]", parts))}
     return domain not in PUBLIC_MAIL and any(
-        len(name) >= 3 and name in label for name in map(squash, [company.name, *company.aliases])
+        len(name) >= 3 and name in labels for name in map(squash, [company.name, *company.aliases])
     )
 
 
@@ -788,6 +789,10 @@ class EntityService:
                                 f.predicate == "domain"
                                 and f.value == domain
                                 and (f.state == "confirmed" or f.withdrawn_for is None)
+                                and not (
+                                    f.evidence.note_id == note.id
+                                    and f.evidence.note_hash != note.content_hash
+                                )
                             )
                             for f in company.facts
                         ):

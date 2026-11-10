@@ -305,6 +305,49 @@ async def test_a_known_domain_gives_a_company_to_attendees_of_later_notes(store)
     ]
 
 
+@pytest.mark.parametrize(
+    "company,address",
+    [("Ford", "x@afford.com"), ("Ford", "y@crawford.com"), ("Dell", "z@modellers.test")],
+)
+async def test_domain_never_attaches_on_a_substring_of_a_longer_word(store, company, address):
+    await store.create_note(customer_note(account=[company], attendees=[address]))
+    await store.entities.refresh()
+    assert not [f for f in named(store, company).facts if f.predicate == "domain"]
+    person = next(e for e in store.entities.load().entities.values() if address in e.emails)
+    assert page_company(store, person) == []
+
+
+@pytest.mark.parametrize(
+    "company,address,domain",
+    [
+        ("Acme Power", "x@acme-power.test", "acme-power.test"),
+        ("Xcel Energy", "y@mail.xcelenergy.com", "mail.xcelenergy.com"),
+        ("Acme", "z@acme-power.test", "acme-power.test"),
+    ],
+)
+async def test_domain_attaches_on_a_whole_label_or_component(store, company, address, domain):
+    await store.create_note(customer_note(account=[company], attendees=[address]))
+    await store.entities.refresh()
+    held = [f.value for f in named(store, company).facts if f.predicate == "domain"]
+    assert held == [domain]
+
+
+async def test_editing_a_note_keeps_its_domain_without_a_gap(store):
+    note = await store.create_note(
+        customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])
+    )
+    await store.entities.refresh()
+    path = store.notes_root / note.path
+    path.write_text(path.read_text() + "More discussion.\n")
+    await reconcile_once(store, full=True)
+    company = named(store, "Xcel Energy")
+    live = [f.value for f in company.facts if f.predicate == "domain" and f.state == "confirmed"]
+    assert live == ["xcelenergy.com"]
+    assert fm.parse((store.notes_root / company.path).read_text())[0]["domains"] == [
+        "xcelenergy.com"
+    ]
+
+
 async def test_owner_set_company_and_domains_always_win(store):
     await store.create_note(
         customer_note(account=["Xcel Energy"], attendees=["arthur.smith@xcelenergy.com"])
