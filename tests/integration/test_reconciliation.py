@@ -403,12 +403,12 @@ async def test_a_refusal_heavy_sweep_keeps_letting_other_work_run(
             await asyncio.sleep(0)
 
     read_schema = 0
-    real_schema = store.control.schema
+    real_schema_document = store.control.schema_document
 
-    def counted_schema():
+    def counted_schema_document():
         nonlocal read_schema
         read_schema += 1
-        return real_schema()
+        return real_schema_document()
 
     seen: list[int] = []
     real_adopt = store.adopt_note
@@ -417,7 +417,7 @@ async def test_a_refusal_heavy_sweep_keeps_letting_other_work_run(
         seen.append(ticks)
         return await real_adopt(relative, expected_hash, **control)
 
-    monkeypatch.setattr(store.control, "schema", counted_schema)
+    monkeypatch.setattr(store.control, "schema_document", counted_schema_document)
     monkeypatch.setattr(store, "adopt_note", note_the_tick)
     ticker = asyncio.create_task(other_work())
     counts = await reconcile_once(store)
@@ -1675,7 +1675,12 @@ async def test_a_refused_adoption_is_listed_on_problems_until_the_file_changes(
         key.model_copy(update={"default": "note", "required": True}) if key.name == "type" else key
         for key in schema.keys
     ]
-    store.control.schema = lambda: schema.model_copy(update={"keys": keys})
+    state = store.control.store.read("schema")
+    store.control.store.write(
+        "schema",
+        schema.model_copy(update={"keys": keys}).model_dump(mode="json"),
+        if_revision=state.revision,
+    )
     path = store.notes_root / "Review" / "Bare.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"# Bare note\n")
