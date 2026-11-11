@@ -316,6 +316,7 @@ class NoteLifecycle:
                                 "longer an active person. Choose someone else or leave this "
                                 "speaker unnamed."
                             )
+                        person = await speaker_names.resolve_contact(self.context, person)
                         mapping[suggestion.field] = person["name"]
                         person_ids[suggestion.field] = (
                             person.get("person_id") or person["id"].removeprefix("person:")
@@ -383,6 +384,7 @@ class NoteLifecycle:
                             raise ValueError(
                                 f"{label}: this person is no longer active. Choose someone else."
                             )
+                        person = await speaker_names.resolve_contact(self.context, person)
                         speaker_operation["mapping"][label] = person["name"]
                         speaker_operation["person_ids"][label] = person.get("person_id") or (
                             person["id"].removeprefix("person:")

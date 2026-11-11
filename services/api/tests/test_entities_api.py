@@ -163,12 +163,6 @@ def test_voice_consent_and_settings_require_people_write_scope(tmp_path):
         read = {"Authorization": f"Bearer {reader_key}"}
         write = {"Authorization": f"Bearer {fake.writer_key}"}
         assert client.get("/v1/entities/person/voice", headers=read).status_code == 200
-        assert (
-            client.put(
-                "/v1/entities/person/voice", headers=read, json={"enabled": True}
-            ).status_code
-            == 403
-        )
         assert client.delete("/v1/entities/person/voice", headers=read).status_code == 403
         assert (
             client.put(
@@ -180,7 +174,7 @@ def test_voice_consent_and_settings_require_people_write_scope(tmp_path):
             client.put(
                 "/v1/entities/person/voice", headers=write, json={"enabled": True}
             ).status_code
-            == 200
+            == 405
         )
         assert client.delete("/v1/entities/person/voice", headers=write).status_code == 200
         assert (
@@ -189,5 +183,4 @@ def test_voice_consent_and_settings_require_people_write_scope(tmp_path):
             ).status_code
             == 200
         )
-        assert ("voice-set", {"id": "person", "enabled": True}) in fake.calls
         assert ("voice-delete", {"id": "person"}) in fake.calls

@@ -636,16 +636,7 @@ def router(wiring: Wiring) -> APIRouter:
         from coppermind_admin.main import submitted
 
         form = await submitted(request)
-        if action == "set":
-            if form.get("enabled") not in ("true", "false"):
-                return page("Voice recognition", "<p>Invalid setting.</p>", 422)
-            try:
-                await client(request).entity_action(
-                    "voice-set", {"id": form["id"], "enabled": form["enabled"] == "true"}
-                )
-            except StoreError as exc:
-                return page("Voice recognition", '<p class="error">' + e(str(exc)) + "</p>", 422)
-        elif action == "delete":
+        if action == "delete":
             try:
                 await client(request).entity_action("voice-delete", {"id": form["id"]})
             except StoreError as exc:

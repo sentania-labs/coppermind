@@ -295,15 +295,14 @@ def test_turning_voice_recognition_off_warns_that_signatures_are_deleted(signed_
             if action == "voice-list":
                 signature = {"note_id": "n1", "created_at": "2026-01-02T00:00:00Z"}
                 return {
-                    "alex": {"enabled": True, "signatures": [signature, signature]},
-                    "blair": {"enabled": True, "signatures": []},
+                    "alex": {"signatures": [signature, signature]},
+                    "blair": {"signatures": []},
                 }
             return await super().entity_action(action, payload)
 
     client.app.state.store = PeopleStore()
     page = client.get("/admin/workflow?tab=dossiers").text
     assert "Manage recognition and unknown voices in the Obsidian companion" in page
-    assert 'action="/v1/admin/voice/set"' not in page
     assert 'action="/v1/admin/voice/delete"' in page
 
 
@@ -314,15 +313,12 @@ def test_voice_change_for_a_person_who_is_gone_shows_the_reason_not_a_server_err
 
     class GoneStore(ContextStore):
         async def entity_action(self, action, payload):
-            if action in {"voice-set", "voice-delete"}:
+            if action == "voice-delete":
                 raise ValidationFailed(["Person not found"])
             return await super().entity_action(action, payload)
 
     client.app.state.store = GoneStore()
     token = form_token(client, "/admin/workflow?tab=dossiers")
-    for action, extra in (("set", {"enabled": "true"}), ("delete", {})):
-        refused = client.post(
-            "/v1/admin/voice/" + action, data={"csrf": token, "id": "gone", **extra}
-        )
-        assert refused.status_code == 422
-        assert "Person not found" in refused.text
+    refused = client.post("/v1/admin/voice/delete", data={"csrf": token, "id": "gone"})
+    assert refused.status_code == 422
+    assert "Person not found" in refused.text

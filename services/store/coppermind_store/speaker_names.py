@@ -105,6 +105,32 @@ def chosen_person(
     return None
 
 
+async def resolve_contact(context: Any, person: dict[str, Any]) -> dict[str, Any]:
+    """Give a contact-only choice a People entry: an existing match, otherwise a new one."""
+    if person["id"].startswith("person:") or person.get("person_id"):
+        return person
+    from coppermind.entities import EntityInput
+    from coppermind_store.entities import email
+
+    entities = context.store.entities
+    address = email(person.get("email", ""))
+    name = person["name"].strip().casefold()
+    active = [
+        e
+        for e in entities.load().entities.values()
+        if e.kind == "person" and not e.retired_at and not e.redirect
+    ]
+    match = next(
+        (e for e in active if address and address in {email(a) for a in e.emails}), None
+    ) or next((e for e in active if e.name.strip().casefold() == name), None)
+    if match is None:
+        created = await entities.create(
+            EntityInput(kind="person", name=person["name"], emails=[address] if address else [])
+        )
+        match = entities.load().entities[created["id"]]
+    return {**person_candidate(match), "id": person["id"], "person_id": match.id}
+
+
 def same_recording(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
     """Speakers follow from the immutable transcript revision; People do not matter here."""
 

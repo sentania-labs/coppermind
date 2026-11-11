@@ -17,56 +17,47 @@ class Context:
         self.data[name] = deepcopy(value)
 
 
-def test_consent_review_changeover_and_deletion():
+def test_review_changeover_and_deletion():
     store = VoiceStore(Context())
     old = {"model": "old", "version": "1", "vector": [1, 0]}
     new = {"model": "new", "version": "2", "vector": [0, 1]}
     store.confirm("alice", "note1", "2026-01-01", 25, [old])
     assert len(store.summary("alice")["signatures"]) == 1
-    store.set_enabled("alice", True)
     store.confirm("alice", "note1", "2026-01-01", 25, [old, new])
     store.confirm("alice", "note1", "2026-01-01", 25, [old, new])
     assert len(store.summary("alice")["signatures"]) == 2
     assert store.match([old])[0]["person_id"] == "alice"
     assert store.match([dict(old, version="different")]) == []
     assert "vector" not in repr(store.summary("alice"))
-    store.set_enabled("alice", False)
-    assert store.match([new]) == []
     store.delete("alice")
-    store.set_enabled("alice", True)
+    assert store.summary("alice") == {"signatures": [], "assignments": []}
     assert store.match([new]) == []
 
 
-def test_turning_off_deletes_signatures_and_turned_down_suggestions():
+def test_deleting_a_person_removes_their_signatures_and_turned_down_suggestions():
     store = VoiceStore(Context())
     signature = {"model": "m", "version": "v", "vector": [1, 0]}
-    store.set_enabled("alice", True)
-    store.set_enabled("bob", True)
     store.confirm("alice", "note1", "today", 30, [signature])
     store.confirm("bob", "note1", "today", 30, [signature])
     store.reject("note2", "Speaker 1", "alice")
-    store.set_enabled("alice", False)
-    assert store.summary("alice") == {"enabled": False, "signatures": [], "assignments": []}
+    store.delete("alice")
+    assert store.summary("alice") == {"signatures": [], "assignments": []}
     assert not store.rejected("note2", "Speaker 1", "alice")
-    store.set_enabled("alice", True)
-    assert store.summary("alice") == {"enabled": True, "signatures": [], "assignments": []}
     assert store.match([signature])[0]["person_id"] == "bob"
     assert len(store.summary("bob")["signatures"]) == 1
 
 
 def test_purge_removes_person_and_note_signatures():
     store = VoiceStore(Context())
-    store.set_enabled("alice", True)
-    store.set_enabled("bob", True)
     signature = {"model": "m", "version": "v", "vector": [1, 0]}
     store.confirm("alice", "note1", "today", 30, [signature])
     store.confirm("bob", "note2", "today", 30, [signature])
     store.purge({"alice"}, {"note2"})
-    assert store.summary("alice")["enabled"] is False
+    assert store.summary("alice")["signatures"] == []
     assert store.summary("bob")["signatures"] == []
 
 
-def test_review_suggestions_never_expose_vectors_and_ignore_disabled_people():
+def test_review_suggestions_never_expose_vectors_and_stop_after_deletion():
     from types import SimpleNamespace
 
     from coppermind_store.speaker_names import voice_suggestions
@@ -86,7 +77,6 @@ def test_review_suggestions_never_expose_vectors_and_ignore_disabled_people():
         entities=SimpleNamespace(load=lambda: SimpleNamespace(entities={"alice": alice}))
     )
     voice = VoiceStore(context)
-    voice.set_enabled("alice", True)
     signature = {"model": "m", "version": "v", "vector": [1, 0]}
     voice.confirm("alice", "old-note", "today", 30, [signature])
     context.write(
@@ -100,7 +90,7 @@ def test_review_suggestions_never_expose_vectors_and_ignore_disabled_people():
     assert suggestion["Speaker 1"][0]["name"] == "Alice"
     assert suggestion["Speaker 1"][0]["strength"] == "strong"
     assert "vector" not in repr(suggestion)
-    voice.set_enabled("alice", False)
+    voice.delete("alice")
     assert voice_suggestions(context, "note") == {}
 
 

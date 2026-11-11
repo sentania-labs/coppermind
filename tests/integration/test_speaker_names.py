@@ -535,7 +535,6 @@ async def test_pending_voice_signatures_are_removed_when_no_speaker_is_named(sto
     context, result, note, job_id, _ = await recorded(
         store, standin, SHORT, speaker_answer(alex_id)
     )
-    VoiceStore(context).set_enabled(alex["id"], True)
     recording = next(r for r in context.recordings.jobs() if r.note_id == note.id)
     vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
     context.write(
@@ -970,14 +969,13 @@ async def test_a_speaker_quote_not_in_the_transcript_is_not_shown_as_evidence(st
     assert proposals["Speaker 2"].value == alex_id(observed[0])
 
 
-async def test_voice_enrollment_uses_confirmed_opted_in_people_and_removes_pending(store, standin):
+async def test_voice_enrollment_keeps_every_named_speaker_and_removes_pending(store, standin):
     from coppermind_store.voice_store import VoiceStore
 
     alex = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
     blair = await store.entities.create(EntityInput(kind="person", name="Blair Stone"))
     context, result, note, _, _ = await recorded(store, standin, SHORT, speaker_answer(alex_id))
     voice = VoiceStore(context)
-    voice.set_enabled(alex["id"], True)
     recording = next(r for r in context.recordings.jobs() if r.note_id == note.id)
     vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
     context.write(
@@ -1005,7 +1003,7 @@ async def test_voice_enrollment_uses_confirmed_opted_in_people_and_removes_pendi
         }
     )
     assert len(voice.summary(alex["id"])["signatures"]) == 1
-    assert voice.summary(blair["id"])["signatures"] == []
+    assert len(voice.summary(blair["id"])["signatures"]) == 1
     assert context.read("voice-pending/" + recording.id, None) is None
     manifest = await store.get_source(result.source.id)
     artifact = await store.get_source_artifact(
@@ -1016,3 +1014,53 @@ async def test_voice_enrollment_uses_confirmed_opted_in_people_and_removes_pendi
     store.entities.purge({note.id}, {alex["id"]}, "voice-purge-test")
     assert context.read("voice-pending/" + recording.id, None) is None
     assert voice.summary(alex["id"])["signatures"] == []
+
+
+async def test_naming_an_unknown_voice_with_a_calendar_contact_gives_it_a_person(store, standin):
+    from coppermind_store.voice_store import VoiceStore
+
+    transcript = {
+        "segments": [
+            {"start": 0, "speaker": "Unknown voice 1", "text": "Hello."},
+            {"start": 3, "speaker": "Unknown voice 2", "text": "Hi."},
+        ]
+    }
+    context, result, note, _, _ = await recorded(store, standin, transcript, lambda e, ev: [])
+    vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
+    other = {"model": "model", "version": "v1", "vector": [0.0, 1.0]}
+    voice = VoiceStore(context)
+    assert voice.capture_unknown(note.id, "Unknown voice 1", "today", 30, [vector]) == "unknown:1"
+    assert voice.capture_unknown(note.id, "Unknown voice 2", "today", 30, [other]) == "unknown:2"
+    voice.set_segments(note.id, transcript)
+    manual = (await context.lifecycle_detail({"note_id": note.id}))["manual_speaker_review"]
+    contact = next(c for c in manual["candidates"] if c["id"].startswith("contact:"))
+    assert not any(p.name == contact["name"] for p in store.entities.load().entities.values())
+    completed = await context.complete_review(
+        {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "confirmation": "Complete review",
+            "selected": [],
+            "manual_source_id": manual["source_id"],
+            "manual_source_revision": manual["revision"],
+            "manual_speakers": {"Unknown voice 1": contact["id"]},
+        }
+    )
+    assert completed["state"] == "complete"
+    people = [
+        p
+        for p in store.entities.load().entities.values()
+        if p.kind == "person" and p.name == contact["name"]
+    ]
+    assert len(people) == 1
+    assert list(voice.unknown_summaries()) == ["unknown:2"]
+    assert len(voice.summary(people[0].id)["signatures"]) == 1
+    assert [a["note_id"] for a in voice.assignments("person:" + people[0].id)] == [note.id]
+    manifest = await store.get_source(result.source.id)
+    text = (
+        await store.get_source_artifact(
+            result.source.id, manifest.current_revision, "transcript.txt"
+        )
+    ).content
+    assert contact["name"] + ": Hello." in text
+    assert "Unknown voice 1" not in text

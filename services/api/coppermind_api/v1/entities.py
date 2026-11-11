@@ -91,16 +91,6 @@ async def get_voice(
     return await call(client, "voice-get", {"id": entity_id}, principal)
 
 
-@router.put("/{entity_id}/voice")
-async def set_voice(
-    entity_id: str,
-    payload: VoiceConsent,
-    client: HttpStoreClient = Depends(store),
-    principal: Principal = Depends(require_scopes("entities:write", "entities:read", "notes:read")),
-) -> JSONResponse:
-    return await call(client, "voice-set", {"id": entity_id, "enabled": payload.enabled}, principal)
-
-
 @router.delete("/{entity_id}/voice")
 async def delete_voice(
     entity_id: str,

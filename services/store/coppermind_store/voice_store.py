@@ -258,7 +258,6 @@ class VoiceStore:
     @staticmethod
     def _summary(person: dict[str, Any]) -> dict[str, Any]:
         return {
-            "enabled": person.get("enabled", False),
             "signatures": [
                 {key: entry[key] for key in ("note_id", "created_at", "speech_seconds")}
                 for entry in person.get("signatures", [])
@@ -272,14 +271,6 @@ class VoiceStore:
 
     def summaries(self) -> dict[str, dict[str, Any]]:
         return {pid: self._summary(person) for pid, person in self._load()["people"].items()}
-
-    def set_enabled(self, person_id: str, enabled: bool) -> None:
-        data = self._load()
-        person = data["people"].setdefault(person_id, {"signatures": []})
-        person["enabled"] = enabled
-        if not enabled:
-            self._clear(data, person_id)
-        self._save(data)
 
     @staticmethod
     def _clear(data: dict[str, Any], person_id: str) -> None:

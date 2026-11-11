@@ -79,7 +79,7 @@ async def entity_action(action: str, payload: dict[str, Any], request: Request) 
 
             async with request.app.state.store.context.lock:
                 result = VoiceStore(request.app.state.store.context).summaries()
-        elif action in {"voice-get", "voice-set", "voice-delete"}:
+        elif action in {"voice-get", "voice-delete"}:
             from coppermind_store.voice_store import VoiceStore
 
             identity = payload["id"]
@@ -88,9 +88,7 @@ async def entity_action(action: str, payload: dict[str, Any], request: Request) 
                 if not entity or entity.kind != "person" or entity.retired_at or entity.redirect:
                     raise ValidationFailed(["Person not found"])
                 voice = VoiceStore(request.app.state.store.context)
-                if action == "voice-set":
-                    raise ValidationFailed(["Use the global voice recognition setting"])
-                elif action == "voice-delete":
+                if action == "voice-delete":
                     voice.delete(identity)
                 result = voice.summary(identity)
         elif action == "create":
