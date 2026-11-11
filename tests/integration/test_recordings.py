@@ -1651,3 +1651,60 @@ async def test_combine_refuses_while_an_appearance_has_an_unfinished_review(stor
 
         await combine(context, source, target, job.note_id)
         assert source not in voice.unknown_summaries()
+
+
+async def test_stale_combine_refuses_an_unfinished_review_on_an_earlier_combined_voice(store):
+    def reply(vector):
+        return {
+            **REPLY,
+            "speakers": [
+                {
+                    "label": "Speaker 1",
+                    "speech_seconds": 30,
+                    "embeddings": [{"model": "m", "version": "1", "vector": vector}],
+                }
+            ],
+        }
+
+    async with Service(reply=reply([1, 0])) as service:
+        context = await setup_transcription(store, service)
+        await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+        service.reply = reply([0, 1])
+        second = await context.accept_recording(
+            request(
+                await store_audio(store, name="b.m4a", data=AUDIO + b"b"),
+                external_source_id="other-voice",
+            )
+        )
+        await context.recordings.tick()
+        job = context.recordings.load(second["id"])
+        from coppermind_store.voice_relabel import combine
+        from coppermind_store.voice_store import VoiceStore
+
+        voice = VoiceStore(context)
+        unknowns = voice.unknown_summaries()
+        source = next(
+            k for k, v in unknowns.items() if v["assignments"][0]["note_id"] == job.note_id
+        )
+        target = next(k for k in unknowns if k != source)
+        await combine(context, source, target)
+        assert list(voice.unknown_summaries()) == [target]
+        manifest = await store.get_source(job.source_id)
+        before = await store.get_source_artifact(
+            job.source_id, manifest.current_revision, "transcript.json"
+        )
+        context.write("review-completions/" + job.note_id, {"state": "applying"})
+
+        with pytest.raises(ValueError, match="Finish the review of"):
+            await combine(context, source, target)
+
+        assert list(voice.unknown_summaries()) == [target]
+        assert len(voice.assignments(target)) == 2
+        after = await store.get_source(job.source_id)
+        assert after.current_revision == manifest.current_revision
+        assert (
+            await store.get_source_artifact(
+                job.source_id, after.current_revision, "transcript.json"
+            )
+        ).content == before.content

@@ -210,7 +210,10 @@ async def combine(context: Any, source: str, target: str, reviewing: str | None 
         name = entity.name
     else:
         raise ValueError("Target voice not found")
-    await _refuse_unfinished_reviews(context, voice.assignments(source), reviewing)
+    affected = voice.assignments(source)
+    if source not in unknowns:
+        affected = [a for a in voice._load().get("assignments", []) if a.get("origin_id") == source]
+    await _refuse_unfinished_reviews(context, affected, reviewing)
     if source not in unknowns:
         voice.restore_unknown(source)
     for assignment in voice.assignments(source):
