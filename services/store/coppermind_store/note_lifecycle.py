@@ -94,7 +94,7 @@ class NoteLifecycle:
         if not event_id or day is None:
             return []
         zone = ZoneInfo(self._default_timezone())
-        events = await self.context.calendar_candidates(note)
+        events = await self.context.recording_calendar_candidates(note)
 
         def on_day(event: dict[str, Any]) -> bool:
             try:

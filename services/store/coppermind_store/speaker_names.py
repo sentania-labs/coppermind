@@ -282,7 +282,11 @@ async def evidence(
             identity = person.get("contact_id")
             name = person.get("name")
             if identity and name:
-                if "contact:" + identity not in candidates and len(candidates) >= MAX_CANDIDATES:
+                if (
+                    ambiguous
+                    and "contact:" + identity not in candidates
+                    and len(candidates) >= MAX_CANDIDATES
+                ):
                     continue
                 candidates["contact:" + identity] = {
                     "id": "contact:" + identity,

@@ -67,7 +67,8 @@ them.
 
 For a recording, the review panel also shows each diarized speaker with a proposed
 person, confidence and reason. Candidates are the linked calendar attendees, or people
-from possible meetings when several timed events overlap, then People named in the note
+from possible meetings when several timed events overlap (up to 40 across them; a
+single linked meeting lists all its invitees), then People named in the note
 or transcript, then a few recently met People;
 never the whole People list. The model sees a bounded sample of each speaker's turns, not
 the full transcript. If that cannot fit the input limit, speaker suggestions are skipped
@@ -159,12 +160,20 @@ a retry action in review, with durable failure details in Problems. Stale or
 unsynced proposals cannot be applied. Completing review is recorded before the
 append, so retrying an interrupted completion does not append a second copy.
 
-When several timed events overlap a recording's start, Review offers the matching
-meetings and may suggest one from names and the topic in the conversation. The
+When several timed events overlap a recording's start (a recording that starts up to
+ten minutes early still matches), Review offers the matching meetings and may suggest
+one from names and the topic in the conversation. With one or no overlapping event,
+every event on the note's day stays a candidate, as before. The
 recording and summary do not wait for that choice. Choose the meeting to link it;
 the generated heading takes its title when that heading has not been edited. Until
 then, possible meeting attendees are marked in the speaker chooser. Invited
 people are not automatically treated as attendees.
+
+Calendar event descriptions can hold private details, so they stay out of every API
+response and out of the model prompt by default. Turn on **Send calendar event
+descriptions to the model** in the enrichment settings to include them, and only
+while the model works out which of several meetings a recording belongs to; with
+it off the model compares titles and invitees.
 
 If an existing hand-written note is linked to the same event on the same day,
 Review offers to add the recording to it. Check the destination and summary, then

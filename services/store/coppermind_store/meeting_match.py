@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
+
+EARLY_START = timedelta(minutes=10)
 
 
 def overlapping(events: list[dict[str, Any]], captured_at: str) -> list[dict[str, Any]]:
-    """Find timed occurrences containing the recording start; unknown times do not match."""
+    """Find timed occurrences containing the recording start, allowing a few minutes early."""
     try:
         captured = datetime.fromisoformat(captured_at)
         if captured.utcoffset() is None:
@@ -23,7 +25,7 @@ def overlapping(events: list[dict[str, Any]], captured_at: str) -> list[dict[str
             if (
                 start.utcoffset() is not None
                 and end.utcoffset() is not None
-                and start <= captured < end
+                and start - EARLY_START <= captured < end
             ):
                 found.append(event)
         except (KeyError, TypeError, ValueError):

@@ -136,8 +136,8 @@ Use transcript clues and give confidence and a short reason.
 Do not invent candidates or assert unsupported identities.
 Existing values are human-owned; never propose replacing them.
 When several events are supplied for a recording, compare the conversation with event titles,
-descriptions and invitee names. Suggest one event only if the content supports it; otherwise
-leave the event unresolved. An invitation does not establish who spoke or attended.
+invitee names and any supplied descriptions. Suggest one event only if the content supports it;
+otherwise leave the event unresolved. An invitation does not establish who spoke or attended.
 """
 
 
@@ -302,18 +302,25 @@ class ContextService:
             self.read("contact_corrections", {})
         )
 
-    async def calendar_candidates(self, note: Any) -> list[dict[str, Any]]:
+    async def calendar_candidates(
+        self, note: Any, descriptions: bool = False
+    ) -> list[dict[str, Any]]:
         day = note_date(note.frontmatter, self.store.control.schema())
         if day is None:
             return []
         catalog = await asyncio.to_thread(self.archive.catalog)
         events = catalog.events.page(None, calendar_id=CALENDAR_ID)
-        return await asyncio.to_thread(
+        found = await asyncio.to_thread(
             occurrences, events, day, self.store.control.settings().general.timezone
         )
+        if descriptions:
+            return found
+        return [{k: v for k, v in event.items() if k != "description"} for event in found]
 
-    async def recording_calendar_candidates(self, note: Any) -> list[dict[str, Any]]:
-        events = await self.calendar_candidates(note)
+    async def recording_calendar_candidates(
+        self, note: Any, descriptions: bool = False
+    ) -> list[dict[str, Any]]:
+        events = await self.calendar_candidates(note, descriptions)
         recording = next(
             (r for r in self.recordings.jobs() if r.note_id == note.id and r.source_id), None
         )
@@ -328,12 +335,15 @@ class ContextService:
                 zone = ZoneInfo(self.store.control.settings().general.timezone)
                 captured_at = datetime.combine(day, start, zone).isoformat()
         matches = meeting_match.overlapping(events, captured_at)
+        if len(matches) < 2:
+            return events
         field = self.config().assignments["enrichment"].event_field
-        linked = note.frontmatter.get(field) if field else None
-        if linked:
-            matches.extend(
-                event for event in events if event["event_id"] == linked and event not in matches
-            )
+        linked = set(self.read("associations", {}).get(note.id, {}).get("events", []))
+        if field and note.frontmatter.get(field):
+            linked.add(note.frontmatter[field])
+        matches.extend(
+            event for event in events if event["event_id"] in linked and event not in matches
+        )
         return matches
 
     async def note_evidence_hash(self, note: Any, ledger: Any = None) -> str:
@@ -1164,8 +1174,16 @@ class ContextService:
             or self.schema_hash() != job.schema_hash
         ):
             raise ValueError("stale: note, evidence, schema or configuration changed")
-        candidates = await self.recording_calendar_candidates(note)
         assignment = self.config().assignments["enrichment"]
+        candidates = await self.recording_calendar_candidates(
+            note, assignment.send_calendar_descriptions
+        )
+        several = len({event["event_id"] for event in candidates}) > 1
+        attached = any(r.note_id == note.id and r.source_id for r in self.recordings.jobs())
+        if not (attached and several):
+            candidates = [
+                {k: v for k, v in event.items() if k != "description"} for event in candidates
+            ]
         fields = [
             item.model_dump()
             for item in schema.keys

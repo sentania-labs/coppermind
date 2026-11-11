@@ -18,6 +18,103 @@ def test_recording_only_matches_timed_events_containing_its_start():
     assert overlapping(events, "2026-11-11T09:30:00") == []
 
 
+def test_recording_starting_a_few_minutes_early_still_matches():
+    events = [
+        {"event_id": "a", "start": "2026-11-11T10:00:00-06:00", "end": "2026-11-11T11:00:00-06:00"}
+    ]
+    assert overlapping(events, "2026-11-11T09:55:00-06:00") == events
+    assert overlapping(events, "2026-11-11T09:30:00-06:00") == []
+
+
+async def _candidates(events, captured_at, frontmatter=None, associated=()):
+    from types import SimpleNamespace
+
+    from coppermind_store.context_service import ContextService
+
+    seen = []
+
+    class Fake:
+        recordings = SimpleNamespace(
+            jobs=lambda: [SimpleNamespace(note_id="note", source_id="src", captured_at=captured_at)]
+        )
+
+        async def calendar_candidates(self, note, descriptions=False):
+            seen.append(descriptions)
+            return list(events)
+
+        def config(self):
+            return SimpleNamespace(
+                assignments={"enrichment": SimpleNamespace(event_field="meeting")}
+            )
+
+        def read(self, name, default):
+            return {"associations": {"note": {"events": list(associated)}}}.get(name, default)
+
+    note = SimpleNamespace(id="note", frontmatter=frontmatter or {})
+    found = await ContextService.recording_calendar_candidates(Fake(), note)
+    return [event["event_id"] for event in found], seen
+
+
+async def test_single_event_day_keeps_every_event_as_candidate():
+    timed = [
+        {"event_id": "a", "start": "2026-11-11T10:00:00-06:00", "end": "2026-11-11T11:00:00-06:00"}
+    ]
+    assert (await _candidates(timed, "2026-11-11T09:55:00-06:00"))[0] == ["a"]
+    assert (await _candidates(timed, "2026-11-11T14:00:00-06:00"))[0] == ["a"]
+    all_day = [{"event_id": "d", "start": "2026-11-11", "end": "2026-11-12"}]
+    assert (await _candidates(all_day, "2026-11-11T09:55:00-06:00"))[0] == ["d"]
+    no_end = [{"event_id": "n", "start": "2026-11-11T10:00:00-06:00", "end": ""}]
+    assert (await _candidates(no_end, "2026-11-11T10:05:00-06:00"))[0] == ["n"]
+    floating = [{"event_id": "f", "start": "2026-11-11T10:00:00", "end": "2026-11-11T11:00:00"}]
+    assert (await _candidates(floating, "2026-11-11T10:05:00-06:00"))[0] == ["f"]
+    one_of_two = [
+        *timed,
+        {"event_id": "b", "start": "2026-11-11T15:00:00-06:00", "end": "2026-11-11T16:00:00-06:00"},
+    ]
+    assert (await _candidates(one_of_two, "2026-11-11T10:05:00-06:00"))[0] == ["a", "b"]
+
+
+async def test_several_overlapping_events_narrow_the_candidates():
+    events = [
+        {"event_id": "a", "start": "2026-11-11T10:00:00-06:00", "end": "2026-11-11T11:00:00-06:00"},
+        {"event_id": "b", "start": "2026-11-11T10:30:00-06:00", "end": "2026-11-11T11:30:00-06:00"},
+        {"event_id": "c", "start": "2026-11-11T15:00:00-06:00", "end": "2026-11-11T16:00:00-06:00"},
+    ]
+    assert (await _candidates(events, "2026-11-11T10:40:00-06:00"))[0] == ["a", "b"]
+    assert (await _candidates(events, "2026-11-11T09:55:00-06:00"))[0] == ["a", "b", "c"]
+    linked = await _candidates(events, "2026-11-11T10:40:00-06:00", {"meeting": "c"})
+    assert linked[0] == ["a", "b", "c"]
+    associated = await _candidates(events, "2026-11-11T10:40:00-06:00", associated=["c"])
+    assert associated[0] == ["a", "b", "c"]
+
+
+async def test_calendar_descriptions_leave_the_store_only_when_asked(monkeypatch):
+    from types import SimpleNamespace
+
+    import coppermind_store.context_service as module
+    from coppermind_store.context_service import ContextService
+
+    catalog = SimpleNamespace(events=SimpleNamespace(page=lambda *a, **k: []))
+
+    class Fake:
+        archive = SimpleNamespace(catalog=lambda: catalog)
+        store = SimpleNamespace(
+            control=SimpleNamespace(
+                schema=lambda: SimpleNamespace(role=lambda name: "date"),
+                settings=lambda: SimpleNamespace(general=SimpleNamespace(timezone="UTC")),
+            )
+        )
+
+    monkeypatch.setattr(
+        module, "occurrences", lambda *a: [{"event_id": "a", "description": "Dial-in PIN 1234"}]
+    )
+    note = SimpleNamespace(frontmatter={"date": "2026-11-11"})
+    hidden = await ContextService.calendar_candidates(Fake(), note)
+    shown = await ContextService.calendar_candidates(Fake(), note, True)
+    assert hidden == [{"event_id": "a"}]
+    assert shown == [{"event_id": "a", "description": "Dial-in PIN 1234"}]
+
+
 def test_content_match_requires_unique_corroborating_evidence():
     events = [
         {"event_id": "a", "title": "Launch planning", "people": [{"name": "Alex Morgan"}]},
@@ -152,7 +249,7 @@ async def test_merge_candidates_require_same_event_and_respect_dismissal():
         def in_review_folder(self, path):
             return path.startswith("Review/")
 
-        async def calendar_candidates(self, note):
+        async def recording_calendar_candidates(self, note):
             return self.events
 
         def read(self, name, default):
