@@ -348,9 +348,9 @@ def router(wiring: Wiring) -> APIRouter:
                                 "signatures": [],
                             }
                             body += (
-                                "<h3>Voice recognition</h3><p>Off by default. Voice signatures "
-                                "are stored, not audio clips. Unidentified signatures are held "
-                                "privately with the recording until review and removal.</p>"
+                                "<h3>Voice recognition</h3><p>Voice signatures are stored, "
+                                "not audio clips. Manage recognition and unknown voices "
+                                "in the Obsidian companion.</p>"
                             )
                             body += "<p>" + str(len(voice["signatures"])) + " saved signatures</p>"
                             for signature in voice["signatures"]:
@@ -361,29 +361,6 @@ def router(wiring: Wiring) -> APIRouter:
                                     + quote(signature["note_id"])
                                     + '">Source note</a></p>'
                                 )
-                            count = len(voice["signatures"])
-                            turn_off_confirm = ""
-                            if voice["enabled"] and count:
-                                turn_off_confirm = (
-                                    ' onsubmit="return confirm(this.dataset.confirm)" '
-                                    'data-confirm="Turning this off deletes '
-                                    + str(count)
-                                    + " saved voice signature"
-                                    + ("" if count == 1 else "s")
-                                    + " for "
-                                    + e(entity["name"])
-                                    + '. Turning it on again starts from nothing."'
-                                )
-                            body += (
-                                '<form method="post" action="/v1/admin/voice/set"'
-                                + turn_off_confirm
-                                + ">"
-                                + _hidden("id", entity["id"])
-                                + _hidden("enabled", "false" if voice["enabled"] else "true")
-                                + "<button>"
-                                + ("Turn off" if voice["enabled"] else "Turn on")
-                                + "</button></form>"
-                            )
                             if voice["signatures"]:
                                 body += (
                                     '<form method="post" action="/v1/admin/voice/delete" '

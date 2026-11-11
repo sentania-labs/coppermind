@@ -302,11 +302,9 @@ def test_turning_voice_recognition_off_warns_that_signatures_are_deleted(signed_
 
     client.app.state.store = PeopleStore()
     page = client.get("/admin/workflow?tab=dossiers").text
-    assert (
-        'data-confirm="Turning this off deletes 2 saved voice signatures for '
-        'Alex &quot;Al&quot; O&#x27;Neil. Turning it on again starts from nothing."'
-    ) in page
-    assert page.count("data-confirm=") == 1
+    assert "Manage recognition and unknown voices in the Obsidian companion" in page
+    assert 'action="/v1/admin/voice/set"' not in page
+    assert 'action="/v1/admin/voice/delete"' in page
 
 
 def test_voice_change_for_a_person_who_is_gone_shows_the_reason_not_a_server_error(signed_in):

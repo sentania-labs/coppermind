@@ -43,6 +43,37 @@ async def entity_action(action: str, payload: dict[str, Any], request: Request) 
                         )
                     context.write("voice-settings", {"strong": strong, "maybe": maybe})
                 result = context.read("voice-settings", {"strong": 0.60, "maybe": 0.45})
+        elif action in {"voice-recognition", "voice-recognition-save"}:
+            from coppermind_store.voice_store import VoiceStore
+
+            async with request.app.state.store.context.lock:
+                voice = VoiceStore(request.app.state.store.context)
+                if action == "voice-recognition-save":
+                    if type(payload.get("enabled")) is not bool:
+                        raise ValidationFailed(["Invalid voice recognition setting"])
+                    voice.set_recognition_enabled(payload["enabled"])
+                result = {"enabled": voice.recognition_enabled()}
+        elif action in {"voice-unknown-list", "voice-unknown-delete"}:
+            from coppermind_store.voice_store import VoiceStore
+
+            async with request.app.state.store.context.lock:
+                voice = VoiceStore(request.app.state.store.context)
+                if action == "voice-unknown-delete":
+                    voice.delete_unknown(payload["id"])
+                result = voice.unknown_summaries()
+        elif action in {"voice-combine", "voice-split"}:
+            from coppermind_store.voice_relabel import combine, separate
+
+            context = request.app.state.store.context
+            async with context.lifecycle.lock, context.lock:
+                if action == "voice-combine":
+                    await combine(context, payload["id"], payload["target"])
+                    result = {"ok": True}
+                else:
+                    identity = await separate(
+                        context, payload["id"], payload["note_id"], payload["label"]
+                    )
+                    result = {"id": identity}
         elif action == "voice-list":
             from coppermind_store.voice_store import VoiceStore
 
@@ -58,9 +89,7 @@ async def entity_action(action: str, payload: dict[str, Any], request: Request) 
                     raise ValidationFailed(["Person not found"])
                 voice = VoiceStore(request.app.state.store.context)
                 if action == "voice-set":
-                    if type(payload.get("enabled")) is not bool:
-                        raise ValidationFailed(["Invalid consent setting"])
-                    voice.set_enabled(identity, payload["enabled"])
+                    raise ValidationFailed(["Use the global voice recognition setting"])
                 elif action == "voice-delete":
                     voice.delete(identity)
                 result = voice.summary(identity)

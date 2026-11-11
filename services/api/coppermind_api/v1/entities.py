@@ -131,3 +131,76 @@ async def save_voice_settings(
     principal: Principal = Depends(require_scopes("entities:write", "entities:read", "notes:read")),
 ) -> JSONResponse:
     return await call(client, "voice-settings-save", payload.model_dump(), principal)
+
+
+@router.get("/voice/recognition")
+async def voice_recognition(
+    client: HttpStoreClient = Depends(store),
+    principal: Principal = Depends(require_scopes("entities:read", "notes:read")),
+) -> JSONResponse:
+    return await call(client, "voice-recognition", {}, principal)
+
+
+@router.put("/voice/recognition")
+async def save_voice_recognition(
+    payload: VoiceConsent,
+    client: HttpStoreClient = Depends(store),
+    principal: Principal = Depends(require_scopes("entities:write", "entities:read", "notes:read")),
+) -> JSONResponse:
+    return await call(client, "voice-recognition-save", payload.model_dump(), principal)
+
+
+@router.get("/voice/unknowns")
+async def list_unknown_voices(
+    client: HttpStoreClient = Depends(store),
+    principal: Principal = Depends(require_scopes("entities:read", "notes:read")),
+) -> JSONResponse:
+    return await call(client, "voice-unknown-list", {}, principal)
+
+
+@router.delete("/voice/unknowns/{voice_id}")
+async def delete_unknown_voice(
+    voice_id: str,
+    client: HttpStoreClient = Depends(store),
+    principal: Principal = Depends(require_scopes("entities:write", "entities:read", "notes:read")),
+) -> JSONResponse:
+    return await call(client, "voice-unknown-delete", {"id": voice_id}, principal)
+
+
+class VoiceCombine(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target: str
+
+
+class VoiceSplit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note_id: str
+    label: str
+
+
+@router.post("/voice/unknowns/{voice_id}/combine")
+async def combine_voice(
+    voice_id: str,
+    payload: VoiceCombine,
+    client: HttpStoreClient = Depends(store),
+    principal: Principal = Depends(
+        require_scopes(
+            "entities:write", "entities:read", "notes:read", "notes:write", "sources:write"
+        )
+    ),
+) -> JSONResponse:
+    return await call(client, "voice-combine", {"id": voice_id, **payload.model_dump()}, principal)
+
+
+@router.post("/voice/voices/{voice_id}/split")
+async def split_voice(
+    voice_id: str,
+    payload: VoiceSplit,
+    client: HttpStoreClient = Depends(store),
+    principal: Principal = Depends(
+        require_scopes(
+            "entities:write", "entities:read", "notes:read", "notes:write", "sources:write"
+        )
+    ),
+) -> JSONResponse:
+    return await call(client, "voice-split", {"id": voice_id, **payload.model_dump()}, principal)

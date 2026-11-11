@@ -128,17 +128,17 @@ async def test_a_recording_alone_becomes_a_transcribed_note_in_review(store):
     assert note.path.startswith("Review/") and note.frontmatter["reviewed"] is False
     assert audio in note.frontmatter["artifacts"]
 
-    # The transcript is the note's source, speakers as the service gave them.
+    # The transcript is the note's source, with persistent unknown voice labels.
     sources = await store.get_note_sources(note.id)
     assert len(sources) == 1 and sources[0].id == done["source_id"]
     source = await store.get_source(sources[0].id)
     assert {a.name for a in source.revisions[-1].artifacts} == {"transcript.txt", "transcript.json"}
     text = (await store.get_source_artifact(sources[0].id, 1, "transcript.txt")).content
-    assert text == "[00:00:00] Speaker 1: Hello there.\n[00:00:03] Speaker 2: Hi.\n"
+    assert text == "[00:00:00] Unknown voice 1: Hello there.\n[00:00:03] Unknown voice 2: Hi.\n"
     segments = json.loads(
         (await store.get_source_artifact(sources[0].id, 1, "transcript.json")).content
     )["segments"]
-    assert [s["speaker"] for s in segments] == ["Speaker 1", "Speaker 2"]
+    assert [s["speaker"] for s in segments] == ["Unknown voice 1", "Unknown voice 2"]
 
     # Review has not happened, so the audio is still stored.
     kept = await store.get_artifact_bytes(audio)
@@ -1006,7 +1006,7 @@ async def test_the_recording_page_reads_the_transcript_and_a_retry_needs_transcr
         await context.recordings.tick()
         detail = await context.recording_detail({"id": job["id"]})
         assert detail["state"] == "succeeded" and detail["note_path"].startswith("Review/")
-        assert detail["transcript"].startswith("[00:00:00] Speaker 1: Hello there.")
+        assert detail["transcript"].startswith("[00:00:00] Unknown voice 1: Hello there.")
         assert "frontmatter" not in detail and detail["can_retry"] is False
 
         # A failed intake only offers a retry while transcription is switched on.
@@ -1139,7 +1139,9 @@ async def test_voice_pending_is_private_and_follows_recording_or_note_removal(st
         await context.recordings.tick()
     job = context.recordings.load(accepted["id"])
     assert b'name="include_speaker_embeddings"\r\n\r\ntrue' in service.requests[0]["body"]
-    assert context.read("voice-pending/" + job.id, []) == speakers
+    assert context.read("voice-pending/" + job.id, []) == [
+        {**speakers[0], "label": "Unknown voice 1"}
+    ]
     assert "vector" not in json.dumps(context.recordings.saved_transcript(job))
     manifest = await store.get_source(job.source_id)
     source = await store.get_source_artifact(
@@ -1162,7 +1164,9 @@ async def test_voice_pending_is_removed_for_a_deleted_note_with_a_stuck_review(s
         accepted = await context.accept_recording(request(await store_audio(store)))
         await context.recordings.tick()
     job = context.recordings.load(accepted["id"])
-    assert context.read("voice-pending/" + job.id, []) == speakers
+    assert context.read("voice-pending/" + job.id, []) == [
+        {**speakers[0], "label": "Unknown voice 1"}
+    ]
     context.write("review-completions/" + job.note_id, {"state": "applying"})
     await set_note_state(store, job.note_id, "deleted")
     await context.recordings.tick()
@@ -1170,8 +1174,6 @@ async def test_voice_pending_is_removed_for_a_deleted_note_with_a_stuck_review(s
 
 
 async def test_reviewed_voice_is_suggested_for_later_recording(store):
-    from coppermind_store.voice_store import VoiceStore
-
     from coppermind.entities import EntityInput
 
     person = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
@@ -1180,7 +1182,6 @@ async def test_reviewed_voice_is_suggested_for_later_recording(store):
     async with Service(reply={**REPLY, "speakers": speakers}) as service:
         context = await setup_transcription(store, service)
         await context.setup_lifecycle({"revision": context.config().revision})
-        VoiceStore(context).set_enabled(person["id"], True)
         first = await context.accept_recording(request(await store_audio(store)))
         await context.recordings.tick()
         first_job = context.recordings.load(first["id"])
@@ -1195,7 +1196,7 @@ async def test_reviewed_voice_is_suggested_for_later_recording(store):
                 "selected": [],
                 "manual_source_id": manual["source_id"],
                 "manual_source_revision": manual["revision"],
-                "manual_speakers": {"Speaker 1": "person:" + person["id"]},
+                "manual_speakers": {"Unknown voice 1": "person:" + person["id"]},
             }
         )
         second_audio = await store_audio(store, name="second.m4a", data=AUDIO + b"second")
@@ -1207,7 +1208,7 @@ async def test_reviewed_voice_is_suggested_for_later_recording(store):
         second_job = context.recordings.load(second["id"])
         assert second_job.state == "succeeded"
         detail = await context.lifecycle_detail({"note_id": second_job.note_id})
-        match = detail["manual_speaker_review"]["voice_matches"]["Speaker 1"][0]
+        match = next(iter(detail["manual_speaker_review"]["voice_matches"].values()))[0]
         assert match["id"] == "person:" + person["id"] and match["strength"] == "strong"
         assert "vector" not in json.dumps(detail)
 
@@ -1314,8 +1315,6 @@ async def test_companion_voice_flow_through_public_api(store):
             transport=httpx.ASGITransport(app=app), base_url="http://api", headers=headers
         ) as api:
             alex_url, blair_url = (f"/v1/entities/{p['id']}/voice" for p in (alex, blair))
-            assert (await api.put(alex_url, json={"enabled": True})).status_code == 200
-            assert (await api.put(blair_url, json={"enabled": True})).status_code == 200
 
             async def make_recording(name, content, external):
                 audio = await store_audio(store, name=name, data=content)
@@ -1342,7 +1341,13 @@ async def test_companion_voice_flow_through_public_api(store):
                         "selected": [],
                         "manual_source_id": manual["source_id"],
                         "manual_source_revision": manual["revision"],
-                        "manual_speakers": {"Speaker 1": "person:" + person_id},
+                        "manual_speakers": {
+                            next(
+                                label
+                                for label in manual["speakers"]
+                                if label.startswith("Unknown voice ")
+                            ): "person:" + person_id
+                        },
                     },
                 )
                 assert completed.status_code == 200, completed.text
@@ -1350,16 +1355,89 @@ async def test_companion_voice_flow_through_public_api(store):
                 return data
 
             first = await make_recording("one.m4a", AUDIO, "voice-http-1")
+            earlier = await make_recording("earlier.m4a", AUDIO + b"earlier", "voice-http-earlier")
+            unknowns = (await api.get("/v1/entities/voice/unknowns")).json()
+            unknown = next(voice for voice in unknowns.values() if len(voice["assignments"]) == 2)
+            assert len(unknown["assignments"]) == 2
+            earlier_detail = (await api.get(f"/v1/notes/{earlier.note_id}/review")).json()
+            completed = await api.post(
+                f"/v1/notes/{earlier.note_id}/review",
+                json={
+                    "if_match": earlier_detail["note"]["content_hash"],
+                    "confirmation": "Complete review",
+                    "selected": [],
+                },
+            )
+            assert completed.status_code == 200, completed.text
+            from coppermind.store_protocol import ReplaceNote
+
+            note = await store.get_note(earlier.note_id)
+            label = unknown["name"]
+            original = f"{label}: sent plan.\n{label}: original."
+            accepted = f"{label}: sent plan.\n{label}: owner edited."
+            body = f"Owner wrote {label}.\n\n## Summary\n\n{accepted}\n"
+            await store.replace_note(
+                note.id,
+                ReplaceNote(frontmatter=note.frontmatter, body=body),
+                if_match=note.content_hash,
+            )
+            receipt = context.read("review-completions/" + earlier.note_id, {})
+            receipt["summary"] = {
+                "generated": {"summary": original, "decisions": "", "action_items": ""},
+                "value": {"summary": accepted, "decisions": "", "action_items": ""},
+                "body": body,
+            }
+            receipt["summary_applied"] = True
+            context.write("review-completions/" + earlier.note_id, receipt)
             await review(first, alex["id"])
+            changed = await store.get_note(earlier.note_id)
+            assert f"Owner wrote {label}." in changed.body
+            assert "Alex Morgan: sent plan." in changed.body
+            assert f"{label}: owner edited." in changed.body
+            manifest = await store.get_source(earlier.source_id)
+            transcript = await store.get_source_artifact(
+                earlier.source_id, manifest.current_revision, "transcript.json"
+            )
+            assert '"speaker": "Alex Morgan"' in transcript.content
+            alex_voice = (await api.get(alex_url)).json()
+            assert len(alex_voice["signatures"]) == 2
+            appearance = next(
+                a for a in alex_voice["assignments"] if a["note_id"] == earlier.note_id
+            )
+            separated = await api.post(
+                f"/v1/entities/voice/voices/person:{alex['id']}/split",
+                json={"note_id": earlier.note_id, "label": appearance["label"]},
+            )
+            assert separated.status_code == 200, separated.text
+            separated_label = (await api.get("/v1/entities/voice/unknowns")).json()[
+                separated.json()["id"]
+            ]["name"]
+            separated_note = await store.get_note(earlier.note_id)
+            assert f"{separated_label}: sent plan." in separated_note.body
+            assert f"Owner wrote {label}." in separated_note.body
+            assert f"{label}: owner edited." in separated_note.body
+            manifest = await store.get_source(earlier.source_id)
+            transcript = await store.get_source_artifact(
+                earlier.source_id, manifest.current_revision, "transcript.json"
+            )
+            assert '"speaker": "Unknown voice ' in transcript.content
             assert len((await api.get(alex_url)).json()["signatures"]) == 1
             second = await make_recording("two.m4a", AUDIO + b"2", "voice-http-2")
             detail = (await api.get(f"/v1/notes/{second.note_id}/review")).json()
             assert (
-                detail["manual_speaker_review"]["voice_matches"]["Speaker 1"][0]["id"]
+                detail["manual_speaker_review"]["voice_matches"][
+                    next(
+                        label
+                        for label in detail["manual_speaker_review"]["speakers"]
+                        if label.startswith("Unknown voice ")
+                    )
+                ][0]["id"]
                 == "person:" + alex["id"]
             )
             await review(second, blair["id"])
             assert len((await api.get(alex_url)).json()["signatures"]) == 1
-            assert len((await api.get(blair_url)).json()["signatures"]) == 1
+            assert len((await api.get(blair_url)).json()["signatures"]) == 2
             assert (await api.delete(alex_url)).json()["signatures"] == []
-            assert (await api.put(alex_url, json={"enabled": False})).json()["enabled"] is False
+            assert (
+                await api.put("/v1/entities/voice/recognition", json={"enabled": False})
+            ).json()["enabled"] is False

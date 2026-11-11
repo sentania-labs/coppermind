@@ -139,42 +139,40 @@ operations work in Obsidian or the agent API.
 
 ## Voice recognition
 
-Recognising recurring speakers by voice is biometric data about other people, so it is off
-by default and enabled per person. Coppermind keeps voice signatures only, never audio clips.
-The transcription service returns a signature (`model`, `version`, vector) for each speaker;
-until review these are held privately with the recording, never in notes, the vault or API
-responses. They are removed when review completes (after the opted-in speakers' signatures
-are saved), whether or not the audio removal succeeded, and also if the note is deleted or
-purged.
+Voice recognition keeps signatures, not audio clips, for diarized speakers. An unmatched
+speaker is given a persistent unknown voice label that can recur in later recordings.
+If the transcription service supplies no usable signature for a speaker, the label is
+kept but cannot be matched to a later recording until a signature is available.
+The single switch in the Obsidian People view stops collecting new signatures; existing
+data remains available for deletion. Recordings reviewed before this change have no
+signatures and cannot be recovered or backfilled.
 
-- **Saving:** completing review with a speaker name the owner accepted or corrected saves
-  that speaker's signature against the person, only if the person is opted in. There is no
-  separate confirmation step.
-- **Suggesting:** on a later recording, each speaker's signature is compared with saved ones
-  of the same `model` and `version`. A close match appears in the review panel as
-  `Voice: <name>` (cosine at least the Voice threshold, 0.60 by default) or
-  `Maybe: <name>` (at least the Maybe threshold, 0.45 by default). A single `Voice` match
-  that does not contradict a confident model name starts selected; `Maybe` matches and
-  ambiguous or conflicting matches are left for the owner to choose. Nothing is applied
-  without review. A candidate the owner passed over is not offered again
-  for that speaker on that note.
-- **Deleting:** a person's signatures can be deleted at any time, which also clears their
-  turned-down suggestions. Turning a person's recognition off does the same in one step,
-  after a warning ("Turning this off deletes N saved voice signatures for <name>. Turning it
-  on again starts from nothing."), so off means nothing is stored.
-  Retiring, merging or purging the person removes them too.
+A close match against a person appears as `Voice` or `Maybe` in Review. The existing
+thresholds are 0.60 and 0.45 by default. A single strong match may start selected, but
+is applied only when the owner completes review. Ambiguous and conflicting matches
+remain for the owner to choose.
 
-The People view in Obsidian (command "Manage people and voice recognition") shows a
-person's opt-in, saved signatures with their source notes, and Delete signatures. Admin's
-Dossiers tab offers the same per-person controls for setup and repair, and is where the
-two thresholds are set; a change affects future suggestions only.
+In People, an unknown voice can be combined with another unknown voice or attached to
+a person. Its appearances are relabelled in recording transcripts; unchanged generated
+summary lines can also be updated. Owner-edited lines are left alone. A wrong match can
+be separated for one recording. A person or unknown voice's saved voice data can be
+deleted after confirmation, so future recordings cannot be recognised from those
+signatures. Deleting a note or person also removes the corresponding data.
+
+The Obsidian command "Manage people and voice recognition" opens People. Admin's
+Dossiers view offers person signature deletion and controls the matching thresholds.
+Signatures and their vectors stay private and are never returned in API responses.
 
 | Request | Scopes | Purpose |
 | --- | --- | --- |
-| `GET /v1/entities/{id}/voice` | `entities:read`, `notes:read` | Opt-in state and signature summaries (note, date, speech seconds; never vectors) |
-| `PUT /v1/entities/{id}/voice` | adds `entities:write` | `{"enabled": true/false}`; `false` also deletes the person's signatures |
+| `GET /v1/entities/{id}/voice` | `entities:read`, `notes:read` | Person's signature summaries and appearances |
 | `DELETE /v1/entities/{id}/voice` | adds `entities:write` | Delete the person's signatures |
-| `GET`/`PUT /v1/entities/voice/settings` | read / adds `entities:write` | The `strong` and `maybe` thresholds, each -1 to 1 with `maybe` not above `strong` |
+| `GET`/`PUT /v1/entities/voice/recognition` | read / adds `entities:write` | Global recognition switch |
+| `GET /v1/entities/voice/unknowns` | `entities:read`, `notes:read` | Unknown voices and their appearances |
+| `DELETE /v1/entities/voice/unknowns/{id}` | adds `entities:write` | Delete an unknown voice's signatures |
+| `POST /v1/entities/voice/unknowns/{id}/combine` | adds `entities:write`, `notes:write`, `sources:write` | Combine with a voice or person |
+| `POST /v1/entities/voice/voices/{id}/split` | adds `entities:write`, `notes:write`, `sources:write` | Separate one appearance |
+| `GET`/`PUT /v1/entities/voice/settings` | read / adds `entities:write` | Matching thresholds |
 
 ## Deletion and recovery
 

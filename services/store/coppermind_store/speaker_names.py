@@ -14,9 +14,9 @@ def speaker_labels(transcript: dict[str, Any]) -> list[str]:
             segment["speaker"]
             for segment in transcript.get("segments", [])
             if isinstance(segment.get("speaker"), str)
-            and re.fullmatch(r"Speaker [1-9][0-9]*", segment["speaker"])
+            and re.fullmatch(r"(?:Speaker|Unknown voice) [1-9][0-9]*", segment["speaker"])
         },
-        key=lambda label: int(label.split()[1]),
+        key=lambda label: (int(label.rsplit(" ", 1)[1]), label),
     )
 
 

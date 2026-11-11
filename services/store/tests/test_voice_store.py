@@ -22,7 +22,7 @@ def test_consent_review_changeover_and_deletion():
     old = {"model": "old", "version": "1", "vector": [1, 0]}
     new = {"model": "new", "version": "2", "vector": [0, 1]}
     store.confirm("alice", "note1", "2026-01-01", 25, [old])
-    assert store.summary("alice") == {"enabled": False, "signatures": []}
+    assert len(store.summary("alice")["signatures"]) == 1
     store.set_enabled("alice", True)
     store.confirm("alice", "note1", "2026-01-01", 25, [old, new])
     store.confirm("alice", "note1", "2026-01-01", 25, [old, new])
@@ -46,10 +46,10 @@ def test_turning_off_deletes_signatures_and_turned_down_suggestions():
     store.confirm("bob", "note1", "today", 30, [signature])
     store.reject("note2", "Speaker 1", "alice")
     store.set_enabled("alice", False)
-    assert store.summary("alice") == {"enabled": False, "signatures": []}
+    assert store.summary("alice") == {"enabled": False, "signatures": [], "assignments": []}
     assert not store.rejected("note2", "Speaker 1", "alice")
     store.set_enabled("alice", True)
-    assert store.summary("alice") == {"enabled": True, "signatures": []}
+    assert store.summary("alice") == {"enabled": True, "signatures": [], "assignments": []}
     assert store.match([signature])[0]["person_id"] == "bob"
     assert len(store.summary("bob")["signatures"]) == 1
 
@@ -111,3 +111,66 @@ def test_contradicted_pair_is_suppressed_and_removed_on_purge():
     assert not store.rejected("other-note", "Speaker 1", "alice")
     store.purge(set(), {"note"})
     assert not store.rejected("note", "Speaker 1", "alice")
+
+
+def test_unknown_voice_is_stable_across_recordings_and_private():
+    store = VoiceStore(Context())
+    signature = {"model": "m", "version": "1", "vector": [1, 0]}
+    first = store.capture_unknown("note1", "Speaker 1", "today", 10, [signature])
+    assert first == "unknown:1"
+    assert store.capture_unknown("note1", "Speaker 1", "today", 10, [signature]) == first
+    assert store.capture_unknown("note2", "Speaker 2", "today", 10, [signature]) == first
+    assert store.capture_unknown("note2", "Speaker 3", "today", 10, [signature]) != first
+    assert len(store.unknown_summaries()[first]["signatures"]) == 2
+    assert "vector" not in repr(store.unknown_summaries())
+
+
+def test_unknown_capture_respects_global_switch():
+    context = Context()
+    context.write("voice-signatures", {"people": {}, "recognition_enabled": False})
+    store = VoiceStore(context)
+    signature = {"model": "m", "version": "1", "vector": [1, 0]}
+    assert store.capture_unknown("note", "Speaker 1", "today", 10, [signature]) is None
+    assert store.unknown_summaries() == {}
+
+
+def test_speaker_without_embedding_still_has_an_identity():
+    store = VoiceStore(Context())
+    identity = store.capture_unknown("note1", "Speaker 1", "today", 3, [])
+    assert store.capture_unknown("note1", "Speaker 1", "today", 3, []) == identity
+    assert store.unknown_summaries()[identity]["signatures"] == []
+    assert store.assignments(identity)[0]["note_id"] == "note1"
+    assert store.capture_unknown("note2", "Speaker 1", "today", 3, []) != identity
+
+
+def test_move_and_split_keep_recording_assignments_and_signatures():
+    store = VoiceStore(Context())
+    signature = {"model": "m", "version": "1", "vector": [1, 0]}
+    voice = store.capture_unknown("recording:job", "Speaker 1", "today", 10, [signature])
+    store.bind_recording("recording:job", "note1")
+    store.capture_unknown("note2", "Speaker 2", "today", 10, [signature])
+    assert len(store.move_voice(voice, "person:alice")) == 2
+    assert len(store.summary("alice")["signatures"]) == 2
+    separated = store.split_assignment("person:alice", "note1", "Speaker 1")
+    assert len(store.assignments(separated)) == 1
+    assert len(store.assignments("person:alice")) == 1
+    assert len(store.summary("alice")["signatures"]) == 1
+    assert store.unknown_summaries()[separated]["signatures"][0]["note_id"] == "note1"
+
+
+def test_relabel_preserves_edits_and_only_changes_assigned_turns():
+    from coppermind_store.voice_relabel import relabel_generated_lines, relabel_transcript
+
+    transcript = {
+        "segments": [
+            {"speaker": "Morgan", "text": "first"},
+            {"speaker": "Morgan", "text": "second"},
+        ]
+    }
+    result = relabel_transcript(transcript, [0], "Morgan", "Unknown voice 2")
+    assert [s["speaker"] for s in result["segments"]] == ["Unknown voice 2", "Morgan"]
+    body = "Morgan: generated\nMorgan: owner edit\nMorgan: duplicated\nMorgan: duplicated\n"
+    generated = "Morgan: generated\nMorgan: original\nMorgan: duplicated\n"
+    body, _, generated = relabel_generated_lines(body, body, generated, 0, "Morgan", "Alex")
+    assert body == "Alex: generated\nMorgan: owner edit\nMorgan: duplicated\nMorgan: duplicated\n"
+    assert generated.startswith("Alex: generated\n")
