@@ -67,7 +67,9 @@ event's attendees. If you link an event yourself after the first pass, request f
 suggestions. Confident names start selected, and the panel previews each change.
 For people who opted in, a close voice match also appears as a `Voice` or `Maybe`
 candidate for that speaker, returned as `voice_matches` in the review response
-(see [voice recognition](dossiers.md#voice-recognition)); it is never preselected.
+(see [voice recognition](dossiers.md#voice-recognition)). A single `Voice` match that the
+model does not contradict starts selected; `Maybe` matches, several `Voice` matches, or a
+disagreement with a confident model name are left for you to choose.
 Choose another candidate or leave a speaker unnamed. Search existing People from the
 panel, even if the model is unavailable or speaker suggestions were omitted. Completing
 review replaces selected speaker labels throughout the transcript, adds confirmed attendees

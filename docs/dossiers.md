@@ -151,8 +151,10 @@ responses, and are removed with the recording's audio, its note, or a confirmed 
 - **Suggesting:** on a later recording, each speaker's signature is compared with saved ones
   of the same `model` and `version`. A close match appears in the review panel as
   `Voice: <name>` (cosine at least the Voice threshold, 0.60 by default) or
-  `Maybe: <name>` (at least the Maybe threshold, 0.45 by default) for the owner to choose;
-  nothing is applied without review. A candidate the owner passed over is not offered again
+  `Maybe: <name>` (at least the Maybe threshold, 0.45 by default). A single `Voice` match
+  that does not contradict a confident model name starts selected; `Maybe` matches and
+  ambiguous or conflicting matches are left for the owner to choose. Nothing is applied
+  without review. A candidate the owner passed over is not offered again
   for that speaker on that note.
 - **Deleting:** a person's signatures can be deleted at any time, which also clears their
   turned-down suggestions. Retiring, merging or purging the person removes them too.

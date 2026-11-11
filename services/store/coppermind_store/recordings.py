@@ -48,7 +48,6 @@ from coppermind.store_protocol import (
     ValidationFailed,
 )
 from coppermind_store import artifacts
-from coppermind_store.calendar_import import CalendarImportError
 from coppermind_store.model_provider import ProviderError
 
 if TYPE_CHECKING:
@@ -836,7 +835,8 @@ class Recordings:
         if speakers is None:
             try:
                 maximum = await self.calendar_speaker_hint(job)
-            except CalendarImportError:
+            except Exception:
+                log.warning("calendar speaker hint unavailable for %s", job.id, exc_info=True)
                 maximum = None
 
         def save_remote(remote_id: str, started: float, resubmits: int, message: str) -> None:
