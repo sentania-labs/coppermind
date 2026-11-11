@@ -698,6 +698,7 @@ class ModelProvider:
         job_id: str = "",
         duration_seconds: float | None = None,
         num_speakers: int | None = None,
+        max_speakers: int | None = None,
         include_speaker_embeddings: bool = False,
         remote_job_id: str = "",
         job_started: float = 0,
@@ -721,7 +722,9 @@ class ModelProvider:
         if assignment.response_format == "diarized_json":
             fields["chunking_strategy"] = "auto"
         if num_speakers is not None:
-            fields["max_speakers"] = str(num_speakers)
+            fields["num_speakers"] = str(num_speakers)
+        elif max_speakers is not None:
+            fields["max_speakers"] = str(max_speakers)
         if include_speaker_embeddings:
             fields["include_speaker_embeddings"] = "true"
         use_job = bool(job_id) and (

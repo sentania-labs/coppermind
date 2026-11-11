@@ -43,6 +43,11 @@ async def entity_action(action: str, payload: dict[str, Any], request: Request) 
                         )
                     context.write("voice-settings", {"strong": strong, "maybe": maybe})
                 result = context.read("voice-settings", {"strong": 0.60, "maybe": 0.45})
+        elif action == "voice-list":
+            from coppermind_store.voice_store import VoiceStore
+
+            async with request.app.state.store.context.lock:
+                result = VoiceStore(request.app.state.store.context).summaries()
         elif action in {"voice-get", "voice-set", "voice-delete"}:
             from coppermind_store.voice_store import VoiceStore
 

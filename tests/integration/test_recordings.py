@@ -1211,3 +1211,39 @@ async def test_calendar_attendee_count_is_sent_as_maximum_speakers(store, monkey
         body = service.requests[0]["body"]
         assert b'name="max_speakers"\r\n\r\n3' in body
         assert b'name="num_speakers"' not in body
+
+
+async def test_calendar_failure_does_not_block_transcription(store, monkeypatch):
+    from coppermind_store.calendar_import import CalendarTransientError
+
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+
+        async def candidates(note):
+            raise CalendarTransientError("calendar lookup timed out")
+
+        monkeypatch.setattr(context, "calendar_candidates", candidates)
+        accepted = await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+        assert context.recordings.load(accepted["id"]).state == "succeeded"
+        body = service.requests[0]["body"]
+        assert b'name="max_speakers"' not in body
+        assert b'name="num_speakers"' not in body
+
+
+async def test_owner_speaker_count_is_sent_exactly_and_beats_the_calendar(store, monkeypatch):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+
+        async def candidates(note):
+            return [{"event_id": "event", "title": "Standup", "people": [{}, {}, {}]}]
+
+        monkeypatch.setattr(context, "calendar_candidates", candidates)
+        accepted = await context.accept_recording(
+            request(await store_audio(store), metadata={"num_speakers": 2})
+        )
+        await context.recordings.tick()
+        assert context.recordings.load(accepted["id"]).state == "succeeded"
+        body = service.requests[0]["body"]
+        assert b'name="num_speakers"\r\n\r\n2' in body
+        assert b'name="max_speakers"' not in body

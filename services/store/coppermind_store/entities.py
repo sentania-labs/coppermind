@@ -936,6 +936,9 @@ class EntityService:
                         )
                         target.facts.extend(entity.facts)
                         entity.redirect = target.id
+                        from coppermind_store.voice_store import VoiceStore
+
+                        VoiceStore(self.store.context).purge({entity.id}, set())
                         target.version += 1
             self.receipt(ledger, entity, "legacy contact correction", legacy=key)
 
@@ -1743,6 +1746,9 @@ class EntityService:
             target.aliases = sorted(set(target.aliases + entity.aliases + [entity.name]))
             target.emails = sorted(set(target.emails + entity.emails))
             entity.redirect = target.id
+            from coppermind_store.voice_store import VoiceStore
+
+            VoiceStore(self.store.context).purge({entity.id}, set())
             for other in ledger.entities.values():
                 for fact in other.facts:
                     if fact.target == entity.id:

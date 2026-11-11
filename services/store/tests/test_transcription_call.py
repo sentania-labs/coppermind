@@ -462,7 +462,7 @@ async def test_job_path_polls_and_submits_stable_identity_and_hint(recording, mo
         size_bytes=recording.stat().st_size,
         job_id="stable-id",
         duration_seconds=7201,
-        num_speakers=3,
+        max_speakers=3,
     )
     assert result["segments"]
     assert requests[0][1] == "/v1/audio/transcriptions/jobs"
@@ -1047,7 +1047,7 @@ async def test_voice_signatures_requested_and_returned_only_when_requested(recor
             filename=recording.name,
             mime_type="audio/mp4",
             size_bytes=recording.stat().st_size,
-            num_speakers=5,
+            max_speakers=5,
             include_speaker_embeddings=True,
         )
     assert b'name="include_speaker_embeddings"\r\n\r\ntrue' in service.requests[0]["body"]

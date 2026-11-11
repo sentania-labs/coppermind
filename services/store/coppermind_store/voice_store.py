@@ -35,8 +35,8 @@ class VoiceStore:
             "rejections", []
         )
 
-    def summary(self, person_id: str) -> dict[str, Any]:
-        person = self._load()["people"].get(person_id, {})
+    @staticmethod
+    def _summary(person: dict[str, Any]) -> dict[str, Any]:
         return {
             "enabled": person.get("enabled", False),
             "signatures": [
@@ -44,6 +44,12 @@ class VoiceStore:
                 for entry in person.get("signatures", [])
             ],
         }
+
+    def summary(self, person_id: str) -> dict[str, Any]:
+        return self._summary(self._load()["people"].get(person_id, {}))
+
+    def summaries(self) -> dict[str, dict[str, Any]]:
+        return {pid: self._summary(person) for pid, person in self._load()["people"].items()}
 
     def set_enabled(self, person_id: str, enabled: bool) -> None:
         data = self._load()

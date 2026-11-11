@@ -312,6 +312,11 @@ def router(wiring: Wiring) -> APIRouter:
                     "<p>Read people and companies in Obsidian under People/ and Companies/. "
                     "Edit a fact there to correct it. This view is for setup and repair.</p>"
                 )
+                voices = (
+                    await client(request).entity_action("voice-list", {})
+                    if any(e["kind"] == "person" for e in data.get("entities", []))
+                    else {}
+                )
                 for kind, heading in (("person", "People"), ("company", "Companies")):
                     count = sum(e["kind"] == kind for e in data.get("entities", []))
                     body += "<h2>" + heading + f" ({count})</h2>"
@@ -329,9 +334,10 @@ def router(wiring: Wiring) -> APIRouter:
                             and not entity.get("retired_at")
                             and not entity.get("redirect")
                         ):
-                            voice = await client(request).entity_action(
-                                "voice-get", {"id": entity["id"]}
-                            )
+                            voice = voices.get(entity["id"]) or {
+                                "enabled": False,
+                                "signatures": [],
+                            }
                             body += (
                                 "<h3>Voice recognition</h3><p>Off by default. Voice signatures "
                                 "are stored, not audio clips. Unidentified signatures are held "

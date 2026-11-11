@@ -48,6 +48,7 @@ from coppermind.store_protocol import (
     ValidationFailed,
 )
 from coppermind_store import artifacts
+from coppermind_store.calendar_import import CalendarImportError
 from coppermind_store.model_provider import ProviderError
 
 if TYPE_CHECKING:
@@ -828,11 +829,15 @@ class Recordings:
             or duration <= 0
         ):
             duration = None
-        speakers = await self.calendar_speaker_hint(job)
+        speakers = job.metadata.get("num_speakers")
+        if isinstance(speakers, bool) or not isinstance(speakers, int) or speakers < 1:
+            speakers = None
+        maximum = None
         if speakers is None:
-            speakers = job.metadata.get("num_speakers")
-            if isinstance(speakers, bool) or not isinstance(speakers, int) or speakers < 1:
-                speakers = None
+            try:
+                maximum = await self.calendar_speaker_hint(job)
+            except CalendarImportError:
+                maximum = None
 
         def save_remote(remote_id: str, started: float, resubmits: int, message: str) -> None:
             job.remote_job_id, job.remote_job_started, job.remote_job_resubmits = (
@@ -858,6 +863,7 @@ class Recordings:
             job_update=save_remote,
             duration_seconds=duration,
             num_speakers=speakers,
+            max_speakers=maximum,
             include_speaker_embeddings=True,
         )
         pending = transcript.pop("speakers", [])
