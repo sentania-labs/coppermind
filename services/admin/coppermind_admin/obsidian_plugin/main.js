@@ -72,14 +72,14 @@ class ReviewView extends ItemView {
         const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Which meeting was this?'});
         box.createEl('p',{text:meeting.suggested_event_id?'Suggested from the conversation. Please check the choice.':'Several meetings could match. Choose one to use its context.'});
         let choice=meeting.selected_event_id||meeting.suggested_event_id||'';
-        new Setting(box).setName('Meeting').addDropdown(d=>{
-          d.addOption('','Choose a meeting');
-          for(const event of meeting.candidates){
-            const people=(event.people||[]).map(p=>p.name).filter(Boolean).join(', ');
-            d.addOption(event.event_id,event.title+(people?' · '+people:''));
-          }
-          d.setValue(choice).onChange(v=>choice=v);
-        });
+        for(const event of meeting.candidates){
+          const row=box.createEl('label',{cls:'coppermind-meeting-option'});
+          const radio=row.createEl('input',{attr:{type:'radio',name:'coppermind-meeting-'+id},value:event.event_id});
+          radio.checked=choice===event.event_id;radio.onchange=()=>{if(radio.checked)choice=event.event_id;};
+          const people=(event.people||[]).map(p=>p.name).filter(Boolean).join(', ');
+          const when=event.start&&!Number.isNaN(Date.parse(event.start))?new Date(event.start).toLocaleString([],{dateStyle:'medium',timeStyle:'short'}):'';
+          row.createEl('span',{text:event.title+(when?' · '+when:'')+(event.event_id===meeting.suggested_event_id?' · Suggested':'')+(people?' · '+people:'')});
+        }
         new Setting(box).addButton(b=>b.setButtonText('Use selected meeting').setDisabled(!synced).onClick(async()=>{
           if(!choice){new Notice('Choose a meeting first.');return;}
           if(await hash(await this.app.vault.read(file))!==data.note.content_hash){new Notice('The note changed. Wait for sync, then refresh.');return;}
@@ -112,7 +112,7 @@ class ReviewView extends ItemView {
         const open=box.createEl('a',{text:'Open your note',href:'#'});open.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(destination.path,'',false);};
         box.createEl('p',{text:'Your words stay as they are. The recording summary will be added below them with a transcript link. This separate recording note will be retired.'});
         const review=box.createEl('button',{text:'Review merge'});review.disabled=!ready;
-        review.onclick=()=>new MergeModal(this.app,destination,summary,async()=>{
+        review.onclick=()=>new MergeModal(this.app,destination,summary,merge.transcript_path,async()=>{
           try{
             const targetFile=this.app.vault.getAbstractFileByPath(destination.path);
             if(!targetFile||await hash(await this.app.vault.read(targetFile))!==destination.content_hash||await hash(await this.app.vault.read(file))!==data.note.content_hash){new Notice('A note changed. Wait for sync, then refresh.');return;}
@@ -337,11 +337,12 @@ class WaitingView extends ItemView {
   }
 }
 class MergeModal extends Modal {
-  constructor(app,destination,summary,confirm){super(app);this.destination=destination;this.summary=summary;this.confirm=confirm;}
+  constructor(app,destination,summary,transcriptPath,confirm){super(app);this.destination=destination;this.summary=summary;this.transcriptPath=transcriptPath;this.confirm=confirm;}
   onOpen(){
     const el=this.contentEl;el.empty();el.createEl('h2',{text:'Add this recording to '+this.destination.title+'?'});
     el.createEl('p',{text:'Your existing text stays word for word. The recording summary and a transcript link will be added below it.'});
     for(const [key,label] of [['summary','Summary'],['decisions','Decisions'],['action_items','Action items']])if(this.summary[key]?.trim()){el.createEl('h3',{text:label});el.createEl('p',{text:this.summary[key]});}
+    if(this.transcriptPath){const link=el.createEl('a',{text:'View transcript',href:'#'});link.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(this.transcriptPath,'',false);};}
     el.createEl('p',{text:'The recording will belong to your existing note and this separate recording note will be retired.'});
     const confirm=el.createEl('button',{text:'Confirm merge',cls:'mod-cta'});confirm.onclick=async()=>{this.close();await this.confirm();};
     const back=el.createEl('button',{text:'Go back'});back.onclick=()=>this.close();

@@ -294,6 +294,9 @@ async def test_companion_api_proposes_and_confirms_event_match(store):
         review = await client.get(f"/v1/notes/{generated.id}/review")
         assert review.status_code == 200
         assert [c["id"] for c in review.json()["recording_merge"]["candidates"]] == [target.id]
+        assert review.json()["recording_merge"]["transcript_path"] == (
+            await store.get_source(recording.source_id)
+        ).projection_path
         result = await client.post(
             f"/v1/notes/{generated.id}/recording-merge",
             json={k: v for k, v in payload.items() if k != "note_id"},

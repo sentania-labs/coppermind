@@ -62,8 +62,9 @@ test('credential is read from secret storage, not plugin settings',async()=>{
 test('a suggested meeting can be changed before confirming',async()=>{
   const meeting={calendar_hash:'calendar',suggested_event_id:'a',candidates:[{event_id:'a',title:'Planning',people:[{name:'Alex'}]},{event_id:'b',title:'Budget',people:[{name:'Blair'}]}]};
   const f=await fixture(undefined,{recording_meeting:meeting});
-  const chooser=f.view.contentEl.all().find(e=>e.tag==='select'&&e.children.some(c=>c.value==='b'));
-  assert.equal(chooser.value,'a');chooser.value='b';chooser.onchange();
+  const radios=f.view.contentEl.all().filter(e=>e.tag==='input'&&['a','b'].includes(e.value));
+  assert.equal(radios.find(r=>r.value==='a').checked,true);
+  const choice=radios.find(r=>r.value==='b');choice.checked=true;choice.onchange();
   await f.view.contentEl.all().find(e=>e.text==='Use selected meeting').onclick();
   const request=f.requests.find(r=>r.url.endsWith('/recording-meeting'));
   assert.equal(JSON.parse(request.body).event_id,'b');
@@ -72,9 +73,10 @@ test('a suggested meeting can be changed before confirming',async()=>{
 test('merging requires a confirmation and uses the checked destination and summary',async()=>{
   const raw='---\nid: test-note\nreviewed: false\n---\nHuman prose.\n';
   const digest='sha256:'+Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(raw))).toString('hex');
-  const f=await fixture(undefined,{recording_merge:{state:'offered',candidates:[{id:'target',title:'My meeting',path:'Notes/My meeting.md',content_hash:digest}]},meeting_summary:{summary:'Launch plan.',decisions:'',action_items:''},job_id:'job'});
+  const f=await fixture(undefined,{recording_merge:{state:'offered',transcript_path:'_Sources/Transcript.md',candidates:[{id:'target',title:'My meeting',path:'Notes/My meeting.md',content_hash:digest}]},meeting_summary:{summary:'Launch plan.',decisions:'',action_items:''},job_id:'job'});
   f.view.contentEl.all().find(e=>e.text==='Review merge').onclick();
   assert.equal(f.requests.filter(r=>r.url.endsWith('/recording-merge')).length,0);
+  assert.ok(f.modals[0].contentEl.all().some(e=>e.text==='View transcript'));
   await f.modals[0].contentEl.all().find(e=>e.text==='Confirm merge').onclick();
   const request=f.requests.find(r=>r.url.endsWith('/recording-merge'));
   assert.equal(JSON.parse(request.body).target_id,'target');

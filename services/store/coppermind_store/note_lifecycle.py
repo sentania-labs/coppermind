@@ -574,7 +574,12 @@ class NoteLifecycle:
             elif job and job.result and job.result.meeting_summary and not stale:
                 matches = await self.merge_candidates(note, recording)
                 if matches:
-                    merge = {"state": "offered", "candidates": matches}
+                    source = await self.context.store.get_source(recording.source_id)
+                    merge = {
+                        "state": "offered",
+                        "candidates": matches,
+                        "transcript_path": source.projection_path,
+                    }
         if manual:
             from coppermind_store.voice_store import VoiceStore
 
