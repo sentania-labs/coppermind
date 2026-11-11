@@ -122,7 +122,10 @@ async def resolve_contact(context: Any, person: dict[str, Any]) -> dict[str, Any
     ]
     match = next(
         (e for e in active if address and address in {email(a) for a in e.emails}), None
-    ) or next((e for e in active if e.name.strip().casefold() == name), None)
+    ) or next(
+        (e for e in active if e.name.strip().casefold() == name and (not address or not e.emails)),
+        None,
+    )
     if match is None:
         created = await entities.create(
             EntityInput(kind="person", name=person["name"], emails=[address] if address else [])

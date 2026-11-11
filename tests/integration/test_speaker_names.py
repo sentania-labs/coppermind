@@ -1064,3 +1064,43 @@ async def test_naming_an_unknown_voice_with_a_calendar_contact_gives_it_a_person
     ).content
     assert contact["name"] + ": Hello." in text
     assert "Unknown voice 1" not in text
+
+
+async def test_a_contact_is_not_attached_to_a_same_named_person_with_another_address(
+    store, standin
+):
+    from coppermind_store.voice_store import VoiceStore
+
+    transcript = {"segments": [{"start": 0, "speaker": "Unknown voice 1", "text": "Hello."}]}
+    context, result, note, _, _ = await recorded(store, standin, transcript, lambda e, ev: [])
+    manual = (await context.lifecycle_detail({"note_id": note.id}))["manual_speaker_review"]
+    contact = next(c for c in manual["candidates"] if c["id"].startswith("contact:"))
+    assert contact["email"]
+    namesake = await store.entities.create(
+        EntityInput(kind="person", name=contact["name"], emails=["someone.else@example.test"])
+    )
+    voice = VoiceStore(context)
+    vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
+    voice.capture_unknown(note.id, "Unknown voice 1", "today", 30, [vector])
+    voice.set_segments(note.id, transcript)
+    completed = await context.complete_review(
+        {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "confirmation": "Complete review",
+            "selected": [],
+            "manual_source_id": manual["source_id"],
+            "manual_source_revision": manual["revision"],
+            "manual_speakers": {"Unknown voice 1": contact["id"]},
+        }
+    )
+    assert completed["state"] == "complete"
+    assert voice.summary(namesake["id"])["signatures"] == []
+    invitee = next(
+        p
+        for p in store.entities.load().entities.values()
+        if p.kind == "person" and p.name == contact["name"] and p.id != namesake["id"]
+    )
+    assert invitee.emails and "someone.else@example.test" not in invitee.emails
+    assert len(voice.summary(invitee.id)["signatures"]) == 1
+    assert voice.unknown_summaries() == {}
