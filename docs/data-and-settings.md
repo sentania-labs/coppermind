@@ -339,16 +339,16 @@ collation version. Run these commands from the compose directory:
 
 ```bash
 docker compose stop
-docker compose up -d postgres
-docker compose exec postgres psql -U coppermind -d coppermind -c 'REINDEX DATABASE coppermind;'
-docker compose exec postgres psql -U coppermind -d coppermind -c 'ALTER DATABASE coppermind REFRESH COLLATION VERSION;'
-docker compose up -d
+docker compose up -d --wait postgres
+docker compose exec postgres psql -v ON_ERROR_STOP=1 -U coppermind -d coppermind -c 'REINDEX DATABASE coppermind;' \
+  && docker compose exec postgres psql -v ON_ERROR_STOP=1 -U coppermind -d coppermind -c 'ALTER DATABASE coppermind REFRESH COLLATION VERSION;' \
+  && docker compose up -d
 ```
 
-Wait for PostgreSQL to become healthy before running the two `psql` commands.
-The reindex may take time and locks the affected indexes. Do not refresh the
-collation version if reindexing fails. For an external database or additional
-databases, coordinate the equivalent repair with the database administrator.
+The reindex may take time and locks the affected indexes. The collation version
+is refreshed only if the reindex succeeds; if it fails, fix the cause and rerun
+the block. For an external database or additional databases, coordinate the
+equivalent repair with the database administrator.
 
 ## Named tests this data model is proven against
 
