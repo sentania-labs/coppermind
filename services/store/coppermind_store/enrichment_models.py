@@ -44,6 +44,9 @@ class EnrichmentJob(ContextModel):
     ] = "queued"
     # Set when the owner asked for fresh suggestions; automatic re-queues leave it off.
     fresh: bool = False
+    # Fingerprint of the summary limits in force when the summary stage failed on them;
+    # empty otherwise. A change to those limits retries only such a job.
+    summary_limits: str = ""
     attempts: int = 0
     attempt_limit: int | None = Field(default=None, ge=1, le=3)
     error: str = ""

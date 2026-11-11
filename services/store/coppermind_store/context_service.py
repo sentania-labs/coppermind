@@ -267,7 +267,15 @@ class ContextService:
         config = self.config()
         assignment = config.assignments["enrichment"]
         values = assignment.model_dump(
-            exclude={"paused", "enabled", "automatic_after", "response_format", "wait_s"}
+            exclude={
+                "paused",
+                "enabled",
+                "automatic_after",
+                "response_format",
+                "wait_s",
+                "summary_max_input_chars",
+                "summary_timeout_s",
+            }
         )
         connection = next(
             (
@@ -281,6 +289,10 @@ class ContextService:
             assignment.connection, assignment.connection
         )
         return fingerprint({"assignment": values, "connection": connection})
+
+    def summary_limits(self) -> str:
+        assignment = self.config().assignments["enrichment"]
+        return fingerprint([assignment.summary_max_input_chars, assignment.summary_timeout_s])
 
     def evidence_hash(self) -> str:
         return self.archive.catalog().events.context_fingerprint(
@@ -1434,7 +1446,7 @@ class ContextService:
         try:
             job.state = "running"
             job.attempts += 1
-            job.reply, job.retry_after = "", ""
+            job.reply, job.retry_after, job.summary_limits = "", "", ""
             self.save_job(job)
             if job.purpose == "dossier":
                 await extract(self, job)
@@ -2294,6 +2306,7 @@ class ContextService:
                         or known.path != current.path
                         or known.source_versions != source_versions
                         or known.config_hash != self.config_hash()
+                        or (known.summary_limits and known.summary_limits != self.summary_limits())
                         or known.schema_hash != self.schema_hash()
                         or (
                             self.config().lifecycle_enabled

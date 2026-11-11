@@ -53,6 +53,7 @@ async def prepare(
     evidence = {"transcript": artifact.content}
     size = len(json.dumps(evidence, ensure_ascii=False))
     if size > assignment.summary_max_input_chars:
+        job.summary_limits = context.summary_limits()
         raise JobRejected(
             "summary-input-limit",
             f"The full meeting transcript needs {size:,} characters; the summary limit is "
@@ -88,6 +89,7 @@ async def generate(
             connection, context.key(connection.id), limits, PROMPT, evidence
         )
     except ProviderError as exc:
+        job.summary_limits = context.summary_limits()
         raise ProviderError(
             f"Meeting summary failed: {exc}. Check the model connection and its context "
             "window (including room for thinking and the response), then retry or choose "
@@ -121,7 +123,7 @@ async def generate(
 async def apply(context: Any, receipt: dict[str, Any], note: Any) -> Any:
     """Persist the exact append before writing; a replay cannot duplicate it."""
     from coppermind_store.context_service import fingerprint
-    from coppermind_store.recordings import SUMMARY_PENDING
+    from coppermind_store.recordings import SUMMARY_PENDING, SUMMARY_PENDING_EARLIER
 
     operation = receipt["summary"]
     if "body" not in operation:
@@ -130,11 +132,12 @@ async def apply(context: Any, receipt: dict[str, Any], note: Any) -> Any:
         prose = MeetingSummary.model_validate(operation["value"]).markdown()
         body = note.body
         if prose:
-            # Only the unchanged generated line is disposable; preserve every other byte.
+            # Only an unchanged generated line is disposable; preserve every other byte.
             body = "".join(
                 line
                 for line in body.splitlines(keepends=True)
-                if line.removesuffix("\n").removesuffix("\r") != SUMMARY_PENDING
+                if line.removesuffix("\n").removesuffix("\r")
+                not in (SUMMARY_PENDING, SUMMARY_PENDING_EARLIER)
             )
         operation["body"] = body + ("\n\n" + prose + "\n" if prose else "")
         operation["frontmatter_hash"] = fingerprint(note.frontmatter)

@@ -6,7 +6,12 @@ from typing import Any
 import httpx
 import pytest
 from coppermind_store.model_provider import ModelProvider
-from coppermind_store.recordings import SUMMARY_PENDING, TranscriptionJob, render_transcript
+from coppermind_store.recordings import (
+    SUMMARY_PENDING,
+    SUMMARY_PENDING_EARLIER,
+    TranscriptionJob,
+    render_transcript,
+)
 
 from coppermind.store_protocol import (
     IngestArtifact,
@@ -168,11 +173,16 @@ async def setup_recording(store, standin, *, limit=200000, failure=None, recordi
     return context, note, job, requests
 
 
-@pytest.mark.parametrize("mode", ["apply", "edited-placeholder", "empty", "reject", "direct"])
+@pytest.mark.parametrize(
+    "mode", ["apply", "earlier-placeholder", "edited-placeholder", "empty", "reject", "direct"]
+)
 async def test_recording_placeholder_is_removed_only_when_applying_kept_summary(
     store, standin, mode
 ):
-    placeholder = SUMMARY_PENDING if mode != "edited-placeholder" else SUMMARY_PENDING + " Edited."
+    placeholder = {
+        "earlier-placeholder": SUMMARY_PENDING_EARLIER,
+        "edited-placeholder": SUMMARY_PENDING + " Edited.",
+    }.get(mode, SUMMARY_PENDING)
     owner_text = "\nOwner notes.\n\n> " + SUMMARY_PENDING + "\n"
     original = placeholder + "\n" + owner_text
     context, note, job, _ = await setup_recording(store, standin, recording_body=original)
@@ -201,7 +211,11 @@ async def test_recording_placeholder_is_removed_only_when_applying_kept_summary(
     if mode in {"empty", "reject"}:
         assert reviewed.body == note.body
     else:
-        prefix = note.body.replace(SUMMARY_PENDING + "\n", "", 1) if mode == "apply" else note.body
+        prefix = (
+            note.body.replace(placeholder + "\n", "", 1)
+            if mode in {"apply", "earlier-placeholder"}
+            else note.body
+        )
         assert reviewed.body == (
             prefix + "\n\n## Summary\n\n" + kept["summary"] + "\n\n## Decisions\n\n- Ship Monday.\n"
         )
@@ -327,6 +341,45 @@ async def test_raising_summary_limit_retries_the_whole_transcript(store, standin
     fresh = context.load_job(await context.queue_note(note.id, force=True))
     await context.run_job(fresh)
     assert fresh.state == "suggested", fresh.error
+    assert sum("transcript" in request for request in requests) == 1
+
+
+async def test_summary_limit_edit_keeps_pending_suggestions_reviewable(store, standin):
+    context, note, job, requests = await setup_recording(store, standin)
+    assert job.state == "suggested", job.error
+    before = context.config_hash()
+    config = context.config()
+    config.assignments["enrichment"].summary_max_input_chars = 500000
+    config.assignments["enrichment"].summary_timeout_s = 1200
+    context.save_config(config)
+    assert context.config_hash() == before
+    await context.tick()
+    assert [item.id for item in context.jobs()] == [job.id]
+    receipt = await context.complete_review(
+        {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "job_id": job.id,
+            "selected": [],
+            "meeting_summary": PROPOSAL,
+            "confirmation": "Complete review",
+        }
+    )
+    assert receipt["state"] == "complete"
+    assert sum("transcript" in request for request in requests) == 1
+
+
+async def test_summary_limit_change_retries_only_a_summary_that_failed_on_it(store, standin):
+    context, note, job, requests = await setup_recording(store, standin, limit=60000)
+    assert job.state == "failed" and job.error_rule == "summary-input-limit"
+    await context.tick()
+    assert [item.id for item in context.jobs()] == [job.id]
+    config = context.config()
+    config.assignments["enrichment"].summary_max_input_chars = 300000
+    context.save_config(config)
+    await context.tick()
+    jobs = sorted(context.jobs(), key=lambda item: item.created_at)
+    assert [item.state for item in jobs] == ["failed", "suggested"]
     assert sum("transcript" in request for request in requests) == 1
 
 
