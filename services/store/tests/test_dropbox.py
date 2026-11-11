@@ -796,6 +796,37 @@ async def test_an_unmarked_non_calendar_drop_is_parked_with_the_kind_instruction
     assert (store.context.root / "dropbox-originals" / item["id"]).exists()
 
 
+async def test_an_unmarked_document_upload_is_told_to_declare_the_artifact_kind(tmp_path):
+    store = local_store(tmp_path)
+    store.context.dropbox.submit("report.pdf", b"%PDF-1.4 report")
+    await store.context.dropbox.process()
+    item = store.context.dropbox.snapshot()["items"][0]
+    assert item["state"] == "unsupported"
+    assert "kind=artifact" in item["error"]
+    assert "not supported" not in item["error"]
+
+
+async def test_a_long_multibyte_filename_still_moves_to_failed(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    path = root / ("\u6f22" * 80 + ".xyz")
+    path.write_bytes(b"unknown")
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    dropbox = store.context.dropbox
+    await dropbox.scan()
+    clock[0] = 31
+    await dropbox.scan()
+    await dropbox.process()
+    await dropbox.scan()
+    assert not path.exists()
+    files = list((root / "Failed").iterdir())
+    assert len(files) == 2
+    assert all(len(p.name.encode()) <= 255 for p in files)
+    assert any(p.read_bytes() == b"unknown" for p in files)
+
+
 def test_submit_refuses_a_marker_that_is_not_artifact(tmp_path):
     store = local_store(tmp_path)
     with pytest.raises(ValueError, match="only artifact"):

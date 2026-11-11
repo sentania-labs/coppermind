@@ -46,7 +46,13 @@ OFFICE_SUFFIXES = {
     ".epub",
     ".rtf",
 }
+ARTIFACT_SUFFIXES = EXTENSION_TYPES.keys() | OFFICE_SUFFIXES
 NO_KIND = "This file type is not supported. Choose a supported format and try again."
+NEEDS_KIND = "This document needs kind=artifact on the upload to be stored as an artifact."
+
+
+def no_kind_message(filename: str) -> str:
+    return NEEDS_KIND if Path(filename).suffix.lower() in ARTIFACT_SUFFIXES else NO_KIND
 
 
 def read_kind_marker(data: bytes) -> dict[str, Any] | None:
@@ -211,7 +217,7 @@ class Dropbox:
                         log.info("Dropbox adopt artifact %s", item["id"])
                     elif handler is None:
                         item["state"] = "unsupported"
-                        item["error"] = NO_KIND
+                        item["error"] = no_kind_message(item["filename"])
                         log.info("Dropbox park export %s: no kind marker", item["id"])
                     else:
                         name = item["filename"]
@@ -280,7 +286,7 @@ class Dropbox:
     def display_error(item: dict[str, Any]) -> str:
         error = item.get("error", "")
         if item.get("state") == "unsupported" and error.startswith("No kind marker."):
-            error = NO_KIND
+            error = no_kind_message(item["filename"])
         if item.get("state") in {"failed", "unsupported"} and item.get("original_path"):
             if item.get("failed_path"):
                 error += (
@@ -357,7 +363,8 @@ class Dropbox:
             failed.mkdir(exist_ok=True)
             # A unique name prevents overwriting an earlier failed drop. The sidecar is
             # durable before the move, so an interrupted cleanup remains recoverable.
-            target = failed / (uuid.uuid4().hex + "-" + path.name[:150])
+            stem = path.name.encode()[:120].decode(errors="ignore")
+            target = failed / (uuid.uuid4().hex + "-" + stem)
             reason = target.with_name(target.name + ".reason.txt")
             message = (
                 item.get("error")
@@ -470,8 +477,7 @@ class Dropbox:
                             if (
                                 marker is None
                                 and self.handler(data, name) is None
-                                and path.suffix.lower()
-                                in (EXTENSION_TYPES.keys() | OFFICE_SUFFIXES)
+                                and path.suffix.lower() in ARTIFACT_SUFFIXES
                             ):
                                 marker = {"kind": "artifact"}
                             submitted = await asyncio.to_thread(self.submit, name, data, marker)
