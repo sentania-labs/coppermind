@@ -18,11 +18,12 @@ commitments or deadlines. Use an empty string when there are no decisions or act
 Do not include section headings; the review interface supplies them."""
 
 
-async def prepare(context: Any, job: Any, assignment: Any) -> dict[str, Any] | None:
+async def prepare(
+    context: Any, job: Any, assignment: Any
+) -> dict[str, Any] | MeetingSummary | None:
+    """Return a summary already made for this transcript revision, else the evidence to send."""
     from coppermind_store.context_service import JobRejected
 
-    if job.purpose != "initial":
-        return None
     recording = next(
         (r for r in context.recordings.jobs() if r.note_id == job.note_id and r.source_id), None
     )
@@ -31,6 +32,22 @@ async def prepare(context: Any, job: Any, assignment: Any) -> dict[str, Any] | N
     revision = job.source_versions.get(recording.source_id)
     if revision is None:
         raise ValueError("stale: recording transcript is no longer attached to this note")
+    earlier = sorted(
+        (
+            prior
+            for prior in context.jobs()
+            if job.purpose != "initial"
+            and prior.note_id == job.note_id
+            and prior.id != job.id
+            and prior.state in {"suggested", "stale"}
+            and prior.result is not None
+            and prior.result.meeting_summary is not None
+            and prior.source_versions.get(recording.source_id) == revision
+        ),
+        key=lambda prior: prior.created_at,
+    )
+    if earlier:
+        return earlier[-1].result.meeting_summary
     artifact = await context.store.get_source_artifact(
         recording.source_id, revision, "transcript.txt"
     )
@@ -55,10 +72,16 @@ async def prepare(context: Any, job: Any, assignment: Any) -> dict[str, Any] | N
 
 
 async def generate(
-    context: Any, connection: Any, assignment: Any, evidence: dict[str, Any] | None, job: Any
+    context: Any,
+    connection: Any,
+    assignment: Any,
+    evidence: dict[str, Any] | MeetingSummary | None,
+    job: Any,
 ) -> tuple[Any, Any]:
     if evidence is None:
         return None, {}
+    if isinstance(evidence, MeetingSummary):
+        return evidence.model_copy(deep=True), {}
     limits = assignment.model_copy(
         update={
             "max_input_chars": assignment.summary_max_input_chars,

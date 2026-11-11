@@ -239,6 +239,76 @@ async def test_raising_summary_limit_retries_the_whole_transcript(store, standin
     assert sum("transcript" in request for request in requests) == 1
 
 
+async def test_calendar_refresh_carries_the_summary_without_another_read(store, standin):
+    context, note, first, requests = await setup_recording(store, standin)
+    assert first.state == "suggested", first.error
+    refresh = context.load_job(await context.queue_note(note.id, force=True))
+    refresh.purpose = "calendar"
+    context.save_job(refresh)
+    await context.run_job(refresh)
+    assert refresh.state == "suggested", refresh.error
+    assert sum("transcript" in request for request in requests) == 1
+    detail = await context.lifecycle_detail({"note_id": note.id})
+    assert detail["job_id"] == refresh.id
+    assert detail["meeting_summary"] == PROPOSAL
+
+
+async def test_calendar_refresh_reads_again_when_the_transcript_revision_changed(store, standin):
+    context, note, first, requests = await setup_recording(store, standin)
+    assert first.state == "suggested", first.error
+    corrected = "Corrected transcript. Launch Monday."
+    await store.ingest(
+        IngestRequest(
+            source=IngestSource(
+                provider="test-audio",
+                external_source_id="summary-test",
+                source_type="transcript",
+                artifacts=[
+                    IngestArtifact(
+                        name="transcript.txt", mime_type="text/plain", content=corrected
+                    ),
+                    IngestArtifact(
+                        name="transcript.json",
+                        mime_type="application/json",
+                        content=json.dumps(
+                            {"segments": [{"start": 0, "speaker": "Speaker 1", "text": corrected}]}
+                        ),
+                    ),
+                ],
+            ),
+            note=IngestNote(
+                title="Planning",
+                body="My own meeting notes.\n",
+                frontmatter={"date": "2026-10-14T09:00:00"},
+            ),
+        )
+    )
+    reread = {**PROPOSAL, "summary": "Launch moved to Monday."}
+    seen = []
+
+    def model(request):
+        evidence = json.loads(json.loads(request.content)["messages"][-1]["content"])
+        seen.append(evidence)
+        output = reread if "transcript" in evidence else {"suggestions": [], "unresolved": []}
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(output)}}]
+            },
+        )
+
+    standin["handler"] = model
+    refresh = context.load_job(await context.queue_note(note.id, force=True))
+    refresh.purpose = "calendar"
+    context.save_job(refresh)
+    await context.run_job(refresh)
+    assert refresh.state == "suggested", refresh.error
+    assert [e["transcript"] for e in seen if "transcript" in e] == [corrected]
+    detail = await context.lifecycle_detail({"note_id": note.id})
+    assert detail["job_id"] == refresh.id
+    assert detail["meeting_summary"] == reread
+
+
 async def test_summary_silence_uses_long_wait_and_records_retry_backoff(store, standin):
     context, note, _, _ = await setup_recording(store, standin)
     config = context.config()
