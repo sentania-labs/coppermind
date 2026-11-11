@@ -171,6 +171,7 @@ Signatures and their vectors stay private and are never returned in API response
 | `DELETE /v1/entities/{id}/voice` | adds `entities:write` | Delete the person's signatures |
 | `GET`/`PUT /v1/entities/voice/recognition` | read / adds `entities:write` | Global recognition switch |
 | `GET /v1/entities/voice/unknowns` | `entities:read`, `notes:read` | Unknown voices and their appearances |
+| `GET /v1/entities/voice/people` | `entities:read`, `notes:read` | People with saved voice signatures |
 | `DELETE /v1/entities/voice/unknowns/{id}` | adds `entities:write` | Delete an unknown voice's signatures |
 | `POST /v1/entities/voice/unknowns/{id}/combine` | adds `entities:write`, `notes:write`, `sources:write` | Combine with a voice or person |
 | `POST /v1/entities/voice/voices/{id}/split` | adds `entities:write`, `notes:write`, `sources:write` | Separate one appearance |

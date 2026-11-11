@@ -148,6 +148,14 @@ async def list_unknown_voices(
     return await call(client, "voice-unknown-list", {}, principal)
 
 
+@router.get("/voice/people")
+async def list_people_with_voices(
+    client: HttpStoreClient = Depends(store),
+    principal: Principal = Depends(require_scopes("entities:read", "notes:read")),
+) -> JSONResponse:
+    return await call(client, "voice-list", {}, principal)
+
+
 @router.delete("/voice/unknowns/{voice_id}")
 async def delete_unknown_voice(
     voice_id: str,

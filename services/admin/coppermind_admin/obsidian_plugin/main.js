@@ -85,10 +85,10 @@ class ReviewView extends ItemView {
         if(summary&&ready)preview.createEl('p',{text:Object.values(summary).some(v=>v.trim())?'The kept summary sections will be appended to your note. Your existing text stays intact.':'All summary sections dropped. No summary text will be added.'});
         const changes=cards.filter(c=>c.active()&&c.chooser.value);
         if(!changes.length)preview.createEl('p',{text:'No speaker names selected.'});
-        for(const c of changes){const person=c.people.find(p=>p.id===c.chooser.value);if(person){preview.createEl('p',{text:c.label+' → '+person.name});const count=manual?.voice_appearances?.[c.label];if(count>1)preview.createEl('p',{text:'Also name this voice in '+(count-1)+' earlier recordings. Transcripts and unchanged generated labels will change; your own writing in reviewed notes stays intact.'});}}
+        for(const c of changes){const person=c.people.find(p=>p.id===c.chooser.value);if(person){preview.createEl('p',{text:c.label+' → '+person.name});const count=manual?.voice_appearances?.[c.label];if(count!==undefined)preview.createEl('p',{text:'Also name this voice in '+Math.max(0,count-1)+' earlier recordings. Transcripts and unchanged generated labels will change; your own writing in reviewed notes stays intact.'});}}
         const attendeesNotice=cards.length&&data.speaker_attendees_notice;
         if(attendeesNotice)preview.createEl('p',{text:data.speaker_attendees_notice});
-        preview.createEl('p',{text:attendeesNotice?'Completing review updates transcript labels for selected people. Unnamed speakers stay as they are.':'Completing review updates transcript labels, note attendees and dossier links for selected people. Unnamed speakers stay as they are.'});
+        preview.createEl('p',{text:attendeesNotice?'Completing review updates transcript labels for selected people. Unnamed speakers stay as they are.':'Completing review updates transcript labels, note attendees and links to selected people. Unnamed speakers stay as they are.'});
       };
       const makeChooser=(card,label,people,initial,onSelect,disabled,voice=[])=>{
         const chooser=card.createEl('select');
@@ -157,6 +157,8 @@ class ReviewView extends ItemView {
         const shown=s.display_value||(Array.isArray(s.value)?s.value.join(', '):String(s.value??''));
         card.createEl('p',{text:voice?.conflict&&s.value?'Model: '+shown:voice&&voice.strong.length===1&&!voice.conflict&&!voice.agreed?voice.strong[0].name:shown});
         if(s.kind==='speaker'){
+          if(s.field.startsWith('Unknown voice '))card.createEl('p',{text:'This voice will be remembered across recordings.'});
+          if(voice.strong.length===1&&!voice.conflict)card.createEl('p',{text:'Check this suggestion before you finish.'});
           if(manual?.voice_unavailable?.includes(s.field))card.createEl('p',{text:'There was too little speech to recognise this voice in later recordings. A name chosen here applies only to this recording.'});
           if(!noModelCandidate)card.createEl('p',{text:'Model confidence: '+Math.round(s.confidence*100)+'%'});
           if(voice.agreed)card.createEl('p',{text:'Sources: Model and Voice'});
@@ -177,12 +179,13 @@ class ReviewView extends ItemView {
       for(const label of manual?.speakers||[]){
         if(proposed.has(label))continue;
         const card=el.createDiv({cls:'coppermind-card'});card.createEl('h3',{text:label});
+        if(label.startsWith('Unknown voice '))card.createEl('p',{text:'This voice will be remembered across recordings.'});
         if(manual?.voice_unavailable?.includes(label))card.createEl('p',{text:'There was too little speech to recognise this voice in later recordings. A name chosen here applies only to this recording.'});
         card.createEl('p',{text:'Choose a person, or leave this speaker unnamed.'});
         const people=[...manual.candidates];const voice=voicePlan(label,null);
         if(!people.length&&!voice.matches.length)card.createEl('p',{text:'No people suggested. Enter a name below, then choose Find a person.'});
         if(voice.conflict)card.createEl('p',{text:'Suggestions disagree. Choose a person.'});
-        else if(voice.initial)card.createEl('p',{text:'Source: Voice'});
+        else if(voice.initial){card.createEl('p',{text:'Source: Voice'});card.createEl('p',{text:'Check this suggestion before you finish.'});}
         if(voice.initial)people.push(voice.strong[0]);
         const choices=voice.initial?voice.matches.filter(m=>m!==voice.strong[0]):voice.matches;
         const chooser=makeChooser(card,label,people,voice.initial,value=>{manualSpeakers[label]=value;},!synced,choices);
@@ -242,14 +245,16 @@ class PeopleView extends ItemView {
       new Setting(el).setName('Voice recognition').setDesc('Store voice signatures to recognise speakers in future recordings. No audio clips are saved for recognition.').addToggle(t=>t.setValue(recognition.enabled).onChange(async enabled=>{try{await this.plugin.call('/v1/entities/voice/recognition','PUT',{enabled});await this.show(person);}catch(e){new Notice(e.message);}}));
       if(!recognition.enabled)el.createEl('p',{text:'New voice signatures are not being stored. Existing voice data is listed below.'});
       const unknowns=await this.plugin.call('/v1/entities/voice/unknowns');
+      const savedPeople=await this.plugin.call('/v1/entities/voice/people');
       const search=el.createEl('input',{attr:{type:'search',placeholder:'Find a person'}});
       const find=el.createEl('button',{text:'Search'});const list=el.createDiv();
       find.onclick=async()=>{try{list.empty();const page=await this.plugin.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(search.value.trim()));
         if(!page.items.length)list.createEl('p',{text:'No people found.'});
         for(const item of page.items){const b=list.createEl('button',{text:item.name});b.onclick=()=>this.show(item);}
       }catch(e){new Notice(e.message);}};
-      el.createEl('h3',{text:'Unknown voices'});
-      if(!Object.keys(unknowns).length)el.createEl('p',{text:'No unknown voices saved yet.'});
+      el.createEl('h3',{text:'Saved voices'});
+      if(!Object.keys(unknowns).length&&!Object.keys(savedPeople).length)el.createEl('p',{text:'No voices saved yet.'});
+      for(const [id,item] of Object.entries(savedPeople)){const b=el.createEl('button',{text:item.name+' · Voice data saved'});b.onclick=()=>this.show({id,name:item.name});}
       for(const [id,item] of Object.entries(unknowns)){const b=el.createEl('button',{text:item.name+' · '+item.assignments.length+' recordings'});b.onclick=()=>this.show({id,name:item.name,unknown:true});}
       if(!person)return;
       const path=person.unknown?'/v1/entities/voice/unknowns/'+encodeURIComponent(person.id):'/v1/entities/'+encodeURIComponent(person.id)+'/voice';
@@ -268,9 +273,9 @@ class PeopleView extends ItemView {
         for(const [id,item] of Object.entries(unknowns))if(id!==person.id)target.createEl('option',{text:item.name,value:id});
         const query=el.createEl('input',{attr:{type:'search',placeholder:'Find a person'}});const lookup=el.createEl('button',{text:'Find a person'});
         lookup.onclick=async()=>{try{const page=await this.plugin.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(query.value.trim()));for(const p of page.items)target.createEl('option',{text:p.name,value:'person:'+p.id});if(!page.items.length)new Notice('No people found.');}catch(e){new Notice(e.message);}};
-        const combine=el.createEl('button',{text:'Choose and combine',cls:'mod-cta'});combine.onclick=async()=>{if(!target.value){new Notice('Choose a voice or person first.');return;}try{await this.plugin.call(path+'/combine','POST',{target:target.value});await this.show();}catch(e){new Notice(e.message);}};
+        const combine=el.createEl('button',{text:'Choose and combine',cls:'mod-cta'});combine.onclick=()=>{if(!target.value){new Notice('Choose a voice or person first.');return;}const chosen=target.value;const count=new Set((voice.assignments||[]).map(a=>a.note_id)).size;new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call(path+'/combine','POST',{target:chosen});await this.show();}catch(e){new Notice(e.message);}},{title:'Combine these voices?',text:'This will relabel '+count+' recording'+(count===1?'':'s')+'. Transcripts and unchanged generated labels will change; your own writing in reviewed notes stays intact.',action:'Combine voices'}).open();};
       }
-      if(person.unknown||voice.signatures.length){const del=el.createEl('button',{text:'Delete voice data',cls:'mod-warning'});del.onclick=()=>new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call(path,'DELETE');await this.show(person.unknown?undefined:person);}catch(e){new Notice(e.message);}},{title:'Delete voice data?',text:'Delete saved voice data for '+person.name+'? Future recordings cannot be recognised from these signatures. This cannot be undone.',action:'Delete voice data'}).open();}
+      if(person.unknown||voice.signatures.length){const del=el.createEl('button',{text:'Delete voice data',cls:'mod-warning'});del.onclick=()=>new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call(path,'DELETE');await this.show(person.unknown?undefined:person);}catch(e){new Notice(e.message);}},{title:'Delete voice data?',text:'Delete '+voice.signatures.length+' saved voice signature'+(voice.signatures.length===1?'':'s')+' for '+person.name+'? Future recordings cannot be recognised from these signatures. This cannot be undone.',action:'Delete voice data'}).open();}
     }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});}
   }
 }
