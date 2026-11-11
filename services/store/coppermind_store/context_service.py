@@ -1446,6 +1446,7 @@ class ContextService:
                     "The Enrichment connection or model is not set up: " + str(exc),
                     "Open Enrichment, refresh models and choose one, then retry.",
                 ) from exc
+            transcript = await meeting_summary.prepare(self, job, assignment)
             output, usage = await self.provider.suggest(
                 connection,
                 self.key(connection.id),
@@ -1463,7 +1464,7 @@ class ContextService:
                 ]
             # Only the separate full-transcript stage can supply meeting prose.
             result.meeting_summary, summary_usage = await meeting_summary.generate(
-                self, job, connection, assignment
+                self, connection, assignment, transcript, job
             )
             if summary_usage:
                 usage["summary"] = summary_usage

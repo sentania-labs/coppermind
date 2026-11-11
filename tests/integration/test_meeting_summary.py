@@ -221,6 +221,7 @@ async def test_summary_failures_are_durable_problems_with_no_partial_note(
     )
     if failure == "limit":
         assert not any("transcript" in request for request in requests)
+        assert requests == []
         assert "raise Maximum summary input characters" in job.error
     else:
         assert sum("transcript" in request for request in requests) == 1

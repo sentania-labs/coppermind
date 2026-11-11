@@ -18,16 +18,16 @@ commitments or deadlines. Use an empty string when there are no decisions or act
 Do not include section headings; the review interface supplies them."""
 
 
-async def generate(context: Any, job: Any, connection: Any, assignment: Any) -> tuple[Any, Any]:
+async def prepare(context: Any, job: Any, assignment: Any) -> dict[str, Any] | None:
     from coppermind_store.context_service import JobRejected
 
     if job.purpose != "initial":
-        return None, {}
+        return None
     recording = next(
         (r for r in context.recordings.jobs() if r.note_id == job.note_id and r.source_id), None
     )
     if recording is None:
-        return None, {}
+        return None
     revision = job.source_versions.get(recording.source_id)
     if revision is None:
         raise ValueError("stale: recording transcript is no longer attached to this note")
@@ -51,6 +51,14 @@ async def generate(context: Any, job: Any, connection: Any, assignment: Any) -> 
             "transcript only if the model has room for it and the response, then retry. "
             "Otherwise use a larger-context model or write the summary yourself.",
         )
+    return evidence
+
+
+async def generate(
+    context: Any, connection: Any, assignment: Any, evidence: dict[str, Any] | None, job: Any
+) -> tuple[Any, Any]:
+    if evidence is None:
+        return None, {}
     limits = assignment.model_copy(
         update={
             "max_input_chars": assignment.summary_max_input_chars,
