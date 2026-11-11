@@ -502,7 +502,7 @@ class NoteLifecycle:
                             None,
                         )
                         if unknown:
-                            await combine(self.context, unknown, "person:" + person_id)
+                            await combine(self.context, unknown, "person:" + person_id, identity)
                     receipt["voices_applied"] = True
                     self.context.write(name, receipt)
             if receipt.get("summary") and not receipt.get("summary_applied"):
