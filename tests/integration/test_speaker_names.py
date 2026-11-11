@@ -1256,7 +1256,7 @@ async def test_an_address_taken_after_validation_can_be_fixed_and_the_review_res
         await create(ctx, operation)
 
     monkeypatch.setattr(speaker_names, "create_contact_people", taken_meanwhile)
-    with pytest.raises(ValueError, match="already belongs to Vendor Support"):
+    with pytest.raises(ValueError, match="now belongs to Vendor Support.*resume the review"):
         await context.complete_review(request)
     assert contact["name"] not in [p.name for p in people()]
     monkeypatch.setattr(speaker_names, "create_contact_people", create)
@@ -1267,3 +1267,75 @@ async def test_an_address_taken_after_validation_can_be_fixed_and_the_review_res
     completed = await context.complete_review(request)
     assert completed["state"] == "complete"
     assert [p.name for p in people()].count(contact["name"]) == 1
+
+
+async def deleted_note_voice(store, standin):
+    import sqlalchemy as sa
+    from coppermind_store.voice_store import VoiceStore
+
+    from coppermind.db.models import Note
+    from coppermind.store_protocol import CreateNote
+
+    transcript = {"segments": [{"start": 0, "speaker": "Unknown voice 1", "text": "Hello."}]}
+    context, result, note, _, _ = await recorded(store, standin, transcript, lambda e, ev: [])
+    vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
+    voice = VoiceStore(context)
+    earlier = await store.create_note(CreateNote(title="Earlier", body="Earlier recording"))
+    assert voice.capture_unknown(earlier.id, "Speaker 1", "today", 30, [vector]) == "unknown:1"
+    assert voice.capture_unknown(note.id, "Unknown voice 1", "today", 30, [vector]) == "unknown:1"
+    voice.set_segments(note.id, transcript)
+    async with store.session_factory() as session:
+        await session.execute(sa.update(Note).where(Note.id == earlier.id).values(state="deleted"))
+        await session.commit()
+    return context, result, note, earlier, voice
+
+
+async def test_naming_a_voice_still_holding_a_deleted_notes_signature_completes(store, standin):
+    context, result, note, earlier, voice = await deleted_note_voice(store, standin)
+    manual = (await context.lifecycle_detail({"note_id": note.id}))["manual_speaker_review"]
+    contact = next(c for c in manual["candidates"] if c["id"].startswith("contact:"))
+    completed = await context.complete_review(
+        {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "confirmation": "Complete review",
+            "selected": [],
+            "manual_source_id": manual["source_id"],
+            "manual_source_revision": manual["revision"],
+            "manual_speakers": {"Unknown voice 1": contact["id"]},
+        }
+    )
+    assert completed["state"] == "complete"
+    person = next(
+        p
+        for p in store.entities.load().entities.values()
+        if p.kind == "person" and p.name == contact["name"]
+    )
+    assert [s["note_id"] for s in voice.summary(person.id)["signatures"]] == [note.id]
+    assert [a["note_id"] for a in voice.assignments("person:" + person.id)] == [note.id]
+    assert voice.unknown_summaries() == {}
+
+
+async def test_removing_a_deleted_notes_recording_drops_its_voice_data(store, standin):
+    context, result, note, earlier, voice = await deleted_note_voice(store, standin)
+    context.recordings.save(
+        TranscriptionJob(
+            id="c" * 64,
+            artifact_id="d" * 64,
+            filename="earlier.wav",
+            mime_type="audio/wav",
+            size_bytes=1,
+            title="Earlier",
+            provider="test-audio",
+            external_source_id="earlier",
+            state="succeeded",
+            transcribed=True,
+            created_at="2026-10-13T14:00:00+00:00",
+            note_id=earlier.id,
+        )
+    )
+    job = next(j for j in context.recordings.jobs() if j.note_id == earlier.id)
+    await context.recordings.remove_reviewed_audio(job)
+    kept = voice.unknown_summaries()["unknown:1"]
+    assert [s["note_id"] for s in kept["signatures"]] == [note.id]
+    assert [a["note_id"] for a in kept["assignments"]] == [note.id]

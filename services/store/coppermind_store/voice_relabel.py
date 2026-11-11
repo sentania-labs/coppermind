@@ -58,16 +58,22 @@ async def relabel_recording(context: Any, assignment: dict[str, Any], old: str, 
         IngestNote,
         IngestRequest,
         IngestSource,
+        NotFound,
         ReplaceNote,
     )
     from coppermind_store.recordings import render_transcript
+    from coppermind_store.voice_store import VoiceStore
 
-    note = await context.store.get_note(assignment["note_id"])
+    try:
+        note = await context.store.get_note(assignment["note_id"])
+    except NotFound:
+        VoiceStore(context).purge(set(), {assignment["note_id"]})
+        return
     recording = next(
         (r for r in context.recordings.jobs() if r.note_id == note.id and r.source_id), None
     )
     if recording is None:
-        raise ValueError("Recording no longer exists")
+        return
     manifest = await context.store.get_source(recording.source_id)
     artifact = await context.store.get_source_artifact(
         recording.source_id, manifest.current_revision, "transcript.json"

@@ -109,7 +109,7 @@ def _is_contact(person: dict[str, Any]) -> bool:
     return not person["id"].startswith("person:") and not person.get("person_id")
 
 
-def _contact_match(context: Any, person: dict[str, Any]) -> Any:
+def _contact_match(context: Any, person: dict[str, Any], *, applying: bool = False) -> Any:
     from coppermind_store.entities import email
 
     address = email(person.get("email", ""))
@@ -125,14 +125,24 @@ def _contact_match(context: Any, person: dict[str, Any]) -> Any:
     if match is None and address:
         for entity in entities:
             if address in {email(a) for a in entity.emails}:
-                raise ValueError(_taken_address(person["name"], entity))
+                raise ValueError(_taken_address(person["name"], entity, applying))
     return match
 
 
-def _taken_address(name: str, holder: Any) -> str:
+def _taken_address(name: str, holder: Any, applying: bool) -> str:
     if holder.kind == "person":
+        if applying:
+            return (
+                f"{name} now matches a person who was removed. Restore that person, "
+                "then resume the review."
+            )
         return (
             f"{name} matches a person who was removed. Choose someone else or restore that person."
+        )
+    if applying:
+        return (
+            f"{name}'s email address now belongs to {holder.name}. Change that dossier, "
+            "then resume the review."
         )
     return (
         f"{name}'s email address already belongs to {holder.name}. Choose someone else "
@@ -159,7 +169,7 @@ async def create_contact_people(context: Any, operation: dict[str, Any]) -> None
     for index, person in enumerate(operation["people"]):
         if not _is_contact(person):
             continue
-        match = _contact_match(context, person)
+        match = _contact_match(context, person, applying=True)
         if match is None:
             address = email(person.get("email", ""))
             try:

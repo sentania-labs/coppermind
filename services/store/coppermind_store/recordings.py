@@ -515,6 +515,9 @@ class Recordings:
                     return False
             elif row.state == "deleted":
                 (self.context.root / "voice-pending" / (job.id + ".json")).unlink(missing_ok=True)
+                from coppermind_store.voice_store import VoiceStore
+
+                VoiceStore(self.context).purge(set(), {job.note_id})
                 if not (row.filed and row.reviewed):
                     return False
             elif not (row.filed and row.reviewed):
