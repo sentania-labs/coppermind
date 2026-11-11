@@ -255,7 +255,7 @@ class WaitingView extends ItemView {
       for(const recording of data.failed){
         const card=el.createDiv({cls:'coppermind-card'});card.createEl('h4',{text:recording.title});
         card.createEl('p',{text:recording.message});
-        if(recording.details)card.createEl('p',{text:'Details: '+recording.details});
+        for(const problem of recording.field_problems||[])card.createEl('p',{text:'Details: the '+JSON.stringify(problem.field)+' field '+problem.reason+'.'});
         if(recording.retry_after){const date=new Date(recording.retry_after);if(!isNaN(date))card.createEl('p',{text:'Next attempt after '+date.toLocaleString()+'.'});}
         if(recording.can_retry){
           const button=card.createEl('button',{text:'Retry'}), feedback=card.createEl('p');

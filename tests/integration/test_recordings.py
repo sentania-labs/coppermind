@@ -712,7 +712,10 @@ async def test_a_note_that_cannot_be_filed_keeps_its_transcript_and_is_not_sent_
         async def refuse(ingest_request, **kwargs):
             calls.append(ingest_request)
             if len(calls) == 1:
-                raise ValidationFailed(["frontmatter: type is required"])
+                raise ValidationFailed(
+                    ["frontmatter: type is required"],
+                    field_problems=[{"field": "type", "reason": "is required"}],
+                )
             return await real(ingest_request, **kwargs)
 
         store.ingest = refuse
@@ -721,7 +724,7 @@ async def test_a_note_that_cannot_be_filed_keeps_its_transcript_and_is_not_sent_
         assert failed["error_rule"] == "note-rejected" and "type is required" in failed["error"]
         assert "transcript is kept" in failed["error"]
         row = (await context.recording_waiting({}))["failed"][0]
-        assert "type is required" in row["details"]
+        assert row["field_problems"] == [{"field": "type", "reason": "is required"}]
         assert "Retry will only work after the vault's field rules are changed" in row["message"]
         assert "send the recording again with corrected fields" in row["message"]
         await context.retry_recording({"id": job["id"]})
@@ -1813,3 +1816,18 @@ async def test_companion_retry_permissions_and_waiting_count_through_real_store(
             assert after.status_code == 200 and after.json()["failed"] == []
             assert context.recordings.load(job.id).state == "queued"
     await client.aclose()
+
+
+async def test_rejected_recording_exposes_structured_field_reason(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        accepted = await context.accept_recording(
+            request(await store_audio(store), frontmatter={"date": "2026-11-09", "account": 42})
+        )
+        await context.recordings.tick()
+        job = context.recordings.load(accepted["id"])
+        assert job.error_rule == "note-rejected"
+        assert "account: expected a list" in job.error
+        row = (await context.recording_waiting({}))["failed"][0]
+        assert row["field_problems"] == [{"field": "account", "reason": "should be a list"}]
+        assert "external id" not in str(row) and "schema" not in str(row)

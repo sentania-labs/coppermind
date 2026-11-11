@@ -101,6 +101,7 @@ class TranscriptionJob(ContextModel):
     attempt_limit: int = Field(default=2, ge=1, le=3)
     error: str = ""
     error_rule: str = ""
+    field_problems: list[dict[str, str]] = Field(default_factory=list)
     reply: str = Field(default="", max_length=REPLY_KEPT)
     retry_after: str = ""
     # When the service first answered busy in the current run of busy answers.
@@ -339,7 +340,9 @@ class Recordings:
                         "id": job.id,
                         "title": job.title or job.filename,
                         "message": message,
-                        "details": job.error if job.error_rule == "note-rejected" else "",
+                        "field_problems": job.field_problems
+                        if job.error_rule == "note-rejected"
+                        else [],
                         "retry_after": job.retry_after if scheduled else "",
                         "can_retry": ready and retry_offered,
                         "can_dismiss": not retrying,
@@ -823,6 +826,7 @@ class Recordings:
             )
         except ValidationFailed as exc:
             job.state = "failed"
+            job.field_problems = exc.field_problems
             job.set_error(
                 "The note could not be filed: " + "; ".join(exc.errors)[:500] + ". The transcript "
                 "is kept. The note fields are fixed once the recording is accepted, so a retry "

@@ -207,10 +207,18 @@ async def test_a_dismissed_recording_is_still_run_by_the_worker_and_shows_a_new_
 @pytest.mark.asyncio
 async def test_rejected_note_shows_the_stores_message_as_details(tmp_path):
     stored = "The note could not be filed: type: invalid; frontmatter: account is required."
-    failure = job(1, state="failed", error_rule="note-rejected", transcribed=True, error=stored)
+    failure = job(
+        1,
+        state="failed",
+        error_rule="note-rejected",
+        transcribed=True,
+        error=stored,
+        field_problems=[{"field": "account", "reason": "should be a list"}],
+    )
     recordings, _, _ = waiting_recordings(tmp_path, [failure])
     row = (await recordings.waiting())["failed"][0]
-    assert row["details"] == stored
+    assert row["field_problems"] == [{"field": "account", "reason": "should be a list"}]
+    assert stored not in str(row)
     assert "Retry will only work after the vault's field rules are changed" in row["message"]
     assert "send the recording again with corrected fields" in row["message"]
     assert stored not in row["message"]

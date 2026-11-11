@@ -401,3 +401,12 @@ test('a credential forbidden to retry sees the required permissions',async()=>{
   assert.match(message,/select it in companion settings/);assert.equal(retry.disabled,false);
   assert.doesNotMatch(message,/Check your connection/);
 });
+
+
+test('rejected note details show only the specific field problem',async()=>{
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'The meeting note fields were rejected.',field_problems:[{field:'account',reason:'should be a list'}]}]}});
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  const text=view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.ok(text.includes('Details: the "account" field should be a list.'));
+  assert.doesNotMatch(text,/schema|external id/);
+});
