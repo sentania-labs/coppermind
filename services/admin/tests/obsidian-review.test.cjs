@@ -25,15 +25,15 @@ async function fixture(local, overrides={}){
   const digest='sha256:'+Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(raw))).toString('hex');
   const requests=[];const notices=[];
   const file={basename:'Note',path:'Review/Note.md'};
-  let factory;
-  class Plugin {registerView(type,fn){factory=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(){}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
+  let factory;const factories={};const modals=[];
+  class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(){}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
-  return {view,plugin,requests,notices,app,raw};
+  return {view,plugin,requests,notices,app,raw,factories,modals};
 }
 test('unsynced note cannot complete review',async()=>{
   const {view}=await fixture('A local edit that has not synced');
@@ -200,4 +200,110 @@ for(const state of ['queued','running'])test(state+' recording warns beside comp
 for(const overrides of [{state:'running'},{state:'suggested',meeting_summary:summaryProposal},{state:'failed',meeting_summary:summaryProposal}])test('no pending-summary warning for '+JSON.stringify(overrides),async()=>{
   const f=await fixture(undefined,overrides);
   assert.ok(!f.view.contentEl.all().some(e=>e.text===pendingSummaryNotice));
+});
+test('voice and maybe names require a deliberate choice',async()=>{
+  const f=await fixture(undefined,{state:'failed',manual_speaker_review:{source_id:'source',revision:1,speakers:['Speaker 1'],candidates:[],voice_matches:{'Speaker 1':[{id:'person:a',name:'Alex',strength:'maybe'}]}}});
+  const select=f.view.contentEl.all().find(e=>e.tag==='select');
+  assert.equal(select.value,'');
+  const button=f.view.contentEl.all().find(e=>e.text==='Maybe: Alex');assert.ok(button);
+  button.onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:a');
+});
+
+const voiceManual=matches=>({source_id:'source',revision:1,speakers:['Speaker 1'],candidates:[],voice_matches:{'Speaker 1':matches}});
+const match=(id,name,strength='strong')=>({id:'person:'+id,name,strength});
+test('a single strong voice suggestion is included in one completion',async()=>{
+  const f=await fixture(undefined,{manual_speaker_review:voiceManual([match('a','Alex')])});
+  const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.match(text,/Speaker 1 → Alex/);assert.match(text,/Source: Voice/);assert.doesNotMatch(text,/No people suggested/);
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:a');
+});
+test('agreeing model and voice show both sources with one selection',async()=>{
+  const s=proposal(0,.9,'contact:a');s.candidates=[{id:'contact:a',person_id:'a',name:'Alex'}];
+  const f=await fixture(undefined,{suggestions:[s],job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
+  assert.ok(f.view.contentEl.all().some(e=>e.text==='Sources: Model and Voice'));
+  assert.ok(!f.view.contentEl.all().some(e=>e.text==='Voice: Alex'));
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).speaker_choices['0'],'contact:a');
+});
+for(const [name,suggestions,matches] of [
+  ['two voices',[],[match('a','Alex'),match('b','Blair')]],
+  ['model and voice',[proposal(0,.9,'person:a')],[match('b','Blair')]],
+])test(name+' conflict selects no one',async()=>{
+  const f=await fixture(undefined,{suggestions,job_id:'job',manual_speaker_review:voiceManual(matches)});
+  assert.ok(f.view.contentEl.all().some(e=>e.text==='Suggestions disagree. Choose a person.'));
+  assert.equal(f.view.contentEl.all().find(e=>e.tag==='select').value,'');
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
+  assert.deepEqual(body.selected,[]);assert.deepEqual(body.manual_speakers,{});
+});
+test('correcting a selected voice match sends only the corrected person',async()=>{
+  const review=voiceManual([match('a','Alex')]);review.candidates=[{id:'person:b',name:'Blair'}];
+  const f=await fixture(undefined,{manual_speaker_review:review});
+  const select=f.view.contentEl.all().find(e=>e.tag==='select');select.value='person:b';select.onchange();
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:b');
+});
+
+const personVoice=(signatures)=>({enabled:true,signatures});
+const sig=(id)=>({note_id:id,created_at:'2026-01-02T00:00:00Z'});
+async function peopleFixture(signatures){
+  const f=await fixture(undefined,personVoice(signatures));
+  const view=f.factories['coppermind-people']({app:f.app});
+  await view.show({id:'alex-id',name:'Alex'});
+  const toggle=view.contentEl.all().find(e=>e.tag==='toggle');
+  const puts=()=>f.requests.filter(r=>r.method==='PUT');
+  return {...f,view,toggle,puts};
+}
+test('turning voice recognition off says its signatures are deleted and waits for confirmation',async()=>{
+  const f=await peopleFixture([sig('n1'),sig('n2')]);
+  await f.toggle.onchange(false);
+  assert.equal(f.puts().length,0);
+  const modal=f.modals.at(-1);
+  assert.ok(modal.contentEl.all().some(e=>e.text==='Turning this off deletes 2 saved voice signatures for Alex. Turning it on again starts from nothing.'));
+  await modal.contentEl.all().find(e=>e.text==='Turn off and delete').onclick();
+  assert.equal(f.puts().length,1);
+  assert.match(f.puts()[0].url,/\/v1\/entities\/alex-id\/voice$/);
+  assert.deepEqual(JSON.parse(f.puts()[0].body),{enabled:false});
+});
+test('cancelling the turn-off warning changes nothing',async()=>{
+  const f=await peopleFixture([sig('n1')]);
+  await f.toggle.onchange(false);
+  f.modals.at(-1).contentEl.all().find(e=>e.text==='Cancel').onclick();
+  assert.equal(f.puts().length,0);
+});
+test('turning off with nothing saved needs no confirmation',async()=>{
+  const f=await peopleFixture([]);
+  await f.toggle.onchange(false);
+  assert.equal(f.modals.length,0);
+  assert.equal(f.puts().length,1);
+});
+
+test('summary edits and strong voice are submitted together',async()=>{
+  const f=await fixture(undefined,{meeting_summary:summaryProposal,job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
+  const input=f.view.contentEl.all().find(e=>e.tag==='textarea');input.value='Corrected summary.';input.oninput();
+  assert.ok(f.view.contentEl.all().some(e=>e.text==='Speaker 1 → Alex'));
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
+  assert.equal(body.meeting_summary.summary,'Corrected summary.');
+  assert.equal(body.manual_speakers['Speaker 1'],'person:a');
+});
+
+
+test('voice selection does not show an empty model suggestion as a 0% voice match',async()=>{
+  const s={...proposal(0,0,null),display_value:'No person suggested',reason:'No confident match was suggested.',candidates:[]};
+  const f=await fixture(undefined,{suggestions:[s],job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
+  const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.match(text,/Source: Voice/);assert.match(text,/Speaker 1 → Alex/);
+  assert.doesNotMatch(text,/Model confidence: 0%/);assert.doesNotMatch(text,/No confident match was suggested/);
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).speaker_choices['0'],'person:a');
+});
+test('useful model evidence stays attributed when voice supplies the name',async()=>{
+  const s={...proposal(0,0,null),reason:'Someone said hello.',quote:'Hello.',candidates:[]};
+  const f=await fixture(undefined,{suggestions:[s],job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
+  const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.match(text,/Model: Someone said hello/);assert.match(text,/Model evidence/);
 });

@@ -528,6 +528,26 @@ async def test_a_retired_person_is_reported_for_that_speaker_and_the_rest_stays_
     assert (await store.get_source(result.source.id)).current_revision == 1
 
 
+async def test_pending_voice_signatures_are_removed_when_no_speaker_is_named(store, standin):
+    from coppermind_store.voice_store import VoiceStore
+
+    alex = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    context, result, note, job_id, _ = await recorded(
+        store, standin, SHORT, speaker_answer(alex_id)
+    )
+    VoiceStore(context).set_enabled(alex["id"], True)
+    recording = next(r for r in context.recordings.jobs() if r.note_id == note.id)
+    vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
+    context.write(
+        "voice-pending/" + recording.id,
+        [{"label": "Speaker 1", "speech_seconds": 30.0, "embeddings": [vector]}],
+    )
+    leave_unnamed = await completion(context, store, result, job_id, person="")
+    assert (await context.complete_review(leave_unnamed))["state"] == "complete"
+    assert context.read("voice-pending/" + recording.id, None) is None
+    assert VoiceStore(context).summary(alex["id"])["signatures"] == []
+
+
 async def test_speakers_and_an_attendee_suggestion_complete_together_without_losing_either(
     store, standin
 ):
@@ -948,3 +968,51 @@ async def test_a_speaker_quote_not_in_the_transcript_is_not_shown_as_evidence(st
     assert proposals["Speaker 1"].quote == "Thanks, Alex."
     assert proposals["Speaker 2"].quote == ""
     assert proposals["Speaker 2"].value == alex_id(observed[0])
+
+
+async def test_voice_enrollment_uses_confirmed_opted_in_people_and_removes_pending(store, standin):
+    from coppermind_store.voice_store import VoiceStore
+
+    alex = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    blair = await store.entities.create(EntityInput(kind="person", name="Blair Stone"))
+    context, result, note, _, _ = await recorded(store, standin, SHORT, speaker_answer(alex_id))
+    voice = VoiceStore(context)
+    voice.set_enabled(alex["id"], True)
+    recording = next(r for r in context.recordings.jobs() if r.note_id == note.id)
+    vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
+    context.write(
+        "voice-pending/" + recording.id,
+        [
+            {"label": "Speaker 1", "speech_seconds": 30.0, "embeddings": [vector]},
+            {"label": "Speaker 2", "speech_seconds": 30.0, "embeddings": [vector]},
+        ],
+    )
+    detail = await context.lifecycle_detail({"note_id": note.id})
+    manual = detail["manual_speaker_review"]
+    assert "vector" not in json.dumps(detail)
+    await context.complete_review(
+        {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "confirmation": "Complete review",
+            "selected": [],
+            "manual_source_id": manual["source_id"],
+            "manual_source_revision": manual["revision"],
+            "manual_speakers": {
+                "Speaker 1": "person:" + alex["id"],
+                "Speaker 2": "person:" + blair["id"],
+            },
+        }
+    )
+    assert len(voice.summary(alex["id"])["signatures"]) == 1
+    assert voice.summary(blair["id"])["signatures"] == []
+    assert context.read("voice-pending/" + recording.id, None) is None
+    manifest = await store.get_source(result.source.id)
+    artifact = await store.get_source_artifact(
+        result.source.id, manifest.current_revision, "transcript.json"
+    )
+    assert "vector" not in artifact.content
+    context.write("voice-pending/" + recording.id, [{"label": "Speaker 1", "embeddings": [vector]}])
+    store.entities.purge({note.id}, {alex["id"]}, "voice-purge-test")
+    assert context.read("voice-pending/" + recording.id, None) is None
+    assert voice.summary(alex["id"])["signatures"] == []

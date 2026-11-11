@@ -503,8 +503,19 @@ class Recordings:
                 return False
             async with store.session_factory() as session:
                 row = await session.get(Note, job.note_id)
+            if (
+                row is not None
+                and row.state != "deleted"
+                and self.context.read("review-completions/" + job.note_id, {}).get("state")
+                == "applying"
+            ):
+                return False
             if row is None:
                 if not await self._purged(job.note_id):
+                    return False
+            elif row.state == "deleted":
+                (self.context.root / "voice-pending" / (job.id + ".json")).unlink(missing_ok=True)
+                if not (row.filed and row.reviewed):
                     return False
             elif not (row.filed and row.reviewed):
                 return False
@@ -609,6 +620,7 @@ class Recordings:
             )
 
     def _audio_removed(self, job: TranscriptionJob) -> bool:
+        (self.context.root / "voice-pending" / (job.id + ".json")).unlink(missing_ok=True)
         job.audio_removed, job.audio_kept = True, ""
         job.audio_removal_error, job.audio_removal_retry_after = "", ""
         job.audio_removal_attempts = 0
@@ -768,6 +780,30 @@ class Recordings:
             )
         return transcript
 
+    async def calendar_speaker_hint(self, job: TranscriptionJob) -> int | None:
+        """Use a linked event, or an unambiguous same-day title, as an upper bound."""
+        from types import SimpleNamespace
+
+        fields = dict(job.frontmatter)
+        date_key = self.context.store.control.schema().role("date_key")
+        if not fields.get(date_key) and job.captured_at:
+            fields[date_key] = job.captured_at
+        events = await self.context.calendar_candidates(SimpleNamespace(frontmatter=fields))
+        event_field = self.context.config().assignments["enrichment"].event_field
+        linked = fields.get(event_field) if event_field else None
+        if linked:
+            candidates = [event for event in events if event["event_id"] == linked]
+        else:
+            candidates = [
+                event
+                for event in events
+                if event["title"].strip().casefold() == job.title.strip().casefold()
+            ]
+        if len(candidates) != 1:
+            return None
+        count = len(candidates[0].get("people", []))
+        return count if count > 0 else None
+
     async def transcribe(self, job: TranscriptionJob) -> dict[str, Any]:
         assignment = self.assignment()
         assert assignment is not None
@@ -797,6 +833,13 @@ class Recordings:
         speakers = job.metadata.get("num_speakers")
         if isinstance(speakers, bool) or not isinstance(speakers, int) or speakers < 1:
             speakers = None
+        maximum = None
+        if speakers is None:
+            try:
+                maximum = await self.calendar_speaker_hint(job)
+            except Exception:
+                log.warning("calendar speaker hint unavailable for %s", job.id, exc_info=True)
+                maximum = None
 
         def save_remote(remote_id: str, started: float, resubmits: int, message: str) -> None:
             job.remote_job_id, job.remote_job_started, job.remote_job_resubmits = (
@@ -822,7 +865,11 @@ class Recordings:
             job_update=save_remote,
             duration_seconds=duration,
             num_speakers=speakers,
+            max_speakers=maximum,
+            include_speaker_embeddings=True,
         )
+        pending = transcript.pop("speakers", [])
+        self.context.write("voice-pending/" + job.id, pending)
         transcript["model"] = assignment.model
         self.context.write(self.transcript_path(job), transcript)
         job.remote_job_id, job.remote_job_started, job.remote_job_resubmits = "", 0, 0

@@ -1421,6 +1421,10 @@ async def _retire(
         if typed is not None:
             raise typed from exc
         raise
+    # Pending voice data follows the recording when it is removed by any route.
+    for job in store.context.recordings.jobs():
+        if job.artifact_id == artifact_id:
+            (store.context.root / "voice-pending" / (job.id + ".json")).unlink(missing_ok=True)
 
 
 async def sweep(store: LocalStore, *, full: bool = False) -> dict[str, int]:

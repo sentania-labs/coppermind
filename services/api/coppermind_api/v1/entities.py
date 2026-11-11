@@ -4,6 +4,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 
 from coppermind.entities import EntityChange, EntityInput, EntityQuery
 from coppermind.store_client import HttpStoreClient
@@ -74,3 +75,59 @@ async def change_entity(
     return await call(
         client, "change", {"id": entity_id, "change": payload.model_dump()}, principal
     )
+
+
+class VoiceConsent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
+@router.get("/{entity_id}/voice")
+async def get_voice(
+    entity_id: str,
+    client: HttpStoreClient = Depends(store),
+    principal: Principal = Depends(require_scopes("entities:read", "notes:read")),
+) -> JSONResponse:
+    return await call(client, "voice-get", {"id": entity_id}, principal)
+
+
+@router.put("/{entity_id}/voice")
+async def set_voice(
+    entity_id: str,
+    payload: VoiceConsent,
+    client: HttpStoreClient = Depends(store),
+    principal: Principal = Depends(require_scopes("entities:write", "entities:read", "notes:read")),
+) -> JSONResponse:
+    return await call(client, "voice-set", {"id": entity_id, "enabled": payload.enabled}, principal)
+
+
+@router.delete("/{entity_id}/voice")
+async def delete_voice(
+    entity_id: str,
+    client: HttpStoreClient = Depends(store),
+    principal: Principal = Depends(require_scopes("entities:write", "entities:read", "notes:read")),
+) -> JSONResponse:
+    return await call(client, "voice-delete", {"id": entity_id}, principal)
+
+
+class VoiceThresholds(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    strong: float
+    maybe: float
+
+
+@router.get("/voice/settings")
+async def voice_settings(
+    client: HttpStoreClient = Depends(store),
+    principal: Principal = Depends(require_scopes("entities:read", "notes:read")),
+) -> JSONResponse:
+    return await call(client, "voice-settings", {}, principal)
+
+
+@router.put("/voice/settings")
+async def save_voice_settings(
+    payload: VoiceThresholds,
+    client: HttpStoreClient = Depends(store),
+    principal: Principal = Depends(require_scopes("entities:write", "entities:read", "notes:read")),
+) -> JSONResponse:
+    return await call(client, "voice-settings-save", payload.model_dump(), principal)

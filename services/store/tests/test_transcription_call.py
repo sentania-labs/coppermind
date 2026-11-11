@@ -462,12 +462,12 @@ async def test_job_path_polls_and_submits_stable_identity_and_hint(recording, mo
         size_bytes=recording.stat().st_size,
         job_id="stable-id",
         duration_seconds=7201,
-        num_speakers=3,
+        max_speakers=3,
     )
     assert result["segments"]
     assert requests[0][1] == "/v1/audio/transcriptions/jobs"
     assert requests[0][3] == "stable-id"
-    assert b'name="num_speakers"\r\n\r\n3' in requests[0][2]
+    assert b'name="max_speakers"\r\n\r\n3' in requests[0][2]
     assert requests[1][1] == "/v1/audio/transcriptions/jobs/job-1"
     assert [r[0] for r in requests] == ["POST", "GET", "GET"]
 
@@ -1024,3 +1024,32 @@ async def test_recovery_has_time_to_resubmit_when_old_deadline_is_near(
     )
     assert result["segments"]
     assert requests == [("POST", "stable"), ("GET", None), ("POST", "stable")]
+
+
+async def test_voice_signatures_requested_and_returned_only_when_requested(recording):
+    speakers = [
+        {
+            "label": "Speaker 1",
+            "speech_seconds": 30.5,
+            "embeddings": [
+                {"model": "voice", "version": "old", "vector": [0.1, 0.2]},
+                {"model": "voice", "version": "new", "vector": [0.3, 0.4]},
+            ],
+        },
+        {"label": "Speaker 2", "speech_seconds": 3, "embeddings": []},
+    ]
+    async with Service(reply={**REPLY, "speakers": speakers}) as service:
+        transcript, _ = await ModelProvider().transcribe(
+            service.connection,
+            "",
+            assignment(),
+            recording,
+            filename=recording.name,
+            mime_type="audio/mp4",
+            size_bytes=recording.stat().st_size,
+            max_speakers=5,
+            include_speaker_embeddings=True,
+        )
+    assert b'name="include_speaker_embeddings"\r\n\r\ntrue' in service.requests[0]["body"]
+    assert b'name="max_speakers"\r\n\r\n5' in service.requests[0]["body"]
+    assert transcript["speakers"] == speakers

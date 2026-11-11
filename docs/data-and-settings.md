@@ -194,7 +194,12 @@ recording, since most send nothing until they have finished), the total attempts
 only to that connection. Editing a connection turns off every assignment that uses it, as
 for enrichment. Saved in `/data/state/context/config.json` as `assignments.transcription`;
 each intake is one small file under `/data/state/context/recordings/` and its saved
-transcript under `/data/state/context/recording-transcripts/`.
+transcript under `/data/state/context/recording-transcripts/`. Voice signatures are
+private state in the same folder (mode 0600, never in the vault or an API response):
+`voice-signatures.json` (per-person opt-in, saved signatures, turned-down suggestions),
+`voice-pending/<recording id>.json` (a recording's signatures, removed when its
+review completes) and `voice-settings.json` (the two match thresholds). Rules in
+[dossiers](dossiers.md#voice-recognition).
 
 ### Calendar import budgets
 

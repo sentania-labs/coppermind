@@ -82,6 +82,9 @@ has not been exercised by this slice.
   the link. Each intake is listed with its state and a Retry under Suggestions
   and backlog, and a failure also appears under Problems with its reason. Naming
   the speakers is part of Review (see [note workflow](docs/note-workflow.md)).
+  Recognising recurring speakers by voice is off by default, opt-in per person,
+  keeps signatures only and is deletable (see
+  [dossiers](docs/dossiers.md#voice-recognition)).
   Summary and search by meaning are later steps. No
   transcription service was reachable while this was built, so it is proven
   against a local stand-in that returns the documented shape slowly

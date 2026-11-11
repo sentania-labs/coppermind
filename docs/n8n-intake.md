@@ -214,7 +214,8 @@ the service is sent its bytes.
    ```
 
    `duration_seconds` and `num_speakers` are optional metadata supplied by the caller.
-   The speaker count is a hint, not an identification. A recording without a calendar
+   The speaker count is a hint, not an identification; without it, the attendee count of
+   the matching calendar event is sent instead (rules in `docs/api.md`). A recording without a calendar
    match still becomes a Review note using its capture date and time; fill in its details
    during review.
 3. Poll `GET /v1/recordings/{id}` with bounded backoff until `state` is `succeeded` (the

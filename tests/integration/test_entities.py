@@ -1432,3 +1432,25 @@ async def test_failing_dossier_refresh_does_not_fail_an_index_rebuild(store, mon
     monkeypatch.setattr(EntityService, "refresh", broken)
     counts = await rebuild(store)
     assert "notes" in counts
+
+
+async def test_merging_a_person_away_deletes_their_voice_signatures(store):
+    from coppermind_store.voice_store import VoiceStore
+
+    source = await person(store, name="Casey", address="casey@example.test")
+    target = await person(store, name="Casey Two", address="two@example.test")
+    voice = VoiceStore(store.context)
+    voice.set_enabled(source["id"], True)
+    voice.confirm(
+        source["id"], "note", "today", 30, [{"model": "m", "version": "v", "vector": [1, 0]}]
+    )
+    assert len(voice.summary(source["id"])["signatures"]) == 1
+    request = dict(version=source["version"], target=target["id"])
+    preview = await store.entities.change(
+        source["id"], EntityChange(action="merge-preview", **request)
+    )
+    await store.entities.change(
+        source["id"], EntityChange(action="merge", preview=preview["preview"], **request)
+    )
+    assert voice.summary(source["id"]) == {"enabled": False, "signatures": []}
+    assert source["id"] not in voice.summaries()

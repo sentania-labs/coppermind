@@ -499,6 +499,9 @@ class EntityService:
         if not path.exists():
             if entity.generated is not None and not entity.retired_at:
                 entity.retired_at = datetime.now(UTC)
+                from coppermind_store.voice_store import VoiceStore
+
+                VoiceStore(self.store.context).purge({entity.id}, set())
                 self.receipt(ledger, entity, "page deleted")
             return None
         raw = path.read_bytes()
@@ -933,6 +936,9 @@ class EntityService:
                         )
                         target.facts.extend(entity.facts)
                         entity.redirect = target.id
+                        from coppermind_store.voice_store import VoiceStore
+
+                        VoiceStore(self.store.context).purge({entity.id}, set())
                         target.version += 1
             self.receipt(ledger, entity, "legacy contact correction", legacy=key)
 
@@ -1662,6 +1668,9 @@ class EntityService:
                 fact.withdrawn_for = None
             elif change.action == "retire":
                 entity.retired_at = datetime.now(UTC)
+                from coppermind_store.voice_store import VoiceStore
+
+                VoiceStore(self.store.context).purge({entity.id}, set())
             elif change.action == "restore":
                 if entity.redirect:
                     raise ValidationFailed(
@@ -1737,6 +1746,9 @@ class EntityService:
             target.aliases = sorted(set(target.aliases + entity.aliases + [entity.name]))
             target.emails = sorted(set(target.emails + entity.emails))
             entity.redirect = target.id
+            from coppermind_store.voice_store import VoiceStore
+
+            VoiceStore(self.store.context).purge({entity.id}, set())
             for other in ledger.entities.values():
                 for fact in other.facts:
                     if fact.target == entity.id:
@@ -1808,6 +1820,14 @@ class EntityService:
         ledger = self.load()
         if any(r.get("purge") == token for r in ledger.receipts):
             return
+        from coppermind_store.voice_store import VoiceStore
+
+        VoiceStore(self.store.context).purge(entity_ids, note_ids)
+        for recording in self.store.context.recordings.jobs():
+            if recording.note_id in note_ids:
+                (self.store.context.root / "voice-pending" / (recording.id + ".json")).unlink(
+                    missing_ok=True
+                )
         for snapshot in (self.root / "moves").glob("*.json"):
             snapshot.unlink()
         for identity in entity_ids:

@@ -238,3 +238,93 @@ def test_task_destination_names_match_headings_and_breadcrumbs(signed_in):
         page = client.get(url).text
         assert f"<h1>{name}</h1>" in page
         assert f"Coppermind / {name}" in page
+
+
+def test_voice_thresholds_are_set_in_admin_and_bad_values_are_refused(signed_in):
+    client, _ = signed_in
+    fake = ContextStore()
+    client.app.state.store = fake
+    page = client.get("/admin/workflow?tab=dossiers").text
+    assert 'action="/v1/admin/voice/thresholds"' in page
+    assert 'name="strong"' in page and 'value="0.6"' in page and 'value="0.45"' in page
+    token = form_token(client, "/admin/workflow?tab=dossiers")
+    saved = client.post(
+        "/v1/admin/voice/thresholds",
+        data={"csrf": token, "strong": "0.7", "maybe": "0.5"},
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    assert ("voice-settings-save", {"strong": 0.7, "maybe": 0.5}) in fake.calls
+    for strong, maybe in [("abc", "0.5"), ("", "0.5")]:
+        refused = client.post(
+            "/v1/admin/voice/thresholds",
+            data={"csrf": token, "strong": strong, "maybe": maybe},
+        )
+        assert refused.status_code == 422
+    assert [c for c in fake.calls if c[0] == "voice-settings-save"] == [
+        ("voice-settings-save", {"strong": 0.7, "maybe": 0.5})
+    ]
+
+
+def test_turning_voice_recognition_off_warns_that_signatures_are_deleted(signed_in):
+    client, _ = signed_in
+
+    class PeopleStore(ContextStore):
+        async def context_action(self, action, payload):
+            data = await super().context_action(action, payload)
+            if action == "snapshot":
+                data["entities"] = [
+                    {
+                        "id": "alex",
+                        "kind": "person",
+                        "name": 'Alex "Al" O\'Neil',
+                        "path": "People/Alex.md",
+                        "facts": [],
+                    },
+                    {
+                        "id": "blair",
+                        "kind": "person",
+                        "name": "Blair",
+                        "path": "People/Blair.md",
+                        "facts": [],
+                    },
+                ]
+            return data
+
+        async def entity_action(self, action, payload):
+            if action == "voice-list":
+                signature = {"note_id": "n1", "created_at": "2026-01-02T00:00:00Z"}
+                return {
+                    "alex": {"enabled": True, "signatures": [signature, signature]},
+                    "blair": {"enabled": True, "signatures": []},
+                }
+            return await super().entity_action(action, payload)
+
+    client.app.state.store = PeopleStore()
+    page = client.get("/admin/workflow?tab=dossiers").text
+    assert (
+        'data-confirm="Turning this off deletes 2 saved voice signatures for '
+        'Alex &quot;Al&quot; O&#x27;Neil. Turning it on again starts from nothing."'
+    ) in page
+    assert page.count("data-confirm=") == 1
+
+
+def test_voice_change_for_a_person_who_is_gone_shows_the_reason_not_a_server_error(signed_in):
+    from coppermind.store_protocol import ValidationFailed
+
+    client, _ = signed_in
+
+    class GoneStore(ContextStore):
+        async def entity_action(self, action, payload):
+            if action in {"voice-set", "voice-delete"}:
+                raise ValidationFailed(["Person not found"])
+            return await super().entity_action(action, payload)
+
+    client.app.state.store = GoneStore()
+    token = form_token(client, "/admin/workflow?tab=dossiers")
+    for action, extra in (("set", {"enabled": "true"}), ("delete", {})):
+        refused = client.post(
+            "/v1/admin/voice/" + action, data={"csrf": token, "id": "gone", **extra}
+        )
+        assert refused.status_code == 422
+        assert "Person not found" in refused.text

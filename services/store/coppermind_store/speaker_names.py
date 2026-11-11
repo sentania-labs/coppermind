@@ -364,3 +364,34 @@ async def apply(context: Any, receipt: dict[str, Any], note: Any) -> Any:
     return await context.store.patch_frontmatter(
         note.id, PatchFrontmatter(set=changes), if_match=note.content_hash
     )
+
+
+def voice_suggestions(context: Any, note_id: str) -> dict[str, list[dict[str, Any]]]:
+    """Return names and strength only; pending and saved vectors stay private."""
+    from coppermind_store.voice_store import VoiceStore
+
+    recording = next((r for r in context.recordings.jobs() if r.note_id == note_id), None)
+    if recording is None:
+        return {}
+    pending = context.read("voice-pending/" + recording.id, [])
+    settings = context.read("voice-settings", {"strong": 0.60, "maybe": 0.45})
+    people = context.store.entities.load().entities
+    results = {}
+    for speaker in pending:
+        if not isinstance(speaker, dict) or not isinstance(speaker.get("label"), str):
+            continue
+        embeddings = speaker.get("embeddings")
+        if not isinstance(embeddings, list):
+            continue
+        matches = VoiceStore(context).match(embeddings, **settings)
+        candidates = []
+        for match in matches:
+            if VoiceStore(context).rejected(note_id, speaker["label"], match["person_id"]):
+                continue
+            person = people.get(match["person_id"])
+            if not person or person.kind != "person" or person.retired_at or person.redirect:
+                continue
+            candidates.append({**person_candidate(person), "strength": match["strength"]})
+        if candidates:
+            results[speaker["label"]] = candidates
+    return results

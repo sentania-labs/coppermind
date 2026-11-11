@@ -1124,3 +1124,242 @@ async def test_recovering_shared_recording_keeps_audio_until_its_note_is_reviewe
         assert (await context.recording_status({"id": second["id"]}))["state"] == "succeeded"
         assert await context.recordings.tick() is False
         assert archive.read_bytes() == AUDIO
+
+
+@pytest.mark.parametrize("removed", ["note", "recording"])
+async def test_voice_pending_is_private_and_follows_recording_or_note_removal(store, removed):
+    from coppermind_store import artifacts
+
+    vector = {"model": "voice", "version": "v1", "vector": [0.1, 0.2]}
+    speakers = [{"label": "Speaker 1", "speech_seconds": 30.0, "embeddings": [vector]}]
+    async with Service(reply={**REPLY, "speakers": speakers}) as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    job = context.recordings.load(accepted["id"])
+    assert b'name="include_speaker_embeddings"\r\n\r\ntrue' in service.requests[0]["body"]
+    assert context.read("voice-pending/" + job.id, []) == speakers
+    assert "vector" not in json.dumps(context.recordings.saved_transcript(job))
+    manifest = await store.get_source(job.source_id)
+    source = await store.get_source_artifact(
+        job.source_id, manifest.current_revision, "transcript.json"
+    )
+    assert "vector" not in source.content
+    if removed == "note":
+        await set_note_state(store, job.note_id, "deleted")
+        await context.recordings.tick()
+    else:
+        await artifacts.remove_artifact(store, audio)
+    assert context.read("voice-pending/" + job.id, None) is None
+
+
+async def test_voice_pending_is_removed_for_a_deleted_note_with_a_stuck_review(store):
+    vector = {"model": "voice", "version": "v1", "vector": [0.1, 0.2]}
+    speakers = [{"label": "Speaker 1", "speech_seconds": 30.0, "embeddings": [vector]}]
+    async with Service(reply={**REPLY, "speakers": speakers}) as service:
+        context = await setup_transcription(store, service)
+        accepted = await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+    job = context.recordings.load(accepted["id"])
+    assert context.read("voice-pending/" + job.id, []) == speakers
+    context.write("review-completions/" + job.note_id, {"state": "applying"})
+    await set_note_state(store, job.note_id, "deleted")
+    await context.recordings.tick()
+    assert context.read("voice-pending/" + job.id, None) is None
+
+
+async def test_reviewed_voice_is_suggested_for_later_recording(store):
+    from coppermind_store.voice_store import VoiceStore
+
+    from coppermind.entities import EntityInput
+
+    person = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    vector = {"model": "voice", "version": "v1", "vector": [1.0, 0.0]}
+    speakers = [{"label": "Speaker 1", "speech_seconds": 30.0, "embeddings": [vector]}]
+    async with Service(reply={**REPLY, "speakers": speakers}) as service:
+        context = await setup_transcription(store, service)
+        await context.setup_lifecycle({"revision": context.config().revision})
+        VoiceStore(context).set_enabled(person["id"], True)
+        first = await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+        first_job = context.recordings.load(first["id"])
+        note = await store.get_note(first_job.note_id)
+        detail = await context.lifecycle_detail({"note_id": note.id})
+        manual = detail["manual_speaker_review"]
+        await context.complete_review(
+            {
+                "note_id": note.id,
+                "if_match": note.content_hash,
+                "confirmation": "Complete review",
+                "selected": [],
+                "manual_source_id": manual["source_id"],
+                "manual_source_revision": manual["revision"],
+                "manual_speakers": {"Speaker 1": "person:" + person["id"]},
+            }
+        )
+        second_audio = await store_audio(store, name="second.m4a", data=AUDIO + b"second")
+        second = await context.accept_recording(request(second_audio, external_source_id="second"))
+        for _ in range(3):
+            if context.recordings.load(second["id"]).state == "succeeded":
+                break
+            await context.recordings.tick()
+        second_job = context.recordings.load(second["id"])
+        assert second_job.state == "succeeded"
+        detail = await context.lifecycle_detail({"note_id": second_job.note_id})
+        match = detail["manual_speaker_review"]["voice_matches"]["Speaker 1"][0]
+        assert match["id"] == "person:" + person["id"] and match["strength"] == "strong"
+        assert "vector" not in json.dumps(detail)
+
+
+async def test_calendar_attendee_count_is_sent_as_maximum_speakers(store, monkeypatch):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+
+        async def candidates(note):
+            return [{"event_id": "event", "title": "Standup", "people": [{}, {}, {}]}]
+
+        monkeypatch.setattr(context, "calendar_candidates", candidates)
+        accepted = await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+        assert context.recordings.load(accepted["id"]).state == "succeeded"
+        body = service.requests[0]["body"]
+        assert b'name="max_speakers"\r\n\r\n3' in body
+        assert b'name="num_speakers"' not in body
+
+
+async def test_calendar_failure_does_not_block_transcription(store, monkeypatch):
+    from coppermind_store.calendar_import import CalendarTransientError
+
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+
+        async def candidates(note):
+            raise CalendarTransientError("calendar lookup timed out")
+
+        monkeypatch.setattr(context, "calendar_candidates", candidates)
+        accepted = await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+        assert context.recordings.load(accepted["id"]).state == "succeeded"
+        body = service.requests[0]["body"]
+        assert b'name="max_speakers"' not in body
+        assert b'name="num_speakers"' not in body
+
+
+async def test_unexpected_calendar_error_does_not_block_transcription(store, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+
+        async def candidates(note):
+            raise OperationalError("select", {}, RuntimeError("database is locked"))
+
+        monkeypatch.setattr(context, "calendar_candidates", candidates)
+        accepted = await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+        assert context.recordings.load(accepted["id"]).state == "succeeded"
+        body = service.requests[0]["body"]
+        assert b'name="max_speakers"' not in body
+        assert b'name="num_speakers"' not in body
+
+
+async def test_owner_speaker_count_is_sent_exactly_and_beats_the_calendar(store, monkeypatch):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+
+        async def candidates(note):
+            return [{"event_id": "event", "title": "Standup", "people": [{}, {}, {}]}]
+
+        monkeypatch.setattr(context, "calendar_candidates", candidates)
+        accepted = await context.accept_recording(
+            request(await store_audio(store), metadata={"num_speakers": 2})
+        )
+        await context.recordings.tick()
+        assert context.recordings.load(accepted["id"]).state == "succeeded"
+        body = service.requests[0]["body"]
+        assert b'name="num_speakers"\r\n\r\n2' in body
+        assert b'name="max_speakers"' not in body
+
+
+async def test_companion_voice_flow_through_public_api(store):
+    import httpx
+    from coppermind_store.auth import InternalAuth
+    from coppermind_store.context_api import router as context_router
+    from coppermind_store.entity_api import router as entity_router
+    from fastapi import FastAPI
+
+    from coppermind.entities import EntityInput
+    from coppermind.store_client import HttpStoreClient
+    from tests.integration.test_store_write_protocol import authorized_api
+
+    alex = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    blair = await store.entities.create(EntityInput(kind="person", name="Blair Stone"))
+    vector = {"model": "voice", "version": "v1", "vector": [1.0, 0.0]}
+    speakers = [{"label": "Speaker 1", "speech_seconds": 30.0, "embeddings": [vector]}]
+    internal = FastAPI()
+    internal.state.store = store
+    internal.state.auth = InternalAuth("synthetic-internal-token")
+    internal.include_router(context_router)
+    internal.include_router(entity_router)
+    client = HttpStoreClient(
+        "http://store", "synthetic-internal-token", transport=httpx.ASGITransport(app=internal)
+    )
+    app, headers = authorized_api(store)
+    app.state.store = client
+    async with Service(reply={**REPLY, "speakers": speakers}) as service:
+        context = await setup_transcription(store, service)
+        await context.setup_lifecycle({"revision": context.config().revision})
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://api", headers=headers
+        ) as api:
+            alex_url, blair_url = (f"/v1/entities/{p['id']}/voice" for p in (alex, blair))
+            assert (await api.put(alex_url, json={"enabled": True})).status_code == 200
+            assert (await api.put(blair_url, json={"enabled": True})).status_code == 200
+
+            async def make_recording(name, content, external):
+                audio = await store_audio(store, name=name, data=content)
+                accepted = await context.accept_recording(
+                    request(audio, external_source_id=external)
+                )
+                for _ in range(4):
+                    job = context.recordings.load(accepted["id"])
+                    if job.state == "succeeded":
+                        return job
+                    await context.recordings.tick()
+                pytest.fail("recording was not processed")
+
+            async def review(job, person_id):
+                response = await api.get(f"/v1/notes/{job.note_id}/review")
+                assert response.status_code == 200, response.text
+                data = response.json()
+                manual = data["manual_speaker_review"]
+                completed = await api.post(
+                    f"/v1/notes/{job.note_id}/review",
+                    json={
+                        "if_match": data["note"]["content_hash"],
+                        "confirmation": "Complete review",
+                        "selected": [],
+                        "manual_source_id": manual["source_id"],
+                        "manual_source_revision": manual["revision"],
+                        "manual_speakers": {"Speaker 1": "person:" + person_id},
+                    },
+                )
+                assert completed.status_code == 200, completed.text
+                assert "vector" not in response.text and "vector" not in completed.text
+                return data
+
+            first = await make_recording("one.m4a", AUDIO, "voice-http-1")
+            await review(first, alex["id"])
+            assert len((await api.get(alex_url)).json()["signatures"]) == 1
+            second = await make_recording("two.m4a", AUDIO + b"2", "voice-http-2")
+            detail = (await api.get(f"/v1/notes/{second.note_id}/review")).json()
+            assert (
+                detail["manual_speaker_review"]["voice_matches"]["Speaker 1"][0]["id"]
+                == "person:" + alex["id"]
+            )
+            await review(second, blair["id"])
+            assert len((await api.get(alex_url)).json()["signatures"]) == 1
+            assert len((await api.get(blair_url)).json()["signatures"]) == 1
+            assert (await api.delete(alex_url)).json()["signatures"] == []
+            assert (await api.put(alex_url, json={"enabled": False})).json()["enabled"] is False
