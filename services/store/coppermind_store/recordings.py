@@ -296,6 +296,7 @@ class Recordings:
         assignment = self.assignment()
         enabled = bool(assignment and assignment.enabled)
         paused = bool(assignment and assignment.paused)
+        ready = bool(enabled and assignment.connection and assignment.model)
         meetings, failed = [], []
         seen = set()
         for job in sorted(self.jobs(), key=lambda item: item.created_at, reverse=True):
@@ -315,11 +316,13 @@ class Recordings:
                 guidance = failure_guidance(job)
                 if guidance:
                     message, retry_offered = guidance
+                    if retry_offered and not ready:
+                        message += " " + SET_UP_FIRST
                 else:
                     message = failure_reason(job.error_rule)
                     retry_offered = True
-                    if not enabled:
-                        message += " Turn on transcription before retrying."
+                    if not ready:
+                        message += " " + SET_UP_FIRST
                     elif paused:
                         message += " A retry will start when transcription resumes."
                     elif retrying:
@@ -334,7 +337,7 @@ class Recordings:
                         "message": message,
                         "details": job.error if job.error_rule == "note-rejected" else "",
                         "retry_after": job.retry_after if scheduled else "",
-                        "can_retry": enabled and retry_offered,
+                        "can_retry": ready and retry_offered,
                         "can_dismiss": not retrying,
                     }
                 )
@@ -1081,6 +1084,7 @@ def repeats_only(rule: str) -> bool:
     return rule in NO_AUTOMATIC_RETRY or rule.startswith("transcription-http-")
 
 
+SET_UP_FIRST = "Set up and turn on transcription before retrying."
 _RESEND = "the same way recordings normally arrive."
 _CHECK_SERVICE = "Check the transcription connection and model in settings, then retry."
 

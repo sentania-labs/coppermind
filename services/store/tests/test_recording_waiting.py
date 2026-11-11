@@ -34,7 +34,9 @@ async def test_waiting_lists_all_current_notes_and_safe_failure_guidance():
         control=SimpleNamespace(schema=lambda: SimpleNamespace(role=lambda _: "reviewed")),
     )
     recordings = Recordings(SimpleNamespace(store=store))
-    recordings.assignment = lambda: SimpleNamespace(enabled=True, paused=False)
+    recordings.assignment = lambda: SimpleNamespace(
+        enabled=True, paused=False, connection="c", model="m"
+    )
     recordings.jobs = lambda: [
         job(1, state="succeeded", note_id="one"),
         job(2, state="succeeded", note_id="two"),
@@ -65,7 +67,9 @@ async def test_waiting_survives_one_unreadable_note_and_offers_no_retry_for_miss
         control=SimpleNamespace(schema=lambda: SimpleNamespace(role=lambda _: "reviewed")),
     )
     recordings = Recordings(SimpleNamespace(store=store))
-    recordings.assignment = lambda: SimpleNamespace(enabled=True, paused=False)
+    recordings.assignment = lambda: SimpleNamespace(
+        enabled=True, paused=False, connection="c", model="m"
+    )
     recordings.jobs = lambda: [
         job(1, state="succeeded", note_id="broken"),
         job(2, state="succeeded", note_id="ok"),
@@ -230,3 +234,24 @@ async def test_every_refusal_that_a_retry_would_repeat_gets_its_own_next_step(tm
     assert "shorter recording" in too_long["message"] and too_long["can_retry"] is False
     unfinished = rows[failures[rules.index("transcription-unfinished")].id]
     assert "settings, then retry" in unfinished["message"] and unfinished["can_retry"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled, model", [(False, "m"), (True, "")])
+async def test_retry_advice_waits_for_transcription_to_be_set_up(tmp_path, enabled, model):
+    failures = [
+        job(1, state="failed", error_rule="connection-missing"),
+        job(2, state="failed", error_rule="transcription-http"),
+        job(3, state="failed", error_rule="transcription-no_speech"),
+    ]
+    recordings, _, _ = waiting_recordings(tmp_path, failures, enabled=enabled)
+    recordings.assignment = lambda: SimpleNamespace(
+        enabled=enabled, paused=False, connection="c", model=model
+    )
+    rows = {item["id"]: item for item in (await recordings.waiting())["failed"]}
+    for failure in failures[:2]:
+        assert rows[failure.id]["message"].endswith(
+            "Set up and turn on transcription before retrying."
+        )
+        assert rows[failure.id]["can_retry"] is False
+    assert "Set up and turn on" not in rows[failures[2].id]["message"]
