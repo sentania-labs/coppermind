@@ -184,3 +184,20 @@ for(const state of ['failed','running','stale'])test(state+' summary cannot be a
   await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).meeting_summary,null);
 });
+
+const pendingSummaryNotice='The summary is still being written. Marking reviewed now files the note without it.';
+for(const state of ['queued','running'])test(state+' recording warns beside completion before filing without a summary',async()=>{
+  const f=await fixture(undefined,{state,manual_speaker_review:{source_id:'source',revision:1,speakers:[],candidates:[]}});
+  const children=f.view.contentEl.children;
+  const action=children.findIndex(e=>e.text==='Apply kept suggestions & mark reviewed');
+  assert.equal(children[action-1].text,pendingSummaryNotice);
+  assert.equal(children[action].disabled,false);
+  await children[action].onclick();
+  const writes=f.requests.filter(r=>r.method==='POST');
+  assert.equal(writes.length,1);
+  assert.equal(JSON.parse(writes[0].body).meeting_summary,null);
+});
+for(const overrides of [{state:'running'},{state:'suggested',meeting_summary:summaryProposal},{state:'failed',meeting_summary:summaryProposal}])test('no pending-summary warning for '+JSON.stringify(overrides),async()=>{
+  const f=await fixture(undefined,overrides);
+  assert.ok(!f.view.contentEl.all().some(e=>e.text===pendingSummaryNotice));
+});

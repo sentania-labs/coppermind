@@ -169,6 +169,7 @@ class ReviewView extends ItemView {
           new Notice('Review recorded. Changes and filing will sync back to Obsidian.');await this.refresh();
         }catch(e){new Notice(e.message);}
       };
+      if((manual||summary)&&['queued','running'].includes(data.state))el.createEl('p',{text:'The summary is still being written. Marking reviewed now files the note without it.',cls:'coppermind-notice'});
       const apply=el.createEl('button',{text:'Apply kept suggestions & mark reviewed',cls:'mod-cta'});apply.disabled=!synced;apply.onclick=()=>finish(true);
       const without=el.createEl('button',{text:'Mark reviewed without changes'});without.disabled=!synced;without.onclick=()=>finish(false);
       const refresh=el.createEl('button',{text:'Request fresh suggestions'});refresh.disabled=!synced;refresh.onclick=async()=>{
