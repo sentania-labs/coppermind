@@ -1,6 +1,7 @@
 /* Coppermind companion: proposals stay separate until explicit review completion. */
-const {Plugin, ItemView, PluginSettingTab, Setting, SecretComponent, Notice, requestUrl, MarkdownView} = require('obsidian');
+const {Plugin, ItemView, PluginSettingTab, Setting, SecretComponent, Notice, requestUrl, MarkdownView, Modal} = require('obsidian');
 const VIEW = 'coppermind-review';
+const PEOPLE_VIEW = 'coppermind-people';
 async function hash(text) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return 'sha256:' + [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2,'0')).join('');
@@ -89,12 +90,17 @@ class ReviewView extends ItemView {
         if(attendeesNotice)preview.createEl('p',{text:data.speaker_attendees_notice});
         preview.createEl('p',{text:attendeesNotice?'Completing review updates transcript labels for selected people. Unnamed speakers stay as they are.':'Completing review updates transcript labels, note attendees and dossier links for selected people. Unnamed speakers stay as they are.'});
       };
-      const makeChooser=(card,label,people,initial,onSelect,disabled)=>{
+      const makeChooser=(card,label,people,initial,onSelect,disabled,voice=[])=>{
         const chooser=card.createEl('select');
         chooser.createEl('option',{text:'Leave as '+label,value:''});
         const add=person=>{if(!people.some(p=>p.id===person.id)){people.push(person);chooser.createEl('option',{text:person.name+(person.email?' ('+person.email+')':''),value:person.id});}};
         const supplied=[...people];people.length=0;for(const person of supplied)add(person);
         chooser.value=initial||'';chooser.disabled=disabled;chooser.onchange=()=>{onSelect(chooser.value);updatePreview();};
+        for(const match of voice){
+          add(match);
+          const choice=card.createEl('button',{text:(match.strength==='maybe'?'Maybe: ':'Voice: ')+match.name});
+          choice.disabled=disabled;choice.onclick=()=>{chooser.value=match.id;chooser.onchange();};
+        }
         const search=card.createEl('input',{attr:{type:'search',placeholder:'Find a person'}});search.disabled=disabled;
         const find=card.createEl('button',{text:'Find a person'});find.disabled=disabled;
         let cursor='';
@@ -123,6 +129,7 @@ class ReviewView extends ItemView {
           drop.onclick=()=>{summary[key]='';input.value='';updatePreview();};
         }
       }
+      const manual=data.manual_speaker_review;
       for(const s of data.suggestions){
         if(s.kind==='speaker'&&!ready)continue;
         const card=el.createDiv({cls:'coppermind-card'});let toggle;
@@ -134,13 +141,12 @@ class ReviewView extends ItemView {
           card.createEl('p',{text:'Model confidence: '+Math.round(s.confidence*100)+'%'});
           if(!s.candidates.length)card.createEl('p',{text:'No people suggested. Enter a name below, then choose Find a person.'});
           const people=[...s.candidates];
-          const chooser=makeChooser(card,s.field,people,s.value,value=>{speakerChoices[s.index]=value;selected.add(s.index);toggle.setValue(true);},!ready);
+          const chooser=makeChooser(card,s.field,people,s.value,value=>{speakerChoices[s.index]=value;selected.add(s.index);toggle.setValue(true);},!ready,manual?.voice_matches?.[s.field]||[]);
           speakerChoices[s.index]=chooser.value;cards.push({label:s.field,chooser,people,active:()=>selected.has(s.index),select:()=>{if(chooser.value){selected.add(s.index);toggle.setValue(true);}}});
         }
         card.createEl('p',{text:s.reason});if(s.quote)card.createEl('blockquote',{text:s.quote});
         if(s.contact_ids.length)card.createEl('small',{text:'Linked contact evidence is recorded with this suggestion.'});
       }
-      const manual=data.manual_speaker_review;
       const proposed=new Set(data.suggestions.filter(s=>s.kind==='speaker'&&ready).map(s=>s.field));
       for(const label of manual?.speakers||[]){
         if(proposed.has(label))continue;
@@ -148,7 +154,7 @@ class ReviewView extends ItemView {
         card.createEl('p',{text:'Choose a person, or leave this speaker unnamed.'});
         const people=[...manual.candidates];
         if(!people.length)card.createEl('p',{text:'No people suggested. Enter a name below, then choose Find a person.'});
-        const chooser=makeChooser(card,label,people,'',value=>{manualSpeakers[label]=value;},!synced);
+        const chooser=makeChooser(card,label,people,'',value=>{manualSpeakers[label]=value;},!synced,manual?.voice_matches?.[label]||[]);
         cards.push({label,chooser,people,active:()=>!!manualSpeakers[label],select:()=>{}});
       }
       if(cards.length){const all=el.createEl('button',{text:'Select all suggested names'});all.disabled=!ready;all.onclick=()=>{for(const card of cards)card.select();updatePreview();};}
@@ -179,21 +185,78 @@ class ReviewView extends ItemView {
     }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
   }
 }
+class DeleteVoiceModal extends Modal {
+  constructor(app, person, confirm){super(app);this.person=person;this.confirm=confirm;}
+  onOpen(){
+    this.contentEl.createEl('h2',{text:'Delete voice signatures?'});
+    this.contentEl.createEl('p',{text:'All saved voice signatures for '+this.person.name+' will be deleted. This cannot be undone.'});
+    const button=this.contentEl.createEl('button',{text:'Delete signatures',cls:'mod-warning'});
+    button.onclick=async()=>{this.close();await this.confirm();};
+    const cancel=this.contentEl.createEl('button',{text:'Cancel'});cancel.onclick=()=>this.close();
+  }
+  onClose(){this.contentEl.empty();}
+}
+class PeopleView extends ItemView {
+  constructor(leaf,plugin){super(leaf);this.plugin=plugin;}
+  getViewType(){return PEOPLE_VIEW;}
+  getDisplayText(){return 'People';}
+  getIcon(){return 'users';}
+  async onOpen(){await this.show();}
+  async show(person){
+    const el=this.contentEl;el.empty();el.createEl('h2',{text:'People'});
+    const search=el.createEl('input',{attr:{type:'search',placeholder:'Find a person'}});
+    const find=el.createEl('button',{text:'Search'});const list=el.createDiv();
+    find.onclick=async()=>{try{list.empty();const page=await this.plugin.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(search.value.trim()));
+      if(!page.items.length)list.createEl('p',{text:'No people found.'});
+      for(const item of page.items){const b=list.createEl('button',{text:item.name});b.onclick=()=>this.show(item);}
+    }catch(e){new Notice(e.message);}};
+    if(person){
+      try{
+        const path='/v1/entities/'+encodeURIComponent(person.id)+'/voice';
+        const voice=await this.plugin.call(path);
+        el.createEl('h3',{text:person.name+' · Voice recognition'});
+        el.createEl('p',{text:'Off by default. Voice signatures are stored, not audio clips. Unidentified signatures are held privately with the recording until review and removal.'});
+        new Setting(el).setName('Recognise this person by voice').addToggle(t=>t.setValue(voice.enabled).onChange(async enabled=>{try{await this.plugin.call(path,'PUT',{enabled});await this.show(person);}catch(e){new Notice(e.message);await this.show(person);}}));
+        el.createEl('p',{text:voice.signatures.length+' saved signatures'});
+        if(!voice.signatures.length)el.createEl('p',{text:'A reviewed recording can add a signature when recognition is enabled.'});
+        for(const sig of voice.signatures){const line=el.createEl('p');line.createSpan({text:sig.created_at.slice(0,10)+' · '});
+          try{const note=await this.plugin.call('/v1/notes/'+encodeURIComponent(sig.note_id));const a=line.createEl('a',{text:note.title,href:'#'});a.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(note.path,'',false);};}catch{line.createSpan({text:'Source note unavailable'});}}
+        if(voice.signatures.length){const del=el.createEl('button',{text:'Delete signatures',cls:'mod-warning'});del.onclick=()=>new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call(path,'DELETE');await this.show(person);}catch(e){new Notice(e.message);}}).open();}
+      }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});}
+    }
+    try{
+      const settings=await this.plugin.call('/v1/entities/voice/settings');let strong=String(settings.strong),maybe=String(settings.maybe);
+      el.createEl('h3',{text:'Voice suggestion thresholds'});el.createEl('p',{text:'Changes affect future suggestions. A weaker match is shown as Maybe.'});
+      new Setting(el).setName('Voice').addText(t=>t.setValue(strong).onChange(v=>strong=v));
+      new Setting(el).setName('Maybe').addText(t=>t.setValue(maybe).onChange(v=>maybe=v));
+      const error=el.createEl('p',{cls:'coppermind-notice'});const save=el.createEl('button',{text:'Save thresholds'});
+      save.onclick=async()=>{const a=Number(strong),b=Number(maybe);if(!strong.trim()||!maybe.trim()||!Number.isFinite(a)||!Number.isFinite(b)||b < -1||a > 1||b>a){error.setText('Enter numbers from -1 to 1. Maybe must be no higher than Voice.');return;}try{await this.plugin.call('/v1/entities/voice/settings','PUT',{strong:a,maybe:b});error.setText('Saved.');}catch(e){error.setText(e.message);}};
+    }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});}
+  }
+}
 class Settings extends PluginSettingTab {
   constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
   display(){const el=this.containerEl;el.empty();el.createEl('h2',{text:'Coppermind'});
     new Setting(el).setName('Server URL').setDesc('Your Coppermind address, without /admin.').addText(t=>t.setValue(this.plugin.settings.url).onChange(async v=>{this.plugin.settings.url=v.trim().replace(/\/$/,'');await this.plugin.saveData(this.plugin.settings);}));
-    new Setting(el).setName('API credential').setDesc('In Coppermind Admin, open Connected apps (API Keys) and create a new key with Read notes, Update notes, Read sources, Update sources, and Read people and companies. Select that key here. Only the secret name is saved in plugin settings.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
+    new Setting(el).setName('API credential').setDesc('In Coppermind Admin, open Connected apps (API Keys) and create a new key with Read notes, Update notes, Read sources, Update sources, and Read people and companies, and Update people and companies. Select that key here. Only the secret name is saved in plugin settings.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
   }
 }
 module.exports=class CoppermindReview extends Plugin {
   async onload(){
     this.settings={url:'',secret:'',...await this.loadData()};
+    this.registerView(PEOPLE_VIEW,leaf=>new PeopleView(leaf,this));
     this.registerView(VIEW,leaf=>new ReviewView(leaf,this));
     this.addSettingTab(new Settings(this.app,this));
+    this.addCommand({id:'manage-people',name:'Manage people and voice recognition',callback:()=>this.openPeople()});
     this.addCommand({id:'review-current-note',name:'Review current note',callback:()=>this.open()});
     this.addRibbonIcon('clipboard-check','Review with Coppermind',()=>this.open());
     this.registerEvent(this.app.workspace.on('file-open',file=>{if(file)this.noteFile=file;}));
+  }
+  async openPeople(){
+    const file=this.app.workspace.getActiveFile();
+    let leaf=this.app.workspace.getLeavesOfType(PEOPLE_VIEW)[0]||this.app.workspace.getRightLeaf(false);
+    await leaf.setViewState({type:PEOPLE_VIEW,active:true});await this.app.workspace.revealLeaf(leaf);
+    if(file){try{const result=await this.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(file.basename));const person=result.items?.find(p=>p.path===file.path);if(person)await leaf.view.show(person);}catch{}}
   }
   async open(){this.noteFile=this.app.workspace.getActiveFile()||this.noteFile;let leaf=this.app.workspace.getLeavesOfType(VIEW)[0]||this.app.workspace.getRightLeaf(false);await leaf.setViewState({type:VIEW,active:true});await this.app.workspace.revealLeaf(leaf);await leaf.view.refresh();}
   async call(path,method='GET',body){

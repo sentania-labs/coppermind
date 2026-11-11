@@ -150,6 +150,7 @@ class NoteLifecycle:
             manual = {
                 key: manual[key] for key in ("source_id", "revision", "speakers", "candidates")
             }
+            manual["voice_matches"] = speaker_names.voice_suggestions(self.context, note.id)
             manual["candidates"] = [
                 person
                 for candidate in manual["candidates"]
@@ -286,6 +287,7 @@ class NoteLifecycle:
                     candidates = {c["id"]: c for c in speaker_data.get("candidates", [])}
                     people = self.context.store.entities.load().entities
                     mapping = {}
+                    person_ids = {}
                     chosen = []
                     for i in speaker_indexes:
                         suggestion = job.result.suggestions[i]
@@ -301,12 +303,18 @@ class NoteLifecycle:
                                 "speaker unnamed."
                             )
                         mapping[suggestion.field] = person["name"]
+                        person_ids[suggestion.field] = (
+                            person.get("person_id") or person["id"].removeprefix("person:")
+                            if person.get("person_id") or person["id"].startswith("person:")
+                            else ""
+                        )
                         chosen.append(person)
                     if mapping:
                         speaker_operation = {
                             "source_id": speaker_data["source_id"],
                             "revision": speaker_data["revision"],
                             "mapping": mapping,
+                            "person_ids": person_ids,
                             "people": chosen,
                         }
                         speaker_names.people_changes(self.context, prospective.frontmatter, chosen)
@@ -352,6 +360,7 @@ class NoteLifecycle:
                             "source_id": manual["source_id"],
                             "revision": manual["revision"],
                             "mapping": {},
+                            "person_ids": {},
                             "people": [],
                         }
                     for label, person_id in manual_choices.items():
@@ -361,6 +370,11 @@ class NoteLifecycle:
                                 f"{label}: this person is no longer active. Choose someone else."
                             )
                         speaker_operation["mapping"][label] = person["name"]
+                        speaker_operation["person_ids"][label] = person.get("person_id") or (
+                            person["id"].removeprefix("person:")
+                            if person["id"].startswith("person:")
+                            else ""
+                        )
                         speaker_operation["people"].append(person)
                     speaker_names.people_changes(
                         self.context,
@@ -458,6 +472,49 @@ class NoteLifecycle:
                 )
             elif receipt.get("reviewed_hash") != current.content_hash:
                 raise ValueError("reviewed note diverged from the recorded completion")
+            if receipt.get("speakers"):
+                from coppermind_store.voice_store import VoiceStore
+
+                operation = receipt["speakers"]
+                recording = next(
+                    (
+                        r
+                        for r in self.context.recordings.jobs()
+                        if r.note_id == identity and r.source_id == operation["source_id"]
+                    ),
+                    None,
+                )
+                if recording:
+                    async with self.context.lock:
+                        pending = self.context.read("voice-pending/" + recording.id, [])
+                        proposed = speaker_names.voice_suggestions(self.context, identity)
+                        voice = VoiceStore(self.context)
+                        current_people = self.context.store.entities.load().entities
+                        for label, candidates in proposed.items():
+                            chosen_id = operation.get("person_ids", {}).get(label)
+                            if chosen_id:
+                                for candidate in candidates:
+                                    proposed_id = candidate["id"].removeprefix("person:")
+                                    if proposed_id != chosen_id:
+                                        voice.reject(identity, label, proposed_id)
+                        for speaker in pending:
+                            if not isinstance(speaker, dict):
+                                continue
+                            person_id = operation.get("person_ids", {}).get(speaker.get("label"))
+                            person = current_people.get(person_id)
+                            if (
+                                person
+                                and person.kind == "person"
+                                and not person.retired_at
+                                and not person.redirect
+                            ):
+                                voice.confirm(
+                                    person_id,
+                                    identity,
+                                    now(),
+                                    speaker.get("speech_seconds"),
+                                    speaker.get("embeddings", []),
+                                )
             receipt["state"], receipt["finished_at"] = "complete", now()
             receipt["final_hash"] = current.content_hash
             self.context.write(name, receipt)

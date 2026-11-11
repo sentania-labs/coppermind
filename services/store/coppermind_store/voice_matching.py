@@ -34,6 +34,8 @@ def matches(
         raise ValueError("voice thresholds must satisfy -1 <= maybe <= strong <= 1")
     best: dict[str, float] = {}
     for embedding in embeddings:
+        if not isinstance(embedding, dict):
+            continue
         for signature in saved:
             if (
                 not isinstance(embedding.get("model"), str)

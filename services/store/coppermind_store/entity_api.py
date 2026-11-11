@@ -23,6 +23,42 @@ async def entity_action(action: str, payload: dict[str, Any], request: Request) 
             result = await entities.list(EntityQuery.model_validate(payload))
         elif action == "get":
             result = await entities.get(payload["id"])
+        elif action in {"voice-settings", "voice-settings-save"}:
+            async with request.app.state.store.context.lock:
+                context = request.app.state.store.context
+                if action == "voice-settings-save":
+                    strong, maybe = payload.get("strong"), payload.get("maybe")
+                    if (
+                        isinstance(strong, bool)
+                        or isinstance(maybe, bool)
+                        or not isinstance(strong, (int, float))
+                        or not isinstance(maybe, (int, float))
+                        or not -1 <= maybe <= strong <= 1
+                    ):
+                        raise ValidationFailed(
+                            [
+                                "Maybe must be at most the voice threshold; "
+                                "both must be between -1 and 1"
+                            ]
+                        )
+                    context.write("voice-settings", {"strong": strong, "maybe": maybe})
+                result = context.read("voice-settings", {"strong": 0.60, "maybe": 0.45})
+        elif action in {"voice-get", "voice-set", "voice-delete"}:
+            from coppermind_store.voice_store import VoiceStore
+
+            identity = payload["id"]
+            async with request.app.state.store.context.lock:
+                entity = entities.load().entities.get(identity)
+                if not entity or entity.kind != "person" or entity.retired_at or entity.redirect:
+                    raise ValidationFailed(["Person not found"])
+                voice = VoiceStore(request.app.state.store.context)
+                if action == "voice-set":
+                    if type(payload.get("enabled")) is not bool:
+                        raise ValidationFailed(["Invalid consent setting"])
+                    voice.set_enabled(identity, payload["enabled"])
+                elif action == "voice-delete":
+                    voice.delete(identity)
+                result = voice.summary(identity)
         elif action == "create":
             result = await entities.create(EntityInput.model_validate(payload))
         elif action == "change":

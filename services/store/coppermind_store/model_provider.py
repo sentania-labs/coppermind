@@ -698,6 +698,7 @@ class ModelProvider:
         job_id: str = "",
         duration_seconds: float | None = None,
         num_speakers: int | None = None,
+        include_speaker_embeddings: bool = False,
         remote_job_id: str = "",
         job_started: float = 0,
         job_resubmits: int = 0,
@@ -721,6 +722,8 @@ class ModelProvider:
             fields["chunking_strategy"] = "auto"
         if num_speakers is not None:
             fields["max_speakers"] = str(num_speakers)
+        if include_speaker_embeddings:
+            fields["include_speaker_embeddings"] = "true"
         use_job = bool(job_id) and (
             bool(job_started)
             or bool(remote_job_id)
@@ -953,6 +956,8 @@ class ModelProvider:
                 "transcription-provider",
             ) from exc
         transcript = parse_transcript(result)
+        if include_speaker_embeddings and isinstance(result.get("speakers"), list):
+            transcript["speakers"] = result["speakers"]
         reported = result.get("usage")
         usage: dict[str, Any] = {
             k: v

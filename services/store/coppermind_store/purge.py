@@ -977,6 +977,16 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
             committed = True
             for item in record["items"]:
                 await asyncio.to_thread(_unlink, store, item)
+            purged_artifacts = {
+                i["candidate"]["id"]
+                for i in record["items"]
+                if i["candidate"]["kind"] == "artifact"
+            }
+            for job in store.context.recordings.jobs():
+                if job.artifact_id in purged_artifacts:
+                    (store.context.root / "voice-pending" / (job.id + ".json")).unlink(
+                        missing_ok=True
+                    )
             store.entities.purge(
                 {i["candidate"]["id"] for i in record["items"] if i["candidate"]["kind"] == "note"},
                 {

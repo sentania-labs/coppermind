@@ -22,6 +22,19 @@ class VoiceStore:
     def _save(self, data: dict[str, Any]) -> None:
         self.context.write("voice-signatures", data)
 
+    def reject(self, note_id: str, label: str, person_id: str) -> None:
+        data = self._load()
+        record = {"note_id": note_id, "label": label, "person_id": person_id}
+        rejections = data.setdefault("rejections", [])
+        if record not in rejections:
+            rejections.append(record)
+            self._save(data)
+
+    def rejected(self, note_id: str, label: str, person_id: str) -> bool:
+        return {"note_id": note_id, "label": label, "person_id": person_id} in self._load().get(
+            "rejections", []
+        )
+
     def summary(self, person_id: str) -> dict[str, Any]:
         person = self._load()["people"].get(person_id, {})
         return {
@@ -42,6 +55,7 @@ class VoiceStore:
         data = self._load()
         if person_id in data["people"]:
             data["people"][person_id]["signatures"] = []
+        data["rejections"] = [r for r in data.get("rejections", []) if r["person_id"] != person_id]
         self._save(data)
 
     def purge(self, person_ids: set[str], note_ids: set[str]) -> None:
@@ -54,6 +68,11 @@ class VoiceStore:
                 for signature in person.get("signatures", [])
                 if signature["note_id"] not in note_ids
             ]
+        data["rejections"] = [
+            r
+            for r in data.get("rejections", [])
+            if r["person_id"] not in person_ids and r["note_id"] not in note_ids
+        ]
         self._save(data)
 
     def confirm(
@@ -76,7 +95,11 @@ class VoiceStore:
         ):
             return
         signatures = person.setdefault("signatures", [])
+        if not isinstance(embeddings, list):
+            return
         for embedding in embeddings:
+            if not isinstance(embedding, dict):
+                continue
             model, version, vector = (embedding.get(k) for k in ("model", "version", "vector"))
             if (
                 not isinstance(model, str)

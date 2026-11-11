@@ -149,3 +149,45 @@ def test_transcript_quotes_need_sources_read(tmp_path):
             facts = (body["items"][0] if "items" in body else body)["facts"]
             assert facts[1]["evidence"]["quote"] == "I run the platform team."
             assert "quote_withheld" not in facts[1]["evidence"]
+
+
+def test_voice_consent_and_settings_require_people_write_scope(tmp_path):
+    token = tmp_path / "internal"
+    token.write_text("test-internal")
+    app = create_app(Wiring(internal_token_file=token))
+    fake = EntityStore()
+    fake.bare, reader_key = create_key("People reader", ["notes:read", "entities:read"])
+    app.dependency_overrides[store] = lambda: fake
+    with TestClient(app) as client:
+        app.state.api_key_auth._store = fake
+        read = {"Authorization": f"Bearer {reader_key}"}
+        write = {"Authorization": f"Bearer {fake.writer_key}"}
+        assert client.get("/v1/entities/person/voice", headers=read).status_code == 200
+        assert (
+            client.put(
+                "/v1/entities/person/voice", headers=read, json={"enabled": True}
+            ).status_code
+            == 403
+        )
+        assert client.delete("/v1/entities/person/voice", headers=read).status_code == 403
+        assert (
+            client.put(
+                "/v1/entities/voice/settings", headers=read, json={"strong": 0.6, "maybe": 0.45}
+            ).status_code
+            == 403
+        )
+        assert (
+            client.put(
+                "/v1/entities/person/voice", headers=write, json={"enabled": True}
+            ).status_code
+            == 200
+        )
+        assert client.delete("/v1/entities/person/voice", headers=write).status_code == 200
+        assert (
+            client.put(
+                "/v1/entities/voice/settings", headers=write, json={"strong": 0.6, "maybe": 0.45}
+            ).status_code
+            == 200
+        )
+        assert ("voice-set", {"id": "person", "enabled": True}) in fake.calls
+        assert ("voice-delete", {"id": "person"}) in fake.calls

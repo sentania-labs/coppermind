@@ -324,6 +324,45 @@ def router(wiring: Wiring) -> APIRouter:
                         )
                         body += " (retired)" if entity.get("retired_at") else ""
                         body += "</summary><p>" + e(entity["path"]) + "</p>"
+                        if (
+                            kind == "person"
+                            and not entity.get("retired_at")
+                            and not entity.get("redirect")
+                        ):
+                            voice = await client(request).entity_action(
+                                "voice-get", {"id": entity["id"]}
+                            )
+                            body += (
+                                "<h3>Voice recognition</h3><p>Off by default. Voice signatures "
+                                "are stored, not audio clips. Unidentified signatures are held "
+                                "privately with the recording until review and removal.</p>"
+                            )
+                            body += "<p>" + str(len(voice["signatures"])) + " saved signatures</p>"
+                            for signature in voice["signatures"]:
+                                body += (
+                                    "<p>"
+                                    + e(signature["created_at"][:10])
+                                    + ' · <a href="/admin/review/'
+                                    + quote(signature["note_id"])
+                                    + '">Source note</a></p>'
+                                )
+                            body += (
+                                '<form method="post" action="/v1/admin/voice/set">'
+                                + _hidden("id", entity["id"])
+                                + _hidden("enabled", "false" if voice["enabled"] else "true")
+                                + "<button>"
+                                + ("Turn off" if voice["enabled"] else "Turn on")
+                                + "</button></form>"
+                            )
+                            if voice["signatures"]:
+                                body += (
+                                    '<form method="post" action="/v1/admin/voice/delete" '
+                                    'onsubmit="return confirm(&quot;Delete all saved '
+                                    "voice signatures for this person? "
+                                    'This cannot be undone.&quot;)">'
+                                    + _hidden("id", entity["id"])
+                                    + '<button class="danger">Delete signatures</button></form>'
+                                )
                         if entity.get("problem"):
                             body += '<p class="error">' + e(entity["problem"]) + "</p>"
                         if entity.get("aliases"):
@@ -584,6 +623,23 @@ def router(wiring: Wiring) -> APIRouter:
             return page("Review note", body)
         except (StoreError, ValueError) as exc:
             return page("Review unavailable", '<p class="error">' + e(str(exc)) + "</p>", 422)
+
+    @routes.post("/v1/admin/voice/{action}", include_in_schema=False)
+    async def voice_action(action: str, request: Request) -> Response:
+        from coppermind_admin.main import submitted
+
+        form = await submitted(request)
+        if action == "set":
+            if form.get("enabled") not in ("true", "false"):
+                return page("Voice recognition", "<p>Invalid setting.</p>", 422)
+            await client(request).entity_action(
+                "voice-set", {"id": form["id"], "enabled": form["enabled"] == "true"}
+            )
+        elif action == "delete":
+            await client(request).entity_action("voice-delete", {"id": form["id"]})
+        else:
+            return page("Voice recognition", "<p>Unknown action.</p>", 404)
+        return RedirectResponse("/admin/workflow?tab=dossiers&saved=1", 303)
 
     @routes.post("/v1/admin/workflow/{action}", include_in_schema=False)
     async def complete(action: str, request: Request) -> Response:

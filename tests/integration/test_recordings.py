@@ -1124,3 +1124,90 @@ async def test_recovering_shared_recording_keeps_audio_until_its_note_is_reviewe
         assert (await context.recording_status({"id": second["id"]}))["state"] == "succeeded"
         assert await context.recordings.tick() is False
         assert archive.read_bytes() == AUDIO
+
+
+@pytest.mark.parametrize("removed", ["note", "recording"])
+async def test_voice_pending_is_private_and_follows_recording_or_note_removal(store, removed):
+    from coppermind_store import artifacts
+
+    vector = {"model": "voice", "version": "v1", "vector": [0.1, 0.2]}
+    speakers = [{"label": "Speaker 1", "speech_seconds": 30.0, "embeddings": [vector]}]
+    async with Service(reply={**REPLY, "speakers": speakers}) as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    job = context.recordings.load(accepted["id"])
+    assert b'name="include_speaker_embeddings"\r\n\r\ntrue' in service.requests[0]["body"]
+    assert context.read("voice-pending/" + job.id, []) == speakers
+    assert "vector" not in json.dumps(context.recordings.saved_transcript(job))
+    manifest = await store.get_source(job.source_id)
+    source = await store.get_source_artifact(
+        job.source_id, manifest.current_revision, "transcript.json"
+    )
+    assert "vector" not in source.content
+    if removed == "note":
+        await set_note_state(store, job.note_id, "deleted")
+        await context.recordings.tick()
+    else:
+        await artifacts.remove_artifact(store, audio)
+    assert context.read("voice-pending/" + job.id, None) is None
+
+
+async def test_reviewed_voice_is_suggested_for_later_recording(store):
+    from coppermind_store.voice_store import VoiceStore
+
+    from coppermind.entities import EntityInput
+
+    person = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    vector = {"model": "voice", "version": "v1", "vector": [1.0, 0.0]}
+    speakers = [{"label": "Speaker 1", "speech_seconds": 30.0, "embeddings": [vector]}]
+    async with Service(reply={**REPLY, "speakers": speakers}) as service:
+        context = await setup_transcription(store, service)
+        await context.setup_lifecycle({"revision": context.config().revision})
+        VoiceStore(context).set_enabled(person["id"], True)
+        first = await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+        first_job = context.recordings.load(first["id"])
+        note = await store.get_note(first_job.note_id)
+        detail = await context.lifecycle_detail({"note_id": note.id})
+        manual = detail["manual_speaker_review"]
+        await context.complete_review(
+            {
+                "note_id": note.id,
+                "if_match": note.content_hash,
+                "confirmation": "Complete review",
+                "selected": [],
+                "manual_source_id": manual["source_id"],
+                "manual_source_revision": manual["revision"],
+                "manual_speakers": {"Speaker 1": "person:" + person["id"]},
+            }
+        )
+        second_audio = await store_audio(store, name="second.m4a", data=AUDIO + b"second")
+        second = await context.accept_recording(request(second_audio, external_source_id="second"))
+        for _ in range(3):
+            if context.recordings.load(second["id"]).state == "succeeded":
+                break
+            await context.recordings.tick()
+        second_job = context.recordings.load(second["id"])
+        assert second_job.state == "succeeded"
+        detail = await context.lifecycle_detail({"note_id": second_job.note_id})
+        match = detail["manual_speaker_review"]["voice_matches"]["Speaker 1"][0]
+        assert match["id"] == "person:" + person["id"] and match["strength"] == "strong"
+        assert "vector" not in json.dumps(detail)
+
+
+async def test_calendar_attendee_count_is_sent_as_maximum_speakers(store, monkeypatch):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+
+        async def candidates(note):
+            return [{"event_id": "event", "title": "Standup", "people": [{}, {}, {}]}]
+
+        monkeypatch.setattr(context, "calendar_candidates", candidates)
+        accepted = await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+        assert context.recordings.load(accepted["id"]).state == "succeeded"
+        body = service.requests[0]["body"]
+        assert b'name="max_speakers"\r\n\r\n3' in body
+        assert b'name="num_speakers"' not in body

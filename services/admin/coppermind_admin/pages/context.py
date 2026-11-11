@@ -784,6 +784,11 @@ def router(wiring: Wiring) -> APIRouter:
                     "Base URL, compatible providers only (include /v1 if needed)",
                     connection["base_url"],
                 )
+                fields += (
+                    "<p>For the in-cluster transcription service, use "
+                    "http://transcribe.transcribe.svc.cluster.local:8000/v1. "
+                    "The external service address also works.</p>"
+                )
                 fields += _input("api_key", "API key (blank keeps existing key)", kind="password")
                 fields += _check(
                     "clear_key", "Remove stored key for an unauthenticated local server"
