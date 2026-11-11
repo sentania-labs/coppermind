@@ -255,3 +255,55 @@ async def test_retry_advice_waits_for_transcription_to_be_set_up(tmp_path, enabl
         )
         assert rows[failure.id]["can_retry"] is False
     assert "Set up and turn on" not in rows[failures[2].id]["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paused, enabled", [(True, True), (False, False)])
+async def test_a_deferred_retry_cannot_be_dismissed_and_runs_when_transcription_resumes(
+    tmp_path, paused, enabled
+):
+    from coppermind_store.model_provider import ProviderError
+
+    pending = job(
+        1,
+        state="failed",
+        error_rule="transcription-timeout",
+        retry_after="2026-01-01T00:00:00+00:00",
+        attempts=1,
+        attempt_limit=2,
+    )
+    recordings, by_id, saved = waiting_recordings(tmp_path, [pending], enabled=enabled)
+    state = SimpleNamespace(enabled=enabled, paused=paused, connection="c", model="m")
+    recordings.assignment = lambda: state
+    row = (await recordings.waiting())["failed"][0]
+    assert row["can_dismiss"] is False
+    with pytest.raises(ValueError, match="by itself"):
+        await recordings.dismiss({"id": pending.id})
+    assert not saved
+
+    async def transcribe(item):
+        raise ProviderError("The service did not answer.", "transcription-timeout")
+
+    recordings.transcribe = transcribe
+    assert await recordings.tick() is False
+    state.enabled, state.paused = True, False
+    assert await recordings.tick() is True
+    assert saved[pending.id].attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_waiting_skips_meetings_whose_audio_is_already_removed_after_review():
+    notes = {"open": SimpleNamespace(title="Open", path="Open.md", frontmatter={})}
+    store = SimpleNamespace(
+        get_note=AsyncMock(side_effect=lambda identity: notes[identity]),
+        control=SimpleNamespace(schema=lambda: SimpleNamespace(role=lambda _: "reviewed")),
+    )
+    recordings = Recordings(SimpleNamespace(store=store))
+    recordings.assignment = lambda: None
+    recordings.jobs = lambda: [
+        job(1, state="succeeded", note_id="open"),
+        job(2, state="succeeded", note_id="done", audio_removed=True),
+    ]
+    result = await recordings.waiting()
+    assert [m["title"] for m in result["meetings"]] == ["Open"]
+    store.get_note.assert_awaited_once_with("open")

@@ -282,14 +282,12 @@ class Recordings:
             for item in newest
         ]
 
-    def retry_pending(self, job: TranscriptionJob) -> bool:
-        assignment = self.assignment()
+    @staticmethod
+    def retry_pending(job: TranscriptionJob) -> bool:
         return bool(
-            assignment
-            and assignment.enabled
-            and not assignment.paused
-            and job.retry_after
+            job.retry_after
             and job.attempts < job.attempt_limit
+            and not repeats_only(job.error_rule)
         )
 
     async def waiting(self) -> dict[str, Any]:
@@ -297,16 +295,22 @@ class Recordings:
         enabled = bool(assignment and assignment.enabled)
         paused = bool(assignment and assignment.paused)
         ready = bool(enabled and assignment.connection and assignment.model)
+        reviewed_key = self.context.store.control.schema().role("reviewed_key")
         meetings, failed = [], []
         seen = set()
-        for job in sorted(self.jobs(), key=lambda item: item.created_at, reverse=True):
-            if job.state == "succeeded" and job.note_id and job.note_id not in seen:
+        jobs = await asyncio.to_thread(self.jobs)
+        for job in sorted(jobs, key=lambda item: item.created_at, reverse=True):
+            if (
+                job.state == "succeeded"
+                and job.note_id
+                and not job.audio_removed
+                and job.note_id not in seen
+            ):
                 seen.add(job.note_id)
                 try:
                     note = await self.context.store.get_note(job.note_id)
                 except StoreError:
                     continue
-                reviewed_key = self.context.store.control.schema().role("reviewed_key")
                 if note.frontmatter.get(reviewed_key) is not True:
                     meetings.append(
                         {"title": note.title, "path": note.path, "date": job.captured_at}
