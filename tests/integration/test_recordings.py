@@ -1154,6 +1154,21 @@ async def test_voice_pending_is_private_and_follows_recording_or_note_removal(st
     assert context.read("voice-pending/" + job.id, None) is None
 
 
+async def test_voice_pending_is_removed_for_a_deleted_note_with_a_stuck_review(store):
+    vector = {"model": "voice", "version": "v1", "vector": [0.1, 0.2]}
+    speakers = [{"label": "Speaker 1", "speech_seconds": 30.0, "embeddings": [vector]}]
+    async with Service(reply={**REPLY, "speakers": speakers}) as service:
+        context = await setup_transcription(store, service)
+        accepted = await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+    job = context.recordings.load(accepted["id"])
+    assert context.read("voice-pending/" + job.id, []) == speakers
+    context.write("review-completions/" + job.note_id, {"state": "applying"})
+    await set_note_state(store, job.note_id, "deleted")
+    await context.recordings.tick()
+    assert context.read("voice-pending/" + job.id, None) is None
+
+
 async def test_reviewed_voice_is_suggested_for_later_recording(store):
     from coppermind_store.voice_store import VoiceStore
 

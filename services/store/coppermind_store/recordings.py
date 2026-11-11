@@ -501,13 +501,15 @@ class Recordings:
         try:
             if not job.transcribed or not job.note_id:
                 return False
+            async with store.session_factory() as session:
+                row = await session.get(Note, job.note_id)
             if (
-                self.context.read("review-completions/" + job.note_id, {}).get("state")
+                row is not None
+                and row.state != "deleted"
+                and self.context.read("review-completions/" + job.note_id, {}).get("state")
                 == "applying"
             ):
                 return False
-            async with store.session_factory() as session:
-                row = await session.get(Note, job.note_id)
             if row is None:
                 if not await self._purged(job.note_id):
                     return False
