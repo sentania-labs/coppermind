@@ -121,13 +121,22 @@ async def generate(
 async def apply(context: Any, receipt: dict[str, Any], note: Any) -> Any:
     """Persist the exact append before writing; a replay cannot duplicate it."""
     from coppermind_store.context_service import fingerprint
+    from coppermind_store.recordings import SUMMARY_PENDING
 
     operation = receipt["summary"]
     if "body" not in operation:
         if note.content_hash != receipt["expected_hash"]:
             raise ValueError("note changed during review; no summary was appended")
         prose = MeetingSummary.model_validate(operation["value"]).markdown()
-        operation["body"] = note.body + ("\n\n" + prose + "\n" if prose else "")
+        body = note.body
+        if prose:
+            # Only the unchanged generated line is disposable; preserve every other byte.
+            body = "".join(
+                line
+                for line in body.splitlines(keepends=True)
+                if line.removesuffix("\n").removesuffix("\r") != SUMMARY_PENDING
+            )
+        operation["body"] = body + ("\n\n" + prose + "\n" if prose else "")
         operation["frontmatter_hash"] = fingerprint(note.frontmatter)
         context.write("review-completions/" + note.id, receipt)
     if (

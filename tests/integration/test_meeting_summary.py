@@ -6,13 +6,14 @@ from typing import Any
 import httpx
 import pytest
 from coppermind_store.model_provider import ModelProvider
-from coppermind_store.recordings import TranscriptionJob, render_transcript
+from coppermind_store.recordings import SUMMARY_PENDING, TranscriptionJob, render_transcript
 
 from coppermind.store_protocol import (
     IngestArtifact,
     IngestNote,
     IngestRequest,
     IngestSource,
+    PatchFrontmatter,
     ReplaceNote,
 )
 from tests.integration.test_context_enrichment import configure
@@ -27,7 +28,7 @@ PROPOSAL = {
 }
 
 
-async def setup_recording(store, standin, *, limit=200000, failure=None):
+async def setup_recording(store, standin, *, limit=200000, failure=None, recording_body=None):
     context = await configure(store)
     await context.setup_lifecycle({"revision": context.config().revision})
     transcript = {
@@ -41,34 +42,14 @@ async def setup_recording(store, standin, *, limit=200000, failure=None):
         ]
     }
     text = render_transcript(transcript)
-    result = await store.ingest(
-        IngestRequest(
-            source=IngestSource(
-                provider="test-audio",
-                external_source_id="summary-test",
-                source_type="transcript",
-                artifacts=[
-                    IngestArtifact(name="transcript.txt", mime_type="text/plain", content=text),
-                    IngestArtifact(
-                        name="transcript.json",
-                        mime_type="application/json",
-                        content=json.dumps(transcript),
-                    ),
-                ],
-            ),
-            note=IngestNote(
-                title="Planning",
-                body="My own meeting notes.\n",
-                frontmatter={"date": "2026-10-14T09:00:00"},
-            ),
-        )
-    )
-    context.recordings.save(
-        TranscriptionJob(
+    if recording_body is not None:
+        from tests.integration.test_recordings import store_audio
+
+        recording = TranscriptionJob(
             id="a" * 64,
-            artifact_id="b" * 64,
-            filename="meeting.wav",
-            mime_type="audio/wav",
+            artifact_id=await store_audio(store),
+            filename="meeting.m4a",
+            mime_type="audio/mp4",
             size_bytes=1,
             title="Planning",
             provider="test-audio",
@@ -76,11 +57,60 @@ async def setup_recording(store, standin, *, limit=200000, failure=None):
             state="succeeded",
             transcribed=True,
             created_at="2026-10-14T14:00:00+00:00",
-            note_id=result.note.id,
-            note_path=result.note.path,
-            source_id=result.source.id,
         )
-    )
+        await context.recordings.file_note(recording, transcript)
+        filed = await store.get_note(recording.note_id)
+        assert SUMMARY_PENDING + "\n" in filed.body
+        note = await store.replace_note(
+            filed.id,
+            ReplaceNote(
+                frontmatter=filed.frontmatter,
+                body=filed.body.replace(SUMMARY_PENDING + "\n", recording_body, 1),
+            ),
+            filed.content_hash,
+        )
+    else:
+        result = await store.ingest(
+            IngestRequest(
+                source=IngestSource(
+                    provider="test-audio",
+                    external_source_id="summary-test",
+                    source_type="transcript",
+                    artifacts=[
+                        IngestArtifact(name="transcript.txt", mime_type="text/plain", content=text),
+                        IngestArtifact(
+                            name="transcript.json",
+                            mime_type="application/json",
+                            content=json.dumps(transcript),
+                        ),
+                    ],
+                ),
+                note=IngestNote(
+                    title="Planning",
+                    body="My own meeting notes.\n",
+                    frontmatter={"date": "2026-10-14T09:00:00"},
+                ),
+            )
+        )
+        context.recordings.save(
+            TranscriptionJob(
+                id="a" * 64,
+                artifact_id="b" * 64,
+                filename="meeting.wav",
+                mime_type="audio/wav",
+                size_bytes=1,
+                title="Planning",
+                provider="test-audio",
+                external_source_id="summary-test",
+                state="succeeded",
+                transcribed=True,
+                created_at="2026-10-14T14:00:00+00:00",
+                note_id=result.note.id,
+                note_path=result.note.path,
+                source_id=result.source.id,
+            )
+        )
+        note = await store.get_note(result.note.id)
     requests = []
     rejected: list[bool] = []
     drift = {"on": False}
@@ -133,10 +163,50 @@ async def setup_recording(store, standin, *, limit=200000, failure=None):
         return found
 
     context.evidence = drifting
-    note = await store.get_note(result.note.id)
     job = context.load_job(await context.queue_note(note.id))
     await context.run_job(job)
     return context, note, job, requests
+
+
+@pytest.mark.parametrize("mode", ["apply", "edited-placeholder", "empty", "reject", "direct"])
+async def test_recording_placeholder_is_removed_only_when_applying_kept_summary(
+    store, standin, mode
+):
+    placeholder = SUMMARY_PENDING if mode != "edited-placeholder" else SUMMARY_PENDING + " Edited."
+    owner_text = "\nOwner notes.\n\n> " + SUMMARY_PENDING + "\n"
+    original = placeholder + "\n" + owner_text
+    context, note, job, _ = await setup_recording(store, standin, recording_body=original)
+    assert job.state == "suggested", job.error
+    if mode == "direct":
+        await store.patch_frontmatter(
+            note.id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
+        )
+        reviewed = await store.get_note(note.id)
+        assert reviewed.frontmatter["reviewed"] is True
+        assert reviewed.body == note.body
+        return
+    kept = {**PROPOSAL, "decisions": "- Ship Monday.", "action_items": ""}
+    payload = {
+        "note_id": note.id,
+        "if_match": note.content_hash,
+        "job_id": job.id,
+        "selected": [],
+        "confirmation": "Complete review",
+    }
+    if mode != "reject":
+        payload["meeting_summary"] = {key: "" for key in kept} if mode == "empty" else kept
+    receipt = await context.complete_review(payload)
+    reviewed = await store.get_note(note.id)
+    assert reviewed.frontmatter["reviewed"] is True
+    if mode in {"empty", "reject"}:
+        assert reviewed.body == note.body
+    else:
+        prefix = note.body.replace(SUMMARY_PENDING + "\n", "", 1) if mode == "apply" else note.body
+        assert reviewed.body == (
+            prefix + "\n\n## Summary\n\n" + kept["summary"] + "\n\n## Decisions\n\n- Ship Monday.\n"
+        )
+    assert await context.complete_review(payload) == receipt
+    assert (await store.get_note(note.id)).content_hash == reviewed.content_hash
 
 
 @pytest.mark.parametrize("mode", ["keep", "edit", "reject", "interrupted", "stale"])

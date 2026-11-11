@@ -322,7 +322,7 @@ async def test_review_corrects_a_speaker_and_replays_without_another_revision(
 
 
 async def recorded(
-    store, standin, transcript, answer, *, max_input_chars=None, attendees_field=None
+    store, standin, transcript, answer, *, max_input_chars=None, attendees_field=None, summary=None
 ):
     """A linked recording note in Review whose model replies with `answer(evidence)`."""
     context = await configure(store)
@@ -389,7 +389,12 @@ async def recorded(
                             "finish_reason": "stop",
                             "message": {
                                 "content": json.dumps(
-                                    {"summary": "Greetings.", "decisions": "", "action_items": ""}
+                                    summary
+                                    or {
+                                        "summary": "Greetings.",
+                                        "decisions": "",
+                                        "action_items": "",
+                                    }
                                 )
                             },
                         }
@@ -722,7 +727,7 @@ async def test_calendar_contact_tracks_matched_dossier_changes(store, standin, a
         assert (await store.get_source(result.source.id)).current_revision == 1
 
 
-async def test_public_review_api_approves_corrects_and_leaves_a_speaker_unknown(store, standin):
+async def test_public_review_api_combines_speaker_names_and_edited_summary(store, standin):
     from coppermind_store.auth import InternalAuth
     from coppermind_store.context_api import router as internal_router
     from fastapi import FastAPI
@@ -755,7 +760,14 @@ async def test_public_review_api_approves_corrects_and_leaves_a_speaker_unknown(
             for label in ("Speaker 1", "Speaker 2")
         ]
 
-    context, result, note, job_id, _ = await recorded(store, standin, transcript, answer)
+    summary = {
+        "summary": "Alex and Blair discussed the launch.",
+        "decisions": "- Launch Friday.",
+        "action_items": "- Alex: Send the plan.",
+    }
+    context, result, note, job_id, _ = await recorded(
+        store, standin, transcript, answer, summary=summary
+    )
     internal = FastAPI()
     internal.state.store = store
     internal.state.auth = InternalAuth("synthetic-internal-token")
@@ -770,6 +782,7 @@ async def test_public_review_api_approves_corrects_and_leaves_a_speaker_unknown(
     ) as api:
         detail = await api.get(f"/v1/notes/{note.id}/review")
         assert detail.status_code == 200, detail.text
+        assert detail.json()["meeting_summary"] == summary
         proposals = {s["field"]: s for s in detail.json()["suggestions"] if s["kind"] == "speaker"}
         first, second = proposals["Speaker 1"], proposals["Speaker 2"]
         response = await api.post(
@@ -781,7 +794,8 @@ async def test_public_review_api_approves_corrects_and_leaves_a_speaker_unknown(
                 "selected": [first["index"], second["index"]],
                 "meeting_summary": {
                     **detail.json()["meeting_summary"],
-                    "summary": "The owner corrected this summary.",
+                    "decisions": "- Launch Monday.",
+                    "action_items": "",
                 },
                 "speaker_choices": {
                     str(first["index"]): "person:" + alex["id"],
@@ -800,7 +814,11 @@ async def test_public_review_api_approves_corrects_and_leaves_a_speaker_unknown(
     reviewed = await store.get_note(note.id)
     assert reviewed.frontmatter["reviewed"] is True
     assert reviewed.body.startswith(note.body)
-    assert "The owner corrected this summary." in reviewed.body
+    assert summary["summary"] in reviewed.body
+    assert "- Launch Monday." in reviewed.body
+    assert summary["decisions"] not in reviewed.body
+    assert summary["action_items"] not in reviewed.body
+    assert "## Action items" not in reviewed.body
 
 
 async def test_one_person_cannot_name_two_speakers(store, standin):
