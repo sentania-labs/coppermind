@@ -46,7 +46,7 @@ test-integration:
 db-up:
 	docker run -d --rm --name coppermind-test-db \
 		-e POSTGRES_USER=coppermind -e POSTGRES_PASSWORD=coppermind -e POSTGRES_DB=coppermind_test \
-		-p 127.0.0.1:5433:5432 pgvector/pgvector:pg16 >/dev/null
+		-p 127.0.0.1:5433:5432 pgvector/pgvector:0.8.7-pg16-trixie@sha256:9cf8b511f0e9a2c209b61430fc139f1ab9c75edbb31fb1751db6617b246a897a >/dev/null
 	@for i in $$(seq 1 30); do \
 		docker exec coppermind-test-db pg_isready -U coppermind -d coppermind_test >/dev/null 2>&1 && exit 0; \
 		sleep 1; \
