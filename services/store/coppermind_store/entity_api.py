@@ -43,12 +43,57 @@ async def entity_action(action: str, payload: dict[str, Any], request: Request) 
                         )
                     context.write("voice-settings", {"strong": strong, "maybe": maybe})
                 result = context.read("voice-settings", {"strong": 0.60, "maybe": 0.45})
+        elif action in {"voice-recognition", "voice-recognition-save"}:
+            from coppermind_store.voice_store import VoiceStore
+
+            async with request.app.state.store.context.lock:
+                voice = VoiceStore(request.app.state.store.context)
+                if action == "voice-recognition-save":
+                    if type(payload.get("enabled")) is not bool:
+                        raise ValidationFailed(["Invalid voice recognition setting"])
+                    voice.set_recognition_enabled(payload["enabled"])
+                result = {"enabled": voice.recognition_enabled()}
+        elif action in {"voice-unknown-list", "voice-unknown-delete"}:
+            from coppermind_store.voice_store import VoiceStore
+
+            async with request.app.state.store.context.lock:
+                voice = VoiceStore(request.app.state.store.context)
+                if action == "voice-unknown-delete":
+                    voice.delete_unknown(payload["id"])
+                result = voice.unknown_summaries()
+        elif action in {"voice-combine", "voice-split"}:
+            from coppermind_store.voice_relabel import combine, separate
+
+            context = request.app.state.store.context
+            async with context.lifecycle.lock, context.lock:
+                if action == "voice-combine":
+                    await combine(context, payload["id"], payload["target"])
+                    result = {"ok": True}
+                else:
+                    identity = await separate(
+                        context, payload["id"], payload["note_id"], payload["label"]
+                    )
+                    result = {"id": identity}
         elif action == "voice-list":
             from coppermind_store.voice_store import VoiceStore
 
             async with request.app.state.store.context.lock:
-                result = VoiceStore(request.app.state.store.context).summaries()
-        elif action in {"voice-get", "voice-set", "voice-delete"}:
+                voice = VoiceStore(request.app.state.store.context)
+                people = entities.load().entities
+                result = {
+                    identity: {
+                        **summary,
+                        "name": people[identity].name,
+                        "assignments": voice.assignments("person:" + identity),
+                    }
+                    for identity, summary in voice.summaries().items()
+                    if identity in people
+                    and people[identity].kind == "person"
+                    and not people[identity].retired_at
+                    and not people[identity].redirect
+                    and summary["signatures"]
+                }
+        elif action in {"voice-get", "voice-delete"}:
             from coppermind_store.voice_store import VoiceStore
 
             identity = payload["id"]
@@ -57,11 +102,7 @@ async def entity_action(action: str, payload: dict[str, Any], request: Request) 
                 if not entity or entity.kind != "person" or entity.retired_at or entity.redirect:
                     raise ValidationFailed(["Person not found"])
                 voice = VoiceStore(request.app.state.store.context)
-                if action == "voice-set":
-                    if type(payload.get("enabled")) is not bool:
-                        raise ValidationFailed(["Invalid consent setting"])
-                    voice.set_enabled(identity, payload["enabled"])
-                elif action == "voice-delete":
+                if action == "voice-delete":
                     voice.delete(identity)
                 result = voice.summary(identity)
         elif action == "create":
@@ -77,6 +118,11 @@ async def entity_action(action: str, payload: dict[str, Any], request: Request) 
         status, body = to_http(exc, surface="internal")
     except SQLAlchemyError:
         status, body = to_http(MetadataUnavailable(), surface="internal")
-    except (ValueError, KeyError, ValidationError):
+    except (KeyError, ValidationError):
         status, body = to_http(ValidationFailed(["Invalid entity fields"]), surface="internal")
+    except ValueError as exc:
+        message = (
+            str(exc) if action in {"voice-combine", "voice-split"} else "Invalid entity fields"
+        )
+        status, body = to_http(ValidationFailed([message]), surface="internal")
     return JSONResponse(body, status)

@@ -429,8 +429,25 @@ class Recordings:
             if not worked:
                 await asyncio.sleep(10)
 
+    async def apply_deferred_voices(self) -> bool:
+        """Rewrite speaker names held back while their note's review was unfinished."""
+        from coppermind_store.voice_relabel import apply_deferred
+        from coppermind_store.voice_store import VoiceStore
+
+        if not VoiceStore(self.context).deferred_relabels():
+            return False
+        async with self.context.lifecycle.lock, self.context.lock:
+            return await apply_deferred(self.context)
+
     async def tick(self) -> bool:
         """Run the oldest job that is due. True when one ran."""
+        try:
+            if await self.apply_deferred_voices():
+                return True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("deferred voice relabel failed")
         for job in sorted(await asyncio.to_thread(self.jobs), key=lambda item: item.created_at):
             if job.state == "succeeded" and not job.audio_removed:
                 if job.audio_removal_stuck:
@@ -515,6 +532,9 @@ class Recordings:
                     return False
             elif row.state == "deleted":
                 (self.context.root / "voice-pending" / (job.id + ".json")).unlink(missing_ok=True)
+                from coppermind_store.voice_store import VoiceStore
+
+                VoiceStore(self.context).purge(set(), {job.note_id})
                 if not (row.filed and row.reviewed):
                     return False
             elif not (row.filed and row.reviewed):
@@ -850,6 +870,9 @@ class Recordings:
             job.set_error(message, "transcription-recovering" if message else "")
             self.save(job)
 
+        from coppermind_store.voice_store import VoiceStore
+
+        voice_enabled = VoiceStore(self.context).recognition_enabled()
         transcript, usage = await self.context.provider.transcribe(
             connection,
             self.context.key(connection.id),
@@ -866,10 +889,12 @@ class Recordings:
             duration_seconds=duration,
             num_speakers=speakers,
             max_speakers=maximum,
-            include_speaker_embeddings=True,
+            include_speaker_embeddings=voice_enabled,
         )
         pending = transcript.pop("speakers", [])
-        self.context.write("voice-pending/" + job.id, pending)
+        async with self.context.lock:
+            if voice_enabled and VoiceStore(self.context).recognition_enabled():
+                self.context.write("voice-pending/" + job.id, pending)
         transcript["model"] = assignment.model
         self.context.write(self.transcript_path(job), transcript)
         job.remote_job_id, job.remote_job_started, job.remote_job_resubmits = "", 0, 0
@@ -879,6 +904,34 @@ class Recordings:
 
     async def file_note(self, job: TranscriptionJob, transcript: dict[str, Any]) -> None:
         """File the transcript as a source and a note in Review, and cite the recording."""
+        from coppermind_store.speaker_names import rename_speakers, speaker_labels
+        from coppermind_store.voice_store import VoiceStore
+
+        async with self.context.lock:
+            voice = VoiceStore(self.context)
+            voice_map = self.context.read("voice-mappings/" + job.id, {})
+            if voice.recognition_enabled() and not voice_map:
+                pending = self.context.read("voice-pending/" + job.id, [])
+                by_label = {
+                    speaker["label"]: speaker
+                    for speaker in pending
+                    if isinstance(speaker, dict) and isinstance(speaker.get("label"), str)
+                }
+                for label in speaker_labels(transcript):
+                    speaker = by_label.get(label, {})
+                    identity = voice.capture_unknown(
+                        "recording:" + job.id,
+                        label,
+                        _now(),
+                        speaker.get("speech_seconds"),
+                        speaker.get("embeddings", []),
+                    )
+                    if identity:
+                        voice_map[label] = voice.unknown_summaries()[identity]["name"]
+                self.context.write("voice-mappings/" + job.id, voice_map)
+            if voice_map:
+                voice.set_segments("recording:" + job.id, transcript)
+                transcript = rename_speakers(transcript, voice_map)
         captured = datetime.fromisoformat(job.captured_at) if job.captured_at else None
         request = IngestRequest(
             source=IngestSource(
@@ -912,6 +965,14 @@ class Recordings:
         result = await self.context.store.ingest(request)
         job.note_id, job.note_path = result.note.id, result.note.path
         job.source_id = result.source.id
+        async with self.context.lock:
+            VoiceStore(self.context).bind_recording("recording:" + job.id, result.note.id)
+            pending = self.context.read("voice-pending/" + job.id, [])
+            for speaker in pending:
+                if isinstance(speaker, dict):
+                    speaker["label"] = voice_map.get(speaker.get("label"), speaker.get("label"))
+            if pending:
+                self.context.write("voice-pending/" + job.id, pending)
         self.save(job)
         try:
             await artifacts.known_paths(self.context.store, [job.artifact_id])

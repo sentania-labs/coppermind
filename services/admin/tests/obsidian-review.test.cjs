@@ -10,6 +10,7 @@ class El {
   empty(){this.children=[];}
   createEl(tag,options){const el=new El(tag,options);this.children.push(el);return el;}
   createDiv(options){return this.createEl('div',options);}
+  createSpan(options){return this.createEl('span',options);}
   all(){return [this,...this.children.flatMap(x=>x.all())];}
 }
 class Setting {
@@ -29,7 +30,7 @@ async function fixture(local, overrides={}){
   class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(){}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
@@ -98,7 +99,7 @@ test('preview shows selected speaker changes and dropdown correction selects the
   const f=await fixture(undefined,{suggestions:[proposal(0,.9),proposal(1,.4)],job_id:'job'});
   let text=()=>f.view.contentEl.all().map(e=>e.text||'').join(' ');
   assert.match(text(),/Speaker 1 → Alex/);assert.doesNotMatch(text(),/Speaker 2 → Alex/);
-  assert.match(text(),/transcript labels, note attendees and dossier links/);assert.match(text(),/Unnamed speakers stay/);
+  assert.match(text(),/transcript labels, note attendees and links to selected people/);assert.match(text(),/Unnamed speakers stay/);
   const selects=f.view.contentEl.all().filter(e=>e.tag==='select');selects[1].value='person:b';selects[1].onchange();
   assert.match(text(),/Speaker 2 → Blair/);
   await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
@@ -247,6 +248,12 @@ test('correcting a selected voice match sends only the corrected person',async()
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:b');
 });
 
+test('a speaker without enough speech is explained in review',async()=>{
+  const manual={speakers:['Speaker 2'],candidates:[],voice_matches:{},voice_unavailable:['Speaker 2']};
+  const f=await fixture(undefined,{manual_speaker_review:manual});
+  assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('too little speech to recognise this voice')));
+});
+
 const personVoice=(signatures)=>({enabled:true,signatures});
 const sig=(id)=>({note_id:id,created_at:'2026-01-02T00:00:00Z'});
 async function peopleFixture(signatures){
@@ -257,28 +264,22 @@ async function peopleFixture(signatures){
   const puts=()=>f.requests.filter(r=>r.method==='PUT');
   return {...f,view,toggle,puts};
 }
-test('turning voice recognition off says its signatures are deleted and waits for confirmation',async()=>{
-  const f=await peopleFixture([sig('n1'),sig('n2')]);
-  await f.toggle.onchange(false);
-  assert.equal(f.puts().length,0);
-  const modal=f.modals.at(-1);
-  assert.ok(modal.contentEl.all().some(e=>e.text==='Turning this off deletes 2 saved voice signatures for Alex. Turning it on again starts from nothing.'));
-  await modal.contentEl.all().find(e=>e.text==='Turn off and delete').onclick();
-  assert.equal(f.puts().length,1);
-  assert.match(f.puts()[0].url,/\/v1\/entities\/alex-id\/voice$/);
-  assert.deepEqual(JSON.parse(f.puts()[0].body),{enabled:false});
-});
-test('cancelling the turn-off warning changes nothing',async()=>{
+test('the global switch stops collecting signatures without deleting saved voices',async()=>{
   const f=await peopleFixture([sig('n1')]);
   await f.toggle.onchange(false);
-  f.modals.at(-1).contentEl.all().find(e=>e.text==='Cancel').onclick();
-  assert.equal(f.puts().length,0);
-});
-test('turning off with nothing saved needs no confirmation',async()=>{
-  const f=await peopleFixture([]);
-  await f.toggle.onchange(false);
-  assert.equal(f.modals.length,0);
   assert.equal(f.puts().length,1);
+  assert.match(f.puts()[0].url,/\/v1\/entities\/voice\/recognition$/);
+  assert.deepEqual(JSON.parse(f.puts()[0].body),{enabled:false});
+  assert.equal(f.modals.length,0);
+});
+test('deleting a person voice requires confirmation',async()=>{
+  const f=await peopleFixture([sig('n1')]);
+  f.view.contentEl.all().find(e=>e.text==='Delete voice data').onclick();
+  assert.equal(f.requests.filter(r=>r.method==='DELETE').length,0);
+  const modal=f.modals.at(-1);
+  assert.match(modal.contentEl.all().map(e=>e.text||'').join(' '),/Future recordings cannot be recognised/);
+  await modal.contentEl.all().find(e=>e.text==='Delete voice data').onclick();
+  assert.equal(f.requests.filter(r=>r.method==='DELETE').length,1);
 });
 
 test('summary edits and strong voice are submitted together',async()=>{
@@ -306,4 +307,27 @@ test('useful model evidence stays attributed when voice supplies the name',async
   const f=await fixture(undefined,{suggestions:[s],job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
   const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
   assert.match(text,/Model: Someone said hello/);assert.match(text,/Model evidence/);
+});
+
+test('People shows saved people and confirms how many recordings a voice combines',async()=>{
+  const unknownVoices={'unknown:12':{name:'Unknown voice 12',signatures:[sig('n1')],assignments:[{note_id:'n1',label:'Speaker 1'},{note_id:'n2',label:'Speaker 1'}]},'unknown:18':{name:'Unknown voice 18',signatures:[sig('n3')],assignments:[]}};
+  const f=await fixture(undefined,{unknownVoices,savedPeople:{alex:{name:'Alex',signatures:[sig('n4')],assignments:[]}}});
+  const view=f.factories['coppermind-people']({app:f.app});await view.show();
+  assert.ok(view.contentEl.all().some(e=>e.text==='Alex · Voice data saved'));
+  await view.show({id:'unknown:12',name:'Unknown voice 12',unknown:true});
+  const select=view.contentEl.all().find(e=>e.tag==='select');select.value='unknown:18';
+  view.contentEl.all().find(e=>e.text==='Choose and combine').onclick();
+  assert.equal(f.requests.filter(r=>r.method==='POST').length,0);
+  const modal=f.modals.at(-1);assert.ok(modal.contentEl.all().some(e=>e.text?.includes('relabel 2 recordings')));
+  await modal.contentEl.all().find(e=>e.text==='Combine voices').onclick();
+  assert.equal(f.requests.filter(r=>r.method==='POST').length,1);
+});
+
+test('strong voice suggestion explains confirmation and earlier appearances',async()=>{
+  const manual={speakers:['Unknown voice 12'],candidates:[],voice_matches:{'Unknown voice 12':[match('a','Alex')]},voice_appearances:{'Unknown voice 12':3}};
+  const f=await fixture(undefined,{manual_speaker_review:manual});
+  const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.match(text,/Check this suggestion before you finish/);
+  assert.match(text,/remembered across recordings/);
+  assert.match(text,/2 earlier recordings/);
 });

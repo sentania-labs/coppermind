@@ -27,6 +27,7 @@ from coppermind.store_protocol import (
     NotFound,
     PathCollision,
     PayloadTooLarge,
+    PermissionDenied,
     PreconditionRequired,
     ProjectionNotPlaced,
     PurgeConflict,
@@ -96,6 +97,8 @@ def code_for_status(status_code: int) -> str:
 def to_http(error: StoreError, *, surface: Surface = "public") -> tuple[int, dict[str, Any]]:
     """Map a typed store error onto its status code and error envelope."""
     cause = {"detail": str(error)} if surface == "internal" else {}
+    if isinstance(error, PermissionDenied):
+        return 403, envelope("forbidden", str(error))
     if isinstance(error, FieldIndexNotReady):
         return 503, envelope("field_index_not_ready", str(error), job_id=error.job_id)
     if isinstance(error, PurgeConflict):

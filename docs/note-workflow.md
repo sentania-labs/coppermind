@@ -26,9 +26,11 @@ Install the companion ZIP from **Note workflow** into
 Obsidian 1.11 or later and a Coppermind API key with `notes:read`, `notes:write` and
 `sources:read`. Naming speakers also needs `sources:write` and `entities:read`; a key
 without `entities:read` still reviews everything else, and the panel says that speakers
-cannot be named with it. The People view (voice recognition) also needs `entities:write`
-to change opt-in or delete signatures. Select the key through Obsidian SecretStorage; the plugin saves
-only its name, never its value, in plugin settings. Configure it separately on devices
+cannot be named with it. Naming a calendar contact who needs a new People entry also
+requires `entities:write`; choosing an existing person does not. The People view
+(voice recognition) also needs `entities:write`
+to change recognition or delete signatures. Combining or separating voices also needs `sources:write`. Select the key through
+Obsidian SecretStorage; the plugin saves only its name, never its value, in plugin settings. Configure it separately on devices
 that do not share local secret storage.
 
 Open a note and run **Coppermind Review: Review current note**. The panel checks
@@ -65,7 +67,7 @@ were made is written under the current name; one retired is refused for that spe
 only. When enrichment links an event automatically, it asks the model again with that
 event's attendees. If you link an event yourself after the first pass, request fresh
 suggestions. Confident names start selected, and the panel previews each change.
-For people who opted in, a close voice match also appears as a `Voice` or `Maybe`
+For people with saved signatures, a close voice match also appears as a `Voice` or `Maybe`
 candidate for that speaker, returned as `voice_matches` in the review response
 (see [voice recognition](dossiers.md#voice-recognition)). A single `Voice` match that the
 model does not contradict starts selected; `Maybe` matches, several `Voice` matches, or a

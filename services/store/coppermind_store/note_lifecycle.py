@@ -146,11 +146,25 @@ class NoteLifecycle:
                 self.context, note, await self.context.calendar_candidates(note)
             )
         if manual:
+            from coppermind_store.voice_store import VoiceStore
+
             people = self.context.store.entities.load().entities
             manual = {
                 key: manual[key] for key in ("source_id", "revision", "speakers", "candidates")
             }
             manual["voice_matches"] = speaker_names.voice_suggestions(self.context, note.id)
+            recording = next(r for r in self.context.recordings.jobs() if r.note_id == note.id)
+            voice_map = self.context.read("voice-mappings/" + recording.id, None)
+            manual["voice_unavailable"] = (
+                [label for label in manual["speakers"] if label.startswith("Speaker ")]
+                if isinstance(voice_map, dict)
+                else []
+            )
+            manual["voice_appearances"] = {
+                voice["name"]: len(voice["assignments"])
+                for voice in VoiceStore(self.context).unknown_summaries().values()
+                if voice["name"] in manual["speakers"]
+            }
             manual["candidates"] = [
                 person
                 for candidate in manual["candidates"]
@@ -302,6 +316,7 @@ class NoteLifecycle:
                                 "longer an active person. Choose someone else or leave this "
                                 "speaker unnamed."
                             )
+                        person = speaker_names.find_contact(self.context, person)
                         mapping[suggestion.field] = person["name"]
                         person_ids[suggestion.field] = (
                             person.get("person_id") or person["id"].removeprefix("person:")
@@ -369,6 +384,7 @@ class NoteLifecycle:
                             raise ValueError(
                                 f"{label}: this person is no longer active. Choose someone else."
                             )
+                        person = speaker_names.find_contact(self.context, person)
                         speaker_operation["mapping"][label] = person["name"]
                         speaker_operation["person_ids"][label] = person.get("person_id") or (
                             person["id"].removeprefix("person:")
@@ -389,8 +405,22 @@ class NoteLifecycle:
                                 f"{chosen} is already chosen for {earlier}. Choose someone "
                                 "else or leave this speaker unnamed."
                             )
+                    if payload.get("can_create_people", True) is not True and any(
+                        speaker_names._is_contact(person) for person in speaker_operation["people"]
+                    ):
+                        from coppermind.store_protocol import PermissionDenied
+
+                        raise PermissionDenied(
+                            "This key cannot create a person. Choose an existing person or use "
+                            "a key with permission to update people."
+                        )
                 receipt = {
-                    "summary": {"value": summary} if summary is not None else None,
+                    "summary": {
+                        "value": summary,
+                        "generated": job.result.meeting_summary.model_dump(),
+                    }
+                    if summary is not None
+                    else None,
                     "speakers": speaker_operation,
                     "note_id": identity,
                     "request": request_hash,
@@ -400,10 +430,20 @@ class NoteLifecycle:
                     "selected": selected,
                     "applied": [],
                     "created_at": now(),
-                    "payload": payload,
+                    "payload": {k: v for k, v in payload.items() if k != "can_create_people"},
                     "accept_link_risk": payload.get("accept_link_risk") is True,
                 }
                 self.context.write(name, receipt)
+            if payload.get("can_create_people", True) is not True and any(
+                speaker_names._is_contact(person)
+                for person in (receipt.get("speakers") or {}).get("people", [])
+            ):
+                from coppermind.store_protocol import PermissionDenied
+
+                raise PermissionDenied(
+                    "This key cannot create a person. Use a key with permission to update people "
+                    "to resume this review."
+                )
             if receipt["selected"]:
                 job = self.context.load_job(receipt["job_id"])
                 if job.pending_approval:
@@ -438,10 +478,33 @@ class NoteLifecycle:
                     self.context.write(name, receipt)
             current = await self.context.store.get_note(identity)
             if receipt.get("speakers") and not receipt.get("speakers_applied"):
+                await speaker_names.create_contact_people(self.context, receipt["speakers"])
+                self.context.write(name, receipt)
                 current = await speaker_names.apply(self.context, receipt, current)
                 receipt["expected_hash"] = current.content_hash
                 receipt["speakers_applied"] = True
                 self.context.write(name, receipt)
+            if receipt.get("speakers") and not receipt.get("voices_applied"):
+                from coppermind_store.voice_relabel import combine
+                from coppermind_store.voice_store import VoiceStore
+
+                async with self.context.lock:
+                    voice = VoiceStore(self.context)
+                    for label, person_id in receipt["speakers"].get("person_ids", {}).items():
+                        if not person_id:
+                            continue
+                        unknown = next(
+                            (
+                                key
+                                for key, value in voice.unknown_summaries().items()
+                                if value["name"] == label
+                            ),
+                            None,
+                        )
+                        if unknown:
+                            await combine(self.context, unknown, "person:" + person_id, identity)
+                    receipt["voices_applied"] = True
+                    self.context.write(name, receipt)
             if receipt.get("summary") and not receipt.get("summary_applied"):
                 current = await meeting_summary.apply(self.context, receipt, current)
                 receipt["expected_hash"] = current.content_hash
@@ -485,7 +548,11 @@ class NoteLifecycle:
                         proposed = speaker_names.voice_suggestions(self.context, identity)
                         current_people = self.context.store.entities.load().entities
                         for label, candidates in proposed.items():
-                            chosen_id = operation.get("person_ids", {}).get(label)
+                            original_label = next(
+                                (old for old, new in operation["mapping"].items() if new == label),
+                                label,
+                            )
+                            chosen_id = operation.get("person_ids", {}).get(original_label)
                             if chosen_id:
                                 for candidate in candidates:
                                     proposed_id = candidate["id"].removeprefix("person:")
@@ -494,7 +561,15 @@ class NoteLifecycle:
                         for speaker in pending:
                             if not isinstance(speaker, dict):
                                 continue
-                            person_id = operation.get("person_ids", {}).get(speaker.get("label"))
+                            original_label = next(
+                                (
+                                    old
+                                    for old, new in operation["mapping"].items()
+                                    if new == speaker.get("label")
+                                ),
+                                speaker.get("label"),
+                            )
+                            person_id = operation.get("person_ids", {}).get(original_label)
                             person = current_people.get(person_id)
                             if (
                                 person
@@ -523,6 +598,10 @@ class NoteLifecycle:
                     )
                     self.context.save_job(job)
             await self.finalize(current)
+            from coppermind_store.voice_relabel import apply_deferred
+
+            async with self.context.lock:
+                await apply_deferred(self.context, identity)
             return receipt
 
     async def finalize(self, note: NoteDocument) -> None:

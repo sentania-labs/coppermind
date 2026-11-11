@@ -103,7 +103,15 @@ async def finish(
             choice = payload.speaker_choices.get(str(index), item.get("value") or "")
             if item.get("kind") == "speaker" and choice:
                 raise forbidden()
-    return await call(client, "complete-review", {"note_id": note_id, **payload.model_dump()})
+    return await call(
+        client,
+        "complete-review",
+        {
+            "note_id": note_id,
+            **payload.model_dump(),
+            "can_create_people": principal.has("entities:write"),
+        },
+    )
 
 
 @router.post("/notes/{note_id}/suggestions")

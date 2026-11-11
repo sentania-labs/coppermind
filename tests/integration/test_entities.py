@@ -1440,7 +1440,6 @@ async def test_merging_a_person_away_deletes_their_voice_signatures(store):
     source = await person(store, name="Casey", address="casey@example.test")
     target = await person(store, name="Casey Two", address="two@example.test")
     voice = VoiceStore(store.context)
-    voice.set_enabled(source["id"], True)
     voice.confirm(
         source["id"], "note", "today", 30, [{"model": "m", "version": "v", "vector": [1, 0]}]
     )
@@ -1452,5 +1451,5 @@ async def test_merging_a_person_away_deletes_their_voice_signatures(store):
     await store.entities.change(
         source["id"], EntityChange(action="merge", preview=preview["preview"], **request)
     )
-    assert voice.summary(source["id"]) == {"enabled": False, "signatures": []}
+    assert voice.summary(source["id"]) == {"signatures": [], "assignments": []}
     assert source["id"] not in voice.summaries()
