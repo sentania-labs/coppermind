@@ -1469,12 +1469,6 @@ class ContextService:
                     for s in result.suggestions
                     if s.kind in {"event", "contact", "attendee", "invitee", "speaker"}
                 ]
-            # Only the separate full-transcript stage can supply meeting prose.
-            result.meeting_summary, summary_usage = await meeting_summary.generate(
-                self, connection, assignment, transcript, job
-            )
-            if summary_usage:
-                usage["summary"] = summary_usage
             speaker = evidence.get("speaker_review") or {}
             for suggestion in result.suggestions:
                 if suggestion.kind == "speaker":
@@ -1497,6 +1491,12 @@ class ContextService:
             left = len(unnamed) - min(room, len(unnamed))
             job.notice = speaker_names.leftover_notice(left) if left else ""
             self.validate_result(result, evidence, await self.source_text(job.note_id))
+            # Only the separate full-transcript stage can supply meeting prose.
+            result.meeting_summary, summary_usage = await meeting_summary.generate(
+                self, connection, assignment, transcript, job
+            )
+            if summary_usage:
+                usage["summary"] = summary_usage
             # A note or calendar can change during a slow model request.
             if not same_evidence(await self.evidence(job), evidence):
                 raise ValueError("stale: source evidence changed during model processing")
@@ -1721,7 +1721,7 @@ class ContextService:
         identity = (
             await self.queue_reviewed(job.note_id, force=True)
             if job.purpose == "dossier"
-            else await self.queue_note(job.note_id, force=True)
+            else await self.queue_note(job.note_id, force=True, fresh=job.fresh)
         )
         return {"job": identity}
 
@@ -2301,12 +2301,18 @@ class ContextService:
                             != await self.note_evidence_hash(current, ledger)
                         )
                     ):
-                        touched.append(await self.queue_note(note.id, force=True, ledger=ledger))
+                        touched.append(
+                            await self.queue_note(
+                                note.id, force=True, fresh=known.fresh, ledger=ledger
+                            )
+                        )
                     continue
                 if self.config().lifecycle_enabled and previous:
                     current = await self.store.get_note(note.id)
                     if previous[-1].evidence_hash != await self.note_evidence_hash(current, ledger):
-                        identity = await self.queue_note(note.id, ledger=ledger)
+                        identity = await self.queue_note(
+                            note.id, fresh=previous[-1].fresh, ledger=ledger
+                        )
                         touched.append(identity)
                         changed = self.load_job(identity)
                         known = previous[-1]

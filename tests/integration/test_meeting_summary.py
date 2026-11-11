@@ -82,6 +82,8 @@ async def setup_recording(store, standin, *, limit=200000, failure=None):
         )
     )
     requests = []
+    rejected = []
+    drift = {"on": False}
 
     def model(request):
         payload = json.loads(request.content)
@@ -94,6 +96,15 @@ async def setup_recording(store, standin, *, limit=200000, failure=None):
             if failure == "context":
                 return httpx.Response(400, json={"error": {"message": "context length exceeded"}})
             output = {"summary": 42} if failure == "shape" else PROPOSAL
+            drift["on"] = failure == "drift"
+        elif failure == "primary" and not rejected:
+            rejected.append(True)
+            output = {
+                "suggestions": [
+                    {"kind": "field", "field": "type", "entity_ids": ["nope"], "reason": "x"}
+                ],
+                "unresolved": [],
+            }
         else:
             output = {"suggestions": [], "unresolved": []}
         return httpx.Response(
@@ -112,6 +123,16 @@ async def setup_recording(store, standin, *, limit=200000, failure=None):
     connection.base_url = standin["url"]
     context.save_config(config)
     context.provider = ModelProvider()
+    evidence = context.evidence
+
+    async def drifting(job):
+        found = await evidence(job)
+        if drift["on"]:
+            drift["on"] = False
+            found = {**found, "note": {**found["note"], "body": found["note"]["body"] + "!"}}
+        return found
+
+    context.evidence = drifting
     note = await store.get_note(result.note.id)
     job = context.load_job(await context.queue_note(note.id))
     await context.run_job(job)
@@ -260,6 +281,40 @@ async def test_automatic_requeue_carries_the_summary_without_another_read(
     detail = await context.lifecycle_detail({"note_id": note.id})
     assert detail["job_id"] == refresh.id
     assert detail["meeting_summary"] == PROPOSAL
+
+
+@pytest.mark.parametrize("failure,state", [("primary", "failed"), ("drift", "stale")])
+async def test_finished_summary_survives_a_job_that_fails_afterwards(
+    store, standin, failure, state
+):
+    context, note, first, requests = await setup_recording(store, standin, failure=failure)
+    assert first.state == state, first.error
+    reads = sum("transcript" in request for request in requests)
+    assert reads == (0 if failure == "primary" else 1)
+    stored = context.read("meeting-summaries/" + note.id, {})
+    assert (stored.get("summary") == PROPOSAL) == (failure == "drift")
+    retry = context.load_job(await context.queue_note(note.id, force=True))
+    await context.run_job(retry)
+    assert retry.state == "suggested", retry.error
+    assert sum("transcript" in request for request in requests) == 1
+    detail = await context.lifecycle_detail({"note_id": note.id})
+    assert detail["meeting_summary"] == PROPOSAL
+
+
+async def test_failed_fresh_request_stays_fresh_until_a_new_summary_is_stored(store, standin):
+    context, note, first, requests = await setup_recording(store, standin)
+    assert first.state == "suggested", first.error
+    config = context.config()
+    config.assignments["enrichment"].summary_timeout_s = 1234
+    context.save_config(config)
+    context.provider = ModelProvider(
+        httpx.MockTransport(lambda request: (_ for _ in ()).throw(httpx.ConnectError("down")))
+    )
+    fresh = context.load_job(await context.queue_note(note.id, force=True, fresh=True))
+    await context.run_job(fresh)
+    assert fresh.state == "failed"
+    retry = context.load_job((await context.retry_job({"id": fresh.id}))["job"])
+    assert retry.fresh is True
 
 
 async def test_owner_requested_fresh_suggestions_read_the_transcript_again(store, standin):

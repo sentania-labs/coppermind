@@ -1846,9 +1846,8 @@ class EntityService:
                 records.pop(identity, None)
             self.store.context.write(name, records)
         for identity in note_ids:
-            (self.store.context.root / "review-completions" / (identity + ".json")).unlink(
-                missing_ok=True
-            )
+            for folder in ("review-completions", "meeting-summaries"):
+                (self.store.context.root / folder / (identity + ".json")).unlink(missing_ok=True)
         for path in (self.store.context.root / "association-corrections").glob("*.json"):
             if json.loads(path.read_bytes()).get("note_id") in note_ids:
                 path.unlink()
