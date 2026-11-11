@@ -217,7 +217,9 @@ def test_key_creation_names_the_companion_permissions_in_plain_language(signed_i
         "notes:write": "Update notes",
         "sources:read": "Read sources",
         "sources:write": "Update sources",
+        "artifacts:read": "Read artifacts",
         "entities:read": "Read people and companies",
+        "entities:write": "Update people and companies",
     }
     for scope, label in labels.items():
         assert f'name="scope:{scope}" value="on">{label}</label>' in page.text

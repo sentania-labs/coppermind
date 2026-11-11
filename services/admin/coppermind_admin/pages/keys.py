@@ -20,6 +20,7 @@ PERMISSION_LABELS = {
     "sources:read": "Read sources",
     "sources:write": "Update sources",
     "entities:read": "Read people and companies",
+    "entities:write": "Update people and companies",
 }
 
 
