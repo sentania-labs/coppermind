@@ -282,6 +282,16 @@ class Recordings:
             for item in newest
         ]
 
+    def retry_pending(self, job: TranscriptionJob) -> bool:
+        assignment = self.assignment()
+        return bool(
+            assignment
+            and assignment.enabled
+            and not assignment.paused
+            and job.retry_after
+            and job.attempts < job.attempt_limit
+        )
+
     async def waiting(self) -> dict[str, Any]:
         assignment = self.assignment()
         enabled = bool(assignment and assignment.enabled)
@@ -302,6 +312,7 @@ class Recordings:
                     )
             elif job.state == "failed" and not job.dismissed:
                 audio_gone = job.error_rule == "recording-missing" and not job.transcribed
+                retrying = self.retry_pending(job)
                 replacement = audio_gone or job.error_rule in {
                     "transcription-audio_unreadable",
                     "transcription-no_speech",
@@ -361,7 +372,7 @@ class Recordings:
                         action = "Turn on transcription before retrying."
                     elif paused:
                         action = "A retry will start when transcription resumes."
-                    elif job.retry_after and job.attempts < job.attempt_limit:
+                    elif retrying:
                         action = "The app will try again automatically."
                     else:
                         action = "Try the recording again."
@@ -374,6 +385,7 @@ class Recordings:
                         "message": message,
                         "retry_after": job.retry_after if scheduled else "",
                         "can_retry": enabled and not replacement,
+                        "can_dismiss": not retrying,
                     }
                 )
         return {"meetings": meetings, "failed": failed}
@@ -516,6 +528,8 @@ class Recordings:
             job = self.load(str(payload.get("id", "")))
             if job.state != "failed":
                 raise ValueError("only a failed recording can be dismissed")
+            if self.retry_pending(job):
+                raise ValueError("the app will try this recording again by itself")
             job.dismissed = True
             self.save(job)
         return {"job": job.id}
@@ -570,7 +584,7 @@ class Recordings:
             return False
         for known in sorted(await asyncio.to_thread(self.jobs), key=lambda item: item.created_at):
             job = self.load(known.id)
-            if job.state == "succeeded" or job.dismissed:
+            if job.state == "succeeded":
                 continue
             if job.state == "running":
                 # The store stopped mid-call. That is not a failed attempt: asking again polls
@@ -803,6 +817,7 @@ class Recordings:
         from coppermind_store.context_service import TIMEOUT_BACKOFF_S
 
         job.state, job.started_at = "running", _now()
+        job.dismissed = False
         job.attempts += 1
         job.set_error()
         self.save(job)

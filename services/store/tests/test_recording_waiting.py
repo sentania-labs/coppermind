@@ -154,3 +154,46 @@ async def test_missing_audio_says_to_resend_unless_the_transcript_is_kept(tmp_pa
     assert "transcript is kept" in by_id[kept.id]["message"]
     assert "Send the recording again" not in by_id[kept.id]["message"]
     assert by_id[kept.id]["can_retry"] is True
+
+
+@pytest.mark.asyncio
+async def test_dismiss_is_refused_while_the_app_will_retry_by_itself(tmp_path):
+    pending = job(
+        1,
+        state="failed",
+        error_rule="transcription-http-500",
+        retry_after="2026-11-11T12:00:00+00:00",
+        attempts=1,
+        attempt_limit=2,
+    )
+    final = job(2, state="failed", error_rule="transcription-http-500", attempts=2)
+    recordings, _, saved = waiting_recordings(tmp_path, [pending, final])
+    rows = {item["id"]: item for item in (await recordings.waiting())["failed"]}
+    assert rows[pending.id]["can_dismiss"] is False
+    assert "try again automatically" in rows[pending.id]["message"]
+    assert rows[final.id]["can_dismiss"] is True
+    with pytest.raises(ValueError, match="by itself"):
+        await recordings.dismiss({"id": pending.id})
+    assert not saved
+    await recordings.dismiss({"id": final.id})
+    assert saved[final.id].dismissed is True
+
+
+@pytest.mark.asyncio
+async def test_a_dismissed_recording_is_still_run_by_the_worker_and_shows_a_new_failure(tmp_path):
+    from coppermind_store.model_provider import ProviderError
+
+    dismissed = job(
+        1, state="failed", error_rule="transcription-timeout", attempts=1, dismissed=True
+    )
+    recordings, by_id, saved = waiting_recordings(tmp_path, [dismissed])
+
+    async def transcribe(item):
+        raise ProviderError("The service did not answer.", "transcription-timeout")
+
+    recordings.transcribe = transcribe
+    assert (await recordings.waiting())["failed"] == []
+    assert await recordings.tick() is True
+    assert saved[dismissed.id].state == "failed" and saved[dismissed.id].attempts == 2
+    assert saved[dismissed.id].dismissed is False
+    assert len((await recordings.waiting())["failed"]) == 1

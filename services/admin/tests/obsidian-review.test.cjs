@@ -351,7 +351,7 @@ test('waiting view opens the note and handles a failed retry',async()=>{
 });
 
 test('dismissing a failed recording asks first, then refreshes the list',async()=>{
-  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'No speech was found.',can_retry:false}]}});
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'No speech was found.',can_retry:false,can_dismiss:true}]}});
   const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
   const texts=()=>view.contentEl.all().map(e=>e.text||'');
   await view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
@@ -364,10 +364,17 @@ test('dismissing a failed recording asks first, then refreshes the list',async()
 });
 
 test('a failed dismiss keeps the entry and lets the user try again',async()=>{
-  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'No speech was found.',can_retry:false}]},dismissFail:true});
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'No speech was found.',can_retry:false,can_dismiss:true}]},dismissFail:true});
   const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
   await view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
   const yes=view.contentEl.all().find(e=>e.text==='Dismiss entry');await yes.onclick();
   assert.equal(yes.disabled,false);
   assert.ok(view.contentEl.all().some(e=>e.text?.includes('Could not dismiss')));
+});
+
+test('a recording the app will retry by itself offers no Dismiss',async()=>{
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'The app will try again automatically.',can_retry:true,can_dismiss:false,retry_after:'2026-11-11T12:00:00Z'}]}});
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  assert.equal(view.contentEl.all().some(e=>e.text==='Dismiss'),false);
+  assert.ok(view.contentEl.all().some(e=>e.text==='Retry'));
 });

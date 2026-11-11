@@ -262,6 +262,7 @@ class WaitingView extends ItemView {
             catch(e){feedback.setText('Could not queue retry. Check your connection and transcription settings, then try again.');button.disabled=false;}
           };
         }
+        if(recording.can_dismiss){
         const dismiss=card.createEl('button',{text:'Dismiss'}), confirm=card.createDiv();
         dismiss.onclick=()=>{
           dismiss.disabled=true;confirm.empty();
@@ -273,6 +274,7 @@ class WaitingView extends ItemView {
             catch(e){note.setText('Could not dismiss. Check your connection, then try again.');yes.disabled=false;no.disabled=false;}
           };
         };
+        }
       }
     }catch(e){if(generation!==this.generation)return;status.setText('Could not load meetings and recordings. Check your connection and API credential, then try again.');status.addClass('coppermind-notice');const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
   }
