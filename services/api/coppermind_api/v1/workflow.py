@@ -5,10 +5,11 @@ from __future__ import annotations
 import base64
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from coppermind.errors import envelope
 from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import StoreError
 from coppermind_api.auth import Principal
@@ -25,6 +26,10 @@ class ReviewCompletion(BaseModel):
     confirmation: str
     job_id: str | None = None
     selected: list[int] = Field(default_factory=list, max_length=30)
+    speaker_choices: dict[str, str] = Field(default_factory=dict, max_length=30)
+    manual_speakers: dict[str, str] = Field(default_factory=dict, max_length=30)
+    manual_source_revision: int | None = Field(default=None, ge=1)
+    manual_source_id: str | None = None
     accept_link_risk: bool = False
 
 
@@ -35,13 +40,34 @@ async def call(client: HttpStoreClient, action: str, payload: dict[str, Any]) ->
         return failure(exc)
 
 
+PEOPLE_HIDDEN = (
+    "This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, "
+    "open Connected apps (API Keys) and create a new key with Read notes, Update notes, "
+    "Read sources, Update sources, and Read people and companies, "
+    "then select that key in the companion settings."
+)
+
+
 @router.get("/notes/{note_id}/review")
 async def review(
     note_id: str,
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("notes:read", "sources:read")),
+    principal: Principal = Depends(require_scopes("notes:read", "sources:read")),
 ) -> Response:
-    return await call(client, "lifecycle", {"note_id": note_id})
+    try:
+        detail = await client.context_action("lifecycle", {"note_id": note_id})
+    except StoreError as exc:
+        return failure(exc)
+    detail["people_access_notice"] = PEOPLE_HIDDEN
+    if principal.has("entities:read"):
+        return JSONResponse(detail)
+    hidden = detail.get("manual_speaker_review") is not None or any(
+        s.get("kind") == "speaker" for s in detail.get("suggestions", [])
+    )
+    detail["suggestions"] = [s for s in detail.get("suggestions", []) if s.get("kind") != "speaker"]
+    detail["manual_speaker_review"] = None
+    detail["speakers_unavailable"] = PEOPLE_HIDDEN if hidden else ""
+    return JSONResponse(detail)
 
 
 @router.post("/notes/{note_id}/review")
@@ -49,8 +75,32 @@ async def finish(
     note_id: str,
     payload: ReviewCompletion,
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("notes:write", "notes:read", "sources:read")),
+    principal: Principal = Depends(require_scopes("notes:write", "notes:read", "sources:read")),
 ) -> Response:
+    def forbidden() -> HTTPException:
+        return HTTPException(
+            status_code=403,
+            detail=envelope("forbidden", "the API key does not grant the required scope"),
+        )
+
+    manual = [value for value in payload.manual_speakers.values() if value]
+    if manual and not principal.has("sources:write", "entities:read"):
+        raise forbidden()
+    if payload.selected and not principal.has("sources:write", "entities:read"):
+        # Inspect the durable job, not client-supplied labels. This also covers retries
+        # after a speaker decision has already been recorded in an unfinished review.
+        try:
+            job = await client.context_action("job", {"id": payload.job_id or ""})
+        except StoreError as exc:
+            return failure(exc)
+        suggestions = (job.get("result") or {}).get("suggestions", [])
+        for index in payload.selected:
+            if index < 0 or index >= len(suggestions):
+                raise forbidden()
+            item = suggestions[index]
+            choice = payload.speaker_choices.get(str(index), item.get("value") or "")
+            if item.get("kind") == "speaker" and choice:
+                raise forbidden()
     return await call(client, "complete-review", {"note_id": note_id, **payload.model_dump()})
 
 

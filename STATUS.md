@@ -80,8 +80,9 @@ has not been exercised by this slice.
   the note cites until the note is reviewed and filed, then its audio is removed
   and a receipt (hash, size, duration, optional `metadata.archive_url`) replaces
   the link. Each intake is listed with its state and a Retry under Suggestions
-  and backlog, and a failure also appears under Problems with its reason. Summary,
-  speaker names and search by meaning are later steps. No
+  and backlog, and a failure also appears under Problems with its reason. Naming
+  the speakers is part of Review (see [note workflow](docs/note-workflow.md)).
+  Summary and search by meaning are later steps. No
   transcription service was reachable while this was built, so it is proven
   against a local stand-in that returns the documented shape slowly
   (`services/store/tests/test_transcription_call.py`,

@@ -15,6 +15,7 @@ from coppermind.schema import (
     parse_note_time,
 )
 from coppermind.store_protocol import NoteDocument, PatchFrontmatter, StoreError
+from coppermind_store import speaker_names
 
 if TYPE_CHECKING:
     from coppermind_store.context_service import ContextService
@@ -78,6 +79,7 @@ class NoteLifecycle:
                 for i, s in enumerate(job.result.suggestions)
                 if i not in decided
             ]
+        people = self.context.store.entities.load().entities
         for suggestion in suggestions:
             labels = []
             for event in job.evidence.get("events", []) if job else []:
@@ -86,6 +88,30 @@ class NoteLifecycle:
                 for person in event.get("people", []):
                     if person["contact_id"] in suggestion["contact_ids"]:
                         labels.append(person["address"])
+            if suggestion["kind"] == "speaker":
+                saved = (
+                    (job.evidence.get("speaker_review") or {}).get("candidates", []) if job else []
+                )
+                candidate_list = [
+                    current
+                    for candidate in saved
+                    if (current := speaker_names.current_person(people, candidate)) is not None
+                ]
+                if suggestion["value"] and not any(
+                    candidate["id"] == suggestion["value"] for candidate in candidate_list
+                ):
+                    suggestion["value"] = None
+                    suggestion["reason"] = (
+                        "The suggested person is no longer active. Choose someone else "
+                        "or leave this speaker unnamed."
+                    )
+                    suggestion["confidence"] = 0
+                suggestion["candidates"] = candidate_list
+                suggestion["display_value"] = next(
+                    (c["name"] for c in candidate_list if c["id"] == suggestion["value"]),
+                    "No person suggested",
+                )
+                continue
             value = suggestion["value"]
             suggestion["display_value"] = (
                 ", ".join(dict.fromkeys(labels))
@@ -113,12 +139,38 @@ class NoteLifecycle:
         update = self.context.read("calendar-followups", {}).get(note.id)
         if update is not None:
             update = dict(update, candidates=await self.context.calendar_candidates(note))
+        manual = None
+        if any(r.note_id == note.id and r.source_id for r in self.context.recordings.jobs()):
+            manual = await speaker_names.evidence(
+                self.context, note, await self.context.calendar_candidates(note)
+            )
+        if manual:
+            people = self.context.store.entities.load().entities
+            manual = {
+                key: manual[key] for key in ("source_id", "revision", "speakers", "candidates")
+            }
+            manual["candidates"] = [
+                person
+                for candidate in manual["candidates"]
+                if (person := speaker_names.current_person(people, candidate)) is not None
+            ]
         return {
+            "manual_speaker_review": manual,
             "review_problem": problem,
             "note": note.model_dump(mode="json"),
             "job_id": job.id if job else None,
             "state": job.state if job else "awaiting_suggestions",
+            "suggestions_enabled": self.context.config().assignments["enrichment"].enabled,
+            "suggestion_error": job.error if job and job.state == "failed" else "",
             "stale": stale,
+            "speaker_notice": speaker_names.OMITTED_NOTICE
+            if job and (job.evidence.get("speaker_review") or {}).get("omitted")
+            else job.notice
+            if job
+            else "",
+            "speaker_attendees_notice": ""
+            if self.context.config().assignments["enrichment"].attendees_field
+            else speaker_names.ATTENDEES_UNSET_NOTICE,
             "suggestions": suggestions,
             "unresolved": job.result.unresolved if job and job.result else [],
             "roles": self.context.store.control.schema().roles,
@@ -129,7 +181,7 @@ class NoteLifecycle:
         }
 
     async def complete(self, payload: dict[str, Any]) -> dict[str, Any]:
-        from coppermind_store.context_service import fingerprint, now
+        from coppermind_store.context_service import fingerprint, now, same_evidence
 
         if not self.context.config().lifecycle_enabled:
             raise ValueError("enable the note lifecycle in Admin first")
@@ -148,7 +200,17 @@ class NoteLifecycle:
             request_hash = fingerprint(
                 {
                     k: payload.get(k)
-                    for k in ("note_id", "if_match", "job_id", "selected", "accept_link_risk")
+                    for k in (
+                        "note_id",
+                        "if_match",
+                        "job_id",
+                        "selected",
+                        "speaker_choices",
+                        "manual_speakers",
+                        "manual_source_revision",
+                        "manual_source_id",
+                        "accept_link_risk",
+                    )
                 }
             )
             note = await self.context.store.get_note(identity)
@@ -192,14 +254,118 @@ class NoteLifecycle:
                             for key in removed:
                                 prospective.frontmatter.pop(key, None)
                     validate_review(prospective, schema, self._default_timezone())
-                    if fingerprint(await self.context.evidence(job)) != fingerprint(job.evidence):
+                    if not same_evidence(await self.context.evidence(job), job.evidence):
                         raise ValueError("source evidence changed; regenerate the suggestion")
                     selected.sort(
                         key=lambda i: (
                             job.result.suggestions[i].field in {schema.role("date_key"), "time"}
                         )
                     )
+                speaker_operation = None
+                if selected:
+                    speaker_indexes = [
+                        i for i in selected if job.result.suggestions[i].kind == "speaker"
+                    ]
+                    choices = payload.get("speaker_choices") or {}
+                    if not isinstance(choices, dict) or any(
+                        not isinstance(k, str) or not isinstance(v, str) for k, v in choices.items()
+                    ):
+                        raise ValueError("invalid speaker choices")
+                    speaker_data = job.evidence.get("speaker_review") or {}
+                    candidates = {c["id"]: c for c in speaker_data.get("candidates", [])}
+                    people = self.context.store.entities.load().entities
+                    mapping = {}
+                    chosen = []
+                    for i in speaker_indexes:
+                        suggestion = job.result.suggestions[i]
+                        person_id = choices.get(str(i), suggestion.value or "")
+                        if not person_id:
+                            continue
+                        person = speaker_names.chosen_person(people, person_id, candidates)
+                        if person is None:
+                            person_name = candidates.get(person_id, {}).get("name", "This person")
+                            raise ValueError(
+                                f"{suggestion.field}: {person_name} is no "
+                                "longer an active person. Choose someone else or leave this "
+                                "speaker unnamed."
+                            )
+                        mapping[suggestion.field] = person["name"]
+                        chosen.append(person)
+                    if mapping:
+                        speaker_operation = {
+                            "source_id": speaker_data["source_id"],
+                            "revision": speaker_data["revision"],
+                            "mapping": mapping,
+                            "people": chosen,
+                        }
+                        speaker_names.people_changes(self.context, prospective.frontmatter, chosen)
+                    selected = [i for i in selected if i not in speaker_indexes]
+                manual_choices = payload.get("manual_speakers") or {}
+                if (
+                    not isinstance(manual_choices, dict)
+                    or any(
+                        not isinstance(k, str) or not isinstance(v, str)
+                        for k, v in manual_choices.items()
+                    )
+                    or len(manual_choices) > 30
+                ):
+                    raise ValueError("invalid manual speaker choices")
+                manual_choices = {
+                    label: person for label, person in manual_choices.items() if person
+                }
+                if manual_choices:
+                    manual = await speaker_names.evidence(
+                        self.context, note, await self.context.calendar_candidates(note)
+                    )
+                    if not manual or (manual["source_id"], manual["revision"]) != (
+                        payload.get("manual_source_id"),
+                        payload.get("manual_source_revision"),
+                    ):
+                        raise ValueError("the transcript changed; refresh before completing review")
+                    if not set(manual_choices) <= set(manual["speakers"]):
+                        raise ValueError("a selected speaker no longer appears in the transcript")
+                    people = self.context.store.entities.load().entities
+                    candidates = {c["id"]: c for c in manual["candidates"]}
+                    if (
+                        speaker_operation
+                        and set(manual_choices) & speaker_operation["mapping"].keys()
+                    ):
+                        raise ValueError("choose only one person for each speaker")
+                    if speaker_operation and (
+                        speaker_operation["source_id"],
+                        speaker_operation["revision"],
+                    ) != (manual["source_id"], manual["revision"]):
+                        raise ValueError("the transcript changed; refresh before completing review")
+                    if not speaker_operation:
+                        speaker_operation = {
+                            "source_id": manual["source_id"],
+                            "revision": manual["revision"],
+                            "mapping": {},
+                            "people": [],
+                        }
+                    for label, person_id in manual_choices.items():
+                        person = speaker_names.chosen_person(people, person_id, candidates)
+                        if person is None:
+                            raise ValueError(
+                                f"{label}: this person is no longer active. Choose someone else."
+                            )
+                        speaker_operation["mapping"][label] = person["name"]
+                        speaker_operation["people"].append(person)
+                    speaker_names.people_changes(
+                        self.context,
+                        prospective.frontmatter if selected else note.frontmatter,
+                        speaker_operation["people"],
+                    )
+                if speaker_operation:
+                    taken: dict[str, str] = {}
+                    for label, chosen in speaker_operation["mapping"].items():
+                        if (earlier := taken.setdefault(chosen.casefold(), label)) != label:
+                            raise ValueError(
+                                f"{chosen} is already chosen for {earlier}. Choose someone "
+                                "else or leave this speaker unnamed."
+                            )
                 receipt = {
+                    "speakers": speaker_operation,
                     "note_id": identity,
                     "request": request_hash,
                     "state": "applying",
@@ -245,6 +411,11 @@ class NoteLifecycle:
                     receipt["expected_hash"] = job.decisions[-1]["after_hash"]
                     self.context.write(name, receipt)
             current = await self.context.store.get_note(identity)
+            if receipt.get("speakers") and not receipt.get("speakers_applied"):
+                current = await speaker_names.apply(self.context, receipt, current)
+                receipt["expected_hash"] = current.content_hash
+                receipt["speakers_applied"] = True
+                self.context.write(name, receipt)
             validate_review(current, schema, self._default_timezone())
             reviewed_key = schema.role("reviewed_key")
             if current.frontmatter.get(reviewed_key) is not True:

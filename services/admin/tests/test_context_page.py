@@ -675,3 +675,51 @@ def test_refused_retry_returns_plain_message_on_jobs(signed_in):
     assert response.status_code == 200
     assert "Retry could not be queued." in response.text
     assert "Could not complete that action" not in response.text
+
+
+def test_speaker_suggestions_are_read_only_in_admin(signed_in):
+    client, _ = signed_in
+    job: dict[str, Any] = {
+        "id": "a" * 64,
+        "note_id": "note",
+        "path": "Review/Planning.md",
+        "state": "suggested",
+        "error": "",
+        "input_limit": None,
+        "reply": "Speaker 1 said: private transcript words",
+        "result": {
+            "suggestions": [
+                {
+                    "kind": "speaker",
+                    "field": "Speaker 1",
+                    "value": "person:private-id",
+                    "reason": "Addressed by name.",
+                    "confidence": 0.8,
+                }
+            ],
+            "unresolved": [],
+        },
+        "evidence": {
+            "events": [],
+            "speaker_review": {"candidates": [{"id": "person:private-id", "name": "Alex Morgan"}]},
+        },
+        "decisions": [],
+        "usage": {},
+        "newest": True,
+        "current": {"frontmatter": {}},
+    }
+
+    class JobStore(ContextStore):
+        async def context_action(self, action, payload):
+            if action == "job":
+                return job
+            return await super().context_action(action, payload)
+
+    client.app.state.store = JobStore()
+    page = client.get(f"/admin/context/jobs/{job['id']}")
+    assert page.status_code == 200
+    assert "Speaker 1" in page.text and "Alex Morgan" in page.text
+    assert "person:private-id" not in page.text
+    assert "private transcript words" not in page.text
+    assert "Open this note in the Coppermind companion" in page.text
+    assert "Apply this suggestion" not in page.text
