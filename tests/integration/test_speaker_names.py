@@ -528,6 +528,26 @@ async def test_a_retired_person_is_reported_for_that_speaker_and_the_rest_stays_
     assert (await store.get_source(result.source.id)).current_revision == 1
 
 
+async def test_pending_voice_signatures_are_removed_when_no_speaker_is_named(store, standin):
+    from coppermind_store.voice_store import VoiceStore
+
+    alex = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    context, result, note, job_id, _ = await recorded(
+        store, standin, SHORT, speaker_answer(alex_id)
+    )
+    VoiceStore(context).set_enabled(alex["id"], True)
+    recording = next(r for r in context.recordings.jobs() if r.note_id == note.id)
+    vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
+    context.write(
+        "voice-pending/" + recording.id,
+        [{"label": "Speaker 1", "speech_seconds": 30.0, "embeddings": [vector]}],
+    )
+    leave_unnamed = await completion(context, store, result, job_id, person="")
+    assert (await context.complete_review(leave_unnamed))["state"] == "complete"
+    assert context.read("voice-pending/" + recording.id, None) is None
+    assert VoiceStore(context).summary(alex["id"])["signatures"] == []
+
+
 async def test_speakers_and_an_attendee_suggestion_complete_together_without_losing_either(
     store, standin
 ):

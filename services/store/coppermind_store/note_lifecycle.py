@@ -472,23 +472,17 @@ class NoteLifecycle:
                 )
             elif receipt.get("reviewed_hash") != current.content_hash:
                 raise ValueError("reviewed note diverged from the recorded completion")
-            if receipt.get("speakers"):
-                from coppermind_store.voice_store import VoiceStore
+            from coppermind_store.voice_store import VoiceStore
 
-                operation = receipt["speakers"]
-                recording = next(
-                    (
-                        r
-                        for r in self.context.recordings.jobs()
-                        if r.note_id == identity and r.source_id == operation["source_id"]
-                    ),
-                    None,
-                )
-                if recording:
-                    async with self.context.lock:
+            operation = receipt.get("speakers")
+            async with self.context.lock:
+                voice = VoiceStore(self.context)
+                for recording in self.context.recordings.jobs():
+                    if recording.note_id != identity:
+                        continue
+                    if operation and recording.source_id == operation["source_id"]:
                         pending = self.context.read("voice-pending/" + recording.id, [])
                         proposed = speaker_names.voice_suggestions(self.context, identity)
-                        voice = VoiceStore(self.context)
                         current_people = self.context.store.entities.load().entities
                         for label, candidates in proposed.items():
                             chosen_id = operation.get("person_ids", {}).get(label)
@@ -515,9 +509,9 @@ class NoteLifecycle:
                                     speaker.get("speech_seconds"),
                                     speaker.get("embeddings", []),
                                 )
-                        (self.context.root / "voice-pending" / (recording.id + ".json")).unlink(
-                            missing_ok=True
-                        )
+                    (self.context.root / "voice-pending" / (recording.id + ".json")).unlink(
+                        missing_ok=True
+                    )
             receipt["state"], receipt["finished_at"] = "complete", now()
             receipt["final_hash"] = current.content_hash
             self.context.write(name, receipt)
