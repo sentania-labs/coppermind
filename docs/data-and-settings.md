@@ -324,6 +324,32 @@ installing it later, or moving to the pgvector image, needs no migration. If the
 database user may not create extensions, Admin says so and gives the one
 `CREATE EXTENSION` command a superuser runs.
 
+## PostgreSQL image upgrade
+
+The bundled PostgreSQL image uses pgvector 0.8.7 on Debian trixie, matching
+PostgreSQL 16's collation library in the v0.6.4 compose image. Back up the
+PostgreSQL data and the notes filesystem before upgrading. From v0.6.4, start
+the updated compose stack normally; its migration job upgrades the database.
+
+If the data directory has already run with the bookworm-based image from
+v0.7.0 or v0.8.0, text indexes may have been built using a different sort
+order. Stop the application and all other database clients, start only the
+updated PostgreSQL service, then rebuild indexes before refreshing the recorded
+collation version. Run these commands from the compose directory:
+
+```bash
+docker compose stop
+docker compose up -d --wait postgres
+docker compose exec postgres psql -v ON_ERROR_STOP=1 -U coppermind -d coppermind -c 'REINDEX DATABASE coppermind;' \
+  && docker compose exec postgres psql -v ON_ERROR_STOP=1 -U coppermind -d coppermind -c 'ALTER DATABASE coppermind REFRESH COLLATION VERSION;' \
+  && docker compose up -d
+```
+
+The reindex may take time and locks the affected indexes. The collation version
+is refreshed only if the reindex succeeds; if it fails, fix the cause and rerun
+the block. For an external database or additional databases, coordinate the
+equivalent repair with the database administrator.
+
 ## Named tests this data model is proven against
 
 These identifiers appear throughout the delivery plan and the acceptance
