@@ -104,6 +104,8 @@ async def generate(
     recording = next(
         (r for r in context.recordings.jobs() if r.note_id == job.note_id and r.source_id), None
     )
+    if recording is None:
+        raise ValueError("stale: recording transcript is no longer attached to this note")
     context.write(
         RECORDS + job.note_id,
         {

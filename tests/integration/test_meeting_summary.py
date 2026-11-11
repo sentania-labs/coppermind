@@ -82,7 +82,7 @@ async def setup_recording(store, standin, *, limit=200000, failure=None):
         )
     )
     requests = []
-    rejected = []
+    rejected: list[bool] = []
     drift = {"on": False}
 
     def model(request):
@@ -356,7 +356,7 @@ async def test_calendar_refresh_reads_again_when_the_transcript_revision_changed
             ),
         )
     )
-    reread = {**PROPOSAL, "summary": "Launch moved to Monday."}
+    reread: dict[str, Any] = {**PROPOSAL, "summary": "Launch moved to Monday."}
     seen = []
 
     def model(request):
