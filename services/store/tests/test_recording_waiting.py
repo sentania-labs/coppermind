@@ -45,3 +45,31 @@ async def test_waiting_lists_all_current_notes_and_safe_failure_guidance():
     assert all("secret" not in item["message"] for item in result["failed"])
     assert result["failed"][-1]["can_retry"] is False
     assert "No speech" in result["failed"][-1]["message"]
+
+
+@pytest.mark.asyncio
+async def test_waiting_survives_one_unreadable_note_and_offers_no_retry_for_missing_audio():
+    from coppermind.store_protocol import StoreError
+
+    notes = {"ok": SimpleNamespace(title="Ok", path="Ok.md", frontmatter={})}
+
+    async def get_note(identity):
+        if identity not in notes:
+            raise StoreError("store unavailable")
+        return notes[identity]
+
+    store = SimpleNamespace(
+        get_note=AsyncMock(side_effect=get_note),
+        control=SimpleNamespace(schema=lambda: SimpleNamespace(role=lambda _: "reviewed")),
+    )
+    recordings = Recordings(SimpleNamespace(store=store))
+    recordings.assignment = lambda: SimpleNamespace(enabled=True, paused=False)
+    recordings.jobs = lambda: [
+        job(1, state="succeeded", note_id="broken"),
+        job(2, state="succeeded", note_id="ok"),
+        job(3, state="failed", error_rule="recording-missing"),
+    ]
+    result = await recordings.waiting()
+    assert [m["title"] for m in result["meetings"]] == ["Ok"]
+    assert len(result["failed"]) == 1
+    assert result["failed"][0]["can_retry"] is False

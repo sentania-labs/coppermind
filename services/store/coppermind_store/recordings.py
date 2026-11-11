@@ -281,8 +281,6 @@ class Recordings:
         ]
 
     async def waiting(self) -> dict[str, Any]:
-        from coppermind.store_protocol import NotFound
-
         assignment = self.assignment()
         enabled = bool(assignment and assignment.enabled)
         paused = bool(assignment and assignment.paused)
@@ -293,7 +291,7 @@ class Recordings:
                 seen.add(job.note_id)
                 try:
                     note = await self.context.store.get_note(job.note_id)
-                except NotFound:
+                except StoreError:
                     continue
                 reviewed_key = self.context.store.control.schema().role("reviewed_key")
                 if note.frontmatter.get(reviewed_key) is not True:
@@ -304,6 +302,7 @@ class Recordings:
                 replacement = job.error_rule in {
                     "transcription-audio_unreadable",
                     "transcription-no_speech",
+                    "recording-missing",
                 }
                 if job.error_rule == "transcription-audio_unreadable":
                     message = (
