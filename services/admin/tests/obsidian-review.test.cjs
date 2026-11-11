@@ -248,6 +248,12 @@ test('correcting a selected voice match sends only the corrected person',async()
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:b');
 });
 
+test('a speaker without enough speech is explained in review',async()=>{
+  const manual={speakers:['Speaker 2'],candidates:[],voice_matches:{},voice_unavailable:['Speaker 2']};
+  const f=await fixture(undefined,{manual_speaker_review:manual});
+  assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('too little speech to recognise this voice')));
+});
+
 const personVoice=(signatures)=>({enabled:true,signatures});
 const sig=(id)=>({note_id:id,created_at:'2026-01-02T00:00:00Z'});
 async function peopleFixture(signatures){

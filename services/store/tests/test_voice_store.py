@@ -134,13 +134,13 @@ def test_unknown_capture_respects_global_switch():
     assert store.unknown_summaries() == {}
 
 
-def test_speaker_without_embedding_still_has_an_identity():
+def test_speaker_without_embedding_has_no_voice_identity():
     store = VoiceStore(Context())
-    identity = store.capture_unknown("note1", "Speaker 1", "today", 3, [])
-    assert store.capture_unknown("note1", "Speaker 1", "today", 3, []) == identity
-    assert store.unknown_summaries()[identity]["signatures"] == []
-    assert store.assignments(identity)[0]["note_id"] == "note1"
-    assert store.capture_unknown("note2", "Speaker 1", "today", 3, []) != identity
+    assert store.capture_unknown("note1", "Speaker 1", "today", 3, []) is None
+    assert store.unknown_summaries() == {}
+    assert store._load().get("assignments", []) == []
+    store.confirm("alice", "note1", "today", 3, [])
+    assert store._load()["people"] == {}
 
 
 def test_move_and_split_keep_recording_assignments_and_signatures():

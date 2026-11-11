@@ -104,6 +104,8 @@ class VoiceStore:
                         "vector": vector,
                     }
                 )
+        if not valid:
+            return None
         unknowns[identity]["signatures"].extend(valid)
         data.setdefault("assignments", []).append(
             {"note_id": note_id, "label": label, "voice_id": identity}
@@ -377,7 +379,8 @@ class VoiceStore:
                     "vector": vector,
                 }
             )
-        self._save(data)
+        if signatures:
+            self._save(data)
 
     def match(
         self, embeddings: list[dict[str, Any]], *, strong: float = 0.60, maybe: float = 0.45

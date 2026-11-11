@@ -157,6 +157,7 @@ class ReviewView extends ItemView {
         const shown=s.display_value||(Array.isArray(s.value)?s.value.join(', '):String(s.value??''));
         card.createEl('p',{text:voice?.conflict&&s.value?'Model: '+shown:voice&&voice.strong.length===1&&!voice.conflict&&!voice.agreed?voice.strong[0].name:shown});
         if(s.kind==='speaker'){
+          if(manual?.voice_unavailable?.includes(s.field))card.createEl('p',{text:'There was too little speech to recognise this voice in later recordings. A name chosen here applies only to this recording.'});
           if(!noModelCandidate)card.createEl('p',{text:'Model confidence: '+Math.round(s.confidence*100)+'%'});
           if(voice.agreed)card.createEl('p',{text:'Sources: Model and Voice'});
           else if(voice.strong.length===1&&!voice.conflict)card.createEl('p',{text:'Source: Voice'});
@@ -176,6 +177,7 @@ class ReviewView extends ItemView {
       for(const label of manual?.speakers||[]){
         if(proposed.has(label))continue;
         const card=el.createDiv({cls:'coppermind-card'});card.createEl('h3',{text:label});
+        if(manual?.voice_unavailable?.includes(label))card.createEl('p',{text:'There was too little speech to recognise this voice in later recordings. A name chosen here applies only to this recording.'});
         card.createEl('p',{text:'Choose a person, or leave this speaker unnamed.'});
         const people=[...manual.candidates];const voice=voicePlan(label,null);
         if(!people.length&&!voice.matches.length)card.createEl('p',{text:'No people suggested. Enter a name below, then choose Find a person.'});
@@ -255,7 +257,6 @@ class PeopleView extends ItemView {
       if(!voice){await this.show();return;}
       el.createEl('h3',{text:person.name});
       el.createEl('p',{text:voice.signatures.length+' saved voice signatures'});
-      if(person.unknown&&!voice.signatures.length)el.createEl('p',{text:'The transcription service did not provide a usable signature for this speaker, so this voice cannot yet be recognised in another recording.'});
       for(const assignment of voice.assignments||[]){const line=el.createDiv();
         try{const note=await this.plugin.call('/v1/notes/'+encodeURIComponent(assignment.note_id));const a=line.createEl('a',{text:note.title,href:'#'});a.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(note.path,'',false);};}
         catch{line.createSpan({text:'Source note unavailable'});}

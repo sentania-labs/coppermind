@@ -128,17 +128,17 @@ async def test_a_recording_alone_becomes_a_transcribed_note_in_review(store):
     assert note.path.startswith("Review/") and note.frontmatter["reviewed"] is False
     assert audio in note.frontmatter["artifacts"]
 
-    # The transcript is the note's source, with persistent unknown voice labels.
+    # Without returned signatures, speakers remain local to this recording.
     sources = await store.get_note_sources(note.id)
     assert len(sources) == 1 and sources[0].id == done["source_id"]
     source = await store.get_source(sources[0].id)
     assert {a.name for a in source.revisions[-1].artifacts} == {"transcript.txt", "transcript.json"}
     text = (await store.get_source_artifact(sources[0].id, 1, "transcript.txt")).content
-    assert text == "[00:00:00] Unknown voice 1: Hello there.\n[00:00:03] Unknown voice 2: Hi.\n"
+    assert text == "[00:00:00] Speaker 1: Hello there.\n[00:00:03] Speaker 2: Hi.\n"
     segments = json.loads(
         (await store.get_source_artifact(sources[0].id, 1, "transcript.json")).content
     )["segments"]
-    assert [s["speaker"] for s in segments] == ["Unknown voice 1", "Unknown voice 2"]
+    assert [s["speaker"] for s in segments] == ["Speaker 1", "Speaker 2"]
 
     # Review has not happened, so the audio is still stored.
     kept = await store.get_artifact_bytes(audio)
@@ -1006,7 +1006,7 @@ async def test_the_recording_page_reads_the_transcript_and_a_retry_needs_transcr
         await context.recordings.tick()
         detail = await context.recording_detail({"id": job["id"]})
         assert detail["state"] == "succeeded" and detail["note_path"].startswith("Review/")
-        assert detail["transcript"].startswith("[00:00:00] Unknown voice 1: Hello there.")
+        assert detail["transcript"].startswith("[00:00:00] Speaker 1: Hello there.")
         assert "frontmatter" not in detail and detail["can_retry"] is False
 
         # A failed intake only offers a retry while transcription is switched on.
@@ -1328,11 +1328,19 @@ async def test_companion_voice_flow_through_public_api(store):
                     await context.recordings.tick()
                 pytest.fail("recording was not processed")
 
-            async def review(job, person_id):
+            async def review(job, person_id, *, name_unsigned=False):
                 response = await api.get(f"/v1/notes/{job.note_id}/review")
                 assert response.status_code == 200, response.text
                 data = response.json()
                 manual = data["manual_speaker_review"]
+                choices = {
+                    next(
+                        label for label in manual["speakers"] if label.startswith("Unknown voice ")
+                    ): "person:" + person_id
+                }
+                if name_unsigned:
+                    assert manual["voice_unavailable"] == ["Speaker 2"]
+                    choices["Speaker 2"] = "person:" + blair["id"]
                 completed = await api.post(
                     f"/v1/notes/{job.note_id}/review",
                     json={
@@ -1341,13 +1349,7 @@ async def test_companion_voice_flow_through_public_api(store):
                         "selected": [],
                         "manual_source_id": manual["source_id"],
                         "manual_source_revision": manual["revision"],
-                        "manual_speakers": {
-                            next(
-                                label
-                                for label in manual["speakers"]
-                                if label.startswith("Unknown voice ")
-                            ): "person:" + person_id
-                        },
+                        "manual_speakers": choices,
                     },
                 )
                 assert completed.status_code == 200, completed.text
@@ -1357,6 +1359,7 @@ async def test_companion_voice_flow_through_public_api(store):
             first = await make_recording("one.m4a", AUDIO, "voice-http-1")
             earlier = await make_recording("earlier.m4a", AUDIO + b"earlier", "voice-http-earlier")
             unknowns = (await api.get("/v1/entities/voice/unknowns")).json()
+            assert len(unknowns) == 1
             unknown = next(voice for voice in unknowns.values() if len(voice["assignments"]) == 2)
             assert len(unknown["assignments"]) == 2
             earlier_detail = (await api.get(f"/v1/notes/{earlier.note_id}/review")).json()
@@ -1389,7 +1392,7 @@ async def test_companion_voice_flow_through_public_api(store):
             }
             receipt["summary_applied"] = True
             context.write("review-completions/" + earlier.note_id, receipt)
-            await review(first, alex["id"])
+            await review(first, alex["id"], name_unsigned=True)
             changed = await store.get_note(earlier.note_id)
             assert f"Owner wrote {label}." in changed.body
             assert "Alex Morgan: sent plan." in changed.body
@@ -1399,6 +1402,8 @@ async def test_companion_voice_flow_through_public_api(store):
                 earlier.source_id, manifest.current_revision, "transcript.json"
             )
             assert '"speaker": "Alex Morgan"' in transcript.content
+            assert '"speaker": "Speaker 2"' in transcript.content
+            assert (await api.get(blair_url)).json()["signatures"] == []
             alex_voice = (await api.get(alex_url)).json()
             assert len(alex_voice["signatures"]) == 2
             appearance = next(

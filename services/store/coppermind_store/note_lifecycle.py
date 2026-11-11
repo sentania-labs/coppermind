@@ -153,6 +153,13 @@ class NoteLifecycle:
                 key: manual[key] for key in ("source_id", "revision", "speakers", "candidates")
             }
             manual["voice_matches"] = speaker_names.voice_suggestions(self.context, note.id)
+            recording = next(r for r in self.context.recordings.jobs() if r.note_id == note.id)
+            voice_map = self.context.read("voice-mappings/" + recording.id, None)
+            manual["voice_unavailable"] = (
+                [label for label in manual["speakers"] if label.startswith("Speaker ")]
+                if isinstance(voice_map, dict)
+                else []
+            )
             manual["voice_appearances"] = {
                 voice["name"]: len(voice["assignments"])
                 for voice in VoiceStore(self.context).unknown_summaries().values()

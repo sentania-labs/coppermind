@@ -141,8 +141,10 @@ operations work in Obsidian or the agent API.
 
 Voice recognition keeps signatures, not audio clips, for diarized speakers. An unmatched
 speaker is given a persistent unknown voice label that can recur in later recordings.
-If the transcription service supplies no usable signature for a speaker, the label is
-kept but cannot be matched to a later recording until a signature is available.
+If the transcription service supplies no usable signature because there is too little
+speech, the speaker remains local to that recording and cannot be recognised later.
+No voice identity or signature is saved for that speaker; a name chosen in Review
+applies only to that recording.
 The single switch in the Obsidian People view stops collecting new signatures; existing
 data remains available for deletion. Recordings reviewed before this change have no
 signatures and cannot be recovered or backfilled.
