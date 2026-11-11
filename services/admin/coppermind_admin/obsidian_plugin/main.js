@@ -258,8 +258,8 @@ class WaitingView extends ItemView {
         if(recording.can_retry){
           const button=card.createEl('button',{text:'Retry'}), feedback=card.createEl('p');
           button.onclick=async()=>{button.disabled=true;feedback.setText('Queuing retry…');
-            try{await this.plugin.call('/v1/recordings/'+encodeURIComponent(recording.id)+'/retry','POST',{});feedback.setText('Retry queued. Refresh to see the latest status.');}
-            catch(e){feedback.setText('Could not queue retry. Check your connection and transcription settings, then try again.');button.disabled=false;}
+            try{await this.plugin.call('/v1/recordings/'+encodeURIComponent(recording.id)+'/retry','POST',{});await this.refresh();}
+            catch(e){feedback.setText(e.status===403?'This API credential is not allowed to retry recordings. In Coppermind Admin, create a credential with Update sources, Update notes, and Read artifacts, then select it in the companion settings.':'Could not queue retry. Check your connection and transcription settings, then try again.');button.disabled=false;}
           };
         }
         if(recording.can_dismiss){
@@ -342,7 +342,7 @@ class Settings extends PluginSettingTab {
   constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
   display(){const el=this.containerEl;el.empty();el.createEl('h2',{text:'Coppermind'});
     new Setting(el).setName('Server URL').setDesc('Your Coppermind address, without /admin.').addText(t=>t.setValue(this.plugin.settings.url).onChange(async v=>{this.plugin.settings.url=v.trim().replace(/\/$/,'');await this.plugin.saveData(this.plugin.settings);}));
-    new Setting(el).setName('API credential').setDesc('In Coppermind Admin, open Connected apps (API Keys) and create a new key with Read notes, Update notes, Read sources, Update sources, and Read people and companies, and Update people and companies. Select that key here. Only the secret name is saved in plugin settings.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
+    new Setting(el).setName('API credential').setDesc('In Coppermind Admin, open Connected apps (API Keys) and create a new key with Read notes, Update notes, Read sources, Update sources, Read artifacts, Read people and companies, and Update people and companies. Select that key here. Only the secret name is saved in plugin settings.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
   }
 }
 module.exports=class CoppermindReview extends Plugin {

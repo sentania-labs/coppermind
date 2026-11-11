@@ -14,6 +14,7 @@ from coppermind_admin.pages.search_index import local_time
 router = APIRouter()
 
 PERMISSION_LABELS = {
+    "artifacts:read": "Read artifacts",
     "notes:read": "Read notes",
     "notes:write": "Update notes",
     "sources:read": "Read sources",

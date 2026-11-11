@@ -1719,3 +1719,60 @@ async def test_a_voice_cannot_be_separated_from_a_note_whose_review_is_unfinishe
 
         assert voice.assignments(source) == [assignment]
         assert await transcript_of(store, job) == (revision, before)
+
+
+async def test_companion_retry_permissions_and_waiting_count_through_real_store(store):
+    """A refused retry keeps the failure; an accepted retry removes it from the count."""
+    import httpx
+    from coppermind_store.auth import InternalAuth
+    from coppermind_store.context_api import router as context_router
+    from fastapi import FastAPI
+
+    from coppermind.api_keys import create_key, load_keys
+    from coppermind.store_client import HttpStoreClient
+    from tests.integration.test_store_write_protocol import authorized_api
+
+    internal = FastAPI()
+    internal.state.store = store
+    internal.state.auth = InternalAuth("synthetic-internal-token")
+    internal.include_router(context_router)
+    client = HttpStoreClient(
+        "http://store", "synthetic-internal-token", transport=httpx.ASGITransport(app=internal)
+    )
+    app, headers = authorized_api(store)
+    app.state.store = client
+    current = load_keys(store.control.store)
+    reader, reader_key = create_key("reader", ["notes:read", "sources:read"])
+    current.keys.append(reader)
+    store.control.store.write("keys", current.model_dump(mode="json"), if_revision=current.revision)
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        accepted = await context.accept_recording(request(await store_audio(store)))
+        job = context.recordings.load(accepted["id"])
+        job.state = "failed"
+        job.attempts = job.attempt_limit
+        job.set_error("synthetic failure", "job-error")
+        context.recordings.save(job)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://api"
+        ) as api:
+            reader_headers = {"Authorization": f"Bearer {reader_key}"}
+            before = await api.get("/v1/recordings/waiting", headers=reader_headers)
+            assert before.status_code == 200
+            assert len(before.json()["failed"]) == 1
+            denied = await api.post(f"/v1/recordings/{job.id}/retry", headers=reader_headers)
+            assert denied.status_code == 403
+            assert (
+                len(
+                    (await api.get("/v1/recordings/waiting", headers=reader_headers)).json()[
+                        "failed"
+                    ]
+                )
+                == 1
+            )
+            accepted_retry = await api.post(f"/v1/recordings/{job.id}/retry", headers=headers)
+            assert accepted_retry.status_code == 200
+            after = await api.get("/v1/recordings/waiting", headers=reader_headers)
+            assert after.status_code == 200 and after.json()["failed"] == []
+            assert context.recordings.load(job.id).state == "queued"
+    await client.aclose()

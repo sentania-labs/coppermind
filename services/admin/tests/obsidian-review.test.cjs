@@ -33,7 +33,7 @@ async function fixture(local, overrides={}){
   class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(){}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/recordings/waiting'))return {status:200,json:overrides.waiting};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/recordings/waiting'))return {status:200,json:overrides.waiting};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
@@ -377,4 +377,27 @@ test('a recording the app will retry by itself offers no Dismiss',async()=>{
   const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
   assert.equal(view.contentEl.all().some(e=>e.text==='Dismiss'),false);
   assert.ok(view.contentEl.all().some(e=>e.text==='Retry'));
+});
+
+
+test('a queued retry refreshes the count and removes the failed row and Dismiss',async()=>{
+  const options={waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'Try again.',can_retry:true,can_dismiss:true}]}};
+  options.onRetry=()=>{options.waiting={meetings:[],failed:[]};};
+  const f=await fixture(undefined,options), view=f.factories['coppermind-waiting']({app:f.app});
+  await view.refresh();await view.contentEl.all().find(e=>e.text==='Retry').onclick();
+  const texts=view.contentEl.all().map(e=>e.text);
+  assert.ok(texts.includes('0 meetings to review · 0 recordings failed'));
+  assert.ok(texts.includes('No recordings need attention.'));
+  assert.ok(!texts.includes('Call'));assert.ok(!texts.includes('Dismiss'));
+});
+
+test('a credential forbidden to retry sees the required permissions',async()=>{
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'Try again.',can_retry:true}]},retryFail:403});
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  const retry=view.contentEl.all().find(e=>e.text==='Retry');await retry.onclick();
+  const message=view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.match(message,/not allowed to retry recordings/);
+  assert.match(message,/Update sources, Update notes, and Read artifacts/);
+  assert.match(message,/select it in the companion settings/);assert.equal(retry.disabled,false);
+  assert.doesNotMatch(message,/Check your connection/);
 });
