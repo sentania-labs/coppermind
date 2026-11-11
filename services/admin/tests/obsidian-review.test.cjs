@@ -25,15 +25,15 @@ async function fixture(local, overrides={}){
   const digest='sha256:'+Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(raw))).toString('hex');
   const requests=[];const notices=[];
   const file={basename:'Note',path:'Review/Note.md'};
-  let factory;
-  class Plugin {registerView(type,fn){factory=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(){}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
+  let factory;const factories={};const modals=[];
+  class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(){}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
-  return {view,plugin,requests,notices,app,raw};
+  return {view,plugin,requests,notices,app,raw,factories,modals};
 }
 test('unsynced note cannot complete review',async()=>{
   const {view}=await fixture('A local edit that has not synced');
@@ -245,4 +245,38 @@ test('correcting a selected voice match sends only the corrected person',async()
   const select=f.view.contentEl.all().find(e=>e.tag==='select');select.value='person:b';select.onchange();
   await f.view.contentEl.all().find(e=>e.text==='Apply selected & mark reviewed').onclick();
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:b');
+});
+
+const personVoice=(signatures)=>({enabled:true,signatures});
+const sig=(id)=>({note_id:id,created_at:'2026-01-02T00:00:00Z'});
+async function peopleFixture(signatures){
+  const f=await fixture(undefined,personVoice(signatures));
+  const view=f.factories['coppermind-people']({app:f.app});
+  await view.show({id:'alex-id',name:'Alex'});
+  const toggle=view.contentEl.all().find(e=>e.tag==='toggle');
+  const puts=()=>f.requests.filter(r=>r.method==='PUT');
+  return {...f,view,toggle,puts};
+}
+test('turning voice recognition off says its signatures are deleted and waits for confirmation',async()=>{
+  const f=await peopleFixture([sig('n1'),sig('n2')]);
+  await f.toggle.onchange(false);
+  assert.equal(f.puts().length,0);
+  const modal=f.modals.at(-1);
+  assert.ok(modal.contentEl.all().some(e=>e.text==='Turning this off deletes 2 saved voice signatures for Alex. Turning it on again starts from nothing.'));
+  await modal.contentEl.all().find(e=>e.text==='Turn off and delete').onclick();
+  assert.equal(f.puts().length,1);
+  assert.match(f.puts()[0].url,/\/v1\/entities\/alex-id\/voice$/);
+  assert.deepEqual(JSON.parse(f.puts()[0].body),{enabled:false});
+});
+test('cancelling the turn-off warning changes nothing',async()=>{
+  const f=await peopleFixture([sig('n1')]);
+  await f.toggle.onchange(false);
+  f.modals.at(-1).contentEl.all().find(e=>e.text==='Cancel').onclick();
+  assert.equal(f.puts().length,0);
+});
+test('turning off with nothing saved needs no confirmation',async()=>{
+  const f=await peopleFixture([]);
+  await f.toggle.onchange(false);
+  assert.equal(f.modals.length,0);
+  assert.equal(f.puts().length,1);
 });

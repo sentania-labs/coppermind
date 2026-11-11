@@ -515,6 +515,9 @@ class NoteLifecycle:
                                     speaker.get("speech_seconds"),
                                     speaker.get("embeddings", []),
                                 )
+                        (self.context.root / "voice-pending" / (recording.id + ".json")).unlink(
+                            missing_ok=True
+                        )
             receipt["state"], receipt["finished_at"] = "complete", now()
             receipt["final_hash"] = current.content_hash
             self.context.write(name, receipt)

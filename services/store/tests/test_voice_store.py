@@ -37,6 +37,23 @@ def test_consent_review_changeover_and_deletion():
     assert store.match([new]) == []
 
 
+def test_turning_off_deletes_signatures_and_turned_down_suggestions():
+    store = VoiceStore(Context())
+    signature = {"model": "m", "version": "v", "vector": [1, 0]}
+    store.set_enabled("alice", True)
+    store.set_enabled("bob", True)
+    store.confirm("alice", "note1", "today", 30, [signature])
+    store.confirm("bob", "note1", "today", 30, [signature])
+    store.reject("note2", "Speaker 1", "alice")
+    store.set_enabled("alice", False)
+    assert store.summary("alice") == {"enabled": False, "signatures": []}
+    assert not store.rejected("note2", "Speaker 1", "alice")
+    store.set_enabled("alice", True)
+    assert store.summary("alice") == {"enabled": True, "signatures": []}
+    assert store.match([signature])[0]["person_id"] == "bob"
+    assert len(store.summary("bob")["signatures"]) == 1
+
+
 def test_purge_removes_person_and_note_signatures():
     store = VoiceStore(Context())
     store.set_enabled("alice", True)

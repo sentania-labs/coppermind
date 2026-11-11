@@ -264,3 +264,46 @@ def test_voice_thresholds_are_set_in_admin_and_bad_values_are_refused(signed_in)
     assert [c for c in fake.calls if c[0] == "voice-settings-save"] == [
         ("voice-settings-save", {"strong": 0.7, "maybe": 0.5})
     ]
+
+
+def test_turning_voice_recognition_off_warns_that_signatures_are_deleted(signed_in):
+    client, _ = signed_in
+
+    class PeopleStore(ContextStore):
+        async def context_action(self, action, payload):
+            data = await super().context_action(action, payload)
+            if action == "snapshot":
+                data["entities"] = [
+                    {
+                        "id": "alex",
+                        "kind": "person",
+                        "name": 'Alex "Al" O\'Neil',
+                        "path": "People/Alex.md",
+                        "facts": [],
+                    },
+                    {
+                        "id": "blair",
+                        "kind": "person",
+                        "name": "Blair",
+                        "path": "People/Blair.md",
+                        "facts": [],
+                    },
+                ]
+            return data
+
+        async def entity_action(self, action, payload):
+            if action == "voice-list":
+                signature = {"note_id": "n1", "created_at": "2026-01-02T00:00:00Z"}
+                return {
+                    "alex": {"enabled": True, "signatures": [signature, signature]},
+                    "blair": {"enabled": True, "signatures": []},
+                }
+            return await super().entity_action(action, payload)
+
+    client.app.state.store = PeopleStore()
+    page = client.get("/admin/workflow?tab=dossiers").text
+    assert (
+        'data-confirm="Turning this off deletes 2 saved voice signatures for '
+        'Alex &quot;Al&quot; O&#x27;Neil. Turning it on again starts from nothing."'
+    ) in page
+    assert page.count("data-confirm=") == 1

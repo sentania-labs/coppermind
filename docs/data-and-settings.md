@@ -197,8 +197,8 @@ each intake is one small file under `/data/state/context/recordings/` and its sa
 transcript under `/data/state/context/recording-transcripts/`. Voice signatures are
 private state in the same folder (mode 0600, never in the vault or an API response):
 `voice-signatures.json` (per-person opt-in, saved signatures, turned-down suggestions),
-`voice-pending/<recording id>.json` (a recording's signatures until review) and
-`voice-settings.json` (the two match thresholds). Rules in
+`voice-pending/<recording id>.json` (a recording's signatures, removed when its
+review completes) and `voice-settings.json` (the two match thresholds). Rules in
 [dossiers](dossiers.md#voice-recognition).
 
 ### Calendar import budgets

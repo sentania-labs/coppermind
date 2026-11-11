@@ -143,7 +143,9 @@ Recognising recurring speakers by voice is biometric data about other people, so
 by default and enabled per person. Coppermind keeps voice signatures only, never audio clips.
 The transcription service returns a signature (`model`, `version`, vector) for each speaker;
 until review these are held privately with the recording, never in notes, the vault or API
-responses, and are removed with the recording's audio, its note, or a confirmed purge.
+responses. They are removed when review completes (after the opted-in speakers' signatures
+are saved), whether or not the audio removal succeeded, and also if the note is deleted or
+purged.
 
 - **Saving:** completing review with a speaker name the owner accepted or corrected saves
   that speaker's signature against the person, only if the person is opted in. There is no
@@ -157,7 +159,10 @@ responses, and are removed with the recording's audio, its note, or a confirmed 
   without review. A candidate the owner passed over is not offered again
   for that speaker on that note.
 - **Deleting:** a person's signatures can be deleted at any time, which also clears their
-  turned-down suggestions. Retiring, merging or purging the person removes them too.
+  turned-down suggestions. Turning a person's recognition off does the same in one step,
+  after a warning ("Turning this off deletes N saved voice signatures for <name>. Turning it
+  on again starts from nothing."), so off means nothing is stored.
+  Retiring, merging or purging the person removes them too.
 
 The People view in Obsidian (command "Manage people and voice recognition") shows a
 person's opt-in, saved signatures with their source notes, and Delete signatures. Admin's
@@ -167,7 +172,7 @@ two thresholds are set; a change affects future suggestions only.
 | Request | Scopes | Purpose |
 | --- | --- | --- |
 | `GET /v1/entities/{id}/voice` | `entities:read`, `notes:read` | Opt-in state and signature summaries (note, date, speech seconds; never vectors) |
-| `PUT /v1/entities/{id}/voice` | adds `entities:write` | `{"enabled": true/false}` |
+| `PUT /v1/entities/{id}/voice` | adds `entities:write` | `{"enabled": true/false}`; `false` also deletes the person's signatures |
 | `DELETE /v1/entities/{id}/voice` | adds `entities:write` | Delete the person's signatures |
 | `GET`/`PUT /v1/entities/voice/settings` | read / adds `entities:write` | The `strong` and `maybe` thresholds, each -1 to 1 with `maybe` not above `strong` |
 

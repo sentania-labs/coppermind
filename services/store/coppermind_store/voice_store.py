@@ -55,13 +55,19 @@ class VoiceStore:
         data = self._load()
         person = data["people"].setdefault(person_id, {"signatures": []})
         person["enabled"] = enabled
+        if not enabled:
+            self._clear(data, person_id)
         self._save(data)
 
-    def delete(self, person_id: str) -> None:
-        data = self._load()
+    @staticmethod
+    def _clear(data: dict[str, Any], person_id: str) -> None:
         if person_id in data["people"]:
             data["people"][person_id]["signatures"] = []
         data["rejections"] = [r for r in data.get("rejections", []) if r["person_id"] != person_id]
+
+    def delete(self, person_id: str) -> None:
+        data = self._load()
+        self._clear(data, person_id)
         self._save(data)
 
     def purge(self, person_ids: set[str], note_ids: set[str]) -> None:

@@ -986,13 +986,12 @@ async def test_voice_enrollment_uses_confirmed_opted_in_people_and_removes_pendi
     )
     assert len(voice.summary(alex["id"])["signatures"]) == 1
     assert voice.summary(blair["id"])["signatures"] == []
+    assert context.read("voice-pending/" + recording.id, None) is None
     manifest = await store.get_source(result.source.id)
     artifact = await store.get_source_artifact(
         result.source.id, manifest.current_revision, "transcript.json"
     )
     assert "vector" not in artifact.content
-    context.recordings._audio_removed(recording)
-    assert context.read("voice-pending/" + recording.id, None) is None
     context.write("voice-pending/" + recording.id, [{"label": "Speaker 1", "embeddings": [vector]}])
     store.entities.purge({note.id}, {alex["id"]}, "voice-purge-test")
     assert context.read("voice-pending/" + recording.id, None) is None

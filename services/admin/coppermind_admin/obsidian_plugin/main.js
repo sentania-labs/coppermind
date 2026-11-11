@@ -214,15 +214,16 @@ class ReviewView extends ItemView {
   }
 }
 class DeleteVoiceModal extends Modal {
-  constructor(app, person, confirm){super(app);this.person=person;this.confirm=confirm;}
+  constructor(app, person, confirm, options={}){super(app);this.person=person;this.confirm=confirm;this.options=options;this.done=false;}
   onOpen(){
-    this.contentEl.createEl('h2',{text:'Delete voice signatures?'});
-    this.contentEl.createEl('p',{text:'All saved voice signatures for '+this.person.name+' will be deleted. This cannot be undone.'});
-    const button=this.contentEl.createEl('button',{text:'Delete signatures',cls:'mod-warning'});
-    button.onclick=async()=>{this.close();await this.confirm();};
+    const o=this.options;
+    this.contentEl.createEl('h2',{text:o.title||'Delete voice signatures?'});
+    this.contentEl.createEl('p',{text:o.text||'All saved voice signatures for '+this.person.name+' will be deleted. This cannot be undone.'});
+    const button=this.contentEl.createEl('button',{text:o.action||'Delete signatures',cls:'mod-warning'});
+    button.onclick=async()=>{this.done=true;this.close();await this.confirm();};
     const cancel=this.contentEl.createEl('button',{text:'Cancel'});cancel.onclick=()=>this.close();
   }
-  onClose(){this.contentEl.empty();}
+  onClose(){this.contentEl.empty();if(!this.done&&this.options.cancel)this.options.cancel();}
 }
 class PeopleView extends ItemView {
   constructor(leaf,plugin){super(leaf);this.plugin=plugin;}
@@ -244,7 +245,12 @@ class PeopleView extends ItemView {
         const voice=await this.plugin.call(path);
         el.createEl('h3',{text:person.name+' · Voice recognition'});
         el.createEl('p',{text:'Off by default. Voice signatures are stored, not audio clips. Unidentified signatures are held privately with the recording until review and removal.'});
-        new Setting(el).setName('Recognise this person by voice').addToggle(t=>t.setValue(voice.enabled).onChange(async enabled=>{try{await this.plugin.call(path,'PUT',{enabled});await this.show(person);}catch(e){new Notice(e.message);await this.show(person);}}));
+        new Setting(el).setName('Recognise this person by voice').addToggle(t=>t.setValue(voice.enabled).onChange(async enabled=>{
+          const apply=async()=>{try{await this.plugin.call(path,'PUT',{enabled});}catch(e){new Notice(e.message);}await this.show(person);};
+          const count=voice.signatures.length;
+          if(enabled||!count){await apply();return;}
+          new DeleteVoiceModal(this.app,person,apply,{title:'Turn off voice recognition?',text:'Turning this off deletes '+count+' saved voice signature'+(count===1?'':'s')+' for '+person.name+'. Turning it on again starts from nothing.',action:'Turn off and delete',cancel:()=>this.show(person)}).open();
+        }));
         el.createEl('p',{text:voice.signatures.length+' saved signatures'});
         if(!voice.signatures.length)el.createEl('p',{text:'A reviewed recording can add a signature when recognition is enabled.'});
         for(const sig of voice.signatures){const line=el.createEl('p');line.createSpan({text:sig.created_at.slice(0,10)+' · '});
