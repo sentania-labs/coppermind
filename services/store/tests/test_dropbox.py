@@ -824,7 +824,7 @@ async def test_a_long_multibyte_filename_still_moves_to_failed(tmp_path, monkeyp
     files = list((root / "Failed").iterdir())
     assert len(files) == 2
     assert all(len(p.name.encode()) <= 255 for p in files)
-    assert any(p.read_bytes() == b"unknown" for p in files)
+    assert (root / "Failed" / path.name).read_bytes() == b"unknown"
 
 
 def test_submit_refuses_a_marker_that_is_not_artifact(tmp_path):
@@ -959,3 +959,104 @@ async def test_changed_drop_is_not_removed_after_import(tmp_path, monkeypatch):
     path.write_bytes(changed)
     await store.context.dropbox.scan()
     assert path.read_bytes() == changed
+
+
+async def settle(dropbox, clock):
+    clock[0] += 31
+    await dropbox.scan()
+    clock[0] += 31
+    await dropbox.scan()
+    await dropbox.process()
+    await dropbox.scan()
+
+
+async def test_failed_files_keep_their_name_and_a_taken_name_gets_a_folder(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    dropbox = store.context.dropbox
+    (root / "odd.xyz").write_bytes(b"first")
+    await dropbox.scan()
+    await settle(dropbox, clock)
+    assert (root / "Failed" / "odd.xyz").read_bytes() == b"first"
+    assert (root / "Failed" / "odd.xyz.reason.txt").exists()
+    (root / "odd.xyz").write_bytes(b"second")
+    await dropbox.scan()
+    await settle(dropbox, clock)
+    assert (root / "Failed" / "odd.xyz").read_bytes() == b"first"
+    moved = [p for p in (root / "Failed").iterdir() if p.is_dir()]
+    assert len(moved) == 1
+    assert (moved[0] / "odd.xyz").read_bytes() == b"second"
+    assert (moved[0] / "odd.xyz.reason.txt").exists()
+
+
+async def test_a_kind_sidecar_is_consumed_with_its_file(tmp_path, monkeypatch):
+    from coppermind.store_protocol import CreatedArtifact
+
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    (root / "deck.bin").write_bytes(b"deck")
+    (root / "deck.bin.kind").write_text("artifact")
+    (root / "bad.xyz").write_bytes(b"bad")
+    (root / "bad.xyz.kind").write_text("nonsense")
+    created = []
+
+    async def create_artifact(request):
+        created.append(request)
+        return CreatedArtifact(
+            id="01K4Q8Z2A0P1Q2R3S4T5U6V7W8",
+            revision=1,
+            created=True,
+            path="Artifacts/deck.bin",
+            title="Deck",
+        )
+
+    store.create_artifact = create_artifact
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    dropbox = store.context.dropbox
+    await dropbox.scan()
+    await settle(dropbox, clock)
+    assert created
+    assert not (root / "deck.bin").exists() and not (root / "deck.bin.kind").exists()
+    assert not (root / "bad.xyz").exists() and not (root / "bad.xyz.kind").exists()
+    assert (root / "Failed" / "bad.xyz").read_bytes() == b"bad"
+    assert (root / "Failed" / "bad.xyz.kind").read_text() == "nonsense"
+    assert not (root / "Failed" / "deck.bin").exists()
+    assert not (root / "Failed" / "deck.bin.kind").exists()
+
+
+async def test_files_left_in_dropbox_before_disposal_existed_are_cleared(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    path = root / "left.xyz"
+    path.write_bytes(b"left")
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    dropbox = store.context.dropbox
+    records = dropbox.records()
+    info = path.lstat()
+    records["observations"]["left.xyz"] = [info.st_mtime_ns, info.st_size, 0, -1]
+    dropbox.save(records)
+    await dropbox.scan()
+    assert any(i["state"] == "stabilizing" for i in dropbox.snapshot()["items"])
+    await settle(dropbox, clock)
+    assert not path.exists()
+    assert (root / "Failed" / "left.xyz").read_bytes() == b"left"
+
+
+async def test_an_idle_scan_does_not_rewrite_the_records(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    dropbox = store.context.dropbox
+    writes = []
+    original = dropbox.save
+    monkeypatch.setattr(dropbox, "save", lambda records: (writes.append(1), original(records)))
+    await dropbox.scan()
+    await dropbox.scan()
+    assert writes == []

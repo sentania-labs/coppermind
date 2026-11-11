@@ -701,11 +701,11 @@ def router(wiring: Wiring) -> APIRouter:
                     + e(", ".join(sorted({_address(item["address"]) for item in evidence})))
                     + "</p><ul>"
                 )
-                shown_events: set[str] = set()
+                shown_events: set[tuple[str, str]] = set()
                 for item in evidence:
-                    if item["event_id"] in shown_events:
+                    if (item["event_id"], item["role"]) in shown_events:
                         continue
-                    shown_events.add(item["event_id"])
+                    shown_events.add((item["event_id"], item["role"]))
                     event = event_lookup.get(item["event_id"], {})
                     title = item.get("event_title") or event.get("title") or "Untitled event"
                     start = item.get("event_start") or event.get("start", "")

@@ -35,11 +35,6 @@ class ImportsView extends ItemView {
           if(!file){new Notice('The artifact has not synced to this device yet. Try again after sync.');return;}
           await this.app.workspace.getLeaf(false).openFile(file);
         };}
-        if((item.parts||[]).some(p=>p.import_id)&&['succeeded','already_imported'].includes(item.state)){
-          const calendar=card.createEl('button',{text:'View calendar'});calendar.onclick=async()=>{
-            try{const result=await this.plugin.call('/v1/calendars');card.createEl('h4',{text:'Calendar events'});for(const event of result.events||[])card.createEl('p',{text:(event.title||'Untitled event')+' · '+event.start});if(!(result.events||[]).length)card.createEl('p',{text:'No calendar events to show.'});calendar.disabled=true;}catch(e){new Notice('Calendar is unavailable. Try again.');}
-          };
-        }
       }
     }catch(e){if(generation!==this.generation)return;this.loaded=false;el.empty();el.createEl('h2',{text:'Imports'});el.createEl('p',{text:'Imports are unavailable. Try again.'});const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
     finally{this.refreshing=false;}

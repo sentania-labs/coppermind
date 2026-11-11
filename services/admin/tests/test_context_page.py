@@ -776,3 +776,23 @@ def test_contact_lists_each_merged_event_once(signed_in):
     page = client.get("/admin/context?tab=calendar")
     assert page.status_code == 200
     assert page.text.count("Invitee: Planning meeting") == 1
+
+
+def test_contact_keeps_each_role_for_one_merged_event(signed_in):
+    class TwoRoleStore(ContextStore):
+        async def context_action(self, action, payload):
+            result = await super().context_action(action, payload)
+            if action == "snapshot":
+                evidence = result["contacts"][0]["evidence"]
+                evidence[0]["event_title"] = "Planning meeting"
+                other = dict(evidence[0])
+                other["role"] = "organizer"
+                evidence.extend([other, dict(other)])
+            return result
+
+    client, _ = signed_in
+    client.app.state.store = TwoRoleStore()
+    page = client.get("/admin/context?tab=calendar")
+    assert page.status_code == 200
+    assert page.text.count("Invitee: Planning meeting") == 1
+    assert page.text.count("Organizer: Planning meeting") == 1
