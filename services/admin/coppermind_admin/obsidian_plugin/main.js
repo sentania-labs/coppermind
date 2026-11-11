@@ -35,6 +35,7 @@ class ImportsView extends ItemView {
           if(!file){new Notice('The artifact has not synced to this device yet. Try again after sync.');return;}
           await this.app.workspace.getLeaf(false).openFile(file);
         };}
+        else if((item.parts||[]).some(p=>p.artifact))card.createEl('p',{text:'Stored as an artifact. This key needs permission to read artifacts to open it.'});
       }
     }catch(e){if(generation!==this.generation)return;this.loaded=false;el.empty();el.createEl('h2',{text:'Imports'});el.createEl('p',{text:'Imports are unavailable. Try again.'});const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
     finally{this.refreshing=false;}

@@ -329,3 +329,12 @@ test('imports view explains an unavailable connection',async()=>{
   assert.ok(view.contentEl.all().some(e=>e.text==='Imports are unavailable. Try again.'));
   assert.ok(view.contentEl.all().some(e=>e.text==='Retry'));
 });
+
+test('imports view explains a key that cannot read artifacts',async()=>{
+  const f=await fixture();
+  f.plugin.call=async()=>({folder:'Dropbox',items:[{filename:'report.pdf',state:'succeeded',parts:[{artifact:'stored'}],error:''}]});
+  const view=f.factories['coppermind-imports']({app:f.app});await view.refresh();
+  const text=view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.match(text,/needs permission to read artifacts/);
+  assert.ok(!view.contentEl.all().some(e=>e.text==='Open artifact'));
+});

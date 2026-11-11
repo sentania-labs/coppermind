@@ -543,8 +543,8 @@ separate calendars. Calendar UID binding and identity claiming are removed.
 
 | Route | Scope | Result |
 |---|---|---|
-| `POST /v1/dropbox?filename=export.zip` | `sources:write`; `kind=artifact` also needs `artifacts:write` | Binary ICS or ZIP, 202 after durable intake; 413 above 200,000,000 bytes, or above `limits.artifact_max_bytes` when `kind=artifact` |
-| `GET /v1/dropbox` | `sources:read` | `{folder, items}`; each receipt has `id`, `filename`, `state`, `error`, `event_count`, `first_imported_at`, and import references in `parts`; files still being copied have state `stabilizing` and an empty `id` until accepted |
+| `POST /v1/dropbox?filename=export.zip` | `sources:write`; `kind=artifact` also needs `artifacts:write` | Binary ICS or ZIP; 202 after durable intake; 413 above 200,000,000 bytes, or above `limits.artifact_max_bytes` when `kind=artifact` |
+| `GET /v1/dropbox` | `sources:read` | `{folder, items}`; each receipt has `id`, `filename`, `state`, `error`, `event_count`, `first_imported_at`, and `parts`; the same redaction applies to the `POST /v1/dropbox` receipt; an artifact part carries `artifact_id` and `path` only when the key also holds `artifacts:read`, otherwise it is `{artifact: "stored"}`; files still being copied have state `stabilizing` and an empty `id` until accepted |
 | `POST /v1/dropbox/{id}/dismiss` | `sources:write` | Dismiss a completed, failed or unsupported receipt; 422 for pending/importing or unknown receipts |
 | `GET /v1/calendars?offset=0` | `sources:read` | Compatible `{calendar, events, contacts, offset, next_offset, totals}` response; calendar now also has `id: calendar`, `name: My calendar` |
 | `POST /v1/calendars/calendar/imports/{id}/dismiss` | `sources:write` | Dismiss a failed import receipt, whether it arrived by Dropbox, direct upload or the upgrade migration; the receipt stays in import history marked dismissed and leaves Problems; 422 for unknown or non-failed receipts |
