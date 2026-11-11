@@ -1104,3 +1104,92 @@ async def test_a_contact_is_not_attached_to_a_same_named_person_with_another_add
     assert invitee.emails and "someone.else@example.test" not in invitee.emails
     assert len(voice.summary(invitee.id)["signatures"]) == 1
     assert voice.unknown_summaries() == {}
+
+
+async def contact_review(store, standin):
+    transcript = {
+        "segments": [
+            {"start": 0, "speaker": "Unknown voice 1", "text": "Hello."},
+            {"start": 3, "speaker": "Unknown voice 2", "text": "Hi."},
+        ]
+    }
+    context, result, note, _, _ = await recorded(store, standin, transcript, lambda e, ev: [])
+    manual = (await context.lifecycle_detail({"note_id": note.id}))["manual_speaker_review"]
+    contact = next(c for c in manual["candidates"] if c["id"].startswith("contact:"))
+
+    def payload(speakers):
+        return {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "confirmation": "Complete review",
+            "selected": [],
+            "manual_source_id": manual["source_id"],
+            "manual_source_revision": manual["revision"],
+            "manual_speakers": speakers,
+        }
+
+    def people():
+        return [p for p in store.entities.load().entities.values() if p.kind == "person"]
+
+    return context, result, contact, payload, people
+
+
+async def test_a_refused_review_creates_no_person_for_a_calendar_contact(store, standin):
+    context, result, contact, payload, people = await contact_review(store, standin)
+    before = len(people())
+    with pytest.raises(ValueError, match="is already chosen for"):
+        await context.complete_review(
+            payload({"Unknown voice 1": contact["id"], "Unknown voice 2": contact["id"]})
+        )
+    assert len(people()) == before
+    assert (await store.get_source(result.source.id)).current_revision == 1
+
+
+async def test_a_review_that_fails_later_validation_creates_no_person(store, standin):
+    context, result, contact, payload, people = await contact_review(store, standin)
+    before = len(people())
+    stale = payload({"Unknown voice 1": contact["id"]}) | {"manual_source_revision": 99}
+    with pytest.raises(ValueError, match="transcript changed"):
+        await context.complete_review(stale)
+    assert len(people()) == before
+
+
+async def test_replaying_a_contact_review_keeps_one_person(store, standin):
+    context, result, contact, payload, people = await contact_review(store, standin)
+    request = payload({"Unknown voice 1": contact["id"]})
+    first = await context.complete_review(request)
+    again = await context.complete_review(request)
+    assert first["state"] == again["state"] == "complete"
+    assert [p.name for p in people()].count(contact["name"]) == 1
+
+
+async def test_a_contact_whose_address_belongs_to_a_removed_person_stops_the_review(store, standin):
+    from coppermind.entities import EntityChange
+
+    def calendar_candidate(evidence):
+        return next(
+            c["id"]
+            for c in evidence["speaker_review"]["candidates"]
+            if c["id"].startswith("contact:")
+        )
+
+    context, result, note, job_id, observed = await recorded(
+        store, standin, SHORT, speaker_answer(calendar_candidate)
+    )
+    address = next(
+        c["email"]
+        for c in observed[0]["speaker_review"]["candidates"]
+        if c["id"].startswith("contact:")
+    )
+    removed = await store.entities.create(
+        EntityInput(kind="person", name="Someone Else", emails=[address])
+    )
+    await store.entities.change(
+        removed["id"], EntityChange(version=removed["version"], action="retire")
+    )
+    before = len(store.entities.load().entities)
+    request = await completion(context, store, result, job_id)
+    with pytest.raises(ValueError, match="matches a person who was removed"):
+        await context.complete_review(request)
+    assert len(store.entities.load().entities) == before
+    assert (await store.get_source(result.source.id)).current_revision == 1

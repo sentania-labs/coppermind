@@ -105,33 +105,74 @@ def chosen_person(
     return None
 
 
-async def resolve_contact(context: Any, person: dict[str, Any]) -> dict[str, Any]:
-    """Give a contact-only choice a People entry: an existing match, otherwise a new one."""
-    if person["id"].startswith("person:") or person.get("person_id"):
-        return person
-    from coppermind.entities import EntityInput
+def _is_contact(person: dict[str, Any]) -> bool:
+    return not person["id"].startswith("person:") and not person.get("person_id")
+
+
+def _contact_match(context: Any, person: dict[str, Any]) -> Any:
     from coppermind_store.entities import email
 
-    entities = context.store.entities
     address = email(person.get("email", ""))
     name = person["name"].strip().casefold()
-    active = [
-        e
-        for e in entities.load().entities.values()
-        if e.kind == "person" and not e.retired_at and not e.redirect
-    ]
+    people = [e for e in context.store.entities.load().entities.values() if e.kind == "person"]
+    active = [e for e in people if not e.retired_at and not e.redirect]
     match = next(
         (e for e in active if address and address in {email(a) for a in e.emails}), None
     ) or next(
         (e for e in active if e.name.strip().casefold() == name and (not address or not e.emails)),
         None,
     )
+    if match is None and address:
+        for entity in people:
+            if (
+                entity.retired_at
+                and not entity.redirect
+                and address in {email(a) for a in entity.emails}
+            ):
+                raise ValueError(
+                    f"{person['name']} matches a person who was removed. Choose someone else "
+                    "or restore that person."
+                )
+    return match
+
+
+def find_contact(context: Any, person: dict[str, Any]) -> dict[str, Any]:
+    """An existing person for a contact-only choice, else the contact itself; never creates."""
+    if not _is_contact(person):
+        return person
+    match = _contact_match(context, person)
     if match is None:
-        created = await entities.create(
-            EntityInput(kind="person", name=person["name"], emails=[address] if address else [])
-        )
-        match = entities.load().entities[created["id"]]
+        return person
     return {**person_candidate(match), "id": person["id"], "person_id": match.id}
+
+
+async def create_contact_people(context: Any, operation: dict[str, Any]) -> None:
+    """Give each still-pending contact a People entry, reusing one an earlier attempt made."""
+    from coppermind.entities import EntityInput
+    from coppermind_store.entities import email
+
+    for index, person in enumerate(operation["people"]):
+        if not _is_contact(person):
+            continue
+        match = _contact_match(context, person)
+        if match is None:
+            address = email(person.get("email", ""))
+            created = await context.store.entities.create(
+                EntityInput(kind="person", name=person["name"], emails=[address] if address else [])
+            )
+            match = context.store.entities.load().entities[created["id"]]
+        label = next(
+            label
+            for label, name in operation["mapping"].items()
+            if name == person["name"] and not operation["person_ids"].get(label)
+        )
+        operation["people"][index] = {
+            **person_candidate(match),
+            "id": person["id"],
+            "person_id": match.id,
+        }
+        operation["mapping"][label] = match.name
+        operation["person_ids"][label] = match.id
 
 
 def same_recording(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:

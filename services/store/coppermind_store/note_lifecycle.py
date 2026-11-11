@@ -316,7 +316,7 @@ class NoteLifecycle:
                                 "longer an active person. Choose someone else or leave this "
                                 "speaker unnamed."
                             )
-                        person = await speaker_names.resolve_contact(self.context, person)
+                        person = speaker_names.find_contact(self.context, person)
                         mapping[suggestion.field] = person["name"]
                         person_ids[suggestion.field] = (
                             person.get("person_id") or person["id"].removeprefix("person:")
@@ -384,7 +384,7 @@ class NoteLifecycle:
                             raise ValueError(
                                 f"{label}: this person is no longer active. Choose someone else."
                             )
-                        person = await speaker_names.resolve_contact(self.context, person)
+                        person = speaker_names.find_contact(self.context, person)
                         speaker_operation["mapping"][label] = person["name"]
                         speaker_operation["person_ids"][label] = person.get("person_id") or (
                             person["id"].removeprefix("person:")
@@ -459,6 +459,8 @@ class NoteLifecycle:
                     self.context.write(name, receipt)
             current = await self.context.store.get_note(identity)
             if receipt.get("speakers") and not receipt.get("speakers_applied"):
+                await speaker_names.create_contact_people(self.context, receipt["speakers"])
+                self.context.write(name, receipt)
                 current = await speaker_names.apply(self.context, receipt, current)
                 receipt["expected_hash"] = current.content_hash
                 receipt["speakers_applied"] = True
