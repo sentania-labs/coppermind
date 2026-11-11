@@ -1059,4 +1059,6 @@ async def test_an_idle_scan_does_not_rewrite_the_records(tmp_path, monkeypatch):
     monkeypatch.setattr(dropbox, "save", lambda records: (writes.append(1), original(records)))
     await dropbox.scan()
     await dropbox.scan()
+    await dropbox.process()
+    await dropbox.process()
     assert writes == []

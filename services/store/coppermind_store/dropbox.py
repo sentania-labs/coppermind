@@ -208,6 +208,7 @@ class Dropbox:
 
     async def process(self) -> None:
         records = self.records()
+        before = copy.deepcopy(records)
         self.expire(records)
         for item in records["items"].values():
             if item["state"] == "pending":
@@ -262,7 +263,8 @@ class Dropbox:
                     log.info("Dropbox fail export %s", item["id"])
             if item["state"] not in {"pending", "importing"}:
                 records["history"][item["id"]] = dict(item)
-        self.save(records)
+        if records != before:
+            self.save(records)
 
     async def _store_artifact(
         self, item: dict[str, Any], data: bytes, marker: dict[str, Any]
@@ -480,6 +482,7 @@ class Dropbox:
                 self.save(records)
         present = set()
         count = 0
+        records = self.records()
         for path, markers in self.candidates(root):
             name = path.name
             count += 1
@@ -494,7 +497,6 @@ class Dropbox:
             present.add(key)
             signature = (info.st_mtime_ns, info.st_size)
             observed = self.observe(info, path)
-            records = self.records()
             if key in records["paths"] and records["observations"].get(key) == list(observed):
                 continue
             old = self.seen.get(key)
