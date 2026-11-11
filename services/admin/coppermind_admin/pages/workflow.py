@@ -312,6 +312,15 @@ def router(wiring: Wiring) -> APIRouter:
                     "<p>Read people and companies in Obsidian under People/ and Companies/. "
                     "Edit a fact there to correct it. This view is for setup and repair.</p>"
                 )
+                thresholds = await client(request).entity_action("voice-settings", {})
+                body += (
+                    "<h2>Voice suggestion thresholds</h2><p>Changes affect future suggestions. "
+                    "A weaker match is shown as Maybe.</p>"
+                    '<form method="post" action="/v1/admin/voice/thresholds">'
+                    + _input("strong", "Voice", str(thresholds["strong"]))
+                    + _input("maybe", "Maybe", str(thresholds["maybe"]))
+                    + "<button>Save thresholds</button></form>"
+                )
                 voices = (
                     await client(request).entity_action("voice-list", {})
                     if any(e["kind"] == "person" for e in data.get("entities", []))
@@ -643,6 +652,17 @@ def router(wiring: Wiring) -> APIRouter:
             )
         elif action == "delete":
             await client(request).entity_action("voice-delete", {"id": form["id"]})
+        elif action == "thresholds":
+            try:
+                values = {key: float(form[key]) for key in ("strong", "maybe")}
+                await client(request).entity_action("voice-settings-save", values)
+            except (KeyError, ValueError, StoreError):
+                return page(
+                    "Voice recognition",
+                    '<p class="error">Enter numbers from -1 to 1. Maybe must be no higher '
+                    "than Voice.</p>",
+                    422,
+                )
         else:
             return page("Voice recognition", "<p>Unknown action.</p>", 404)
         return RedirectResponse("/admin/workflow?tab=dossiers&saved=1", 303)

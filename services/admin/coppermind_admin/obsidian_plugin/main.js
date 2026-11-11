@@ -224,14 +224,6 @@ class PeopleView extends ItemView {
         if(voice.signatures.length){const del=el.createEl('button',{text:'Delete signatures',cls:'mod-warning'});del.onclick=()=>new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call(path,'DELETE');await this.show(person);}catch(e){new Notice(e.message);}}).open();}
       }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});}
     }
-    try{
-      const settings=await this.plugin.call('/v1/entities/voice/settings');let strong=String(settings.strong),maybe=String(settings.maybe);
-      el.createEl('h3',{text:'Voice suggestion thresholds'});el.createEl('p',{text:'Changes affect future suggestions. A weaker match is shown as Maybe.'});
-      new Setting(el).setName('Voice').addText(t=>t.setValue(strong).onChange(v=>strong=v));
-      new Setting(el).setName('Maybe').addText(t=>t.setValue(maybe).onChange(v=>maybe=v));
-      const error=el.createEl('p',{cls:'coppermind-notice'});const save=el.createEl('button',{text:'Save thresholds'});
-      save.onclick=async()=>{const a=Number(strong),b=Number(maybe);if(!strong.trim()||!maybe.trim()||!Number.isFinite(a)||!Number.isFinite(b)||b < -1||a > 1||b>a){error.setText('Enter numbers from -1 to 1. Maybe must be no higher than Voice.');return;}try{await this.plugin.call('/v1/entities/voice/settings','PUT',{strong:a,maybe:b});error.setText('Saved.');}catch(e){error.setText(e.message);}};
-    }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});}
   }
 }
 class Settings extends PluginSettingTab {

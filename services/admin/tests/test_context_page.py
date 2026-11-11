@@ -11,6 +11,10 @@ class ContextStore:
     def __init__(self):
         self.calls = []
 
+    async def entity_action(self, action, payload):
+        self.calls.append((action, payload))
+        return {"strong": 0.6, "maybe": 0.45} if action == "voice-settings" else {}
+
     async def context_action(self, action, payload):
         self.calls.append((action, payload))
         if action == "snapshot":
