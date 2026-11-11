@@ -405,6 +405,15 @@ class NoteLifecycle:
                                 f"{chosen} is already chosen for {earlier}. Choose someone "
                                 "else or leave this speaker unnamed."
                             )
+                    if payload.get("can_create_people", True) is not True and any(
+                        speaker_names._is_contact(person) for person in speaker_operation["people"]
+                    ):
+                        from coppermind.store_protocol import PermissionDenied
+
+                        raise PermissionDenied(
+                            "This key cannot create a person. Choose an existing person or use "
+                            "a key with permission to update people."
+                        )
                 receipt = {
                     "summary": {
                         "value": summary,
@@ -421,10 +430,20 @@ class NoteLifecycle:
                     "selected": selected,
                     "applied": [],
                     "created_at": now(),
-                    "payload": payload,
+                    "payload": {k: v for k, v in payload.items() if k != "can_create_people"},
                     "accept_link_risk": payload.get("accept_link_risk") is True,
                 }
                 self.context.write(name, receipt)
+            if payload.get("can_create_people", True) is not True and any(
+                speaker_names._is_contact(person)
+                for person in (receipt.get("speakers") or {}).get("people", [])
+            ):
+                from coppermind.store_protocol import PermissionDenied
+
+                raise PermissionDenied(
+                    "This key cannot create a person. Use a key with permission to update people "
+                    "to resume this review."
+                )
             if receipt["selected"]:
                 job = self.context.load_job(receipt["job_id"])
                 if job.pending_approval:

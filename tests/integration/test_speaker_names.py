@@ -1339,3 +1339,56 @@ async def test_removing_a_deleted_notes_recording_drops_its_voice_data(store, st
     kept = voice.unknown_summaries()["unknown:1"]
     assert [s["note_id"] for s in kept["signatures"]] == [note.id]
     assert [a["note_id"] for a in kept["assignments"]] == [note.id]
+
+
+async def test_review_requires_people_write_only_when_creating_a_contact_person(store, standin):
+    import httpx
+    from coppermind_api.auth import ApiKeyAuthenticator
+    from coppermind_store.auth import InternalAuth
+    from coppermind_store.context_api import router as context_router
+    from fastapi import FastAPI
+
+    from coppermind.api_keys import ApiKeySet, create_key
+    from coppermind.store_client import HttpStoreClient
+    from tests.integration.test_store_write_protocol import authorized_api
+
+    context, result, contact, payload, people = await contact_review(store, standin)
+    existing = await store.entities.create(EntityInput(kind="person", name="Existing Person"))
+    record, credential = create_key(
+        "restricted",
+        ["notes:read", "notes:write", "sources:read", "sources:write", "entities:read"],
+        key_id="1234567890abcdef",
+        secret="test-only-integration-secret",
+    )
+    internal = FastAPI()
+    internal.state.store = store
+    internal.state.auth = InternalAuth("synthetic-internal-token")
+    internal.include_router(context_router)
+    client = HttpStoreClient(
+        "http://store", "synthetic-internal-token", transport=httpx.ASGITransport(app=internal)
+    )
+    app, _ = authorized_api(store)
+    store.control.store.write(
+        "keys",
+        ApiKeySet(keys=[record]).model_dump(mode="json"),
+        if_revision=store.control.store.read("keys").revision,
+    )
+    app.state.api_key_auth = ApiKeyAuthenticator(store)
+    app.state.store = client
+    before = len(people())
+    choices = payload({"Unknown voice 1": contact["id"]})
+    note_id = choices.pop("note_id")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://api",
+        headers={"Authorization": f"Bearer {credential}"},
+    ) as api:
+        refused = await api.post(f"/v1/notes/{note_id}/review", json=choices)
+        assert refused.status_code == 403, refused.text
+        assert "cannot create a person" in refused.text
+        assert len(people()) == before
+        assert context.read("review-completions/" + note_id, None) is None
+        assert (await store.get_source(result.source.id)).current_revision == 1
+        choices["manual_speakers"] = {"Unknown voice 1": "person:" + existing["id"]}
+        accepted = await api.post(f"/v1/notes/{note_id}/review", json=choices)
+        assert accepted.status_code == 200, accepted.text

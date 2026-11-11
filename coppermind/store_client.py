@@ -54,6 +54,7 @@ from coppermind.store_protocol import (
     PatchFrontmatter,
     PathCollision,
     PayloadTooLarge,
+    PermissionDenied,
     PreconditionRequired,
     ProblemInfo,
     ProjectionNotPlaced,
@@ -494,6 +495,8 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         payload = {}
     code = payload.get("error", "")
     message = payload.get("message", response.text)
+    if code == "forbidden":
+        return PermissionDenied(message)
     if response.status_code == 404 and "source_id" in payload and "name" in payload:
         return ArtifactNotFound(
             payload.get("source_id", ""), payload.get("revision", 0), payload.get("name", "")
