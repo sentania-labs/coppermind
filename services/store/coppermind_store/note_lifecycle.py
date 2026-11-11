@@ -27,6 +27,7 @@ from coppermind.store_protocol import (
     StoreError,
     StoreUnavailable,
     ValidationFailed,
+    VersionConflict,
 )
 from coppermind_store import meeting_summary, speaker_names
 
@@ -428,20 +429,22 @@ class NoteLifecycle:
                             NotesFilesystemUnavailable,
                             SourcesFilesystemUnavailable,
                             ArtifactsFilesystemUnavailable,
+                            VersionConflict,
                         ),
                     )
                     if isinstance(exc, (ValueError, FileNotFoundError)) or (
                         isinstance(exc, StoreError) and not transient
                     ):
                         receipt["state"] = "attention"
-                    receipt["error"] = (
-                        str(exc)
-                        if isinstance(exc, (ValueError, ValidationFailed))
-                        else (
+                    if isinstance(exc, VersionConflict):
+                        receipt["error"] = "The destination note changed. Trying again."
+                    elif isinstance(exc, (ValueError, ValidationFailed)):
+                        receipt["error"] = str(exc)
+                    else:
+                        receipt["error"] = (
                             "A note or recording is unavailable. It was kept; "
                             "try again when it returns."
                         )
-                    )
                     self.context.write("recording-merges/" + path.stem, receipt)
 
     async def retry_recording_merge(self, payload: dict[str, Any]) -> dict[str, Any]:
