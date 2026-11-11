@@ -720,7 +720,7 @@ class ModelProvider:
         if assignment.response_format == "diarized_json":
             fields["chunking_strategy"] = "auto"
         if num_speakers is not None:
-            fields["num_speakers"] = str(num_speakers)
+            fields["max_speakers"] = str(num_speakers)
         use_job = bool(job_id) and (
             bool(job_started)
             or bool(remote_job_id)

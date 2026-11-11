@@ -467,7 +467,7 @@ async def test_job_path_polls_and_submits_stable_identity_and_hint(recording, mo
     assert result["segments"]
     assert requests[0][1] == "/v1/audio/transcriptions/jobs"
     assert requests[0][3] == "stable-id"
-    assert b'name="num_speakers"\r\n\r\n3' in requests[0][2]
+    assert b'name="max_speakers"\r\n\r\n3' in requests[0][2]
     assert requests[1][1] == "/v1/audio/transcriptions/jobs/job-1"
     assert [r[0] for r in requests] == ["POST", "GET", "GET"]
 
