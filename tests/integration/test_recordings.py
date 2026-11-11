@@ -720,6 +720,10 @@ async def test_a_note_that_cannot_be_filed_keeps_its_transcript_and_is_not_sent_
         failed = await context.recording_status({"id": job["id"]})
         assert failed["error_rule"] == "note-rejected" and "type is required" in failed["error"]
         assert "transcript is kept" in failed["error"]
+        row = (await context.recording_waiting({}))["failed"][0]
+        assert "Rejected fields: type." in row["message"]
+        assert "Retry will only work after the vault's field rules are changed" in row["message"]
+        assert "send the recording again with corrected fields" in row["message"]
         await context.retry_recording({"id": job["id"]})
         await context.recordings.tick()
     assert (await context.recording_status({"id": job["id"]}))["state"] == "succeeded"

@@ -27,6 +27,7 @@ import json
 import logging
 import math
 import random
+import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -327,6 +328,33 @@ class Recordings:
                         "No speech was found. Send a corrected recording again "
                         "the same way recordings normally arrive."
                     )
+                elif job.error_rule == "note-rejected":
+                    # Validation messages can include note values. Show only field names
+                    # from the schema, never the values or the raw validation message.
+                    schema = self.context.store.control.schema()
+                    fields = [
+                        key.name
+                        for key in schema.keys
+                        if re.search(
+                            r"(?:^|[:;]\s*)(?:frontmatter:\s*)?"
+                            + re.escape(key.name)
+                            + r"(?::|\s+is\b)",
+                            job.error,
+                            re.IGNORECASE,
+                        )
+                    ]
+                    detail = (
+                        "Rejected fields: " + ", ".join(fields) + ". "
+                        if fields
+                        else "The affected fields could not be identified. "
+                    )
+                    message = (
+                        "The meeting note's fields were rejected. "
+                        + detail
+                        + "The transcript is saved. Retry will only work after the vault's "
+                        "field rules are changed. Otherwise, send the recording again "
+                        "with corrected fields."
+                    )
                 elif audio_gone:
                     message = (
                         "The stored recording is missing. Send the recording again "
@@ -360,7 +388,7 @@ class Recordings:
                             "The stored recording was removed before the note could cite it. "
                             "The transcript is kept."
                         )
-                    elif job.error_rule in {"note-rejected", "filing-failed"}:
+                    elif job.error_rule == "filing-failed":
                         reason = (
                             "The transcript was saved, but the meeting note could not be filed."
                         )

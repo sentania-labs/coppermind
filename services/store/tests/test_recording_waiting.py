@@ -198,3 +198,25 @@ async def test_a_dismissed_recording_is_still_run_by_the_worker_and_shows_a_new_
     assert saved[dismissed.id].state == "failed" and saved[dismissed.id].attempts == 2
     assert saved[dismissed.id].dismissed is False
     assert len((await recordings.waiting())["failed"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_rejected_note_fields_explain_the_correction_without_exposing_values(tmp_path):
+    failure = job(
+        1,
+        state="failed",
+        error_rule="note-rejected",
+        transcribed=True,
+        error="The note could not be filed: type: invalid secret value; "
+        "frontmatter: account is required. The transcript is kept.",
+    )
+    recordings, _, _ = waiting_recordings(tmp_path, [failure])
+    recordings.context.store.control.schema = lambda: SimpleNamespace(
+        keys=[SimpleNamespace(name="type"), SimpleNamespace(name="account")]
+    )
+    row = (await recordings.waiting())["failed"][0]
+    assert "Rejected fields: type, account." in row["message"]
+    assert "Retry will only work after the vault's field rules are changed" in row["message"]
+    assert "send the recording again with corrected fields" in row["message"]
+    assert "secret value" not in row["message"]
+    assert row["can_retry"] is True
