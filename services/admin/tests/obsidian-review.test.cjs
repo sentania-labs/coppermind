@@ -15,6 +15,8 @@ class El {
   createDiv(options){return this.createEl('div',options);}
   createSpan(options){return this.createEl('span',options);}
   all(){return [this,...this.children.flatMap(x=>x.all())];}
+  querySelectorAll(selectors){const tags=selectors.split(',').map(s=>s.trim());return this.all().filter(e=>tags.includes(e.tag));}
+  setText(text){this.text=text;}
 }
 class Setting {
   constructor(el){this.el=el;}
@@ -82,6 +84,24 @@ test('merging requires a confirmation and uses the checked destination and summa
   assert.equal(JSON.parse(request.body).target_id,'target');
   assert.equal(JSON.parse(request.body).meeting_summary.summary,'Launch plan.');
   assert.ok(f.view.contentEl.all().some(e=>e.text==='Recording added'));
+});
+
+test('merge shows progress and prevents conflicting actions until it resolves',async()=>{
+  const raw='---\nid: test-note\nreviewed: false\n---\nHuman prose.\n';
+  const digest='sha256:'+Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(raw))).toString('hex');
+  const f=await fixture(undefined,{recording_merge:{state:'offered',candidates:[{id:'target',title:'My meeting',path:'Notes/My meeting.md',content_hash:digest}]},meeting_summary:{summary:'Launch plan.',decisions:'',action_items:''},job_id:'job'});
+  let rejectMerge;const call=f.plugin.call.bind(f.plugin);
+  f.plugin.call=(url,...args)=>url.endsWith('/recording-merge')?new Promise((_,reject)=>{rejectMerge=reject;}):call(url,...args);
+  f.view.contentEl.all().find(e=>e.text==='Review merge').onclick();
+  const pending=f.modals[0].contentEl.all().find(e=>e.text==='Confirm merge').onclick();
+  await new Promise(resolve=>setTimeout(resolve,20));
+  assert.ok(f.view.contentEl.all().some(e=>e.text==='Adding the recording to your note…'));
+  for(const text of ['Review merge','Keep separate','Apply kept suggestions & mark reviewed','Mark reviewed without changes']){
+    const button=f.view.contentEl.all().find(e=>e.text===text);assert.ok(button,text);assert.equal(button.disabled,true,text);
+  }
+  rejectMerge(Error('Connection lost'));await pending;
+  assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('Refresh this panel to check its status before trying again.')));
+  assert.equal(f.view.contentEl.all().find(e=>e.text==='Refresh merge status').disabled,false);
 });
 
 test('an interrupted merge offers retry from the companion',async()=>{

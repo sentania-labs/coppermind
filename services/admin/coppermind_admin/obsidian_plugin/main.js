@@ -112,14 +112,22 @@ class ReviewView extends ItemView {
         const open=box.createEl('a',{text:'Open your note',href:'#'});open.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(destination.path,'',false);};
         box.createEl('p',{text:'Your words stay as they are. The recording summary will be added below them with a transcript link. This separate recording note will be retired.'});
         const review=box.createEl('button',{text:'Review merge'});review.disabled=!ready;
+        let merging=false;
         review.onclick=()=>new MergeModal(this.app,destination,summary,merge.transcript_path,async()=>{
+          if(merging)return;
+          merging=true;
+          for(const control of el.querySelectorAll('button, input, select, textarea'))control.disabled=true;
+          const progress=box.createEl('p',{text:'Adding the recording to your note…',cls:'coppermind-notice'});
           try{
             const targetFile=this.app.vault.getAbstractFileByPath(destination.path);
-            if(!targetFile||await hash(await this.app.vault.read(targetFile))!==destination.content_hash||await hash(await this.app.vault.read(file))!==data.note.content_hash){new Notice('A note changed. Wait for sync, then refresh.');return;}
+            if(!targetFile||await hash(await this.app.vault.read(targetFile))!==destination.content_hash||await hash(await this.app.vault.read(file))!==data.note.content_hash)throw Error('A note changed. Wait for sync, then refresh.');
             await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-merge','POST',{if_match:data.note.content_hash,target_id:destination.id,target_hash:destination.content_hash,job_id:data.job_id,meeting_summary:summary,confirmation:'Merge recording'});
             el.empty();el.createEl('h3',{text:'Recording added'});el.createEl('p',{text:'The recording is now part of '+destination.title+'.'});
             const openResult=el.createEl('button',{text:'Open '+destination.title});openResult.onclick=()=>this.app.workspace.openLinkText(destination.path,'',false);
-          }catch(e){new Notice(e.message);}
+          }catch(e){
+            progress.setText('Could not confirm the merge: '+e.message+'. Refresh this panel to check its status before trying again.');
+            const refresh=box.createEl('button',{text:'Refresh merge status'});refresh.onclick=()=>this.refresh();
+          }
         }).open();
         const dismiss=box.createEl('button',{text:'Keep separate'});dismiss.disabled=!synced;
         dismiss.onclick=async()=>{try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-merge/dismiss','POST',{if_match:data.note.content_hash});await this.refresh();}catch(e){new Notice(e.message);}};
