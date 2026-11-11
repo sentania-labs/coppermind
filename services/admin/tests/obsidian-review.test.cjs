@@ -410,3 +410,10 @@ test('rejected note details show only the specific field problem',async()=>{
   assert.ok(text.includes('Details: the "account" field should be a list.'));
   assert.doesNotMatch(text,/schema|external id/);
 });
+
+test('rejected note with unavailable field details explains the next step',async()=>{
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'The meeting note fields were rejected.',field_problems:[],field_problems_unavailable:true}]}});
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  const text=view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.ok(text.includes('Details: the specific field was not recorded. Retry to check the note again.'));
+});

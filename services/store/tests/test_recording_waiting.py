@@ -226,6 +226,15 @@ async def test_rejected_note_shows_the_stores_message_as_details(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_rejected_note_without_details_falls_back_when_recheck_fails(tmp_path):
+    failure = job(1, state="failed", error_rule="note-rejected")
+    recordings, _, _ = waiting_recordings(tmp_path, [failure])
+    row = (await recordings.waiting())["failed"][0]
+    assert row["field_problems"] == []
+    assert row["field_problems_unavailable"] is True
+
+
+@pytest.mark.asyncio
 async def test_every_refusal_that_a_retry_would_repeat_gets_its_own_next_step(tmp_path):
     from coppermind_store.recordings import NO_AUTOMATIC_RETRY
 

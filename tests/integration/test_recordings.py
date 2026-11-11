@@ -1831,3 +1831,16 @@ async def test_rejected_recording_exposes_structured_field_reason(store):
         row = (await context.recording_waiting({}))["failed"][0]
         assert row["field_problems"] == [{"field": "account", "reason": "should be a list"}]
         assert "external id" not in str(row) and "schema" not in str(row)
+        # Earlier versions saved the input but had no field_problems property.
+        path = context.root / "recordings" / f"{job.id}.json"
+        saved = json.loads(path.read_text())
+        del saved["field_problems"]
+        path.write_text(json.dumps(saved))
+        row = (await context.recording_waiting({}))["failed"][0]
+        assert row["field_problems"] == [{"field": "account", "reason": "should be a list"}]
+        assert row["field_problems_unavailable"] is False
+        saved["frontmatter"]["account"] = ["valid"]
+        path.write_text(json.dumps(saved))
+        row = (await context.recording_waiting({}))["failed"][0]
+        assert row["field_problems"] == []
+        assert row["field_problems_unavailable"] is True

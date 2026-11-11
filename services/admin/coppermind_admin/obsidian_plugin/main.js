@@ -256,6 +256,7 @@ class WaitingView extends ItemView {
         const card=el.createDiv({cls:'coppermind-card'});card.createEl('h4',{text:recording.title});
         card.createEl('p',{text:recording.message});
         for(const problem of recording.field_problems||[])card.createEl('p',{text:'Details: the '+JSON.stringify(problem.field)+' field '+problem.reason+'.'});
+        if(recording.field_problems_unavailable)card.createEl('p',{text:'Details: the specific field was not recorded. Retry to check the note again.'});
         if(recording.retry_after){const date=new Date(recording.retry_after);if(!isNaN(date))card.createEl('p',{text:'Next attempt after '+date.toLocaleString()+'.'});}
         if(recording.can_retry){
           const button=card.createEl('button',{text:'Retry'}), feedback=card.createEl('p');

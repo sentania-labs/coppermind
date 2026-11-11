@@ -37,6 +37,7 @@ from coppermind.context_config import ContextModel, FeatureAssignment
 from coppermind.db.models import Note
 from coppermind.store_protocol import (
     ArtifactMissing,
+    CreateNote,
     IngestArtifact,
     IngestNote,
     IngestRequest,
@@ -49,6 +50,7 @@ from coppermind.store_protocol import (
 )
 from coppermind_store import artifacts
 from coppermind_store.model_provider import ProviderError
+from coppermind_store.notes import _build_frontmatter
 
 if TYPE_CHECKING:
     from coppermind_store.context_service import ContextService
@@ -291,6 +293,31 @@ class Recordings:
             and not repeats_only(job.error_rule)
         )
 
+    def rejected_field_problems(self, job: TranscriptionJob) -> list[dict[str, str]]:
+        if job.field_problems:
+            return job.field_problems
+        try:
+            schema = self.context.store.control.schema()
+            fields = {
+                **job.frontmatter,
+                schema.role("sources_key"): ["00000000000000000000000000"],
+                schema.role("reviewed_key"): False,
+            }
+            note = CreateNote(title=job.title, body=SUMMARY_PENDING, frontmatter=fields)
+            captured = datetime.fromisoformat(job.captured_at) if job.captured_at else None
+            frontmatter = _build_frontmatter(
+                note,
+                schema,
+                self.context.store.control.settings(),
+                "00000000000000000000000000",
+                captured_at=captured,
+                from_ingest=True,
+            )
+            return schema.field_problems(frontmatter)
+        except Exception:
+            log.warning("Could not recheck rejected recording fields")
+            return []
+
     async def waiting(self) -> dict[str, Any]:
         assignment = self.assignment()
         enabled = bool(assignment and assignment.enabled)
@@ -318,6 +345,9 @@ class Recordings:
                     )
             elif job.state == "failed" and not job.dismissed:
                 retrying = self.retry_pending(job)
+                field_problems = (
+                    self.rejected_field_problems(job) if job.error_rule == "note-rejected" else []
+                )
                 guidance = failure_guidance(job)
                 if guidance:
                     message, retry_offered = guidance
@@ -340,9 +370,9 @@ class Recordings:
                         "id": job.id,
                         "title": job.title or job.filename,
                         "message": message,
-                        "field_problems": job.field_problems
-                        if job.error_rule == "note-rejected"
-                        else [],
+                        "field_problems": field_problems,
+                        "field_problems_unavailable": job.error_rule == "note-rejected"
+                        and not field_problems,
                         "retry_after": job.retry_after if scheduled else "",
                         "can_retry": ready and retry_offered,
                         "can_dismiss": not retrying,
