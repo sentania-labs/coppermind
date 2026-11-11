@@ -955,6 +955,9 @@ class ContextService:
     async def retry_failed_recording(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.recordings.retry({"id": payload.get("id"), "failed_only": True})
 
+    async def dismiss_recording(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.recordings.dismiss(payload)
+
     async def retry_import(self, payload: dict[str, Any]) -> dict[str, Any]:
         receipts = await asyncio.to_thread(self.archive.receipts)
         if any(r.id == payload["id"] and r.dismissed for r in receipts):

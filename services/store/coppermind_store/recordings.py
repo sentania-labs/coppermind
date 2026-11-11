@@ -125,6 +125,8 @@ class TranscriptionJob(ContextModel):
     audio_removal_retry_after: str = ""
     audio_removal_attempts: int = 0
     audio_kept: str = ""
+    # Set when someone removes a failed intake from the waiting list. A retry clears it.
+    dismissed: bool = False
 
     @property
     def audio_removal_stuck(self) -> bool:
@@ -298,11 +300,11 @@ class Recordings:
                     meetings.append(
                         {"title": note.title, "path": note.path, "date": job.captured_at}
                     )
-            elif job.state == "failed":
-                replacement = job.error_rule in {
+            elif job.state == "failed" and not job.dismissed:
+                audio_gone = job.error_rule == "recording-missing" and not job.transcribed
+                replacement = audio_gone or job.error_rule in {
                     "transcription-audio_unreadable",
                     "transcription-no_speech",
-                    "recording-missing",
                 }
                 if job.error_rule == "transcription-audio_unreadable":
                     message = (
@@ -312,6 +314,11 @@ class Recordings:
                 elif job.error_rule == "transcription-no_speech":
                     message = (
                         "No speech was found. Send a corrected recording again "
+                        "the same way recordings normally arrive."
+                    )
+                elif audio_gone:
+                    message = (
+                        "The stored recording is missing. Send the recording again "
                         "the same way recordings normally arrive."
                     )
                 else:
@@ -338,7 +345,10 @@ class Recordings:
                     }:
                         reason = "The transcription service did not return a usable transcript."
                     elif job.error_rule == "recording-missing":
-                        reason = "The stored recording is missing. Send the recording again."
+                        reason = (
+                            "The stored recording was removed before the note could cite it. "
+                            "The transcript is kept."
+                        )
                     elif job.error_rule in {"note-rejected", "filing-failed"}:
                         reason = (
                             "The transcript was saved, but the meeting note could not be filed."
@@ -496,6 +506,17 @@ class Recordings:
             job.state, job.attempts, job.busy_since = "queued", 0, ""
             job.remote_job_id, job.remote_job_started, job.remote_job_resubmits = "", 0, 0
             job.set_error()
+            job.dismissed = False
+            self.save(job)
+        return {"job": job.id}
+
+    async def dismiss(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Take a failed intake off the waiting list. Nothing is deleted."""
+        async with self.context.lock:
+            job = self.load(str(payload.get("id", "")))
+            if job.state != "failed":
+                raise ValueError("only a failed recording can be dismissed")
+            job.dismissed = True
             self.save(job)
         return {"job": job.id}
 
@@ -549,7 +570,7 @@ class Recordings:
             return False
         for known in sorted(await asyncio.to_thread(self.jobs), key=lambda item: item.created_at):
             job = self.load(known.id)
-            if job.state in {"succeeded"}:
+            if job.state == "succeeded" or job.dismissed:
                 continue
             if job.state == "running":
                 # The store stopped mid-call. That is not a failed attempt: asking again polls

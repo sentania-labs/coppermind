@@ -55,10 +55,23 @@ async def waiting_recordings(
 async def retry_recording(
     recording_id: str,
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("sources:write")),
+    _: Principal = Depends(require_scopes("sources:write", "notes:write", "artifacts:read")),
 ) -> JSONResponse:
     try:
         result = await client.context_action("retry-failed-recording", {"id": recording_id})
+        return JSONResponse(content=result)
+    except StoreError as error:
+        return failure(error)
+
+
+@router.post("/{recording_id}/dismiss")
+async def dismiss_recording(
+    recording_id: str,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("sources:write")),
+) -> JSONResponse:
+    try:
+        result = await client.context_action("dismiss-recording", {"id": recording_id})
         return JSONResponse(content=result)
     except StoreError as error:
         return failure(error)

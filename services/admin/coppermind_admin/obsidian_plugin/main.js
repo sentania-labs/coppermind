@@ -262,6 +262,17 @@ class WaitingView extends ItemView {
             catch(e){feedback.setText('Could not queue retry. Check your connection and transcription settings, then try again.');button.disabled=false;}
           };
         }
+        const dismiss=card.createEl('button',{text:'Dismiss'}), confirm=card.createDiv();
+        dismiss.onclick=()=>{
+          dismiss.disabled=true;confirm.empty();
+          confirm.createEl('p',{text:'This only removes the entry from this list and deletes nothing.'});
+          const yes=confirm.createEl('button',{text:'Dismiss entry'}), no=confirm.createEl('button',{text:'Cancel'}), note=confirm.createEl('p');
+          no.onclick=()=>{confirm.empty();dismiss.disabled=false;};
+          yes.onclick=async()=>{yes.disabled=true;no.disabled=true;note.setText('Dismissing…');
+            try{await this.plugin.call('/v1/recordings/'+encodeURIComponent(recording.id)+'/dismiss','POST',{});await this.refresh();}
+            catch(e){note.setText('Could not dismiss. Check your connection, then try again.');yes.disabled=false;no.disabled=false;}
+          };
+        };
       }
     }catch(e){if(generation!==this.generation)return;status.setText('Could not load meetings and recordings. Check your connection and API credential, then try again.');status.addClass('coppermind-notice');const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
   }

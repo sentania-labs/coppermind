@@ -44,6 +44,7 @@ ACTIONS = {
     "recording-waiting": "recording_waiting",
     "retry-recording": "retry_recording",
     "retry-failed-recording": "retry_failed_recording",
+    "dismiss-recording": "dismiss_recording",
     "recording-detail": "recording_detail",
     "retry-all-failed": "retry_all_failed",
     "attention": "attention",
