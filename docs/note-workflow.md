@@ -11,7 +11,9 @@ New valid unreviewed notes receive one initial enrichment pass when enrichment
 is enabled. The existing backlog is opt-in. Ordinary edits do not run the model
 again. **Refresh suggestions** explicitly requests another pass. Related calendar
 changes can generate a calendar-only pass, without repeating filename or general
-property proposals. An unrelated calendar change does not regenerate suggestions.
+property proposals. An unrelated calendar change does not regenerate suggestions. A recording's meeting
+summary is read from the transcript once per transcript revision: automatic refreshes
+carry it forward, and only **Refresh suggestions** or a changed transcript reads it again.
 
 The **Review notes** screen shows the note and proposals together. Select changes
 and complete review once, or leave everything unchecked to retain only your edits.

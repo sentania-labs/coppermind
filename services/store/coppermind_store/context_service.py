@@ -985,11 +985,17 @@ class ContextService:
         results = []
         for identity in identities:
             results.append(
-                await self.queue_note(str(identity), force=payload.get("regenerate") is True)
+                await self.queue_note(
+                    str(identity),
+                    force=payload.get("regenerate") is True,
+                    fresh=payload.get("regenerate") is True,
+                )
             )
         return {"jobs": results}
 
-    async def queue_note(self, identity: str, *, force: bool = False, ledger: Any = None) -> str:
+    async def queue_note(
+        self, identity: str, *, force: bool = False, fresh: bool = False, ledger: Any = None
+    ) -> str:
         async with self.lock:
             assignment = self.config().assignments["enrichment"]
             if not assignment.enabled:
@@ -1043,6 +1049,7 @@ class ContextService:
                     path=note.path,
                     created_at=now(),
                     attempt_limit=assignment.attempts,
+                    fresh=fresh,
                 )
             )
             return job_id

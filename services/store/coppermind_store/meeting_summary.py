@@ -36,7 +36,7 @@ async def prepare(
         (
             prior
             for prior in context.jobs()
-            if job.purpose != "initial"
+            if not job.fresh
             and prior.note_id == job.note_id
             and prior.id != job.id
             and prior.state in {"suggested", "stale"}

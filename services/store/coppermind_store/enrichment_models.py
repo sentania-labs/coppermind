@@ -42,6 +42,8 @@ class EnrichmentJob(ContextModel):
     state: Literal[
         "queued", "running", "suggested", "failed", "stale", "rejected", "applying", "applied"
     ] = "queued"
+    # Set when the owner asked for fresh suggestions; automatic re-queues leave it off.
+    fresh: bool = False
     attempts: int = 0
     attempt_limit: int | None = Field(default=None, ge=1, le=3)
     error: str = ""

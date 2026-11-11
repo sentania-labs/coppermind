@@ -239,11 +239,20 @@ async def test_raising_summary_limit_retries_the_whole_transcript(store, standin
     assert sum("transcript" in request for request in requests) == 1
 
 
-async def test_calendar_refresh_carries_the_summary_without_another_read(store, standin):
+@pytest.mark.parametrize(
+    "purpose,earlier_state",
+    [("calendar", "suggested"), ("initial", "suggested"), ("initial", "stale")],
+)
+async def test_automatic_requeue_carries_the_summary_without_another_read(
+    store, standin, purpose, earlier_state
+):
     context, note, first, requests = await setup_recording(store, standin)
     assert first.state == "suggested", first.error
+    if earlier_state != first.state:
+        first.state = earlier_state
+        context.save_job(first)
     refresh = context.load_job(await context.queue_note(note.id, force=True))
-    refresh.purpose = "calendar"
+    refresh.purpose = purpose
     context.save_job(refresh)
     await context.run_job(refresh)
     assert refresh.state == "suggested", refresh.error
@@ -251,6 +260,15 @@ async def test_calendar_refresh_carries_the_summary_without_another_read(store, 
     detail = await context.lifecycle_detail({"note_id": note.id})
     assert detail["job_id"] == refresh.id
     assert detail["meeting_summary"] == PROPOSAL
+
+
+async def test_owner_requested_fresh_suggestions_read_the_transcript_again(store, standin):
+    context, note, first, requests = await setup_recording(store, standin)
+    assert first.state == "suggested", first.error
+    fresh = context.load_job(await context.queue_note(note.id, force=True, fresh=True))
+    await context.run_job(fresh)
+    assert fresh.state == "suggested", fresh.error
+    assert sum("transcript" in request for request in requests) == 2
 
 
 async def test_calendar_refresh_reads_again_when_the_transcript_revision_changed(store, standin):
@@ -333,7 +351,7 @@ async def test_summary_silence_uses_long_wait_and_records_retry_backoff(store, s
         )
 
     context.provider = ModelProvider(httpx.MockTransport(timeout))
-    job = context.load_job(await context.queue_note(note.id, force=True))
+    job = context.load_job(await context.queue_note(note.id, force=True, fresh=True))
     await context.run_job(job)
     assert job.state == "failed"
     assert job.attempts == 1
