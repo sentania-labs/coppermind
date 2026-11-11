@@ -292,4 +292,6 @@ async def test_only_time_matching_meeting_supplies_speakers():
     data = await evidence(context, note, chosen)
     assert [event["event_id"] for event in chosen] == ["afternoon"]
     assert len(data["candidates"]) == 30
-    assert {c["id"][:len("contact:afternoon")] for c in data["candidates"]} == {"contact:afternoon"}
+    assert {c["id"][: len("contact:afternoon")] for c in data["candidates"]} == {
+        "contact:afternoon"
+    }

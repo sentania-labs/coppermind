@@ -10,7 +10,7 @@ EARLY_START = timedelta(minutes=10)
 
 
 def overlapping(events: list[dict[str, Any]], captured_at: str) -> list[dict[str, Any]]:
-    """Timed occurrences containing the recording start, a few minutes early allowed, nearest first."""
+    """Timed occurrences holding the recording start (a few minutes early), nearest first."""
     try:
         captured = datetime.fromisoformat(captured_at)
         if captured.utcoffset() is None:
