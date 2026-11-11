@@ -1392,3 +1392,74 @@ async def test_review_requires_people_write_only_when_creating_a_contact_person(
         choices["manual_speakers"] = {"Unknown voice 1": "person:" + existing["id"]}
         accepted = await api.post(f"/v1/notes/{note_id}/review", json=choices)
         assert accepted.status_code == 200, accepted.text
+
+
+async def test_naming_a_voice_is_not_blocked_by_another_notes_unfinished_review(store, standin):
+    from coppermind_store.voice_relabel import apply_deferred
+    from coppermind_store.voice_store import VoiceStore
+
+    from coppermind.store_protocol import CreateNote
+
+    transcript = {"segments": [{"start": 0, "speaker": "Unknown voice 1", "text": "Hello."}]}
+    context, result, note, _, _ = await recorded(store, standin, transcript, lambda e, ev: [])
+    vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
+    voice = VoiceStore(context)
+    other = await store.create_note(CreateNote(title="Other", body="Other recording"))
+    assert voice.capture_unknown(other.id, "Speaker 1", "today", 30, [vector]) == "unknown:1"
+    assert voice.capture_unknown(note.id, "Unknown voice 1", "today", 30, [vector]) == "unknown:1"
+    voice.set_segments(note.id, transcript)
+    context.write("review-completions/" + other.id, {"state": "applying"})
+    manual = (await context.lifecycle_detail({"note_id": note.id}))["manual_speaker_review"]
+    contact = next(c for c in manual["candidates"] if c["id"].startswith("contact:"))
+
+    completed = await context.complete_review(
+        {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "confirmation": "Complete review",
+            "selected": [],
+            "manual_source_id": manual["source_id"],
+            "manual_source_revision": manual["revision"],
+            "manual_speakers": {"Unknown voice 1": contact["id"]},
+        }
+    )
+
+    assert completed["state"] == "complete"
+    person = next(
+        p
+        for p in store.entities.load().entities.values()
+        if p.kind == "person" and p.name == contact["name"]
+    )
+    assert voice.unknown_summaries() == {}
+    assert sorted(a["note_id"] for a in voice.assignments("person:" + person.id)) == sorted(
+        [note.id, other.id]
+    )
+    assert [(d["note_id"], d["name"]) for d in voice.deferred_relabels()] == [
+        (other.id, contact["name"])
+    ]
+    assert not await apply_deferred(context)
+    context.write("review-completions/" + other.id, {"state": "complete"})
+    assert await apply_deferred(context)
+    assert voice.deferred_relabels() == []
+
+
+async def test_completing_a_review_applies_the_relabels_held_back_for_that_note(store, standin):
+    from coppermind_store.voice_store import VoiceStore
+
+    context, result, contact, payload, people = await contact_review(store, standin)
+    note_id = payload({})["note_id"]
+    voice = VoiceStore(context)
+    voice.defer_relabel(
+        {"note_id": note_id, "label": "Unknown voice 2", "segments": [1]}, contact["name"]
+    )
+
+    await context.complete_review(payload({"Unknown voice 1": contact["id"]}))
+
+    assert voice.deferred_relabels() == []
+    manifest = await store.get_source(result.source.id)
+    text = (
+        await store.get_source_artifact(
+            result.source.id, manifest.current_revision, "transcript.txt"
+        )
+    ).content
+    assert contact["name"] + ": Hi." in text

@@ -8,6 +8,7 @@ documented `diarized_json` shape after a delay, over a real socket.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -1596,7 +1597,8 @@ async def test_combine_two_unknown_voices_through_public_api(store):
             assert unknowns[target]["name"] in transcript.content
 
 
-async def test_combine_refuses_while_an_appearance_has_an_unfinished_review(store):
+@contextlib.asynccontextmanager
+async def two_unknown_voices(store):
     def reply(vector):
         return {
             **REPLY,
@@ -1608,6 +1610,8 @@ async def test_combine_refuses_while_an_appearance_has_an_unfinished_review(stor
                 }
             ],
         }
+
+    from coppermind_store.voice_store import VoiceStore
 
     async with Service(reply=reply([1, 0])) as service:
         context = await setup_transcription(store, service)
@@ -1622,89 +1626,96 @@ async def test_combine_refuses_while_an_appearance_has_an_unfinished_review(stor
         )
         await context.recordings.tick()
         job = context.recordings.load(second["id"])
-        from coppermind_store.voice_relabel import combine
-        from coppermind_store.voice_store import VoiceStore
-
         voice = VoiceStore(context)
         unknowns = voice.unknown_summaries()
         source = next(
             k for k, v in unknowns.items() if v["assignments"][0]["note_id"] == job.note_id
         )
         target = next(k for k in unknowns if k != source)
-        manifest = await store.get_source(job.source_id)
-        before = await store.get_source_artifact(
-            job.source_id, manifest.current_revision, "transcript.json"
-        )
+        yield context, job, voice, source, target
+
+
+async def transcript_of(store, job):
+    manifest = await store.get_source(job.source_id)
+    artifact = await store.get_source_artifact(
+        job.source_id, manifest.current_revision, "transcript.json"
+    )
+    return manifest.current_revision, artifact.content
+
+
+async def test_combine_moves_the_voice_now_and_renames_an_unfinished_review_when_it_ends(
+    store, monkeypatch
+):
+    from coppermind_store import voice_relabel
+
+    async with two_unknown_voices(store) as (context, job, voice, source, target):
+        name = voice.unknown_summaries()[target]["name"]
+        revision, before = await transcript_of(store, job)
         context.write("review-completions/" + job.note_id, {"state": "applying"})
 
-        with pytest.raises(ValueError, match="Finish the review of"):
-            await combine(context, source, target)
-
-        assert source in voice.unknown_summaries()
-        after = await store.get_source(job.source_id)
-        assert after.current_revision == manifest.current_revision
-        assert (
-            await store.get_source_artifact(
-                job.source_id, after.current_revision, "transcript.json"
-            )
-        ).content == before.content
-
-        await combine(context, source, target, job.note_id)
-        assert source not in voice.unknown_summaries()
-
-
-async def test_stale_combine_refuses_an_unfinished_review_on_an_earlier_combined_voice(store):
-    def reply(vector):
-        return {
-            **REPLY,
-            "speakers": [
-                {
-                    "label": "Speaker 1",
-                    "speech_seconds": 30,
-                    "embeddings": [{"model": "m", "version": "1", "vector": vector}],
-                }
-            ],
-        }
-
-    async with Service(reply=reply([1, 0])) as service:
-        context = await setup_transcription(store, service)
-        await context.accept_recording(request(await store_audio(store)))
-        await context.recordings.tick()
-        service.reply = reply([0, 1])
-        second = await context.accept_recording(
-            request(
-                await store_audio(store, name="b.m4a", data=AUDIO + b"b"),
-                external_source_id="other-voice",
-            )
-        )
-        await context.recordings.tick()
-        job = context.recordings.load(second["id"])
-        from coppermind_store.voice_relabel import combine
-        from coppermind_store.voice_store import VoiceStore
-
-        voice = VoiceStore(context)
-        unknowns = voice.unknown_summaries()
-        source = next(
-            k for k, v in unknowns.items() if v["assignments"][0]["note_id"] == job.note_id
-        )
-        target = next(k for k in unknowns if k != source)
-        await combine(context, source, target)
-        assert list(voice.unknown_summaries()) == [target]
-        manifest = await store.get_source(job.source_id)
-        before = await store.get_source_artifact(
-            job.source_id, manifest.current_revision, "transcript.json"
-        )
-        context.write("review-completions/" + job.note_id, {"state": "applying"})
-
-        with pytest.raises(ValueError, match="Finish the review of"):
-            await combine(context, source, target)
+        await voice_relabel.combine(context, source, target)
 
         assert list(voice.unknown_summaries()) == [target]
         assert len(voice.assignments(target)) == 2
-        after = await store.get_source(job.source_id)
-        assert after.current_revision == manifest.current_revision
-        assert (
-            await store.get_source_artifact(
-                job.source_id, after.current_revision, "transcript.json"
-            )
-        ).content == before.content
+        assert await transcript_of(store, job) == (revision, before)
+        assert [d["note_id"] for d in voice.deferred_relabels()] == [job.note_id]
+
+        await context.recordings.tick()
+        assert await transcript_of(store, job) == (revision, before)
+        assert len(voice.deferred_relabels()) == 1
+
+        context.write("review-completions/" + job.note_id, {"state": "complete"})
+        relabel = voice_relabel.relabel_recording
+
+        async def crash(*args):
+            raise RuntimeError("stopped before the note was rewritten")
+
+        monkeypatch.setattr(voice_relabel, "relabel_recording", crash)
+        await context.recordings.tick()
+        assert len(voice.deferred_relabels()) == 1
+        assert await transcript_of(store, job) == (revision, before)
+
+        monkeypatch.setattr(voice_relabel, "relabel_recording", relabel)
+        await context.recordings.tick()
+        assert voice.deferred_relabels() == []
+        new_revision, after = await transcript_of(store, job)
+        assert new_revision == revision + 1
+        assert name in after
+        await context.recordings.tick()
+        assert (await transcript_of(store, job))[0] == new_revision
+
+
+async def test_combining_a_stale_voice_defers_an_unfinished_review_from_an_earlier_combine(store):
+    from coppermind_store.voice_relabel import apply_deferred, combine
+
+    async with two_unknown_voices(store) as (context, job, voice, source, target):
+        await combine(context, source, target)
+        revision, before = await transcript_of(store, job)
+        context.write("review-completions/" + job.note_id, {"state": "applying"})
+
+        await combine(context, source, target)
+
+        assert list(voice.unknown_summaries()) == [target]
+        assert len(voice.assignments(target)) == 2
+        assert [d["note_id"] for d in voice.deferred_relabels()] == [job.note_id]
+        assert await transcript_of(store, job) == (revision, before)
+        assert not await apply_deferred(context)
+
+        context.write("review-completions/" + job.note_id, {"state": "complete"})
+        assert await apply_deferred(context)
+        assert voice.deferred_relabels() == []
+
+
+async def test_a_voice_cannot_be_separated_from_a_note_whose_review_is_unfinished(store):
+    from coppermind_store.voice_relabel import separate
+
+    async with two_unknown_voices(store) as (context, job, voice, source, target):
+        assignment = voice.assignments(source)[0]
+        revision, before = await transcript_of(store, job)
+        context.write("review-completions/" + job.note_id, {"state": "applying"})
+
+        with pytest.raises(ValueError, match="Finish the review of"):
+            await separate(context, source, assignment["note_id"], assignment["label"])
+
+        assert voice.assignments(source) == [assignment]
+        assert await transcript_of(store, job) == (revision, before)

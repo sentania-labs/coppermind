@@ -429,8 +429,25 @@ class Recordings:
             if not worked:
                 await asyncio.sleep(10)
 
+    async def apply_deferred_voices(self) -> bool:
+        """Rewrite speaker names held back while their note's review was unfinished."""
+        from coppermind_store.voice_relabel import apply_deferred
+        from coppermind_store.voice_store import VoiceStore
+
+        if not VoiceStore(self.context).deferred_relabels():
+            return False
+        async with self.context.lifecycle.lock, self.context.lock:
+            return await apply_deferred(self.context)
+
     async def tick(self) -> bool:
         """Run the oldest job that is due. True when one ran."""
+        try:
+            if await self.apply_deferred_voices():
+                return True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("deferred voice relabel failed")
         for job in sorted(await asyncio.to_thread(self.jobs), key=lambda item: item.created_at):
             if job.state == "succeeded" and not job.audio_removed:
                 if job.audio_removal_stuck:

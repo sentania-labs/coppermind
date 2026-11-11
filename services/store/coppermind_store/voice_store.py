@@ -320,8 +320,35 @@ class VoiceStore:
         ]
         self._save(data)
 
+    def defer_relabel(self, assignment: dict[str, Any], name: str) -> None:
+        """Remember a speaker rename for a note that cannot be rewritten yet."""
+        data = self._load()
+        key = (assignment["note_id"], assignment["label"])
+        kept = [d for d in data.get("deferred", []) if (d["note_id"], d["label"]) != key]
+        kept.append(
+            {
+                "note_id": assignment["note_id"],
+                "label": assignment["label"],
+                "assignment": dict(assignment),
+                "name": name,
+            }
+        )
+        data["deferred"] = kept
+        self._save(data)
+
+    def deferred_relabels(self) -> list[dict[str, Any]]:
+        return list(self._load().get("deferred", []))
+
+    def clear_deferred(self, note_id: str, label: str) -> None:
+        data = self._load()
+        data["deferred"] = [
+            d for d in data.get("deferred", []) if (d["note_id"], d["label"]) != (note_id, label)
+        ]
+        self._save(data)
+
     def purge(self, person_ids: set[str], note_ids: set[str]) -> None:
         data = self._load()
+        data["deferred"] = [d for d in data.get("deferred", []) if d["note_id"] not in note_ids]
         for person_id in person_ids:
             data["people"].pop(person_id, None)
         for person in data["people"].values():

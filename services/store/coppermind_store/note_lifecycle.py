@@ -598,6 +598,10 @@ class NoteLifecycle:
                     )
                     self.context.save_job(job)
             await self.finalize(current)
+            from coppermind_store.voice_relabel import apply_deferred
+
+            async with self.context.lock:
+                await apply_deferred(self.context, identity)
             return receipt
 
     async def finalize(self, note: NoteDocument) -> None:

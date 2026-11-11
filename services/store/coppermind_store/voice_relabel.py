@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import re
 from typing import Any
@@ -172,23 +173,36 @@ async def relabel_recording(
         context.write("review-completions/" + note.id, receipt)
 
 
-async def _refuse_unfinished_reviews(
-    context: Any, assignments: list[dict[str, Any]], reviewing: str | None
-) -> None:
-    """Never rewrite a note whose own recorded review has not finished."""
+async def unfinished_review(context: Any, note_id: str) -> str | None:
+    """Title of a note whose recorded review is still being applied."""
     from coppermind.store_protocol import NotFound
 
-    for assignment in assignments:
-        note_id = assignment["note_id"]
-        if note_id == reviewing or note_id.startswith("recording:"):
+    if note_id.startswith("recording:"):
+        return None
+    if context.read("review-completions/" + note_id, {}).get("state") != "applying":
+        return None
+    try:
+        return (await context.store.get_note(note_id)).title
+    except NotFound:
+        return None
+
+
+async def apply_deferred(context: Any, note_id: str | None = None) -> bool:
+    """Rewrite deferred appearances whose reviews have finished. Callers hold the locks."""
+    from coppermind_store.voice_store import VoiceStore
+
+    voice = VoiceStore(context)
+    ran = False
+    for item in voice.deferred_relabels():
+        if note_id not in (None, item["note_id"]):
             continue
-        if context.read("review-completions/" + note_id, {}).get("state") != "applying":
+        if await unfinished_review(context, item["note_id"]):
             continue
-        try:
-            title = (await context.store.get_note(note_id)).title
-        except NotFound:
-            continue
-        raise ValueError(f"Finish the review of {title} first.")
+        with contextlib.suppress(ValueError):
+            await relabel_recording(context, item["assignment"], None, item["name"])
+        voice.clear_deferred(item["note_id"], item["label"])
+        ran = True
+    return ran
 
 
 async def combine(context: Any, source: str, target: str, reviewing: str | None = None) -> None:
@@ -210,14 +224,18 @@ async def combine(context: Any, source: str, target: str, reviewing: str | None 
         name = entity.name
     else:
         raise ValueError("Target voice not found")
-    affected = voice.assignments(source)
-    if source not in unknowns:
-        affected = [a for a in voice._load().get("assignments", []) if a.get("origin_id") == source]
-    await _refuse_unfinished_reviews(context, affected, reviewing)
     if source not in unknowns:
         voice.restore_unknown(source)
+    deferred = []
     for assignment in voice.assignments(source):
-        await relabel_recording(context, assignment, None, name)
+        if assignment["note_id"] != reviewing and await unfinished_review(
+            context, assignment["note_id"]
+        ):
+            deferred.append(assignment)
+        else:
+            await relabel_recording(context, assignment, None, name)
+    for assignment in deferred:
+        voice.defer_relabel(assignment, name)
     voice.move_voice(source, target)
 
 
@@ -232,7 +250,11 @@ async def separate(context: Any, voice_id: str, note_id: str, label: str) -> str
     )
     if assignment is None:
         raise ValueError("Speaker assignment not found")
-    await _refuse_unfinished_reviews(context, [assignment], None)
+    if title := await unfinished_review(context, note_id):
+        raise ValueError(
+            f"Finish the review of {title} first. A voice cannot be separated from a note "
+            "while its review is unfinished."
+        )
     serial = voice._load().get("next_unknown", 1)
     new_label = f"Unknown voice {serial}"
     await relabel_recording(context, assignment, None, new_label)
