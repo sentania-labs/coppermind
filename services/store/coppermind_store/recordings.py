@@ -27,7 +27,6 @@ import json
 import logging
 import math
 import random
-import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -312,107 +311,30 @@ class Recordings:
                         {"title": note.title, "path": note.path, "date": job.captured_at}
                     )
             elif job.state == "failed" and not job.dismissed:
-                audio_gone = job.error_rule == "recording-missing" and not job.transcribed
                 retrying = self.retry_pending(job)
-                replacement = audio_gone or job.error_rule in {
-                    "transcription-audio_unreadable",
-                    "transcription-no_speech",
-                }
-                if job.error_rule == "transcription-audio_unreadable":
-                    message = (
-                        "The recording could not be read. Send a readable audio file "
-                        "again the same way recordings normally arrive."
-                    )
-                elif job.error_rule == "transcription-no_speech":
-                    message = (
-                        "No speech was found. Send a corrected recording again "
-                        "the same way recordings normally arrive."
-                    )
-                elif job.error_rule == "note-rejected":
-                    # Validation messages can include note values. Show only field names
-                    # from the schema, never the values or the raw validation message.
-                    schema = self.context.store.control.schema()
-                    fields = [
-                        key.name
-                        for key in schema.keys
-                        if re.search(
-                            r"(?:^|[:;]\s*)(?:frontmatter:\s*)?"
-                            + re.escape(key.name)
-                            + r"(?::|\s+is\b)",
-                            job.error,
-                            re.IGNORECASE,
-                        )
-                    ]
-                    detail = (
-                        "Rejected fields: " + ", ".join(fields) + ". "
-                        if fields
-                        else "The affected fields could not be identified. "
-                    )
-                    message = (
-                        "The meeting note's fields were rejected. "
-                        + detail
-                        + "The transcript is saved. Retry will only work after the vault's "
-                        "field rules are changed. Otherwise, send the recording again "
-                        "with corrected fields."
-                    )
-                elif audio_gone:
-                    message = (
-                        "The stored recording is missing. Send the recording again "
-                        "the same way recordings normally arrive."
-                    )
+                guidance = failure_guidance(job)
+                if guidance:
+                    message, retry_offered = guidance
                 else:
-                    if job.error_rule in {"transcription-too_long", "provider-too-long"}:
-                        reason = "The recording is too long for the transcription service."
-                    elif job.error_rule in {
-                        "transcription-http-401",
-                        "transcription-http-403",
-                        "transcription-http-404",
-                        "transcription-http-422",
-                        "transcription-provider",
-                        "connection-missing",
-                    }:
-                        reason = (
-                            "The transcription service could not accept the recording. "
-                            "Check its connection and model."
-                        )
-                    elif job.error_rule == "transcription-busy-limit":
-                        reason = "The transcription service stayed busy."
-                    elif job.error_rule in {
-                        "transcript-empty",
-                        "transcript-flat",
-                        "transcript-no-speakers",
-                    }:
-                        reason = "The transcription service did not return a usable transcript."
-                    elif job.error_rule == "recording-missing":
-                        reason = (
-                            "The stored recording was removed before the note could cite it. "
-                            "The transcript is kept."
-                        )
-                    elif job.error_rule == "filing-failed":
-                        reason = (
-                            "The transcript was saved, but the meeting note could not be filed."
-                        )
-                    elif job.error_rule == "recording-unreadable":
-                        reason = "The stored recording could not be read."
-                    else:
-                        reason = "Transcription could not finish."
+                    message = failure_reason(job.error_rule)
+                    retry_offered = True
                     if not enabled:
-                        action = "Turn on transcription before retrying."
+                        message += " Turn on transcription before retrying."
                     elif paused:
-                        action = "A retry will start when transcription resumes."
+                        message += " A retry will start when transcription resumes."
                     elif retrying:
-                        action = "The app will try again automatically."
+                        message += " The app will try again automatically."
                     else:
-                        action = "Try the recording again."
-                    message = reason + " " + action
+                        message += " Try the recording again."
                 scheduled = enabled and not paused and job.attempts < job.attempt_limit
                 failed.append(
                     {
                         "id": job.id,
                         "title": job.title or job.filename,
                         "message": message,
+                        "details": job.error if job.error_rule == "note-rejected" else "",
                         "retry_after": job.retry_after if scheduled else "",
-                        "can_retry": enabled and not replacement,
+                        "can_retry": enabled and retry_offered,
                         "can_dismiss": not retrying,
                     }
                 )
@@ -1157,3 +1079,98 @@ NO_AUTOMATIC_RETRY = frozenset(
 
 def repeats_only(rule: str) -> bool:
     return rule in NO_AUTOMATIC_RETRY or rule.startswith("transcription-http-")
+
+
+_RESEND = "the same way recordings normally arrive."
+_CHECK_SERVICE = "Check the transcription connection and model in settings, then retry."
+
+# Every refusal in NO_AUTOMATIC_RETRY gets its own next step, so the companion never tells
+# someone to try again when trying again would only repeat the refusal. The flag says
+# whether Retry can succeed once the stated fix is made; where the recording itself has to
+# change, only sending a new one helps and Retry is not offered.
+FAILURE_GUIDANCE: dict[str, tuple[str, bool]] = {
+    "transcription-audio_unreadable": (
+        f"The recording could not be read. Send a readable audio file again {_RESEND}",
+        False,
+    ),
+    "transcription-no_speech": (
+        f"No speech was found. Send a corrected recording again {_RESEND}",
+        False,
+    ),
+    "transcription-too_long": (
+        "The recording is too long for the transcription service. Send a shorter recording "
+        "or split it, or change the transcription model or its limit, then send it again.",
+        False,
+    ),
+    "provider-too-long": (
+        "The recording is too long for the transcription service. Send a shorter recording "
+        "or split it, or change the transcription model or its limit, then send it again.",
+        False,
+    ),
+    "recording-missing": (
+        f"The stored recording is missing. Send the recording again {_RESEND}",
+        False,
+    ),
+    "transcript-empty": (
+        "The transcription service returned no speech. Check the recording and send it "
+        "again, or change the transcription settings and retry.",
+        True,
+    ),
+    "transcript-flat": (
+        "The transcription service returned text without separate speakers. Check the "
+        "recording and send it again, or choose a service and reply format that label "
+        "speakers and retry.",
+        True,
+    ),
+    "transcript-no-speakers": (
+        "The transcription service did not label any speaker. Check the recording and send "
+        "it again, or choose a service and reply format that does and retry.",
+        True,
+    ),
+    "transcription-provider": (
+        "The transcription service could not accept the recording. " + _CHECK_SERVICE,
+        True,
+    ),
+    "connection-missing": (
+        "The transcription connection is not set up. " + _CHECK_SERVICE,
+        True,
+    ),
+    "transcription-busy-limit": (
+        "The transcription service stayed busy. " + _CHECK_SERVICE,
+        True,
+    ),
+    "transcription-unfinished": (
+        "The transcription service never finished this recording. " + _CHECK_SERVICE,
+        True,
+    ),
+    "note-rejected": (
+        "The meeting note's fields were rejected. The transcript is saved. Retry will only "
+        "work after the vault's field rules are changed. Otherwise, send the recording "
+        "again with corrected fields.",
+        True,
+    ),
+}
+
+
+def failure_guidance(job: TranscriptionJob) -> tuple[str, bool] | None:
+    if job.error_rule == "recording-missing" and job.transcribed:
+        return None
+    if job.error_rule.startswith("transcription-http-"):
+        return (
+            "The transcription service could not accept the recording. " + _CHECK_SERVICE,
+            True,
+        )
+    return FAILURE_GUIDANCE.get(job.error_rule)
+
+
+def failure_reason(rule: str) -> str:
+    if rule == "recording-missing":
+        return (
+            "The stored recording was removed before the note could cite it. "
+            "The transcript is kept."
+        )
+    if rule == "filing-failed":
+        return "The transcript was saved, but the meeting note could not be filed."
+    if rule == "recording-unreadable":
+        return "The stored recording could not be read."
+    return "Transcription could not finish."

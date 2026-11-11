@@ -131,7 +131,7 @@ async def test_only_a_failed_recording_can_be_dismissed(tmp_path):
 
 @pytest.mark.asyncio
 async def test_retry_puts_a_dismissed_recording_back_on_the_list_if_it_fails_again(tmp_path):
-    failed = job(1, state="failed", error_rule="transcription-http-500", dismissed=True)
+    failed = job(1, state="failed", error_rule="transcription-http", dismissed=True)
     recordings, by_id, saved = waiting_recordings(tmp_path, [failed])
     recordings.ready = lambda: None
     assert (await recordings.waiting())["failed"] == []
@@ -162,12 +162,12 @@ async def test_dismiss_is_refused_while_the_app_will_retry_by_itself(tmp_path):
     pending = job(
         1,
         state="failed",
-        error_rule="transcription-http-500",
+        error_rule="transcription-http",
         retry_after="2026-11-11T12:00:00+00:00",
         attempts=1,
         attempt_limit=2,
     )
-    final = job(2, state="failed", error_rule="transcription-http-500", attempts=2)
+    final = job(2, state="failed", error_rule="transcription-http", attempts=2)
     recordings, _, saved = waiting_recordings(tmp_path, [pending, final])
     rows = {item["id"]: item for item in (await recordings.waiting())["failed"]}
     assert rows[pending.id]["can_dismiss"] is False
@@ -201,22 +201,32 @@ async def test_a_dismissed_recording_is_still_run_by_the_worker_and_shows_a_new_
 
 
 @pytest.mark.asyncio
-async def test_rejected_note_fields_explain_the_correction_without_exposing_values(tmp_path):
-    failure = job(
-        1,
-        state="failed",
-        error_rule="note-rejected",
-        transcribed=True,
-        error="The note could not be filed: type: invalid secret value; "
-        "frontmatter: account is required. The transcript is kept.",
-    )
+async def test_rejected_note_shows_the_stores_message_as_details(tmp_path):
+    stored = "The note could not be filed: type: invalid; frontmatter: account is required."
+    failure = job(1, state="failed", error_rule="note-rejected", transcribed=True, error=stored)
     recordings, _, _ = waiting_recordings(tmp_path, [failure])
-    recordings.context.store.control.schema = lambda: SimpleNamespace(
-        keys=[SimpleNamespace(name="type"), SimpleNamespace(name="account")]
-    )
     row = (await recordings.waiting())["failed"][0]
-    assert "Rejected fields: type, account." in row["message"]
+    assert row["details"] == stored
     assert "Retry will only work after the vault's field rules are changed" in row["message"]
     assert "send the recording again with corrected fields" in row["message"]
-    assert "secret value" not in row["message"]
+    assert stored not in row["message"]
     assert row["can_retry"] is True
+
+
+@pytest.mark.asyncio
+async def test_every_refusal_that_a_retry_would_repeat_gets_its_own_next_step(tmp_path):
+    from coppermind_store.recordings import NO_AUTOMATIC_RETRY
+
+    rules = sorted(NO_AUTOMATIC_RETRY) + ["transcription-http-401"]
+    failures = [job(i, state="failed", error_rule=rule) for i, rule in enumerate(rules, 1)]
+    recordings, _, _ = waiting_recordings(tmp_path, failures)
+    rows = {item["id"]: item for item in (await recordings.waiting())["failed"]}
+    for failure in failures:
+        message = rows[failure.id]["message"]
+        assert "Try the recording again" not in message, failure.error_rule
+        assert "Transcription could not finish" not in message, failure.error_rule
+        assert "Turn on" not in message, failure.error_rule
+    too_long = rows[failures[rules.index("transcription-too_long")].id]
+    assert "shorter recording" in too_long["message"] and too_long["can_retry"] is False
+    unfinished = rows[failures[rules.index("transcription-unfinished")].id]
+    assert "settings, then retry" in unfinished["message"] and unfinished["can_retry"] is True
