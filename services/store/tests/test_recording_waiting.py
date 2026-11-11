@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -82,7 +83,7 @@ def waiting_recordings(tmp_path, jobs, enabled=True):
         control=SimpleNamespace(schema=lambda: SimpleNamespace(role=lambda _: "reviewed")),
     )
     lock = asyncio.Lock()
-    saved = {}
+    saved: dict[str, Any] = {}
     context = SimpleNamespace(
         store=store,
         lock=lock,
