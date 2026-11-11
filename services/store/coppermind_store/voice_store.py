@@ -108,7 +108,7 @@ class VoiceStore:
             return None
         unknowns[identity]["signatures"].extend(valid)
         data.setdefault("assignments", []).append(
-            {"note_id": note_id, "label": label, "voice_id": identity}
+            {"note_id": note_id, "label": label, "voice_id": identity, "origin_id": identity}
         )
         self._save(data)
         return identity
@@ -206,6 +206,39 @@ class VoiceStore:
         self._save(data)
         return moved
 
+    def restore_unknown(self, identity: str) -> None:
+        """Recover an earlier unknown group if it has since been attached elsewhere."""
+        data = self._load()
+        if identity in data.get("unknowns", {}):
+            return
+        assignments = [a for a in data.get("assignments", []) if a.get("origin_id") == identity]
+        if not assignments or not identity.startswith("unknown:"):
+            raise ValueError("This voice is no longer available. Refresh People and try again.")
+        signatures = []
+        for assignment in assignments:
+            voice_id = assignment["voice_id"]
+            source = (
+                data.get("unknowns", {}).get(voice_id)
+                if voice_id.startswith("unknown:")
+                else data["people"].get(voice_id.removeprefix("person:"))
+            )
+            if source is None:
+                raise ValueError("This voice is no longer available. Refresh People and try again.")
+            selected = [
+                s
+                for s in source.get("signatures", [])
+                if s.get("note_id") == assignment["note_id"]
+                and s.get("label") == assignment["label"]
+            ]
+            signatures.extend(selected)
+            source["signatures"] = [s for s in source.get("signatures", []) if s not in selected]
+            assignment["voice_id"] = identity
+        data.setdefault("unknowns", {})[identity] = {
+            "name": "Unknown voice " + identity.removeprefix("unknown:"),
+            "signatures": signatures,
+        }
+        self._save(data)
+
     def split_assignment(self, voice_id: str, note_id: str, label: str) -> str:
         """Move one speaker appearance and its signatures to a new unknown voice."""
         data = self._load()
@@ -239,6 +272,7 @@ class VoiceStore:
         }
         source["signatures"] = [s for s in source.get("signatures", []) if s not in selected]
         assignment["voice_id"] = identity
+        assignment["origin_id"] = identity
         self._save(data)
         return identity
 

@@ -78,7 +78,21 @@ async def entity_action(action: str, payload: dict[str, Any], request: Request) 
             from coppermind_store.voice_store import VoiceStore
 
             async with request.app.state.store.context.lock:
-                result = VoiceStore(request.app.state.store.context).summaries()
+                voice = VoiceStore(request.app.state.store.context)
+                people = entities.load().entities
+                result = {
+                    identity: {
+                        **summary,
+                        "name": people[identity].name,
+                        "assignments": voice.assignments("person:" + identity),
+                    }
+                    for identity, summary in voice.summaries().items()
+                    if identity in people
+                    and people[identity].kind == "person"
+                    and not people[identity].retired_at
+                    and not people[identity].redirect
+                    and summary["signatures"]
+                }
         elif action in {"voice-get", "voice-delete"}:
             from coppermind_store.voice_store import VoiceStore
 
@@ -104,6 +118,11 @@ async def entity_action(action: str, payload: dict[str, Any], request: Request) 
         status, body = to_http(exc, surface="internal")
     except SQLAlchemyError:
         status, body = to_http(MetadataUnavailable(), surface="internal")
-    except (ValueError, KeyError, ValidationError):
+    except (KeyError, ValidationError):
         status, body = to_http(ValidationFailed(["Invalid entity fields"]), surface="internal")
+    except ValueError as exc:
+        message = (
+            str(exc) if action in {"voice-combine", "voice-split"} else "Invalid entity fields"
+        )
+        status, body = to_http(ValidationFailed([message]), surface="internal")
     return JSONResponse(body, status)

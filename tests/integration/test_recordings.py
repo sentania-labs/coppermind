@@ -1409,6 +1409,14 @@ async def test_companion_voice_flow_through_public_api(store):
             appearance = next(
                 a for a in alex_voice["assignments"] if a["note_id"] == earlier.note_id
             )
+            from coppermind.entities import EntityChange
+
+            await store.entities.refresh()
+            current = await store.entities.get(alex["id"])
+            await store.entities.change(
+                alex["id"],
+                EntityChange(version=current["version"], action="rename", name="Alex New"),
+            )
             separated = await api.post(
                 f"/v1/entities/voice/voices/person:{alex['id']}/split",
                 json={"note_id": earlier.note_id, "label": appearance["label"]},
@@ -1442,7 +1450,147 @@ async def test_companion_voice_flow_through_public_api(store):
             await review(second, blair["id"])
             assert len((await api.get(alex_url)).json()["signatures"]) == 1
             assert len((await api.get(blair_url)).json()["signatures"]) == 2
+            attached = await api.post(
+                f"/v1/entities/voice/unknowns/{separated.json()['id']}/combine",
+                json={"target": "person:" + alex["id"]},
+            )
+            assert attached.status_code == 200, attached.text
+            manifest = await store.get_source(earlier.source_id)
+            transcript = await store.get_source_artifact(
+                earlier.source_id, manifest.current_revision, "transcript.json"
+            )
+            assert '"speaker": "Alex New"' in transcript.content
             assert (await api.delete(alex_url)).json()["signatures"] == []
             assert (
                 await api.put("/v1/entities/voice/recognition", json={"enabled": False})
             ).json()["enabled"] is False
+            before = (await api.get("/v1/entities/voice/unknowns")).json()
+            await make_recording("off.m4a", AUDIO + b"off", "voice-http-off")
+            assert (await api.get("/v1/entities/voice/unknowns")).json() == before
+
+
+async def test_cascade_preserves_a_failed_provisional_recording_for_retry(store, monkeypatch):
+    from coppermind_store.voice_store import VoiceStore
+
+    from coppermind.entities import EntityInput
+
+    person = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    vector = {"model": "voice", "version": "v1", "vector": [1.0, 0.0]}
+    speakers = [{"label": "Speaker 1", "speech_seconds": 30.0, "embeddings": [vector]}]
+    async with Service(reply={**REPLY, "speakers": speakers}) as service:
+        context = await setup_transcription(store, service)
+        await context.setup_lifecycle({"revision": context.config().revision})
+        first = await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+        first_job = context.recordings.load(first["id"])
+        second = await context.accept_recording(
+            request(
+                await store_audio(store, name="second.m4a", data=AUDIO + b"2"),
+                external_source_id="retry-second",
+            )
+        )
+        second_job = context.recordings.load(second["id"])
+        context.write("voice-pending/" + second_job.id, speakers)
+        original_ingest = store.ingest
+
+        async def failed_ingest(*args, **kwargs):
+            raise RuntimeError("simulated filing failure")
+
+        monkeypatch.setattr(store, "ingest", failed_ingest)
+        with pytest.raises(RuntimeError, match="simulated filing failure"):
+            await context.recordings.file_note(second_job, REPLY)
+        monkeypatch.setattr(store, "ingest", original_ingest)
+        provisional = "recording:" + second_job.id
+        voice = VoiceStore(context)
+        unknown_id = next(iter(voice.unknown_summaries()))
+        assert any(a["note_id"] == provisional for a in voice.assignments(unknown_id))
+        detail = await context.lifecycle_detail({"note_id": first_job.note_id})
+        manual = detail["manual_speaker_review"]
+        await context.complete_review(
+            {
+                "note_id": first_job.note_id,
+                "if_match": detail["note"]["content_hash"],
+                "confirmation": "Complete review",
+                "selected": [],
+                "manual_source_id": manual["source_id"],
+                "manual_source_revision": manual["revision"],
+                "manual_speakers": {"Unknown voice 1": "person:" + person["id"]},
+            }
+        )
+        assert any(a["note_id"] == provisional for a in voice.assignments("person:" + person["id"]))
+        await context.recordings.file_note(second_job, REPLY)
+        manifest = await store.get_source(second_job.source_id)
+        transcript = await store.get_source_artifact(
+            second_job.source_id, manifest.current_revision, "transcript.json"
+        )
+        assert '"speaker": "Alex Morgan"' in transcript.content
+        assert any(
+            a["note_id"] == second_job.note_id for a in voice.assignments("person:" + person["id"])
+        )
+
+
+async def test_combine_two_unknown_voices_through_public_api(store):
+    import httpx
+    from coppermind_store.auth import InternalAuth
+    from coppermind_store.entity_api import router as entity_router
+    from fastapi import FastAPI
+
+    from coppermind.store_client import HttpStoreClient
+    from tests.integration.test_store_write_protocol import authorized_api
+
+    def reply(vector):
+        return {
+            **REPLY,
+            "speakers": [
+                {
+                    "label": "Speaker 1",
+                    "speech_seconds": 30,
+                    "embeddings": [{"model": "m", "version": "1", "vector": vector}],
+                }
+            ],
+        }
+
+    internal = FastAPI()
+    internal.state.store = store
+    internal.state.auth = InternalAuth("synthetic-internal-token")
+    internal.include_router(entity_router)
+    client = HttpStoreClient(
+        "http://store", "synthetic-internal-token", transport=httpx.ASGITransport(app=internal)
+    )
+    app, headers = authorized_api(store)
+    app.state.store = client
+    async with Service(reply=reply([1, 0])) as service:
+        context = await setup_transcription(store, service)
+        await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+        service.reply = reply([0, 1])
+        second = await context.accept_recording(
+            request(
+                await store_audio(store, name="b.m4a", data=AUDIO + b"b"),
+                external_source_id="other-voice",
+            )
+        )
+        await context.recordings.tick()
+        job = context.recordings.load(second["id"])
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://api", headers=headers
+        ) as api:
+            unknowns = (await api.get("/v1/entities/voice/unknowns")).json()
+            assert len(unknowns) == 2
+            identities = list(unknowns)
+            source = next(
+                k for k, v in unknowns.items() if v["assignments"][0]["note_id"] == job.note_id
+            )
+            target = next(k for k in identities if k != source)
+            result = await api.post(
+                f"/v1/entities/voice/unknowns/{source}/combine", json={"target": target}
+            )
+            assert result.status_code == 200, result.text
+            unknowns = (await api.get("/v1/entities/voice/unknowns")).json()
+            assert list(unknowns) == [target]
+            assert len(unknowns[target]["assignments"]) == 2
+            manifest = await store.get_source(job.source_id)
+            transcript = await store.get_source_artifact(
+                job.source_id, manifest.current_revision, "transcript.json"
+            )
+            assert unknowns[target]["name"] in transcript.content

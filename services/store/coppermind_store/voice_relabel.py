@@ -48,7 +48,9 @@ def relabel_generated_lines(
     return "".join(lines), "".join(saved), "".join(original)
 
 
-async def relabel_recording(context: Any, assignment: dict[str, Any], old: str, new: str) -> None:
+async def relabel_recording(
+    context: Any, assignment: dict[str, Any], old: str | None, new: str
+) -> None:
     """Update the transcript and unchanged generated summary lines for one appearance."""
     import json
 
@@ -64,6 +66,13 @@ async def relabel_recording(context: Any, assignment: dict[str, Any], old: str, 
     from coppermind_store.recordings import render_transcript
     from coppermind_store.voice_store import VoiceStore
 
+    if assignment["note_id"].startswith("recording:"):
+        job_id = assignment["note_id"].removeprefix("recording:")
+        key = "voice-mappings/" + job_id
+        mapping = context.read(key, {})
+        mapping[assignment["label"]] = new
+        context.write(key, mapping)
+        return
     try:
         note = await context.store.get_note(assignment["note_id"])
     except NotFound:
@@ -79,6 +88,17 @@ async def relabel_recording(context: Any, assignment: dict[str, Any], old: str, 
         recording.source_id, manifest.current_revision, "transcript.json"
     )
     transcript = json.loads(artifact.content or "{}")
+    if old is None:
+        positions = assignment.get("segments", [])
+        segments = transcript.get("segments", [])
+        if not positions or any(
+            type(i) is not int or i < 0 or i >= len(segments) for i in positions
+        ):
+            raise ValueError("recording speaker positions changed")
+        labels = {segments[i].get("speaker") for i in positions}
+        if len(labels) != 1 or not isinstance(next(iter(labels)), str):
+            raise ValueError("recording speaker labels changed")
+        old = labels.pop()
     renamed = relabel_transcript(transcript, assignment.get("segments", []), old, new)
     if renamed != transcript:
         revision = next(r for r in manifest.revisions if r.revision == manifest.current_revision)
@@ -158,8 +178,8 @@ async def combine(context: Any, source: str, target: str) -> None:
 
     voice = VoiceStore(context)
     unknowns = voice.unknown_summaries()
-    if source not in unknowns or source == target:
-        raise ValueError("Unknown voice not found")
+    if source == target:
+        raise ValueError("Choose a different voice or person.")
     if target.startswith("unknown:"):
         if target not in unknowns:
             raise ValueError("Target voice not found")
@@ -171,8 +191,10 @@ async def combine(context: Any, source: str, target: str) -> None:
         name = entity.name
     else:
         raise ValueError("Target voice not found")
+    if source not in unknowns:
+        voice.restore_unknown(source)
     for assignment in voice.assignments(source):
-        await relabel_recording(context, assignment, unknowns[source]["name"], name)
+        await relabel_recording(context, assignment, None, name)
     voice.move_voice(source, target)
 
 
@@ -187,16 +209,9 @@ async def separate(context: Any, voice_id: str, note_id: str, label: str) -> str
     )
     if assignment is None:
         raise ValueError("Speaker assignment not found")
-    if voice_id.startswith("unknown:"):
-        old = voice.unknown_summaries()[voice_id]["name"]
-    else:
-        entity = context.store.entities.load().entities.get(voice_id.removeprefix("person:"))
-        if not entity:
-            raise ValueError("Person not found")
-        old = entity.name
     serial = voice._load().get("next_unknown", 1)
     new_label = f"Unknown voice {serial}"
-    await relabel_recording(context, assignment, old, new_label)
+    await relabel_recording(context, assignment, None, new_label)
     result = voice.split_assignment(voice_id, note_id, label)
     if voice_id.startswith("person:"):
         voice.reject(note_id, new_label, voice_id.removeprefix("person:"))
