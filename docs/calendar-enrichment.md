@@ -187,8 +187,9 @@ defaults to 200,000 and can be raised to 2,000,000. It counts the complete JSON
 input including escaping. **Summary wait limit** defaults to 900 seconds and can
 be set up to 1,800; the existing streaming client, one-hour total-call ceiling,
 retry/backoff and Problems machinery apply. The ordinary enrichment limits stay
-separate. These settings take effect for new jobs; request fresh suggestions
-after changing them.
+separate. These settings take effect for new jobs. A job whose summary stage
+failed is queued again automatically once you change either summary limit; for any
+other job, request fresh suggestions after changing them.
 
 This is a single-pass strategy, not chunking. The character guard is not a token
 estimator or model context discovery: operators must choose a limit that fits
