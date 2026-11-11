@@ -16,11 +16,17 @@ from coppermind.schema import (
     parse_note_time,
 )
 from coppermind.store_protocol import (
+    ArtifactsFilesystemUnavailable,
+    MetadataUnavailable,
     NoteDocument,
     NoteQuery,
+    NotesFilesystemUnavailable,
     NotFound,
     PatchFrontmatter,
+    SourcesFilesystemUnavailable,
     StoreError,
+    StoreUnavailable,
+    ValidationFailed,
 )
 from coppermind_store import meeting_summary, speaker_names
 
@@ -414,11 +420,23 @@ class NoteLifecycle:
                     KeyError,
                     TypeError,
                 ) as exc:
-                    if isinstance(exc, (ValueError, NotFound, FileNotFoundError)):
+                    transient = isinstance(
+                        exc,
+                        (
+                            StoreUnavailable,
+                            MetadataUnavailable,
+                            NotesFilesystemUnavailable,
+                            SourcesFilesystemUnavailable,
+                            ArtifactsFilesystemUnavailable,
+                        ),
+                    )
+                    if isinstance(exc, (ValueError, FileNotFoundError)) or (
+                        isinstance(exc, StoreError) and not transient
+                    ):
                         receipt["state"] = "attention"
                     receipt["error"] = (
                         str(exc)
-                        if isinstance(exc, ValueError)
+                        if isinstance(exc, (ValueError, ValidationFailed))
                         else (
                             "A note or recording is unavailable. It was kept; "
                             "try again when it returns."
@@ -786,7 +804,7 @@ class NoteLifecycle:
                 }
                 if manual_choices:
                     manual = await speaker_names.evidence(
-                        self.context, note, await self.context.calendar_candidates(note)
+                        self.context, note, await self.context.recording_calendar_candidates(note)
                     )
                     if not manual or (manual["source_id"], manual["revision"]) != (
                         payload.get("manual_source_id"),
