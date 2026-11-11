@@ -207,7 +207,7 @@ test('voice and maybe names require a deliberate choice',async()=>{
   assert.equal(select.value,'');
   const button=f.view.contentEl.all().find(e=>e.text==='Maybe: Alex');assert.ok(button);
   button.onclick();
-  await f.view.contentEl.all().find(e=>e.text==='Apply selected & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:a');
 });
 
@@ -217,7 +217,7 @@ test('a single strong voice suggestion is included in one completion',async()=>{
   const f=await fixture(undefined,{manual_speaker_review:voiceManual([match('a','Alex')])});
   const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
   assert.match(text,/Speaker 1 → Alex/);assert.match(text,/Source: Voice/);assert.doesNotMatch(text,/No people suggested/);
-  await f.view.contentEl.all().find(e=>e.text==='Apply selected & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:a');
 });
 test('agreeing model and voice show both sources with one selection',async()=>{
@@ -225,7 +225,7 @@ test('agreeing model and voice show both sources with one selection',async()=>{
   const f=await fixture(undefined,{suggestions:[s],job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
   assert.ok(f.view.contentEl.all().some(e=>e.text==='Sources: Model and Voice'));
   assert.ok(!f.view.contentEl.all().some(e=>e.text==='Voice: Alex'));
-  await f.view.contentEl.all().find(e=>e.text==='Apply selected & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).speaker_choices['0'],'contact:a');
 });
 for(const [name,suggestions,matches] of [
@@ -235,7 +235,7 @@ for(const [name,suggestions,matches] of [
   const f=await fixture(undefined,{suggestions,job_id:'job',manual_speaker_review:voiceManual(matches)});
   assert.ok(f.view.contentEl.all().some(e=>e.text==='Suggestions disagree. Choose a person.'));
   assert.equal(f.view.contentEl.all().find(e=>e.tag==='select').value,'');
-  await f.view.contentEl.all().find(e=>e.text==='Apply selected & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
   const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
   assert.deepEqual(body.selected,[]);assert.deepEqual(body.manual_speakers,{});
 });
@@ -243,7 +243,7 @@ test('correcting a selected voice match sends only the corrected person',async()
   const review=voiceManual([match('a','Alex')]);review.candidates=[{id:'person:b',name:'Blair'}];
   const f=await fixture(undefined,{manual_speaker_review:review});
   const select=f.view.contentEl.all().find(e=>e.tag==='select');select.value='person:b';select.onchange();
-  await f.view.contentEl.all().find(e=>e.text==='Apply selected & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:b');
 });
 
