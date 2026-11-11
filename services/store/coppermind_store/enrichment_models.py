@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from coppermind.context_config import ContextModel
+from coppermind.meeting_summary import MeetingSummary
 
 
 class Suggestion(ContextModel):
@@ -22,6 +23,7 @@ class Suggestion(ContextModel):
 
 
 class Suggestions(ContextModel):
+    meeting_summary: MeetingSummary | None = None
     suggestions: list[Suggestion] = Field(default_factory=list, max_length=30)
     unresolved: list[str] = Field(default_factory=list, max_length=20)
 
@@ -40,6 +42,11 @@ class EnrichmentJob(ContextModel):
     state: Literal[
         "queued", "running", "suggested", "failed", "stale", "rejected", "applying", "applied"
     ] = "queued"
+    # Set when the owner asked for fresh suggestions; automatic re-queues leave it off.
+    fresh: bool = False
+    # Fingerprint of the summary limits in force when the summary stage failed on them;
+    # empty otherwise. A change to those limits retries only such a job.
+    summary_limits: str = ""
     attempts: int = 0
     attempt_limit: int | None = Field(default=None, ge=1, le=3)
     error: str = ""

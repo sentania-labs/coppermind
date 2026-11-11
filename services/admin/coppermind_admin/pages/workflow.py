@@ -13,6 +13,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from coppermind.context_config import FeatureAssignment
 from coppermind.settings import Wiring
 from coppermind.store_protocol import PatchFrontmatter, StoreError
 from coppermind_admin.pages.context import (
@@ -187,7 +188,10 @@ def router(wiring: Wiring) -> APIRouter:
                 )
             elif tab == "enrichment":
                 title = "Suggestions"
-                assignment = config["assignments"]["enrichment"]
+                assignment = {
+                    **FeatureAssignment().model_dump(),
+                    **config["assignments"]["enrichment"],
+                }
                 body += (
                     "<p>Make suggestions once for each new unreviewed note. Editing a not"
                     "e does not repeatedly call the model.</p>"
@@ -280,6 +284,8 @@ def router(wiring: Wiring) -> APIRouter:
                     ("timeout_s", "Wait limit (seconds, how long the model may stay silent)"),
                     ("max_input_chars", "Maximum note and transcript characters"),
                     ("max_output_tokens", "Maximum response tokens"),
+                    ("summary_max_input_chars", "Maximum summary input characters"),
+                    ("summary_timeout_s", "Summary wait limit (seconds)"),
                     ("attempts", "Maximum attempts"),
                 ]:
                     fields += _input(key, label, str(assignment[key]), kind="number")

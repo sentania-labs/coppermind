@@ -818,7 +818,7 @@ def router(wiring: Wiring) -> APIRouter:
                     if model_ids:
                         body += _form("test-model", fields, "Test model with sample meeting text")
                 body += "</details>"
-            assignment = config["assignments"]["enrichment"]
+            assignment = {**FeatureAssignment().model_dump(), **config["assignments"]["enrichment"]}
             fields = "<fieldset><legend>1. Choose a model</legend>"
             options = '<option value="">Choose a connection</option>'
             for item in config["connections"]:
@@ -908,6 +908,20 @@ def router(wiring: Wiring) -> APIRouter:
             )
             for key, label, help_text in [
                 (
+                    "summary_max_input_chars",
+                    "Maximum summary input characters",
+                    "Default 200,000, up to 2,000,000. Includes the full transcript and JSON "
+                    "wrapper. Nothing is truncated. Match this to the selected model's context "
+                    "window with room for its response; characters are not tokens. A model "
+                    "context rejection is recorded as a failed job.",
+                ),
+                (
+                    "summary_timeout_s",
+                    "Summary wait limit (seconds)",
+                    "Default 900, up to 1,800. Allows a thinking model to read a long transcript "
+                    "before replying. Streaming responses may continue for up to one hour.",
+                ),
+                (
                     "timeout_s",
                     "Wait limit (seconds)",
                     "Default 120. How long the model may stay silent, before it starts "
@@ -975,7 +989,7 @@ picker.addEventListener('change', () => {
                 "automatically. Other suggestions need your approval, and applying any "
                 "change leaves the note unreviewed.</p>"
             )
-            assignment = config["assignments"]["enrichment"]
+            assignment = {**FeatureAssignment().model_dump(), **config["assignments"]["enrichment"]}
             try:
                 backlog = await client(request).context_action(
                     "backlog", {"cursor": request.query_params.get("cursor")}
@@ -1293,8 +1307,15 @@ picker.addEventListener('change', () => {
                 assignment["fields"] = [
                     key.removeprefix("field_") for key in form if key.startswith("field_")
                 ]
-                for key in ("timeout_s", "max_input_chars", "max_output_tokens", "attempts"):
-                    assignment[key] = int(form[key])
+                for key in (
+                    "timeout_s",
+                    "max_input_chars",
+                    "max_output_tokens",
+                    "attempts",
+                    "summary_max_input_chars",
+                    "summary_timeout_s",
+                ):
+                    assignment[key] = int(form.get(key, assignment[key]))
                 assignment["enabled"], assignment["paused"] = "enabled" in form, "paused" in form
                 payload["assignment"] = assignment
             elif action == "save-transcription":

@@ -67,6 +67,7 @@ class ReviewView extends ItemView {
       const selected=new Set();
       const speakerChoices={}, manualSpeakers={}, cards=[];
       const ready=data.state==='suggested'&&!data.stale&&synced;
+      const summary=data.meeting_summary?{...data.meeting_summary}:null;
       if(!data.suggestions_enabled)el.createEl('p',{text:'Suggestions are off. You can name speakers below, or turn on enrichment in Model connections.',cls:'coppermind-notice'});
       else if(data.suggestion_error){
         el.createEl('p',{text:'Suggestions could not be completed: '+data.suggestion_error,cls:'coppermind-notice'});
@@ -80,6 +81,7 @@ class ReviewView extends ItemView {
       const preview=el.createDiv({cls:'coppermind-card'});
       const updatePreview=()=>{
         preview.empty();preview.createEl('h3',{text:'What will change'});
+        if(summary&&ready)preview.createEl('p',{text:Object.values(summary).some(v=>v.trim())?'The kept summary sections will be appended to your note. Your existing text stays intact.':'All summary sections dropped. No summary text will be added.'});
         const changes=cards.filter(c=>c.active()&&c.chooser.value);
         if(!changes.length)preview.createEl('p',{text:'No speaker names selected.'});
         for(const c of changes){const person=c.people.find(p=>p.id===c.chooser.value);if(person)preview.createEl('p',{text:c.label+' → '+person.name});}
@@ -110,6 +112,17 @@ class ReviewView extends ItemView {
         const moreButton=card.createEl('button',{text:'More people'});moreButton.disabled=true;moreButton.onclick=()=>lookup(true);
         return chooser;
       };
+      if(summary){
+        const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Meeting summary'});
+        box.createEl('p',{text:'Edit these suggestions, or clear a section to drop it. Marking reviewed adds what you keep to the note. Action items are recorded only; nothing is carried out.'});
+        for(const [key,label] of [['summary','Summary'],['decisions','Decisions'],['action_items','Action items and owners']]){
+          const field=box.createEl('label',{text:label});
+          const input=field.createEl('textarea');input.value=summary[key];input.rows=6;input.maxLength=12000;input.style.width='100%';input.disabled=!ready;
+          input.oninput=()=>{summary[key]=input.value;updatePreview();};
+          const drop=box.createEl('button',{text:'Drop '+label.toLowerCase()});drop.disabled=!ready;
+          drop.onclick=()=>{summary[key]='';input.value='';updatePreview();};
+        }
+      }
       for(const s of data.suggestions){
         if(s.kind==='speaker'&&!ready)continue;
         const card=el.createDiv({cls:'coppermind-card'});let toggle;
@@ -149,14 +162,15 @@ class ReviewView extends ItemView {
           const editor=this.app.workspace.getActiveViewOfType(MarkdownView);
           if(editor?.file?.path===file.path)await editor.save();
           if(await hash(await this.app.vault.read(file))!==data.note.content_hash)throw Error('The note changed. Refresh after sync before finishing.');
-          const payload={if_match:data.note.content_hash,job_id:data.job_id,selected:apply?[...selected]:[],speaker_choices:apply?speakerChoices:{},manual_speakers:apply?manualSpeakers:{},manual_source_revision:manual?.revision??null,manual_source_id:manual?.source_id??null,accept_link_risk:acceptLinks,confirmation:'Complete review'};
+          const payload={if_match:data.note.content_hash,job_id:data.job_id,selected:apply?[...selected]:[],meeting_summary:apply&&ready?summary:null,speaker_choices:apply?speakerChoices:{},manual_speakers:apply?manualSpeakers:{},manual_source_revision:manual?.revision??null,manual_source_id:manual?.source_id??null,accept_link_risk:acceptLinks,confirmation:'Complete review'};
           this.plugin.pending={id,payload};
           await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/review','POST',payload);
           this.plugin.pending=null;
           new Notice('Review recorded. Changes and filing will sync back to Obsidian.');await this.refresh();
         }catch(e){new Notice(e.message);}
       };
-      const apply=el.createEl('button',{text:'Apply selected & mark reviewed',cls:'mod-cta'});apply.disabled=!synced;apply.onclick=()=>finish(true);
+      if((manual||summary)&&['queued','running'].includes(data.state))el.createEl('p',{text:'The summary is still being written. Marking reviewed now files the note without it.',cls:'coppermind-notice'});
+      const apply=el.createEl('button',{text:'Apply kept suggestions & mark reviewed',cls:'mod-cta'});apply.disabled=!synced;apply.onclick=()=>finish(true);
       const without=el.createEl('button',{text:'Mark reviewed without changes'});without.disabled=!synced;without.onclick=()=>finish(false);
       const refresh=el.createEl('button',{text:'Request fresh suggestions'});refresh.disabled=!synced;refresh.onclick=async()=>{
         try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/suggestions','POST',{});new Notice('Suggestions queued. Refresh when processing finishes.');}catch(e){new Notice(e.message);}

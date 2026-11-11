@@ -381,8 +381,14 @@ itself.
 
 On success the note's source holds `transcript.txt`, one line per segment with the
 speaker label exactly as the service gave it (`[00:03:12] Speaker 2: text`), and
-`transcript.json` with the segments and their timings. The note body says the summary
-has not been written yet. Once the transcript is nonempty and the note is reviewed
+`transcript.json` with the segments and their timings. With enrichment enabled, the
+configured model reads the complete transcript in a separate summary stage of the
+existing enrichment job. Summary, decisions and action items remain durable proposals
+until the owner completes review. The companion and review API let the owner edit or
+drop sections before the kept text is appended; existing prose is preserved. See
+[Recording summaries](note-workflow.md#recording-summaries) for the API payload and
+[enrichment limits](calendar-enrichment.md) for the full-input ceiling and long wait.
+Once the transcript is nonempty and the note is reviewed
 and filed, Coppermind removes the recording audio and replaces its link with a receipt
 containing its hash, size and duration. Supply `metadata.archive_url` to include the
 location of an external archive in the receipt. Cleanup failures appear in Problems

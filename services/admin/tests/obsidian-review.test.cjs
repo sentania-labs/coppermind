@@ -6,7 +6,7 @@ const path=require('node:path');
 const vm=require('node:vm');
 const {webcrypto}=require('node:crypto');
 class El {
-  constructor(tag='',options={}){this.tag=tag;this.text=options.text;this.value=options.value;this.children=[];this.disabled=false;}
+  constructor(tag='',options={}){this.tag=tag;this.text=options.text;this.value=options.value;this.children=[];this.disabled=false;this.style={};}
   empty(){this.children=[];}
   createEl(tag,options){const el=new El(tag,options);this.children.push(el);return el;}
   createDiv(options){return this.createEl('div',options);}
@@ -75,7 +75,7 @@ test('speaker choice is sent with the selected proposal',async()=>{
   assert.equal(choice.value,'contact:a');
   choice.value='person:b';choice.onchange();
   card.children.find(c=>c.tag==='toggle').onchange(true);
-  await f.view.contentEl.all().find(e=>e.text==='Apply selected & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
   const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
   assert.deepEqual(body.selected,[3]);
   assert.equal(body.speaker_choices['3'],'person:b');
@@ -101,13 +101,13 @@ test('preview shows selected speaker changes and dropdown correction selects the
   assert.match(text(),/transcript labels, note attendees and dossier links/);assert.match(text(),/Unnamed speakers stay/);
   const selects=f.view.contentEl.all().filter(e=>e.tag==='select');selects[1].value='person:b';selects[1].onchange();
   assert.match(text(),/Speaker 2 → Blair/);
-  await f.view.contentEl.all().find(e=>e.text==='Apply selected & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
   assert.deepEqual(JSON.parse(f.requests.find(r=>r.method==='POST').body).selected,[0,1]);
 });
 test('select all suggested names selects low confidence names explicitly',async()=>{
   const f=await fixture(undefined,{suggestions:[proposal(0,.4),proposal(1,.3)],job_id:'job'});
   f.view.contentEl.all().find(e=>e.text==='Select all suggested names').onclick();
-  await f.view.contentEl.all().find(e=>e.text==='Apply selected & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
   assert.deepEqual(JSON.parse(f.requests.find(r=>r.method==='POST').body).selected,[0,1]);
 });
 test('failed suggestions show cause and retry and still permit manual speaker selection',async()=>{
@@ -115,7 +115,7 @@ test('failed suggestions show cause and retry and still permit manual speaker se
   assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('The model timed out.')));
   assert.ok(f.view.contentEl.all().some(e=>e.text==='Retry suggestions'));
   const select=f.view.contentEl.all().find(e=>e.tag==='select');select.value='person:a';select.onchange();
-  await f.view.contentEl.all().find(e=>e.text==='Apply selected & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
   const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
   assert.equal(body.manual_speakers['Speaker 1'],'person:a');assert.equal(body.manual_source_revision,2);
 });
@@ -159,4 +159,45 @@ test('companion settings name the available key creation path',async()=>{
   assert.match(text,/create a new key/);assert.match(text,/Read people and companies/);
   assert.match(text,/Update notes/);assert.match(text,/Update sources/);
   assert.doesNotMatch(text,/entities:read|sources:write|change its permissions/);
+});
+
+const summaryProposal={summary:'Launch discussion.',decisions:'- Ship Friday.',action_items:'- Casey: send the plan.'};
+test('summary edits and dropped sections are sent only on review completion',async()=>{
+  const f=await fixture(undefined,{meeting_summary:summaryProposal,job_id:'job'});
+  const inputs=f.view.contentEl.all().filter(e=>e.tag==='textarea');
+  assert.equal(inputs.length,3);assert.equal(inputs[0].value,'Launch discussion.');
+  inputs[0].value='Owner corrected summary.';inputs[0].oninput();
+  await f.view.contentEl.all().find(e=>e.text==='Drop decisions').onclick();
+  assert.equal(f.requests.filter(r=>r.method==='POST').length,0);
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
+  assert.deepEqual(body.meeting_summary,{summary:'Owner corrected summary.',decisions:'',action_items:'- Casey: send the plan.'});
+});
+test('review without changes drops the summary',async()=>{
+  const f=await fixture(undefined,{meeting_summary:summaryProposal});
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed without changes').onclick();
+  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).meeting_summary,null);
+});
+for(const state of ['failed','running','stale'])test(state+' summary cannot be applied',async()=>{
+  const f=await fixture(undefined,{state,meeting_summary:summaryProposal});
+  assert.ok(f.view.contentEl.all().filter(e=>e.tag==='textarea').every(e=>e.disabled));
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).meeting_summary,null);
+});
+
+const pendingSummaryNotice='The summary is still being written. Marking reviewed now files the note without it.';
+for(const state of ['queued','running'])test(state+' recording warns beside completion before filing without a summary',async()=>{
+  const f=await fixture(undefined,{state,manual_speaker_review:{source_id:'source',revision:1,speakers:[],candidates:[]}});
+  const children=f.view.contentEl.children;
+  const action=children.findIndex(e=>e.text==='Apply kept suggestions & mark reviewed');
+  assert.equal(children[action-1].text,pendingSummaryNotice);
+  assert.equal(children[action].disabled,false);
+  await children[action].onclick();
+  const writes=f.requests.filter(r=>r.method==='POST');
+  assert.equal(writes.length,1);
+  assert.equal(JSON.parse(writes[0].body).meeting_summary,null);
+});
+for(const overrides of [{state:'running'},{state:'suggested',meeting_summary:summaryProposal},{state:'failed',meeting_summary:summaryProposal}])test('no pending-summary warning for '+JSON.stringify(overrides),async()=>{
+  const f=await fixture(undefined,overrides);
+  assert.ok(!f.view.contentEl.all().some(e=>e.text===pendingSummaryNotice));
 });

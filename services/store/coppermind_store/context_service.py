@@ -46,7 +46,7 @@ from coppermind.store_protocol import (
     StoreUnavailable,
     VersionConflict,
 )
-from coppermind_store import speaker_names
+from coppermind_store import meeting_summary, speaker_names
 from coppermind_store.calendar_archive import CalendarArchive
 from coppermind_store.calendar_import import CALENDAR_ID
 from coppermind_store.calendar_worker import occurrences
@@ -267,7 +267,15 @@ class ContextService:
         config = self.config()
         assignment = config.assignments["enrichment"]
         values = assignment.model_dump(
-            exclude={"paused", "enabled", "automatic_after", "response_format", "wait_s"}
+            exclude={
+                "paused",
+                "enabled",
+                "automatic_after",
+                "response_format",
+                "wait_s",
+                "summary_max_input_chars",
+                "summary_timeout_s",
+            }
         )
         connection = next(
             (
@@ -281,6 +289,10 @@ class ContextService:
             assignment.connection, assignment.connection
         )
         return fingerprint({"assignment": values, "connection": connection})
+
+    def summary_limits(self) -> str:
+        assignment = self.config().assignments["enrichment"]
+        return fingerprint([assignment.summary_max_input_chars, assignment.summary_timeout_s])
 
     def evidence_hash(self) -> str:
         return self.archive.catalog().events.context_fingerprint(
@@ -985,11 +997,17 @@ class ContextService:
         results = []
         for identity in identities:
             results.append(
-                await self.queue_note(str(identity), force=payload.get("regenerate") is True)
+                await self.queue_note(
+                    str(identity),
+                    force=payload.get("regenerate") is True,
+                    fresh=payload.get("regenerate") is True,
+                )
             )
         return {"jobs": results}
 
-    async def queue_note(self, identity: str, *, force: bool = False, ledger: Any = None) -> str:
+    async def queue_note(
+        self, identity: str, *, force: bool = False, fresh: bool = False, ledger: Any = None
+    ) -> str:
         async with self.lock:
             assignment = self.config().assignments["enrichment"]
             if not assignment.enabled:
@@ -1043,6 +1061,7 @@ class ContextService:
                     path=note.path,
                     created_at=now(),
                     attempt_limit=assignment.attempts,
+                    fresh=fresh,
                 )
             )
             return job_id
@@ -1427,7 +1446,7 @@ class ContextService:
         try:
             job.state = "running"
             job.attempts += 1
-            job.reply, job.retry_after = "", ""
+            job.reply, job.retry_after, job.summary_limits = "", "", ""
             self.save_job(job)
             if job.purpose == "dossier":
                 await extract(self, job)
@@ -1446,6 +1465,7 @@ class ContextService:
                     "The Enrichment connection or model is not set up: " + str(exc),
                     "Open Enrichment, refresh models and choose one, then retry.",
                 ) from exc
+            transcript = await meeting_summary.prepare(self, job, assignment)
             output, usage = await self.provider.suggest(
                 connection,
                 self.key(connection.id),
@@ -1483,6 +1503,12 @@ class ContextService:
             left = len(unnamed) - min(room, len(unnamed))
             job.notice = speaker_names.leftover_notice(left) if left else ""
             self.validate_result(result, evidence, await self.source_text(job.note_id))
+            # Only the separate full-transcript stage can supply meeting prose.
+            result.meeting_summary, summary_usage = await meeting_summary.generate(
+                self, connection, assignment, transcript, job
+            )
+            if summary_usage:
+                usage["summary"] = summary_usage
             # A note or calendar can change during a slow model request.
             if not same_evidence(await self.evidence(job), evidence):
                 raise ValueError("stale: source evidence changed during model processing")
@@ -1707,7 +1733,7 @@ class ContextService:
         identity = (
             await self.queue_reviewed(job.note_id, force=True)
             if job.purpose == "dossier"
-            else await self.queue_note(job.note_id, force=True)
+            else await self.queue_note(job.note_id, force=True, fresh=job.fresh)
         )
         return {"job": identity}
 
@@ -1784,7 +1810,10 @@ class ContextService:
                 ):
                     raise ValueError("invalid or already decided suggestion")
                 job.decisions.append({"action": "reject", "index": index, "at": now()})
-                if len(job.decided) == len(job.result.suggestions):
+                if (
+                    len(job.decided) == len(job.result.suggestions)
+                    and not job.result.meeting_summary
+                ):
                     job.state = (
                         "applied"
                         if any("suggestion" in item for item in job.decisions)
@@ -2021,7 +2050,13 @@ class ContextService:
             for field in job.evidence["allowed_fields"]
             if blank(note.frontmatter.get(field["name"]))
         ]
-        remaining = len(job.result.suggestions) - len(job.decided) if job.result else 0
+        remaining = (
+            len(job.result.suggestions)
+            - len(job.decided)
+            + int(job.result.meeting_summary is not None)
+            if job.result
+            else 0
+        )
         schema = self.store.control.schema()
         changed_date = note_date(approval["before_frontmatter"], schema) != note_date(
             note.frontmatter, schema
@@ -2271,6 +2306,7 @@ class ContextService:
                         or known.path != current.path
                         or known.source_versions != source_versions
                         or known.config_hash != self.config_hash()
+                        or (known.summary_limits and known.summary_limits != self.summary_limits())
                         or known.schema_hash != self.schema_hash()
                         or (
                             self.config().lifecycle_enabled
@@ -2278,12 +2314,18 @@ class ContextService:
                             != await self.note_evidence_hash(current, ledger)
                         )
                     ):
-                        touched.append(await self.queue_note(note.id, force=True, ledger=ledger))
+                        touched.append(
+                            await self.queue_note(
+                                note.id, force=True, fresh=known.fresh, ledger=ledger
+                            )
+                        )
                     continue
                 if self.config().lifecycle_enabled and previous:
                     current = await self.store.get_note(note.id)
                     if previous[-1].evidence_hash != await self.note_evidence_hash(current, ledger):
-                        identity = await self.queue_note(note.id, ledger=ledger)
+                        identity = await self.queue_note(
+                            note.id, fresh=previous[-1].fresh, ledger=ledger
+                        )
                         touched.append(identity)
                         changed = self.load_job(identity)
                         known = previous[-1]
