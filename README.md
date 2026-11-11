@@ -17,6 +17,9 @@ use is [docs/acceptance-plan.md](docs/acceptance-plan.md).
 
 ## Quickstart
 
+Upgrading from v0.6.4, v0.7.0 or v0.8.0? Read the
+[PostgreSQL image upgrade note](docs/data-and-settings.md#postgresql-image-upgrade) first.
+
 ```bash
 docker compose up -d
 ```
