@@ -18,9 +18,8 @@ def relabel_transcript(
     for index in positions:
         if not isinstance(index, int) or index < 0 or index >= len(segments):
             raise ValueError("recording speaker positions changed")
-        if segments[index].get("speaker") not in (old, new):
-            raise ValueError("recording speaker label changed")
-        segments[index]["speaker"] = new
+        if segments[index].get("speaker") in (old, new):
+            segments[index]["speaker"] = new
     return result
 
 

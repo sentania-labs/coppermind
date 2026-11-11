@@ -174,3 +174,16 @@ def test_relabel_preserves_edits_and_only_changes_assigned_turns():
     body, _, generated = relabel_generated_lines(body, body, generated, 0, "Morgan", "Alex")
     assert body == "Alex: generated\nMorgan: owner edit\nMorgan: duplicated\nMorgan: duplicated\n"
     assert generated.startswith("Alex: generated\n")
+
+
+def test_relabel_skips_turns_already_renamed_elsewhere():
+    from coppermind_store.voice_relabel import relabel_transcript
+
+    transcript = {
+        "segments": [
+            {"speaker": "Alice Smith", "text": "first"},
+            {"speaker": "Unknown voice 3", "text": "second"},
+        ]
+    }
+    result = relabel_transcript(transcript, [0, 1], "Unknown voice 3", "Bob")
+    assert [s["speaker"] for s in result["segments"]] == ["Alice Smith", "Bob"]
