@@ -280,6 +280,95 @@ class Recordings:
             for item in newest
         ]
 
+    async def waiting(self) -> dict[str, Any]:
+        from coppermind.store_protocol import NotFound
+
+        assignment = self.assignment()
+        enabled = bool(assignment and assignment.enabled)
+        paused = bool(assignment and assignment.paused)
+        meetings, failed = [], []
+        seen = set()
+        for job in sorted(self.jobs(), key=lambda item: item.created_at, reverse=True):
+            if job.state == "succeeded" and job.note_id and job.note_id not in seen:
+                seen.add(job.note_id)
+                try:
+                    note = await self.context.store.get_note(job.note_id)
+                except NotFound:
+                    continue
+                reviewed_key = self.context.store.control.schema().role("reviewed_key")
+                if note.frontmatter.get(reviewed_key) is not True:
+                    meetings.append(
+                        {"title": note.title, "path": note.path, "date": job.captured_at}
+                    )
+            elif job.state == "failed":
+                replacement = job.error_rule in {
+                    "transcription-audio_unreadable",
+                    "transcription-no_speech",
+                }
+                if job.error_rule == "transcription-audio_unreadable":
+                    message = (
+                        "The recording could not be read. Send a readable audio file "
+                        "again the same way recordings normally arrive."
+                    )
+                elif job.error_rule == "transcription-no_speech":
+                    message = (
+                        "No speech was found. Send a corrected recording again "
+                        "the same way recordings normally arrive."
+                    )
+                else:
+                    if job.error_rule in {"transcription-too_long", "provider-too-long"}:
+                        reason = "The recording is too long for the transcription service."
+                    elif job.error_rule in {
+                        "transcription-http-401",
+                        "transcription-http-403",
+                        "transcription-http-404",
+                        "transcription-http-422",
+                        "transcription-provider",
+                        "connection-missing",
+                    }:
+                        reason = (
+                            "The transcription service could not accept the recording. "
+                            "Check its connection and model."
+                        )
+                    elif job.error_rule == "transcription-busy-limit":
+                        reason = "The transcription service stayed busy."
+                    elif job.error_rule in {
+                        "transcript-empty",
+                        "transcript-flat",
+                        "transcript-no-speakers",
+                    }:
+                        reason = "The transcription service did not return a usable transcript."
+                    elif job.error_rule == "recording-missing":
+                        reason = "The stored recording is missing. Send the recording again."
+                    elif job.error_rule in {"note-rejected", "filing-failed"}:
+                        reason = (
+                            "The transcript was saved, but the meeting note could not be filed."
+                        )
+                    elif job.error_rule == "recording-unreadable":
+                        reason = "The stored recording could not be read."
+                    else:
+                        reason = "Transcription could not finish."
+                    if not enabled:
+                        action = "Turn on transcription before retrying."
+                    elif paused:
+                        action = "A retry will start when transcription resumes."
+                    elif job.retry_after and job.attempts < job.attempt_limit:
+                        action = "The app will try again automatically."
+                    else:
+                        action = "Try the recording again."
+                    message = reason + " " + action
+                scheduled = enabled and not paused and job.attempts < job.attempt_limit
+                failed.append(
+                    {
+                        "id": job.id,
+                        "title": job.title or job.filename,
+                        "message": message,
+                        "retry_after": job.retry_after if scheduled else "",
+                        "can_retry": enabled and not replacement,
+                    }
+                )
+        return {"meetings": meetings, "failed": failed}
+
     async def save_assignment(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Choose the connection and model that transcribe recordings, and switch it on."""
         given = FeatureAssignment.model_validate(payload["assignment"])
@@ -397,7 +486,7 @@ class Recordings:
         """Queue a failed intake again with fresh attempts; a saved transcript is reused."""
         async with self.context.lock:
             job = self.load(str(payload.get("id", "")))
-            if job.audio_removal_stuck:
+            if job.audio_removal_stuck and not payload.get("failed_only"):
                 job.audio_removal_attempts, job.audio_removal_retry_after = 0, ""
                 job.audio_removal_error = ""
                 self.save(job)

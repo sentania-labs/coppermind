@@ -322,6 +322,8 @@ It takes two steps, so the recording never has to be held whole in a request:
 | Method and path | Scope | What it does | Success | Failure |
 |---|---|---|---|---|
 | `POST /v1/recordings` | `sources:write`, `notes:write` and `artifacts:read`, because the recording's bytes are sent to the transcription service | Queue a stored recording. Body: `artifact_id`, `provider`, `external_source_id` (together the idempotency key, as for `/v1/ingest`), `title`, optional offset-qualified `captured_at`, `origin`, `metadata` (kept on the source) and `frontmatter` (the note's fields, checked against the schema when the note is filed) | 202 with the status below while it is queued or running; 200 with the same status once it has succeeded or failed. The same `provider` and `external_source_id` with the same artifact returns the same intake | 422 `validation_error` with one plain message when no transcription service is set up, the artifact does not exist, it is not audio, or the id already belongs to a different recording; 401, 403 |
+| `GET /v1/recordings/waiting` | `notes:read`, `sources:read` | Current unreviewed recording notes and failed recordings, with safe guidance and retry eligibility | 200, `{meetings, failed}` |
+| `POST /v1/recordings/{id}/retry` | `sources:write` | Queue a failed recording again using the existing recording retry behavior | 200; 422 if it cannot be retried |
 | `GET /v1/recordings/{id}` | `sources:read` | The status of one intake, for polling with bounded backoff | 200, the status | 422 for an unknown id |
 
 The status is `{id, state, artifact_id, attempts, attempt_limit, error, error_rule,
