@@ -662,11 +662,17 @@ def router(wiring: Wiring) -> APIRouter:
         if action == "set":
             if form.get("enabled") not in ("true", "false"):
                 return page("Voice recognition", "<p>Invalid setting.</p>", 422)
-            await client(request).entity_action(
-                "voice-set", {"id": form["id"], "enabled": form["enabled"] == "true"}
-            )
+            try:
+                await client(request).entity_action(
+                    "voice-set", {"id": form["id"], "enabled": form["enabled"] == "true"}
+                )
+            except StoreError as exc:
+                return page("Voice recognition", '<p class="error">' + e(str(exc)) + "</p>", 422)
         elif action == "delete":
-            await client(request).entity_action("voice-delete", {"id": form["id"]})
+            try:
+                await client(request).entity_action("voice-delete", {"id": form["id"]})
+            except StoreError as exc:
+                return page("Voice recognition", '<p class="error">' + e(str(exc)) + "</p>", 422)
         elif action == "thresholds":
             try:
                 values = {key: float(form[key]) for key in ("strong", "maybe")}

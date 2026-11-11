@@ -307,3 +307,24 @@ def test_turning_voice_recognition_off_warns_that_signatures_are_deleted(signed_
         'Alex &quot;Al&quot; O&#x27;Neil. Turning it on again starts from nothing."'
     ) in page
     assert page.count("data-confirm=") == 1
+
+
+def test_voice_change_for_a_person_who_is_gone_shows_the_reason_not_a_server_error(signed_in):
+    from coppermind.store_protocol import ValidationFailed
+
+    client, _ = signed_in
+
+    class GoneStore(ContextStore):
+        async def entity_action(self, action, payload):
+            if action in {"voice-set", "voice-delete"}:
+                raise ValidationFailed(["Person not found"])
+            return await super().entity_action(action, payload)
+
+    client.app.state.store = GoneStore()
+    token = form_token(client, "/admin/workflow?tab=dossiers")
+    for action, extra in (("set", {"enabled": "true"}), ("delete", {})):
+        refused = client.post(
+            "/v1/admin/voice/" + action, data={"csrf": token, "id": "gone", **extra}
+        )
+        assert refused.status_code == 422
+        assert "Person not found" in refused.text
