@@ -8,6 +8,9 @@ const {webcrypto}=require('node:crypto');
 class El {
   constructor(tag='',options={}){this.tag=tag;this.text=options.text;this.value=options.value;this.children=[];this.disabled=false;this.style={};}
   empty(){this.children=[];}
+  setText(text){this.text=text;}
+  addClass(){}
+  querySelector(){return null;}
   createEl(tag,options){const el=new El(tag,options);this.children.push(el);return el;}
   createDiv(options){return this.createEl('div',options);}
   createSpan(options){return this.createEl('span',options);}
@@ -30,7 +33,7 @@ async function fixture(local, overrides={}){
   class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(){}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/recordings/waiting'))return {status:200,json:overrides.waiting};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
@@ -158,7 +161,7 @@ test('companion settings name the available key creation path',async()=>{
   const f=await fixture();f.plugin.settingTab.display();
   const text=f.plugin.settingTab.containerEl.all().map(e=>e.text||'').join(' ');
   assert.match(text,/create a new key/);assert.match(text,/Read people and companies/);
-  assert.match(text,/Update notes/);assert.match(text,/Update sources/);
+  assert.match(text,/Read notes, Read sources, Update sources, Update notes, Read artifacts, Read people and companies, and Update people and companies/);
   assert.doesNotMatch(text,/entities:read|sources:write|change its permissions/);
 });
 
@@ -330,4 +333,87 @@ test('strong voice suggestion explains confirmation and earlier appearances',asy
   assert.match(text,/Check this suggestion before you finish/);
   assert.match(text,/remembered across recordings/);
   assert.match(text,/2 earlier recordings/);
+});
+
+test('waiting view opens the note and handles a failed retry',async()=>{
+  const f=await fixture(undefined,{waiting:{meetings:[{title:'Planning',path:'Review/Planning.md',date:''}],failed:[{id:'abc',title:'Call',message:'Try again.',can_retry:true}]},retryFail:true});
+  const file={path:'Review/Planning.md'};let opened;
+  f.app.vault.getAbstractFileByPath=path=>path===file.path?file:null;
+  f.app.workspace.getLeaf=()=>({openFile:async value=>{opened=value;}});
+  f.plugin.open=async()=>{};
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  assert.ok(view.contentEl.all().some(e=>e.text==='1 meeting to review · 1 recording failed'));
+  await view.contentEl.all().find(e=>e.text==='Planning').onclick();assert.equal(opened,file);
+  const retry=view.contentEl.all().find(e=>e.text==='Retry');await retry.onclick();
+  assert.equal(retry.disabled,false);
+  assert.ok(view.contentEl.all().some(e=>e.text?.includes('Could not queue retry')));
+  assert.ok(f.requests.some(r=>r.url.endsWith('/v1/recordings/abc/retry')&&r.method==='POST'));
+});
+
+test('dismissing a failed recording asks first, then refreshes the list',async()=>{
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'No speech was found.',can_retry:false,can_dismiss:true}]}});
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  const texts=()=>view.contentEl.all().map(e=>e.text||'');
+  await view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
+  assert.equal(f.requests.some(r=>r.url.endsWith('/dismiss')),false);
+  assert.ok(texts().includes('This only removes the entry from this list and deletes nothing.'));
+  const before=f.requests.filter(r=>r.url.endsWith('/v1/recordings/waiting')).length;
+  await view.contentEl.all().find(e=>e.text==='Dismiss entry').onclick();
+  assert.ok(f.requests.some(r=>r.url.endsWith('/v1/recordings/abc/dismiss')&&r.method==='POST'));
+  assert.equal(f.requests.filter(r=>r.url.endsWith('/v1/recordings/waiting')).length,before+1);
+});
+
+test('a failed dismiss keeps the entry and lets the user try again',async()=>{
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'No speech was found.',can_retry:false,can_dismiss:true}]},dismissFail:true});
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  await view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
+  const yes=view.contentEl.all().find(e=>e.text==='Dismiss entry');await yes.onclick();
+  assert.equal(yes.disabled,false);
+  assert.ok(view.contentEl.all().some(e=>e.text?.includes('Could not dismiss')));
+});
+
+test('a recording the app will retry by itself offers no Dismiss',async()=>{
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'The app will try again automatically.',can_retry:true,can_dismiss:false,retry_after:'2026-11-11T12:00:00Z'}]}});
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  assert.equal(view.contentEl.all().some(e=>e.text==='Dismiss'),false);
+  assert.ok(view.contentEl.all().some(e=>e.text==='Retry'));
+});
+
+
+test('a queued retry refreshes the count and removes the failed row and Dismiss',async()=>{
+  const options={waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'Try again.',can_retry:true,can_dismiss:true}]}};
+  options.onRetry=()=>{options.waiting={meetings:[],failed:[]};};
+  const f=await fixture(undefined,options), view=f.factories['coppermind-waiting']({app:f.app});
+  await view.refresh();await view.contentEl.all().find(e=>e.text==='Retry').onclick();
+  const texts=view.contentEl.all().map(e=>e.text);
+  assert.ok(texts.includes('0 meetings to review · 0 recordings failed'));
+  assert.ok(texts.includes('No recordings need attention.'));
+  assert.ok(!texts.includes('Call'));assert.ok(!texts.includes('Dismiss'));
+});
+
+test('a credential forbidden to retry sees the required permissions',async()=>{
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'Try again.',can_retry:true}]},retryFail:403});
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  const retry=view.contentEl.all().find(e=>e.text==='Retry');await retry.onclick();
+  const message=view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.match(message,/missing a permission the companion needs/);
+  assert.match(message,/Read notes, Read sources, Update sources, Update notes, Read artifacts, Read people and companies, and Update people and companies/);
+  assert.match(message,/select it in companion settings/);assert.equal(retry.disabled,false);
+  assert.doesNotMatch(message,/Check your connection/);
+});
+
+
+test('rejected note details show only the specific field problem',async()=>{
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'The meeting note fields were rejected.',field_problems:[{field:'account',reason:'should be a list'}]}]}});
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  const text=view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.ok(text.includes('Details: the "account" field should be a list.'));
+  assert.doesNotMatch(text,/schema|external id/);
+});
+
+test('rejected note with unavailable field details explains the next step',async()=>{
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'The meeting note fields were rejected.',field_problems:[],field_problems_unavailable:true}]}});
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  const text=view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.ok(text.includes('Details: the specific field was not recorded. Retry to check the note again.'));
 });

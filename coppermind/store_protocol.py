@@ -216,9 +216,12 @@ class PreconditionRequired(StoreError):
 
 
 class ValidationFailed(StoreError):
-    def __init__(self, errors: list[str]) -> None:
+    def __init__(
+        self, errors: list[str], *, field_problems: list[dict[str, str]] | None = None
+    ) -> None:
         super().__init__("; ".join(errors))
         self.errors = errors
+        self.field_problems = field_problems or []
 
 
 class MetadataUnavailable(StoreError):

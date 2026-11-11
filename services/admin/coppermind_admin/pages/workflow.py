@@ -97,8 +97,8 @@ def router(wiring: Wiring) -> APIRouter:
                     'ip">Download the companion plugin</a>.</li><li>Extract its folder in'
                     "to your vault’s .obsidian/plugins directory and enable Coppermind Re"
                     "view in Community plugins.</li><li>In plugin settings, enter this se"
-                    "rver address and select an API credential with notes:read, notes:wri"
-                    "te and sources:read.</li><li>Open a note and run “Coppermind Review:"
+                    "rver address and select an API credential. The setting lists the per"
+                    "missions it needs.</li><li>Open a note and run “Coppermind Review:"
                     " Review current note”.</li></ol><p>Requires Obsidian 1.11 or later. "
                     "Credentials use Obsidian SecretStorage; only the secret name is stor"
                     "ed in plugin settings.</p>"

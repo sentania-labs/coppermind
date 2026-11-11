@@ -215,6 +215,44 @@ class FrontmatterSchema(BaseModel):
         """
         return [problem for _, problem in self._problems(frontmatter)]
 
+    def field_problems(self, frontmatter: dict[str, Any]) -> list[dict[str, str]]:
+        """Describe rejected fields without copying values or validation messages."""
+        names = set(self.invalid_keys(frontmatter))
+        if self.tag_problems(frontmatter):
+            names.add(self.role("tags_key"))
+        result = []
+        for definition in self.keys:
+            name = definition.name
+            if name not in names:
+                continue
+            value = frontmatter.get(name)
+            if value is None:
+                reason = "is required"
+            elif name == self.role("account_key") and not isinstance(value, (str, list)):
+                reason = "should be a list"
+            elif name == self.role("account_key") and isinstance(value, list):
+                reason = "should contain text entries"
+            elif definition.kind == "list" and not isinstance(value, list):
+                reason = "should be a list"
+            elif definition.kind == "bool" and not isinstance(value, bool):
+                reason = "should be true or false"
+            elif definition.kind == "int" and (
+                isinstance(value, bool) or not isinstance(value, int)
+            ):
+                reason = "should be a whole number"
+            elif definition.kind == "date":
+                reason = "should be a local date or date and time"
+            elif definition.kind in {"string", "enum"} and not isinstance(value, (str, datetime)):
+                reason = "should be text"
+            elif definition.kind == "enum":
+                reason = "should use an allowed value"
+            elif name == self.role("tags_key"):
+                reason = "contains a tag that is not allowed"
+            else:
+                reason = "does not meet the vault's field rules"
+            result.append({"field": name, "reason": reason})
+        return result
+
     def invalid_keys(self, frontmatter: dict[str, Any]) -> list[str]:
         """The names of the keys a note fails on, carrying none of its content.
 

@@ -2,6 +2,8 @@
 const {Plugin, ItemView, PluginSettingTab, Setting, SecretComponent, Notice, requestUrl, MarkdownView, Modal} = require('obsidian');
 const VIEW = 'coppermind-review';
 const PEOPLE_VIEW = 'coppermind-people';
+const WAITING_VIEW = 'coppermind-waiting';
+const COMPANION_PERMISSIONS = 'Read notes, Read sources, Update sources, Update notes, Read artifacts, Read people and companies, and Update people and companies';
 async function hash(text) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return 'sha256:' + [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2,'0')).join('');
@@ -220,6 +222,66 @@ class ReviewView extends ItemView {
     }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
   }
 }
+class WaitingView extends ItemView {
+  constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.generation=0;}
+  getViewType(){return WAITING_VIEW;}
+  getDisplayText(){return 'Meetings to review';}
+  getIcon(){return 'list-checks';}
+  async onOpen(){await this.refresh();}
+  async refresh(){
+    const generation=++this.generation, el=this.contentEl;
+    el.empty();el.createEl('h2',{text:'Meetings to review'});
+    const status=el.createEl('p',{text:'Loading meetings and recordings…'});
+    try{
+      const data=await this.plugin.call('/v1/recordings/waiting');
+      if(generation!==this.generation)return;
+      status.setText(`${data.meetings.length} meeting${data.meetings.length===1?'':'s'} to review · ${data.failed.length} recording${data.failed.length===1?'':'s'} failed`);
+      const refresh=el.createEl('button',{text:'Refresh'});refresh.onclick=()=>this.refresh();
+      el.createEl('h3',{text:`Ready to review (${data.meetings.length})`});
+      if(!data.meetings.length)el.createEl('p',{text:'No meetings are waiting for review.'});
+      for(const meeting of data.meetings){
+        const card=el.createDiv({cls:'coppermind-card'});
+        const open=card.createEl('button',{text:meeting.title});
+        if(meeting.date){const date=new Date(meeting.date);if(!isNaN(date))card.createEl('p',{text:date.toLocaleDateString()});}
+        card.createEl('p',{text:'Open note and review'});
+        open.onclick=async()=>{
+          const file=this.app.vault.getAbstractFileByPath(meeting.path);
+          if(!file){let notice=card.querySelector('.coppermind-notice');if(!notice)notice=card.createEl('p',{cls:'coppermind-notice'});notice.setText('That note is not in this vault yet. Wait for sync, then refresh.');return;}
+          await this.app.workspace.getLeaf(false).openFile(file);this.plugin.noteFile=file;await this.plugin.open();
+        };
+      }
+      el.createEl('h3',{text:`Recordings needing attention (${data.failed.length})`});
+      if(!data.failed.length)el.createEl('p',{text:'No recordings need attention.'});
+      for(const recording of data.failed){
+        const card=el.createDiv({cls:'coppermind-card'});card.createEl('h4',{text:recording.title});
+        card.createEl('p',{text:recording.message});
+        for(const problem of recording.field_problems||[])card.createEl('p',{text:'Details: the '+JSON.stringify(problem.field)+' field '+problem.reason+'.'});
+        if(recording.field_problems_unavailable)card.createEl('p',{text:'Details: the specific field was not recorded. Retry to check the note again.'});
+        if(recording.retry_after){const date=new Date(recording.retry_after);if(!isNaN(date))card.createEl('p',{text:'Next attempt after '+date.toLocaleString()+'.'});}
+        if(recording.can_retry){
+          const button=card.createEl('button',{text:'Retry'}), feedback=card.createEl('p');
+          button.onclick=async()=>{button.disabled=true;feedback.setText('Queuing retry…');
+            try{await this.plugin.call('/v1/recordings/'+encodeURIComponent(recording.id)+'/retry','POST',{});await this.refresh();}
+            catch(e){feedback.setText(e.status===403?'This API credential is missing a permission the companion needs. In Coppermind Admin, create one with: '+COMPANION_PERMISSIONS+', then select it in companion settings.':'Could not queue retry. Check your connection and transcription settings, then try again.');button.disabled=false;}
+          };
+        }
+        if(recording.can_dismiss){
+        const dismiss=card.createEl('button',{text:'Dismiss'}), confirm=card.createDiv();
+        dismiss.onclick=()=>{
+          dismiss.disabled=true;confirm.empty();
+          confirm.createEl('p',{text:'This only removes the entry from this list and deletes nothing.'});
+          const yes=confirm.createEl('button',{text:'Dismiss entry'}), no=confirm.createEl('button',{text:'Cancel'}), note=confirm.createEl('p');
+          no.onclick=()=>{confirm.empty();dismiss.disabled=false;};
+          yes.onclick=async()=>{yes.disabled=true;no.disabled=true;note.setText('Dismissing…');
+            try{await this.plugin.call('/v1/recordings/'+encodeURIComponent(recording.id)+'/dismiss','POST',{});await this.refresh();}
+            catch(e){note.setText('Could not dismiss. Check your connection, then try again.');yes.disabled=false;no.disabled=false;}
+          };
+        };
+        }
+      }
+    }catch(e){if(generation!==this.generation)return;status.setText('Could not load meetings and recordings. Check your connection and API credential, then try again.');status.addClass('coppermind-notice');const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
+  }
+}
 class DeleteVoiceModal extends Modal {
   constructor(app, person, confirm, options={}){super(app);this.person=person;this.confirm=confirm;this.options=options;this.done=false;}
   onOpen(){
@@ -283,19 +345,26 @@ class Settings extends PluginSettingTab {
   constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
   display(){const el=this.containerEl;el.empty();el.createEl('h2',{text:'Coppermind'});
     new Setting(el).setName('Server URL').setDesc('Your Coppermind address, without /admin.').addText(t=>t.setValue(this.plugin.settings.url).onChange(async v=>{this.plugin.settings.url=v.trim().replace(/\/$/,'');await this.plugin.saveData(this.plugin.settings);}));
-    new Setting(el).setName('API credential').setDesc('In Coppermind Admin, open Connected apps (API Keys) and create a new key with Read notes, Update notes, Read sources, Update sources, and Read people and companies, and Update people and companies. Select that key here. Only the secret name is saved in plugin settings.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
+    new Setting(el).setName('API credential').setDesc('In Coppermind Admin, open Connected apps (API Keys) and create a new key with: '+COMPANION_PERMISSIONS+'. Select that key here. Only the secret name is saved in plugin settings.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
   }
 }
 module.exports=class CoppermindReview extends Plugin {
   async onload(){
     this.settings={url:'',secret:'',...await this.loadData()};
+    this.registerView(WAITING_VIEW,leaf=>new WaitingView(leaf,this));
     this.registerView(PEOPLE_VIEW,leaf=>new PeopleView(leaf,this));
     this.registerView(VIEW,leaf=>new ReviewView(leaf,this));
     this.addSettingTab(new Settings(this.app,this));
+    this.addCommand({id:'meetings-to-review',name:'Meetings to review',callback:()=>this.openWaiting()});
+    this.addRibbonIcon('list-checks','Meetings to review',()=>this.openWaiting());
     this.addCommand({id:'manage-people',name:'Manage people and voice recognition',callback:()=>this.openPeople()});
     this.addCommand({id:'review-current-note',name:'Review current note',callback:()=>this.open()});
     this.addRibbonIcon('clipboard-check','Review with Coppermind',()=>this.open());
     this.registerEvent(this.app.workspace.on('file-open',file=>{if(file)this.noteFile=file;}));
+  }
+  async openWaiting(){
+    let leaf=this.app.workspace.getLeavesOfType(WAITING_VIEW)[0]||this.app.workspace.getRightLeaf(false);
+    await leaf.setViewState({type:WAITING_VIEW,active:true});await this.app.workspace.revealLeaf(leaf);await leaf.view.refresh();
   }
   async openPeople(){
     const file=this.app.workspace.getActiveFile();

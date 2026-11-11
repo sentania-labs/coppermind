@@ -939,6 +939,10 @@ class ContextService:
     async def recording_status(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.recordings.status(payload)
 
+    async def recording_waiting(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Current reviewable recording notes and failed recording intakes."""
+        return await self.recordings.waiting()
+
     async def save_transcription(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.recordings.save_assignment(payload)
 
@@ -947,6 +951,12 @@ class ContextService:
 
     async def retry_recording(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.recordings.retry(payload)
+
+    async def retry_failed_recording(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.recordings.retry({"id": payload.get("id"), "failed_only": True})
+
+    async def dismiss_recording(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.recordings.dismiss(payload)
 
     async def retry_import(self, payload: dict[str, Any]) -> dict[str, Any]:
         receipts = await asyncio.to_thread(self.archive.receipts)

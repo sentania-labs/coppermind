@@ -712,7 +712,10 @@ async def test_a_note_that_cannot_be_filed_keeps_its_transcript_and_is_not_sent_
         async def refuse(ingest_request, **kwargs):
             calls.append(ingest_request)
             if len(calls) == 1:
-                raise ValidationFailed(["frontmatter: type is required"])
+                raise ValidationFailed(
+                    ["frontmatter: type is required"],
+                    field_problems=[{"field": "type", "reason": "is required"}],
+                )
             return await real(ingest_request, **kwargs)
 
         store.ingest = refuse
@@ -720,6 +723,10 @@ async def test_a_note_that_cannot_be_filed_keeps_its_transcript_and_is_not_sent_
         failed = await context.recording_status({"id": job["id"]})
         assert failed["error_rule"] == "note-rejected" and "type is required" in failed["error"]
         assert "transcript is kept" in failed["error"]
+        row = (await context.recording_waiting({}))["failed"][0]
+        assert row["field_problems"] == [{"field": "type", "reason": "is required"}]
+        assert "Retry will only work after the vault's field rules are changed" in row["message"]
+        assert "send the recording again with corrected fields" in row["message"]
         await context.retry_recording({"id": job["id"]})
         await context.recordings.tick()
     assert (await context.recording_status({"id": job["id"]}))["state"] == "succeeded"
@@ -1719,3 +1726,121 @@ async def test_a_voice_cannot_be_separated_from_a_note_whose_review_is_unfinishe
 
         assert voice.assignments(source) == [assignment]
         assert await transcript_of(store, job) == (revision, before)
+
+
+async def test_companion_retry_permissions_and_waiting_count_through_real_store(store):
+    """A refused retry keeps the failure; an accepted retry removes it from the count."""
+    import httpx
+    from coppermind_store.auth import InternalAuth
+    from coppermind_store.context_api import router as context_router
+    from fastapi import FastAPI
+
+    from coppermind.api_keys import create_key, load_keys
+    from coppermind.store_client import HttpStoreClient
+    from tests.integration.test_store_write_protocol import authorized_api
+
+    internal = FastAPI()
+    internal.state.store = store
+    internal.state.auth = InternalAuth("synthetic-internal-token")
+    internal.include_router(context_router)
+    client = HttpStoreClient(
+        "http://store", "synthetic-internal-token", transport=httpx.ASGITransport(app=internal)
+    )
+    app, _ = authorized_api(store)
+    app.state.store = client
+    current = load_keys(store.control.store)
+    reader, reader_key = create_key("reader", ["notes:read", "sources:read"])
+    # Use precisely the permission names shown in settings to provision the key.
+    import subprocess
+    from pathlib import Path
+
+    driver = (
+        Path(__file__).resolve().parents[2]
+        / "services/admin/tests/companion-permission-requests.cjs"
+    )
+    captured = json.loads(subprocess.check_output(["node", str(driver)], text=True))
+    permission_labels = {
+        "Read notes": "notes:read",
+        "Read sources": "sources:read",
+        "Update sources": "sources:write",
+        "Update notes": "notes:write",
+        "Read artifacts": "artifacts:read",
+        "Read people and companies": "entities:read",
+        "Update people and companies": "entities:write",
+    }
+    description = next(text for text in captured["descriptions"] if "create a new key" in text)
+    advertised = description.split("create a new key with: ", 1)[1].split(". Select", 1)[0]
+    names = [part.removeprefix("and ") for part in advertised.split(", ")]
+    assert set(names) == set(permission_labels)
+    companion, companion_key = create_key("companion", [permission_labels[name] for name in names])
+    current.keys.extend([reader, companion])
+    store.control.store.write("keys", current.model_dump(mode="json"), if_revision=current.revision)
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        accepted = await context.accept_recording(request(await store_audio(store)))
+        job = context.recordings.load(accepted["id"])
+        job.state = "failed"
+        job.attempts = job.attempt_limit
+        job.set_error("synthetic failure", "job-error")
+        context.recordings.save(job)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://api"
+        ) as api:
+            reader_headers = {"Authorization": f"Bearer {reader_key}"}
+            before = await api.get("/v1/recordings/waiting", headers=reader_headers)
+            assert before.status_code == 200
+            assert len(before.json()["failed"]) == 1
+            denied = await api.post(f"/v1/recordings/{job.id}/retry", headers=reader_headers)
+            assert denied.status_code == 403
+            assert (
+                len(
+                    (await api.get("/v1/recordings/waiting", headers=reader_headers)).json()[
+                        "failed"
+                    ]
+                )
+                == 1
+            )
+            # Replay actual view startup calls through the public authorization stack.
+            headers = {"Authorization": f"Bearer {companion_key}"}
+            for call in captured["calls"]:
+                response = await api.request(call["method"], call["path"], headers=headers)
+                assert response.status_code != 403, (call, response.text)
+            recognition = await api.put(
+                "/v1/entities/voice/recognition", headers=headers, json={"enabled": False}
+            )
+            assert recognition.status_code != 403
+            assert (await api.get("/v1/recordings/waiting", headers=headers)).status_code == 200
+            accepted_retry = await api.post(f"/v1/recordings/{job.id}/retry", headers=headers)
+            assert accepted_retry.status_code == 200
+            after = await api.get("/v1/recordings/waiting", headers=reader_headers)
+            assert after.status_code == 200 and after.json()["failed"] == []
+            assert context.recordings.load(job.id).state == "queued"
+    await client.aclose()
+
+
+async def test_rejected_recording_exposes_structured_field_reason(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        accepted = await context.accept_recording(
+            request(await store_audio(store), frontmatter={"date": "2026-11-09", "account": 42})
+        )
+        await context.recordings.tick()
+        job = context.recordings.load(accepted["id"])
+        assert job.error_rule == "note-rejected"
+        assert "account: expected a list" in job.error
+        row = (await context.recording_waiting({}))["failed"][0]
+        assert row["field_problems"] == [{"field": "account", "reason": "should be a list"}]
+        assert "external id" not in str(row) and "schema" not in str(row)
+        # Earlier versions saved the input but had no field_problems property.
+        path = context.root / "recordings" / f"{job.id}.json"
+        saved = json.loads(path.read_text())
+        del saved["field_problems"]
+        path.write_text(json.dumps(saved))
+        row = (await context.recording_waiting({}))["failed"][0]
+        assert row["field_problems"] == [{"field": "account", "reason": "should be a list"}]
+        assert row["field_problems_unavailable"] is False
+        saved["frontmatter"]["account"] = ["valid"]
+        path.write_text(json.dumps(saved))
+        row = (await context.recording_waiting({}))["failed"][0]
+        assert row["field_problems"] == []
+        assert row["field_problems_unavailable"] is True

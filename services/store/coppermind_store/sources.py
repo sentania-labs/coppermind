@@ -264,7 +264,7 @@ async def _ingest_new(
     problems = schema.validate_frontmatter(frontmatter) + schema.tag_problems(frontmatter)
     if problems:
         await _record_rejection(store, request, "validation_error")
-        raise ValidationFailed(problems)
+        raise ValidationFailed(problems, field_problems=schema.field_problems(frontmatter))
 
     folder = sanitize_folder(settings.notes.review_folder)
     folder_path = resolve(store.notes_root, folder)

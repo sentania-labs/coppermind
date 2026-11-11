@@ -33,6 +33,14 @@ to change recognition or delete signatures. Combining or separating voices also 
 Obsidian SecretStorage; the plugin saves only its name, never its value, in plugin settings. Configure it separately on devices
 that do not share local secret storage.
 
+Run **Coppermind Review: Meetings to review** (or use the list icon in the ribbon) to see
+how many meetings are waiting for review and which recordings failed. Each waiting meeting
+opens its note for review. Each failed recording says why in plain words, and offers
+Retry when a retry can help and Dismiss when the app is not going to retry it by itself;
+Dismiss only takes the entry off the list and deletes nothing. The view needs `notes:read` and
+`sources:read`; Retry also needs `sources:write`, `notes:write` and `artifacts:read`, and
+Dismiss needs `sources:write`. The calls are in [the API reference](api.md#recordings-audio-on-its-own).
+
 Open a note and run **Coppermind Review: Review current note**. The panel checks
 that the exact local bytes match the server before permitting completion. Wait
 for Obsidian Sync after editing. `date` is the one field for a note's date and
