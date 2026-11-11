@@ -10,14 +10,14 @@ EARLY_START = timedelta(minutes=10)
 
 
 def overlapping(events: list[dict[str, Any]], captured_at: str) -> list[dict[str, Any]]:
-    """Find timed occurrences containing the recording start, allowing a few minutes early."""
+    """Timed occurrences containing the recording start, a few minutes early allowed, nearest first."""
     try:
         captured = datetime.fromisoformat(captured_at)
         if captured.utcoffset() is None:
             return []
     except (ValueError, TypeError):
         return []
-    found = []
+    found: list[tuple[timedelta, dict[str, Any]]] = []
     for event in events:
         try:
             start = datetime.fromisoformat(event["start"])
@@ -27,10 +27,10 @@ def overlapping(events: list[dict[str, Any]], captured_at: str) -> list[dict[str
                 and end.utcoffset() is not None
                 and start - EARLY_START <= captured < end
             ):
-                found.append(event)
+                found.append((abs(start - captured), event))
         except (KeyError, TypeError, ValueError):
             continue
-    return found
+    return [event for _, event in sorted(found, key=lambda item: item[0])]
 
 
 def suggest(events: list[dict[str, Any]], transcript: str) -> str | None:

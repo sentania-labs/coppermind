@@ -335,7 +335,7 @@ class ContextService:
                 zone = ZoneInfo(self.store.control.settings().general.timezone)
                 captured_at = datetime.combine(day, start, zone).isoformat()
         matches = meeting_match.overlapping(events, captured_at)
-        if len(matches) < 2:
+        if not matches:
             return events
         field = self.config().assignments["enrichment"].event_field
         linked = set(self.read("associations", {}).get(note.id, {}).get("events", []))

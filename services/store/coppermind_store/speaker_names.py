@@ -276,7 +276,7 @@ async def evidence(
         linked.add(note.frontmatter[assignment.event_field])
     ambiguous = not linked and len({event["event_id"] for event in events}) > 1
     for event in events:
-        if not ambiguous and event["event_id"] not in linked:
+        if linked and event["event_id"] not in linked:
             continue
         for person in event.get("people", []):
             identity = person.get("contact_id")

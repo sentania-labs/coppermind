@@ -14,7 +14,7 @@ def test_recording_only_matches_timed_events_containing_its_start():
         },
         {"event_id": "all-day", "start": "2026-11-11", "end": "2026-11-12"},
     ]
-    assert [e["event_id"] for e in overlapping(events, "2026-11-11T09:30:00-06:00")] == ["a", "b"]
+    assert [e["event_id"] for e in overlapping(events, "2026-11-11T09:30:00-06:00")] == ["b", "a"]
     assert overlapping(events, "2026-11-11T09:30:00") == []
 
 
@@ -71,7 +71,8 @@ async def test_single_event_day_keeps_every_event_as_candidate():
         *timed,
         {"event_id": "b", "start": "2026-11-11T15:00:00-06:00", "end": "2026-11-11T16:00:00-06:00"},
     ]
-    assert (await _candidates(one_of_two, "2026-11-11T10:05:00-06:00"))[0] == ["a", "b"]
+    assert (await _candidates(one_of_two, "2026-11-11T10:05:00-06:00"))[0] == ["a"]
+    assert (await _candidates(one_of_two, "2026-11-11T12:00:00-06:00"))[0] == ["a", "b"]
 
 
 async def test_several_overlapping_events_narrow_the_candidates():
@@ -80,12 +81,13 @@ async def test_several_overlapping_events_narrow_the_candidates():
         {"event_id": "b", "start": "2026-11-11T10:30:00-06:00", "end": "2026-11-11T11:30:00-06:00"},
         {"event_id": "c", "start": "2026-11-11T15:00:00-06:00", "end": "2026-11-11T16:00:00-06:00"},
     ]
-    assert (await _candidates(events, "2026-11-11T10:40:00-06:00"))[0] == ["a", "b"]
-    assert (await _candidates(events, "2026-11-11T09:55:00-06:00"))[0] == ["a", "b", "c"]
+    assert (await _candidates(events, "2026-11-11T10:40:00-06:00"))[0] == ["b", "a"]
+    assert (await _candidates(events, "2026-11-11T09:55:00-06:00"))[0] == ["a"]
+    assert (await _candidates(events, "2026-11-11T12:00:00-06:00"))[0] == ["a", "b", "c"]
     linked = await _candidates(events, "2026-11-11T10:40:00-06:00", {"meeting": "c"})
-    assert linked[0] == ["a", "b", "c"]
+    assert linked[0] == ["b", "a", "c"]
     associated = await _candidates(events, "2026-11-11T10:40:00-06:00", associated=["c"])
-    assert associated[0] == ["a", "b", "c"]
+    assert associated[0] == ["b", "a", "c"]
 
 
 async def test_calendar_descriptions_leave_the_store_only_when_asked(monkeypatch):
