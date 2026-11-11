@@ -65,7 +65,7 @@ from a transcript or other source returns an empty `quote` with
 the current integer `version`. See the
 [dossier contract](dossiers.md#agent-api) for filters, corrections, evidenced
 claims, and merge/split previews. No existing API key gains these scopes. Voice
-recognition routes (`/v1/entities/{id}/voice` and `/v1/entities/voice/settings`) are
+recognition routes (`/v1/entities/{id}/voice` and `/v1/entities/voice/...`) are
 described under [voice recognition](dossiers.md#voice-recognition).
 
 Entity search hits require both `notes:read` and `entities:read`. Unauthorized

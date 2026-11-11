@@ -27,8 +27,8 @@ Obsidian 1.11 or later and a Coppermind API key with `notes:read`, `notes:write`
 `sources:read`. Naming speakers also needs `sources:write` and `entities:read`; a key
 without `entities:read` still reviews everything else, and the panel says that speakers
 cannot be named with it. The People view (voice recognition) also needs `entities:write`
-to change recognition or delete signatures. Combining or separating voices also needs `sources:write`. Select the key through Obsidian SecretStorage; the plugin saves
-only its name, never its value, in plugin settings. Configure it separately on devices
+to change recognition or delete signatures. Combining or separating voices also needs `sources:write`. Select the key through
+Obsidian SecretStorage; the plugin saves only its name, never its value, in plugin settings. Configure it separately on devices
 that do not share local secret storage.
 
 Open a note and run **Coppermind Review: Review current note**. The panel checks
