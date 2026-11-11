@@ -373,6 +373,15 @@ class ContextService:
     async def choose_recording_meeting(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.lifecycle.choose_recording_meeting(payload)
 
+    async def merge_recording(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.lifecycle.merge_recording(payload)
+
+    async def dismiss_recording_merge(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.lifecycle.dismiss_recording_merge(payload)
+
+    async def retry_recording_merge(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.lifecycle.retry_recording_merge(payload)
+
     async def complete_review(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.lifecycle.complete(payload)
 
@@ -2320,6 +2329,7 @@ class ContextService:
         return job_id
 
     async def tick(self) -> None:
+        await self.lifecycle.resume_recording_merges()
         await self.migrate_event_ids()
         await self.dropbox.scan()
         async with self.lock:

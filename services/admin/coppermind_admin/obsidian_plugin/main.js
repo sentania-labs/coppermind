@@ -90,6 +90,40 @@ class ReviewView extends ItemView {
       const speakerChoices={}, manualSpeakers={}, cards=[];
       const ready=data.state==='suggested'&&!data.stale&&synced;
       const summary=data.meeting_summary?{...data.meeting_summary}:null;
+      const merge=data.recording_merge;
+      if(['applying','attention'].includes(merge?.state)){
+        const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Recording merge needs attention'});
+        box.createEl('p',{text:merge.error||'The recording is being added to your note. You can retry if it does not finish.',cls:'coppermind-notice'});
+        const retry=box.createEl('button',{text:'Retry merge'});retry.disabled=!synced;
+        retry.onclick=async()=>{try{
+          if(await hash(await this.app.vault.read(file))!==data.note.content_hash){new Notice('The note changed. Wait for sync, then refresh.');return;}
+          const result=await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-merge/retry','POST',{if_match:data.note.content_hash});
+          el.empty();el.createEl('h3',{text:'Recording added'});el.createEl('p',{text:'The recording is now part of '+result.target_title+'.'});
+          const open=el.createEl('button',{text:'Open '+result.target_title});open.onclick=()=>this.app.workspace.openLinkText(result.target_path,'',false);
+        }catch(e){new Notice(e.message);}};
+      }
+      if(merge?.state==='offered'&&summary){
+        const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'You already have a note for this meeting'});
+        let destination=merge.candidates[0];
+        if(merge.candidates.length>1)new Setting(box).setName('Your note').addDropdown(d=>{
+          for(const candidate of merge.candidates)d.addOption(candidate.id,candidate.title);
+          d.setValue(destination.id).onChange(v=>destination=merge.candidates.find(c=>c.id===v));
+        });
+        const open=box.createEl('a',{text:'Open your note',href:'#'});open.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(destination.path,'',false);};
+        box.createEl('p',{text:'Your words stay as they are. The recording summary will be added below them with a transcript link. This separate recording note will be retired.'});
+        const review=box.createEl('button',{text:'Review merge'});review.disabled=!ready;
+        review.onclick=()=>new MergeModal(this.app,destination,summary,async()=>{
+          try{
+            const targetFile=this.app.vault.getAbstractFileByPath(destination.path);
+            if(!targetFile||await hash(await this.app.vault.read(targetFile))!==destination.content_hash||await hash(await this.app.vault.read(file))!==data.note.content_hash){new Notice('A note changed. Wait for sync, then refresh.');return;}
+            await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-merge','POST',{if_match:data.note.content_hash,target_id:destination.id,target_hash:destination.content_hash,job_id:data.job_id,meeting_summary:summary,confirmation:'Merge recording'});
+            el.empty();el.createEl('h3',{text:'Recording added'});el.createEl('p',{text:'The recording is now part of '+destination.title+'.'});
+            const openResult=el.createEl('button',{text:'Open '+destination.title});openResult.onclick=()=>this.app.workspace.openLinkText(destination.path,'',false);
+          }catch(e){new Notice(e.message);}
+        }).open();
+        const dismiss=box.createEl('button',{text:'Keep separate'});dismiss.disabled=!synced;
+        dismiss.onclick=async()=>{try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-merge/dismiss','POST',{if_match:data.note.content_hash});await this.refresh();}catch(e){new Notice(e.message);}};
+      }
       if(!data.suggestions_enabled)el.createEl('p',{text:'Suggestions are off. You can name speakers below, or turn on enrichment in Model connections.',cls:'coppermind-notice'});
       else if(data.suggestion_error){
         el.createEl('p',{text:'Suggestions could not be completed: '+data.suggestion_error,cls:'coppermind-notice'});
@@ -301,6 +335,18 @@ class WaitingView extends ItemView {
       }
     }catch(e){if(generation!==this.generation)return;status.setText('Could not load meetings and recordings. Check your connection and API credential, then try again.');status.addClass('coppermind-notice');const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
   }
+}
+class MergeModal extends Modal {
+  constructor(app,destination,summary,confirm){super(app);this.destination=destination;this.summary=summary;this.confirm=confirm;}
+  onOpen(){
+    const el=this.contentEl;el.empty();el.createEl('h2',{text:'Add this recording to '+this.destination.title+'?'});
+    el.createEl('p',{text:'Your existing text stays word for word. The recording summary and a transcript link will be added below it.'});
+    for(const [key,label] of [['summary','Summary'],['decisions','Decisions'],['action_items','Action items']])if(this.summary[key]?.trim()){el.createEl('h3',{text:label});el.createEl('p',{text:this.summary[key]});}
+    el.createEl('p',{text:'The recording will belong to your existing note and this separate recording note will be retired.'});
+    const confirm=el.createEl('button',{text:'Confirm merge',cls:'mod-cta'});confirm.onclick=async()=>{this.close();await this.confirm();};
+    const back=el.createEl('button',{text:'Go back'});back.onclick=()=>this.close();
+  }
+  onClose(){this.contentEl.empty();}
 }
 class DeleteVoiceModal extends Modal {
   constructor(app, person, confirm, options={}){super(app);this.person=person;this.confirm=confirm;this.options=options;this.done=false;}

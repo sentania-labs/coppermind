@@ -1,3 +1,5 @@
+from typing import Any
+
 from coppermind_store.meeting_match import overlapping, suggest
 
 
@@ -36,7 +38,7 @@ async def test_owner_choice_validates_current_candidates_and_preserves_existing_
     import pytest
     from coppermind_store.note_lifecycle import NoteLifecycle
 
-    note = SimpleNamespace(id="note", content_hash="hash", frontmatter={})
+    note = SimpleNamespace(id="note", content_hash="hash", frontmatter={}, body="")
 
     class Store:
         async def get_note(self, _):
@@ -52,9 +54,9 @@ async def test_owner_choice_validates_current_candidates_and_preserves_existing_
         store = Store()
         lock = asyncio.Lock()
         recordings = SimpleNamespace(
-            jobs=lambda: [SimpleNamespace(note_id="note", source_id="src")]
+            jobs=lambda: [SimpleNamespace(note_id="note", source_id="src", title="Recording")]
         )
-        state = {}
+        state: dict[str, Any] = {}
 
         def read(self, name, default):
             return self.state.get(name, default)
@@ -90,3 +92,105 @@ async def test_owner_choice_validates_current_candidates_and_preserves_existing_
     await lifecycle.choose_recording_meeting({**payload, "event_id": "event"})
     assert note.frontmatter["meeting"] == "event"
     assert context.state["associations"]["note"]["events"] == ["event"]
+
+
+async def test_merge_candidates_require_same_event_and_respect_dismissal():
+    from datetime import date
+    from types import SimpleNamespace
+
+    from coppermind_store.note_lifecycle import NoteLifecycle
+
+    manual = SimpleNamespace(
+        id="manual",
+        title="My notes",
+        path="Notes/My notes.md",
+        content_hash="m",
+        frontmatter={"meeting": "event"},
+        sources=[],
+    )
+    unrelated = SimpleNamespace(
+        id="other",
+        title="Other",
+        path="Notes/Other.md",
+        content_hash="o",
+        frontmatter={"meeting": "other"},
+        sources=[],
+    )
+    generated = SimpleNamespace(
+        id="generated",
+        title="Generated",
+        path="Review/Generated.md",
+        content_hash="g",
+        frontmatter={"meeting": "event"},
+        sources=[],
+    )
+    documents = {n.id: n for n in (manual, unrelated, generated)}
+
+    class Schema:
+        def role(self, name):
+            return {"date_key": "date"}.get(name, name)
+
+    class Store:
+        control = SimpleNamespace(
+            schema=lambda: Schema(),
+            settings=lambda: SimpleNamespace(general=SimpleNamespace(timezone="America/Chicago")),
+        )
+
+        async def list_notes(self, query):
+            assert query.from_date == date(2026, 11, 11) == query.to_date
+            return SimpleNamespace(items=list(documents.values()), next_cursor=None)
+
+        async def get_note(self, identity):
+            return documents[identity]
+
+    class Context:
+        store = Store()
+        recordings = SimpleNamespace(jobs=lambda: [SimpleNamespace(note_id="generated")])
+        state: dict[str, Any] = {}
+        events: list[dict[str, str]] = []
+
+        def in_review_folder(self, path):
+            return path.startswith("Review/")
+
+        async def calendar_candidates(self, note):
+            return self.events
+
+        def read(self, name, default):
+            return self.state.get(name, default)
+
+        def config(self):
+            return SimpleNamespace(
+                assignments={"enrichment": SimpleNamespace(event_field="meeting")}
+            )
+
+    context = Context()
+    note = SimpleNamespace(
+        id="recording",
+        path="Review/Recording.md",
+        frontmatter={"meeting": "event", "date": "2026-11-11"},
+    )
+    recording = SimpleNamespace(source_id="source")
+    assert [m["id"] for m in await NoteLifecycle(context).merge_candidates(note, recording)] == [
+        "manual"
+    ]
+    context.events = [
+        {
+            "event_id": "event",
+            "start": "2026-11-11T09:00:00-06:00",
+            "end": "2026-11-11T10:00:00-06:00",
+        },
+        {
+            "event_id": "event",
+            "start": "2026-11-11T14:00:00-06:00",
+            "end": "2026-11-11T15:00:00-06:00",
+        },
+    ]
+    recording.captured_at = "2026-11-11T09:15:00-06:00"
+    manual.frontmatter["date"] = "2026-11-11T14:00:00"
+    assert await NoteLifecycle(context).merge_candidates(note, recording) == []
+    manual.frontmatter["date"] = "2026-11-11T09:00:00"
+    assert [m["id"] for m in await NoteLifecycle(context).merge_candidates(note, recording)] == [
+        "manual"
+    ]
+    context.state["recording-merge-dismissals"] = {"source": True}
+    assert await NoteLifecycle(context).merge_candidates(note, recording) == []

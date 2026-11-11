@@ -584,6 +584,27 @@ async def reconcile_once(
                 rows = (await session.scalars(sa.select(Note).where(Note.id.in_(chunk)))).all()
                 for row in rows:
                     observed = observations.get(row.id)
+                    retired = (
+                        store.context.read("retired-recordings/" + row.id, {})
+                        if observed is None
+                        else {}
+                    )
+                    if retired.get("snapshot") and retired.get("source_id"):
+                        if row.state != "deleted" or row.state_reason != "Merged into another note":
+                            result = await session.execute(
+                                sa.update(Note)
+                                .where(Note.id == row.id, Note.updated_at <= scan_started)
+                                .values(
+                                    state="deleted",
+                                    state_reason="Merged into another note",
+                                    updated_at=now,
+                                )
+                                .returning(Note.id)
+                            )
+                            if result.scalar_one_or_none() is not None:
+                                await indexer.drop_note(session, row.id, now)
+                                counts["deleted"] += 1
+                        continue
                     values = _values_for(row, observed, schema)
                     receipt = None
                     if observed is None:

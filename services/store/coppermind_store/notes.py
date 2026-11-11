@@ -926,6 +926,79 @@ class LocalStore:
         )
 
     @writer
+    async def merge_note_update(
+        self, note_id: NoteId, changes: dict[str, Any], suffix: str, if_match: ETag
+    ) -> NoteDocument:
+        """Apply internal source citations and an append without rewriting existing prose."""
+        schema = self.control.schema()
+        allowed = {schema.role("sources_key"), schema.optional_role("artifacts_key")}
+        if not set(changes) <= allowed:
+            raise ValueError("merge can only add source and recording citations")
+        relative, path = await self._locate(note_id)
+        async with self._lock_for(note_id):
+            original, current, _ = _bytes_at(note_id, relative, path, schema, if_match)
+            for field, values in changes.items():
+                existing = current.get(field, [])
+                if (
+                    not isinstance(existing, list)
+                    or not isinstance(values, list)
+                    or values[: len(existing)] != existing
+                    or any(not is_valid_id(value) for value in values)
+                ):
+                    raise ValueError("merge citations must only add valid identities")
+            before_body = fm.parse(original.decode("utf-8"))[1]
+            updated = (
+                fm.patch(original.decode("utf-8"), _with_kinds(changes, schema))
+                if changes
+                else original.decode("utf-8")
+            ) + suffix
+            frontmatter, body = fm.parse(updated)
+            if body != before_body + suffix:
+                raise ValueError("merge would change existing note text")
+            problems = schema.validate_frontmatter(frontmatter)
+            problems += schema.tag_problems(frontmatter, current)
+            if problems:
+                raise ValidationFailed(problems)
+            await self._artifact_links(frontmatter, current)
+            data = updated.encode("utf-8")
+            now = datetime.now(tz=UTC)
+            digest = content_hash(data)
+            try:
+                async with transaction(self.session_factory) as session:
+                    await session.execute(
+                        sa.update(Note)
+                        .where(Note.id == note_id)
+                        .values(
+                            title=_title_of(body, path),
+                            content_hash=digest,
+                            size_bytes=len(data),
+                            mtime=now,
+                            frontmatter=_jsonable(frontmatter),
+                            **_mirror_columns(frontmatter, schema),
+                            state="ok",
+                            state_reason=None,
+                            updated_at=now,
+                        )
+                    )
+                    await index_note(
+                        session,
+                        note_id=note_id,
+                        path=relative,
+                        title=_title_of(body, path),
+                        body=body,
+                        version=digest,
+                        now=now,
+                        notes_folder=self.control.settings().notes.notes_folder,
+                    )
+                    _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
+            except BaseException as exc:
+                typed = _metadata_failure(exc)
+                if typed is None:
+                    raise
+                raise typed from exc
+        return await self.get_note(note_id)
+
+    @writer
     async def patch_frontmatter(
         self, note_id: NoteId, request: PatchFrontmatter, if_match: ETag
     ) -> NoteDocument:

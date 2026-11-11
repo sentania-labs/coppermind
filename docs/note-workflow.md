@@ -66,8 +66,9 @@ that applies to several customers lists them all, and a note found by any one of
 them.
 
 For a recording, the review panel also shows each diarized speaker with a proposed
-person, confidence and reason. Candidates are the linked calendar
-attendees, then People named in the note or transcript, then a few recently met People;
+person, confidence and reason. Candidates are the linked calendar attendees, or people
+from possible meetings when several timed events overlap, then People named in the note
+or transcript, then a few recently met People;
 never the whole People list. The model sees a bounded sample of each speaker's turns, not
 the full transcript. If that cannot fit the input limit, speaker suggestions are skipped
 with a notice and the other suggestions still arrive. A person renamed after suggestions
@@ -158,6 +159,25 @@ a retry action in review, with durable failure details in Problems. Stale or
 unsynced proposals cannot be applied. Completing review is recorded before the
 append, so retrying an interrupted completion does not append a second copy.
 
+When several timed events overlap a recording's start, Review offers the matching
+meetings and may suggest one from names and the topic in the conversation. The
+recording and summary do not wait for that choice. Choose the meeting to link it;
+the generated heading takes its title when that heading has not been edited. Until
+then, possible meeting attendees are marked in the speaker chooser. Invited
+people are not automatically treated as attendees.
+
+If an existing hand-written note is linked to the same event on the same day,
+Review offers to add the recording to it. Check the destination and summary, then
+confirm the merge. The original text stays in place, the recording summary and
+transcript link are appended, and the separate recording note is retired. Keeping
+them separate dismisses the offer for that recording. A merge receipt and snapshots
+are stored in the state volume before changes. An interrupted merge resumes on the
+worker's next pass; if a note is unavailable or the recording note has been edited,
+it is kept and Review reports what needs attention. Once the note is available again,
+use **Retry merge** in Review. Merging requires `sources:write`
+in addition to the review scopes. The audio is retained after a merge so automatic
+audio cleanup does not rewrite text in the hand-written note.
+
 ## State, recovery and rollback
 
 Lifecycle receipts, confirmed contributions, follow-ups and Dropbox originals
@@ -188,6 +208,15 @@ Do not restore old note files over newer reviewed content.
 - `POST /v1/notes/{id}/suggestions`: explicit refresh, with the same three scopes.
 - `POST /v1/notes/{id}/calendar-update`: confirm a candidate or dismiss the update,
   conditional on both note version and calendar evidence version.
+- `POST /v1/notes/{id}/recording-meeting`: select a current overlapping event using
+  `if_match`, `calendar_hash` and `event_id`. Requires the review scopes and `notes:write`.
+- `POST /v1/notes/{id}/recording-merge`: confirm a proposed merge with `if_match`,
+  `target_id`, `target_hash`, `job_id`, `meeting_summary` and confirmation
+  `Merge recording`. Also requires `sources:write`.
+- `POST /v1/notes/{id}/recording-merge/dismiss`: remember dismissal for the source,
+  with `if_match` and the review write scopes.
+- `POST /v1/notes/{id}/recording-merge/retry`: retry a recorded merge with `if_match`
+  and the same scopes as confirmation.
 
 The companion uses the documented Obsidian
 [SecretStorage](https://docs.obsidian.md/plugins/guides/secret-storage) and
