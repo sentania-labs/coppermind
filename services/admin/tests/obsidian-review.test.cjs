@@ -280,3 +280,30 @@ test('turning off with nothing saved needs no confirmation',async()=>{
   assert.equal(f.modals.length,0);
   assert.equal(f.puts().length,1);
 });
+
+test('summary edits and strong voice are submitted together',async()=>{
+  const f=await fixture(undefined,{meeting_summary:summaryProposal,job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
+  const input=f.view.contentEl.all().find(e=>e.tag==='textarea');input.value='Corrected summary.';input.oninput();
+  assert.ok(f.view.contentEl.all().some(e=>e.text==='Speaker 1 → Alex'));
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
+  assert.equal(body.meeting_summary.summary,'Corrected summary.');
+  assert.equal(body.manual_speakers['Speaker 1'],'person:a');
+});
+
+
+test('voice selection does not show an empty model suggestion as a 0% voice match',async()=>{
+  const s={...proposal(0,0,null),display_value:'No person suggested',reason:'No confident match was suggested.',candidates:[]};
+  const f=await fixture(undefined,{suggestions:[s],job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
+  const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.match(text,/Source: Voice/);assert.match(text,/Speaker 1 → Alex/);
+  assert.doesNotMatch(text,/Model confidence: 0%/);assert.doesNotMatch(text,/No confident match was suggested/);
+  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).speaker_choices['0'],'person:a');
+});
+test('useful model evidence stays attributed when voice supplies the name',async()=>{
+  const s={...proposal(0,0,null),reason:'Someone said hello.',quote:'Hello.',candidates:[]};
+  const f=await fixture(undefined,{suggestions:[s],job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
+  const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.match(text,/Model: Someone said hello/);assert.match(text,/Model evidence/);
+});

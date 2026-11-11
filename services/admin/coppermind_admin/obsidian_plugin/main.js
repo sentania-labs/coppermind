@@ -151,12 +151,13 @@ class ReviewView extends ItemView {
         const card=el.createDiv({cls:'coppermind-card'});let toggle;
         const voice=s.kind==='speaker'?voicePlan(s.field,s):null;
         const initial=s.kind==='speaker'&&ready&&!voice.conflict&&!!voice.initial&&(voice.strong.length===1||s.confidence>=0.8);
+        const noModelCandidate=s.kind==='speaker'&&!s.value&&voice.matches.length>0;
         if(initial)selected.add(s.index);
         new Setting(card).setName(s.kind==='filename'?'Note title':s.kind==='speaker'?s.field:s.field||s.kind).addToggle(t=>{toggle=t;t.setDisabled(!ready).setValue(initial).onChange(v=>{v?selected.add(s.index):selected.delete(s.index);updatePreview();});});
         const shown=s.display_value||(Array.isArray(s.value)?s.value.join(', '):String(s.value??''));
         card.createEl('p',{text:voice?.conflict&&s.value?'Model: '+shown:voice&&voice.strong.length===1&&!voice.conflict&&!voice.agreed?voice.strong[0].name:shown});
         if(s.kind==='speaker'){
-          card.createEl('p',{text:'Model confidence: '+Math.round(s.confidence*100)+'%'});
+          if(!noModelCandidate)card.createEl('p',{text:'Model confidence: '+Math.round(s.confidence*100)+'%'});
           if(voice.agreed)card.createEl('p',{text:'Sources: Model and Voice'});
           else if(voice.strong.length===1&&!voice.conflict)card.createEl('p',{text:'Source: Voice'});
           if(voice.conflict)card.createEl('p',{text:'Suggestions disagree. Choose a person.'});
@@ -167,7 +168,8 @@ class ReviewView extends ItemView {
           const chooser=makeChooser(card,s.field,people,voice.initial,value=>{speakerChoices[s.index]=value;value?selected.add(s.index):selected.delete(s.index);toggle.setValue(!!value);},!ready,choices);
           speakerChoices[s.index]=chooser.value;cards.push({label:s.field,chooser,people,active:()=>selected.has(s.index),select:()=>{if(chooser.value){selected.add(s.index);toggle.setValue(true);}}});
         }
-        card.createEl('p',{text:s.reason});if(s.quote)card.createEl('blockquote',{text:s.quote});
+        if(s.reason&&(!noModelCandidate||!/^No (confident )?(match|person|speaker).*suggest/i.test(s.reason)))card.createEl('p',{text:s.kind==='speaker'?'Model: '+s.reason:s.reason});
+        if(s.quote){if(s.kind==='speaker')card.createEl('small',{text:'Model evidence'});card.createEl('blockquote',{text:s.quote});}
         if(s.contact_ids.length)card.createEl('small',{text:'Linked contact evidence is recorded with this suggestion.'});
       }
       const proposed=new Set(data.suggestions.filter(s=>s.kind==='speaker'&&ready).map(s=>s.field));
