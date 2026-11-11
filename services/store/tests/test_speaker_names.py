@@ -283,14 +283,19 @@ async def test_only_time_matching_meeting_supplies_speakers():
         def config(self):
             return SimpleNamespace(assignments={"enrichment": SimpleNamespace(event_field="event")})
 
+        linked = False
+
         def read(self, name, default):
-            return default
+            return {"note": {"events": ["afternoon"]}} if self.linked else default
 
     context = Context()
     note = SimpleNamespace(id="note", title="", body="", frontmatter={})
     chosen = await ContextService.recording_calendar_candidates(context, note)
-    data = await evidence(context, note, chosen)
     assert [event["event_id"] for event in chosen] == ["afternoon"]
+    # Until the meeting is linked, no other meeting's invitees are offered either.
+    assert (await evidence(context, note, chosen))["candidates"] == []
+    context.linked = True
+    data = await evidence(context, note, chosen)
     assert len(data["candidates"]) == 30
     assert {c["id"][: len("contact:afternoon")] for c in data["candidates"]} == {
         "contact:afternoon"
