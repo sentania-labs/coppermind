@@ -1739,11 +1739,15 @@ async def test_companion_retry_permissions_and_waiting_count_through_real_store(
     client = HttpStoreClient(
         "http://store", "synthetic-internal-token", transport=httpx.ASGITransport(app=internal)
     )
-    app, headers = authorized_api(store)
+    app, _ = authorized_api(store)
     app.state.store = client
     current = load_keys(store.control.store)
     reader, reader_key = create_key("reader", ["notes:read", "sources:read"])
-    current.keys.append(reader)
+    companion, companion_key = create_key(
+        "companion",
+        ["notes:read", "sources:read", "sources:write", "notes:write", "artifacts:read"],
+    )
+    current.keys.extend([reader, companion])
     store.control.store.write("keys", current.model_dump(mode="json"), if_revision=current.revision)
     async with Service() as service:
         context = await setup_transcription(store, service)
@@ -1770,6 +1774,8 @@ async def test_companion_retry_permissions_and_waiting_count_through_real_store(
                 )
                 == 1
             )
+            headers = {"Authorization": f"Bearer {companion_key}"}
+            assert (await api.get("/v1/recordings/waiting", headers=headers)).status_code == 200
             accepted_retry = await api.post(f"/v1/recordings/{job.id}/retry", headers=headers)
             assert accepted_retry.status_code == 200
             after = await api.get("/v1/recordings/waiting", headers=reader_headers)

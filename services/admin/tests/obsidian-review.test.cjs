@@ -397,7 +397,7 @@ test('a credential forbidden to retry sees the required permissions',async()=>{
   const retry=view.contentEl.all().find(e=>e.text==='Retry');await retry.onclick();
   const message=view.contentEl.all().map(e=>e.text||'').join(' ');
   assert.match(message,/not allowed to retry recordings/);
-  assert.match(message,/Update sources, Update notes, and Read artifacts/);
+  assert.match(message,/Read notes, Read sources, Update sources, Update notes, and Read artifacts/);
   assert.match(message,/select it in the companion settings/);assert.equal(retry.disabled,false);
   assert.doesNotMatch(message,/Check your connection/);
 });
