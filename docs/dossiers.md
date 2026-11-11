@@ -137,6 +137,38 @@ Admin's Dossiers view shows People, Companies, facts, relationships, interests
 and evidence for setup and repair. Daily reading, corrections and identity
 operations work in Obsidian or the agent API.
 
+## Voice recognition
+
+Recognising recurring speakers by voice is biometric data about other people, so it is off
+by default and enabled per person. Coppermind keeps voice signatures only, never audio clips.
+The transcription service returns a signature (`model`, `version`, vector) for each speaker;
+until review these are held privately with the recording, never in notes, the vault or API
+responses, and are removed with the recording's audio, its note, or a confirmed purge.
+
+- **Saving:** completing review with a speaker name the owner accepted or corrected saves
+  that speaker's signature against the person, only if the person is opted in. There is no
+  separate confirmation step.
+- **Suggesting:** on a later recording, each speaker's signature is compared with saved ones
+  of the same `model` and `version`. A close match appears in the review panel as
+  `Voice: <name>` (cosine at least the Voice threshold, 0.60 by default) or
+  `Maybe: <name>` (at least the Maybe threshold, 0.45 by default) for the owner to choose;
+  nothing is applied without review. A candidate the owner passed over is not offered again
+  for that speaker on that note.
+- **Deleting:** a person's signatures can be deleted at any time, which also clears their
+  turned-down suggestions. Retiring, merging or purging the person removes them too.
+
+The People view in Obsidian (command "Manage people and voice recognition") shows a
+person's opt-in, saved signatures with their source notes, and Delete signatures. Admin's
+Dossiers tab offers the same per-person controls for setup and repair, and is where the
+two thresholds are set; a change affects future suggestions only.
+
+| Request | Scopes | Purpose |
+| --- | --- | --- |
+| `GET /v1/entities/{id}/voice` | `entities:read`, `notes:read` | Opt-in state and signature summaries (note, date, speech seconds; never vectors) |
+| `PUT /v1/entities/{id}/voice` | adds `entities:write` | `{"enabled": true/false}` |
+| `DELETE /v1/entities/{id}/voice` | adds `entities:write` | Delete the person's signatures |
+| `GET`/`PUT /v1/entities/voice/settings` | read / adds `entities:write` | The `strong` and `maybe` thresholds, each -1 to 1 with `maybe` not above `strong` |
+
 ## Deletion and recovery
 
 Deleting a page in Obsidian retires the subject at the next reconciliation, index rebuild,

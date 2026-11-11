@@ -64,7 +64,9 @@ from a transcript or other source returns an empty `quote` with
 `POST /v1/entities/{id}` additionally require `entities:write`. Changes carry
 the current integer `version`. See the
 [dossier contract](dossiers.md#agent-api) for filters, corrections, evidenced
-claims, and merge/split previews. No existing API key gains these scopes.
+claims, and merge/split previews. No existing API key gains these scopes. Voice
+recognition routes (`/v1/entities/{id}/voice` and `/v1/entities/voice/settings`) are
+described under [voice recognition](dossiers.md#voice-recognition).
 
 Entity search hits require both `notes:read` and `entities:read`. Unauthorized
 kinds are excluded before retrieval, ranking and pagination. Entity hits have `kind: entity` and
@@ -369,7 +371,13 @@ The service is called as OpenAI-compatible `POST {base URL}/audio/transcriptions
 multipart upload of the file with `model`, `response_format` (`diarized_json` or
 `verbose_json`) and, for `diarized_json`, `chunking_strategy=auto`. When the request's
 `metadata.num_speakers` is a whole number of 1 or more it is passed along as `num_speakers`,
-a hint for separating voices; the labels stay the service's own (`Speaker 2`), because it
+a hint for separating voices. Without it, a calendar event linked to the note (or the one
+same-day event with the note's title) sends its attendee count as `max_speakers`; no
+single match, or no attendees, sends neither. Every request also sets
+`include_speaker_embeddings=true`; the reply's `speakers` list (each with a `label`,
+`speech_seconds` and `embeddings` of `model`, `version` and `vector`) is held privately for
+voice recognition (see [dossiers](dossiers.md#voice-recognition)) and is never part of the
+transcript. The labels stay the service's own (`Speaker 2`), because it
 does not say who anyone is. The reply must carry
 `segments`, each with `text` and a `speaker`. The assignment's wait limit
 (`wait_s`, one hour by default, up to four hours) is how long the connection may stay
