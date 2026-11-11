@@ -291,13 +291,13 @@ reconciler when that version changes. `state` is `ok`, or `modified` when the
 browsable copy no longer hashes to the archived bytes, which Problems reports
 and nothing rewrites.
 
-Dropbox takes an artifact only with a kind marker: a sidecar named
-`<filename>.kind` beside the dropped file containing the word `artifact` (or
-JSON with `kind: artifact` and optional `title`, `tags`, `date`), or
-`kind=artifact` on `POST /v1/dropbox`. Without one a non-calendar drop is
-parked as unsupported with that instruction, never guessed at. A marked drop skips
-Dropbox import history: the same file dropped again after its artifact was removed
-is stored again, and identical bytes under the same filename replay as for the API.
+The Dropbox folder routes calendar exports to the calendar and supported document,
+image, audio and video formats to artifacts. A `.kind` sidecar may still provide
+artifact metadata. Direct `POST /v1/dropbox` uploads must declare `kind=artifact`
+and have `artifacts:write`. Identical artifact bytes under the same filename replay
+as for the artifact API. PDF, PPTX and DOCX text is indexed by the existing extractor
+when extraction succeeds; unsupported or failed extraction leaves the file archived
+and searchable by its title and metadata.
 
 ## Recordings (audio on its own)
 
@@ -554,8 +554,9 @@ Dropbox states are `pending`, `importing`, `succeeded`, `already_imported`,
 `failed`, and `unsupported`. Completed receipts expire after seven days; failed receipts remain until dismissed.
 Dismissal never deletes original exports or calendar import history. An identical
 re-drop is `already_imported` and does not create another import. A dismissed
-unsupported file stays dismissed while it sits unchanged in the folder; changing
-the file or adding a `.kind` sidecar to it brings it back.
+filesystem drop that cannot be handled moves to `Dropbox/Failed` with a reason
+sidecar. Correct it and move it back to Dropbox to retry. Completed drops leave
+Dropbox after storage succeeds and their bytes are checked again.
 
 Events retain their existing fields and add `provenance`, a list of
 `{source_id, filename, entry, imported_at, legacy_calendar}` witnesses. The last

@@ -2405,7 +2405,7 @@ class ContextService:
                     raise
                 except Exception:
                     self.worker_error = "Context worker failed; inspect configuration and retry"
-                await asyncio.sleep(10)
+                await asyncio.sleep(2)
         finally:
             recordings.cancel()
             with contextlib.suppress(asyncio.CancelledError):

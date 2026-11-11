@@ -254,7 +254,7 @@ async def test_scanner_logs_and_dismissal_survive_restart(tmp_path, monkeypatch,
         store.context = ContextService(store)
         await store.context.dropbox.scan()
         assert store.context.dropbox.snapshot()["items"] == []
-        path.unlink()
+        assert not path.exists()
         await store.context.dropbox.scan()
         path.write_bytes(original)
         await store.context.dropbox.scan()
@@ -741,7 +741,7 @@ async def test_upgrade_skips_notes_that_can_never_be_patched_and_finishes(tmp_pa
 async def test_unsupported_receipt_can_be_dismissed(tmp_path):
     store = local_store(tmp_path)
     dropbox = store.context.dropbox
-    item = dropbox.submit("notes.pdf", b"%PDF-1.4 not a calendar")
+    item = dropbox.submit("notes.unknown", b"not a supported file")
     await finish(store)
     assert dropbox.snapshot()["items"][0]["state"] == "unsupported"
     assert await dropbox.dismiss({"id": item["id"]}) == {"dismissed": item["id"]}
@@ -774,7 +774,9 @@ async def test_a_kind_marker_routes_a_drop_to_the_artifact_store(tmp_path):
     await store.context.dropbox.process()
     item = store.context.dropbox.snapshot()["items"][0]
     assert item["state"] == "succeeded"
-    assert item["parts"] == [{"artifact_id": "01K4Q8Z2A0P1Q2R3S4T5U6V7W8"}]
+    assert item["parts"] == [
+        {"artifact_id": "01K4Q8Z2A0P1Q2R3S4T5U6V7W8", "path": "Artifacts/2026/2026-11/deck.pptx"}
+    ]
     assert requests[0].kind == "artifact"
     assert requests[0].filename == "deck.pptx"
     assert requests[0].origin == "dropbox"
@@ -785,12 +787,12 @@ async def test_a_kind_marker_routes_a_drop_to_the_artifact_store(tmp_path):
 
 async def test_an_unmarked_non_calendar_drop_is_parked_with_the_kind_instruction(tmp_path):
     store = local_store(tmp_path)
-    store.context.dropbox.submit("deck.pptx", b"PK\x03\x04deck")
+    store.context.dropbox.submit("deck.unknown", b"unknown format")
     await store.context.dropbox.process()
     item = store.context.dropbox.snapshot()["items"][0]
     assert item["state"] == "unsupported"
-    assert "No kind marker" in item["error"]
-    assert ".kind" in item["error"] and "POST /v1/artifacts" in item["error"]
+    assert "not supported" in item["error"]
+    assert "supported format" in item["error"]
     assert (store.context.root / "dropbox-originals" / item["id"]).exists()
 
 
@@ -850,3 +852,79 @@ async def test_a_marked_redrop_is_stored_again_after_the_artifact_was_removed(tm
     assert len(stored) == 2
     assert dropbox.snapshot()["items"][0]["state"] == "succeeded"
     assert dropbox.submit("deck.pptx", b"PK\x03\x04deck")["state"] == "already_imported"
+
+
+@pytest.mark.parametrize(
+    "filename,data", [("report.pdf", b"%PDF-test"), ("deck.pptx", b"PK\x03\x04deck")]
+)
+async def test_document_drops_are_archived_without_a_marker(tmp_path, filename, data):
+    from coppermind.store_protocol import CreatedArtifact
+
+    store = local_store(tmp_path)
+    requests = []
+
+    async def create_artifact(request, *, payload_size_bytes=None):
+        requests.append(request)
+        return CreatedArtifact(
+            id="01K4Q8Z2A0P1Q2R3S4T5U6V7W8",
+            revision=1,
+            created=True,
+            path="Artifacts/file",
+            title="File",
+        )
+
+    store.create_artifact = create_artifact
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    (root / filename).write_bytes(data)
+    store.context.dropbox.seen[filename] = ((0, 0, 0, -1), 0)  # replaced by first scan
+    await store.context.dropbox.scan()
+    store.context.dropbox.seen[filename] = (store.context.dropbox.seen[filename][0], 0)
+    await store.context.dropbox.scan()
+    item = next(iter(store.context.dropbox.records()["items"].values()))
+    await store.context.dropbox.process()
+    assert store.context.dropbox.records()["items"][item["id"]]["state"] == "succeeded"
+    assert requests[0].filename == filename and requests[0].bytes() == data
+
+
+async def test_unsupported_drop_moves_to_failed_with_reason(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    path = root / "unknown.xyz"
+    path.write_bytes(b"unknown")
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    dropbox = store.context.dropbox
+    await dropbox.scan()
+    clock[0] = 31
+    await dropbox.scan()
+    await dropbox.process()
+    await dropbox.scan()
+    assert not path.exists()
+    files = list((root / "Failed").iterdir())
+    assert len(files) == 2
+    original = next(p for p in files if not p.name.endswith(".reason.txt"))
+    assert original.read_bytes() == b"unknown"
+    assert "not supported" in original.with_name(original.name + ".reason.txt").read_text()
+    assert "Find the file in Dropbox/Failed" in dropbox.snapshot()["items"][0]["error"]
+    await dropbox.scan()
+    assert len(list((root / "Failed").iterdir())) == 2
+
+
+async def test_changed_drop_is_not_removed_after_import(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    path = root / "calendar.ics"
+    path.write_bytes(calendar())
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    await store.context.dropbox.scan()
+    clock[0] = 31
+    await store.context.dropbox.scan()
+    await finish(store)
+    changed = calendar(event="changed-event")
+    path.write_bytes(changed)
+    await store.context.dropbox.scan()
+    assert path.read_bytes() == changed

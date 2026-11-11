@@ -307,3 +307,25 @@ test('useful model evidence stays attributed when voice supplies the name',async
   const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
   assert.match(text,/Model: Someone said hello/);assert.match(text,/Model evidence/);
 });
+
+test('imports view shows stored artifacts and failed files',async()=>{
+  const f=await fixture();
+  f.plugin.call=async path=>{
+    assert.equal(path,'/v1/dropbox');
+    return {folder:'Dropbox',items:[
+      {filename:'report.pdf',state:'succeeded',parts:[{artifact_id:'a',path:'Artifacts/report.pdf'}],error:''},
+      {filename:'broken.ics',state:'failed',parts:[],error:'The calendar file could not be read.'},
+    ]};
+  };
+  const view=f.factories['coppermind-imports']({app:f.app});await view.refresh();
+  const text=view.contentEl.all().map(e=>e.text||'').join(' ');
+  assert.match(text,/report.pdf/);assert.match(text,/Open artifact/);
+  assert.match(text,/broken.ics/);assert.match(text,/could not be read/);
+});
+
+test('imports view explains an unavailable connection',async()=>{
+  const f=await fixture();f.plugin.call=async()=>{throw Error('offline');};
+  const view=f.factories['coppermind-imports']({app:f.app});await view.refresh();
+  assert.ok(view.contentEl.all().some(e=>e.text==='Imports are unavailable. Try again.'));
+  assert.ok(view.contentEl.all().some(e=>e.text==='Retry'));
+});

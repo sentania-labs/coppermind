@@ -759,3 +759,20 @@ def test_summary_limits_can_be_changed_from_model_settings(signed_in):
     assert payload["assignment"]["summary_max_input_chars"] == 400000
     assert payload["assignment"]["summary_timeout_s"] == 1500
     assert payload["assignment"]["max_input_chars"] == 60000
+
+
+def test_contact_lists_each_merged_event_once(signed_in):
+    class DuplicateEvidenceStore(ContextStore):
+        async def context_action(self, action, payload):
+            result = await super().context_action(action, payload)
+            if action == "snapshot":
+                evidence = result["contacts"][0]["evidence"]
+                evidence[0]["event_title"] = "Planning meeting"
+                evidence.append(dict(evidence[0]))
+            return result
+
+    client, _ = signed_in
+    client.app.state.store = DuplicateEvidenceStore()
+    page = client.get("/admin/context?tab=calendar")
+    assert page.status_code == 200
+    assert page.text.count("Invitee: Planning meeting") == 1
