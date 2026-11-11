@@ -114,8 +114,8 @@ def _contact_match(context: Any, person: dict[str, Any]) -> Any:
 
     address = email(person.get("email", ""))
     name = person["name"].strip().casefold()
-    people = [e for e in context.store.entities.load().entities.values() if e.kind == "person"]
-    active = [e for e in people if not e.retired_at and not e.redirect]
+    entities = [e for e in context.store.entities.load().entities.values() if not e.redirect]
+    active = [e for e in entities if e.kind == "person" and not e.retired_at]
     match = next(
         (e for e in active if address and address in {email(a) for a in e.emails}), None
     ) or next(
@@ -123,17 +123,21 @@ def _contact_match(context: Any, person: dict[str, Any]) -> Any:
         None,
     )
     if match is None and address:
-        for entity in people:
-            if (
-                entity.retired_at
-                and not entity.redirect
-                and address in {email(a) for a in entity.emails}
-            ):
-                raise ValueError(
-                    f"{person['name']} matches a person who was removed. Choose someone else "
-                    "or restore that person."
-                )
+        for entity in entities:
+            if address in {email(a) for a in entity.emails}:
+                raise ValueError(_taken_address(person["name"], entity))
     return match
+
+
+def _taken_address(name: str, holder: Any) -> str:
+    if holder.kind == "person":
+        return (
+            f"{name} matches a person who was removed. Choose someone else or restore that person."
+        )
+    return (
+        f"{name}'s email address already belongs to {holder.name}. Choose someone else "
+        "or change that dossier."
+    )
 
 
 def find_contact(context: Any, person: dict[str, Any]) -> dict[str, Any]:
@@ -149,6 +153,7 @@ def find_contact(context: Any, person: dict[str, Any]) -> dict[str, Any]:
 async def create_contact_people(context: Any, operation: dict[str, Any]) -> None:
     """Give each still-pending contact a People entry, reusing one an earlier attempt made."""
     from coppermind.entities import EntityInput
+    from coppermind.store_protocol import ValidationFailed
     from coppermind_store.entities import email
 
     for index, person in enumerate(operation["people"]):
@@ -157,9 +162,17 @@ async def create_contact_people(context: Any, operation: dict[str, Any]) -> None
         match = _contact_match(context, person)
         if match is None:
             address = email(person.get("email", ""))
-            created = await context.store.entities.create(
-                EntityInput(kind="person", name=person["name"], emails=[address] if address else [])
-            )
+            try:
+                created = await context.store.entities.create(
+                    EntityInput(
+                        kind="person", name=person["name"], emails=[address] if address else []
+                    )
+                )
+            except ValidationFailed as exc:
+                raise ValueError(
+                    f"{person['name']} cannot be added to People now: {exc}. "
+                    "Fix that, then resume the review."
+                ) from exc
             match = context.store.entities.load().entities[created["id"]]
         label = next(
             label

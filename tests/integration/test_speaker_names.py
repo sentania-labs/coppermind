@@ -1218,3 +1218,52 @@ async def test_a_contact_whose_address_belongs_to_a_removed_person_stops_the_rev
         await context.complete_review(request)
     assert len(store.entities.load().entities) == before
     assert (await store.get_source(result.source.id)).current_revision == 1
+
+
+async def test_a_contact_whose_address_belongs_to_a_company_stops_the_review_before_any_receipt(
+    store, standin
+):
+    context, result, contact, payload, people = await contact_review(store, standin)
+    await store.entities.create(
+        EntityInput(kind="company", name="Vendor Support", emails=[contact["email"]])
+    )
+    before = len(store.entities.load().entities)
+    with pytest.raises(ValueError, match="already belongs to Vendor Support"):
+        await context.complete_review(payload({"Unknown voice 1": contact["id"]}))
+    assert len(store.entities.load().entities) == before
+    assert context.read("review-completions/" + result.note.id, {}) == {}
+    assert (await store.get_source(result.source.id)).current_revision == 1
+
+
+async def test_an_address_taken_after_validation_can_be_fixed_and_the_review_resumed(
+    store, standin, monkeypatch
+):
+    from coppermind_store import speaker_names
+
+    from coppermind.entities import EntityChange
+
+    context, result, contact, payload, people = await contact_review(store, standin)
+    request = payload({"Unknown voice 1": contact["id"]})
+    create = speaker_names.create_contact_people
+    holder: dict[str, Any] = {}
+
+    async def taken_meanwhile(ctx, operation):
+        holder.update(
+            await store.entities.create(
+                EntityInput(kind="company", name="Vendor Support", emails=[contact["email"]])
+            )
+        )
+        await create(ctx, operation)
+
+    monkeypatch.setattr(speaker_names, "create_contact_people", taken_meanwhile)
+    with pytest.raises(ValueError, match="already belongs to Vendor Support"):
+        await context.complete_review(request)
+    assert contact["name"] not in [p.name for p in people()]
+    monkeypatch.setattr(speaker_names, "create_contact_people", create)
+    await store.entities.change(
+        holder["id"],
+        EntityChange(version=holder["version"], action="aliases", emails=[]),
+    )
+    completed = await context.complete_review(request)
+    assert completed["state"] == "complete"
+    assert [p.name for p in people()].count(contact["name"]) == 1
