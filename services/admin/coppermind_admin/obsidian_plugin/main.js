@@ -95,9 +95,9 @@ class ReviewView extends ItemView {
         chooser.createEl('option',{text:'Leave as '+label,value:''});
         const add=person=>{if(!people.some(p=>p.id===person.id)){people.push(person);chooser.createEl('option',{text:person.name+(person.email?' ('+person.email+')':''),value:person.id});}};
         const supplied=[...people];people.length=0;for(const person of supplied)add(person);
+        for(const match of voice)add(match);
         chooser.value=initial||'';chooser.disabled=disabled;chooser.onchange=()=>{onSelect(chooser.value);updatePreview();};
         for(const match of voice){
-          add(match);
           const choice=card.createEl('button',{text:(match.strength==='maybe'?'Maybe: ':'Voice: ')+match.name});
           choice.disabled=disabled;choice.onclick=()=>{chooser.value=match.id;chooser.onchange();};
         }
@@ -130,18 +130,41 @@ class ReviewView extends ItemView {
         }
       }
       const manual=data.manual_speaker_review;
+      // Contact candidates can refer to the same People entry as a voice match.
+      const personKey=(id,candidates)=>{
+        const person=candidates.find(c=>c.id===id);
+        return person?.person_id?'person:'+person.person_id:id;
+      };
+      const voicePlan=(label,suggestion)=>{
+        const matches=manual?.voice_matches?.[label]||[];
+        const strong=matches.filter(m=>m.strength==='strong');
+        const candidates=suggestion?.candidates||[];
+        const confident=!!suggestion?.value&&suggestion.confidence>=0.8;
+        const modelKey=suggestion?.value?personKey(suggestion.value,candidates):'';
+        const voiceKey=strong.length===1?personKey(strong[0].id,candidates):'';
+        const conflict=strong.length>1||(voiceKey&&confident&&voiceKey!==modelKey);
+        const agreed=!!voiceKey&&voiceKey===modelKey;
+        return {matches,strong,conflict,agreed,initial:conflict?'':voiceKey?(agreed?suggestion.value:strong[0].id):suggestion?.value||''};
+      };
       for(const s of data.suggestions){
         if(s.kind==='speaker'&&!ready)continue;
         const card=el.createDiv({cls:'coppermind-card'});let toggle;
-        const initial=s.kind==='speaker'&&!!s.value&&s.confidence>=0.8&&ready;
+        const voice=s.kind==='speaker'?voicePlan(s.field,s):null;
+        const initial=s.kind==='speaker'&&ready&&!voice.conflict&&!!voice.initial&&(voice.strong.length===1||s.confidence>=0.8);
         if(initial)selected.add(s.index);
         new Setting(card).setName(s.kind==='filename'?'Note title':s.kind==='speaker'?s.field:s.field||s.kind).addToggle(t=>{toggle=t;t.setDisabled(!ready).setValue(initial).onChange(v=>{v?selected.add(s.index):selected.delete(s.index);updatePreview();});});
-        card.createEl('p',{text:s.display_value||(Array.isArray(s.value)?s.value.join(', '):String(s.value??''))});
+        const shown=s.display_value||(Array.isArray(s.value)?s.value.join(', '):String(s.value??''));
+        card.createEl('p',{text:voice?.conflict&&s.value?'Model: '+shown:voice&&voice.strong.length===1&&!voice.conflict&&!voice.agreed?voice.strong[0].name:shown});
         if(s.kind==='speaker'){
           card.createEl('p',{text:'Model confidence: '+Math.round(s.confidence*100)+'%'});
-          if(!s.candidates.length)card.createEl('p',{text:'No people suggested. Enter a name below, then choose Find a person.'});
+          if(voice.agreed)card.createEl('p',{text:'Sources: Model and Voice'});
+          else if(voice.strong.length===1&&!voice.conflict)card.createEl('p',{text:'Source: Voice'});
+          if(voice.conflict)card.createEl('p',{text:'Suggestions disagree. Choose a person.'});
+          if(!s.candidates.length&&!voice.matches.length)card.createEl('p',{text:'No people suggested. Enter a name below, then choose Find a person.'});
           const people=[...s.candidates];
-          const chooser=makeChooser(card,s.field,people,s.value,value=>{speakerChoices[s.index]=value;selected.add(s.index);toggle.setValue(true);},!ready,manual?.voice_matches?.[s.field]||[]);
+          if(voice.strong.length===1&&!voice.conflict&&!voice.agreed)people.push(voice.strong[0]);
+          const choices=voice.strong.length===1&&!voice.conflict?voice.matches.filter(m=>m!==voice.strong[0]):voice.matches;
+          const chooser=makeChooser(card,s.field,people,voice.initial,value=>{speakerChoices[s.index]=value;value?selected.add(s.index):selected.delete(s.index);toggle.setValue(!!value);},!ready,choices);
           speakerChoices[s.index]=chooser.value;cards.push({label:s.field,chooser,people,active:()=>selected.has(s.index),select:()=>{if(chooser.value){selected.add(s.index);toggle.setValue(true);}}});
         }
         card.createEl('p',{text:s.reason});if(s.quote)card.createEl('blockquote',{text:s.quote});
@@ -152,9 +175,14 @@ class ReviewView extends ItemView {
         if(proposed.has(label))continue;
         const card=el.createDiv({cls:'coppermind-card'});card.createEl('h3',{text:label});
         card.createEl('p',{text:'Choose a person, or leave this speaker unnamed.'});
-        const people=[...manual.candidates];
-        if(!people.length)card.createEl('p',{text:'No people suggested. Enter a name below, then choose Find a person.'});
-        const chooser=makeChooser(card,label,people,'',value=>{manualSpeakers[label]=value;},!synced,manual?.voice_matches?.[label]||[]);
+        const people=[...manual.candidates];const voice=voicePlan(label,null);
+        if(!people.length&&!voice.matches.length)card.createEl('p',{text:'No people suggested. Enter a name below, then choose Find a person.'});
+        if(voice.conflict)card.createEl('p',{text:'Suggestions disagree. Choose a person.'});
+        else if(voice.initial)card.createEl('p',{text:'Source: Voice'});
+        if(voice.initial)people.push(voice.strong[0]);
+        const choices=voice.initial?voice.matches.filter(m=>m!==voice.strong[0]):voice.matches;
+        const chooser=makeChooser(card,label,people,voice.initial,value=>{manualSpeakers[label]=value;},!synced,choices);
+        if(voice.initial&&synced)manualSpeakers[label]=voice.initial;
         cards.push({label,chooser,people,active:()=>!!manualSpeakers[label],select:()=>{}});
       }
       if(cards.length){const all=el.createEl('button',{text:'Select all suggested names'});all.disabled=!ready;all.onclick=()=>{for(const card of cards)card.select();updatePreview();};}

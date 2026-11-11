@@ -1247,3 +1247,86 @@ async def test_owner_speaker_count_is_sent_exactly_and_beats_the_calendar(store,
         body = service.requests[0]["body"]
         assert b'name="num_speakers"\r\n\r\n2' in body
         assert b'name="max_speakers"' not in body
+
+
+async def test_companion_voice_flow_through_public_api(store):
+    import httpx
+    from coppermind_store.auth import InternalAuth
+    from coppermind_store.context_api import router as context_router
+    from coppermind_store.entity_api import router as entity_router
+    from fastapi import FastAPI
+
+    from coppermind.entities import EntityInput
+    from coppermind.store_client import HttpStoreClient
+    from tests.integration.test_store_write_protocol import authorized_api
+
+    alex = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    blair = await store.entities.create(EntityInput(kind="person", name="Blair Stone"))
+    vector = {"model": "voice", "version": "v1", "vector": [1.0, 0.0]}
+    speakers = [{"label": "Speaker 1", "speech_seconds": 30.0, "embeddings": [vector]}]
+    internal = FastAPI()
+    internal.state.store = store
+    internal.state.auth = InternalAuth("synthetic-internal-token")
+    internal.include_router(context_router)
+    internal.include_router(entity_router)
+    client = HttpStoreClient(
+        "http://store", "synthetic-internal-token", transport=httpx.ASGITransport(app=internal)
+    )
+    app, headers = authorized_api(store)
+    app.state.store = client
+    async with Service(reply={**REPLY, "speakers": speakers}) as service:
+        context = await setup_transcription(store, service)
+        await context.setup_lifecycle({"revision": context.config().revision})
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://api", headers=headers
+        ) as api:
+            alex_url, blair_url = (f"/v1/entities/{p['id']}/voice" for p in (alex, blair))
+            assert (await api.put(alex_url, json={"enabled": True})).status_code == 200
+            assert (await api.put(blair_url, json={"enabled": True})).status_code == 200
+
+            async def make_recording(name, content, external):
+                audio = await store_audio(store, name=name, data=content)
+                accepted = await context.accept_recording(
+                    request(audio, external_source_id=external)
+                )
+                for _ in range(4):
+                    job = context.recordings.load(accepted["id"])
+                    if job.state == "succeeded":
+                        return job
+                    await context.recordings.tick()
+                pytest.fail("recording was not processed")
+
+            async def review(job, person_id):
+                response = await api.get(f"/v1/notes/{job.note_id}/review")
+                assert response.status_code == 200, response.text
+                data = response.json()
+                manual = data["manual_speaker_review"]
+                completed = await api.post(
+                    f"/v1/notes/{job.note_id}/review",
+                    json={
+                        "if_match": data["note"]["content_hash"],
+                        "confirmation": "Complete review",
+                        "selected": [],
+                        "manual_source_id": manual["source_id"],
+                        "manual_source_revision": manual["revision"],
+                        "manual_speakers": {"Speaker 1": "person:" + person_id},
+                    },
+                )
+                assert completed.status_code == 200, completed.text
+                assert "vector" not in response.text and "vector" not in completed.text
+                return data
+
+            first = await make_recording("one.m4a", AUDIO, "voice-http-1")
+            await review(first, alex["id"])
+            assert len((await api.get(alex_url)).json()["signatures"]) == 1
+            second = await make_recording("two.m4a", AUDIO + b"2", "voice-http-2")
+            detail = (await api.get(f"/v1/notes/{second.note_id}/review")).json()
+            assert (
+                detail["manual_speaker_review"]["voice_matches"]["Speaker 1"][0]["id"]
+                == "person:" + alex["id"]
+            )
+            await review(second, blair["id"])
+            assert len((await api.get(alex_url)).json()["signatures"]) == 1
+            assert len((await api.get(blair_url)).json()["signatures"]) == 1
+            assert (await api.delete(alex_url)).json()["signatures"] == []
+            assert (await api.put(alex_url, json={"enabled": False})).json()["enabled"] is False
