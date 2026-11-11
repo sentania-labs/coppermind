@@ -1062,3 +1062,63 @@ async def test_an_idle_scan_does_not_rewrite_the_records(tmp_path, monkeypatch):
     await dropbox.process()
     await dropbox.process()
     assert writes == []
+
+
+async def test_a_failed_drop_that_later_succeeds_leaves_failed(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    dropbox = store.context.dropbox
+    dropbox.submit("one.ics", calendar())
+    await finish(store)
+    stale_bytes = calendar().replace(b"Planning", b"Conflict")
+    (root / "two.ics").write_bytes(stale_bytes)
+    await dropbox.scan()
+    clock[0] = 31
+    await dropbox.scan()
+    await finish(store)
+    await dropbox.scan()
+    (stale,) = [i for i in dropbox.records()["items"].values() if i["filename"] == "two.ics"]
+    assert stale["state"] == "failed"
+    assert not (root / "two.ics").exists()
+    assert (root / "Failed" / "two.ics").read_bytes() == stale_bytes
+    assert (root / "Failed" / "two.ics.reason.txt").exists()
+    newer = calendar().replace(b"Planning", b"Newer").replace(b"SUMMARY", b"SEQUENCE:1\r\nSUMMARY")
+    dropbox.submit("three.ics", newer)
+    await finish(store)
+    failed = [r for r in store.context.archive.receipts() if r.state == "failed"]
+    assert store.context.archive.process(failed[0].id).state == "succeeded"
+    await dropbox.process()
+    assert dropbox.records()["items"][stale["id"]]["state"] == "succeeded"
+    await dropbox.scan()
+    assert list((root / "Failed").iterdir()) == []
+    assert "failed_path" not in dropbox.records()["items"][stale["id"]]
+
+
+async def test_a_changed_failed_copy_is_kept_when_the_drop_later_succeeds(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    dropbox = store.context.dropbox
+    dropbox.submit("one.ics", calendar())
+    await finish(store)
+    (root / "two.ics").write_bytes(calendar().replace(b"Planning", b"Conflict"))
+    await dropbox.scan()
+    clock[0] = 31
+    await dropbox.scan()
+    await finish(store)
+    await dropbox.scan()
+    (root / "Failed" / "two.ics").write_bytes(b"edited by hand")
+    newer = calendar().replace(b"Planning", b"Newer").replace(b"SUMMARY", b"SEQUENCE:1\r\nSUMMARY")
+    dropbox.submit("three.ics", newer)
+    await finish(store)
+    failed = [r for r in store.context.archive.receipts() if r.state == "failed"]
+    store.context.archive.process(failed[0].id)
+    await dropbox.process()
+    await dropbox.scan()
+    assert (root / "Failed" / "two.ics").read_bytes() == b"edited by hand"
+    assert "differs" in (root / "Failed" / "two.ics.reason.txt").read_text()

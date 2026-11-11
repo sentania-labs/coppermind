@@ -395,6 +395,36 @@ class Dropbox:
                     continue
                 yield path, markers
 
+    def clear_failed(self, root: Path, item: dict[str, Any]) -> bool:
+        """Drop the Failed copy of a drop that later succeeded, if the stored bytes match it."""
+        target = root / item["failed_path"]
+        failed = root / "Failed"
+        try:
+            info = target.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                return True
+            data = self.read_stable(target, (info.st_mtime_ns, info.st_size))
+            if data is None:
+                return False
+            reason = target.with_name(reason_name(target.name))
+            if hashlib.sha256(data).hexdigest() != item["id"]:
+                reason.write_text(
+                    "This import later succeeded, but this copy differs from the stored one "
+                    "and was left here.\n"
+                )
+                return True
+            target.unlink()
+            reason.unlink(missing_ok=True)
+            if target.parent != failed:
+                target.parent.rmdir()
+            sync_directory(failed)
+            return True
+        except FileNotFoundError:
+            return True
+        except (OSError, ValueError):
+            log.exception("Dropbox could not clear a recovered file from Failed")
+            return False
+
     def dispose(self, root: Path, key: str, tracked: dict[str, Any], item: dict[str, Any]) -> bool:
         """Move a settled input aside before verifying it; never discard changed bytes."""
         path = root / key
@@ -470,6 +500,16 @@ class Dropbox:
         async with self.context.lock:
             records = self.records()
             before = copy.deepcopy(records)
+            for item in records["items"].values():
+                if (
+                    item.get("failed_path")
+                    and item["state"] in COMPLETED
+                    and await asyncio.to_thread(self.clear_failed, root, item)
+                ):
+                    item.pop("failed_path")
+                    history = records["history"].get(item["id"])
+                    if history:
+                        history.pop("failed_path", None)
             for key, tracked in list(records["paths"].items()):
                 item = records["items"].get(tracked["id"]) or records["history"].get(tracked["id"])
                 if (
