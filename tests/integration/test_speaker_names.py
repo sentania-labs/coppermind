@@ -135,6 +135,22 @@ async def test_review_corrects_a_speaker_and_replays_without_another_revision(
 
     def model(request):
         evidence = json.loads(json.loads(request.content)["messages"][-1]["content"])
+        if "transcript" in evidence:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": json.dumps(
+                                    {"summary": "Greetings.", "decisions": "", "action_items": ""}
+                                )
+                            },
+                        }
+                    ]
+                },
+            )
         observed.append(evidence)
         if choice == "failed" or (choice == "second_failed" and len(observed) > 1):
             return httpx.Response(503, json={"error": "unavailable"})
@@ -364,6 +380,22 @@ async def recorded(
 
     def model(request):
         evidence = json.loads(json.loads(request.content)["messages"][-1]["content"])
+        if "transcript" in evidence:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": json.dumps(
+                                    {"summary": "Greetings.", "decisions": "", "action_items": ""}
+                                )
+                            },
+                        }
+                    ]
+                },
+            )
         observed.append(evidence)
         content = json.dumps({"suggestions": answer(evidence, event), "unresolved": []})
         return httpx.Response(
@@ -747,6 +779,10 @@ async def test_public_review_api_approves_corrects_and_leaves_a_speaker_unknown(
                 "confirmation": "Complete review",
                 "job_id": job_id,
                 "selected": [first["index"], second["index"]],
+                "meeting_summary": {
+                    **detail.json()["meeting_summary"],
+                    "summary": "The owner corrected this summary.",
+                },
                 "speaker_choices": {
                     str(first["index"]): "person:" + alex["id"],
                     str(second["index"]): "person:" + blair["id"],
@@ -763,6 +799,8 @@ async def test_public_review_api_approves_corrects_and_leaves_a_speaker_unknown(
     assert "Speaker 3: Hello." in text
     reviewed = await store.get_note(note.id)
     assert reviewed.frontmatter["reviewed"] is True
+    assert reviewed.body.startswith(note.body)
+    assert "The owner corrected this summary." in reviewed.body
 
 
 async def test_one_person_cannot_name_two_speakers(store, standin):

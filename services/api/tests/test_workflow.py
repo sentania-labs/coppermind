@@ -270,3 +270,36 @@ def test_speaker_permission_notice_matches_required_review_scopes(missing, label
             },
         )
         assert result.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "summary,expected",
+    [
+        ({"summary": "Owner prose", "decisions": "", "action_items": "- Casey: send plan."}, 200),
+        ({"summary": 12, "decisions": "", "action_items": ""}, 422),
+        ({"summary": "x" * 12001, "decisions": "", "action_items": ""}, 422),
+    ],
+)
+def test_summary_review_accepts_owner_edits_with_note_write_scope(summary, expected):
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal(
+        "test", frozenset({"notes:read", "notes:write", "sources:read"})
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/notes/note/review",
+            json={
+                "if_match": "hash",
+                "confirmation": "Complete review",
+                "job_id": "job",
+                "meeting_summary": summary,
+            },
+        )
+    assert response.status_code == expected
+    if expected == 200:
+        assert fake.calls[-1][1]["meeting_summary"] == summary
+    else:
+        assert fake.calls == []

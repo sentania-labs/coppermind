@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from coppermind.errors import envelope
+from coppermind.meeting_summary import MeetingSummary
 from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import StoreError
 from coppermind_api.auth import Principal
@@ -26,6 +27,7 @@ class ReviewCompletion(BaseModel):
     confirmation: str
     job_id: str | None = None
     selected: list[int] = Field(default_factory=list, max_length=30)
+    meeting_summary: MeetingSummary | None = None
     speaker_choices: dict[str, str] = Field(default_factory=dict, max_length=30)
     manual_speakers: dict[str, str] = Field(default_factory=dict, max_length=30)
     manual_source_revision: int | None = Field(default=None, ge=1)

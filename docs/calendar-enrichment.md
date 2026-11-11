@@ -157,10 +157,10 @@ an already-running call can finish. Disablement does not affect calendar intake
 or ordinary note work. Usage is shown only when the provider supplies numeric
 usage fields; currency budgets and billing estimates are not provided.
 
-Only the selected note, short passages from explicitly associated text sources
+For field and speaker enrichment, only the selected note, short passages from explicitly associated text sources
 (maximum five), nearby calendar events, relevant contact corrections, matching
-active dossiers and selected field/tag guidance are sent. Transcripts are never
-sent whole: at most 12,000 characters are chosen around known attendees,
+active dossiers and selected field/tag guidance are sent. In that stage, transcripts
+are excerpted: at most 12,000 characters are chosen around known attendees,
 accounts and dossier names, and the job records how many characters were
 omitted. Dossier selection is bounded and includes
 only direct relationship targets, never the whole corpus. The maximum input
@@ -173,6 +173,29 @@ no tools, URL fetches, or write access. It returns structured suggestions;
 Coppermind checks supplied identities, exact evidence quotes, and schema rules.
 Ambiguous matches can remain unresolved. Calendar invitees cannot become
 attendee proposals without a supporting quote in the note or transcript.
+
+Recording notes also get a summary stage in the same durable enrichment job. It
+reads the complete `transcript.txt` revision associated with the recording, in one
+call to the selected enrichment connection and model. No transcript excerpt is
+used for this stage. The response contains summary, decisions and action items
+with owners (or an explicit unknown owner); actions are identified, never executed.
+The result remains a proposal until the owner completes review in the companion
+or review API. Admin shows job state and failures.
+
+Under Model connections, Advanced limits, **Maximum summary input characters**
+defaults to 200,000 and can be raised to 2,000,000. It counts the complete JSON
+input including escaping. **Summary wait limit** defaults to 900 seconds and can
+be set up to 1,800; the existing streaming client, one-hour total-call ceiling,
+retry/backoff and Problems machinery apply. The ordinary enrichment limits stay
+separate. These settings take effect for new jobs; request fresh suggestions
+after changing them.
+
+This is a single-pass strategy, not chunking. The character guard is not a token
+estimator or model context discovery: operators must choose a limit that fits
+the selected model's actual context window, leaving room for the prompt, thinking
+and output. An oversized transcript is refused in full with a Problem and next
+steps to raise the limit, choose a larger-context model or summarize manually.
+A provider context rejection is also a failed job, never a partial summary.
 
 A job the checks reject fails with a plain sentence on its Admin row and on
 Inspect that names the rule, the suggestion it concerned and what to do next

@@ -46,7 +46,7 @@ from coppermind.store_protocol import (
     StoreUnavailable,
     VersionConflict,
 )
-from coppermind_store import speaker_names
+from coppermind_store import meeting_summary, speaker_names
 from coppermind_store.calendar_archive import CalendarArchive
 from coppermind_store.calendar_import import CALENDAR_ID
 from coppermind_store.calendar_worker import occurrences
@@ -1461,6 +1461,12 @@ class ContextService:
                     for s in result.suggestions
                     if s.kind in {"event", "contact", "attendee", "invitee", "speaker"}
                 ]
+            # Only the separate full-transcript stage can supply meeting prose.
+            result.meeting_summary, summary_usage = await meeting_summary.generate(
+                self, job, connection, assignment
+            )
+            if summary_usage:
+                usage["summary"] = summary_usage
             speaker = evidence.get("speaker_review") or {}
             for suggestion in result.suggestions:
                 if suggestion.kind == "speaker":
@@ -1784,7 +1790,10 @@ class ContextService:
                 ):
                     raise ValueError("invalid or already decided suggestion")
                 job.decisions.append({"action": "reject", "index": index, "at": now()})
-                if len(job.decided) == len(job.result.suggestions):
+                if (
+                    len(job.decided) == len(job.result.suggestions)
+                    and not job.result.meeting_summary
+                ):
                     job.state = (
                         "applied"
                         if any("suggestion" in item for item in job.decisions)
@@ -2021,7 +2030,13 @@ class ContextService:
             for field in job.evidence["allowed_fields"]
             if blank(note.frontmatter.get(field["name"]))
         ]
-        remaining = len(job.result.suggestions) - len(job.decided) if job.result else 0
+        remaining = (
+            len(job.result.suggestions)
+            - len(job.decided)
+            + int(job.result.meeting_summary is not None)
+            if job.result
+            else 0
+        )
         schema = self.store.control.schema()
         changed_date = note_date(approval["before_frontmatter"], schema) != note_date(
             note.frontmatter, schema

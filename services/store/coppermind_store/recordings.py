@@ -76,7 +76,7 @@ NOT_SET_UP = (
 DETAIL_TRANSCRIPT_CHARS = 200_000
 AUDIO_REMOVAL_ATTEMPTS = 3
 AUDIO_KEPT_SHARED = "Kept because another note still uses this recording."
-SUMMARY_PENDING = "_Transcribed from a recording. The summary has not been written yet._"
+SUMMARY_PENDING = "_Transcribed from a recording. Review the transcript and summary suggestions._"
 
 
 class TranscriptionJob(ContextModel):

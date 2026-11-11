@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from coppermind.context_config import ContextModel
+from coppermind.meeting_summary import MeetingSummary
 
 
 class Suggestion(ContextModel):
@@ -22,6 +23,7 @@ class Suggestion(ContextModel):
 
 
 class Suggestions(ContextModel):
+    meeting_summary: MeetingSummary | None = None
     suggestions: list[Suggestion] = Field(default_factory=list, max_length=30)
     unresolved: list[str] = Field(default_factory=list, max_length=20)
 

@@ -124,6 +124,22 @@ association or dismiss the update in Admin or the companion. These decisions liv
 in sidecar state and never rewrite a reviewed note or infer attendance from an
 invitation. Unchanged re-exports do not reopen the decision.
 
+## Recording summaries
+
+After transcription, the existing enrichment job reads the whole transcript and
+proposes a summary, decisions and action items with owners. Enrichment must be
+enabled with a tested model connection. The companion displays the three sections
+beside speaker suggestions. Edit the text or use **Drop** to clear a section;
+**Apply kept suggestions & mark reviewed** appends the nonempty sections to the
+note. There is no separate accept step for each section. Existing note prose is
+preserved. Action items are recorded only, never carried out.
+
+**Mark reviewed without changes** discards the summary. Directly setting
+`reviewed: true` also adds no proposed prose. Failed jobs expose their reason and
+a retry action in review, with durable failure details in Problems. Stale or
+unsynced proposals cannot be applied. Completing review is recorded before the
+append, so retrying an interrupted completion does not append a second copy.
+
 ## State, recovery and rollback
 
 Lifecycle receipts, confirmed contributions, follow-ups and Dropbox originals
@@ -146,6 +162,10 @@ Do not restore old note files over newer reviewed content.
 - `POST /v1/notes/{id}/review`: explicit completion with `if_match`, selected
   proposal indexes and optional filename-risk acknowledgement. Also requires
   `notes:write`. Confirming a speaker also requires `sources:write` and `entities:read`.
+  For recording summaries, GET includes `meeting_summary` with string fields
+  `summary`, `decisions` and `action_items`. POST includes that object, with the
+  owner's edits and the matching `job_id`, to keep it; empty strings drop sections.
+  Omit it or send `null` to discard it. Each field is limited to 12,000 characters.
   Repeating the recorded request is safe.
 - `POST /v1/notes/{id}/suggestions`: explicit refresh, with the same three scopes.
 - `POST /v1/notes/{id}/calendar-update`: confirm a candidate or dismiss the update,

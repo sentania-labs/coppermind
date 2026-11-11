@@ -233,7 +233,12 @@ The note's source is the transcript (`transcript.txt` with the speaker labels as
 service gave them, `Speaker 1` and so on, and `transcript.json` with timings), and the
 recording is a stored artifact the note cites until the note is reviewed and filed, when
 the audio is removed (see [Recordings](api.md#recordings-audio-on-its-own)). The
-summary is not written yet. A failure appears in Admin under Problems with the
+summary is proposed from the complete transcript by the configured model when enrichment
+is enabled.
+The owner edits or drops its summary, decisions and actions in the companion or
+review API before completing review. See [Recording summaries](note-workflow.md#recording-summaries)
+for approval and [limits](calendar-enrichment.md) for long transcripts.
+A failure appears in Admin under Problems with the
 reason, the recording stays stored, and a person can retry it under Suggestions and backlog. See
 [Recordings](api.md#recordings-audio-on-its-own) for every field and failure.
 

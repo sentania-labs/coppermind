@@ -7,6 +7,7 @@ import time as clock
 from typing import TYPE_CHECKING, Any
 
 from coppermind.ids import is_valid_id
+from coppermind.meeting_summary import MeetingSummary
 from coppermind.schema import (
     date_field_problem,
     field_suggestion_changes,
@@ -15,7 +16,7 @@ from coppermind.schema import (
     parse_note_time,
 )
 from coppermind.store_protocol import NoteDocument, PatchFrontmatter, StoreError
-from coppermind_store import speaker_names
+from coppermind_store import meeting_summary, speaker_names
 
 if TYPE_CHECKING:
     from coppermind_store.context_service import ContextService
@@ -171,6 +172,9 @@ class NoteLifecycle:
             "speaker_attendees_notice": ""
             if self.context.config().assignments["enrichment"].attendees_field
             else speaker_names.ATTENDEES_UNSET_NOTICE,
+            "meeting_summary": job.result.meeting_summary.model_dump()
+            if job and job.result and job.result.meeting_summary
+            else None,
             "suggestions": suggestions,
             "unresolved": job.result.unresolved if job and job.result else [],
             "roles": self.context.store.control.schema().roles,
@@ -197,22 +201,24 @@ class NoteLifecycle:
         async with self.lock:
             name = "review-completions/" + identity
             receipt = self.context.read(name, {})
-            request_hash = fingerprint(
-                {
-                    k: payload.get(k)
-                    for k in (
-                        "note_id",
-                        "if_match",
-                        "job_id",
-                        "selected",
-                        "speaker_choices",
-                        "manual_speakers",
-                        "manual_source_revision",
-                        "manual_source_id",
-                        "accept_link_risk",
-                    )
-                }
-            )
+            request = {
+                k: payload.get(k)
+                for k in (
+                    "note_id",
+                    "if_match",
+                    "job_id",
+                    "selected",
+                    "speaker_choices",
+                    "manual_speakers",
+                    "manual_source_revision",
+                    "manual_source_id",
+                    "accept_link_risk",
+                )
+            }
+            # Keep pre-summary completion receipts replayable after an upgrade.
+            if payload.get("meeting_summary") is not None:
+                request["meeting_summary"] = payload["meeting_summary"]
+            request_hash = fingerprint(request)
             note = await self.context.store.get_note(identity)
             schema = self.context.store.control.schema()
             if receipt.get("request") == request_hash and receipt.get("state") == "complete":
@@ -227,7 +233,10 @@ class NoteLifecycle:
                 validate_review(note, schema, self._default_timezone())
                 if note.frontmatter.get(schema.role("reviewed_key")) is True:
                     raise ValueError("note is already reviewed")
-                if selected:
+                summary = payload.get("meeting_summary")
+                if summary is not None:
+                    summary = MeetingSummary.model_validate(summary).model_dump()
+                if selected or summary is not None:
                     job = self.context.load_job(str(payload.get("job_id", "")))
                     if job.note_id != identity or not job.result:
                         raise ValueError("suggestions do not belong to this note")
@@ -242,6 +251,8 @@ class NoteLifecycle:
                         and payload.get("accept_link_risk") is not True
                     ):
                         raise ValueError("confirm filename links may need manual correction")
+                    if summary is not None and job.result.meeting_summary is None:
+                        raise ValueError("this job has no meeting summary to review")
                     self.context.validate_result(job.result, job.evidence)
                     prospective = note.model_copy(deep=True)
                     for i in selected:
@@ -365,6 +376,7 @@ class NoteLifecycle:
                                 "else or leave this speaker unnamed."
                             )
                 receipt = {
+                    "summary": {"value": summary} if summary is not None else None,
                     "speakers": speaker_operation,
                     "note_id": identity,
                     "request": request_hash,
@@ -415,6 +427,11 @@ class NoteLifecycle:
                 current = await speaker_names.apply(self.context, receipt, current)
                 receipt["expected_hash"] = current.content_hash
                 receipt["speakers_applied"] = True
+                self.context.write(name, receipt)
+            if receipt.get("summary") and not receipt.get("summary_applied"):
+                current = await meeting_summary.apply(self.context, receipt, current)
+                receipt["expected_hash"] = current.content_hash
+                receipt["summary_applied"] = True
                 self.context.write(name, receipt)
             validate_review(current, schema, self._default_timezone())
             reviewed_key = schema.role("reviewed_key")

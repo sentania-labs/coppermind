@@ -723,3 +723,35 @@ def test_speaker_suggestions_are_read_only_in_admin(signed_in):
     assert "private transcript words" not in page.text
     assert "Open this note in the Coppermind companion" in page.text
     assert "Apply this suggestion" not in page.text
+
+
+def test_summary_limits_can_be_changed_from_model_settings(signed_in):
+    client, _ = signed_in
+    fake = ContextStore()
+    client.app.state.store = fake
+    csrf = form_token(client, "/admin/context?tab=models")
+    shown = client.get("/admin/context?tab=models").text
+    assert 'name="summary_max_input_chars"' in shown
+    assert 'name="summary_timeout_s"' in shown
+    response = client.post(
+        "/v1/admin/context/save-assignment",
+        data={
+            "csrf": csrf,
+            "revision": "0",
+            "model": "test-model",
+            "connection": "local",
+            "summary_max_input_chars": "400000",
+            "summary_timeout_s": "1500",
+            "timeout_s": "120",
+            "max_input_chars": "60000",
+            "max_output_tokens": "2048",
+            "attempts": "2",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    action, payload = fake.calls[-1]
+    assert action == "save-assignment"
+    assert payload["assignment"]["summary_max_input_chars"] == 400000
+    assert payload["assignment"]["summary_timeout_s"] == 1500
+    assert payload["assignment"]["max_input_chars"] == 60000
