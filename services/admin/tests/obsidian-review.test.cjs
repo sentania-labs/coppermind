@@ -161,7 +161,7 @@ test('companion settings name the available key creation path',async()=>{
   const f=await fixture();f.plugin.settingTab.display();
   const text=f.plugin.settingTab.containerEl.all().map(e=>e.text||'').join(' ');
   assert.match(text,/create a new key/);assert.match(text,/Read people and companies/);
-  assert.match(text,/Update notes/);assert.match(text,/Update sources/);
+  assert.match(text,/Read notes, Read sources, Update sources, Update notes, Read artifacts, Read people and companies, and Update people and companies/);
   assert.doesNotMatch(text,/entities:read|sources:write|change its permissions/);
 });
 
@@ -396,8 +396,8 @@ test('a credential forbidden to retry sees the required permissions',async()=>{
   const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
   const retry=view.contentEl.all().find(e=>e.text==='Retry');await retry.onclick();
   const message=view.contentEl.all().map(e=>e.text||'').join(' ');
-  assert.match(message,/not allowed to retry recordings/);
-  assert.match(message,/Read notes, Read sources, Update sources, Update notes, and Read artifacts/);
-  assert.match(message,/select it in the companion settings/);assert.equal(retry.disabled,false);
+  assert.match(message,/missing a permission the companion needs/);
+  assert.match(message,/Read notes, Read sources, Update sources, Update notes, Read artifacts, Read people and companies, and Update people and companies/);
+  assert.match(message,/select it in companion settings/);assert.equal(retry.disabled,false);
   assert.doesNotMatch(message,/Check your connection/);
 });

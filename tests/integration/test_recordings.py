@@ -1743,10 +1743,29 @@ async def test_companion_retry_permissions_and_waiting_count_through_real_store(
     app.state.store = client
     current = load_keys(store.control.store)
     reader, reader_key = create_key("reader", ["notes:read", "sources:read"])
-    companion, companion_key = create_key(
-        "companion",
-        ["notes:read", "sources:read", "sources:write", "notes:write", "artifacts:read"],
+    # Use precisely the permission names shown in settings to provision the key.
+    import subprocess
+    from pathlib import Path
+
+    driver = (
+        Path(__file__).resolve().parents[2]
+        / "services/admin/tests/companion-permission-requests.cjs"
     )
+    captured = json.loads(subprocess.check_output(["node", str(driver)], text=True))
+    permission_labels = {
+        "Read notes": "notes:read",
+        "Read sources": "sources:read",
+        "Update sources": "sources:write",
+        "Update notes": "notes:write",
+        "Read artifacts": "artifacts:read",
+        "Read people and companies": "entities:read",
+        "Update people and companies": "entities:write",
+    }
+    description = next(text for text in captured["descriptions"] if "create a new key" in text)
+    advertised = description.split("create a new key with: ", 1)[1].split(". Select", 1)[0]
+    names = [part.removeprefix("and ") for part in advertised.split(", ")]
+    assert set(names) == set(permission_labels)
+    companion, companion_key = create_key("companion", [permission_labels[name] for name in names])
     current.keys.extend([reader, companion])
     store.control.store.write("keys", current.model_dump(mode="json"), if_revision=current.revision)
     async with Service() as service:
@@ -1774,7 +1793,15 @@ async def test_companion_retry_permissions_and_waiting_count_through_real_store(
                 )
                 == 1
             )
+            # Replay actual view startup calls through the public authorization stack.
             headers = {"Authorization": f"Bearer {companion_key}"}
+            for call in captured["calls"]:
+                response = await api.request(call["method"], call["path"], headers=headers)
+                assert response.status_code != 403, (call, response.text)
+            recognition = await api.put(
+                "/v1/entities/voice/recognition", headers=headers, json={"enabled": False}
+            )
+            assert recognition.status_code != 403
             assert (await api.get("/v1/recordings/waiting", headers=headers)).status_code == 200
             accepted_retry = await api.post(f"/v1/recordings/{job.id}/retry", headers=headers)
             assert accepted_retry.status_code == 200

@@ -3,7 +3,7 @@ const {Plugin, ItemView, PluginSettingTab, Setting, SecretComponent, Notice, req
 const VIEW = 'coppermind-review';
 const PEOPLE_VIEW = 'coppermind-people';
 const WAITING_VIEW = 'coppermind-waiting';
-const RECORDING_PERMISSIONS = 'Read notes, Read sources, Update sources, Update notes, and Read artifacts';
+const COMPANION_PERMISSIONS = 'Read notes, Read sources, Update sources, Update notes, Read artifacts, Read people and companies, and Update people and companies';
 async function hash(text) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return 'sha256:' + [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2,'0')).join('');
@@ -260,7 +260,7 @@ class WaitingView extends ItemView {
           const button=card.createEl('button',{text:'Retry'}), feedback=card.createEl('p');
           button.onclick=async()=>{button.disabled=true;feedback.setText('Queuing retry…');
             try{await this.plugin.call('/v1/recordings/'+encodeURIComponent(recording.id)+'/retry','POST',{});await this.refresh();}
-            catch(e){feedback.setText(e.status===403?'This API credential is not allowed to retry recordings. In Coppermind Admin, create a credential with '+RECORDING_PERMISSIONS+', then select it in the companion settings.':'Could not queue retry. Check your connection and transcription settings, then try again.');button.disabled=false;}
+            catch(e){feedback.setText(e.status===403?'This API credential is missing a permission the companion needs. In Coppermind Admin, create one with: '+COMPANION_PERMISSIONS+', then select it in companion settings.':'Could not queue retry. Check your connection and transcription settings, then try again.');button.disabled=false;}
           };
         }
         if(recording.can_dismiss){
@@ -343,7 +343,7 @@ class Settings extends PluginSettingTab {
   constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
   display(){const el=this.containerEl;el.empty();el.createEl('h2',{text:'Coppermind'});
     new Setting(el).setName('Server URL').setDesc('Your Coppermind address, without /admin.').addText(t=>t.setValue(this.plugin.settings.url).onChange(async v=>{this.plugin.settings.url=v.trim().replace(/\/$/,'');await this.plugin.saveData(this.plugin.settings);}));
-    new Setting(el).setName('API credential').setDesc('In Coppermind Admin, open Connected apps (API Keys) and create a new key with '+RECORDING_PERMISSIONS+', plus Read people and companies and Update people and companies. Select that key here. Only the secret name is saved in plugin settings.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
+    new Setting(el).setName('API credential').setDesc('In Coppermind Admin, open Connected apps (API Keys) and create a new key with: '+COMPANION_PERMISSIONS+'. Select that key here. Only the secret name is saved in plugin settings.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
   }
 }
 module.exports=class CoppermindReview extends Plugin {
