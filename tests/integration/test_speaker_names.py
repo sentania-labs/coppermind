@@ -1145,22 +1145,47 @@ async def test_a_refused_review_creates_no_person_for_a_calendar_contact(store, 
     assert (await store.get_source(result.source.id)).current_revision == 1
 
 
-async def test_a_review_that_fails_later_validation_creates_no_person(store, standin):
+async def test_a_review_that_fails_after_a_contact_is_accepted_creates_no_person(store, standin):
     context, result, contact, payload, people = await contact_review(store, standin)
     before = len(people())
-    stale = payload({"Unknown voice 1": contact["id"]}) | {"manual_source_revision": 99}
-    with pytest.raises(ValueError, match="transcript changed"):
-        await context.complete_review(stale)
+    with pytest.raises(ValueError, match="no longer active"):
+        await context.complete_review(
+            payload({"Unknown voice 1": contact["id"], "Unknown voice 2": "person:missing"})
+        )
     assert len(people()) == before
+    assert (await store.get_source(result.source.id)).current_revision == 1
 
 
-async def test_replaying_a_contact_review_keeps_one_person(store, standin):
+async def test_retrying_after_an_interrupted_contact_review_reuses_the_created_person(
+    store, standin, monkeypatch
+):
+    import copy
+
+    from coppermind_store import speaker_names
+
     context, result, contact, payload, people = await contact_review(store, standin)
     request = payload({"Unknown voice 1": contact["id"]})
-    first = await context.complete_review(request)
-    again = await context.complete_review(request)
-    assert first["state"] == again["state"] == "complete"
+    create = speaker_names.create_contact_people
+
+    async def interrupted(ctx, operation):
+        await create(ctx, copy.deepcopy(operation))
+        raise RuntimeError("interrupted before the receipt was saved")
+
+    monkeypatch.setattr(speaker_names, "create_contact_people", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await context.complete_review(request)
     assert [p.name for p in people()].count(contact["name"]) == 1
+    monkeypatch.setattr(speaker_names, "create_contact_people", create)
+    completed = await context.complete_review(request)
+    assert completed["state"] == "complete"
+    assert [p.name for p in people()].count(contact["name"]) == 1
+    manifest = await store.get_source(result.source.id)
+    text = (
+        await store.get_source_artifact(
+            result.source.id, manifest.current_revision, "transcript.txt"
+        )
+    ).content
+    assert contact["name"] + ": Hello." in text
 
 
 async def test_a_contact_whose_address_belongs_to_a_removed_person_stops_the_review(store, standin):
