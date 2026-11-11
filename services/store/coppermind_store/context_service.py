@@ -46,7 +46,7 @@ from coppermind.store_protocol import (
     StoreUnavailable,
     VersionConflict,
 )
-from coppermind_store import meeting_summary, speaker_names
+from coppermind_store import meeting_match, meeting_summary, speaker_names
 from coppermind_store.calendar_archive import CalendarArchive
 from coppermind_store.calendar_import import CALENDAR_ID
 from coppermind_store.calendar_worker import occurrences
@@ -135,6 +135,9 @@ speaker label and value set to one supplied candidate id, or to null when no can
 Use transcript clues and give confidence and a short reason.
 Do not invent candidates or assert unsupported identities.
 Existing values are human-owned; never propose replacing them.
+When several events are supplied for a recording, compare the conversation with event titles,
+descriptions and invitee names. Suggest one event only if the content supports it; otherwise
+leave the event unresolved. An invitation does not establish who spoke or attended.
 """
 
 
@@ -309,6 +312,30 @@ class ContextService:
             occurrences, events, day, self.store.control.settings().general.timezone
         )
 
+    async def recording_calendar_candidates(self, note: Any) -> list[dict[str, Any]]:
+        events = await self.calendar_candidates(note)
+        recording = next(
+            (r for r in self.recordings.jobs() if r.note_id == note.id and r.source_id), None
+        )
+        if recording is None:
+            return events
+        captured_at = getattr(recording, "captured_at", "")
+        if not captured_at:
+            schema = self.store.control.schema()
+            day = note_date(note.frontmatter, schema)
+            start = note_start_time(note.frontmatter, schema)
+            if day and start:
+                zone = ZoneInfo(self.store.control.settings().general.timezone)
+                captured_at = datetime.combine(day, start, zone).isoformat()
+        matches = meeting_match.overlapping(events, captured_at)
+        field = self.config().assignments["enrichment"].event_field
+        linked = note.frontmatter.get(field) if field else None
+        if linked:
+            matches.extend(
+                event for event in events if event["event_id"] == linked and event not in matches
+            )
+        return matches
+
     async def note_evidence_hash(self, note: Any, ledger: Any = None) -> str:
         return fingerprint(
             {
@@ -342,6 +369,9 @@ class ContextService:
 
     async def lifecycle_detail(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.lifecycle.detail(payload)
+
+    async def choose_recording_meeting(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.lifecycle.choose_recording_meeting(payload)
 
     async def complete_review(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.lifecycle.complete(payload)
@@ -1125,7 +1155,7 @@ class ContextService:
             or self.schema_hash() != job.schema_hash
         ):
             raise ValueError("stale: note, evidence, schema or configuration changed")
-        candidates = await self.calendar_candidates(note)
+        candidates = await self.recording_calendar_candidates(note)
         assignment = self.config().assignments["enrichment"]
         fields = [
             item.model_dump()
@@ -1476,6 +1506,13 @@ class ContextService:
                     "Open Enrichment, refresh models and choose one, then retry.",
                 ) from exc
             transcript = await meeting_summary.prepare(self, job, assignment)
+            deterministic_event = (
+                meeting_match.suggest(
+                    evidence["events"], "\n".join(await self.source_text(job.note_id))
+                )
+                if any(r.note_id == job.note_id and r.source_id for r in self.recordings.jobs())
+                else None
+            )
             output, usage = await self.provider.suggest(
                 connection,
                 self.key(connection.id),
@@ -1485,6 +1522,30 @@ class ContextService:
             )
             job.reply = json.dumps(output, ensure_ascii=False)[:4000]
             result = Suggestions.model_validate(output)
+            if len(evidence["events"]) > 1 and any(
+                r.note_id == job.note_id and r.source_id for r in self.recordings.jobs()
+            ):
+                valid_events = {event["event_id"] for event in evidence["events"]}
+                event_suggestions = [
+                    s
+                    for s in result.suggestions
+                    if s.kind == "event"
+                    and len(s.event_ids) == 1
+                    and s.event_ids[0] in valid_events
+                ]
+                result.suggestions = [s for s in result.suggestions if s.kind != "event"]
+                if len(event_suggestions) == 1:
+                    result.suggestions.append(event_suggestions[0])
+            if deterministic_event:
+                result.suggestions = [s for s in result.suggestions if s.kind != "event"][:29]
+                result.suggestions.append(
+                    Suggestion(
+                        kind="event",
+                        event_ids=[deterministic_event],
+                        confidence=0.9,
+                        reason="Names and topic in the conversation match this meeting.",
+                    )
+                )
             if job.purpose == "calendar":
                 result.suggestions = [
                     s
@@ -1689,6 +1750,14 @@ class ContextService:
         schema = self.store.control.schema()
         assignment = self.config().assignments["enrichment"]
         for index, suggestion in enumerate(job.result.suggestions):
+            # A recording with several possible meetings needs an explicit owner choice,
+            # even when the model reports high confidence.
+            if (
+                suggestion.kind == "event"
+                and any(r.note_id == job.note_id and r.source_id for r in self.recordings.jobs())
+                and len({event["event_id"] for event in job.evidence.get("events", [])}) > 1
+            ):
+                continue
             if (
                 suggestion.kind in {"filename", "speaker"}
                 or suggestion.confidence < CONFIDENCE_THRESHOLD

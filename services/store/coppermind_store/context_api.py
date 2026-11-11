@@ -19,6 +19,7 @@ ACTIONS = {
     "resolve-calendar": "resolve_calendar",
     "setup-lifecycle": "setup_lifecycle",
     "lifecycle": "lifecycle_detail",
+    "choose-recording-meeting": "choose_recording_meeting",
     "complete-review": "complete_review",
     "upload-drop": "upload_drop",
     "dismiss-drop": "dismiss_drop",

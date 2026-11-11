@@ -68,6 +68,11 @@ async def review(
     )
     detail["suggestions"] = [s for s in detail.get("suggestions", []) if s.get("kind") != "speaker"]
     detail["manual_speaker_review"] = None
+    if detail.get("recording_meeting"):
+        detail["recording_meeting"]["candidates"] = [
+            {**candidate, "people": []}
+            for candidate in detail["recording_meeting"].get("candidates", [])
+        ]
     detail["speakers_unavailable"] = PEOPLE_HIDDEN if hidden else ""
     return JSONResponse(detail)
 
@@ -200,6 +205,25 @@ class CalendarResolution(BaseModel):
     if_match: str
     calendar_hash: str
     event_id: str = ""
+
+
+class RecordingMeetingChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    if_match: str
+    calendar_hash: str
+    event_id: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/notes/{note_id}/recording-meeting")
+async def recording_meeting(
+    note_id: str,
+    payload: RecordingMeetingChoice,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:write", "notes:read", "sources:read")),
+) -> Response:
+    return await call(
+        client, "choose-recording-meeting", {"note_id": note_id, **payload.model_dump()}
+    )
 
 
 @router.post("/notes/{note_id}/calendar-update")

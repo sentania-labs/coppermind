@@ -83,7 +83,7 @@ def current_person(people: dict[str, Any], candidate: dict[str, Any]) -> dict[st
     entity = people.get(entity_id)
     if entity is None or entity.retired_at or entity.redirect:
         return None
-    return {**person_candidate(entity), "id": candidate["id"], "person_id": entity_id}
+    return {**candidate, **person_candidate(entity), "id": candidate["id"], "person_id": entity_id}
 
 
 def chosen_person(
@@ -274,18 +274,22 @@ async def evidence(
     linked = set(context.read("associations", {}).get(note.id, {}).get("events", []))
     if assignment.event_field and note.frontmatter.get(assignment.event_field):
         linked.add(note.frontmatter[assignment.event_field])
+    ambiguous = not linked and len({event["event_id"] for event in events}) > 1
     for event in events:
-        if event["event_id"] not in linked:
+        if not ambiguous and event["event_id"] not in linked:
             continue
         for person in event.get("people", []):
             identity = person.get("contact_id")
             name = person.get("name")
             if identity and name:
+                if "contact:" + identity not in candidates and len(candidates) >= MAX_CANDIDATES:
+                    continue
                 candidates["contact:" + identity] = {
                     "id": "contact:" + identity,
                     "name": name,
                     "email": person.get("address", "").removeprefix("mailto:"),
                     "path": "",
+                    "from_possible_meeting": ambiguous,
                 }
     from coppermind_store.entities import email
 

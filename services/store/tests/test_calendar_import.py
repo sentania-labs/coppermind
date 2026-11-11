@@ -188,10 +188,11 @@ def test_recurrence_lookup_handles_dst_exception_and_cancellation():
 
     from coppermind_store.calendar_worker import occurrences
 
-    recurring = event() + "\r\nRRULE:FREQ=WEEKLY;COUNT=5"
+    recurring = event() + "\r\nDESCRIPTION:Launch planning\r\nRRULE:FREQ=WEEKLY;COUNT=5"
     records = parse_export("work", "one.ics", ics(recurring))
     result = occurrences(records, date(2026, 11, 4), "America/Chicago")
     assert result[0]["start"] == "2026-11-04T09:00:00-06:00"
+    assert result[0]["description"] == "Launch planning"
     cancelled = parse_export(
         "work",
         "cancel.ics",

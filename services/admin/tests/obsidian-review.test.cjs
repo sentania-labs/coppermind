@@ -22,7 +22,8 @@ class Setting {
   addComponent(fn){fn(this.el);return this;}
   addText(fn){const control={inputEl:{},setValue(){return control;},onChange(){return control;}};fn(control);return this;}
   addToggle(fn){const toggle=this.el.createEl("toggle");const control={setDisabled(v){toggle.disabled=v;return control;},onChange(fn){toggle.onchange=fn;return control;},setValue(){return control;}};fn(control);return this;}
-  addButton(fn){const button=this.el.createEl('button');const control={setButtonText(v){button.text=v;return control;},onClick(fn){button.onclick=fn;return control;}};fn(control);return this;}
+  addButton(fn){const button=this.el.createEl('button');const control={setButtonText(v){button.text=v;return control;},setDisabled(v){button.disabled=v;return control;},onClick(fn){button.onclick=fn;return control;}};fn(control);return this;}
+  addDropdown(fn){const dropdown=this.el.createEl('select');const control={addOption(v,text){dropdown.createEl('option',{value:v,text});return control;},setValue(v){dropdown.value=v;return control;},onChange(fn){dropdown.onchange=()=>fn(dropdown.value);return control;}};fn(control);return this;}
 }
 async function fixture(local, overrides={}){
   const raw='---\nid: test-note\nreviewed: false\n---\nHuman prose.\n';
@@ -56,6 +57,16 @@ test('credential is read from secret storage, not plugin settings',async()=>{
   assert.equal(plugin.settings.secret,'local-secret-name');
   assert.ok(!JSON.stringify(plugin.settings).includes('synthetic-credential'));
   assert.equal(requests[0].headers.Authorization,'Bearer synthetic-credential');
+});
+
+test('a suggested meeting can be changed before confirming',async()=>{
+  const meeting={calendar_hash:'calendar',suggested_event_id:'a',candidates:[{event_id:'a',title:'Planning',people:[{name:'Alex'}]},{event_id:'b',title:'Budget',people:[{name:'Blair'}]}]};
+  const f=await fixture(undefined,{recording_meeting:meeting});
+  const chooser=f.view.contentEl.all().find(e=>e.tag==='select'&&e.children.some(c=>c.value==='b'));
+  assert.equal(chooser.value,'a');chooser.value='b';chooser.onchange();
+  await f.view.contentEl.all().find(e=>e.text==='Use selected meeting').onclick();
+  const request=f.requests.find(r=>r.url.endsWith('/recording-meeting'));
+  assert.equal(JSON.parse(request.body).event_id,'b');
 });
 
 test('reviewed flag does not hide interrupted completion recovery',async()=>{

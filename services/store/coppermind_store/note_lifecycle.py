@@ -62,6 +62,59 @@ class NoteLifecycle:
     def _default_timezone(self) -> str:
         return self.context.store.control.settings().general.timezone
 
+    async def choose_recording_meeting(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Confirm an overlapping event, rechecking the note and calendar at the write."""
+        async with self.lock:
+            note = await self.context.store.get_note(payload["note_id"])
+            if note.content_hash != payload.get("if_match"):
+                raise ValueError("note changed; refresh the review")
+            if await self.context.calendar_evidence_hash(note) != payload.get("calendar_hash"):
+                raise ValueError("calendar changed; refresh the review")
+            recording = next(
+                (r for r in self.context.recordings.jobs() if r.note_id == note.id and r.source_id),
+                None,
+            )
+            if not recording:
+                raise ValueError("recording is no longer attached to this note")
+            event_id = payload.get("event_id")
+            candidates = await self.context.recording_calendar_candidates(note)
+            if event_id not in {event["event_id"] for event in candidates}:
+                raise ValueError("choose an event from the current matching meetings")
+            async with self.context.lock:
+                choices = self.context.read("recording-meetings", {})
+                previous = choices.get(recording.source_id, {}).get("event_id")
+                associations = self.context.read("associations", {})
+                record = associations.setdefault(
+                    note.id, {"events": [], "contacts": [], "attendees": []}
+                )
+                if any(value not in {previous, event_id} for value in record.get("events", [])):
+                    raise ValueError("the note already names a different meeting; edit it first")
+                field = self.context.config().assignments["enrichment"].event_field
+                existing = note.frontmatter.get(field) if field else None
+                if existing and existing not in {previous, event_id}:
+                    raise ValueError("the note already names a different meeting; edit it first")
+                if field and existing != event_id:
+                    note = await self.context.store.patch_frontmatter(
+                        note.id, PatchFrontmatter(set={field: event_id}), if_match=note.content_hash
+                    )
+                record["events"] = [event_id]
+                self.context.write("associations", associations)
+                choices[recording.source_id] = {"event_id": event_id}
+                self.context.write("recording-meetings", choices)
+            queued = False
+            if getattr(self.context.config().assignments["enrichment"], "enabled", False):
+                try:
+                    await self.context.queue_note(note.id)
+                    queued = True
+                except (ValueError, StoreError):
+                    pass
+            return {
+                "note_id": note.id,
+                "event_id": event_id,
+                "note_hash": note.content_hash,
+                "suggestions_queued": queued,
+            }
+
     async def detail(self, payload: dict[str, Any]) -> dict[str, Any]:
         from coppermind_store.context_service import fingerprint
 
@@ -141,10 +194,27 @@ class NoteLifecycle:
         if update is not None:
             update = dict(update, candidates=await self.context.calendar_candidates(note))
         manual = None
-        if any(r.note_id == note.id and r.source_id for r in self.context.recordings.jobs()):
-            manual = await speaker_names.evidence(
-                self.context, note, await self.context.calendar_candidates(note)
-            )
+        recording = next(
+            (r for r in self.context.recordings.jobs() if r.note_id == note.id and r.source_id),
+            None,
+        )
+        meeting = None
+        if recording:
+            candidates = await self.context.recording_calendar_candidates(note)
+            suggested = [
+                s.event_ids[0]
+                for s in (job.result.suggestions if job and job.result and not stale else [])
+                if s.kind == "event" and len(s.event_ids) == 1 and s.confidence >= 0.8
+            ]
+            meeting = {
+                "candidates": candidates,
+                "suggested_event_id": suggested[0] if len(suggested) == 1 else None,
+                "calendar_hash": await self.context.calendar_evidence_hash(note),
+                "selected_event_id": self.context.read("recording-meetings", {})
+                .get(recording.source_id, {})
+                .get("event_id"),
+            }
+            manual = await speaker_names.evidence(self.context, note, candidates)
         if manual:
             from coppermind_store.voice_store import VoiceStore
 
@@ -195,6 +265,7 @@ class NoteLifecycle:
             "roles": self.context.store.control.schema().roles,
             "finalization": self.context.read("finalized", {}).get(note.id),
             "calendar_update": update,
+            "recording_meeting": meeting,
             "body_hash": fingerprint(note.body),
             "completion": self.context.read("review-completions/" + note.id, {}),
         }

@@ -179,7 +179,9 @@ def _lookup(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     "uid": uid,
                     "occurrence": recurrence_id,
                     "title": str(component.get("SUMMARY", "")),
+                    "description": str(component.get("DESCRIPTION", ""))[:1000],
                     "start": component.decoded("DTSTART").isoformat(),
+                    "end": component.decoded("DTEND").isoformat() if "DTEND" in component else "",
                     "people": [
                         person.model_dump() | {"contact_id": person.contact_id}
                         for person in event.people

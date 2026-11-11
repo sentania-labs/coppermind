@@ -67,6 +67,25 @@ class ReviewView extends ItemView {
         return;
       }
       el.createEl('p',{text:'Edit the note and its properties as usual. Finish here when you are ready.'});
+      const meeting=data.recording_meeting;
+      if(meeting?.candidates?.length>1){
+        const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Which meeting was this?'});
+        box.createEl('p',{text:meeting.suggested_event_id?'Suggested from the conversation. Please check the choice.':'Several meetings could match. Choose one to use its context.'});
+        let choice=meeting.selected_event_id||meeting.suggested_event_id||'';
+        new Setting(box).setName('Meeting').addDropdown(d=>{
+          d.addOption('','Choose a meeting');
+          for(const event of meeting.candidates){
+            const people=(event.people||[]).map(p=>p.name).filter(Boolean).join(', ');
+            d.addOption(event.event_id,event.title+(people?' · '+people:''));
+          }
+          d.setValue(choice).onChange(v=>choice=v);
+        });
+        new Setting(box).addButton(b=>b.setButtonText('Use selected meeting').setDisabled(!synced).onClick(async()=>{
+          if(!choice){new Notice('Choose a meeting first.');return;}
+          if(await hash(await this.app.vault.read(file))!==data.note.content_hash){new Notice('The note changed. Wait for sync, then refresh.');return;}
+          try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-meeting','POST',{if_match:data.note.content_hash,calendar_hash:meeting.calendar_hash,event_id:choice});new Notice('Meeting selected. Refresh after sync.');await this.refresh();}catch(e){new Notice(e.message);}
+        }));
+      }
       const selected=new Set();
       const speakerChoices={}, manualSpeakers={}, cards=[];
       const ready=data.state==='suggested'&&!data.stale&&synced;
@@ -95,7 +114,7 @@ class ReviewView extends ItemView {
       const makeChooser=(card,label,people,initial,onSelect,disabled,voice=[])=>{
         const chooser=card.createEl('select');
         chooser.createEl('option',{text:'Leave as '+label,value:''});
-        const add=person=>{if(!people.some(p=>p.id===person.id)){people.push(person);chooser.createEl('option',{text:person.name+(person.email?' ('+person.email+')':''),value:person.id});}};
+        const add=person=>{if(!people.some(p=>p.id===person.id)){people.push(person);chooser.createEl('option',{text:person.name+(person.email?' ('+person.email+')':'')+(person.from_possible_meeting?' · possible meeting':''),value:person.id});}};
         const supplied=[...people];people.length=0;for(const person of supplied)add(person);
         for(const match of voice)add(match);
         chooser.value=initial||'';chooser.disabled=disabled;chooser.onchange=()=>{onSelect(chooser.value);updatePreview();};
@@ -149,6 +168,7 @@ class ReviewView extends ItemView {
         return {matches,strong,conflict,agreed,initial:conflict?'':voiceKey?(agreed?suggestion.value:strong[0].id):suggestion?.value||''};
       };
       for(const s of data.suggestions){
+        if(s.kind==='event'&&meeting?.candidates?.length>1)continue;
         if(s.kind==='speaker'&&!ready)continue;
         const card=el.createDiv({cls:'coppermind-card'});let toggle;
         const voice=s.kind==='speaker'?voicePlan(s.field,s):null;

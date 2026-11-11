@@ -66,6 +66,11 @@ async def test_calendar_candidates_only_come_from_linked_events():
     data = await evidence(Context(), note, events)
     assert [c["name"] for c in data["candidates"]] == ["Alex"]
 
+    note.frontmatter = {}
+    data = await evidence(Context(), note, events)
+    assert {c["name"] for c in data["candidates"]} == {"Alex", "Blair"}
+    assert all(c["from_possible_meeting"] for c in data["candidates"])
+
 
 def _meeting(hours: float) -> dict:
     """Two speakers trading 20-second turns for the whole recording."""
