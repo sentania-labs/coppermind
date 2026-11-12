@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
+from coppermind_store import filing
 from coppermind_store.enrichment_models import Suggestions
 from coppermind_store.reconciler import reconcile_once
 from coppermind_store.recordings import TranscriptionJob
@@ -14,6 +17,7 @@ from coppermind.store_protocol import (
     IngestNote,
     IngestRequest,
     IngestSource,
+    PatchFrontmatter,
     ReplaceNote,
 )
 from tests.integration.test_context_enrichment import configure
@@ -426,3 +430,53 @@ async def test_merge_preserves_owner_frontmatter_comments_and_body(store):
     after = path.read_text()
     assert "# My hand-written comment\n" in after
     assert (await store.get_note(target.id)).body.startswith(before_body)
+
+    job = context.recordings.load(recording.id)
+    job.artifact_revision = 1
+    context.recordings.save(job)
+    context.write(
+        context.recordings.transcript_path(job),
+        {"duration": 3, "segments": [{"start": 0, "speaker": "Speaker 1", "text": "Hello Casey."}]},
+    )
+    merged = await store.get_note(target.id)
+    await store.patch_frontmatter(
+        target.id, PatchFrontmatter(set={"reviewed": True}), merged.content_hash
+    )
+    stable = await store.get_note(target.id)
+    context.lifecycle.observed[target.id] = (stable.content_hash, time.monotonic() - 31)
+    result = await filing.file_reviewed(store)
+    assert result == {"filed": 1, "filing_failed": 0}, filing.filing_state(store, target.id)
+    filed_path = (await store._locate(target.id))[1]
+    filed_path.write_text(
+        filed_path.read_text().replace("---\n", "---\n# My hand-written comment\n", 1)
+    )
+    await reconcile_once(store)
+    reviewed = await store.get_note(target.id)
+    assert reviewed.filed
+    reviewed_text = filed_path.read_text()
+    assert recording.artifact_id in reviewed.frontmatter["artifacts"]
+
+    assert await context.recordings.remove_reviewed_audio(context.recordings.load(recording.id))
+    assert context.recordings.load(recording.id).audio_removed
+    final = await store.get_note(target.id)
+    final_text = filed_path.read_text()
+    assert "# My hand-written comment\n" in final_text
+    assert recording.artifact_id not in final.frontmatter.get("artifacts", [])
+    assert final.body.startswith(before_body)
+    assert "Audio was removed after review" in final.body
+    assert final.body.index("Audio was removed") < final.body.index("<!-- coppermind-recording:")
+    assert final.body.endswith("<!-- coppermind-recording:" + recording.source_id + " -->\n")
+
+    def keys(text: str) -> list[str]:
+        return [
+            line.split(":")[0]
+            for line in text.split("---\n")[1].splitlines()
+            if line and line[0] not in " -#"
+        ]
+
+    assert keys(final_text) == keys(reviewed_text)
+    assert final_text.split("---\n")[1].splitlines() == [
+        line
+        for line in reviewed_text.split("---\n")[1].splitlines()
+        if line.strip() != f"- {recording.artifact_id}"
+    ]

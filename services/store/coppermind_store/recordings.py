@@ -647,10 +647,10 @@ class Recordings:
         try:
             if not job.transcribed or not job.note_id:
                 return False
-            receipt = (
+            merge = (
                 self.context.read("recording-merges/" + job.source_id, {}) if job.source_id else {}
             )
-            if receipt and receipt.get("state") != "complete":
+            if merge and merge.get("state") != "complete":
                 return False
             note_id = self.parent_note_id(job)
             async with store.session_factory() as session:
@@ -713,21 +713,31 @@ class Recordings:
                 receipt += f" Archive: {pointer}"
             finished = receipt.replace("is scheduled for removal", "was removed")
             if receipt not in note.body and finished not in note.body:
-                body = (
-                    note.body.replace(link, receipt)
-                    if link and link in note.body
-                    else note.body + "\n\n" + receipt + "\n"
-                )
-                fields = dict(note.frontmatter)
                 artifacts_key = store.control.schema().optional_role("artifacts_key")
-                cited = fields.get(artifacts_key)
-                if isinstance(cited, list):
-                    fields[artifacts_key] = [item for item in cited if item != job.artifact_id]
-                note = await store.replace_note(
-                    note_id,
-                    ReplaceNote(frontmatter=fields, body=body),
-                    note.content_hash,
-                )
+                if merge:
+                    marker = f"<!-- coppermind-recording:{job.source_id} -->"
+                    note = await store.settle_recording_audio(
+                        note_id,
+                        job.artifact_id,
+                        marker if marker in note.body else "",
+                        f"\n{receipt}\n\n{marker}",
+                        note.content_hash,
+                    )
+                else:
+                    body = (
+                        note.body.replace(link, receipt)
+                        if link and link in note.body
+                        else note.body + "\n\n" + receipt + "\n"
+                    )
+                    fields = dict(note.frontmatter)
+                    cited = fields.get(artifacts_key)
+                    if isinstance(cited, list):
+                        fields[artifacts_key] = [item for item in cited if item != job.artifact_id]
+                    note = await store.replace_note(
+                        note_id,
+                        ReplaceNote(frontmatter=fields, body=body),
+                        note.content_hash,
+                    )
             # Serialize against API note edits and recheck both the file and filing mirror.
             from coppermind_store.notes import _bytes_at
 
@@ -748,13 +758,18 @@ class Recordings:
                 await self._remove_audio(job)
             note = await store.get_note(note_id)
             if receipt in note.body:
-                await store.replace_note(
-                    note_id,
-                    ReplaceNote(
-                        frontmatter=note.frontmatter, body=note.body.replace(receipt, finished)
-                    ),
-                    note.content_hash,
-                )
+                if merge:
+                    await store.settle_recording_audio(
+                        note_id, "", receipt, finished, note.content_hash
+                    )
+                else:
+                    await store.replace_note(
+                        note_id,
+                        ReplaceNote(
+                            frontmatter=note.frontmatter, body=note.body.replace(receipt, finished)
+                        ),
+                        note.content_hash,
+                    )
             return self._audio_removed(job)
         except asyncio.CancelledError:
             raise

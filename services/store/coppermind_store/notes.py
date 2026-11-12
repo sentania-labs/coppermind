@@ -34,7 +34,7 @@ import json
 import os
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, date, datetime
 from math import isfinite
 from pathlib import Path
@@ -934,9 +934,8 @@ class LocalStore:
         allowed = {schema.role("sources_key"), schema.optional_role("artifacts_key")}
         if not set(changes) <= allowed:
             raise ValueError("merge can only add source and recording citations")
-        relative, path = await self._locate(note_id)
-        async with self._lock_for(note_id):
-            original, current, _ = _bytes_at(note_id, relative, path, schema, if_match)
+
+        def build(text: str, current: dict[str, Any], before_body: str) -> tuple[str, str]:
             for field, values in changes.items():
                 existing = current.get(field, [])
                 if (
@@ -946,14 +945,52 @@ class LocalStore:
                     or any(not is_valid_id(value) for value in values)
                 ):
                     raise ValueError("merge citations must only add valid identities")
-            before_body = fm.parse(original.decode("utf-8"))[1]
-            updated = (
-                fm.patch(original.decode("utf-8"), _with_kinds(changes, schema))
-                if changes
-                else original.decode("utf-8")
-            ) + suffix
+            patched = fm.patch(text, _with_kinds(changes, schema)) if changes else text
+            return patched + suffix, before_body + suffix
+
+        return await self._merge_write(note_id, if_match, build)
+
+    @writer
+    async def settle_recording_audio(
+        self, note_id: NoteId, drop: str, old: str, new: str, if_match: ETag
+    ) -> NoteDocument:
+        """Drop one removed recording's citation and swap one span of Coppermind's own text."""
+        schema = self.control.schema()
+        artifacts_key = schema.optional_role("artifacts_key")
+
+        def build(text: str, current: dict[str, Any], before_body: str) -> tuple[str, str]:
+            cited = current.get(artifacts_key, []) if artifacts_key else []
+            kept = [item for item in cited if item != drop] if isinstance(cited, list) else []
+            patched = text
+            if drop and isinstance(cited, list) and kept != cited:
+                patched = fm.patch(text, _with_kinds({artifacts_key: kept}, schema))
+            body = before_body
+            if old:
+                if old not in before_body:
+                    raise ValueError("the recording text is no longer in the note")
+                body = before_body.replace(old, new, 1)
+            if not patched.endswith(before_body):
+                raise ValueError("merge would change existing note text")
+            return patched[: len(patched) - len(before_body)] + body, body
+
+        return await self._merge_write(note_id, if_match, build)
+
+    async def _merge_write(
+        self,
+        note_id: NoteId,
+        if_match: ETag,
+        build: Callable[[str, dict[str, Any], str], tuple[str, str]],
+    ) -> NoteDocument:
+        """Write `build`'s text through a frontmatter patch, refusing any other body change."""
+        schema = self.control.schema()
+        relative, path = await self._locate(note_id)
+        async with self._lock_for(note_id):
+            original, current, _ = _bytes_at(note_id, relative, path, schema, if_match)
+            text = original.decode("utf-8")
+            before_body = fm.parse(text)[1]
+            updated, expected = build(text, current, before_body)
             frontmatter, body = fm.parse(updated)
-            if body != before_body + suffix:
+            if body != expected:
                 raise ValueError("merge would change existing note text")
             problems = schema.validate_frontmatter(frontmatter)
             problems += schema.tag_problems(frontmatter, current)
