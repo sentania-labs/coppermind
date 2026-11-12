@@ -999,3 +999,36 @@ def test_a_refusal_about_transcription_is_not_shown_under_suggestions(admin):
     response = post(client, path, form, page=path)
     assert response.status_code == 422
     assert response.text.count("Home transcription is not answering.") == 1
+
+
+def test_the_live_summary_refresh_keeps_the_choice_the_owner_made(tmp_path):
+    import json
+    import subprocess
+
+    from coppermind_admin.layout import KEEP_CHOICES
+
+    program = (
+        KEEP_CHOICES
+        + """
+const radio=(name,value,checked)=>({name,value,checked});
+const part=(radios,details)=>({
+  querySelectorAll:(sel)=>sel==="input[type=radio]:checked"?radios.filter(r=>r.checked)
+    :sel==="input[type=radio]"?radios:sel==="details"?details:[]});
+const mine=[radio("summary","earlier",false),radio("summary","none",true)];
+const fresh=[radio("summary","earlier",true),radio("summary","none",false)];
+const other=[radio("how","file",true)];
+const openNow=[{open:true},{open:false}], closedNew=[{open:false},{open:false}];
+keepChoices(part(mine,openNow),part(fresh,closedNew));
+const gone=[radio("summary","new",true)];
+keepChoices(part(mine,[]),part(gone,[]));
+console.log(JSON.stringify({fresh:fresh.map(r=>r.checked),gone:gone.map(r=>r.checked),
+  details:closedNew.map(d=>d.open),other:other.map(r=>r.checked)}));
+"""
+    )
+    script = tmp_path / "keep.cjs"
+    script.write_text(program)
+    done = subprocess.run(["node", str(script)], capture_output=True, text=True, check=True)
+    result = json.loads(done.stdout)
+    assert result["fresh"] == [False, True]
+    assert result["gone"] == [True]
+    assert result["details"] == [True, False]

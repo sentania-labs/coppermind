@@ -238,16 +238,31 @@ async function signedIn() {
 }
 
 let lastSigninProbe = 0;
+let probingSignin = false;
 async function recheckSignin() {
-  if (!status.needs_signin || !connection || status.paused || stopping) return;
+  if (probingSignin || !status.needs_signin || !connection || status.paused || stopping) return;
   if (Date.now() - lastSigninProbe < SIGNIN_RECHECK_MS) return;
+  probingSignin = true;
   lastSigninProbe = Date.now();
-  const epoch = signinEpoch;
-  if (!(await signedIn()) || epoch !== signinEpoch || status.paused || stopping) return;
-  quickExits = 0;
-  restartAttempts = 0;
-  await publishStatus({ needs_signin: false, last_error: null, state: "starting" });
-  await startSync().catch(() => {});
+  try {
+    const epoch = signinEpoch;
+    if (!(await signedIn()) || epoch !== signinEpoch || status.paused || stopping) return;
+    if (controlBusy) {
+      lastSigninProbe = 0;
+      return;
+    }
+    controlBusy = true;
+    try {
+      quickExits = 0;
+      restartAttempts = 0;
+      await publishStatus({ needs_signin: false, last_error: null, state: "starting" });
+      await startSync().catch(() => {});
+    } finally {
+      controlBusy = false;
+    }
+  } finally {
+    probingSignin = false;
+  }
 }
 
 function scheduleRestart() {
@@ -863,9 +878,11 @@ server.listen(PORT, "0.0.0.0", async () => {
   log("INFO", "control endpoint started", { port: address.port, simulated: status.simulated });
   try { await reconcileConfig(); await publishDevices(true); } finally { controlBusy = false; }
   const timer = setInterval(async () => {
-    if (controlBusy || stopping) return;
+    if (stopping) return;
+    recheckSignin().catch(() => {});
+    if (controlBusy) return;
     controlBusy = true;
-    try { await recheckSignin(); await reconcileConfig(); await publishDevices(); } finally { controlBusy = false; }
+    try { await reconcileConfig(); await publishDevices(); } finally { controlBusy = false; }
   }, TICK_MS);
   timer.unref();
 });

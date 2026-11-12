@@ -236,7 +236,20 @@ audio{height:30px;vertical-align:middle;max-width:220px}
 
 # Small progressive enhancements. Every page works without them: forms post, links
 # navigate, and a dialog is an ordinary page with the question drawn over it.
-SCRIPT = """
+KEEP_CHOICES = """
+function keepChoices(current,next){
+  current.querySelectorAll("input[type=radio]:checked").forEach(chosen=>{
+    const same=[...next.querySelectorAll("input[type=radio]")].filter(r=>r.name===chosen.name);
+    if(same.some(r=>r.value===chosen.value))same.forEach(r=>{r.checked=r.value===chosen.value;});
+  });
+  const open=[...current.querySelectorAll("details")];
+  next.querySelectorAll("details").forEach((d,i)=>{if(open[i]&&open[i].open)d.open=true;});
+}
+"""
+
+SCRIPT = (
+    KEEP_CHOICES
+    + """
 const pref=()=>{try{return localStorage.getItem("theme")||"system"}catch(e){return "system"}};
 function theme(v){document.documentElement.dataset.theme=v==="system"
   ?(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"):v}
@@ -276,7 +289,8 @@ addEventListener("DOMContentLoaded",()=>{
       try{const reply=await fetch(location.href,{credentials:"same-origin"});
         const next=new DOMParser().parseFromString(await reply.text(),"text/html");
         const part=next.querySelector("[data-live]");
-        if(part)document.querySelector("[data-live]").replaceWith(part);
+        if(part){const now=document.querySelector("[data-live]");
+          keepChoices(now,part);now.replaceWith(part);}
         again=Boolean(next.body.dataset.refresh);
       }catch(error){}
       if(again)setTimeout(poll,every);
@@ -291,6 +305,7 @@ addEventListener("DOMContentLoaded",()=>{
     if(first)first.focus();}
 });
 """
+)
 
 GROUPS = (
     ("", ("home", "setup")),
