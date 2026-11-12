@@ -56,6 +56,10 @@ class StoreError(Exception):
     """Base class for the typed errors the contract defines."""
 
 
+class PermissionDenied(StoreError):
+    """A nested operation requires a permission the caller does not have."""
+
+
 class FieldIndexNotReady(StoreError):
     def __init__(self, job_id: str) -> None:
         super().__init__("declared-field index is not ready; inspect or retry its rebuild in Admin")
@@ -212,9 +216,12 @@ class PreconditionRequired(StoreError):
 
 
 class ValidationFailed(StoreError):
-    def __init__(self, errors: list[str]) -> None:
+    def __init__(
+        self, errors: list[str], *, field_problems: list[dict[str, str]] | None = None
+    ) -> None:
         super().__init__("; ".join(errors))
         self.errors = errors
+        self.field_problems = field_problems or []
 
 
 class MetadataUnavailable(StoreError):

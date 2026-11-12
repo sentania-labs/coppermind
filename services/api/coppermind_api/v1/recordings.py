@@ -40,6 +40,43 @@ async def accept_recording(
     return JSONResponse(status_code=200 if settled else 202, content=result)
 
 
+@router.get("/waiting")
+async def waiting_recordings(
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:read", "sources:read")),
+) -> JSONResponse:
+    try:
+        return JSONResponse(content=await client.context_action("recording-waiting", {}))
+    except StoreError as error:
+        return failure(error)
+
+
+@router.post("/{recording_id}/retry")
+async def retry_recording(
+    recording_id: str,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("sources:write", "notes:write", "artifacts:read")),
+) -> JSONResponse:
+    try:
+        result = await client.context_action("retry-failed-recording", {"id": recording_id})
+        return JSONResponse(content=result)
+    except StoreError as error:
+        return failure(error)
+
+
+@router.post("/{recording_id}/dismiss")
+async def dismiss_recording(
+    recording_id: str,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("sources:write")),
+) -> JSONResponse:
+    try:
+        result = await client.context_action("dismiss-recording", {"id": recording_id})
+        return JSONResponse(content=result)
+    except StoreError as error:
+        return failure(error)
+
+
 @router.get("/{recording_id}", response_model=RecordingStatus)
 async def recording_status(
     recording_id: str,

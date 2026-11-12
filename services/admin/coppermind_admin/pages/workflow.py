@@ -97,8 +97,8 @@ def router(wiring: Wiring) -> APIRouter:
                     'ip">Download the companion plugin</a>.</li><li>Extract its folder in'
                     "to your vault’s .obsidian/plugins directory and enable Coppermind Re"
                     "view in Community plugins.</li><li>In plugin settings, enter this se"
-                    "rver address and select an API credential with notes:read, notes:wri"
-                    "te and sources:read.</li><li>Open a note and run “Coppermind Review:"
+                    "rver address and select an API credential. The setting lists the per"
+                    "missions it needs.</li><li>Open a note and run “Coppermind Review:"
                     " Review current note”.</li></ol><p>Requires Obsidian 1.11 or later. "
                     "Credentials use Obsidian SecretStorage; only the secret name is stor"
                     "ed in plugin settings.</p>"
@@ -112,7 +112,7 @@ def router(wiring: Wiring) -> APIRouter:
                 title = "Imports"
                 dropbox = data.get("dropbox", {"folder": "Dropbox", "items": [], "calendars": []})
                 body += (
-                    "<p>Drop ICS or ZIP files containing ICS into <strong>"
+                    "<p>Drop calendar exports or documents into <strong>"
                     + e(dropbox["folder"])
                     + (
                         "</strong> in Obsidian. Calendar exports update your calendar; "
@@ -124,7 +124,7 @@ def router(wiring: Wiring) -> APIRouter:
                     "Intake limit: 200 MB. ZIP limit: 41.94 MB expanded, "
                     "100 entries. Completed files leave Dropbox after they are safely stored. "
                     "Files that cannot be handled move to Dropbox/Failed with a reason.</p>"
-                    '<p>Every export merges into <a href="/admin/context?tab=calendar">'
+                    '<p>Every calendar export merges into <a href="/admin/context?tab=calendar">'
                     "your calendar</a>. Event details show which exports witnessed it. "
                     "Completed receipts clear automatically; import history and originals "
                     "remain. Failed receipts stay until you dismiss them.</p>"
@@ -352,9 +352,9 @@ def router(wiring: Wiring) -> APIRouter:
                                 "signatures": [],
                             }
                             body += (
-                                "<h3>Voice recognition</h3><p>Off by default. Voice signatures "
-                                "are stored, not audio clips. Unidentified signatures are held "
-                                "privately with the recording until review and removal.</p>"
+                                "<h3>Voice recognition</h3><p>Voice signatures are stored, "
+                                "not audio clips. Manage recognition and unknown voices "
+                                "in the Obsidian companion.</p>"
                             )
                             body += "<p>" + str(len(voice["signatures"])) + " saved signatures</p>"
                             for signature in voice["signatures"]:
@@ -365,29 +365,6 @@ def router(wiring: Wiring) -> APIRouter:
                                     + quote(signature["note_id"])
                                     + '">Source note</a></p>'
                                 )
-                            count = len(voice["signatures"])
-                            turn_off_confirm = ""
-                            if voice["enabled"] and count:
-                                turn_off_confirm = (
-                                    ' onsubmit="return confirm(this.dataset.confirm)" '
-                                    'data-confirm="Turning this off deletes '
-                                    + str(count)
-                                    + " saved voice signature"
-                                    + ("" if count == 1 else "s")
-                                    + " for "
-                                    + e(entity["name"])
-                                    + '. Turning it on again starts from nothing."'
-                                )
-                            body += (
-                                '<form method="post" action="/v1/admin/voice/set"'
-                                + turn_off_confirm
-                                + ">"
-                                + _hidden("id", entity["id"])
-                                + _hidden("enabled", "false" if voice["enabled"] else "true")
-                                + "<button>"
-                                + ("Turn off" if voice["enabled"] else "Turn on")
-                                + "</button></form>"
-                            )
                             if voice["signatures"]:
                                 body += (
                                     '<form method="post" action="/v1/admin/voice/delete" '
@@ -663,16 +640,7 @@ def router(wiring: Wiring) -> APIRouter:
         from coppermind_admin.main import submitted
 
         form = await submitted(request)
-        if action == "set":
-            if form.get("enabled") not in ("true", "false"):
-                return page("Voice recognition", "<p>Invalid setting.</p>", 422)
-            try:
-                await client(request).entity_action(
-                    "voice-set", {"id": form["id"], "enabled": form["enabled"] == "true"}
-                )
-            except StoreError as exc:
-                return page("Voice recognition", '<p class="error">' + e(str(exc)) + "</p>", 422)
-        elif action == "delete":
+        if action == "delete":
             try:
                 await client(request).entity_action("voice-delete", {"id": form["id"]})
             except StoreError as exc:

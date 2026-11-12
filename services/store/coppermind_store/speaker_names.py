@@ -14,9 +14,9 @@ def speaker_labels(transcript: dict[str, Any]) -> list[str]:
             segment["speaker"]
             for segment in transcript.get("segments", [])
             if isinstance(segment.get("speaker"), str)
-            and re.fullmatch(r"Speaker [1-9][0-9]*", segment["speaker"])
+            and re.fullmatch(r"(?:Speaker|Unknown voice) [1-9][0-9]*", segment["speaker"])
         },
-        key=lambda label: int(label.split()[1]),
+        key=lambda label: (int(label.rsplit(" ", 1)[1]), label),
     )
 
 
@@ -103,6 +103,99 @@ def chosen_person(
         ):
             return person_candidate(entity)
     return None
+
+
+def _is_contact(person: dict[str, Any]) -> bool:
+    return not person["id"].startswith("person:") and not person.get("person_id")
+
+
+def _contact_match(context: Any, person: dict[str, Any], *, applying: bool = False) -> Any:
+    from coppermind_store.entities import email
+
+    address = email(person.get("email", ""))
+    name = person["name"].strip().casefold()
+    entities = [e for e in context.store.entities.load().entities.values() if not e.redirect]
+    active = [e for e in entities if e.kind == "person" and not e.retired_at]
+    match = next(
+        (e for e in active if address and address in {email(a) for a in e.emails}), None
+    ) or next(
+        (e for e in active if e.name.strip().casefold() == name and (not address or not e.emails)),
+        None,
+    )
+    if match is None and address:
+        for entity in entities:
+            if address in {email(a) for a in entity.emails}:
+                raise ValueError(_taken_address(person["name"], entity, applying))
+    return match
+
+
+def _taken_address(name: str, holder: Any, applying: bool) -> str:
+    if holder.kind == "person":
+        if applying:
+            return (
+                f"{name} now matches a person who was removed. Restore that person, "
+                "then resume the review."
+            )
+        return (
+            f"{name} matches a person who was removed. Choose someone else or restore that person."
+        )
+    if applying:
+        return (
+            f"{name}'s email address now belongs to {holder.name}. Change that dossier, "
+            "then resume the review."
+        )
+    return (
+        f"{name}'s email address already belongs to {holder.name}. Choose someone else "
+        "or change that dossier."
+    )
+
+
+def find_contact(context: Any, person: dict[str, Any]) -> dict[str, Any]:
+    """An existing person for a contact-only choice, else the contact itself; never creates."""
+    if not _is_contact(person):
+        return person
+    match = _contact_match(context, person)
+    if match is None:
+        return person
+    return {**person_candidate(match), "id": person["id"], "person_id": match.id}
+
+
+async def create_contact_people(context: Any, operation: dict[str, Any]) -> None:
+    """Give each still-pending contact a People entry, reusing one an earlier attempt made."""
+    from coppermind.entities import EntityInput
+    from coppermind.store_protocol import ValidationFailed
+    from coppermind_store.entities import email
+
+    for index, person in enumerate(operation["people"]):
+        if not _is_contact(person):
+            continue
+        match = _contact_match(context, person, applying=True)
+        if match is None:
+            address = email(person.get("email", ""))
+            try:
+                created = await context.store.entities.create(
+                    EntityInput(
+                        kind="person", name=person["name"], emails=[address] if address else []
+                    )
+                )
+            except ValidationFailed as exc:
+                raise ValueError(
+                    f"{person['name']} cannot be added to People now: {exc}. "
+                    "Fix that, then resume the review."
+                ) from exc
+            match = context.store.entities.load().entities[created["id"]]
+        label = next(
+            label
+            for label, name in operation["mapping"].items()
+            if name == person["name"] and not operation["person_ids"].get(label)
+        )
+        operation["people"][index] = {
+            **person_candidate(match),
+            "id": person["id"],
+            "person_id": match.id,
+        }
+        operation["mapping"][label] = match.name
+        operation["person_ids"][label] = match.id
 
 
 def same_recording(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:

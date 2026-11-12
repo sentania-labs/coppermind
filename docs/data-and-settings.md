@@ -196,9 +196,11 @@ for enrichment. Saved in `/data/state/context/config.json` as `assignments.trans
 each intake is one small file under `/data/state/context/recordings/` and its saved
 transcript under `/data/state/context/recording-transcripts/`. Voice signatures are
 private state in the same folder (mode 0600, never in the vault or an API response):
-`voice-signatures.json` (per-person opt-in, saved signatures, turned-down suggestions),
+`voice-signatures.json` (global recognition setting, saved signatures, recording
+assignments, turned-down suggestions),
 `voice-pending/<recording id>.json` (a recording's signatures, removed when its
-review completes) and `voice-settings.json` (the two match thresholds). Rules in
+review completes), `voice-mappings/<recording id>.json` (the unknown-voice names given
+to that recording's speakers) and `voice-settings.json` (the two match thresholds). Rules in
 [dossiers](dossiers.md#voice-recognition).
 
 ### Calendar import budgets

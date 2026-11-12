@@ -145,3 +145,67 @@ def test_status_needs_sources_read(tmp_path):
         allowed = client.get(url, headers={"Authorization": f"Bearer {reader_key}"})
     assert allowed.status_code == 200 and allowed.json()["state"] == "running"
     assert calls == [("recording-status", {"id": "a" * 64})]
+
+
+def test_waiting_and_retry_require_their_scopes(tmp_path):
+    app, fake, calls = serve(tmp_path, {"meetings": [], "failed": []})
+    created = datetime(2026, 9, 8, tzinfo=UTC)
+    record, key = create_key(
+        "companion",
+        ["notes:read", "sources:read", "sources:write", "notes:write", "artifacts:read"],
+        created_at=created,
+    )
+    bare, bare_key = create_key("bare writer", ["sources:write"], created_at=created)
+
+    async def keys():
+        return ApiKeySet(
+            keys=[record, bare, fake.sources_record, fake.notes_record, fake.unreadable_record]
+        )
+
+    fake.get_api_keys = keys
+    with TestClient(app) as client:
+        app.state.store = fake
+        app.state.api_key_auth._store = fake
+        headers = {"Authorization": f"Bearer {key}"}
+        assert (
+            client.get(
+                "/v1/recordings/waiting", headers={"Authorization": f"Bearer {fake.sources_key}"}
+            ).status_code
+            == 403
+        )
+        assert client.get("/v1/recordings/waiting", headers=headers).json() == {
+            "meetings": [],
+            "failed": [],
+        }
+        for refused in (fake.notes_key, bare_key, fake.unreadable_key):
+            assert (
+                client.post(
+                    "/v1/recordings/abc/retry", headers={"Authorization": f"Bearer {refused}"}
+                ).status_code
+                == 403
+            )
+        assert client.post("/v1/recordings/abc/retry", headers=headers).status_code == 200
+    assert calls == [("recording-waiting", {}), ("retry-failed-recording", {"id": "abc"})]
+
+
+def test_dismiss_needs_sources_write_and_reaches_the_store(tmp_path):
+    app, fake, calls = serve(tmp_path, {"job": "abc"})
+    created = datetime(2026, 9, 8, tzinfo=UTC)
+    reader, reader_key = create_key("reader", ["sources:read"], created_at=created)
+    writer, writer_key = create_key("writer", ["sources:write"], created_at=created)
+
+    async def keys():
+        return ApiKeySet(keys=[reader, writer])
+
+    fake.get_api_keys = keys
+    with TestClient(app) as client:
+        app.state.store = fake
+        app.state.api_key_auth._store = fake
+        denied = client.post(
+            "/v1/recordings/abc/dismiss", headers={"Authorization": f"Bearer {reader_key}"}
+        )
+        allowed = client.post(
+            "/v1/recordings/abc/dismiss", headers={"Authorization": f"Bearer {writer_key}"}
+        )
+    assert denied.status_code == 403 and allowed.status_code == 200
+    assert calls == [("dismiss-recording", {"id": "abc"})]

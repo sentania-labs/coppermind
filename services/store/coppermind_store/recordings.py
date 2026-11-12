@@ -37,6 +37,7 @@ from coppermind.context_config import ContextModel, FeatureAssignment
 from coppermind.db.models import Note
 from coppermind.store_protocol import (
     ArtifactMissing,
+    CreateNote,
     IngestArtifact,
     IngestNote,
     IngestRequest,
@@ -49,6 +50,7 @@ from coppermind.store_protocol import (
 )
 from coppermind_store import artifacts
 from coppermind_store.model_provider import ProviderError
+from coppermind_store.notes import _build_frontmatter
 
 if TYPE_CHECKING:
     from coppermind_store.context_service import ContextService
@@ -101,6 +103,7 @@ class TranscriptionJob(ContextModel):
     attempt_limit: int = Field(default=2, ge=1, le=3)
     error: str = ""
     error_rule: str = ""
+    field_problems: list[dict[str, str]] = Field(default_factory=list)
     reply: str = Field(default="", max_length=REPLY_KEPT)
     retry_after: str = ""
     # When the service first answered busy in the current run of busy answers.
@@ -125,6 +128,8 @@ class TranscriptionJob(ContextModel):
     audio_removal_retry_after: str = ""
     audio_removal_attempts: int = 0
     audio_kept: str = ""
+    # Set when someone removes a failed intake from the waiting list. A retry clears it.
+    dismissed: bool = False
 
     @property
     def audio_removal_stuck(self) -> bool:
@@ -280,6 +285,101 @@ class Recordings:
             for item in newest
         ]
 
+    @staticmethod
+    def retry_pending(job: TranscriptionJob) -> bool:
+        return bool(
+            job.retry_after
+            and job.attempts < job.attempt_limit
+            and not repeats_only(job.error_rule)
+        )
+
+    def rejected_field_problems(self, job: TranscriptionJob) -> list[dict[str, str]]:
+        if job.field_problems:
+            return job.field_problems
+        try:
+            schema = self.context.store.control.schema()
+            fields = {
+                **job.frontmatter,
+                schema.role("sources_key"): ["00000000000000000000000000"],
+                schema.role("reviewed_key"): False,
+            }
+            note = CreateNote(title=job.title, body=SUMMARY_PENDING, frontmatter=fields)
+            captured = datetime.fromisoformat(job.captured_at) if job.captured_at else None
+            frontmatter = _build_frontmatter(
+                note,
+                schema,
+                self.context.store.control.settings(),
+                "00000000000000000000000000",
+                captured_at=captured,
+                from_ingest=True,
+            )
+            return schema.field_problems(frontmatter)
+        except Exception:
+            log.warning("Could not recheck rejected recording fields")
+            return []
+
+    async def waiting(self) -> dict[str, Any]:
+        assignment = self.assignment()
+        enabled = bool(assignment and assignment.enabled)
+        paused = bool(assignment and assignment.paused)
+        ready = bool(assignment and enabled and assignment.connection and assignment.model)
+        reviewed_key = self.context.store.control.schema().role("reviewed_key")
+        meetings, failed = [], []
+        seen = set()
+        jobs = await asyncio.to_thread(self.jobs)
+        for job in sorted(jobs, key=lambda item: item.created_at, reverse=True):
+            if (
+                job.state == "succeeded"
+                and job.note_id
+                and not job.audio_removed
+                and job.note_id not in seen
+            ):
+                seen.add(job.note_id)
+                try:
+                    note = await self.context.store.get_note(job.note_id)
+                except StoreError:
+                    continue
+                if note.frontmatter.get(reviewed_key) is not True:
+                    meetings.append(
+                        {"title": note.title, "path": note.path, "date": job.captured_at}
+                    )
+            elif job.state == "failed" and not job.dismissed:
+                retrying = self.retry_pending(job)
+                field_problems = (
+                    self.rejected_field_problems(job) if job.error_rule == "note-rejected" else []
+                )
+                guidance = failure_guidance(job)
+                if guidance:
+                    message, retry_offered = guidance
+                    if retry_offered and not ready:
+                        message += " " + SET_UP_FIRST
+                else:
+                    message = failure_reason(job.error_rule)
+                    retry_offered = True
+                    if not ready:
+                        message += " " + SET_UP_FIRST
+                    elif paused:
+                        message += " A retry will start when transcription resumes."
+                    elif retrying:
+                        message += " The app will try again automatically."
+                    else:
+                        message += " Try the recording again."
+                scheduled = enabled and not paused and job.attempts < job.attempt_limit
+                failed.append(
+                    {
+                        "id": job.id,
+                        "title": job.title or job.filename,
+                        "message": message,
+                        "field_problems": field_problems,
+                        "field_problems_unavailable": job.error_rule == "note-rejected"
+                        and not field_problems,
+                        "retry_after": job.retry_after if scheduled else "",
+                        "can_retry": ready and retry_offered,
+                        "can_dismiss": not retrying,
+                    }
+                )
+        return {"meetings": meetings, "failed": failed}
+
     async def save_assignment(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Choose the connection and model that transcribe recordings, and switch it on."""
         given = FeatureAssignment.model_validate(payload["assignment"])
@@ -397,7 +497,7 @@ class Recordings:
         """Queue a failed intake again with fresh attempts; a saved transcript is reused."""
         async with self.context.lock:
             job = self.load(str(payload.get("id", "")))
-            if job.audio_removal_stuck:
+            if job.audio_removal_stuck and not payload.get("failed_only"):
                 job.audio_removal_attempts, job.audio_removal_retry_after = 0, ""
                 job.audio_removal_error = ""
                 self.save(job)
@@ -408,6 +508,19 @@ class Recordings:
             job.state, job.attempts, job.busy_since = "queued", 0, ""
             job.remote_job_id, job.remote_job_started, job.remote_job_resubmits = "", 0, 0
             job.set_error()
+            job.dismissed = False
+            self.save(job)
+        return {"job": job.id}
+
+    async def dismiss(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Take a failed intake off the waiting list. Nothing is deleted."""
+        async with self.context.lock:
+            job = self.load(str(payload.get("id", "")))
+            if job.state != "failed":
+                raise ValueError("only a failed recording can be dismissed")
+            if self.retry_pending(job):
+                raise ValueError("the app will try this recording again by itself")
+            job.dismissed = True
             self.save(job)
         return {"job": job.id}
 
@@ -429,8 +542,25 @@ class Recordings:
             if not worked:
                 await asyncio.sleep(10)
 
+    async def apply_deferred_voices(self) -> bool:
+        """Rewrite speaker names held back while their note's review was unfinished."""
+        from coppermind_store.voice_relabel import apply_deferred
+        from coppermind_store.voice_store import VoiceStore
+
+        if not VoiceStore(self.context).deferred_relabels():
+            return False
+        async with self.context.lifecycle.lock, self.context.lock:
+            return await apply_deferred(self.context)
+
     async def tick(self) -> bool:
         """Run the oldest job that is due. True when one ran."""
+        try:
+            if await self.apply_deferred_voices():
+                return True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("deferred voice relabel failed")
         for job in sorted(await asyncio.to_thread(self.jobs), key=lambda item: item.created_at):
             if job.state == "succeeded" and not job.audio_removed:
                 if job.audio_removal_stuck:
@@ -444,7 +574,7 @@ class Recordings:
             return False
         for known in sorted(await asyncio.to_thread(self.jobs), key=lambda item: item.created_at):
             job = self.load(known.id)
-            if job.state in {"succeeded"}:
+            if job.state == "succeeded":
                 continue
             if job.state == "running":
                 # The store stopped mid-call. That is not a failed attempt: asking again polls
@@ -515,6 +645,9 @@ class Recordings:
                     return False
             elif row.state == "deleted":
                 (self.context.root / "voice-pending" / (job.id + ".json")).unlink(missing_ok=True)
+                from coppermind_store.voice_store import VoiceStore
+
+                VoiceStore(self.context).purge(set(), {job.note_id})
                 if not (row.filed and row.reviewed):
                     return False
             elif not (row.filed and row.reviewed):
@@ -674,6 +807,7 @@ class Recordings:
         from coppermind_store.context_service import TIMEOUT_BACKOFF_S
 
         job.state, job.started_at = "running", _now()
+        job.dismissed = False
         job.attempts += 1
         job.set_error()
         self.save(job)
@@ -722,6 +856,7 @@ class Recordings:
             )
         except ValidationFailed as exc:
             job.state = "failed"
+            job.field_problems = exc.field_problems
             job.set_error(
                 "The note could not be filed: " + "; ".join(exc.errors)[:500] + ". The transcript "
                 "is kept. The note fields are fixed once the recording is accepted, so a retry "
@@ -850,6 +985,9 @@ class Recordings:
             job.set_error(message, "transcription-recovering" if message else "")
             self.save(job)
 
+        from coppermind_store.voice_store import VoiceStore
+
+        voice_enabled = VoiceStore(self.context).recognition_enabled()
         transcript, usage = await self.context.provider.transcribe(
             connection,
             self.context.key(connection.id),
@@ -866,10 +1004,12 @@ class Recordings:
             duration_seconds=duration,
             num_speakers=speakers,
             max_speakers=maximum,
-            include_speaker_embeddings=True,
+            include_speaker_embeddings=voice_enabled,
         )
         pending = transcript.pop("speakers", [])
-        self.context.write("voice-pending/" + job.id, pending)
+        async with self.context.lock:
+            if voice_enabled and VoiceStore(self.context).recognition_enabled():
+                self.context.write("voice-pending/" + job.id, pending)
         transcript["model"] = assignment.model
         self.context.write(self.transcript_path(job), transcript)
         job.remote_job_id, job.remote_job_started, job.remote_job_resubmits = "", 0, 0
@@ -879,6 +1019,34 @@ class Recordings:
 
     async def file_note(self, job: TranscriptionJob, transcript: dict[str, Any]) -> None:
         """File the transcript as a source and a note in Review, and cite the recording."""
+        from coppermind_store.speaker_names import rename_speakers, speaker_labels
+        from coppermind_store.voice_store import VoiceStore
+
+        async with self.context.lock:
+            voice = VoiceStore(self.context)
+            voice_map = self.context.read("voice-mappings/" + job.id, {})
+            if voice.recognition_enabled() and not voice_map:
+                pending = self.context.read("voice-pending/" + job.id, [])
+                by_label = {
+                    speaker["label"]: speaker
+                    for speaker in pending
+                    if isinstance(speaker, dict) and isinstance(speaker.get("label"), str)
+                }
+                for label in speaker_labels(transcript):
+                    speaker = by_label.get(label, {})
+                    identity = voice.capture_unknown(
+                        "recording:" + job.id,
+                        label,
+                        _now(),
+                        speaker.get("speech_seconds"),
+                        speaker.get("embeddings", []),
+                    )
+                    if identity:
+                        voice_map[label] = voice.unknown_summaries()[identity]["name"]
+                self.context.write("voice-mappings/" + job.id, voice_map)
+            if voice_map:
+                voice.set_segments("recording:" + job.id, transcript)
+                transcript = rename_speakers(transcript, voice_map)
         captured = datetime.fromisoformat(job.captured_at) if job.captured_at else None
         request = IngestRequest(
             source=IngestSource(
@@ -912,6 +1080,14 @@ class Recordings:
         result = await self.context.store.ingest(request)
         job.note_id, job.note_path = result.note.id, result.note.path
         job.source_id = result.source.id
+        async with self.context.lock:
+            VoiceStore(self.context).bind_recording("recording:" + job.id, result.note.id)
+            pending = self.context.read("voice-pending/" + job.id, [])
+            for speaker in pending:
+                if isinstance(speaker, dict):
+                    speaker["label"] = voice_map.get(speaker.get("label"), speaker.get("label"))
+            if pending:
+                self.context.write("voice-pending/" + job.id, pending)
         self.save(job)
         try:
             await artifacts.known_paths(self.context.store, [job.artifact_id])
@@ -944,3 +1120,99 @@ NO_AUTOMATIC_RETRY = frozenset(
 
 def repeats_only(rule: str) -> bool:
     return rule in NO_AUTOMATIC_RETRY or rule.startswith("transcription-http-")
+
+
+SET_UP_FIRST = "Set up and turn on transcription before retrying."
+_RESEND = "the same way recordings normally arrive."
+_CHECK_SERVICE = "Check the transcription connection and model in settings, then retry."
+
+# Every refusal in NO_AUTOMATIC_RETRY gets its own next step, so the companion never tells
+# someone to try again when trying again would only repeat the refusal. The flag says
+# whether Retry can succeed once the stated fix is made; where the recording itself has to
+# change, only sending a new one helps and Retry is not offered.
+FAILURE_GUIDANCE: dict[str, tuple[str, bool]] = {
+    "transcription-audio_unreadable": (
+        f"The recording could not be read. Send a readable audio file again {_RESEND}",
+        False,
+    ),
+    "transcription-no_speech": (
+        f"No speech was found. Send a corrected recording again {_RESEND}",
+        False,
+    ),
+    "transcription-too_long": (
+        "The recording is too long for the transcription service. Send a shorter recording "
+        "or split it, or change the transcription model or its limit, then send it again.",
+        False,
+    ),
+    "provider-too-long": (
+        "The recording is too long for the transcription service. Send a shorter recording "
+        "or split it, or change the transcription model or its limit, then send it again.",
+        False,
+    ),
+    "recording-missing": (
+        f"The stored recording is missing. Send the recording again {_RESEND}",
+        False,
+    ),
+    "transcript-empty": (
+        "The transcription service returned no speech. Check the recording and send it "
+        "again, or change the transcription settings and retry.",
+        True,
+    ),
+    "transcript-flat": (
+        "The transcription service returned text without separate speakers. Check the "
+        "recording and send it again, or choose a service and reply format that label "
+        "speakers and retry.",
+        True,
+    ),
+    "transcript-no-speakers": (
+        "The transcription service did not label any speaker. Check the recording and send "
+        "it again, or choose a service and reply format that does and retry.",
+        True,
+    ),
+    "transcription-provider": (
+        "The transcription service could not accept the recording. " + _CHECK_SERVICE,
+        True,
+    ),
+    "connection-missing": (
+        "The transcription connection is not set up. " + _CHECK_SERVICE,
+        True,
+    ),
+    "transcription-busy-limit": (
+        "The transcription service stayed busy. " + _CHECK_SERVICE,
+        True,
+    ),
+    "transcription-unfinished": (
+        "The transcription service never finished this recording. " + _CHECK_SERVICE,
+        True,
+    ),
+    "note-rejected": (
+        "The meeting note's fields were rejected. The transcript is saved. Retry will only "
+        "work after the vault's field rules are changed. Otherwise, send the recording "
+        "again with corrected fields.",
+        True,
+    ),
+}
+
+
+def failure_guidance(job: TranscriptionJob) -> tuple[str, bool] | None:
+    if job.error_rule == "recording-missing" and job.transcribed:
+        return None
+    if job.error_rule.startswith("transcription-http-"):
+        return (
+            "The transcription service could not accept the recording. " + _CHECK_SERVICE,
+            True,
+        )
+    return FAILURE_GUIDANCE.get(job.error_rule)
+
+
+def failure_reason(rule: str) -> str:
+    if rule == "recording-missing":
+        return (
+            "The stored recording was removed before the note could cite it. "
+            "The transcript is kept."
+        )
+    if rule == "filing-failed":
+        return "The transcript was saved, but the meeting note could not be filed."
+    if rule == "recording-unreadable":
+        return "The stored recording could not be read."
+    return "Transcription could not finish."

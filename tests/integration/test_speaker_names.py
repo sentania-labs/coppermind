@@ -535,7 +535,6 @@ async def test_pending_voice_signatures_are_removed_when_no_speaker_is_named(sto
     context, result, note, job_id, _ = await recorded(
         store, standin, SHORT, speaker_answer(alex_id)
     )
-    VoiceStore(context).set_enabled(alex["id"], True)
     recording = next(r for r in context.recordings.jobs() if r.note_id == note.id)
     vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
     context.write(
@@ -970,14 +969,13 @@ async def test_a_speaker_quote_not_in_the_transcript_is_not_shown_as_evidence(st
     assert proposals["Speaker 2"].value == alex_id(observed[0])
 
 
-async def test_voice_enrollment_uses_confirmed_opted_in_people_and_removes_pending(store, standin):
+async def test_voice_enrollment_keeps_every_named_speaker_and_removes_pending(store, standin):
     from coppermind_store.voice_store import VoiceStore
 
     alex = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
     blair = await store.entities.create(EntityInput(kind="person", name="Blair Stone"))
     context, result, note, _, _ = await recorded(store, standin, SHORT, speaker_answer(alex_id))
     voice = VoiceStore(context)
-    voice.set_enabled(alex["id"], True)
     recording = next(r for r in context.recordings.jobs() if r.note_id == note.id)
     vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
     context.write(
@@ -1005,7 +1003,7 @@ async def test_voice_enrollment_uses_confirmed_opted_in_people_and_removes_pendi
         }
     )
     assert len(voice.summary(alex["id"])["signatures"]) == 1
-    assert voice.summary(blair["id"])["signatures"] == []
+    assert len(voice.summary(blair["id"])["signatures"]) == 1
     assert context.read("voice-pending/" + recording.id, None) is None
     manifest = await store.get_source(result.source.id)
     artifact = await store.get_source_artifact(
@@ -1016,3 +1014,452 @@ async def test_voice_enrollment_uses_confirmed_opted_in_people_and_removes_pendi
     store.entities.purge({note.id}, {alex["id"]}, "voice-purge-test")
     assert context.read("voice-pending/" + recording.id, None) is None
     assert voice.summary(alex["id"])["signatures"] == []
+
+
+async def test_naming_an_unknown_voice_with_a_calendar_contact_gives_it_a_person(store, standin):
+    from coppermind_store.voice_store import VoiceStore
+
+    transcript = {
+        "segments": [
+            {"start": 0, "speaker": "Unknown voice 1", "text": "Hello."},
+            {"start": 3, "speaker": "Unknown voice 2", "text": "Hi."},
+        ]
+    }
+    context, result, note, _, _ = await recorded(store, standin, transcript, lambda e, ev: [])
+    vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
+    other = {"model": "model", "version": "v1", "vector": [0.0, 1.0]}
+    voice = VoiceStore(context)
+    assert voice.capture_unknown(note.id, "Unknown voice 1", "today", 30, [vector]) == "unknown:1"
+    assert voice.capture_unknown(note.id, "Unknown voice 2", "today", 30, [other]) == "unknown:2"
+    voice.set_segments(note.id, transcript)
+    manual = (await context.lifecycle_detail({"note_id": note.id}))["manual_speaker_review"]
+    contact = next(c for c in manual["candidates"] if c["id"].startswith("contact:"))
+    assert not any(p.name == contact["name"] for p in store.entities.load().entities.values())
+    completed = await context.complete_review(
+        {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "confirmation": "Complete review",
+            "selected": [],
+            "manual_source_id": manual["source_id"],
+            "manual_source_revision": manual["revision"],
+            "manual_speakers": {"Unknown voice 1": contact["id"]},
+        }
+    )
+    assert completed["state"] == "complete"
+    people = [
+        p
+        for p in store.entities.load().entities.values()
+        if p.kind == "person" and p.name == contact["name"]
+    ]
+    assert len(people) == 1
+    assert list(voice.unknown_summaries()) == ["unknown:2"]
+    assert len(voice.summary(people[0].id)["signatures"]) == 1
+    assert [a["note_id"] for a in voice.assignments("person:" + people[0].id)] == [note.id]
+    manifest = await store.get_source(result.source.id)
+    text = (
+        await store.get_source_artifact(
+            result.source.id, manifest.current_revision, "transcript.txt"
+        )
+    ).content
+    assert contact["name"] + ": Hello." in text
+    assert "Unknown voice 1" not in text
+
+
+async def test_a_contact_is_not_attached_to_a_same_named_person_with_another_address(
+    store, standin
+):
+    from coppermind_store.voice_store import VoiceStore
+
+    transcript = {"segments": [{"start": 0, "speaker": "Unknown voice 1", "text": "Hello."}]}
+    context, result, note, _, _ = await recorded(store, standin, transcript, lambda e, ev: [])
+    manual = (await context.lifecycle_detail({"note_id": note.id}))["manual_speaker_review"]
+    contact = next(c for c in manual["candidates"] if c["id"].startswith("contact:"))
+    assert contact["email"]
+    namesake = await store.entities.create(
+        EntityInput(kind="person", name=contact["name"], emails=["someone.else@example.test"])
+    )
+    voice = VoiceStore(context)
+    vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
+    voice.capture_unknown(note.id, "Unknown voice 1", "today", 30, [vector])
+    voice.set_segments(note.id, transcript)
+    completed = await context.complete_review(
+        {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "confirmation": "Complete review",
+            "selected": [],
+            "manual_source_id": manual["source_id"],
+            "manual_source_revision": manual["revision"],
+            "manual_speakers": {"Unknown voice 1": contact["id"]},
+        }
+    )
+    assert completed["state"] == "complete"
+    assert voice.summary(namesake["id"])["signatures"] == []
+    invitee = next(
+        p
+        for p in store.entities.load().entities.values()
+        if p.kind == "person" and p.name == contact["name"] and p.id != namesake["id"]
+    )
+    assert invitee.emails and "someone.else@example.test" not in invitee.emails
+    assert len(voice.summary(invitee.id)["signatures"]) == 1
+    assert voice.unknown_summaries() == {}
+
+
+async def contact_review(store, standin):
+    transcript = {
+        "segments": [
+            {"start": 0, "speaker": "Unknown voice 1", "text": "Hello."},
+            {"start": 3, "speaker": "Unknown voice 2", "text": "Hi."},
+        ]
+    }
+    context, result, note, _, _ = await recorded(store, standin, transcript, lambda e, ev: [])
+    manual = (await context.lifecycle_detail({"note_id": note.id}))["manual_speaker_review"]
+    contact = next(c for c in manual["candidates"] if c["id"].startswith("contact:"))
+
+    def payload(speakers):
+        return {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "confirmation": "Complete review",
+            "selected": [],
+            "manual_source_id": manual["source_id"],
+            "manual_source_revision": manual["revision"],
+            "manual_speakers": speakers,
+        }
+
+    def people():
+        return [p for p in store.entities.load().entities.values() if p.kind == "person"]
+
+    return context, result, contact, payload, people
+
+
+async def test_a_refused_review_creates_no_person_for_a_calendar_contact(store, standin):
+    context, result, contact, payload, people = await contact_review(store, standin)
+    before = len(people())
+    with pytest.raises(ValueError, match="is already chosen for"):
+        await context.complete_review(
+            payload({"Unknown voice 1": contact["id"], "Unknown voice 2": contact["id"]})
+        )
+    assert len(people()) == before
+    assert (await store.get_source(result.source.id)).current_revision == 1
+
+
+async def test_a_review_that_fails_after_a_contact_is_accepted_creates_no_person(store, standin):
+    context, result, contact, payload, people = await contact_review(store, standin)
+    before = len(people())
+    with pytest.raises(ValueError, match="no longer active"):
+        await context.complete_review(
+            payload({"Unknown voice 1": contact["id"], "Unknown voice 2": "person:missing"})
+        )
+    assert len(people()) == before
+    assert (await store.get_source(result.source.id)).current_revision == 1
+
+
+async def test_retrying_after_an_interrupted_contact_review_reuses_the_created_person(
+    store, standin, monkeypatch
+):
+    import copy
+
+    from coppermind_store import speaker_names
+
+    context, result, contact, payload, people = await contact_review(store, standin)
+    request = payload({"Unknown voice 1": contact["id"]})
+    create = speaker_names.create_contact_people
+
+    async def interrupted(ctx, operation):
+        await create(ctx, copy.deepcopy(operation))
+        raise RuntimeError("interrupted before the receipt was saved")
+
+    monkeypatch.setattr(speaker_names, "create_contact_people", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await context.complete_review(request)
+    assert [p.name for p in people()].count(contact["name"]) == 1
+    monkeypatch.setattr(speaker_names, "create_contact_people", create)
+    completed = await context.complete_review(request)
+    assert completed["state"] == "complete"
+    assert [p.name for p in people()].count(contact["name"]) == 1
+    manifest = await store.get_source(result.source.id)
+    text = (
+        await store.get_source_artifact(
+            result.source.id, manifest.current_revision, "transcript.txt"
+        )
+    ).content
+    assert contact["name"] + ": Hello." in text
+
+
+async def test_a_contact_whose_address_belongs_to_a_removed_person_stops_the_review(store, standin):
+    from coppermind.entities import EntityChange
+
+    def calendar_candidate(evidence):
+        return next(
+            c["id"]
+            for c in evidence["speaker_review"]["candidates"]
+            if c["id"].startswith("contact:")
+        )
+
+    context, result, note, job_id, observed = await recorded(
+        store, standin, SHORT, speaker_answer(calendar_candidate)
+    )
+    address = next(
+        c["email"]
+        for c in observed[0]["speaker_review"]["candidates"]
+        if c["id"].startswith("contact:")
+    )
+    removed = await store.entities.create(
+        EntityInput(kind="person", name="Someone Else", emails=[address])
+    )
+    await store.entities.change(
+        removed["id"], EntityChange(version=removed["version"], action="retire")
+    )
+    before = len(store.entities.load().entities)
+    request = await completion(context, store, result, job_id)
+    with pytest.raises(ValueError, match="matches a person who was removed"):
+        await context.complete_review(request)
+    assert len(store.entities.load().entities) == before
+    assert (await store.get_source(result.source.id)).current_revision == 1
+
+
+async def test_a_contact_whose_address_belongs_to_a_company_stops_the_review_before_any_receipt(
+    store, standin
+):
+    context, result, contact, payload, people = await contact_review(store, standin)
+    await store.entities.create(
+        EntityInput(kind="company", name="Vendor Support", emails=[contact["email"]])
+    )
+    before = len(store.entities.load().entities)
+    with pytest.raises(ValueError, match="already belongs to Vendor Support"):
+        await context.complete_review(payload({"Unknown voice 1": contact["id"]}))
+    assert len(store.entities.load().entities) == before
+    assert context.read("review-completions/" + result.note.id, {}) == {}
+    assert (await store.get_source(result.source.id)).current_revision == 1
+
+
+async def test_an_address_taken_after_validation_can_be_fixed_and_the_review_resumed(
+    store, standin, monkeypatch
+):
+    from coppermind_store import speaker_names
+
+    from coppermind.entities import EntityChange
+
+    context, result, contact, payload, people = await contact_review(store, standin)
+    request = payload({"Unknown voice 1": contact["id"]})
+    create = speaker_names.create_contact_people
+    holder: dict[str, Any] = {}
+
+    async def taken_meanwhile(ctx, operation):
+        holder.update(
+            await store.entities.create(
+                EntityInput(kind="company", name="Vendor Support", emails=[contact["email"]])
+            )
+        )
+        await create(ctx, operation)
+
+    monkeypatch.setattr(speaker_names, "create_contact_people", taken_meanwhile)
+    with pytest.raises(ValueError, match="now belongs to Vendor Support.*resume the review"):
+        await context.complete_review(request)
+    assert contact["name"] not in [p.name for p in people()]
+    monkeypatch.setattr(speaker_names, "create_contact_people", create)
+    await store.entities.change(
+        holder["id"],
+        EntityChange(version=holder["version"], action="aliases", emails=[]),
+    )
+    completed = await context.complete_review(request)
+    assert completed["state"] == "complete"
+    assert [p.name for p in people()].count(contact["name"]) == 1
+
+
+async def deleted_note_voice(store, standin):
+    import sqlalchemy as sa
+    from coppermind_store.voice_store import VoiceStore
+
+    from coppermind.db.models import Note
+    from coppermind.store_protocol import CreateNote
+
+    transcript = {"segments": [{"start": 0, "speaker": "Unknown voice 1", "text": "Hello."}]}
+    context, result, note, _, _ = await recorded(store, standin, transcript, lambda e, ev: [])
+    vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
+    voice = VoiceStore(context)
+    earlier = await store.create_note(CreateNote(title="Earlier", body="Earlier recording"))
+    assert voice.capture_unknown(earlier.id, "Speaker 1", "today", 30, [vector]) == "unknown:1"
+    assert voice.capture_unknown(note.id, "Unknown voice 1", "today", 30, [vector]) == "unknown:1"
+    voice.set_segments(note.id, transcript)
+    async with store.session_factory() as session:
+        await session.execute(sa.update(Note).where(Note.id == earlier.id).values(state="deleted"))
+        await session.commit()
+    return context, result, note, earlier, voice
+
+
+async def test_naming_a_voice_still_holding_a_deleted_notes_signature_completes(store, standin):
+    context, result, note, earlier, voice = await deleted_note_voice(store, standin)
+    manual = (await context.lifecycle_detail({"note_id": note.id}))["manual_speaker_review"]
+    contact = next(c for c in manual["candidates"] if c["id"].startswith("contact:"))
+    completed = await context.complete_review(
+        {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "confirmation": "Complete review",
+            "selected": [],
+            "manual_source_id": manual["source_id"],
+            "manual_source_revision": manual["revision"],
+            "manual_speakers": {"Unknown voice 1": contact["id"]},
+        }
+    )
+    assert completed["state"] == "complete"
+    person = next(
+        p
+        for p in store.entities.load().entities.values()
+        if p.kind == "person" and p.name == contact["name"]
+    )
+    assert [s["note_id"] for s in voice.summary(person.id)["signatures"]] == [note.id]
+    assert [a["note_id"] for a in voice.assignments("person:" + person.id)] == [note.id]
+    assert voice.unknown_summaries() == {}
+
+
+async def test_removing_a_deleted_notes_recording_drops_its_voice_data(store, standin):
+    context, result, note, earlier, voice = await deleted_note_voice(store, standin)
+    context.recordings.save(
+        TranscriptionJob(
+            id="c" * 64,
+            artifact_id="d" * 64,
+            filename="earlier.wav",
+            mime_type="audio/wav",
+            size_bytes=1,
+            title="Earlier",
+            provider="test-audio",
+            external_source_id="earlier",
+            state="succeeded",
+            transcribed=True,
+            created_at="2026-10-13T14:00:00+00:00",
+            note_id=earlier.id,
+        )
+    )
+    job = next(j for j in context.recordings.jobs() if j.note_id == earlier.id)
+    await context.recordings.remove_reviewed_audio(job)
+    kept = voice.unknown_summaries()["unknown:1"]
+    assert [s["note_id"] for s in kept["signatures"]] == [note.id]
+    assert [a["note_id"] for a in kept["assignments"]] == [note.id]
+
+
+async def test_review_requires_people_write_only_when_creating_a_contact_person(store, standin):
+    import httpx
+    from coppermind_api.auth import ApiKeyAuthenticator
+    from coppermind_store.auth import InternalAuth
+    from coppermind_store.context_api import router as context_router
+    from fastapi import FastAPI
+
+    from coppermind.api_keys import ApiKeySet, create_key
+    from coppermind.store_client import HttpStoreClient
+    from tests.integration.test_store_write_protocol import authorized_api
+
+    context, result, contact, payload, people = await contact_review(store, standin)
+    existing = await store.entities.create(EntityInput(kind="person", name="Existing Person"))
+    record, credential = create_key(
+        "restricted",
+        ["notes:read", "notes:write", "sources:read", "sources:write", "entities:read"],
+        key_id="1234567890abcdef",
+        secret="test-only-integration-secret",
+    )
+    internal = FastAPI()
+    internal.state.store = store
+    internal.state.auth = InternalAuth("synthetic-internal-token")
+    internal.include_router(context_router)
+    client = HttpStoreClient(
+        "http://store", "synthetic-internal-token", transport=httpx.ASGITransport(app=internal)
+    )
+    app, _ = authorized_api(store)
+    store.control.store.write(
+        "keys",
+        ApiKeySet(keys=[record]).model_dump(mode="json"),
+        if_revision=store.control.store.read("keys").revision,
+    )
+    app.state.api_key_auth = ApiKeyAuthenticator(store)
+    app.state.store = client
+    before = len(people())
+    choices = payload({"Unknown voice 1": contact["id"]})
+    note_id = choices.pop("note_id")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://api",
+        headers={"Authorization": f"Bearer {credential}"},
+    ) as api:
+        refused = await api.post(f"/v1/notes/{note_id}/review", json=choices)
+        assert refused.status_code == 403, refused.text
+        assert "cannot create a person" in refused.text
+        assert len(people()) == before
+        assert context.read("review-completions/" + note_id, None) is None
+        assert (await store.get_source(result.source.id)).current_revision == 1
+        choices["manual_speakers"] = {"Unknown voice 1": "person:" + existing["id"]}
+        accepted = await api.post(f"/v1/notes/{note_id}/review", json=choices)
+        assert accepted.status_code == 200, accepted.text
+
+
+async def test_naming_a_voice_is_not_blocked_by_another_notes_unfinished_review(store, standin):
+    from coppermind_store.voice_relabel import apply_deferred
+    from coppermind_store.voice_store import VoiceStore
+
+    from coppermind.store_protocol import CreateNote
+
+    transcript = {"segments": [{"start": 0, "speaker": "Unknown voice 1", "text": "Hello."}]}
+    context, result, note, _, _ = await recorded(store, standin, transcript, lambda e, ev: [])
+    vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
+    voice = VoiceStore(context)
+    other = await store.create_note(CreateNote(title="Other", body="Other recording"))
+    assert voice.capture_unknown(other.id, "Speaker 1", "today", 30, [vector]) == "unknown:1"
+    assert voice.capture_unknown(note.id, "Unknown voice 1", "today", 30, [vector]) == "unknown:1"
+    voice.set_segments(note.id, transcript)
+    context.write("review-completions/" + other.id, {"state": "applying"})
+    manual = (await context.lifecycle_detail({"note_id": note.id}))["manual_speaker_review"]
+    contact = next(c for c in manual["candidates"] if c["id"].startswith("contact:"))
+
+    completed = await context.complete_review(
+        {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "confirmation": "Complete review",
+            "selected": [],
+            "manual_source_id": manual["source_id"],
+            "manual_source_revision": manual["revision"],
+            "manual_speakers": {"Unknown voice 1": contact["id"]},
+        }
+    )
+
+    assert completed["state"] == "complete"
+    person = next(
+        p
+        for p in store.entities.load().entities.values()
+        if p.kind == "person" and p.name == contact["name"]
+    )
+    assert voice.unknown_summaries() == {}
+    assert sorted(a["note_id"] for a in voice.assignments("person:" + person.id)) == sorted(
+        [note.id, other.id]
+    )
+    assert [(d["note_id"], d["name"]) for d in voice.deferred_relabels()] == [
+        (other.id, contact["name"])
+    ]
+    assert not await apply_deferred(context)
+    context.write("review-completions/" + other.id, {"state": "complete"})
+    assert await apply_deferred(context)
+    assert voice.deferred_relabels() == []
+
+
+async def test_completing_a_review_applies_the_relabels_held_back_for_that_note(store, standin):
+    from coppermind_store.voice_store import VoiceStore
+
+    context, result, contact, payload, people = await contact_review(store, standin)
+    note_id = payload({})["note_id"]
+    voice = VoiceStore(context)
+    voice.defer_relabel(
+        {"note_id": note_id, "label": "Unknown voice 2", "segments": [1]}, contact["name"]
+    )
+
+    await context.complete_review(payload({"Unknown voice 1": contact["id"]}))
+
+    assert voice.deferred_relabels() == []
+    manifest = await store.get_source(result.source.id)
+    text = (
+        await store.get_source_artifact(
+            result.source.id, manifest.current_revision, "transcript.txt"
+        )
+    ).content
+    assert contact["name"] + ": Hi." in text
