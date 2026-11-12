@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import pytest
+
 from coppermind.api_keys import add_key, load_keys
 from coppermind.statefiles import StateStore
 from coppermind.store_protocol import StoreError, ValidationFailed
@@ -406,23 +408,29 @@ def place_companion(store):
     store.answers["pairing-start"] = {"code": "123456"}
 
 
-def test_the_companion_step_warns_when_sync_will_not_carry_it_to_the_devices(admin):
-    client, _, store = admin
+def sync_configs(wiring, configs):
+    control = StateStore(wiring.state_dir)
+    state = control.read("settings")
+    body = dict(state.body)
+    body.setdefault("sync", {})["sync_configs"] = configs
+    control.write("settings", body, if_revision=state.revision)
+
+
+@pytest.mark.parametrize("configs", [[], ["app"], ["appearance", "core-plugin"]])
+def test_the_companion_step_warns_when_sync_will_not_carry_it_to_the_devices(admin, configs):
+    client, wiring, store = admin
     place_companion(store)
+    sync_configs(wiring, configs)
     page = client.get("/admin/setup/companion").text
     assert "only carries the companion to your devices" in page
     assert 'href="/admin/sync/what"' in page
     assert "It reaches your devices with the next sync" not in page
 
 
-def test_the_companion_step_says_nothing_of_the_kind_when_own_settings_are_synced(admin):
+def test_the_companion_step_says_nothing_of_the_kind_when_add_ons_are_synced(admin):
     client, wiring, store = admin
     place_companion(store)
-    control = StateStore(wiring.state_dir)
-    state = control.read("settings")
-    body = dict(state.body)
-    body.setdefault("sync", {})["sync_configs"] = ["community-plugin"]
-    control.write("settings", body, if_revision=state.revision)
+    sync_configs(wiring, ["app", "community-plugin"])
     page = client.get("/admin/setup/companion").text
     assert "only carries the companion to your devices" not in page
     assert "It reaches your devices with the next sync" in page

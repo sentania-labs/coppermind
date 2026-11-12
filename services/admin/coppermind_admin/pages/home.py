@@ -371,7 +371,7 @@ def router(wiring: Wiring) -> APIRouter:
                 pairing = await ctx.act("pairing-start", {})
             except StoreError:
                 pairing = {}
-        carried = bool(ctx.settings().sync.sync_configs)
+        carried = "community-plugin" in ctx.settings().sync.sync_configs
         if placed:
             first = ui.badge("ok", "Done") + (
                 ' <span class="muted">It reaches your devices with the next sync.</span>'
@@ -454,7 +454,7 @@ def router(wiring: Wiring) -> APIRouter:
                 "The companion add-on was put in your vault again, in its newest version. "
                 + (
                     "It reaches each device with the next sync. "
-                    if ctx.settings().sync.sync_configs
+                    if "community-plugin" in ctx.settings().sync.sync_configs
                     else "It only reaches your devices if \u201cYour own Obsidian settings\u201d "
                     "is ticked under What syncs. "
                 )
