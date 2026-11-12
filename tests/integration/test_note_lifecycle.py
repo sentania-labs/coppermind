@@ -267,9 +267,11 @@ async def test_calendar_conflicts_surface_in_problems(store):
     conflict = store.context.archive.submit(
         "calendar", "second.ics", calendar().replace(b"Planning", b"Changed")
     )
-    assert store.context.archive.process(conflict.id).state == "failed"
+    # A conflicting event no longer fails the import; it is reported per event.
+    assert store.context.archive.process(conflict.id).state == "succeeded"
     problems = await store.get_problems()
-    assert any(p.kind == "calendar_import" and p.reference == "second.ics" for p in problems)
+    assert [p.kind for p in problems].count("calendar_conflict") == 1
+    assert not any(p.kind == "calendar_import" for p in problems)
 
 
 async def test_finalized_attendees_follow_changed_and_cleared_mapping(store):

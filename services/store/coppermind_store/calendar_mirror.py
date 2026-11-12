@@ -460,7 +460,7 @@ class CatalogView:
     @property
     def conflicts(self) -> list[CalendarEvent]:
         with self.engine.connect() as connection:
-            return get_conflicts(connection)
+            return [event for event in get_conflicts(connection) if not event.acknowledged]
 
     @property
     def aliases(self) -> dict[str, str]:
