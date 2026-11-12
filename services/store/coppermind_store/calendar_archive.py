@@ -349,6 +349,46 @@ class CalendarArchive:
                 )
                 mirror.write_catalog(connection, self.root / "catalog.json", list(catalog.imports))
 
+    def choose_incoming(self, event_id: str, version: str, incoming: CalendarEvent) -> None:
+        """Settle a disagreement in favour of the incoming version instead of the stored one.
+
+        The chosen version replaces the stored event and keeps every file that witnessed
+        either, and the disagreement is marked answered so the same export stays quiet.
+        """
+        if incoming.identity != event_id or incoming.semantic_hash != version:
+            raise CalendarImportError("that version of the meeting is no longer available")
+        with self._lock:
+            catalog = self.catalog()
+            with self.engine.begin() as connection:
+                value = connection.execute(
+                    sa.select(rows.c.record).where(rows.c.id == event_id)
+                ).scalar()
+                witnesses = list(incoming.provenance)
+                if value is not None:
+                    for witness in CalendarEvent.model_validate_json(value).provenance:
+                        if witness not in witnesses:
+                            witnesses.append(witness)
+                chosen = incoming.model_copy(
+                    update={
+                        "provenance": sorted(
+                            witnesses, key=lambda p: (p.imported_at, p.source_id, p.entry)
+                        ),
+                        "acknowledged": False,
+                        "conflict_version": "",
+                    }
+                )
+                mirror.put_event(connection, event_id, chosen)
+                mirror.put_conflicts(
+                    connection,
+                    [
+                        event.model_copy(update={"acknowledged": True})
+                        if (event.identity, _conflict_version(event)) == (event_id, version)
+                        else event
+                        for event in mirror.get_conflicts(connection)
+                    ],
+                )
+                mirror.write_catalog(connection, self.root / "catalog.json", list(catalog.imports))
+
     def migrate(
         self, legacy_names: dict[str, str], origins: dict[str, tuple[str, str]] | None = None
     ) -> None:

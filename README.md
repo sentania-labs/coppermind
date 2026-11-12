@@ -412,7 +412,8 @@ Markdown is not an artifact: it follows the normal note workflow. Once a file is
 safely stored the folder empties itself; a file that cannot be handled moves to
 `Dropbox/Failed` with a reason sidecar, and moving it back retries it. Admin's
 Recordings and imports page lists files that could not be taken in, each with
-a Remove, while Calendar keeps import history.
+a Remove. Calendar files that were read stay under Calendar's past imports, which is
+read-only.
 Completed receipts clear after seven days; failures remain until dismissed. Uploads support
 200,000,000 bytes with bounded ZIP expansion. See
 [calendar intake and upgrade](docs/calendar-enrichment.md) and the
