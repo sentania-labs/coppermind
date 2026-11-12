@@ -546,7 +546,7 @@ separate calendars. Calendar UID binding and identity claiming are removed.
 
 | Route | Scope | Result |
 |---|---|---|
-| `POST /v1/dropbox?filename=export.zip` | `sources:write`; `kind=artifact` also needs `artifacts:write` | Binary ICS or ZIP; 202 after durable intake; 413 above 200,000,000 bytes, or above `limits.artifact_max_bytes` when `kind=artifact` |
+| `POST /v1/dropbox?filename=export.zip` | `sources:write`; `kind=artifact` also needs `artifacts:write` | Binary calendar export (ICS or ZIP), or a supported document with `kind=artifact`; 202 after durable intake; 413 above 200,000,000 bytes, or above `limits.artifact_max_bytes` when `kind=artifact` |
 | `GET /v1/dropbox` | `sources:read` | `{folder, items}`; each receipt has `id`, `filename`, `state`, `error`, `event_count`, `first_imported_at`, and `parts`; the same redaction applies to the `POST /v1/dropbox` receipt; an artifact part carries `artifact_id` and `path` only when the key also holds `artifacts:read`, otherwise it is `{artifact: "stored"}`; files still being copied have state `stabilizing` and an empty `id` until accepted |
 | `POST /v1/dropbox/{id}/dismiss` | `sources:write` | Dismiss a completed, failed or unsupported receipt; 422 for pending/importing or unknown receipts |
 | `GET /v1/calendars?offset=0` | `sources:read` | Compatible `{calendar, events, contacts, offset, next_offset, totals}` response; calendar now also has `id: calendar`, `name: My calendar` |
@@ -556,9 +556,10 @@ separate calendars. Calendar UID binding and identity claiming are removed.
 Dropbox states are `pending`, `importing`, `succeeded`, `already_imported`,
 `failed`, and `unsupported`. Completed receipts expire after seven days; failed receipts remain until dismissed.
 Dismissal never deletes original exports or calendar import history. An identical
-re-drop is `already_imported` and does not create another import. A dismissed
-filesystem drop that cannot be handled moves to `Dropbox/Failed` with a reason
-sidecar. Correct it and move it back to Dropbox to retry. Completed drops leave
+re-drop is `already_imported` and does not create another import. A filesystem
+drop that cannot be handled moves to `Dropbox/Failed` with a reason sidecar,
+whether or not its receipt is dismissed. Correct it and move it back to Dropbox
+to retry. Completed drops leave
 Dropbox after storage succeeds and their bytes are checked again.
 
 Events retain their existing fields and add `provenance`, a list of
