@@ -183,6 +183,93 @@ async def relabel_recording(
         context.write("review-completions/" + note.id, receipt)
 
 
+async def add_late_attendee(context: Any, assignment: dict[str, Any], person_id: str) -> bool:
+    """Best effort: a failed attendee update never stops the voice from being identified.
+
+    A note edited between the read and the write is read again once; after that, or when the
+    note's attendees cannot take the value, the attendees are left as they are.
+    """
+    from coppermind.store_protocol import VersionConflict
+
+    for attempt in range(2):
+        try:
+            return await _add_late_attendee(context, assignment, person_id)
+        except VersionConflict:
+            if attempt:
+                break
+        except ValueError:
+            break
+    return False
+
+
+async def _add_late_attendee(context: Any, assignment: dict[str, Any], person_id: str) -> bool:
+    """Add a person identified after review to the attendees of the filed note.
+
+    Only a reviewed note is touched; a note still in review gets its attendees from the review
+    itself. The same limits as the relabel apply: nothing is added while voice recognition is
+    off, for a person the reviewer said this voice is not, or for a retired person. Anyone
+    already listed (by address, link or name) stays as is, and nobody is removed.
+    """
+    from coppermind.store_protocol import NotFound, PatchFrontmatter
+    from coppermind_store.speaker_names import people_changes, person_candidate
+    from coppermind_store.voice_store import VoiceStore
+
+    note_id = assignment["note_id"]
+    if note_id.startswith("recording:"):
+        return False
+    voice = VoiceStore(context)
+    if not voice.recognition_enabled() or voice.rejected(
+        note_id, assignment["label"], person_id, assignment.get("source_id")
+    ):
+        return False
+    field = context.config().assignments["enrichment"].attendees_field
+    entity = context.store.entities.load().entities.get(person_id)
+    if (
+        not field
+        or entity is None
+        or entity.kind != "person"
+        or entity.retired_at
+        or entity.redirect
+    ):
+        return False
+    try:
+        note = await context.store.get_note(note_id)
+    except NotFound:
+        return False
+    if note.frontmatter.get(context.store.control.schema().role("reviewed_key")) is not True:
+        return False
+    person = person_candidate(entity)
+    listed = note.frontmatter.get(field)
+    known = {person["name"].strip().casefold(), person["email"].strip().casefold()}
+    known |= {a.strip().casefold() for a in entity.emails}
+    if person["path"]:
+        known.add(("[[" + person["path"].removesuffix(".md") + "]]").casefold())
+    if isinstance(listed, list) and any(
+        isinstance(v, str) and v.strip().casefold() in known for v in listed
+    ):
+        return False
+    changes = people_changes(context, note.frontmatter, [person])
+    note = await context.store.patch_frontmatter(
+        note_id, PatchFrontmatter(set=changes), if_match=note.content_hash
+    )
+    from coppermind_store.context_service import now
+
+    key = "review-completions/" + note_id
+    receipt = context.read(key, {})
+    receipt.setdefault("late_attendees", []).append(
+        {
+            "person_id": person_id,
+            "name": entity.name,
+            "label": assignment["label"],
+            "field": field,
+            "added": [v for v in changes[field] if v not in (listed or [])],
+            "at": now(),
+        }
+    )
+    context.write(key, receipt)
+    return True
+
+
 async def unfinished_review(context: Any, note_id: str) -> str | None:
     """Title of a note whose recorded review is still being applied."""
     from coppermind.store_protocol import NotFound
@@ -210,6 +297,8 @@ async def apply_deferred(context: Any, note_id: str | None = None) -> bool:
             continue
         with contextlib.suppress(ValueError):
             await relabel_recording(context, item["assignment"], None, item["name"])
+            if item.get("person_id"):
+                await add_late_attendee(context, item["assignment"], item["person_id"])
         voice.clear_deferred(
             item["note_id"], item["label"], item.get("assignment", {}).get("source_id")
         )
@@ -225,6 +314,7 @@ async def combine(context: Any, source: str, target: str, reviewing: str | None 
     unknowns = voice.unknown_summaries()
     if source == target:
         raise ValueError("Choose a different voice or person.")
+    person_id = None
     if target.startswith("unknown:"):
         if target not in unknowns:
             raise ValueError("Target voice not found")
@@ -234,6 +324,7 @@ async def combine(context: Any, source: str, target: str, reviewing: str | None 
         if not entity or entity.kind != "person" or entity.retired_at or entity.redirect:
             raise ValueError("Target person not found")
         name = entity.name
+        person_id = entity.id
     else:
         raise ValueError("Target voice not found")
     if source not in unknowns:
@@ -246,8 +337,10 @@ async def combine(context: Any, source: str, target: str, reviewing: str | None 
             deferred.append(assignment)
         else:
             await relabel_recording(context, assignment, None, name)
+            if person_id and assignment["note_id"] != reviewing:
+                await add_late_attendee(context, assignment, person_id)
     for assignment in deferred:
-        voice.defer_relabel(assignment, name)
+        voice.defer_relabel(assignment, name, person_id)
     voice.move_voice(source, target)
 
 

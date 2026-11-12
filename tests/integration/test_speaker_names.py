@@ -1463,3 +1463,186 @@ async def test_completing_a_review_applies_the_relabels_held_back_for_that_note(
         )
     ).content
     assert contact["name"] + ": Hi." in text
+
+
+async def reviewed_with_unknown_voice(store, standin):
+    """A reviewed, filed note whose second voice stayed unknown, with that voice captured."""
+    from coppermind_store.voice_store import VoiceStore
+
+    context, result, contact, payload, people = await contact_review(store, standin)
+    note_id = payload({})["note_id"]
+    voice = VoiceStore(context)
+    vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
+    other = {"model": "model", "version": "v1", "vector": [0.0, 1.0]}
+    voice.capture_unknown(note_id, "Unknown voice 1", "today", 30, [vector])
+    voice.capture_unknown(note_id, "Unknown voice 2", "today", 30, [other])
+    voice.set_segments(
+        note_id, {"segments": [{"speaker": "Unknown voice 1"}, {"speaker": "Unknown voice 2"}]}
+    )
+    completed = await context.complete_review(payload({"Unknown voice 1": contact["id"]}))
+    assert completed["state"] == "complete"
+    # Leaving a voice unknown, and no summary accepted, did not stop the review.
+    assert voice.unknown_summaries()["unknown:2"]["name"] == "Unknown voice 2"
+    return context, store, note_id, voice
+
+
+async def test_a_voice_identified_after_review_adds_that_person_to_attendees_once(store, standin):
+    from coppermind_store.voice_relabel import combine
+
+    context, _, note_id, voice = await reviewed_with_unknown_voice(store, standin)
+    blair = await store.entities.create(
+        EntityInput(kind="person", name="Blair Stone", emails=["blair@example.test"])
+    )
+    before = (await store.get_note(note_id)).frontmatter["attendees"]
+    async with context.lifecycle.lock, context.lock:
+        await combine(context, "unknown:2", "person:" + blair["id"])
+    after = (await store.get_note(note_id)).frontmatter["attendees"]
+    assert after[: len(before)] == before
+    assert after.count("blair@example.test") == 1
+    logged = context.read("review-completions/" + note_id, {})["late_attendees"]
+    assert [(e["name"], e["label"]) for e in logged] == [("Blair Stone", "Unknown voice 2")]
+    # The same person identified again changes nothing.
+    voice.restore_unknown("unknown:2")
+    async with context.lifecycle.lock, context.lock:
+        await combine(context, "unknown:2", "person:" + blair["id"])
+    assert (await store.get_note(note_id)).frontmatter["attendees"] == after
+    assert len(context.read("review-completions/" + note_id, {})["late_attendees"]) == 1
+
+
+async def test_a_failed_attendee_update_does_not_block_identifying_the_voice(
+    store, standin, monkeypatch
+):
+    from coppermind_store import speaker_names
+    from coppermind_store.voice_relabel import combine
+
+    context, _, note_id, voice = await reviewed_with_unknown_voice(store, standin)
+    blair = await store.entities.create(
+        EntityInput(kind="person", name="Blair Stone", emails=["blair@example.test"])
+    )
+    before = (await store.get_note(note_id)).frontmatter["attendees"]
+
+    def refuse(*args, **kwargs):
+        raise ValueError("people fields must be lists")
+
+    monkeypatch.setattr(speaker_names, "people_changes", refuse)
+    async with context.lifecycle.lock, context.lock:
+        await combine(context, "unknown:2", "person:" + blair["id"])
+    assert "unknown:2" not in voice.unknown_summaries()
+    assert (await store.get_note(note_id)).frontmatter["attendees"] == before
+
+
+async def test_someone_already_listed_is_not_added_again(store, standin):
+    from coppermind_store.voice_relabel import combine
+
+    from coppermind.store_protocol import PatchFrontmatter
+
+    context, _, note_id, _ = await reviewed_with_unknown_voice(store, standin)
+    blair = await store.entities.create(
+        EntityInput(kind="person", name="Blair Stone", emails=["blair@example.test"])
+    )
+    note = await store.get_note(note_id)
+    listed = [*note.frontmatter["attendees"], "Blair@Example.test"]
+    await store.patch_frontmatter(
+        note_id, PatchFrontmatter(set={"attendees": listed}), note.content_hash
+    )
+    async with context.lifecycle.lock, context.lock:
+        await combine(context, "unknown:2", "person:" + blair["id"])
+    assert (await store.get_note(note_id)).frontmatter["attendees"] == listed
+    assert "late_attendees" not in context.read("review-completions/" + note_id, {})
+
+
+@pytest.mark.parametrize("limit", ["never_this_person", "recognition_off"])
+async def test_a_refused_or_switched_off_voice_adds_no_attendee(store, standin, limit):
+    from coppermind_store.voice_relabel import combine
+
+    context, _, note_id, voice = await reviewed_with_unknown_voice(store, standin)
+    blair = await store.entities.create(EntityInput(kind="person", name="Blair Stone"))
+    if limit == "never_this_person":
+        voice.reject(note_id, "Unknown voice 2", blair["id"])
+    else:
+        voice.set_recognition_enabled(False)
+    before = (await store.get_note(note_id)).frontmatter["attendees"]
+    async with context.lifecycle.lock, context.lock:
+        await combine(context, "unknown:2", "person:" + blair["id"])
+    assert (await store.get_note(note_id)).frontmatter["attendees"] == before
+
+
+async def test_a_note_still_in_review_gets_attendees_only_from_its_review(store, standin):
+    from coppermind_store.voice_relabel import combine
+    from coppermind_store.voice_store import VoiceStore
+
+    context, result, contact, payload, people = await contact_review(store, standin)
+    note_id = payload({})["note_id"]
+    voice = VoiceStore(context)
+    vector = {"model": "model", "version": "v1", "vector": [1.0, 0.0]}
+    voice.capture_unknown(note_id, "Unknown voice 1", "today", 30, [vector])
+    voice.set_segments(note_id, {"segments": [{"speaker": "Unknown voice 1"}, {"speaker": "x"}]})
+    blair = await store.entities.create(EntityInput(kind="person", name="Blair Stone"))
+    before = (await store.get_note(note_id)).frontmatter
+    async with context.lifecycle.lock, context.lock:
+        await combine(context, "unknown:1", "person:" + blair["id"])
+    assert (await store.get_note(note_id)).frontmatter.get("attendees") == before.get("attendees")
+
+
+async def test_marking_a_note_reviewed_does_not_wait_for_unknown_speakers_or_a_summary(
+    store, standin
+):
+    context, _, note_id, voice = await reviewed_with_unknown_voice(store, standin)
+    note = await store.get_note(note_id)
+    assert note.frontmatter["reviewed"] is True
+    assert voice.unknown_summaries()
+
+
+async def test_a_person_already_listed_as_a_capitalised_link_is_not_added_by_email(store, standin):
+    from coppermind_store.voice_relabel import combine
+
+    from coppermind.store_protocol import PatchFrontmatter
+
+    context, _, note_id, _ = await reviewed_with_unknown_voice(store, standin)
+    blair = await store.entities.create(
+        EntityInput(kind="person", name="Blair Stone", emails=["blair@example.test"])
+    )
+    note = await store.get_note(note_id)
+    link = "[[" + blair["path"].removesuffix(".md") + "]]"
+    assert link != link.casefold()
+    listed = [*note.frontmatter["attendees"], link]
+    await store.patch_frontmatter(
+        note_id, PatchFrontmatter(set={"attendees": listed}), note.content_hash
+    )
+    async with context.lifecycle.lock, context.lock:
+        await combine(context, "unknown:2", "person:" + blair["id"])
+    assert (await store.get_note(note_id)).frontmatter["attendees"] == listed
+    assert "late_attendees" not in context.read("review-completions/" + note_id, {})
+
+
+@pytest.mark.parametrize("conflicts", [1, 2])
+async def test_a_note_edited_during_the_update_never_blocks_identifying_the_voice(
+    store, standin, monkeypatch, conflicts
+):
+    from coppermind_store.voice_relabel import combine
+
+    from coppermind.store_protocol import VersionConflict
+
+    context, _, note_id, voice = await reviewed_with_unknown_voice(store, standin)
+    blair = await store.entities.create(
+        EntityInput(kind="person", name="Blair Stone", emails=["blair@example.test"])
+    )
+    before = (await store.get_note(note_id)).frontmatter["attendees"]
+    real = store.patch_frontmatter
+    remaining = [conflicts]
+
+    async def edited_meanwhile(*args, **kwargs):
+        if remaining[0]:
+            remaining[0] -= 1
+            raise VersionConflict("note changed")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(store, "patch_frontmatter", edited_meanwhile)
+    async with context.lifecycle.lock, context.lock:
+        await combine(context, "unknown:2", "person:" + blair["id"])
+    assert "unknown:2" not in voice.unknown_summaries()
+    after = (await store.get_note(note_id)).frontmatter["attendees"]
+    # One conflict is retried; a second leaves attendees untouched.
+    assert ("blair@example.test" in after) == (conflicts == 1)
+    if conflicts == 2:
+        assert after == before
