@@ -27,7 +27,7 @@ from coppermind_admin.pages.common import (
     stopped_help,
     where_text,
 )
-from coppermind_admin.shell import Ctx
+from coppermind_admin.shell import STALE, Ctx, StaleForm, not_saved
 from coppermind_admin.ui import e, plural, segment
 
 ZONES = {
@@ -182,6 +182,15 @@ def read_schema(control: StateStore) -> tuple[int, FrontmatterSchema]:
     return state.revision, FrontmatterSchema.model_validate(body)
 
 
+def read_pinned(ctx: Ctx) -> tuple[int, FrontmatterSchema]:
+    """The schema to change, refused when the form saving it was drawn from an older one."""
+    revision, schema = read_schema(ctx.control)
+    pinned = ctx.pin("schema")
+    if pinned is not None and pinned != revision:
+        raise StaleForm(revision)
+    return revision, schema
+
+
 def write_schema(control: StateStore, schema: FrontmatterSchema, revision: int) -> None:
     problems = schema.edit_problems()
     if problems:
@@ -241,10 +250,7 @@ def properties(schema: FrontmatterSchema) -> list[dict[str, Any]]:
 def schema_problem(error: Exception) -> str:
     """Why a change to the note schema was not kept, in a plain sentence."""
     if isinstance(error, RevisionConflict):
-        return (
-            "Settings were changed somewhere else while you were editing. Reload the page and "
-            "try again." + ui.tech(str(error))
-        )
+        return STALE
     if isinstance(error, ValidationError):
         return (
             "Coppermind could not keep that. Check the name and options and try again."
@@ -415,8 +421,11 @@ catch(e){}</script>"""
         try:
             ZoneInfo(zone)
             ctx.save_settings(lambda doc: doc.setdefault("general", {}).update(timezone=zone))
-        except (ValueError, OSError, KeyError, RevisionConflict):
-            ctx.say("bad", "That time zone could not be saved. Pick one from the list.")
+        except (ValueError, OSError, KeyError, RevisionConflict) as error:
+            ctx.say(
+                "bad",
+                not_saved(error, "That time zone could not be saved. Pick one from the list."),
+            )
             return ctx.go("/admin/settings/timezone")
         ctx.say(
             "ok",
@@ -531,8 +540,10 @@ catch(e){}</script>"""
         try:
             hours = int(form.get("hours", ""))
             ctx.save_settings(lambda doc: doc.setdefault("admin", {}).update(session_hours=hours))
-        except (ValueError, RevisionConflict):
-            ctx.say("bad", "That could not be saved. Pick one of the listed times.")
+        except (ValueError, RevisionConflict) as error:
+            ctx.say(
+                "bad", not_saved(error, "That could not be saved. Pick one of the listed times.")
+            )
             return ctx.go("/admin/settings/signin")
         ctx.say(
             "ok",
@@ -799,6 +810,7 @@ edit their descriptions and options.</p></div>"""
             return ctx.go("/admin/settings/properties")
         try:
             # The tick goes first: suggestions cannot be left filling a property that is gone.
+            read_pinned(ctx)
             await ctx.act("suggestions-tick", {"key": target["fill"], "on": False})
             revision, schema = read_schema(ctx.control)
             schema.keys = [key for key in schema.keys if key.name != name]
@@ -913,7 +925,10 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
     async def property_save(name: str, request: Request) -> Response:
         ctx = Ctx(request, wiring)
         form = await ctx.form()
-        revision, schema = read_schema(ctx.control)
+        try:
+            revision, schema = read_pinned(ctx)
+        except RevisionConflict as exc:
+            return await edit_page(ctx, name, form, {"save": schema_problem(exc)}, 422)
         new = name == "new"
         item = next((i for i in properties(schema) if i["key"].name == name), None)
         if not new and item is None:
@@ -1106,8 +1121,8 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
         return await ctx.page("Tags", body, "settings", dialog=dialog)
 
     def tag_change(ctx: Ctx, change: Any) -> str:
-        revision, schema = read_schema(ctx.control)
         try:
+            revision, schema = read_pinned(ctx)
             change(schema)
             checked = FrontmatterSchema.model_validate(schema.model_dump())
             write_schema(ctx.control, checked, revision)
@@ -1506,8 +1521,13 @@ is sent to this service a little at a time, in the background.</p>
 
         try:
             ctx.save_settings(change)
-        except (ValueError, KeyError, RevisionConflict):
-            ctx.say("bad", "Those values could not be saved. Pick from the lists and try again.")
+        except (ValueError, KeyError, RevisionConflict) as error:
+            ctx.say(
+                "bad",
+                not_saved(
+                    error, "Those values could not be saved. Pick from the lists and try again."
+                ),
+            )
             return ctx.go("/admin/settings/advanced")
         ctx.say("ok", "Saved. The new values are in use within a minute.")
         return ctx.go("/admin/settings/advanced")

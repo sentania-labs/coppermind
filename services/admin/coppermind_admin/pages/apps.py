@@ -151,7 +151,7 @@ removed here or on its device's line under {ui.a("Obsidian Sync", "/admin/sync")
 
     # -- connect an app ------------------------------------------------------------------
 
-    def new_form(values: dict[str, str], errors: dict[str, str]) -> str:
+    def new_form(ctx: Ctx, values: dict[str, str], errors: dict[str, str]) -> str:
         kind = values.get("kind", "agent")
         choices = ""
         for key, (title, _) in KINDS.items():
@@ -178,7 +178,7 @@ removed here or on its device's line under {ui.a("Obsidian Sync", "/admin/sync")
             for key, (_, default) in KINDS.items()
             if key != "companion"
         )
-        return f"""<form method="post" action="/admin/apps/new">
+        return f"""<form method="post" action="/admin/apps/new">{ui.hidden({"once": ctx.once()})}
 <h3>What are you connecting?</h3>{choices}
 <div data-if="kind=custom"><h3 style="margin-top:10px">What may it do?</h3>
 <div class="checks">{ticks}</div>{ui.field_error(errors.get("can", ""))}</div>
@@ -200,7 +200,7 @@ It connects with a short pairing code that you type into Obsidian.</p>
                 ("/admin/apps", "Connected apps"),
             )
         }
-<div class="stack">{ui.card(new_form({}, {}))}</div>"""
+<div class="stack">{ui.card(new_form(ctx, {}, {}))}</div>"""
         return await ctx.page("Connect an app", body, "apps")
 
     @routes.post("/admin/apps/new", include_in_schema=False)
@@ -214,6 +214,8 @@ It connects with a short pairing code that you type into Obsidian.</p>
             except StoreError as exc:
                 return await ctx.refused(exc, "/admin/apps/new")
             return ctx.go("/admin/apps/pair")
+        if ctx.repeated(form):
+            return ctx.go("/admin/apps/key")
         if kind not in KINDS:
             kind = "agent"
         name = form.get("name_" + kind, "").strip()
@@ -234,7 +236,7 @@ It connects with a short pairing code that you type into Obsidian.</p>
                     ("/admin/apps", "Connected apps"),
                 )
             }
-<div class="stack">{ui.card(new_form(form, errors))}</div>"""
+<div class="stack">{ui.card(new_form(ctx, form, errors))}</div>"""
             return await ctx.page("Connect an app", body, "apps", status=422)
         credential = ""
         for _ in range(3):
@@ -305,8 +307,8 @@ clipboard</span></p>
         try:
             view = await ctx.view()
             state = await ctx.act("pairing-state", {})
-            if not state["code"] and not state["done"]:
-                state = await ctx.act("pairing-start", {"fresh": True})
+            if not state.get("expires_at") and not state["done"]:
+                state = await ctx.act("pairing-start", {})
         except StoreError:
             return await ctx.unavailable("Pair the companion on another device", lede, "apps")
         placed = bool(view and view["companion"]["placed"])
@@ -328,6 +330,14 @@ clipboard</span></p>
                 + ui.btn("Pair one more device", "/admin/apps/pair/code", "", {"from": origin})
                 + "</div>"
             )
+        elif not state["code"]:
+            second = (
+                '<span class="muted">That code has run out, or too many wrong codes were '
+                "typed. Press Make a new code to get another.</span> "
+                + ui.btn("Make a new code", "/admin/apps/pair/code", "primary", {"from": origin})
+            )
+            third = '<span class="muted">Starts once you have a new code.</span>'
+            after = ""
         else:
             second = (
                 f'<span class="keybox keybox--code">{pairing_code(state["code"])}</span> '
@@ -392,6 +402,19 @@ clipboard</span></p>
         held = take_held_key(ctx, identity)
         return await render_app(ctx, app, {}, {}, new_key=held["credential"] if held else "")
 
+    def outside_note(ctx: Ctx, app: dict[str, Any]) -> str:
+        record = next((k for k in load_keys(ctx.control).keys if k.key_id == app["id"]), None)
+        covered = set(scopes_for(app["permissions"]))
+        extra = sorted(set(record.scopes) - covered) if record else []
+        if not extra:
+            return ""
+        return (
+            '<p class="muted">Also allowed outside Admin: '
+            + ", ".join(f"<code>{e(scope)}</code>" for scope in extra)
+            + ". These are only part of a choice above, so no box shows them. Saving keeps "
+            "them.</p>"
+        )
+
     async def render_app(
         ctx: Ctx,
         app: dict[str, Any],
@@ -420,6 +443,7 @@ clipboard</span></p>
                 )
                 + "</div>"
                 + ui.field_error(errors.get("can", ""))
+                + outside_note(ctx, app)
             )
         edit = f"""<form method="post" action="{here}/save">
 {ui.text_input("name", "Name", values.get("name", app["name"]), error=errors.get("name", ""))}
@@ -454,6 +478,7 @@ clipboard</span></p>
                 f"{here}/replace",
                 "Make a new key",
                 here,
+                fields={"once": ctx.once()},
             )
         elif asked == "remove":
             dialog = remove_dialog(app, here)
@@ -536,6 +561,8 @@ clipboard</span></p>
         app = await current(ctx, identity)
         if app is None or app["companion"]:
             return ctx.go("/admin/apps")
+        if ctx.repeated(await ctx.form()):
+            return ctx.go(app_path(identity))
         try:
             credential = change_key(ctx.control, identity, new_secret=True)
         except (ValueError, RevisionConflict, OSError):

@@ -11,14 +11,7 @@ def append_summary(body: str, summary: MeetingSummary, projection_path: str) -> 
         part in projection_path for part in ("\n", "\r", "\0", "]]", "|", "#")
     ):
         raise ValueError("the transcript link is unavailable")
-    sections = []
-    for heading, text in (
-        ("Summary", summary.summary),
-        ("Decisions", summary.decisions),
-        ("Action items", summary.action_items),
-    ):
-        if text.strip():
-            sections.append(f"### {heading}\n\n{text.strip()}")
+    sections = [f"### {heading}\n\n{text}" for heading, text in summary.parts()]
     if not sections:
         raise ValueError("the recording summary is empty")
     path = projection_path.removesuffix(".md")

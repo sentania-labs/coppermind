@@ -378,6 +378,19 @@ class CalendarArchive:
                     }
                 )
                 mirror.put_event(connection, event_id, chosen)
+                for person in chosen.people:
+                    if person.contact_id is not None:
+                        evidence = ContactEvidence(
+                            event_id=event_id,
+                            address=person.address,
+                            name=person.name,
+                            role=person.role,
+                            participation=person.participation,
+                            source_import=incoming.provenance[0].source_id
+                            if incoming.provenance
+                            else "",
+                        )
+                        mirror.add_evidence(connection, person.contact_id, evidence.model_dump())
                 mirror.put_conflicts(
                     connection,
                     [

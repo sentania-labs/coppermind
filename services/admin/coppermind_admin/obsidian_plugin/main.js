@@ -1,5 +1,7 @@
 /* Coppermind companion: proposals stay separate until explicit review completion. */
 const {Plugin, ItemView, PluginSettingTab, Setting, SecretComponent, Notice, requestUrl, MarkdownView, Modal} = require('obsidian');
+const SUMMARY_LABELS = {summary:['Summary','Summary'],decisions:['Decisions','Decisions'],action_items:['Action items and owners','Action items']};
+const summaryLabel = (key, long) => (SUMMARY_LABELS[key] || [])[long ? 0 : 1] || key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
 const VIEW = 'coppermind-review';
 const PEOPLE_VIEW = 'coppermind-people';
 const WAITING_VIEW = 'coppermind-waiting';
@@ -219,7 +221,7 @@ class ReviewView extends ItemView {
       if(summary){
         const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Meeting summary'});
         box.createEl('p',{text:'Edit these suggestions, or clear a section to drop it. Marking reviewed adds what you keep to the note. Action items are recorded only; nothing is carried out.'});
-        for(const [key,label] of [['summary','Summary'],['decisions','Decisions'],['action_items','Action items and owners']]){
+        for(const key of Object.keys(summary)){const label=summaryLabel(key,true);
           const field=box.createEl('label',{text:label});
           const input=field.createEl('textarea');input.value=summary[key];input.rows=6;input.maxLength=12000;input.style.width='100%';input.disabled=!ready;
           input.oninput=()=>{summary[key]=input.value;updatePreview();};
@@ -384,7 +386,7 @@ class MergeModal extends Modal {
   onOpen(){
     const el=this.contentEl;el.empty();el.createEl('h2',{text:'Add this recording to '+this.destination.title+'?'});
     el.createEl('p',{text:'Your existing text stays word for word. The recording summary and a transcript link will be added below it.'});
-    for(const [key,label] of [['summary','Summary'],['decisions','Decisions'],['action_items','Action items']])if(this.summary[key]?.trim()){el.createEl('h3',{text:label});el.createEl('p',{text:this.summary[key]});}
+    for(const key of Object.keys(this.summary))if(this.summary[key]?.trim()){el.createEl('h3',{text:summaryLabel(key,false)});el.createEl('p',{text:this.summary[key]});}
     if(this.transcriptPath){const link=el.createEl('a',{text:'View transcript',href:'#'});link.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(this.transcriptPath,'',false);};}
     el.createEl('p',{text:'The recording will belong to your existing note and this separate recording note will be retired.'});
     const confirm=el.createEl('button',{text:'Confirm merge',cls:'mod-cta'});confirm.onclick=async()=>{this.close();await this.confirm();};

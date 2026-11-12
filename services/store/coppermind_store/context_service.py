@@ -957,7 +957,10 @@ class ContextService:
             ]:
                 if name and allowed[name] != "list":
                     raise ValueError("attendee, invitee and contact mappings must be list fields")
-            if assignment.enabled and not (self.root / "automatic_baseline.json").exists():
+            turning_on = not config.assignments["enrichment"].enabled
+            if assignment.enabled and (
+                turning_on or not (self.root / "automatic_baseline.json").exists()
+            ):
                 identities: list[str] = []
                 cursor = None
                 while True:

@@ -13,7 +13,7 @@ from coppermind_store.note_lifecycle import SETTLING
 
 from coppermind.api_keys import COMPANION_PERMISSIONS, describe, load_keys, scopes_for
 from coppermind.entities import EntityInput, EntityQuery
-from coppermind.store_protocol import CreateNote, ValidationFailed
+from coppermind.store_protocol import CreateNote, MoveNote, ValidationFailed
 from tests.integration.test_context_enrichment import configure
 
 
@@ -355,13 +355,13 @@ async def test_checking_a_note_that_is_not_reviewed_does_not_say_it_was_filed(st
     assert not [text for text in recent if "was filed" in text]
 
 
-def test_a_name_on_the_internet_is_tried_over_https_before_plain_http():
-    tried = candidates("api.groq.com")
-    schemes = [item.split(":", 1)[0] for item in tried]
-    assert schemes == sorted(schemes, key={"https": 0, "http": 1}.get)
-    assert schemes[0] == "https"
+def test_a_name_on_the_internet_is_only_ever_tried_over_https():
+    assert {item.split(":", 1)[0] for item in candidates("api.groq.com")} == {"https"}
+    assert {item.split(":", 1)[0] for item in candidates("api.groq.com:443")} == {"https"}
+    assert candidates("http://api.groq.com")[0].startswith("http://")
     assert candidates("gpu-box:8000")[0].startswith("http://")
     assert candidates("ollama.local")[0].startswith("http://")
+    assert candidates("192.168.1.20:8000")[0].startswith("http://")
 
 
 def _admin_client(store):
@@ -558,3 +558,78 @@ async def test_turning_a_feature_on_for_the_first_time_is_not_paused(store, monk
     one = await _add(store, "One")
     await store.admin.act("transcription-save", {"connection": one, "wait_s": 3600})
     assert store.context.config().assignments["transcription"].paused is False
+
+
+async def test_turning_suggestions_on_again_does_not_send_what_arrived_while_it_was_off(
+    store, monkeypatch
+):
+    await configure(store)
+    _answers(
+        store,
+        monkeypatch,
+        {"One": {"text": TEXT, "speech": NO_SPEECH}, "Two": {"text": TEXT, "speech": NO_SPEECH}},
+    )
+    one, two = await _add(store, "One"), await _add(store, "Two")
+    await store.create_note(
+        CreateNote(title="First", body="a\n", frontmatter={"date": "2026-10-14"})
+    )
+    await store.admin.act("suggestions-save", {"connection": one, "model": "m"})
+    await store.admin.act("service-remove", {"id": one, "takeover": {"sugg": "off"}})
+    later = await store.create_note(
+        CreateNote(title="Second", body="b\n", frontmatter={"date": "2026-10-14"})
+    )
+
+    await store.admin.act("suggestions-save", {"connection": two, "model": "m"})
+
+    assert later.id in store.context.read("automatic_baseline", {})["ids"]
+
+
+async def test_an_address_moved_to_the_internet_is_marked_outside_even_if_its_test_fails(
+    store, monkeypatch
+):
+    from coppermind_store import ai_services
+    from coppermind_store.model_provider import ProviderError
+
+    await configure(store)
+    _answers(store, monkeypatch, {"Home": {"text": TEXT, "speech": NO_SPEECH}})
+    home = await _add(store, "Home")
+    monkeypatch.setattr(
+        ai_services, "is_outside", lambda base_url: "public.example.org" in base_url
+    )
+    assert store.context.services.get(home)["outside"] is False
+
+    async def down(connection, key):
+        raise ProviderError("no answer", "provider-connect")
+
+    monkeypatch.setattr(store.context.services, "_run", down)
+    result = await store.admin.act(
+        "service-save", {"id": home, "name": "Home", "address": "public.example.org"}
+    )
+    assert result["answering"] is False
+    assert store.context.services.get(home)["outside"] is True
+
+
+async def test_folders_that_sit_inside_each_other_are_refused_in_plain_words(store):
+    current = (await store.admin.act("folders", {}))["current"]
+    for key, value in (("review", "Notes/Review"), ("files", "To Coppermind/Files")):
+        wanted = {**current, "filed": "Notes", "drop": "To Coppermind", key: value}
+        refused = await store.admin.act("folders-save", wanted)
+        assert refused["refused"]["field"] == key, key
+        assert "sits inside" in refused["refused"]["message"]
+        assert "pydantic" not in refused["refused"]["message"].lower()
+    assert (await store.admin.act("folders", {}))["current"] == current
+
+
+async def test_moving_the_review_folder_inside_itself_does_not_nest_waiting_notes(store):
+    current = (await store.admin.act("folders", {}))["current"]
+    note = await store.create_note(
+        CreateNote(title="Waiting", body="x\n", frontmatter={"date": "2026-10-14"})
+    )
+    inner = current["review"] + "/Inbox"
+    await store.move_note(note.id, MoveNote(target_folder=inner), None)
+    waiting = (await store.admin.act("notes-waiting", {}))["items"]
+    assert waiting and waiting[0]["path"].startswith(inner + "/")
+    await store.admin.act("folders-save", {**current, "review": inner})
+    moved = await store.get_note(note.id)
+    assert moved.path.startswith(inner + "/")
+    assert not moved.path.startswith(inner + "/Inbox/")

@@ -215,7 +215,8 @@ class Recordings:
         with contextlib.suppress(ValueError):
             saved = self.load(job.id)
             if saved.error_rule == DELETED_RULE and job.error_rule != DELETED_RULE:
-                job.audio_removed, job.dismissed = True, True
+                job.audio_removed = job.audio_removed or saved.audio_removed
+                job.dismissed = True
                 if job.state != "succeeded":
                     job.state = "failed"
                     job.set_error(saved.error, DELETED_RULE)
@@ -230,6 +231,13 @@ class Recordings:
         if assignment is None or not (assignment.enabled and assignment.connection):
             raise ValueError(NOT_SET_UP)
         return assignment
+
+    def accepting(self) -> bool:
+        try:
+            self.ready()
+        except ValueError:
+            return False
+        return True
 
     def enabled(self) -> bool:
         assignment = self.assignment()
@@ -830,7 +838,12 @@ class Recordings:
             return bool(row.filed and row.reviewed)
 
         for other in await asyncio.to_thread(self.jobs):
-            if other.id == job.id or other.artifact_id != job.artifact_id or other.audio_removed:
+            if (
+                other.id == job.id
+                or other.artifact_id != job.artifact_id
+                or other.audio_removed
+                or other.error_rule == DELETED_RULE
+            ):
                 continue
             if other.state != "succeeded" or not await finished(self.parent_note_id(other)):
                 return True

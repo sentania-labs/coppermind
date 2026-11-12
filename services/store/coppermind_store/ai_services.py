@@ -126,7 +126,7 @@ def candidates(address: str) -> list[str]:
     if not host or "@" in host or "?" in text or "#" in text:
         return []
     if len(schemes) == 2 and (host.endswith(":443") or not _on_own_network(host)):
-        schemes = ["https", "http"]
+        schemes = ["https"]
     path = (slash + path).rstrip("/")
     paths = [path] if path.endswith("/v1") else [path + "/v1", path]
     return [f"{scheme}://{host}{tail}" for scheme in schemes for tail in paths]
@@ -699,7 +699,8 @@ class AiServices:
                 "address" if kind == "own" else "key",
                 (
                     f"Nothing answers at {shown}. Check the address, and that the server is "
-                    "switched on, then try again."
+                    "switched on, then try again. A server on your own network that does not "
+                    "use https needs http:// in front of its address."
                     if unreachable
                     else f"Something answers at {shown}, but not the way an AI service does. "
                     "Check the address and try again."
@@ -817,6 +818,8 @@ class AiServices:
                     fails=1,
                     detail=self._without_key(connection, str(error)) if error else "",
                     key_refused=refused,
+                    outside=current.provider != "compatible"
+                    or await asyncio.to_thread(is_outside, current.base_url),
                 )
                 return {
                     "service": self.get(identity),

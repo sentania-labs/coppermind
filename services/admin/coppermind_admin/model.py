@@ -219,7 +219,7 @@ def attention(view: dict[str, Any]) -> list[Item]:
             out.append(
                 Item(
                     f'"{title}" could not be read',
-                    e(failed.get("error") or "Nothing was added from it."),
+                    "Nothing was added from it. Open it to see what to do.",
                     "What to do",
                     "calendar" if failed["kind"] == "calendar" else "incoming",
                     to=incoming_path(failed["id"]),

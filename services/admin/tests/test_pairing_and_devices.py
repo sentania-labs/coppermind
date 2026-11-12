@@ -23,6 +23,33 @@ def test_looking_at_the_pairing_page_never_starts_a_new_code(admin):
     assert fresh_requests(store) == []
 
 
+def test_a_locked_out_code_is_not_replaced_by_looking_at_the_pairing_page(admin):
+    client, _, store = admin
+    store.answers["pairing-state"] = {
+        "code": "",
+        "done": None,
+        "expires_at": "2099-01-01T00:00:00+00:00",
+    }
+    for _ in range(3):
+        page = client.get("/admin/apps/pair").text
+    assert "too many wrong codes" in page
+    assert 'action="/admin/apps/pair/code"' in page and "Make a new code" in page
+    assert store.asked("pairing-start") == []
+
+
+def test_the_first_visit_starts_a_code_when_none_was_ever_made(admin):
+    client, _, store = admin
+    store.answers["pairing-state"] = {"code": "", "done": None}
+    store.answers["pairing-start"] = {
+        "code": "654321",
+        "done": None,
+        "expires_at": "2099-01-01T00:00:00+00:00",
+    }
+    page = client.get("/admin/apps/pair").text
+    assert "654 321" in page or "654321" in page
+    assert len(store.asked("pairing-start")) == 1
+
+
 def test_a_new_code_is_asked_for_by_pressing_the_button_with_the_page_token(admin):
     client, _, store = admin
     store.answers["pairing-state"] = LIVE

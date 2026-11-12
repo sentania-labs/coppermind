@@ -26,7 +26,7 @@ from coppermind.store_protocol import StoreError
 from coppermind_admin import model, ui
 from coppermind_admin.pages.common import setup_strip
 from coppermind_admin.pages.settings import folder_dialog
-from coppermind_admin.shell import Ctx
+from coppermind_admin.shell import Ctx, not_saved
 from coppermind_admin.ui import e, segment
 
 LEDE = (
@@ -640,22 +640,23 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
             ctx.say("bad", HELPER_DOWN)
         return ctx.go("/admin/sync")
 
-    def save_device_name(ctx: Ctx, name: str) -> bool:
+    def save_device_name(ctx: Ctx, name: str) -> str:
+        """Keep the name this server shows in Obsidian; the reason it was not, or nothing."""
+        if not name:
+            return "Give this server a name."
         try:
             ctx.save_settings(lambda doc: doc.setdefault("sync", {}).update(device_name=name))
-        except (ValueError, RevisionConflict):
-            return False
-        return True
+        except (ValueError, RevisionConflict) as error:
+            return not_saved(error, "Give this server a name.")
+        return ""
 
     @routes.post("/admin/sync/connect", include_in_schema=False)
     async def connect(request: Request) -> Response:
         ctx = Ctx(request, wiring)
         form = await ctx.form()
         name = " ".join(form.get("device_name", "").split())
-        if not name or not save_device_name(ctx, name):
-            return ctx.go(
-                ui.url("/admin/sync", field="device_name", problem="Give this server a name.")
-            )
+        if problem := save_device_name(ctx, name):
+            return ctx.go(ui.url("/admin/sync", field="device_name", problem=problem))
         try:
             result = await helper("connect", {"device_name": name})
         except HelperRefused as exc:
@@ -775,8 +776,8 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
         ctx = Ctx(request, wiring)
         form = await ctx.form()
         name = " ".join(form.get("device_name", "").split())
-        if not name or not save_device_name(ctx, name):
-            ctx.say("bad", "Give this server a name. Nothing was changed.")
+        if problem := save_device_name(ctx, name):
+            ctx.say("bad", problem + " Nothing was changed.")
             return ctx.go("/admin/sync?rename=1")
         try:
             result = await helper("configure", {})
@@ -962,11 +963,13 @@ formaction="/admin/sync/what" name="csrf" value="{csrf_token.get()}" data-busy="
 
         try:
             ctx.save_settings(change)
-        except (ValueError, RevisionConflict):
+        except (ValueError, RevisionConflict) as error:
             return ctx.go(
                 ui.url(
                     "/admin/sync/what",
-                    problem="Those choices could not be saved. Check the folder names.",
+                    problem=not_saved(
+                        error, "Those choices could not be saved. Check the folder names."
+                    ),
                 )
             )
         try:

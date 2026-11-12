@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import html
 import re
 from typing import Any
 
 import pytest
 
 from coppermind.api_keys import add_key, load_keys
+from coppermind.settings import read_settings
 from coppermind.statefiles import StateStore
 from coppermind.store_protocol import StoreError, ValidationFailed
 from services.admin.tests.harness import VIEWS, follow, post, token
@@ -1032,3 +1034,174 @@ console.log(JSON.stringify({fresh:fresh.map(r=>r.checked),gone:gone.map(r=>r.che
     assert result["fresh"] == [False, True]
     assert result["gone"] == [True]
     assert result["details"] == [True, False]
+
+
+# -- a file from the drop folder that could not be taken in ----------------------------------
+
+RAW_DROP_ERROR = "OSError: [Errno 28] No space left on device: '/data/staged/x'"
+REFUSED_DROP: dict[str, str | bool] = {
+    "id": "d:" + "ab" * 32,
+    "kind": "file",
+    "title": "standup.m4a",
+    "when": "2026-11-12T17:00:00+00:00",
+    "state": "failed",
+    "error": RAW_DROP_ERROR,
+    "unsupported": False,
+}
+
+
+def refused_drop(store):
+    store.views["incoming"]["items"] = [REFUSED_DROP, *store.views["incoming"]["items"]]
+    store.views["incoming-item"] = dict(REFUSED_DROP)
+    store.views["overview"]["incoming"]["failed"] = [REFUSED_DROP]
+
+
+def test_a_refused_drop_is_a_file_with_what_to_do_and_no_try_again(admin):
+    client, _, store = admin
+    refused_drop(store)
+    listing = client.get("/admin/incoming").text
+    assert RAW_DROP_ERROR not in listing
+    assert "Could not be taken in" in listing
+    row = listing[listing.index("standup.m4a") :].split("</tr>")[0]
+    assert "What to do" in row and "/retry" not in row
+
+
+def test_a_refused_drop_opens_with_a_plain_sentence_and_remove(admin):
+    client, _, store = admin
+    refused_drop(store)
+    page = client.get("/admin/incoming/" + str(REFUSED_DROP["id"]).replace(":", "%3A"))
+    assert page.status_code == 200
+    text = page.text
+    assert "Remove" in text and "Add the new file" in text
+    main, _, support = text.partition("Details for support")
+    shown = html.escape(RAW_DROP_ERROR)
+    assert shown in support and shown not in main
+    assert (
+        client.get(
+            "/admin/incoming/" + str(REFUSED_DROP["id"]).replace(":", "%3A") + "?ask=remove"
+        ).status_code
+        == 200
+    )
+
+
+def test_home_lists_a_refused_drop_without_the_raw_error_or_try_again(admin):
+    client, _, store = admin
+    refused_drop(store)
+    home = client.get("/admin").text
+    assert "standup.m4a" in home
+    assert RAW_DROP_ERROR not in home
+
+
+def test_a_key_with_access_no_box_covers_says_so_on_its_page(admin):
+    client, wiring, store = admin
+    _, record = _command_line_key(client, wiring, store, ["notes:read", "admin:purge"])
+    page = client.get(f"/admin/apps/{record.key_id}").text
+    assert "Also allowed outside Admin" in page
+    shown = page[page.index("Also allowed outside Admin") :].split("</p>")[0]
+    assert "admin:purge" in shown and "notes:read" in shown
+
+
+def test_a_key_every_box_covers_has_no_outside_note(admin):
+    client, wiring, store = admin
+    _, record = _command_line_key(client, wiring, store, ["notes:read", "sources:read"])
+    store.views["apps"]["items"][-1]["permissions"] = ["read"]
+    page = client.get(f"/admin/apps/{record.key_id}").text
+    assert "Also allowed outside Admin" not in page
+
+
+# -- a form drawn before the thing it edits changed ------------------------------------------
+
+STALE_SENTENCE = "This changed since you opened it. Reload and try again."
+
+
+def hidden_value(page, name):
+    match = re.search(rf'name="{name}" value="([^"]*)"', page)
+    assert match is not None, f"no {name} field on the page"
+    return html.unescape(match[1])
+
+
+def bump(control, name):
+    state = control.read(name)
+    control.write(name, dict(state.body), if_revision=state.revision)
+
+
+def test_a_time_zone_saved_from_a_stale_form_is_refused_in_a_plain_sentence(admin):
+    client, wiring, _ = admin
+    control = StateStore(wiring.state_dir)
+    page = client.get("/admin/settings/timezone").text
+    bump(control, "settings")
+    sent = {
+        "zone": "America/Denver",
+        "rev": hidden_value(page, "rev"),
+        "csrf": hidden_value(page, "csrf"),
+    }
+    done = client.post("/admin/settings/timezone", data=sent, follow_redirects=False)
+    assert done.status_code == 303
+    assert STALE_SENTENCE in client.get(done.headers["location"]).text
+    assert read_settings(control).general.timezone != "America/Denver"
+
+
+def test_a_time_zone_saved_from_a_fresh_form_is_kept(admin):
+    client, wiring, _ = admin
+    control = StateStore(wiring.state_dir)
+    page = client.get("/admin/settings/timezone").text
+    sent = {
+        "zone": "America/Denver",
+        "rev": hidden_value(page, "rev"),
+        "csrf": hidden_value(page, "csrf"),
+    }
+    client.post("/admin/settings/timezone", data=sent, follow_redirects=False)
+    assert read_settings(control).general.timezone == "America/Denver"
+
+
+def test_a_property_saved_from_a_stale_form_does_not_overwrite_the_newer_change(admin):
+    client, wiring, _ = admin
+    control = StateStore(wiring.state_dir)
+    page = client.get("/admin/settings/properties/edit/new").text
+    bump(control, "schema")
+    before = control.read("schema").revision
+    sent = {
+        "name": "mood",
+        "kind": "string",
+        "why": "How it went",
+        "rev": hidden_value(page, "rev"),
+        "csrf": hidden_value(page, "csrf"),
+    }
+    done = client.post("/admin/settings/properties/edit/new", data=sent)
+    assert done.status_code == 422
+    assert STALE_SENTENCE in done.text
+    assert control.read("schema").revision == before
+
+
+def test_pressing_create_key_twice_makes_one_key(admin):
+    client, wiring, _ = admin
+    control = StateStore(wiring.state_dir)
+    page = client.get("/admin/apps/new").text
+    sent = {
+        "kind": "agent",
+        "name_agent": "Walk helper",
+        "once": hidden_value(page, "once"),
+        "csrf": hidden_value(page, "csrf"),
+    }
+    before = len(load_keys(control).keys)
+    first = client.post("/admin/apps/new", data=sent, follow_redirects=False)
+    second = client.post("/admin/apps/new", data=sent, follow_redirects=False)
+    assert first.status_code == second.status_code == 303
+    assert len(load_keys(control).keys) == before + 1
+    shown = client.get("/admin/apps/key")
+    assert shown.status_code == 200 and "Key created" in shown.text
+
+
+def test_pressing_replace_key_twice_replaces_it_once(admin):
+    client, wiring, store = admin
+    _, record = _command_line_key(client, wiring, store, ["notes:read"])
+    path = f"/admin/apps/{record.key_id}"
+    page = client.get(path + "?ask=replace").text
+    sent = {"once": hidden_value(page, "once"), "csrf": hidden_value(page, "csrf")}
+    control = StateStore(wiring.state_dir)
+    client.post(path + "/replace", data=sent, follow_redirects=False)
+    (after,) = [k for k in load_keys(control).keys if k.key_id == record.key_id]
+    hashed = after.hash
+    client.post(path + "/replace", data=sent, follow_redirects=False)
+    (again,) = [k for k in load_keys(control).keys if k.key_id == record.key_id]
+    assert again.hash == hashed

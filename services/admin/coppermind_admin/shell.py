@@ -9,6 +9,7 @@ person lands on after pressing the button.
 from __future__ import annotations
 
 import re
+import secrets
 from contextvars import ContextVar
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -33,6 +34,18 @@ UNREACHABLE = (
 )
 
 
+STALE = "This changed since you opened it. Reload and try again."
+
+
+class StaleForm(RevisionConflict):
+    """A save from a form drawn before the thing it edits last changed."""
+
+
+def not_saved(error: Exception, plain: str) -> str:
+    """Why a settings change was not kept: the stale-form sentence, else `plain`."""
+    return STALE if isinstance(error, RevisionConflict) else plain
+
+
 def explain(error: Exception, lead: str, after: str = "") -> str:
     """What to say when the store could not do something: a plain sentence, never the raw error.
 
@@ -40,6 +53,8 @@ def explain(error: Exception, lead: str, after: str = "") -> str:
     "did not finish, try again", with the raw text behind Details for support.
     """
     raw = str(error).strip()
+    if isinstance(error, RevisionConflict):
+        return " ".join(part for part in (lead, STALE, after) if part)
     if isinstance(error, ValidationFailed | ValueError) and raw:
         return " ".join(part for part in (lead, ui.e(raw), after) if part)
     said = " ".join(
@@ -54,12 +69,24 @@ def explain(error: Exception, lead: str, after: str = "") -> str:
     return said + (ui.tech(raw) if raw else "")
 
 
-def with_csrf(document: str) -> str:
-    """Give every form that changes something the token that proves it came from Admin."""
+def with_csrf(document: str, revisions: str = "") -> str:
+    """Give every form that changes something the token that proves it came from Admin, and
+    the revisions of the settings it was drawn from, so a stale form is refused when saved."""
     token = csrf_token.get()
+    seen = f'<input type="hidden" name="rev" value="{revisions}">' if revisions else ""
     return POST_FORM.sub(
-        lambda match: match[0] + f'<input type="hidden" name="csrf" value="{token}">', document
+        lambda match: match[0] + f'<input type="hidden" name="csrf" value="{token}">' + seen,
+        document,
     )
+
+
+def read_pins(text: str) -> dict[str, int]:
+    pins: dict[str, int] = {}
+    for part in text.split(";"):
+        name, _, number = part.partition("=")
+        if name in {"settings", "schema"} and number.isascii() and number.isdigit():
+            pins[name] = int(number)
+    return pins
 
 
 def store_client(request: Request, wiring: Wiring) -> HttpStoreClient:
@@ -81,6 +108,7 @@ class Ctx:
         self._view: dict[str, Any] | None = None
         self._view_failed = False
         self._form: dict[str, str] | None = None
+        self._pins: dict[str, int] = {}
 
     # -- what the page reads -------------------------------------------------------------
 
@@ -121,7 +149,44 @@ class Ctx:
             from coppermind_admin.main import submitted
 
             self._form = await submitted(self.request)
+            self._pins = read_pins(self._form.get("rev", ""))
         return self._form
+
+    def revisions(self) -> str:
+        """The revisions of the settings and the note schema a page is drawn from."""
+        seen = []
+        for name in ("settings", "schema"):
+            try:
+                seen.append(f"{name}={self.control.read(name).revision}")
+            except FileNotFoundError:
+                seen.append(f"{name}=0")
+        return ";".join(seen)
+
+    def pin(self, name: str) -> int | None:
+        """The revision of `name` the form being saved was drawn from, spent once."""
+        return self._pins.pop(name, None)
+
+    def once(self) -> str:
+        """A single-use token for a form: the first submit passes, a repeat is refused."""
+        state = self.request.app.state
+        bag: dict[str, list[str]] = getattr(state, "once", None) or {}
+        state.once = bag
+        tokens = bag.setdefault(self._session, [])
+        token = secrets.token_hex(16)
+        tokens.append(token)
+        del tokens[:-100]
+        return token
+
+    def repeated(self, form: dict[str, str]) -> bool:
+        """True when this form's single-use field was already spent by an earlier submit."""
+        token = form.get("once")
+        if token is None:
+            return False
+        tokens = getattr(self.request.app.state, "once", {}).get(self._session, [])
+        if token in tokens:
+            tokens.remove(token)
+            return False
+        return True
 
     # -- what the page says back ---------------------------------------------------------
 
@@ -165,7 +230,7 @@ class Ctx:
             dialog=dialog,
             refresh=refresh,
         )
-        return HTMLResponse(with_csrf(document), status_code=status)
+        return HTMLResponse(with_csrf(document, self.revisions()), status_code=status)
 
     async def unavailable(self, title: str, lede: str, active: str) -> HTMLResponse:
         """The page for when the store did not answer: say so, and change nothing."""
@@ -182,13 +247,17 @@ class Ctx:
     # -- settings ------------------------------------------------------------------------
 
     def save_settings(self, change: Any) -> ProductSettings:
-        """Apply `change` to the settings document and save it, retrying a lost race once."""
+        """Apply `change` to the settings document and save it. A form drawn before the
+        settings last changed is refused; a lost race is otherwise retried once."""
+        pinned = self.pin("settings")
         for attempt in (1, 2):
             try:
                 current = self.control.read("settings")
                 document, revision = dict(current.body), current.revision
             except FileNotFoundError:
                 document, revision = ProductSettings().model_dump(mode="json"), None
+            if pinned is not None and (revision or 0) != pinned:
+                raise StaleForm(revision or 0)
             change(document)
             validated = ProductSettings.model_validate(
                 {key: value for key, value in document.items() if key != "revision"}
@@ -197,6 +266,6 @@ class Ctx:
                 self.control.write("settings", document, if_revision=revision)
                 return validated
             except RevisionConflict:
-                if attempt == 2:
+                if attempt == 2 or pinned is not None:
                     raise
         raise RevisionConflict(0)

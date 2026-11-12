@@ -227,7 +227,7 @@ class Dropbox:
                         if (
                             stored.created
                             and Path(item["filename"]).suffix.lower() in RECORDING_SUFFIXES
-                            and self.context.recordings.enabled()
+                            and self.context.recordings.accepting()
                         ):
                             item["intake"] = "recording"
                         item["state"] = "succeeded"
@@ -303,9 +303,10 @@ class Dropbox:
                         "origin": "dropbox",
                     }
                 )
-                recording = status["id"]
-            except (ValueError, StoreError):
-                recording = "refused"
+                recording, why = status["id"], ""
+            except (ValueError, StoreError) as exc:
+                recording, why = "refused", str(exc)
+                log.warning("Dropbox did not queue recording %s: %s", item["id"], why)
             except OSError:
                 log.warning("Dropbox could not queue recording %s", item["id"], exc_info=True)
                 continue
@@ -315,6 +316,8 @@ class Dropbox:
                     for stored in current[group].get(item["id"], {}).get("parts", []):
                         if stored.get("artifact_id") == part["artifact_id"]:
                             stored["recording"] = recording
+                            if why:
+                                stored["why"] = why
                 self.save(current)
 
     async def _store_artifact(

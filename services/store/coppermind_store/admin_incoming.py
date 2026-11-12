@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 import sqlalchemy as sa
 
 from coppermind.db.models import Artifact
-from coppermind.store_protocol import ArtifactMissing, StoreError
+from coppermind.store_protocol import ArtifactMissing, ArtifactsFilesystemUnavailable, StoreError
 from coppermind_store.admin_features import recording_minutes, took_minutes
 from coppermind_store.ai_services import UNREACHABLE
 from coppermind_store.recordings import DELETED_RULE
@@ -31,18 +31,6 @@ RECORDING_STATES = {
     "succeeded": "done",
     "failed": "failed",
 }
-AUDIO_SUFFIXES = {".m4a", ".mp3", ".wav", ".ogg", ".opus", ".flac", ".aac", ".webm", ".mp4"}
-CALENDAR_SUFFIXES = {".ics", ".zip"}
-
-
-def kind_of(filename: str) -> str:
-    """What a file is, from its name: a recording, a calendar file or a document."""
-    suffix = Path(filename).suffix.lower()
-    if suffix in CALENDAR_SUFFIXES:
-        return "calendar"
-    if suffix in AUDIO_SUFFIXES - {".mp4", ".webm"}:
-        return "recording"
-    return "document"
 
 
 def _recent(stamp: str | datetime) -> bool:
@@ -176,7 +164,7 @@ class AdminIncoming:
             out.append(
                 {
                     "id": "d:" + item["id"],
-                    "kind": kind_of(item["filename"]),
+                    "kind": "file",
                     "title": item["filename"],
                     "when": item.get("received_at", ""),
                     "state": "failed",
@@ -229,12 +217,19 @@ class AdminIncoming:
             job = self.context.recordings.load(key)
         from coppermind_store import artifacts
 
-        if not job.audio_removed and not await self.context.recordings.shared_audio(job):
+        gone = job.audio_removed
+        if not gone and not await self.context.recordings.shared_audio(job):
             with contextlib.suppress(ArtifactMissing):
-                await artifacts.remove_artifact(self.store, job.artifact_id)
+                try:
+                    await artifacts.remove_recording_audio(
+                        self.store, job.artifact_id, job.artifact_revision
+                    )
+                except ArtifactsFilesystemUnavailable:
+                    await artifacts.remove_artifact(self.store, job.artifact_id)
+            gone = True
         async with self.context.lock:
             job = self.context.recordings.load(key)
-            job.audio_removed = True
+            job.audio_removed = job.audio_removed or gone
             job.dismissed = True
             if job.state != "succeeded":
                 job.state = "failed"

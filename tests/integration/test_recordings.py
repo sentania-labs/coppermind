@@ -2004,3 +2004,78 @@ async def test_a_service_answering_again_does_not_requeue_what_is_running_or_don
         assert (await context.services.resume(connection))["recordings"] == 0
     after = context.recordings.load(accepted["id"])
     assert (after.state, after.attempts) == ("running", 1)
+
+
+async def test_deleting_a_recording_removes_its_audio_for_good_and_it_cannot_come_back(store):
+    from coppermind_store import artifacts
+    from coppermind_store.recordings import DELETED_RULE
+
+    async with Service(status=404, reply={"error": "nope"}) as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    assert archive.exists()
+    await store.admin.act("recording-delete", {"id": "r:" + accepted["id"]})
+    assert not archive.exists()
+    assert context.recordings.load(accepted["id"]).error_rule == DELETED_RULE
+    with pytest.raises(Exception, match=audio):
+        await artifacts.restore_artifact(store, audio)
+
+
+async def test_deleting_one_of_two_recordings_of_the_same_audio_leaves_it_for_the_other(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        first = await context.accept_recording(request(audio, title="First"))
+        second = await context.accept_recording(
+            request(audio, title="Second", external_source_id="plaud/rec-2")
+        )
+        archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+        await store.admin.act("recording-delete", {"id": "r:" + first["id"]})
+        assert archive.exists()
+        assert not context.recordings.load(first["id"]).audio_removed
+        while await context.recordings.tick():
+            pass
+    done = await context.recording_status({"id": second["id"]})
+    assert done["state"] == "succeeded"
+    assert archive.exists()
+    await approve(store, done["note_id"])
+    while await context.recordings.tick():
+        pass
+    assert not archive.exists()
+    assert context.recordings.load(second["id"]).audio_removed
+
+
+async def test_a_drop_is_only_marked_for_intake_when_transcription_can_really_take_it(store):
+    context = store.context
+    config = context.config()
+    config.assignments["transcription"] = FeatureAssignment(enabled=True)
+    context.save_config(config)
+    item = await drop(context)
+    assert item["state"] == "succeeded" and "intake" not in item
+
+
+async def test_a_recording_turned_away_at_the_door_says_why_and_is_never_queued_later(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        item = await drop(context)
+        assert item["intake"] == "recording"
+        config = context.config()
+        config.assignments["transcription"] = config.assignments["transcription"].model_copy(
+            update={"enabled": False}
+        )
+        context.save_config(config)
+        await context.dropbox.queue_recordings()
+        (part,) = context.dropbox.records()["items"][item["id"]]["parts"]
+        assert part["recording"] == "refused"
+        assert "Transcription is off" in part["why"]
+        config = context.config()
+        config.assignments["transcription"] = config.assignments["transcription"].model_copy(
+            update={"enabled": True}
+        )
+        context.save_config(config)
+        await context.dropbox.queue_recordings()
+        await context.recordings.tick()
+        assert context.recordings.jobs() == []

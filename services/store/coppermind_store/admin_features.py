@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
+from coppermind import meeting_summary as shared_summary
 from coppermind.context_config import (
     SUMMARY_DIRECTIONS_MAX,
     EmbeddingAssignment,
@@ -314,7 +315,7 @@ class Features:
             config.assignments["enrichment"] = FeatureAssignment.model_validate(
                 assignment.model_dump()
             )
-            if not (self.context.root / "automatic_baseline.json").exists():
+            if not old.enabled or not (self.context.root / "automatic_baseline.json").exists():
                 # Notes that were already waiting are not sent anywhere by turning this on.
                 self.context.write(
                     "automatic_baseline",
@@ -360,7 +361,7 @@ class Features:
                     "default": section.default,
                     "custom": sent[section.key] != section.default,
                 }
-                for section in meeting_summary.SECTIONS
+                for section in shared_summary.SECTIONS
             ],
             "locked": list(meeting_summary.LOCKED_WORDS),
             "max": SUMMARY_DIRECTIONS_MAX,
@@ -377,7 +378,7 @@ class Features:
             raise ValueError("The directions were not understood. Nothing was changed.")
         kept: dict[str, str] = {}
         emptied: list[str] = []
-        for section in meeting_summary.SECTIONS:
+        for section in shared_summary.SECTIONS:
             if section.key not in given:
                 # A section the page did not send keeps what it had.
                 current = self.context.config().assignments["enrichment"].summary_directions

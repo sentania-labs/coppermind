@@ -162,9 +162,12 @@ def test_choosing_the_other_files_version_replaces_the_stored_one_and_settles_th
 ):
     archive = CalendarArchive(tmp_path)
     first = archive.process(archive.submit("work", "a.ics", ics(event("a"))).id)
-    second = archive.process(archive.submit("work", "b.ics", ics(event("a", title="Changed"))).id)
+    changed = event("a", title="Changed") + (
+        "\r\nATTENDEE;CN=Bob;PARTSTAT=ACCEPTED:mailto:bob@example.com"
+    )
+    second = archive.process(archive.submit("work", "b.ics", ics(changed)).id)
     (problem,) = second.conflicts
-    (incoming,) = parse_export(CALENDAR_ID, "b.ics", ics(event("a", title="Changed")))
+    (incoming,) = parse_export(CALENDAR_ID, "b.ics", ics(changed))
     incoming.provenance = [
         EventProvenance(
             source_id=second.id,
@@ -182,6 +185,10 @@ def test_choosing_the_other_files_version_replaces_the_stored_one_and_settles_th
     assert chosen.title == "Changed"
     assert {p.source_id for p in chosen.provenance} == {first.id, second.id}
     assert catalog.conflicts == []
+    bob = next(
+        c for c in catalog.contacts() if any("bob@example.com" in e.address for e in c.evidence)
+    )
+    assert [e.event_id for e in bob.evidence] == [problem.event_id]
     with archive.engine.connect() as connection:
         (settled,) = mirror.get_conflicts(connection)
     assert settled.acknowledged is True

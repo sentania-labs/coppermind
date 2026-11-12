@@ -562,6 +562,22 @@ class AdminService:
                     "Pick a different folder.",
                 )
             seen[value.casefold()] = key
+        folded = {key: value.casefold().strip("/") for key, value in wanted.items()}
+        for key, value in folded.items():
+            inside = next(
+                (
+                    other
+                    for other, there in folded.items()
+                    if other != key and value.startswith(there + "/")
+                ),
+                None,
+            )
+            if inside:
+                raise Refused(
+                    key,
+                    f'"{wanted[key]}" sits inside "{wanted[inside]}", which is used for something '
+                    "else on this page. Pick a folder that is not inside another one.",
+                )
         changed = {key: value for key, value in wanted.items() if value != current[key]}
         dated = payload.get("dated")
         state = self.store.control.store.read("settings")
@@ -575,7 +591,11 @@ class AdminService:
         try:
             ProductSettings.model_validate({k: v for k, v in body.items() if k != "revision"})
         except ValueError as exc:
-            raise Refused("review", "Those folders cannot be used together: " + str(exc)) from exc
+            raise Refused(
+                "review",
+                "Those folders cannot be used together. Keep each one apart from the others "
+                "and try again.",
+            ) from exc
         self.store.control.store.write("settings", body, if_revision=state.revision)
         if "drop" in changed:
             async with self.context.lock:
@@ -587,6 +607,8 @@ class AdminService:
             old = current["review"]
             for note in await self.notes.waiting():
                 if not note["path"].startswith(old + "/"):
+                    continue
+                if note["path"].startswith(wanted["review"] + "/"):
                     continue
                 inner = str(Path(note["path"]).parent)[len(old) :].strip("/")
                 target = wanted["review"] + ("/" + inner if inner else "")

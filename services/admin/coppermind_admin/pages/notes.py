@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
+from coppermind.meeting_summary import SECTIONS
 from coppermind.schema import normalize_note_time, note_date, note_start_time
 from coppermind.settings import Wiring
 from coppermind.statefiles import RevisionConflict
@@ -20,7 +21,7 @@ from coppermind.store_protocol import PatchFrontmatter, StoreError
 from coppermind_admin import model, ui
 from coppermind_admin.pages.common import folder_words, obsidian
 from coppermind_admin.pages.settings import duration, folder_dialog, read_schema
-from coppermind_admin.shell import Ctx, explain
+from coppermind_admin.shell import Ctx, explain, not_saved
 from coppermind_admin.ui import e, plural
 
 LEDE = (
@@ -113,18 +114,11 @@ def gone_dialog(notes: list[dict[str, Any]], asked: str, back: str) -> str:
     )
 
 
-SUMMARY_PARTS = (
-    ("summary", "Summary"),
-    ("decisions", "Decisions"),
-    ("action_items", "Action items"),
-)
-
-
 def summary_text(summary: dict[str, Any]) -> str:
     """A proposed meeting summary, shown the way it will read in the note."""
     return "".join(
         f'<div class="row-l">{title}</div><div class="summary">{e(summary[key].strip())}</div>'
-        for key, title in SUMMARY_PARTS
+        for key, title in ((part.key, part.name) for part in SECTIONS)
         if str(summary.get(key) or "").strip()
     )
 
@@ -664,8 +658,11 @@ name="csrf" value="{{csrf}}">Save</button>
 
         try:
             ctx.save_settings(change)
-        except (ValueError, RevisionConflict):
-            ctx.say("bad", "That could not be saved. Check the folder names and try again.")
+        except (ValueError, RevisionConflict) as error:
+            ctx.say(
+                "bad",
+                not_saved(error, "That could not be saved. Check the folder names and try again."),
+            )
             return ctx.go("/admin/notes/leave-alone")
         every = duration(ctx.settings().reconcile.scan_interval_s)
         ctx.say(

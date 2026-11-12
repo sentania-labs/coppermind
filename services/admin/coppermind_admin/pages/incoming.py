@@ -25,7 +25,7 @@ from coppermind_admin.pages.common import (
 )
 from coppermind_admin.pages.notes import keep_words
 from coppermind_admin.pages.settings import folder_dialog
-from coppermind_admin.shell import Ctx, explain
+from coppermind_admin.shell import Ctx, explain, not_saved
 from coppermind_admin.ui import e, plural, segment
 from coppermind_admin.uploads import Upload, UploadRefused, receive
 
@@ -39,7 +39,12 @@ STATES = {
     "working": ("accent", "Working"),
     "done": ("ok", "Done"),
 }
-KIND_WORDS = {"recording": "Recording", "calendar": "Calendar file", "document": "Document"}
+KIND_WORDS = {
+    "recording": "Recording",
+    "calendar": "Calendar file",
+    "document": "Document",
+    "file": "File",
+}
 CALENDAR_SUFFIXES = {".ics", ".zip"}
 CALENDAR_LIMIT = 200_000_000
 RECORDING_SUFFIXES = {".m4a", ".mp3", ".wav", ".ogg", ".opus", ".flac", ".aac"}
@@ -122,7 +127,9 @@ def why(item: dict[str, Any], ctx: Ctx, transcription: str) -> str:
         # The raw reason is on the file's own page, behind Details for support.
         return "Could not be read, so nothing was added from it."
     if item["state"] == "failed":
-        return e(item.get("error") or "It could not be taken in.")
+        if item.get("unsupported"):
+            return "Coppermind does not accept this kind of file, so nothing was stored from it."
+        return "Could not be taken in, so nothing was stored from it."
     return (
         "Stored. Its text can be searched."
         if item.get("searchable")
@@ -571,8 +578,10 @@ def router(wiring: Wiring) -> APIRouter:
 
         try:
             ctx.save_settings(change)
-        except (ValueError, RevisionConflict):
-            ctx.say("bad", "That limit could not be saved. Pick one from the list.")
+        except (ValueError, RevisionConflict) as error:
+            ctx.say(
+                "bad", not_saved(error, "That limit could not be saved. Pick one from the list.")
+            )
             return ctx.go("/admin/incoming")
         if "recording" in form:
             ctx.say(

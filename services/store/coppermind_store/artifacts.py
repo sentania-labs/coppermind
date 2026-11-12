@@ -1336,7 +1336,7 @@ async def remove_artifact(
     browsable copy a device changed is left where it is, because it is no
     longer the bytes this store put there.
     """
-    async with store._artifact_lock:
+    async with store.maintenance.shared(), store._artifact_lock:
         manifest = await asyncio.to_thread(read_manifest, store, artifact_id)
         if manifest.get("removed_at"):
             raise ArtifactMissing(artifact_id)
@@ -1350,7 +1350,7 @@ async def restore_artifact(store: LocalStore, artifact_id: str) -> str:
     had (or to a free name beside whatever took it), and the record, row and search
     entry are rebuilt from the archived bytes. Returns the artifact's title.
     """
-    async with store._artifact_lock:
+    async with store.maintenance.shared(), store._artifact_lock:
         manifest = await asyncio.to_thread(read_manifest, store, artifact_id)
         if not manifest.get("removed_at"):
             return str(manifest.get("title") or "")
