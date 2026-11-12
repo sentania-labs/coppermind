@@ -10,9 +10,9 @@ from fastapi.responses import Response
 from coppermind.settings import Wiring
 from coppermind.store_protocol import StoreError
 from coppermind_admin import ui
-from coppermind_admin.pages.incoming import file_dialog, take_in
+from coppermind_admin.pages.incoming import file_dialog, take_in, too_large, upload_limit
 from coppermind_admin.pages.notes import deleted_row, gone_dialog, keep_words
-from coppermind_admin.shell import Ctx
+from coppermind_admin.shell import Ctx, explain
 from coppermind_admin.ui import e, plural, segment
 from coppermind_admin.uploads import UploadRefused, receive
 
@@ -173,7 +173,7 @@ def router(wiring: Wiring) -> APIRouter:
         try:
             data = await ctx.act("cleanup", {})
         except StoreError as exc:
-            ctx.say("bad", "The clean-up list could not be made just now. " + e(str(exc)))
+            ctx.say("bad", explain(exc, "The clean-up list could not be made just now."))
             return ctx.go("/admin/storage")
         items, interrupted = data["items"], data["interrupted"]
         count = len(items)
@@ -297,8 +297,11 @@ def router(wiring: Wiring) -> APIRouter:
         except StoreError as exc:
             ctx.say(
                 "bad",
-                "The clean-up did not finish. " + e(str(exc)) + " What was not deleted is "
-                "still listed below.",
+                explain(
+                    exc,
+                    "The clean-up did not finish.",
+                    "What was not deleted is still listed below.",
+                ),
             )
             return ctx.go(here)
         if result["changed"]:
@@ -345,7 +348,7 @@ def router(wiring: Wiring) -> APIRouter:
                 "cleanup-bring-back", {"kind": form.get("kind", ""), "id": form.get("id", "")}
             )
         except StoreError as exc:
-            ctx.say("bad", "That could not be brought back. " + e(str(exc)))
+            ctx.say("bad", explain(exc, "That could not be brought back."))
             return ctx.go("/admin/storage/cleanup")
         where = {
             "note": "It is back in Obsidian and is off this list.",
@@ -450,22 +453,15 @@ def router(wiring: Wiring) -> APIRouter:
     @routes.post("/admin/storage/files/add", include_in_schema=False)
     async def file_add(request: Request) -> Response:
         ctx = Ctx(request, wiring)
-        limit = ctx.settings().limits.staged_max_bytes
         try:
-            upload = await receive(request, limit)
+            upload = await receive(request, lambda filename: upload_limit(ctx, filename))
         except UploadRefused as exc:
-            ctx.say(
-                "bad",
-                f"That file is larger than {ui.size(limit)}, the largest accepted. Nothing "
-                "was added."
-                if str(exc) == "too large"
-                else e(str(exc)),
-            )
+            ctx.say("bad", too_large(exc))
             return ctx.go("/admin/storage/files")
         try:
             ctx.say(*await take_in(ctx, upload))
         except StoreError as exc:
-            ctx.say("bad", f'"{e(upload.filename)}" could not be added. {e(str(exc))}')
+            ctx.say("bad", explain(exc, f'"{e(upload.filename)}" could not be added.'))
         finally:
             upload.discard()
         return ctx.go("/admin/storage/files")

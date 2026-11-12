@@ -45,7 +45,7 @@ def predicate_of(label: str) -> str:
     for predicate, name in PREDICATES.items():
         if name.casefold() == wanted.casefold():
             return predicate
-    return wanted
+    return "_".join(wanted.casefold().split())
 
 
 class AdminPeople:
@@ -189,6 +189,7 @@ class AdminPeople:
             facts.append(
                 {
                     "id": fact.id,
+                    "predicate": fact.predicate,
                     "label": label_of(fact.predicate),
                     "value": target.name if target else fact.value,
                     "by_you": fact.origin == "correction",
@@ -263,7 +264,7 @@ class AdminPeople:
             str(payload["id"]),
             action="correct",
             fact_id=fact["id"],
-            predicate=predicate_of(fact["label"]),
+            predicate=fact["predicate"],
             value=value,
         )
         return {"label": fact["label"], "value": value, "was": fact["value"]}

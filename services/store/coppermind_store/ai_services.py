@@ -101,6 +101,16 @@ def address_key(base_url: str) -> str:
     return (parts.netloc + path).casefold()
 
 
+def _on_own_network(host: str) -> bool:
+    """True for an address that is plainly a machine on the owner's own network."""
+    name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host.strip("[]")
+    try:
+        found = ipaddress.ip_address(name)
+    except ValueError:
+        return "." not in name or name.endswith((".local", ".lan", ".home.arpa", ".internal"))
+    return found.is_private or found.is_loopback or found.is_link_local
+
+
 def candidates(address: str) -> list[str]:
     """Every base address worth trying for what the owner typed, most likely first."""
     text = address.strip().rstrip("/")
@@ -112,11 +122,11 @@ def candidates(address: str) -> list[str]:
         if scheme.lower() not in {"http", "https"}:
             return []
         schemes = [scheme.lower()]
-    elif text.endswith(":443"):
-        schemes = ["https", "http"]
     host, slash, path = text.partition("/")
     if not host or "@" in host or "?" in text or "#" in text:
         return []
+    if len(schemes) == 2 and (host.endswith(":443") or not _on_own_network(host)):
+        schemes = ["https", "http"]
     path = (slash + path).rstrip("/")
     paths = [path] if path.endswith("/v1") else [path + "/v1", path]
     return [f"{scheme}://{host}{tail}" for scheme in schemes for tail in paths]

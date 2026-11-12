@@ -101,7 +101,6 @@ SLOW_ADMIN_ACTIONS = frozenset(
         "service-save",
         "service-remove",
         "search-on",
-        "calendar-add",
         "cleanup",
         "cleanup-confirm",
         "note-restore",
@@ -164,6 +163,17 @@ class HttpStoreClient:
             timeout=(
                 SERVICE_TEST_TIMEOUT_S if action in SLOW_ADMIN_ACTIONS else httpx.USE_CLIENT_DEFAULT
             ),
+        )
+        return response.json()
+
+    async def add_calendar_file(self, filename: str, data: AsyncIterator[bytes]) -> dict[str, Any]:
+        """Hand a calendar file to the store as the raw request body, streamed as it is read."""
+        response = await self._send(
+            "POST",
+            f"{INTERNAL_PREFIX}/admin/calendar-file",
+            params={"filename": filename},
+            content=data,
+            timeout=SERVICE_TEST_TIMEOUT_S,
         )
         return response.json()
 

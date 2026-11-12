@@ -22,6 +22,7 @@ import sqlalchemy as sa
 from coppermind import frontmatter as fm
 from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes, sync_directory
 from coppermind.db.models import Note
+from coppermind.ids import is_valid_id
 from coppermind.naming import sanitize_folder, unique_stem
 from coppermind.store_protocol import (
     NotFound,
@@ -408,7 +409,7 @@ class AdminNotes:
         }
 
     async def detail(self, payload: dict[str, Any]) -> dict[str, Any]:
-        note_id = str(payload["id"])
+        note_id = _note_id(payload)
         async with self.store.session_factory() as session:
             row = await session.get(Note, note_id)
         if row is None:
@@ -533,7 +534,7 @@ class AdminNotes:
         journal = self.store.control.store.state_dir / "filing" / f"{note_id}.json"
         try:
             async with self.store._filing_lock:
-                await file_note(self.store, note_id)
+                done = await file_note(self.store, note_id)
         except Exception as exc:  # noqa: BLE001 - the reason is recorded exactly as filing does
             state: dict[str, Any] = (
                 json.loads(journal.read_bytes()) if journal.exists() else {"note_id": note_id}
@@ -546,12 +547,18 @@ class AdminNotes:
             )
             atomic_write_bytes(journal, json.dumps(state).encode(), mode=0o600)
             return {"filed": False, "error": state["error"], "settling": SETTLING in state["error"]}
+        if not done:
+            return {
+                "filed": False,
+                "error": "The note is not marked reviewed yet, so it is not filed.",
+                "settling": False,
+            }
         note = await self.store.get_note(note_id)
         return {"filed": True, "path": note.path, "name": Path(note.path).stem}
 
     async def no_set_time(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Say a work note had no set time, which is what was keeping it from being filed."""
-        note_id = str(payload["id"])
+        note_id = _note_id(payload)
         note = await self.store.get_note(note_id)
         await self.store.patch_frontmatter(
             note_id, PatchFrontmatter(set={"time_unknown": True}), if_match=note.content_hash
@@ -559,16 +566,17 @@ class AdminNotes:
         return await self._file_now(note_id)
 
     async def check_again(self, payload: dict[str, Any]) -> dict[str, Any]:
-        result = await self._file_now(str(payload["id"]))
+        note_id = _note_id(payload)
+        result = await self._file_now(note_id)
         if payload.get("reviewed"):
-            self.forget_earlier_summary(str(payload["id"]))
+            self.forget_earlier_summary(note_id)
             # Said by the review page, so Home can recall the review and not only the filing.
             result["reviewed"] = True
         return result
 
     async def keep_both(self, payload: dict[str, Any]) -> dict[str, Any]:
         """File the note beside the file that has its name, under the next free name."""
-        note_id = str(payload["id"])
+        note_id = _note_id(payload)
         detail = await self.detail({"id": note_id})
         if not detail.get("name_taken"):
             return await self._file_now(note_id)
@@ -590,7 +598,7 @@ class AdminNotes:
 
     async def replace(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Move the file that has the name to Deleted, then file this note in its place."""
-        note_id = str(payload["id"])
+        note_id = _note_id(payload)
         detail = await self.detail({"id": note_id})
         if not detail.get("name_taken"):
             return await self._file_now(note_id)
@@ -630,7 +638,7 @@ class AdminNotes:
 
     async def resolve_copy(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Settle a note that has a copy: keep both, keep the original, or keep the copy."""
-        note_id, choice = str(payload["id"]), str(payload["choice"])
+        note_id, choice = _note_id(payload), str(payload["choice"])
         detail = await self.detail({"id": note_id})
         if detail.get("stuck") != "copy":
             raise ValidationFailed(["This note no longer has a copy."])
@@ -694,7 +702,7 @@ class AdminNotes:
             self._drop_removed(key)
             await self._rescan()
             return {"title": item["title"], "path": item["path"]}
-        note_id = str(payload["id"])
+        note_id = _note_id(payload)
         preview = await self.store.preview_note_restore(note_id)
         result = await self.store.restore_note(
             note_id, RestoreNote(token=preview.token, confirmation=f"Restore {note_id}")
@@ -713,7 +721,7 @@ class AdminNotes:
         from coppermind.purge import ConfirmPurge
         from coppermind_store import purge
 
-        note_id = str(payload["id"])
+        note_id = _note_id(payload)
         async with self.store.session_factory() as session:
             row = await session.get(Note, note_id)
         if row is None or row.state != "deleted":
@@ -751,7 +759,7 @@ class AdminNotes:
 
     async def summary(self, payload: dict[str, Any]) -> dict[str, Any]:
         """The summary proposed for a note written from a recording, and the one before it."""
-        note_id = str(payload["id"])
+        note_id = _note_id(payload)
         context = self.store.context
         if self._recording_of(note_id) is None:
             return {"recording": False}
@@ -800,7 +808,7 @@ class AdminNotes:
         what gets summarized. The summary proposed until now is kept so its owner can still
         choose it, and nothing reaches the note until they mark it reviewed.
         """
-        note_id = str(payload["id"])
+        note_id = _note_id(payload)
         context = self.store.context
         async with self.store.session_factory() as session:
             row = await session.get(Note, note_id)
@@ -857,7 +865,7 @@ class AdminNotes:
 
         Nothing is deleted. If the file ever returns the note is an ordinary note again.
         """
-        note_id = str(payload["id"])
+        note_id = _note_id(payload)
         async with self.store.session_factory() as session:
             row = await session.get(Note, note_id)
         if row is None or row.state != "missing":
@@ -873,7 +881,7 @@ class AdminNotes:
 
     async def remove_file(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Delete a note: its file leaves the notes filesystem and waits under Deleted."""
-        note_id = str(payload["id"])
+        note_id = _note_id(payload)
         async with self.store.session_factory() as session:
             row = await session.get(Note, note_id)
         if row is None or row.state != "ok":
@@ -882,6 +890,13 @@ class AdminNotes:
         await self._take_away(row.path, note_id=note_id, title=title, kind="note")
         await self._mark_missing(note_id)
         return {"title": title}
+
+
+def _note_id(payload: dict[str, Any]) -> str:
+    note_id = str(payload.get("id", ""))
+    if not is_valid_id(note_id):
+        raise ValidationFailed(["That note is no longer listed."])
+    return note_id
 
 
 def create_or_replace(source: Path, target: Path, data: bytes) -> None:

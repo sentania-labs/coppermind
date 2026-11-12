@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import base64
+import re
 from typing import Any
 
-from coppermind.api_keys import load_keys
+from coppermind.api_keys import add_key, load_keys
 from coppermind.statefiles import StateStore
+from coppermind.store_protocol import StoreError, ValidationFailed
 from services.admin.tests.harness import VIEWS, follow, post, token
 from services.admin.tests.harness import admin as admin
 
@@ -373,6 +374,47 @@ def test_a_note_gone_on_purpose_can_be_said_to_be(admin):
     assert "No longer in your vault" in client.get(f"/admin/notes/{NOTE}").text
 
 
+# -- a feature whose AI service is gone -------------------------------------------------------
+
+
+def test_a_feature_whose_service_was_removed_outside_admin_says_so_on_its_page_and_on_home(admin):
+    client, _, store = admin
+    for name, view in (("sugg", "suggestions"), ("trans", "transcription")):
+        store.views[view].update(service=None, state="failing")
+        store.views["overview"][name].update(service=None, state="failing")
+    for path, words in (
+        ("/admin/suggestions", "Suggestions have stopped"),
+        ("/admin/transcription", "Transcription has stopped"),
+    ):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert words in response.text
+        assert "no longer in your list" in response.text
+        assert "Use a different service" in response.text
+    home = client.get("/admin")
+    assert home.status_code == 200
+    assert "Suggestions have stopped" in home.text
+    assert "Transcription has stopped" in home.text
+    assert "/admin/suggestions?change=service" in home.text
+
+
+# -- files Coppermind leaves alone ------------------------------------------------------------
+
+
+def test_choosing_a_folder_to_leave_alone_keeps_the_ones_already_chosen(admin):
+    client, _, store = admin
+    store.views["folders"] = {"folders": ["Archive", "Projects"]}
+    opened = client.get("/admin/notes/leave-alone?d=1&folder=Archive&pick=1").text
+    dialog = opened.split('class="dialog"')[1]
+    inputs = re.findall(r"<input[^>]*>", dialog)
+    assert any('name="folder"' in tag and 'value="Archive"' in tag for tag in inputs)
+    assert any('name="picked"' in tag and 'value="Projects"' in tag for tag in inputs)
+    assert not any('name="folder"' in tag and 'type="radio"' in tag for tag in inputs)
+    chosen = client.get("/admin/notes/leave-alone?d=1&folder=Archive&set=add&picked=Projects").text
+    assert 'name="folder" value="Archive"' in chosen
+    assert 'name="folder" value="Projects"' in chosen
+
+
 # -- connected apps ---------------------------------------------------------------------------
 
 
@@ -405,10 +447,78 @@ def test_a_key_needs_a_name_and_something_it_may_do(admin):
     assert len(load_keys(StateStore(wiring.state_dir)).keys) == before
 
 
+def _command_line_key(client, wiring, store, scopes):
+    control = StateStore(wiring.state_dir)
+    add_key(control, "Made on the command line", scopes, if_revision=load_keys(control).revision)
+    (record,) = [k for k in load_keys(control).keys if k.name == "Made on the command line"]
+    store.views["apps"]["items"].append(
+        {
+            "can": "Limited",
+            "companion": False,
+            "created": "2026-11-12T16:38:33+00:00",
+            "device": "",
+            "id": record.key_id,
+            "name": record.name,
+            "permissions": [],
+            "starter": False,
+            "used": "",
+        }
+    )
+    return control, record
+
+
+def test_renaming_a_key_keeps_scopes_the_ticks_do_not_cover(admin):
+    client, wiring, store = admin
+    control, record = _command_line_key(client, wiring, store, ["notes:read", "admin:purge"])
+    page = f"/admin/apps/{record.key_id}"
+    done = post(client, page + "/save", {"name": "Renamed"}, page=page)
+    assert done.status_code == 303
+    (after,) = [k for k in load_keys(control).keys if k.key_id == record.key_id]
+    assert after.name == "Renamed"
+    assert after.scopes == ["notes:read", "admin:purge"]
+
+
+def test_ticking_a_permission_adds_its_scopes_and_unticking_removes_only_that_one(admin):
+    client, wiring, store = admin
+    control, record = _command_line_key(client, wiring, store, ["notes:read", "admin:purge"])
+    page = f"/admin/apps/{record.key_id}"
+    post(client, page + "/save", {"name": "Reader", "can_search": "on"}, page=page)
+    (after,) = [k for k in load_keys(control).keys if k.key_id == record.key_id]
+    assert after.scopes == ["notes:read", "search:read", "admin:purge"]
+    store.views["apps"]["items"][-1]["permissions"] = ["search"]
+    post(client, page + "/save", {"name": "Reader"}, page=page)
+    (after,) = [k for k in load_keys(control).keys if k.key_id == record.key_id]
+    assert after.scopes == ["notes:read", "admin:purge"]
+
+
+# -- adding an AI service that is already there ----------------------------------------------
+
+
+def test_a_service_already_in_the_list_is_linked_not_shown_as_markup(admin):
+    client, _, store = admin
+    store.answers["service-add"] = {
+        "refused": {
+            "field": "address",
+            "message": 'That server is already in the list as "Home". A service is entered once.',
+            "id": "conn_home",
+        }
+    }
+    refused = post(
+        client,
+        "/admin/services/new",
+        {"kind": "own", "address": "home:8000"},
+        "/admin/services/new",
+    )
+    assert refused.status_code == 422
+    assert 'href="/admin/services/conn_home"' in refused.text
+    assert "&lt;a" not in refused.text
+    assert "A service is entered once." in refused.text
+
+
 # -- files handed in from this computer -------------------------------------------------------
 
 
-def test_a_calendar_file_is_handed_to_the_store_whole(admin):
+def test_a_calendar_file_is_streamed_to_the_store_as_it_is(admin):
     client, _, store = admin
     store.answers["calendar-add"] = {
         "state": "added",
@@ -425,11 +535,58 @@ def test_a_calendar_file_is_handed_to_the_store_whole(admin):
         files={"file": ("team.ics", b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", "text/calendar")},
         follow_redirects=False,
     )
-    (asked,) = store.asked("calendar-add")
-    assert asked["filename"] == "team.ics"
-    assert base64.b64decode(asked["content_base64"]).startswith(b"BEGIN:VCALENDAR")
+    assert store.calendar_files == [("team.ics", b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")]
     page = follow(client, sent)
     assert "It holds 3 meetings, all in Nov 2026." in page
+
+
+def _limit(wiring, **limits):
+    control = StateStore(wiring.state_dir)
+    state = control.read("settings")
+    body = dict(state.body)
+    body.setdefault("limits", {}).update(limits)
+    control.write("settings", body, if_revision=state.revision)
+
+
+def _add_file(client, path, name, size, kind="application/octet-stream"):
+    return client.post(
+        path,
+        data={"csrf": token(client, "/admin/incoming")},
+        files={"file": (name, b"x" * size, kind)},
+        follow_redirects=False,
+    )
+
+
+def test_a_document_over_the_other_files_limit_is_refused_whatever_page_it_came_from(admin):
+    client, wiring, store = admin
+    _limit(wiring, artifact_max_bytes=10_000)
+    for path, back in (
+        ("/admin/incoming/add", "/admin/incoming"),
+        ("/admin/storage/files/add", "/admin/storage/files"),
+    ):
+        refused = _add_file(client, path, "slides.pdf", 100_000, "application/pdf")
+        assert refused.headers["location"].startswith(back)
+        assert "That file is larger than 10 KB" in follow(client, refused)
+    assert store.asked("incoming-accept") == []
+
+
+def test_each_kind_of_file_is_held_to_its_own_limit(admin):
+    client, wiring, store = admin
+    store.answers["calendar-add"] = {
+        "state": "added",
+        "name": "team.ics",
+        "has": 1,
+        "new": 1,
+        "from": "2026-11-10T16:00:00+00:00",
+        "to": "2026-11-10T17:00:00+00:00",
+        "total": 1,
+    }
+    _limit(wiring, artifact_max_bytes=10_000, staged_max_bytes=50_000)
+    too_big = _add_file(client, "/admin/incoming/add", "standup.m4a", 100_000, "audio/mp4")
+    assert "That file is larger than 50 KB" in follow(client, too_big)
+    calendar = _add_file(client, "/admin/incoming/add", "team.ics", 100_000, "text/calendar")
+    assert calendar.status_code == 303
+    assert [name for name, _ in store.calendar_files] == ["team.ics"]
 
 
 def test_a_file_without_the_page_token_is_not_taken(admin):
@@ -440,7 +597,7 @@ def test_a_file_without_the_page_token_is_not_taken(admin):
         files={"file": ("team.ics", b"BEGIN:VCALENDAR\r\n", "text/calendar")},
         follow_redirects=False,
     )
-    assert store.asked("calendar-add") == []
+    assert store.calendar_files == []
     assert "Reload the page and add the file again." in follow(client, refused)
 
 
@@ -459,3 +616,35 @@ def test_signing_in_again_asks_only_for_the_password_once_the_account_is_known(a
     asked_once = client.get("/admin/sync").text
     assert 'name="email"' in asked_once
     assert "remembers it for next time" in asked_once
+
+
+# -- what a refused button says --------------------------------------------------------------
+
+
+def test_a_store_that_did_not_answer_is_said_in_plain_words_with_the_raw_error_behind_support(
+    admin,
+):
+    client, _, store = admin
+    raw = "ConnectError: All connection attempts failed (errno 111)"
+    store.answers["incoming-retry"] = StoreError(raw)
+    page = follow(
+        client,
+        post(client, "/admin/incoming/rec1/retry", {"back": "/admin/incoming"}, "/admin/incoming"),
+    )
+    shown, _, behind = page.partition("Details for support")
+    assert "That recording could not be tried again. Coppermind did not finish it." in shown
+    assert "try again" in shown
+    assert raw not in shown
+    assert raw in behind
+
+
+def test_a_refusal_the_store_worded_for_a_person_is_shown_as_it_is(admin):
+    client, _, store = admin
+    sentence = "That recording is already being written up."
+    store.answers["incoming-retry"] = ValidationFailed([sentence])
+    page = follow(
+        client,
+        post(client, "/admin/incoming/rec1/retry", {"back": "/admin/incoming"}, "/admin/incoming"),
+    )
+    assert f"That recording could not be tried again. {sentence}" in page
+    assert "Coppermind did not finish it." not in page

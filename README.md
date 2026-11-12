@@ -276,7 +276,7 @@ page changes what it may do, replaces its key or removes it. The Obsidian
 companion needs no pasted key: it pairs with a six-digit code shown in Admin
 (see `POST /v1/pair` in [the API reference](docs/api.md)). The API reads the
 key records again when they are more than two seconds old, so a removed key
-stops working at once and a new key works within about two seconds.
+stops working within about two seconds and a new key works within about two seconds.
 
 The [Settings page](http://127.0.0.1:8082/admin/settings) holds the time
 zone, password and signing in, folders, note properties, tags, search and
@@ -404,13 +404,13 @@ The tree of Markdown files is the **notes filesystem**. The word "vault"
 appears only for Obsidian's own remote vault object, which is a thing on
 Obsidian's servers, not a thing here.
 
-Anything you want processed belongs in the vault's **Dropbox** folder, routed
-by type. ICS and ZIP calendar exports merge automatically into your one calendar;
-event details show their export and file provenance. No calendar identification
+Anything you want processed belongs in the vault's drop folder (**To Coppermind** on
+a new install, **Dropbox** on an existing one), routed by type. ICS and ZIP calendar
+exports merge automatically into your one calendar; event details show their export and file provenance. No calendar identification
 is required. Supported documents, images, audio and video are stored as artifacts.
 Markdown is not an artifact: it follows the normal note workflow. Once a file is
 safely stored the folder empties itself; a file that cannot be handled moves to
-`Dropbox/Failed` with a reason sidecar, and moving it back retries it. Admin's
+`Failed` inside that folder (`Dropbox/Failed` on an older install) with a reason sidecar, and moving it back retries it. Admin's
 Recordings and imports page lists files that could not be taken in, each with
 a Remove. Calendar files that were read stay under Calendar's past imports, which is
 read-only.

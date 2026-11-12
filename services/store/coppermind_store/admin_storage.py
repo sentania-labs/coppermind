@@ -18,8 +18,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
+from sqlalchemy.exc import SQLAlchemyError
 
-from coppermind.db.models import Artifact, Note
+from coppermind.db.models import Artifact
 from coppermind.entities import EntityChange
 from coppermind.purge import AbandonPurge, ConfirmPurge
 from coppermind.store_protocol import StoreError
@@ -38,6 +39,8 @@ KINDS = {
     "copy": "Deleted file",
 }
 _USAGE: dict[str, tuple[float, int]] = {}
+_COUNT: dict[str, tuple[float, int]] = {}
+COUNT_TTL_S = 15
 
 
 def _tree_size(root: Path, *, skip_hidden: bool = False) -> int:
@@ -238,44 +241,17 @@ class AdminStorage:
         }
 
     async def cleanup_count(self) -> dict[str, int]:
-        """How many deleted things are past their keep time, without making a new list."""
-        cutoff = datetime.now(UTC) - timedelta(days=self.keep_days())
-        from coppermind_store import note_history
-
-        # A note counts from the later of when it was seen gone and when its removal was
-        # recorded, which is the same moment the clean-up list itself goes by.
-        receipts = await asyncio.to_thread(note_history.receipts, self.store)
-        async with self.store.session_factory() as session:
-            rows = (
-                await session.execute(
-                    sa.select(Note.id, Note.updated_at).where(
-                        Note.state == "deleted", Note.updated_at <= cutoff
-                    )
-                )
-            ).all()
-        notes = sum(
-            1 for row in rows if row.id not in receipts or receipts[row.id].recorded_at <= cutoff
-        )
-
-        def archives() -> int:
-            count = 0
-            for manifest_file in self.store.artifacts_root.glob("*/manifest.json"):
-                try:
-                    manifest = json.loads(manifest_file.read_bytes())
-                    removed = manifest.get("removed_at")
-                    if (
-                        removed
-                        and manifest.get("removed_reason") in artifacts.OWNER_REMOVAL_REASONS
-                        and datetime.fromisoformat(removed) <= cutoff
-                    ):
-                        count += 1
-                except (OSError, ValueError):
-                    continue
-            return count
-
-        return {
-            "count": int(notes or 0) + await asyncio.to_thread(archives) + len(self._old_removed())
-        }
+        """How many deleted things are past their keep time, counted as the list counts them."""
+        cached = _COUNT.get(str(self.store.notes_root))
+        if cached and time.monotonic() - cached[0] < COUNT_TTL_S:
+            return {"count": cached[1]}
+        try:
+            found, _ = await purge.candidates(self.store, datetime.now(UTC))
+        except (StoreError, SQLAlchemyError, OSError):
+            return {"count": cached[1] if cached else 0}
+        count = len(found) + len(self._old_removed())
+        _COUNT[str(self.store.notes_root)] = (time.monotonic(), count)
+        return {"count": count}
 
     async def cleanup_confirm(self, payload: dict[str, Any]) -> dict[str, Any]:
         before = await self.cleanup()
@@ -289,6 +265,7 @@ class AdminStorage:
             if item["kind"] == "copy":
                 self.notes._drop_removed(item["id"])
         _USAGE.clear()
+        _COUNT.clear()
         usage = await self.usage()
         return {
             "changed": False,
@@ -307,6 +284,7 @@ class AdminStorage:
 
     async def bring_back(self, payload: dict[str, Any]) -> dict[str, Any]:
         kind, identity = str(payload["kind"]), str(payload["id"])
+        _COUNT.clear()
         if kind == "note":
             result = await self.notes.restore({"id": identity})
             return {"title": result["title"], "kind": "note"}
@@ -316,6 +294,7 @@ class AdminStorage:
         if kind == "artifact":
             title = await artifacts.restore_artifact(self.store, identity)
             _USAGE.clear()
+            _COUNT.clear()
             return {"title": title, "kind": "file"}
         if kind == "entity":
             ledger = self.store.entities.load()
@@ -336,6 +315,7 @@ class AdminStorage:
         body = dict(state.body)
         body.setdefault("retention", {})["days"] = days
         self.store.control.store.write("settings", body, if_revision=state.revision)
+        _COUNT.clear()
         return {"days": days, **await self.cleanup_count()}
 
     # -- files beside notes --------------------------------------------------------------
@@ -389,4 +369,5 @@ class AdminStorage:
         except StoreError:
             raise
         _USAGE.clear()
+        _COUNT.clear()
         return {"name": record.filename or record.title}

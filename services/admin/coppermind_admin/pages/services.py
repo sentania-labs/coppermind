@@ -350,8 +350,16 @@ Nothing of yours is sent.</p>
         if "refused" in result:
             refusal = result["refused"]
             message = e(refusal["message"])
-            if refusal.get("id"):
-                message += " " + ui.a("Open it", "/admin/services/" + segment(refusal["id"]))
+            existing = (
+                '<p class="actions">'
+                + ui.go(
+                    "Open the service already in your list",
+                    "/admin/services/" + segment(refusal["id"]),
+                )
+                + "</p>"
+                if refusal.get("id")
+                else ""
+            )
             lede = (
                 "Enter it once. Coppermind connects, finds out what it can do, and then any "
                 "feature can use it."
@@ -359,7 +367,7 @@ Nothing of yours is sent.</p>
             body = f"""{ui.head("Add an AI service", lede, add_back(ctx, data["services"]))}
 <div class="stack">{
                 ui.card(add_form(ctx, form, {refusal["field"]: message}, data["suggested_name"]))
-            }</div>"""
+            }{existing}</div>"""
             return await ctx.page("Add an AI service", body, "services", status=422)
         service = result["service"]
         said = (

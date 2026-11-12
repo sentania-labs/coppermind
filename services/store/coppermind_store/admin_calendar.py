@@ -8,7 +8,6 @@ the same numbers.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -27,6 +26,8 @@ from coppermind_store.calendar_worker import parse_bounded
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
+
+CALENDAR_UPLOAD_LIMIT = 200_000_000
 
 # One summary of every meeting, kept until the catalog's signature changes.
 _CACHE: dict[str, tuple[str, dict[str, Any]]] = {}
@@ -81,6 +82,16 @@ def _summary(archive: Any) -> dict[str, Any]:
 
 def file_counts(archive: Any) -> dict[str, dict[str, int]]:
     return _summary(archive)["files"]
+
+
+def _started(start: str, now: datetime) -> bool:
+    try:
+        moment = datetime.fromisoformat(start)
+    except ValueError:
+        return False
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment <= now
 
 
 class AdminCalendar:
@@ -228,8 +239,8 @@ class AdminCalendar:
             ]
             if not query:
                 # Recent meetings: the newest that have already started, then what is next.
-                now = datetime.now(UTC).isoformat()
-                past = [event for event in events if event["start"][:19] <= now[:19]]
+                now = datetime.now(UTC)
+                past = [event for event in events if _started(event["start"], now)]
                 events = past or events
             return {
                 "files": self._files(),
@@ -283,11 +294,9 @@ class AdminCalendar:
         ]
         return result
 
-    async def add(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def add(self, filename: str, data: bytes) -> dict[str, Any]:
         """Add a calendar file and read it at once, so the page can say what it held."""
         context = self.store.context
-        data = base64.b64decode(str(payload["content_base64"]), validate=True)
-        filename = str(payload["filename"])
         before = {receipt.id for receipt in self.archive.receipts()}
         async with context.lock:
             item = await asyncio.to_thread(context.dropbox.submit, filename, data, None)
@@ -338,6 +347,8 @@ class AdminCalendar:
         """Settle a disagreement: keep the stored version, or use the other file's."""
         event_id, version = str(payload["id"]), str(payload["version"])
         pick = str(payload["pick"])
+        if pick not in {"stored", "incoming"}:
+            raise ValueError("Choose which version to use.")
 
         def apply() -> dict[str, Any]:
             conflict = next(

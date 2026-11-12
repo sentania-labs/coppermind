@@ -63,7 +63,13 @@ else if (args[0] === 'sync-status') {
   catch { console.log(JSON.stringify({vaultId:'remote-1',vaultName:'Phone notes',syncMode:'bidirectional',conflictStrategy:'merge',deviceName:'Kitchen server'})); }
 }
 else if (args[0] === 'sync-setup') console.log('{}');
-else if (args[0] === 'login') console.log(${JSON.stringify(secrets.join(' '))});
+else if (args[0] === 'login') {
+  const signedOut = ${JSON.stringify(path.join(data, 'signed-out'))};
+  if (args.includes('--password')) fs.rmSync(signedOut, { force: true });
+  else if (fs.existsSync(signedOut)) process.exit(1);
+  console.log(${JSON.stringify(secrets.join(' '))});
+}
+else if (args[0] === 'sync' && fs.existsSync(${JSON.stringify(path.join(data, 'sync-exits'))})) process.exit(1);
 else if (args[0] === 'sync') { console.log(${JSON.stringify(secrets.join(' '))}); console.error(${JSON.stringify(secrets.join(' '))}); setInterval(() => {}, 1000); }
 `, { mode: 0o755 });
   let log = "";
@@ -362,4 +368,27 @@ test("a server that connected before the account was kept is asked for it once",
   assert.equal(code, 200);
   assert.equal(body.account_known, true);
   assert.equal((await h.request("/signin", { password: "anything" }))[0], 200);
+});
+
+test("real mode: a signed-out client is left alone by resume and configure until the password is given", async (context) => {
+  const h = await harness(context, { persisted: true });
+  const syncs = async () => (await h.calls()).filter((a) => a[0] === "sync").length;
+  await waitFor(async () => (await syncs()) > 0, "boot did not sync");
+  await writeFile(path.join(h.data, "signed-out"), "");
+  await writeFile(path.join(h.data, "sync-exits"), "");
+  assert.equal((await h.request("/pause", {}))[0], 200);
+  await h.request("/resume", {});
+  const stopped = await waitFor(async () => { const s = await h.readStatus(); return s.needs_signin && s; }, "sign-out not noticed", 4000);
+  assert.equal(stopped.syncing, false);
+  const before = await syncs();
+  await h.request("/resume", {});
+  await h.request("/configure", {});
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  assert.equal(await syncs(), before, "a signed-out client was started again");
+  assert.equal((await h.readStatus()).needs_signin, true);
+  await rm(path.join(h.data, "sync-exits"));
+  const [code, body] = await h.request("/signin", { email: form.email, password: form.password });
+  assert.equal(code, 200);
+  assert.equal(body.needs_signin, false);
+  await waitFor(async () => (await syncs()) > before, "sync did not restart after signing in");
 });

@@ -2,7 +2,6 @@ import { readFile } from "node:fs/promises";
 import { parse } from "yaml";
 
 export const DEFAULT_DEVICE_NAME = "coppermind-server";
-export const COMPANION_CONFIG = "community-plugin-data";
 export const FILE_TYPES = ["image", "audio", "video", "pdf", "unsupported"];
 export const CONFIG_TYPES = ["app", "appearance", "appearance-data", "hotkey", "core-plugin",
   "core-plugin-data", "community-plugin", "community-plugin-data"];
@@ -31,9 +30,6 @@ export async function syncSettings(file) {
     throw new Error("Invalid excluded folders");
   }
   result.excluded_folders = [...new Set(result.excluded_folders)];
-  // The Coppermind companion lives with the installed community plugins, so those always
-  // travel, whatever else the owner chose to sync.
-  if (!result.sync_configs.includes(COMPANION_CONFIG)) result.sync_configs.push(COMPANION_CONFIG);
   return result;
 }
 

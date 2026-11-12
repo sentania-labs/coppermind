@@ -170,3 +170,61 @@ def test_the_new_setup_link_stops_working_after_an_hour(admin):
     client.cookies.clear()
     late = client.get("/admin/welcome?code=QRST-UVWX-YZ23", follow_redirects=False)
     assert late.headers["location"] == "/admin/signin"
+
+
+def test_the_password_is_changed_from_settings_and_the_old_one_stops_working(admin):
+    client, _, _ = admin
+    new = "a completely different phrase"
+    wrong = client.post(
+        "/admin/settings/signin",
+        data={
+            "cur": "not the password",
+            "new1": new,
+            "new2": new,
+            "csrf": token(client, "/admin/settings/signin"),
+        },
+    )
+    assert wrong.status_code == 422
+    assert "That is not the current password." in wrong.text
+    mismatch = client.post(
+        "/admin/settings/signin",
+        data={
+            "cur": PASSWORD,
+            "new1": new,
+            "new2": new + "!",
+            "csrf": token(client, "/admin/settings/signin"),
+        },
+    )
+    assert "The two new passwords are different." in mismatch.text
+    done = client.post(
+        "/admin/settings/signin",
+        data={
+            "cur": PASSWORD,
+            "new1": new,
+            "new2": new,
+            "csrf": token(client, "/admin/settings/signin"),
+        },
+        follow_redirects=False,
+    )
+    assert done.status_code == 303
+    assert client.get("/admin/storage", follow_redirects=False).status_code == 200
+    client.cookies.clear()
+    old = client.post(
+        "/admin/signin", data={"password": PASSWORD, "csrf": token(client, "/admin/signin")}
+    )
+    assert old.status_code == 401
+    fresh = client.post(
+        "/admin/signin",
+        data={"password": new, "csrf": token(client, "/admin/signin")},
+        follow_redirects=False,
+    )
+    assert fresh.headers["location"] == "/admin"
+
+
+def test_a_session_cookie_that_was_tampered_with_is_not_a_session(admin):
+    client, _, _ = admin
+    (name,) = [cookie.name for cookie in client.cookies.jar if "session" in cookie.name.lower()]
+    genuine = client.cookies[name]
+    client.cookies.set(name, genuine[:-4] + ("aaaa" if not genuine.endswith("aaaa") else "bbbb"))
+    refused = client.get("/admin/storage", follow_redirects=False)
+    assert refused.headers["location"].startswith("/admin/signin")

@@ -306,17 +306,27 @@ touched.</p>
             )
         else:
             waiting = data["waiting"]
-            assert service is not None
-            top = ui.status(
-                "bad",
-                "Suggestions have stopped",
-                f"{name} has not answered since {since(service, ctx.zone)}. "
-                f"{plural(waiting, 'note is', 'notes are')} waiting."
-                + stopped_help(service, waiting, "note"),
-                ui.btn("Test now", test_action, "primary", here, busy="Testing…")
-                + edit
-                + different,
-            )
+            if service is None:
+                top = ui.status(
+                    "bad",
+                    "Suggestions have stopped",
+                    "The AI service they used is no longer in your list. "
+                    f"{plural(waiting, 'note is', 'notes are')} waiting. Choose another service.",
+                    ui.go(
+                        "Use a different service", "/admin/suggestions?change=service", "primary"
+                    ),
+                )
+            else:
+                top = ui.status(
+                    "bad",
+                    "Suggestions have stopped",
+                    f"{name} has not answered since {since(service, ctx.zone)}. "
+                    f"{plural(waiting, 'note is', 'notes are')} waiting."
+                    + stopped_help(service, waiting, "note"),
+                    ui.btn("Test now", test_action, "primary", here, busy="Testing…")
+                    + edit
+                    + different,
+                )
         older = data["older"]
         rows = [
             ui.row(
@@ -947,18 +957,29 @@ minutes. Pick more only if your recordings run for several hours.</div></div>
                 ui.btn("Resume", "/admin/transcription/pause", "primary", {"paused": ""}),
             )
         else:
-            assert service is not None
             waiting = week["waiting"]
-            top = ui.status(
-                "bad",
-                "Transcription has stopped",
-                f"{name} has not answered since {since(service, ctx.zone)}. "
-                f"{plural(waiting, 'recording is', 'recordings are')} waiting. The recordings "
-                "are safe." + stopped_help(service, waiting, "recording"),
-                ui.btn("Test now", test_action, "primary", here, busy="Sending the sample…")
-                + edit
-                + different,
-            )
+            if service is None:
+                top = ui.status(
+                    "bad",
+                    "Transcription has stopped",
+                    "The AI service it used is no longer in your list. "
+                    f"{plural(waiting, 'recording is', 'recordings are')} waiting. The "
+                    "recordings are safe. Choose another service.",
+                    ui.go(
+                        "Use a different service", "/admin/transcription?change=service", "primary"
+                    ),
+                )
+            else:
+                top = ui.status(
+                    "bad",
+                    "Transcription has stopped",
+                    f"{name} has not answered since {since(service, ctx.zone)}. "
+                    f"{plural(waiting, 'recording is', 'recordings are')} waiting. The recordings "
+                    "are safe." + stopped_help(service, waiting, "recording"),
+                    ui.btn("Test now", test_action, "primary", here, busy="Sending the sample…")
+                    + edit
+                    + different,
+                )
         done, waiting, failed = week["done"], week["waiting"], week["failed"]
         if done or waiting or failed:
             this_week = f"{plural(done, 'recording')} written up. "

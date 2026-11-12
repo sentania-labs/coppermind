@@ -164,8 +164,8 @@ filed artifact stay in the artifact archive.
 Audio submitted through the recordings API is removed after its transcript is reviewed
 and filed, including when that note is later deleted. A note deleted before review keeps
 its audio until the note is permanently purged; other source audio remains in the source archive.
-Audio that another unfinished recording or note still uses is kept until that one is
-finished. A removal that keeps failing becomes one Problems entry with a Retry action.
+Audio that another unfinished recording still uses, or that any other note links to, is
+never removed by this clean-up. A removal that keeps failing becomes one Problems entry with a Retry action.
 Filing errors appear in Admin Problems
 and retry automatically. Human edits of a filed note retain review and update search.
 
@@ -183,8 +183,8 @@ Use a distinct submission ID for new material that needs its own reviewable note
 
 When no transcript or summary exists yet, send only the recording and let Coppermind
 transcribe it. This needs transcription turned on in Admin (Transcription, with a service from
-AI services); while it is off the second call below is accepted, and the recording waits with a
-plain message until transcription is turned on, then is written up.
+AI services); while it is off the second call below is refused with a plain message and nothing
+is queued to run later.
 Use an API key with `artifacts:write`, `artifacts:read`, `sources:write`, `sources:read` and
 `notes:write`; naming a stored recording for transcription needs `artifacts:read` because
 the service is sent its bytes.

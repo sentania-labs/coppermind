@@ -447,12 +447,19 @@ async def candidates(
         live_artifacts,
     )
     if only:
-        # Just the one note. What it alone used is left for the next ordinary clean-up.
-        return [
+        # Just the one note, and any automatic person only it supported. Anything else that
+        # is past its keep time is left for the next ordinary clean-up.
+        chosen = [
             item
             for item in items
             if item["candidate"]["kind"] == "note" and item["candidate"]["id"] == only
-        ], kept
+        ]
+        chosen.extend(
+            item
+            for item in store.entities.purge_items(cutoff, {only})
+            if not item["candidate"]["deleted_at"]
+        )
+        return chosen, kept
     note_ids = {item["candidate"]["id"] for item in items if item["candidate"]["kind"] == "note"}
     items.extend(store.entities.purge_items(cutoff, note_ids))
     return items, kept

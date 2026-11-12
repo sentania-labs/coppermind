@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, cast
@@ -23,6 +23,8 @@ FIELD_LIMIT = 16384
 
 class UploadRefused(Exception):
     """The upload was not taken. The message is for the person who sent it."""
+
+    limit: int = 0
 
 
 @dataclass
@@ -110,7 +112,7 @@ def _disposition(headers: bytes) -> tuple[str, str | None]:
     return name, filename
 
 
-async def receive(request: Request, limit: int) -> Upload:
+async def receive(request: Request, limit: int | Callable[[str], int]) -> Upload:
     """Read a multipart form whose last part is the file. Raises `UploadRefused`."""
     content_type = request.headers.get("content-type", "")
     if "boundary=" not in content_type:
@@ -146,8 +148,13 @@ async def receive(request: Request, limit: int) -> Upload:
             )
             upload.path, upload.filename = Path(handle.name), filename
             sink = _Counting(handle, upload)
+            cap = limit(filename) if callable(limit) else limit
             try:
-                await reader.until(delimiter, cast(IO[bytes], sink), limit)
+                await reader.until(delimiter, cast(IO[bytes], sink), cap)
+            except UploadRefused as exc:
+                if str(exc) == "too large":
+                    exc.limit = cap
+                raise
             finally:
                 handle.close()
             upload.sha256 = sink.digest.hexdigest()

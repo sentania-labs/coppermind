@@ -17,7 +17,7 @@ from coppermind.store_protocol import StoreError
 from coppermind_admin import ui
 from coppermind_admin.pages.common import obsidian
 from coppermind_admin.pages.notes import keep_words
-from coppermind_admin.shell import Ctx
+from coppermind_admin.shell import Ctx, explain
 from coppermind_admin.ui import e, plural, segment
 
 LEDE = (
@@ -301,7 +301,7 @@ name="new_name" aria-label="Name of the new person" placeholder="Their name"></s
         try:
             result = await ctx.act(action, payload)
         except StoreError as exc:
-            ctx.say("bad", "That could not be done. " + e(str(exc)))
+            ctx.say("bad", explain(exc, "That could not be done."))
             return None
         if "refused" in result:
             ctx.say("bad", e(result["refused"]["message"]))

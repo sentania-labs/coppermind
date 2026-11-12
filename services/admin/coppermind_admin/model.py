@@ -113,9 +113,23 @@ def attention(view: dict[str, Any]) -> list[Item]:
                 "transcription",
             ),
         ):
-            if not down or not feature["service"]:
+            if not down:
                 continue
             service = feature["service"]
+            if service is None:
+                out.append(
+                    Item(
+                        name,
+                        "The AI service it used is no longer in your list. "
+                        f"{plural(count, noun + ' is', noun + 's are')} waiting. "
+                        "Choose another service.",
+                        "Use a different service",
+                        page,
+                        to=f"/admin/{page}?change=service",
+                        bad=True,
+                    )
+                )
+                continue
             out.append(
                 Item(
                     name,

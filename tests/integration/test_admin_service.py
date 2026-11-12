@@ -12,7 +12,8 @@ from coppermind_store.ai_services import candidates
 from coppermind_store.note_lifecycle import SETTLING
 
 from coppermind.api_keys import COMPANION_PERMISSIONS, describe, load_keys, scopes_for
-from coppermind.store_protocol import CreateNote
+from coppermind.entities import EntityInput
+from coppermind.store_protocol import CreateNote, ValidationFailed
 from tests.integration.test_context_enrichment import configure
 
 
@@ -313,3 +314,170 @@ async def test_confirming_a_clean_up_deletes_only_what_was_listed(store, monkeyp
     result = await store.admin.act("cleanup-confirm", {"token": shown["token"]})
     assert result["changed"] is False and result["count"] == 1
     assert [item["key"] for item in store.admin.notes.removed()] == late
+
+
+@pytest.mark.parametrize("action", ["note-check", "note-no-time", "note-keep-both", "note-replace"])
+async def test_a_note_id_that_is_not_an_id_never_reaches_a_file_path(store, action):
+    context = store.context
+    context.write("credentials", {"conn": "secret"})
+    (context.root / "meeting-summaries-earlier").mkdir(parents=True, exist_ok=True)
+    with pytest.raises(ValidationFailed):
+        await store.admin.act(action, {"id": "../credentials", "reviewed": True})
+    assert context.read("credentials", {}) == {"conn": "secret"}
+    assert not (store.control.store.state_dir / "credentials.json").exists()
+
+
+async def test_correcting_a_fact_keeps_the_kind_of_fact_it_was(store):
+    person = await store.entities.create(EntityInput(kind="person", name="Casey Jones"))
+    await store.admin.act(
+        "fact-add", {"id": person["id"], "label": "Job title", "value": "Analyst"}
+    )
+    shown = await store.admin.act("person", {"id": person["id"]})
+    (fact,) = [f for f in shown["facts"] if f["label"] == "Job title"]
+    await store.admin.act(
+        "fact-correct", {"id": person["id"], "fact_id": fact["id"], "value": "Engineer"}
+    )
+    shown = await store.admin.act("person", {"id": person["id"]})
+    labels = [(f["label"], f["value"]) for f in shown["facts"]]
+    assert labels == [("Job title", "Engineer")]
+    assert [f["predicate"] for f in shown["facts"]] == ["job_title"]
+
+
+async def test_checking_a_note_that_is_not_reviewed_does_not_say_it_was_filed(store):
+    await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Draft", body="Words.\n", frontmatter={"date": "2026-10-14"})
+    )
+    for action in ("note-check", "note-no-time", "note-keep-both", "note-replace"):
+        result = await store.admin.act(action, {"id": note.id})
+        assert result["filed"] is False, action
+    recent = [item["text"] for item in (await store.admin.act("overview", {}))["recent"]]
+    assert not [text for text in recent if "was filed" in text]
+
+
+def test_a_name_on_the_internet_is_tried_over_https_before_plain_http():
+    tried = candidates("api.groq.com")
+    schemes = [item.split(":", 1)[0] for item in tried]
+    assert schemes == sorted(schemes, key={"https": 0, "http": 1}.get)
+    assert schemes[0] == "https"
+    assert candidates("gpu-box:8000")[0].startswith("http://")
+    assert candidates("ollama.local")[0].startswith("http://")
+
+
+def _admin_client(store):
+    import httpx
+    from coppermind_store.admin_api import router
+    from coppermind_store.auth import InternalAuth
+    from fastapi import FastAPI
+
+    from coppermind.store_client import HttpStoreClient
+
+    app = FastAPI()
+    app.state.store = store
+    app.state.auth = InternalAuth("synthetic-internal-token")
+    app.include_router(router)
+    return HttpStoreClient(
+        "http://store", "synthetic-internal-token", transport=httpx.ASGITransport(app=app)
+    )
+
+
+async def _stream(data: bytes, size: int = 7):
+    for start in range(0, len(data), size):
+        yield data[start : start + size]
+
+
+async def test_a_calendar_file_sent_as_a_raw_body_is_read_and_reported(store):
+    from services.store.tests.test_calendar_import import event, ics
+
+    client = _admin_client(store)
+    try:
+        result = await client.add_calendar_file("team.ics", _stream(ics(event("a"), event("b"))))
+    finally:
+        await client.aclose()
+    assert (result["state"], result["name"], result["has"]) == ("added", "team.ics", 2)
+    assert len(store.context.archive.catalog().events) == 2
+    assert 'Calendar file "team.ics" was added.' in [
+        item["text"] for item in (await store.admin.act("overview", {}))["recent"]
+    ]
+
+
+async def test_a_calendar_file_over_the_most_allowed_is_refused_and_nothing_is_added(
+    store, monkeypatch
+):
+    from coppermind_store import admin_api
+
+    from coppermind.store_protocol import ValidationFailed
+    from services.store.tests.test_calendar_import import event, ics
+
+    monkeypatch.setattr(admin_api, "CALENDAR_UPLOAD_LIMIT", 50)
+    client = _admin_client(store)
+    try:
+        with pytest.raises(ValidationFailed):
+            await client.add_calendar_file("big.ics", _stream(ics(event("a"))))
+    finally:
+        await client.aclose()
+    assert store.context.archive.receipts() == []
+
+
+async def test_home_counts_a_removed_person_past_the_keep_time_like_the_clean_up_list(store):
+    from coppermind.entities import EntityChange
+
+    store.sources_root.mkdir(parents=True, exist_ok=True)
+    person = await store.entities.create(EntityInput(kind="person", name="Casey Jones"))
+    await store.entities.change(
+        person["id"], EntityChange(version=person["version"], action="retire")
+    )
+    state = store.control.store.read("settings")
+    body = dict(state.body)
+    body.setdefault("retention", {})["days"] = 7
+    store.control.store.write("settings", body, if_revision=state.revision)
+    ledger = store.entities.load()
+    ledger.entities[person["id"]].retired_at = datetime.now(UTC) - timedelta(days=30)
+    store.entities.save(ledger)
+    listed = await store.admin.act("cleanup", {})
+    assert [item["kind"] for item in listed["items"]] == ["entity"]
+    assert (await store.admin.act("overview", {}))["storage"]["cleanup"] == len(listed["items"])
+
+
+async def test_taking_over_for_a_removed_service_keeps_pauses_and_fixes_an_old_wait(
+    store, monkeypatch
+):
+    await configure(store)
+    _answers(
+        store,
+        monkeypatch,
+        {
+            "Old": {"text": TEXT, "speech": SPEECH},
+            "New": {"text": TEXT, "speech": SPEECH},
+        },
+    )
+    old, new = await _add(store, "Old"), await _add(store, "New")
+    await store.admin.act("suggestions-save", {"connection": old, "model": "m"})
+    await store.admin.act("transcription-save", {"connection": old, "wait_s": 3600})
+    features = store.admin.features
+    await features._update_enrichment(paused=True)
+    await features._update_transcription(paused=True, wait_s=900)
+
+    done = await store.admin.act(
+        "service-remove", {"id": old, "takeover": {"sugg": new, "trans": new}}
+    )
+
+    assert "refused" not in done
+    config = store.context.config()
+    assert config.assignments["enrichment"].connection == new
+    assert config.assignments["enrichment"].paused is True
+    assert config.assignments["transcription"].connection == new
+    assert config.assignments["transcription"].paused is True
+    assert config.assignments["transcription"].wait_s == 1800
+
+
+@pytest.mark.parametrize("directions", [["Summary"], "text", {"summary": 5}])
+async def test_directions_that_are_not_text_per_section_are_refused_not_crashed(store, directions):
+    await configure(store)
+    with pytest.raises(ValueError, match="not understood"):
+        await store.admin.act("summary-directions-save", {"directions": directions})
+
+
+async def test_a_disagreement_is_only_settled_with_one_of_the_two_versions(store):
+    with pytest.raises(ValueError, match="Choose which version"):
+        await store.admin.act("calendar-choose", {"id": "x", "version": "y", "pick": "stored "})

@@ -19,6 +19,7 @@ from coppermind.db.models import Artifact
 from coppermind.store_protocol import ArtifactMissing, StoreError
 from coppermind_store.admin_features import recording_minutes, took_minutes
 from coppermind_store.ai_services import UNREACHABLE
+from coppermind_store.recordings import DELETED_RULE
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
@@ -228,7 +229,7 @@ class AdminIncoming:
             job = self.context.recordings.load(key)
         from coppermind_store import artifacts
 
-        if not job.audio_removed:
+        if not job.audio_removed and not await self.context.recordings.shared_audio(job):
             with contextlib.suppress(ArtifactMissing):
                 await artifacts.remove_artifact(self.store, job.artifact_id)
         async with self.context.lock:
@@ -237,7 +238,7 @@ class AdminIncoming:
             job.dismissed = True
             if job.state in {"queued", "running"}:
                 job.state = "failed"
-                job.set_error("You deleted this recording.", "recording-deleted")
+                job.set_error("You deleted this recording.", DELETED_RULE)
             self.context.recordings.save(job)
         return {"title": job.title}
 
@@ -291,6 +292,10 @@ class AdminIncoming:
         record = await self.store.get_artifact(artifact_id)
         filename = record.filename or record.title
         if (record.mime_type or "").startswith("audio/"):
+            try:
+                self.context.recordings.ready()
+            except ValueError:
+                return {"kind": "audio", "title": Path(filename).stem, "id": "a:" + artifact_id}
             status = await self.context.recordings.accept(
                 {
                     "artifact_id": artifact_id,

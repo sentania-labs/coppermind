@@ -67,6 +67,20 @@ def scopes_for(permissions: Iterable[str]) -> list[str]:
     return [scope for scope in API_SCOPES if scope in granted]
 
 
+def changed_scopes(current: Iterable[str], permissions: Iterable[str]) -> list[str]:
+    """The scopes a key holds after its ticks are saved: a tick adds its scopes, an untick
+    removes only a permission the key held in full, and every other scope is left alone."""
+    held = set(current)
+    full = set(permissions_of(held))
+    wanted = set(permissions)
+    for key, _, scopes in PERMISSIONS:
+        if key in wanted:
+            held |= set(scopes)
+        elif key in full:
+            held -= set(scopes)
+    return [scope for scope in API_SCOPES if scope in held]
+
+
 def permissions_of(scopes: Iterable[str]) -> list[str]:
     """The permissions a key holds in full. A scope outside every permission adds nothing."""
     held = set(scopes)
@@ -75,6 +89,7 @@ def permissions_of(scopes: Iterable[str]) -> list[str]:
 
 def describe(scopes: Iterable[str]) -> str:
     """What a key may do, as one sentence fragment."""
+    scopes = list(scopes)
     held = permissions_of(scopes)
     if len(held) == len(PERMISSIONS):
         return "Everything, including settings"
@@ -82,7 +97,7 @@ def describe(scopes: Iterable[str]) -> str:
         return "Read and change notes, hand in recordings, search"
     labels = [label for key, label, _ in PERMISSIONS if key in held]
     if not labels:
-        return "Nothing yet"
+        return "Limited access set outside Admin" if scopes else "Nothing yet"
     return labels[0] + "".join(", " + label[0].lower() + label[1:] for label in labels[1:])
 
 

@@ -12,8 +12,8 @@ from coppermind.settings import Wiring
 from coppermind.store_protocol import StoreError
 from coppermind_admin import model, ui
 from coppermind_admin.pages.common import setup_strip
-from coppermind_admin.pages.incoming import file_dialog, take_in
-from coppermind_admin.shell import Ctx
+from coppermind_admin.pages.incoming import file_dialog, take_in, too_large, upload_limit
+from coppermind_admin.shell import Ctx, explain
 from coppermind_admin.ui import e, plural, segment
 from coppermind_admin.uploads import UploadRefused, receive
 
@@ -235,21 +235,16 @@ def router(wiring: Wiring) -> APIRouter:
     async def add(request: Request) -> Response:
         ctx = Ctx(request, wiring)
         try:
-            upload = await receive(request, 200_000_000)
+            upload = await receive(request, lambda filename: upload_limit(ctx, filename))
         except UploadRefused as exc:
-            ctx.say(
-                "bad",
-                "That file is larger than 200 MB, the most a calendar file may be."
-                if str(exc) == "too large"
-                else e(str(exc)),
-            )
+            ctx.say("bad", too_large(exc))
             return ctx.go("/admin/calendar")
         target = upload.fields.get("back", "")
         target = target if target.startswith("/admin") else "/admin/calendar"
         try:
             ctx.say(*await take_in(ctx, upload))
         except StoreError as exc:
-            ctx.say("bad", f'"{e(upload.filename)}" could not be added. {e(str(exc))}')
+            ctx.say("bad", explain(exc, f'"{e(upload.filename)}" could not be added.'))
         finally:
             upload.discard()
         return ctx.go(target)

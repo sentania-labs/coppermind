@@ -50,6 +50,7 @@ let connection = null;
 // memory only, so a vault's own password is never written anywhere before it is used.
 let pending = null;
 let quickExits = 0;
+let signinEpoch = 0;
 let devicesReadAt = 0;
 let writeSequence = 0;
 let writeQueue = Promise.resolve();
@@ -197,7 +198,7 @@ async function stopChild() {
 }
 
 async function startSync() {
-  if (!connection || status.paused || stopping || child) return;
+  if (!connection || status.paused || stopping || child || status.needs_signin) return;
   await publishStatus({ state: "starting", syncing: false, sync_pid: null });
   const proc = FAKE
     ? spawn(process.execPath, [path.join(import.meta.dirname, "fake", "sync.mjs")], {
@@ -262,7 +263,8 @@ async function handleChildExit(proc, code, signal, error = null) {
   });
   if (!expected) {
     log("WARNING", "sync process stopped unexpectedly", { code, signal });
-    if (quickExits >= SIGNIN_CHECK_AFTER && !(await signedIn())) {
+    const epoch = signinEpoch;
+    if (quickExits >= SIGNIN_CHECK_AFTER && !(await signedIn()) && epoch === signinEpoch) {
       // Restarting cannot help a client that is signed out. Say so and wait for a sign-in.
       clearTimeout(restartTimer);
       await publishStatus({ state: "error", needs_signin: true,
@@ -529,6 +531,7 @@ async function connectChosen(body) {
     pending = null;
     restartAttempts = 0;
     quickExits = 0;
+    signinEpoch += 1;
     await publishStatus({ configured: true, paused: false, vault_name: next.vault_name,
       device_name: device, needs_signin: false });
     await reconcileConfig();
@@ -568,6 +571,7 @@ async function signinAgain(body) {
   await rememberAccount(account);
   restartAttempts = 0;
   quickExits = 0;
+  signinEpoch += 1;
   await publishStatus({ needs_signin: false, last_error: null });
   await reconcileConfig();
   return [200, publicStatus()];
@@ -666,6 +670,7 @@ async function connect(body) {
     pending = null;
     restartAttempts = 0;
     quickExits = 0;
+    signinEpoch += 1;
     await publishStatus({ configured: true, paused: false, vault_name: vaultName, device_name: device,
       needs_signin: false });
     await reconcileConfig();

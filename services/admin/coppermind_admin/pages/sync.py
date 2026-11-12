@@ -160,7 +160,6 @@ def router(wiring: Wiring) -> APIRouter:
                 ui.text_input(
                     "email",
                     "Obsidian email",
-                    ctx.q("email"),
                     kind="email",
                     error=problem if ctx.q("field") == "email" else "",
                 )
@@ -339,7 +338,6 @@ def router(wiring: Wiring) -> APIRouter:
                 else ui.text_input(
                     "email",
                     "Obsidian email",
-                    ctx.q("email"),
                     kind="email",
                     hint="The address of your Obsidian account. Coppermind asks for it this "
                     "once and remembers it for next time.",
@@ -528,14 +526,12 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
             return ui.url(
                 base,
                 mfa=1,
-                email=form.get("email", ""),
                 problem="Type the sign-in code from your authenticator app, then sign in again."
                 if not form.get("mfa_code")
                 else "That sign-in code was not accepted. Wait for a new one and try again.",
             )
         return ui.url(
             base,
-            email=form.get("email", ""),
             field="password",
             problem="Obsidian did not accept that email and password. Check both and try again."
             if "email" in form
@@ -552,7 +548,6 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
                 ui.url(
                     "/admin/sync",
                     field="email",
-                    email=email,
                     problem="Enter the email address of your Obsidian account.",
                 )
             )
@@ -561,7 +556,6 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
                 ui.url(
                     "/admin/sync",
                     field="password",
-                    email=email,
                     problem="Enter your Obsidian password.",
                 )
             )
@@ -656,9 +650,9 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
         except HelperRefused as exc:
             ctx.say(
                 "bad",
-                "Coppermind could not connect to that vault, so nothing was changed. "
-                + e(str(exc.body.get("detail") or ""))
-                + " Try again; if it keeps failing, go back and sign in again.",
+                "Coppermind could not connect to that vault, so nothing was changed. Try again; "
+                "if it keeps failing, go back and sign in again."
+                + (ui.tech(str(exc.body["detail"])) if exc.body.get("detail") else ""),
             )
             return ctx.go("/admin/sync")
         except (OSError, ValueError):
@@ -735,7 +729,6 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
                 ui.url(
                     "/admin/sync",
                     field="email",
-                    email=email,
                     problem="Enter the email address of your Obsidian account.",
                 )
             )
@@ -744,7 +737,6 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
                 ui.url(
                     "/admin/sync",
                     field="password",
-                    email=email,
                     problem="Enter your Obsidian password.",
                 )
             )
@@ -836,7 +828,7 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
         else:
             draft = {
                 "kinds": list(settings.file_types),
-                "own": any(item != "community-plugin-data" for item in settings.sync_configs),
+                "own": bool(settings.sync_configs),
                 "conflict": settings.conflict_strategy,
                 "skip": list(settings.excluded_folders),
             }
@@ -865,8 +857,10 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
         ) + ui.check(
             "own",
             "Your own Obsidian settings",
-            "Your themes, hotkeys and other add-ons. Most people leave this off. The "
-            "Coppermind companion always syncs, whatever you choose here.",
+            "Your themes, hotkeys, and the files and saved data of every add-on you have "
+            "installed, which can include sign-ins that other add-ons keep. Most people leave "
+            "this off. When it is off, none of that is pulled: no add-on files or data, "
+            "including the Coppermind companion's, travel between devices.",
             checked=draft["own"],
         )
         chips = "".join(

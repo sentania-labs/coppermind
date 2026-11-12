@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -26,7 +25,7 @@ from coppermind_admin.pages.common import (
 )
 from coppermind_admin.pages.notes import keep_words
 from coppermind_admin.pages.settings import folder_dialog
-from coppermind_admin.shell import Ctx
+from coppermind_admin.shell import Ctx, explain
 from coppermind_admin.ui import e, plural, segment
 from coppermind_admin.uploads import Upload, UploadRefused, receive
 
@@ -43,6 +42,7 @@ STATES = {
 KIND_WORDS = {"recording": "Recording", "calendar": "Calendar file", "document": "Document"}
 CALENDAR_SUFFIXES = {".ics", ".zip"}
 CALENDAR_LIMIT = 200_000_000
+RECORDING_SUFFIXES = {".m4a", ".mp3", ".wav", ".ogg", ".opus", ".flac", ".aac"}
 RECORDING_LIMITS = (
     (500_000_000, "500 MB"),
     (1024**3, "1 GB"),
@@ -130,6 +130,27 @@ def why(item: dict[str, Any], ctx: Ctx, transcription: str) -> str:
     )
 
 
+def upload_limit(ctx: Ctx, filename: str) -> int:
+    """The most Admin accepts of a file, by what its name says it is."""
+    suffix = Path(filename).suffix.lower()
+    limits = ctx.settings().limits
+    if suffix in CALENDAR_SUFFIXES:
+        return CALENDAR_LIMIT
+    if suffix in RECORDING_SUFFIXES:
+        return limits.staged_max_bytes
+    return limits.artifact_max_bytes
+
+
+def too_large(exc: UploadRefused) -> str:
+    """What a person is told when a file passed the most that kind of file may be."""
+    if str(exc) != "too large":
+        return e(str(exc))
+    return (
+        f"That file is larger than {ui.size(exc.limit)}, the largest accepted for a file like "
+        "it. Nothing was added."
+    )
+
+
 async def spool(upload: Upload) -> AsyncIterator[bytes]:
     assert upload.path is not None
     with upload.path.open("rb") as handle:
@@ -144,11 +165,7 @@ async def take_in(ctx: Ctx, upload: Upload) -> tuple[str, str]:
     if Path(upload.filename).suffix.lower() in CALENDAR_SUFFIXES:
         if upload.size > CALENDAR_LIMIT:
             return "bad", f'"{name}" is larger than 200 MB, the most a calendar file may be.'
-        data = await asyncio.to_thread(upload.path.read_bytes)
-        result = await ctx.act(
-            "calendar-add",
-            {"filename": upload.filename, "content_base64": base64.b64encode(data).decode()},
-        )
+        result = await ctx.store.add_calendar_file(upload.filename, spool(upload))
         return calendar_message(result, ctx)
     receipt = await ctx.store.reserve_staged_upload(
         StagedReservation(
@@ -162,15 +179,24 @@ async def take_in(ctx: Ctx, upload: Upload) -> tuple[str, str]:
         await ctx.store.put_staged_bytes(receipt.id, spool(upload), declared_bytes=upload.size)
         receipt = await ctx.store.finalize_staged_upload(receipt.id)
     if receipt.artifact is None:
-        return "bad", f'"{name}" could not be stored. {e(receipt.failure or "")}'
+        return "bad", (
+            f'"{name}" could not be stored. Try adding it again.'
+            + (ui.tech(receipt.failure) if receipt.failure else "")
+        )
     result = await ctx.act("incoming-accept", {"artifact_id": receipt.artifact.id})
+    if result["kind"] == "audio":
+        return "warn", (
+            f'Added "{e(result["title"])}" as a file, but transcription is off, so it is not '
+            "being written up. Turn transcription on under Transcription, then add the "
+            "recording again."
+        )
     if result["kind"] == "recording":
         return "ok", (
             f'Added "{e(result["title"])}". Coppermind recognised it as a recording.'
             + (
                 " It is being written up now."
                 if result["transcribing"]
-                else " It waits here until transcription is on."
+                else " Transcription is paused, so it will be written up when you resume it."
             )
         )
     return "ok", (
@@ -289,7 +315,7 @@ def router(wiring: Wiring) -> APIRouter:
         off = (
             ui.banner(
                 "info",
-                "Transcription is off, so recordings are kept here but not written up. "
+                "Transcription is off, so a recording you add is kept as a file, not written up. "
                 + ui.go("Set up transcription", "/admin/transcription", "primary"),
             )
             if transcription == "none"
@@ -440,17 +466,10 @@ def router(wiring: Wiring) -> APIRouter:
     @routes.post("/admin/incoming/add", include_in_schema=False)
     async def add(request: Request) -> Response:
         ctx = Ctx(request, wiring)
-        limit = ctx.settings().limits.staged_max_bytes
         try:
-            upload = await receive(request, limit)
+            upload = await receive(request, lambda filename: upload_limit(ctx, filename))
         except UploadRefused as exc:
-            ctx.say(
-                "bad",
-                f"That file is larger than {ui.size(limit)}, the largest accepted. Nothing "
-                "was added."
-                if str(exc) == "too large"
-                else e(str(exc)),
-            )
+            ctx.say("bad", too_large(exc))
             return ctx.go("/admin/incoming")
         target = upload.fields.get("back", "")
         target = target if target.startswith("/admin") else "/admin/incoming"
@@ -464,7 +483,7 @@ def router(wiring: Wiring) -> APIRouter:
                     "left to fix for it."
                 )
         except StoreError as exc:
-            kind, said = "bad", f'"{e(upload.filename)}" could not be added. {e(str(exc))}'
+            kind, said = "bad", explain(exc, f'"{e(upload.filename)}" could not be added.')
         finally:
             upload.discard()
         ctx.say(kind, said)
@@ -721,7 +740,7 @@ def router(wiring: Wiring) -> APIRouter:
         try:
             result = await ctx.act("incoming-retry", {"id": identity})
         except StoreError as exc:
-            ctx.say("bad", "That recording could not be tried again. " + e(str(exc)))
+            ctx.say("bad", explain(exc, "That recording could not be tried again."))
             return ctx.go(target)
         ctx.say(
             "ok",

@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from coppermind.settings import ProductSettings, Wiring, read_settings
 from coppermind.statefiles import RevisionConflict, StateStore
 from coppermind.store_client import HttpStoreClient
-from coppermind.store_protocol import StoreError
+from coppermind.store_protocol import StoreError, ValidationFailed
 from coppermind_admin import layout, model, ui
 
 COOKIE = "coppermind_admin_session"
@@ -31,6 +31,27 @@ UNREACHABLE = (
     "Wait a minute and reload. If it stays like this, whoever runs the server should check "
     "that Coppermind is running."
 )
+
+
+def explain(error: Exception, lead: str, after: str = "") -> str:
+    """What to say when the store could not do something: a plain sentence, never the raw error.
+
+    A refusal the store worded for a person is shown as it is. Anything else is said as
+    "did not finish, try again", with the raw text behind Details for support.
+    """
+    raw = str(error).strip()
+    if isinstance(error, ValidationFailed | ValueError) and raw:
+        return " ".join(part for part in (lead, ui.e(raw), after) if part)
+    said = " ".join(
+        part
+        for part in (
+            lead,
+            "Coppermind did not finish it. Wait a minute, then try again.",
+            after,
+        )
+        if part
+    )
+    return said + (ui.tech(raw) if raw else "")
 
 
 def with_csrf(document: str) -> str:
@@ -151,9 +172,11 @@ class Ctx:
         self._view, self._view_failed = None, True
         return await self.page(title, ui.head(title, lede), active, status=503)
 
-    async def refused(self, error: Exception, to: str) -> Response:
+    async def refused(
+        self, error: Exception, to: str, lead: str = "That did not work. Nothing was changed."
+    ) -> Response:
         """An action the store would not do: say why on the page it was asked from."""
-        self.say("bad", ui.e(str(error)) or "That did not work. Nothing was changed.")
+        self.say("bad", explain(error, lead))
         return self.go(to)
 
     # -- settings ------------------------------------------------------------------------

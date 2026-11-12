@@ -39,6 +39,7 @@ class FakeStore:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.context_calls: list[tuple[str, dict[str, Any]]] = []
         self.patches: list[tuple[str, Any]] = []
+        self.calendar_files: list[tuple[str, bytes]] = []
         self.answers: dict[str, Any] = {}
         self.down = False
 
@@ -64,6 +65,13 @@ class FakeStore:
         if isinstance(answer, Exception):
             raise answer
         return copy.deepcopy(answer)
+
+    async def add_calendar_file(self, filename: str, data: Any) -> dict[str, Any]:
+        if self.down:
+            raise StoreError("the store did not answer")
+        body = b"".join([chunk async for chunk in data])
+        self.calendar_files.append((filename, body))
+        return copy.deepcopy(self.answers.get("calendar-add", {}))
 
     async def patch_frontmatter(self, identity: str, patch: Any, *, if_match: str) -> None:
         self.patches.append((identity, patch))

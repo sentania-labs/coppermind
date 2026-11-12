@@ -257,7 +257,7 @@ async def test_the_earlier_summary_is_dropped_once_the_note_is_reviewed(store, s
     await context.run_job(max(context.jobs(), key=lambda item: item.created_at))
     kept = context.root / f"{EARLIER_SUMMARY}{note.id}.json"
     assert kept.exists()
-    store.admin.notes.forget_earlier_summary(note.id)
+    await store.admin.act("note-check", {"id": note.id, "reviewed": True})
     assert not kept.exists()
     assert (await store.admin.act("note-summary", {"id": note.id}))["earlier"] is None
 

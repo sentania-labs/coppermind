@@ -44,8 +44,9 @@ only among services whose test showed they can do that job, so nobody types a
 model name or a transcription reply format. A key is created by saying what
 is being connected, and the Obsidian companion pairs with a six-digit code
 through `POST /v1/pair` instead of a pasted key. Obsidian Sync connects in
-steps (sign in, pick or make a vault, name this server). A recording handed in
-while transcription is off is kept and written up once it is turned on.
+steps (sign in, pick or make a vault, name this server). A recording is only
+taken in while transcription is on; audio that was already stored, or that a note
+already links to, is never queued or deleted by it.
 Storage, Clean up lists what is past the keep time and deletes nothing until
 that list is confirmed. Suggestions has "How the meeting summary is written",
 directions per summary section around fixed rules, used from the next
@@ -53,7 +54,7 @@ summary on; a note from a recording that is still waiting for review can have
 its summary written again from the same transcript. Proved by the rendered
 page and action tests under `services/admin/tests/`,
 `tests/integration/test_admin_service.py` and
-`tests/integration/test_summary_instructions.py`.
+`tests/integration/test_summary_directions.py`.
 
 ## Working
 
@@ -178,8 +179,8 @@ page and action tests under `services/admin/tests/`,
   need `sources:read`; ingest needs both `sources:write` and `notes:write`, so
   a key holding one of the two answers 403. Successful verification and key
   hashes are kept, but the key records are read again once they are more than
-  two seconds old, so a removed key stops working at once and a new key works
-  within about two seconds.
+  two seconds old, so a removed key stops working within about two seconds and
+  a new key works within about two seconds.
   Health, readiness and OpenAPI remain open, and Compose remains bound to
   loopback by default.
   The content-typed journal scopes, `journal:read` and `journal:write`, are

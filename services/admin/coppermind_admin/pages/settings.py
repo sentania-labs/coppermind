@@ -1484,26 +1484,27 @@ def folder_dialog(
     method: str = "post",
     extra: str = "",
     error: str = "",
+    field: str = "folder",
 ) -> str:
     """The folder picker: the folders in the vault, or a new one. It opens on the one in use."""
     known = current in folders
     choices = "".join(
         ui.choice(
-            "folder",
+            field,
             name,
             e(name) + (" (in use now)" if name == current else ""),
             "",
             name == current,
         )
         for name in folders
-    ) + ui.choice("folder", "__new__", "A new folder", "", bool(current) and not known)
+    ) + ui.choice(field, "__new__", "A new folder", "", bool(current) and not known)
     using = f'In use now: "{e(current)}". ' if current else ""
     return (
         f'<div class="overlay"><div class="dialog" role="dialog" aria-modal="true" '
         f'aria-label="{e(title)}"><form method="{method}" action="{e(action)}">{extra}'
         f'<h2>{title}</h2><p class="muted">{using}Folders in your vault:</p>'
         f'<div class="pickgrid">{choices}</div>'
-        '<div data-if="folder=__new__">'
+        f'<div data-if="{field}=__new__">'
         + ui.text_input("new_folder", "Name of the new folder", "" if known else current)
         + "</div>"
         + ui.field_error(error)

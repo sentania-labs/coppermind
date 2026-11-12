@@ -8,7 +8,8 @@ for the shared Dropbox, Obsidian companion and lifecycle setup.
 ## One calendar, automatic intake
 
 Coppermind is a single-owner knowledge base with one calendar. Drop `.ics` files
-or ZIP archives containing ICS files into the vault's existing Dropbox folder.
+or ZIP archives containing ICS files into the vault's drop folder (called Dropbox on an existing install and
+**To Coppermind** on a new one).
 No calendar UID, binding, identification or claim is needed. Every export merges
 by event UID and recurrence instance. Calendar names and export filenames are
 provenance, never separate calendar identities. No per-source views are provided.
@@ -16,7 +17,8 @@ provenance, never separate calendar identities. No per-source views are provided
 Files must remain unchanged for 30 seconds. Originals and import history are
 preserved under `/data/state/calendars`. Once the original is durable and the
 import has succeeded, the dropped file leaves Dropbox; a file that cannot be
-handled moves to `Dropbox/Failed` with a reason sidecar. Intake
+handled moves to `Failed` inside that folder (`Dropbox/Failed` on an older
+install) with a reason sidecar. Intake
 never calls a model. Limits are 200,000,000 bytes per upload, 100 ZIP entries and
 50,000 event records per export. The expanded size of an export is bounded by
 `limits.calendar_import_memory_mib` (see the sizing table below), never above a

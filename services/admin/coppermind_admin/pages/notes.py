@@ -20,7 +20,7 @@ from coppermind.store_protocol import PatchFrontmatter, StoreError
 from coppermind_admin import model, ui
 from coppermind_admin.pages.common import folder_words, obsidian
 from coppermind_admin.pages.settings import duration, folder_dialog, read_schema
-from coppermind_admin.shell import Ctx
+from coppermind_admin.shell import Ctx, explain
 from coppermind_admin.ui import e, plural
 
 LEDE = (
@@ -536,10 +536,7 @@ def router(wiring: Wiring) -> APIRouter:
                 "note-restore", {"id": form.get("id", ""), "key": form.get("key", "")}
             )
         except StoreError as exc:
-            ctx.say(
-                "bad",
-                "That note could not be brought back just now. " + e(str(exc)),
-            )
+            ctx.say("bad", explain(exc, "That note could not be brought back just now."))
             return ctx.go(target)
         where = folder_words(str(result["path"]).rsplit("/", 1)[0]) or "your vault"
         ctx.say(
@@ -631,18 +628,15 @@ name="csrf" value="{{csrf}}">Save</button>
             except StoreError:
                 available = []
             ticked = "".join(ui.hidden({name: "on"}) for name, on in ticks.items() if on)
-            dialog = (
-                folder_dialog(
-                    "Choose a folder for Coppermind to leave alone",
-                    [name for name in available if name not in folders],
-                    "",
-                    action="/admin/notes/leave-alone",
-                    method="get",
-                    extra=carry + ticked + ui.hidden({"set": "add"}),
-                    cancel=ui.url("/admin/notes/leave-alone"),
-                )
-                .replace('name="folder"', 'name="picked"')
-                .replace('data-if="folder=', 'data-if="picked=')
+            dialog = folder_dialog(
+                "Choose a folder for Coppermind to leave alone",
+                [name for name in available if name not in folders],
+                "",
+                action="/admin/notes/leave-alone",
+                method="get",
+                extra=carry + ticked + ui.hidden({"set": "add"}),
+                cancel=ui.url("/admin/notes/leave-alone"),
+                field="picked",
             )
         body = f"""{ui.head("Files Coppermind leaves alone", ALONE_LEDE, ("/admin/notes", "Notes"))}
 <div class="stack">{ctx.flash()}{ui.card(form)}</div>"""
@@ -1007,7 +1001,7 @@ name="csrf" value="{{csrf}}">Save</button>
         try:
             return await ctx.act(action, {"id": identity, **payload})
         except StoreError as exc:
-            ctx.say("bad", "That could not be done. " + e(str(exc)) + " Nothing was lost.")
+            ctx.say("bad", explain(exc, "That could not be done.", "Nothing was lost."))
             return None
 
     def filed_message(result: dict[str, Any], title: str, tail: str) -> tuple[str, str]:
@@ -1513,9 +1507,11 @@ name="csrf" value="{{csrf}}">Save</button>
                     except StoreError as exc:
                         ctx.say(
                             "warn",
-                            "Reviewed, with what you accepted. One of your own "
-                            "corrections could not be saved, so check the note in Obsidian. "
-                            + e(str(exc)),
+                            explain(
+                                exc,
+                                "Reviewed, with what you accepted. One of your own "
+                                "corrections could not be saved, so check the note in Obsidian.",
+                            ),
                         )
                         return ctx.go(here)
                 else:
@@ -1555,7 +1551,7 @@ name="csrf" value="{{csrf}}">Save</button>
                 await fresh()
             await apply_edits()
         except StoreError as exc:
-            ctx.say("bad", "That could not be saved. " + e(str(exc)))
+            ctx.say("bad", explain(exc, "That could not be saved."))
             return await review_page(ctx, identity, form, {}, 422)
         ctx.say(
             "ok",

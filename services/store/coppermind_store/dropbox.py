@@ -173,6 +173,12 @@ class Dropbox:
             "received_at": datetime.now(UTC).isoformat(),
             "kind": kind or {},
         }
+        if (
+            not duplicate
+            and Path(filename).suffix.lower() in RECORDING_SUFFIXES
+            and self.context.recordings.enabled()
+        ):
+            item["intake"] = "recording"
         if duplicate:
             item["completed_at"] = time.time()
         if existing and existing.get("failed_path"):
@@ -277,20 +283,21 @@ class Dropbox:
         """
         records = self.records()
         waiting = [
-            item
+            (item, number, part)
             for item in [*records["items"].values(), *records["history"].values()]
-            if item.get("state") == "succeeded"
-            and Path(item["filename"]).suffix.lower() in RECORDING_SUFFIXES
-            and any(part.get("artifact_id") and not part.get("recording") for part in item["parts"])
+            if item.get("state") == "succeeded" and item.get("intake") == "recording"
+            for number, part in enumerate(item["parts"])
+            if part.get("artifact_id") and not part.get("recording")
         ]
-        for item in waiting:
-            part = next(p for p in item["parts"] if p.get("artifact_id"))
+        for item, number, part in waiting:
             try:
                 status = await self.context.recordings.accept(
                     {
                         "artifact_id": part["artifact_id"],
                         "provider": "dropbox",
-                        "external_source_id": item["id"],
+                        "external_source_id": item["id"]
+                        if not number
+                        else f"{item['id']}-{number}",
                         "title": Path(item["filename"]).stem,
                         "origin": "dropbox",
                     }
@@ -298,6 +305,9 @@ class Dropbox:
                 recording = status["id"]
             except (ValueError, StoreError):
                 recording = "refused"
+            except OSError:
+                log.warning("Dropbox could not queue recording %s", item["id"], exc_info=True)
+                continue
             async with self.context.lock:
                 current = self.records()
                 for group in ("items", "history"):

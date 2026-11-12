@@ -261,7 +261,7 @@ fallback for anything that matches nothing: leave it in place and mark it
 `keys.json`: one entry per API key, `key_id`, `name`, an argon2 hash of the
 secret, its scopes, when it was created, and when (if ever) it was revoked.
 The API reads it again once its copy is more than two seconds old, so a removed
-key stops working at once and a new key works within about two seconds.
+key stops working within about two seconds and a new key works within about two seconds.
 `admin.json`: the argon2 hash of the Admin password, when setup was done, and
 the session signing secret. Both are files under `/data/state`, mode 0600,
 never database rows, because the API-key cache and the admin session both need

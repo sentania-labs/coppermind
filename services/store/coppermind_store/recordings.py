@@ -68,6 +68,7 @@ RETRY_BACKOFF_S = 1800
 BUSY_WAIT_S = 120
 BUSY_LIMIT_S = 24 * 3600
 BUSY_RULE = "transcription-busy"
+DELETED_RULE = "recording-deleted"
 BUSY_MESSAGE = "Waiting for the transcription service, which is busy."
 NOT_SET_UP = (
     "Transcription is off, so this recording cannot be written up yet. "
@@ -211,6 +212,13 @@ class Recordings:
             raise ValueError("no such recording intake") from exc
 
     def save(self, job: TranscriptionJob) -> None:
+        with contextlib.suppress(ValueError):
+            saved = self.load(job.id)
+            if saved.error_rule == DELETED_RULE and job.error_rule != DELETED_RULE:
+                job.audio_removed, job.dismissed = True, True
+                if job.state != "succeeded":
+                    job.state = "failed"
+                    job.set_error(saved.error, DELETED_RULE)
         self.context.write(f"recordings/{job.id}", job.model_dump(mode="json"))
 
     def assignment(self) -> FeatureAssignment | None:
@@ -437,8 +445,7 @@ class Recordings:
                 existing = None
         if existing is not None:
             return self.replay(existing, request)
-        # A recording is kept whether or not transcription is on. It waits until it is.
-        assignment = self.assignment() or FeatureAssignment()
+        assignment = self.ready()
         try:
             _, revision = await asyncio.to_thread(
                 artifacts.current_file, self.context.store, request.artifact_id
@@ -589,7 +596,7 @@ class Recordings:
             return False
         for known in sorted(await asyncio.to_thread(self.jobs), key=lambda item: item.created_at):
             job = self.load(known.id)
-            if job.state == "succeeded":
+            if job.state == "succeeded" or job.error_rule == DELETED_RULE:
                 continue
             if job.state == "running":
                 # The store stopped mid-call. That is not a failed attempt: asking again polls
@@ -674,7 +681,7 @@ class Recordings:
             elif not (row.filed and row.reviewed):
                 return False
             deleted = row is None or row.state == "deleted"
-            if await self._shared_audio(job):
+            if await self.shared_audio(job):
                 return self._keep_audio(job, AUDIO_KEPT_SHARED)
             transcript = await asyncio.to_thread(self.saved_transcript, job)
             if not any(
@@ -811,8 +818,8 @@ class Recordings:
         found = index.lookup(note_id)
         return found is not None and not found
 
-    async def _shared_audio(self, job: TranscriptionJob) -> bool:
-        """Whether another intake or note that is not yet finished still needs this audio."""
+    async def shared_audio(self, job: TranscriptionJob) -> bool:
+        """Whether another unfinished intake, or any other note, still uses this audio."""
         store = self.context.store
 
         async def finished(note_id: str) -> bool:
@@ -834,10 +841,12 @@ class Recordings:
                     sa.select(Note.id).where(Note.artifact_ids.overlap([job.artifact_id]))
                 )
             ).all()
-        for note_id in citing:
-            if note_id != job.note_id and not await finished(note_id):
-                return True
-        return False
+        own = {
+            other.note_id
+            for other in await asyncio.to_thread(self.jobs)
+            if other.artifact_id == job.artifact_id
+        }
+        return any(note_id not in own for note_id in citing)
 
     async def run_job(self, job: TranscriptionJob, assignment: FeatureAssignment) -> None:
         from coppermind_store.context_service import TIMEOUT_BACKOFF_S

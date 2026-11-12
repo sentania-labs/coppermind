@@ -717,6 +717,13 @@ class AdminService:
     async def service(self, payload: dict[str, Any]) -> dict[str, Any]:
         return {"service": self.context.services.get(str(payload["id"]))}
 
+    async def calendar_file(self, filename: str, data: bytes) -> dict[str, Any]:
+        result = await self.calendar.add(filename, data)
+        line = self._happened("calendar-add", result)
+        if line:
+            self.log(line)
+        return result
+
     # -- dispatch ------------------------------------------------------------------------
 
     async def act(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -844,7 +851,6 @@ class AdminService:
             "recording-delete": incoming.delete_recording,
             "calendar": calendar.view,
             "calendar-meeting": calendar.meeting,
-            "calendar-add": calendar.add,
             "calendar-choose": calendar.choose,
             "calendar-max": calendar.set_max,
             "people": plain(people.listing),

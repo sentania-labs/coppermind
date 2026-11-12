@@ -598,19 +598,21 @@ async def test_the_same_request_is_one_intake_and_a_different_recording_is_refus
         assert len(context.recordings.jobs()) == 1
 
 
-async def test_a_recording_is_kept_until_transcription_is_on_and_other_files_are_refused(store):
+async def test_a_recording_is_refused_while_transcription_is_off_and_other_files_are_refused(
+    store,
+):
     async with Service() as service:
         context = store.context
         audio = await store_audio(store)
-        # Handed in before any transcription service exists: kept, and nothing is sent.
-        kept = await context.accept_recording(request(audio))
-        await context.recordings.tick()
-        assert context.recordings.load(kept["id"]).state == "queued"
-        assert service.requests == []
+        with pytest.raises(ValueError, match="Transcription is off"):
+            await context.accept_recording(request(audio))
+        assert context.recordings.jobs() == []
         context = await setup_transcription(store, service)
-        # Once transcription is on, the recording that waited is written up.
         await context.recordings.tick()
-        assert context.recordings.load(kept["id"]).state == "succeeded"
+        assert service.requests == []
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+        assert context.recordings.load(accepted["id"]).state == "succeeded"
         assert len(service.requests) == 1
         with pytest.raises(ValueError, match="no stored file"):
             await context.accept_recording(
@@ -1027,10 +1029,9 @@ async def test_a_retried_request_still_finds_its_intake_after_transcription_is_o
         assert context.config().assignments["transcription"].enabled is False
         again = await context.accept_recording(request(audio))
         assert again["id"] == first["id"]
-        # A new recording is kept too, and waits for transcription to be turned on again.
-        later = await context.accept_recording(request(audio, external_source_id="plaud/rec-2"))
-        assert later["id"] != first["id"]
-        assert context.recordings.load(later["id"]).state == "queued"
+        with pytest.raises(ValueError, match="Transcription is off"):
+            await context.accept_recording(request(audio, external_source_id="plaud/rec-2"))
+        assert [job.id for job in context.recordings.jobs()] == [first["id"]]
 
 
 async def test_the_recording_page_reads_the_transcript_and_a_retry_needs_transcription_on(store):
@@ -1866,3 +1867,90 @@ async def test_rejected_recording_exposes_structured_field_reason(store):
         row = (await context.recording_waiting({}))["failed"][0]
         assert row["field_problems"] == []
         assert row["field_problems_unavailable"] is True
+
+
+def drop_record(context, digest, artifact_id, **extra):
+    records = context.dropbox.records()
+    records["history"][digest] = {
+        "id": digest,
+        "filename": "interview.m4a",
+        "state": "succeeded",
+        "parts": [{"artifact_id": artifact_id}],
+        "error": "",
+        **extra,
+    }
+    context.dropbox.save(records)
+
+
+async def test_audio_stored_before_the_upgrade_is_never_queued_or_sent(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store, name="interview.m4a")
+        await store.create_note(
+            CreateNote(title="Old note", body="Linked", frontmatter={"artifacts": [audio]})
+        )
+        drop_record(context, "a" * 64, audio)
+        await context.dropbox.queue_recordings()
+        await context.recordings.tick()
+        assert context.recordings.jobs() == []
+        assert service.requests == []
+
+
+async def test_a_recording_dropped_while_transcription_is_on_is_queued_once(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store, name="interview.m4a")
+        item = context.dropbox.submit("interview.m4a", b"drop bytes")
+        assert item["intake"] == "recording"
+        drop_record(context, item["id"], audio, intake="recording")
+        await context.dropbox.queue_recordings()
+        await context.dropbox.queue_recordings()
+        (job,) = context.recordings.jobs()
+        assert (job.provider, job.artifact_id) == ("dropbox", audio)
+
+
+async def test_a_recording_dropped_while_transcription_is_off_is_not_marked_for_intake(store):
+    context = store.context
+    item = context.dropbox.submit("interview.m4a", b"drop bytes")
+    assert "intake" not in item
+    audio = await store_audio(store, name="interview.m4a")
+    drop_record(context, item["id"], audio)
+    await context.dropbox.queue_recordings()
+    assert context.recordings.jobs() == []
+
+
+async def test_audio_another_note_links_to_is_kept_after_the_recording_is_reviewed(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    older = await store.create_note(
+        CreateNote(
+            title="Older note",
+            body="Linked",
+            frontmatter={"artifacts": [audio], "reviewed": True},
+        )
+    )
+    assert older.id
+    done = await context.recording_status({"id": accepted["id"]})
+    await approve(store, done["note_id"])
+    while await context.recordings.tick():
+        pass
+    assert await drain(await store.get_artifact_bytes(audio)) == AUDIO
+    assert not context.recordings.load(accepted["id"]).audio_removed
+
+
+async def test_deleting_a_recording_while_it_is_being_written_up_keeps_it_deleted(store):
+    async with Service(delay=0.3) as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        running = asyncio.create_task(context.recordings.tick())
+        await asyncio.sleep(0.1)
+        await store.admin.act("recording-delete", {"id": "r:" + accepted["id"]})
+        await running
+    job = context.recordings.load(accepted["id"])
+    assert job.audio_removed and job.dismissed
+    assert job.state in {"succeeded", "failed"}
+    assert await context.recordings.tick() is False

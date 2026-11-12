@@ -16,6 +16,7 @@ from coppermind.api_keys import (
     PRESETS,
     add_key,
     change_key,
+    changed_scopes,
     describe,
     load_keys,
     remove_key,
@@ -457,7 +458,9 @@ clipboard</span></p>
         if not name:
             errors["name"] = "Give it a name."
         permissions = [key for key, _, _ in PERMISSIONS if ("can_" + key) in form]
-        if not app["companion"] and not permissions:
+        record = next((k for k in load_keys(ctx.control).keys if k.key_id == identity), None)
+        scopes = changed_scopes(record.scopes if record else [], permissions)
+        if not app["companion"] and not scopes:
             errors["can"] = "Tick at least one thing it may do, or remove its access instead."
         if errors:
             return await render_app(ctx, app, form, errors, 422)
@@ -466,12 +469,12 @@ clipboard</span></p>
                 ctx.control,
                 identity,
                 name=name,
-                scopes=None if app["companion"] else scopes_for(permissions),
+                scopes=None if app["companion"] else scopes,
             )
         except (ValueError, RevisionConflict, OSError):
             ctx.say("bad", "That could not be saved just now. Nothing was changed.")
             return ctx.go(app_path(identity))
-        can = app["can"] if app["companion"] else describe(scopes_for(permissions))
+        can = app["can"] if app["companion"] else describe(scopes)
         ctx.say(
             "ok",
             f'Saved. "{e(name)}" may now: {can}.'
