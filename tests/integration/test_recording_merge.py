@@ -134,6 +134,60 @@ async def test_merge_keeps_voice_data_through_worker_and_purges_real_deletion(st
     assert unknown not in voice.unknown_summaries()
 
 
+async def test_deleting_merged_voices_clears_pending_embeddings_via_people(store):
+    import httpx
+    from coppermind_store.auth import InternalAuth
+    from coppermind_store.entity_api import router as entity_router
+    from coppermind_store.voice_store import VoiceStore
+    from fastapi import FastAPI
+
+    from coppermind.entities import EntityInput
+    from coppermind.store_client import HttpStoreClient
+    from tests.integration.test_store_write_protocol import authorized_api
+
+    context, recording, generated, target, payload = await prepare(store)
+    person = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    voice = VoiceStore(context)
+    first = {"model": "voice", "version": "1", "vector": [1.0, 0.0]}
+    second = {"model": "voice", "version": "1", "vector": [0.0, 1.0]}
+    unknown = voice.capture_unknown(generated.id, "Speaker 1", "today", 30, [first])
+    named = voice.capture_unknown(generated.id, "Speaker 2", "today", 30, [second])
+    voice.move_voice(named, "person:" + person["id"])
+    unknown_name = voice.unknown_summaries()[unknown]["name"]
+    context.write(
+        "voice-pending/" + recording.id,
+        [
+            {"label": unknown_name, "embeddings": [first]},
+            {"label": "Alex Morgan", "embeddings": [second]},
+        ],
+    )
+    await context.lifecycle.merge_recording(payload)
+
+    internal = FastAPI()
+    internal.state.store = store
+    internal.state.auth = InternalAuth("synthetic-internal-token")
+    internal.include_router(entity_router)
+    app, headers = authorized_api(store)
+    app.state.store = HttpStoreClient(
+        "http://store", "synthetic-internal-token", transport=httpx.ASGITransport(app=internal)
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://api", headers=headers
+    ) as api:
+        result = await api.delete("/v1/entities/voice/unknowns/" + unknown)
+        assert result.status_code == 200, result.text
+        assert unknown not in (await api.get("/v1/entities/voice/unknowns")).json()
+        pending = context.read("voice-pending/" + recording.id, [])
+        assert "embeddings" not in pending[0]
+        assert pending[1]["embeddings"] == [second]
+        assert not voice.assignments(unknown)
+        result = await api.delete("/v1/entities/" + person["id"] + "/voice")
+        assert result.status_code == 200, result.text
+    assert "embeddings" not in context.read("voice-pending/" + recording.id, [])[1]
+    assert voice.summary(person["id"]) == {"signatures": [], "assignments": []}
+    assert voice._load()["unknowns"] == {}
+
+
 @pytest.mark.parametrize(
     "crash",
     [

@@ -87,7 +87,7 @@ async def relabel_recording(
             and (
                 r.source_id == assignment.get("source_id")
                 if assignment.get("source_id")
-                else r.note_id == note.id
+                else context.recordings.parent_note_id(r) == note.id
             )
         ),
         None,

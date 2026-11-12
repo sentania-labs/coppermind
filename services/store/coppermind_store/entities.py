@@ -1824,7 +1824,7 @@ class EntityService:
 
         VoiceStore(self.store.context).purge(entity_ids, note_ids)
         for recording in self.store.context.recordings.jobs():
-            if recording.note_id in note_ids:
+            if self.store.context.recordings.parent_note_id(recording) in note_ids:
                 (self.store.context.root / "voice-pending" / (recording.id + ".json")).unlink(
                     missing_ok=True
                 )

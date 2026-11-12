@@ -471,7 +471,8 @@ def voice_suggestions(context: Any, note_id: str) -> dict[str, list[dict[str, An
     """Return names and strength only; pending and saved vectors stay private."""
     from coppermind_store.voice_store import VoiceStore
 
-    recording = next((r for r in context.recordings.jobs() if r.note_id == note_id), None)
+    parent = getattr(context.recordings, "parent_note_id", lambda r: r.note_id)
+    recording = next((r for r in context.recordings.jobs() if parent(r) == note_id), None)
     if recording is None:
         return {}
     pending = context.read("voice-pending/" + recording.id, [])

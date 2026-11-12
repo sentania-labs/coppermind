@@ -999,7 +999,7 @@ class NoteLifecycle:
             async with self.context.lock:
                 voice = VoiceStore(self.context)
                 for recording in self.context.recordings.jobs():
-                    if recording.note_id != identity:
+                    if self.context.recordings.parent_note_id(recording) != identity:
                         continue
                     if operation and recording.source_id == operation["source_id"]:
                         pending = self.context.read("voice-pending/" + recording.id, [])

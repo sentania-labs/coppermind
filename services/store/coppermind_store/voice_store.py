@@ -167,22 +167,40 @@ class VoiceStore:
         data = self._load()
         if identity not in data.get("unknowns", {}):
             raise ValueError("Unknown voice not found")
-        label = data["unknowns"][identity]["name"]
-        notes = {a["note_id"] for a in data.get("assignments", []) if a["voice_id"] == identity}
+        assignments = [a for a in data.get("assignments", []) if a["voice_id"] == identity]
+        self._clear_pending(assignments, data["unknowns"][identity]["name"])
+        del data["unknowns"][identity]
+        data["assignments"] = [a for a in data.get("assignments", []) if a["voice_id"] != identity]
+        data["deferred"] = [
+            item
+            for item in data.get("deferred", [])
+            if item.get("assignment", {}).get("voice_id") != identity
+        ]
+        self._save(data)
+
+    def _clear_pending(self, assignments: list[dict[str, Any]], name: str) -> None:
+        """Remove embeddings for these appearances, including merged recordings."""
         if self.context.recordings is not None:
             for recording in self.context.recordings.jobs():
-                if recording.note_id not in notes:
+                parent = getattr(self.context.recordings, "parent_note_id", lambda r: r.note_id)(
+                    recording
+                )
+                matches = [
+                    a
+                    for a in assignments
+                    if a["note_id"] in {parent, "recording:" + recording.id}
+                    and (not a.get("source_id") or a["source_id"] == recording.source_id)
+                ]
+                if not matches:
                     continue
                 key = "voice-pending/" + recording.id
                 pending = self.context.read(key, [])
+                labels = {a["label"] for a in matches} | {name}
                 for speaker in pending:
-                    if isinstance(speaker, dict) and speaker.get("label") == label:
+                    if isinstance(speaker, dict) and speaker.get("label") in labels:
                         speaker.pop("embeddings", None)
                 if pending:
                     self.context.write(key, pending)
-        del data["unknowns"][identity]
-        data["assignments"] = [a for a in data.get("assignments", []) if a["voice_id"] != identity]
-        self._save(data)
 
     def assignments(self, voice_id: str) -> list[dict[str, Any]]:
         return [a for a in self._load().get("assignments", []) if a["voice_id"] == voice_id]
@@ -333,7 +351,18 @@ class VoiceStore:
 
     def delete(self, person_id: str) -> None:
         data = self._load()
+        assignments = [
+            a for a in data.get("assignments", []) if a["voice_id"] == "person:" + person_id
+        ]
+        entity_store = getattr(self.context.store, "entities", None)
+        person = entity_store.load().entities.get(person_id) if entity_store else None
+        self._clear_pending(assignments, person.name if person else "")
         self._clear(data, person_id)
+        data["deferred"] = [
+            item
+            for item in data.get("deferred", [])
+            if item.get("assignment", {}).get("voice_id") != "person:" + person_id
+        ]
         data["assignments"] = [
             a for a in data.get("assignments", []) if a["voice_id"] != "person:" + person_id
         ]
@@ -367,8 +396,19 @@ class VoiceStore:
 
     def purge(self, person_ids: set[str], note_ids: set[str]) -> None:
         data = self._load()
-        data["deferred"] = [d for d in data.get("deferred", []) if d["note_id"] not in note_ids]
+        data["deferred"] = [
+            d
+            for d in data.get("deferred", [])
+            if d["note_id"] not in note_ids
+            and d.get("assignment", {}).get("voice_id") not in {"person:" + p for p in person_ids}
+        ]
+        entity_store = getattr(self.context.store, "entities", None)
+        people = entity_store.load().entities if entity_store and person_ids else {}
         for person_id in person_ids:
+            self._clear_pending(
+                [a for a in data.get("assignments", []) if a["voice_id"] == "person:" + person_id],
+                people[person_id].name if person_id in people else "",
+            )
             data["people"].pop(person_id, None)
         for person in data["people"].values():
             person["signatures"] = [
