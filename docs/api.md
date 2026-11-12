@@ -343,7 +343,7 @@ or answered 5xx, is retried by itself after a wait that starts at 30 minutes and
 each time, because every attempt sends the whole recording again (`retry_after` says
 when), until the attempt limit is reached; a refusal the same request
 would only repeat (a wrong address or model, a recording the service cannot read, a reply
-that cannot be used or has no speakers, a recording that ran past the four-hour ceiling) waits for a person to fix it and press Retry under Suggestions and backlog. Every
+that cannot be used or has no speakers, a recording that ran past the four-hour ceiling) waits for a person to fix it and press Try again on Admin's Recordings and imports page. Every
 failure is also listed under Problems as "Recording transcription" with the reason.
 
 A service that answers "busy" (HTTP 429, or the reason `busy`) is working for someone
@@ -447,7 +447,9 @@ Settings, keys and the schema are control state files Admin writes itself,
 under their revision check, and Obsidian Sync goes to the sync helper's control
 endpoint. Every product setting a person needs has a control here, with a
 working default already in place, per the standing rule that nothing ships
-requiring hand-populated configuration.
+requiring hand-populated configuration. Admin has no Problems page: the store's
+Problems list (the word used elsewhere in these docs) shows on Home as what needs you,
+and each problem is fixed on the page that owns it, such as Recordings and imports or Notes.
 
 | Page | Endpoints | What it is for |
 |---|---|---|
@@ -555,7 +557,7 @@ entry unreadable` with its identity, path, and reason. Catch-up summaries
 distinguish `unreadable` (failures this pass) from `skipped_known_unreadable`,
 and the `search index caught up` line is logged only when a pass indexed,
 removed or failed something. Both search index status and store status expose
-`known_unreadable`; Admin Problems lists the entries and their reasons. These
+`known_unreadable`; the Problems list has the entries and their reasons. These
 marks do not remove source archives or notes.
 
 ## Calendar exports and Dropbox receipts

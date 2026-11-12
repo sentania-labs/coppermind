@@ -22,7 +22,7 @@ section is intact, is recovered at its own path. A page moved without its marker
 found only inside `People/` or `Companies/`, by an exact email (person) or domains
 or name with aliases (company), and only when one page matches. Notes elsewhere are
 never claimed, even when they share an email or name. Malformed or unrelated files are preserved and reported
-in Admin Problems. Generated pages never overwrite an unrelated occupied path.
+under Problems. Generated pages never overwrite an unrelated occupied path.
 Names can be changed through the API. Moving or renaming a page in Obsidian keeps
 its identity via the hidden `<!-- coppermind:dossier id=… -->` marker and adopts
 the chosen filename as its name. Legacy frontmatter IDs migrate into that marker. Legacy

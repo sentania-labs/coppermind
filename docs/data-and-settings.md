@@ -517,7 +517,7 @@ origins/providers counts once in each applicable group, so grouped totals can
 exceed the number of candidates. The preview also reports what it kept:
 `kept.notes_within_retention` and `kept.sources_in_use`. The Home Needs attention
 list includes unfinished purges, abandoned purges with items remaining, unreadable
-receipts and damaged bundles (`purge_problems`), so it agrees with the Problems page.
+receipts and damaged bundles (`purge_problems`), so it agrees with the Problems list.
 Status stays cheap: it reads `/data/state/purge-problems.json`, the few receipts that
 can still be unfinished and one bounded query on the ids an abandoned purge left, and
 never walks a source bundle or a finished receipt. The full scan that rewrites that file

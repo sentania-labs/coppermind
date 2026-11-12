@@ -166,7 +166,7 @@ and filed, including when that note is later deleted. A note deleted before revi
 its audio until the note is permanently purged; other source audio remains in the source archive.
 Audio that another unfinished recording still uses, or that any other note links to, is
 never removed by this clean-up. A removal that keeps failing becomes one Problems entry with a Retry action.
-Filing errors appear in Admin Problems
+Filing errors are Problems entries
 and retry automatically. Human edits of a filed note retain review and update search.
 
 A changed payload under the same external ID creates an archive revision and
@@ -240,8 +240,8 @@ is enabled.
 The owner edits or drops its summary, decisions and actions in the companion or
 review API before completing review. See [Recording summaries](note-workflow.md#recording-summaries)
 for approval and [limits](calendar-enrichment.md) for long transcripts.
-A failure appears in Admin under Problems with the
-reason, the recording stays stored, and a person can retry it under Suggestions and backlog. See
+A failure appears with its reason on Admin's Recordings and imports page (and under Problems), the
+recording stays stored, and a person can press Try again there. See
 [Recordings](api.md#recordings-audio-on-its-own) for every field and failure.
 
 ## Proposed next contract: staged bundles

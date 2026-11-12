@@ -6,7 +6,7 @@ edited all follow SECTIONS, so a section added here appears everywhere without a
 """
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, ValidationInfo, model_validator
 
@@ -48,6 +48,10 @@ SECTIONS: tuple[Section, ...] = (
 
 class MeetingSummary(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
+
+    if TYPE_CHECKING:
+        # The parts are the keys of SECTIONS, held as extras, so no field names are declared.
+        def __init__(self, **parts: Any) -> None: ...
 
     @model_validator(mode="before")
     @classmethod
