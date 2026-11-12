@@ -601,7 +601,7 @@ class ContextService:
         event_count, contact_count = len(events), len(contacts)
         receipts = sorted(self.archive.receipts(), key=lambda item: item.received_at, reverse=True)
         reasons = {
-            problem.event_id: problem.model_dump()
+            (problem.event_id, problem.version): problem.model_dump()
             for receipt in reversed(receipts)
             for problem in receipt.conflicts
         }
@@ -653,7 +653,9 @@ class ContextService:
                     | {
                         "id": event.identity,
                         "version": event.semantic_hash,
-                        "reason": reasons.get(event.identity, {}).get("reason", ""),
+                        "reason": reasons.get((event.identity, event.semantic_hash), {}).get(
+                            "reason", ""
+                        ),
                         "stored_title": catalog.events[event.identity].title,
                         "stored_sequence": catalog.events[event.identity].sequence,
                         "stored_modified": catalog.events[event.identity].modified,

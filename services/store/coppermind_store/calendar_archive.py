@@ -261,6 +261,7 @@ class CalendarArchive:
                     # the stored copy and is reported per event, the rest still lands.
                     merged, problems = merge_with_problems(stored, events)
                     written = 0
+                    kept = {problem.event_id for problem in problems}
                     for event in events:
                         previous = stored.get(event.identity)
                         if previous is None:
@@ -274,6 +275,8 @@ class CalendarArchive:
                         if winner != previous:
                             written += 1
                             mirror.put_event(connection, event.identity, winner)
+                        if event.identity in kept:
+                            continue
                         for person in event.people:
                             if person.contact_id is not None:
                                 evidence = ContactEvidence(

@@ -110,6 +110,35 @@ async def test_conflict_ends_when_the_event_is_later_revised(tmp_path):
         assert mirror.get_conflicts(connection) == []
 
 
+async def test_rejected_version_leaves_no_contact_evidence(tmp_path):
+    store = local_store(tmp_path)
+    archive = store.context.archive
+    attendee = b"ATTENDEE;CN=%b:mailto:%b@example.com\r\n"
+    base = calendar().replace(b"SUMMARY", attendee % (b"Casey", b"casey") + b"SUMMARY")
+    archive.process(archive.submit("calendar", "base.ics", base).id)
+    assert len(archive.catalog().contacts()) == 1
+    changed = base.replace(b"SUMMARY", attendee % (b"Dana", b"dana") + b"SUMMARY")
+    receipt = archive.process(archive.submit("calendar", "changed.ics", changed).id)
+    assert receipt.kept_count == 1
+    assert len(archive.catalog().contacts()) == 1
+
+
+async def test_each_held_conflict_shows_its_own_reason(tmp_path):
+    store = local_store(tmp_path)
+    archive = store.context.archive
+    archive.process(archive.submit("calendar", "base.ics", calendar()).id)
+    archive.process(
+        archive.submit("calendar", "a.ics", calendar().replace(b"Planning", b"Other")).id
+    )
+    place = calendar().replace(b"SUMMARY", b"LOCATION:Room 9\r\nSUMMARY")
+    archive.process(archive.submit("calendar", "b.ics", place).id)
+    rows = (await store.context.snapshot())["calendar"]["conflicts"]
+    assert len(rows) == 2
+    by_title = {row["title"]: row["reason"] for row in rows}
+    assert "title" in by_title["Other"] and "location" not in by_title["Other"]
+    assert "location" in by_title["Planning"] and "title" not in by_title["Planning"]
+
+
 async def test_dismissing_failed_receipt_acknowledges_import_failure(tmp_path):
     store = local_store(tmp_path)
     dropbox = store.context.dropbox
