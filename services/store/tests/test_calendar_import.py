@@ -10,6 +10,7 @@ from coppermind_store.calendar_import import (
     MAX_UPLOAD,
     CalendarImportError,
     merge_events,
+    merge_with_problems,
     parse_export,
 )
 from icalendar import Calendar
@@ -88,13 +89,12 @@ def test_partial_older_and_cancelled_exports():
     assert merge_events(merged, cancelled)[newer[0].identity].cancelled
 
 
-def test_equal_revision_conflict_is_not_last_writer_wins():
+def test_equal_revision_conflict_keeps_the_stored_copy_and_reports_it():
     first = parse_export("work", "one.ics", ics(event()))
     conflicting = parse_export("work", "two.ics", ics(event(title="Different")))
-    with pytest.raises(CalendarImportError, match="conflicts"):
-        merge_events({first[0].identity: first[0]}, conflicting)
-    with pytest.raises(CalendarImportError, match="conflicts"):
-        parse_export("work", "one.ics", ics(event(), event(title="Different")))
+    merged, problems = merge_with_problems({first[0].identity: first[0]}, conflicting)
+    assert merged == {first[0].identity: first[0]}
+    assert len(problems) == 1 and "title" in problems[0].reason
 
 
 def test_zip_multiple_calendars_and_recurrence_exceptions_are_retained():

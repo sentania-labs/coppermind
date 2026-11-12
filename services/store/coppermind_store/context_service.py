@@ -649,6 +649,11 @@ class ContextService:
         contacts = catalog.contacts()
         event_count, contact_count = len(events), len(contacts)
         receipts = sorted(self.archive.receipts(), key=lambda item: item.received_at, reverse=True)
+        reasons = {
+            (problem.event_id, problem.version): problem.model_dump()
+            for receipt in reversed(receipts)
+            for problem in receipt.conflicts
+        }
         window = slice(offset, offset + 100)
         maximum = max(event_count, contact_count, len(receipts), len(jobs))
         return {
@@ -696,7 +701,10 @@ class ContextService:
                     event.model_dump(exclude={"component", "timezone_components"})
                     | {
                         "id": event.identity,
-                        "version": event.semantic_hash,
+                        "version": event.conflict_version or event.semantic_hash,
+                        "reason": reasons.get(
+                            (event.identity, event.conflict_version or event.semantic_hash), {}
+                        ).get("reason", ""),
                         "stored_title": catalog.events[event.identity].title,
                         "stored_sequence": catalog.events[event.identity].sequence,
                         "stored_modified": catalog.events[event.identity].modified,
