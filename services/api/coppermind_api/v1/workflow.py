@@ -42,6 +42,13 @@ async def call(client: HttpStoreClient, action: str, payload: dict[str, Any]) ->
         return failure(exc)
 
 
+def hide_artifact(item: dict[str, Any]) -> dict[str, Any]:
+    if "parts" not in item:
+        return item
+    parts = [{"artifact": "stored"} if "artifact_id" in part else part for part in item["parts"]]
+    return {**item, "parts": parts}
+
+
 PEOPLE_HIDDEN = (
     "This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, "
     "open Connected apps (API Keys) and create a new key with Read notes, Update notes, "
@@ -139,9 +146,15 @@ async def refresh(
 @router.get("/dropbox")
 async def dropbox_list(
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("sources:read")),
+    principal: Principal = Depends(require_scopes("sources:read")),
 ) -> Response:
-    return await call(client, "dropbox-list", {})
+    try:
+        result = await client.context_action("dropbox-list", {})
+    except StoreError as exc:
+        return failure(exc)
+    if not principal.has("artifacts:read"):
+        result["items"] = [hide_artifact(item) for item in result["items"]]
+    return JSONResponse(result)
 
 
 @router.post("/dropbox/{receipt_id}/dismiss")
@@ -194,10 +207,13 @@ async def drop(
     }
     if kind is not None:
         payload["kind"] = kind
-    result = await call(client, "upload-drop", payload)
-    if result.status_code == 200:
-        result.status_code = 202
-    return result
+    try:
+        receipt = await client.context_action("upload-drop", payload)
+    except StoreError as exc:
+        return failure(exc)
+    if not principal.has("artifacts:read"):
+        receipt = hide_artifact(receipt)
+    return JSONResponse(receipt, status_code=202)
 
 
 class CalendarResolution(BaseModel):

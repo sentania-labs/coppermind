@@ -14,7 +14,9 @@ by event UID and recurrence instance. Calendar names and export filenames are
 provenance, never separate calendar identities. No per-source views are provided.
 
 Files must remain unchanged for 30 seconds. Originals and import history are
-preserved under `/data/state/calendars`; dropped files are not deleted. Intake
+preserved under `/data/state/calendars`. Once the original is durable and the
+import has succeeded, the dropped file leaves Dropbox; a file that cannot be
+handled moves to `Dropbox/Failed` with a reason sidecar. Intake
 never calls a model. Limits are 200,000,000 bytes per upload, 100 ZIP entries and
 50,000 event records per export. The expanded size of an export is bounded by
 `limits.calendar_import_memory_mib` (see the sizing table below), never above a

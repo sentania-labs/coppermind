@@ -4,9 +4,44 @@ const VIEW = 'coppermind-review';
 const PEOPLE_VIEW = 'coppermind-people';
 const WAITING_VIEW = 'coppermind-waiting';
 const COMPANION_PERMISSIONS = 'Read notes, Read sources, Update sources, Update notes, Read artifacts, Read people and companies, and Update people and companies';
+const IMPORTS_VIEW = 'coppermind-imports';
 async function hash(text) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return 'sha256:' + [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2,'0')).join('');
+}
+class ImportsView extends ItemView {
+  constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.generation=0;}
+  getViewType(){return IMPORTS_VIEW;}
+  getDisplayText(){return 'Imports';}
+  getIcon(){return 'inbox';}
+  async onOpen(){this.timer=setInterval(()=>this.refresh(),5000);await this.refresh();}
+  async onClose(){clearInterval(this.timer);this.generation++;}
+  async refresh(){
+    if(this.refreshing)return;this.refreshing=true;
+    const generation=++this.generation, el=this.contentEl;
+    if(!this.loaded){el.empty();el.createEl('h2',{text:'Imports'});el.createEl('p',{text:'Loading imports…'});}
+    try{
+      const data=await this.plugin.call('/v1/dropbox');if(generation!==this.generation)return;
+      const fingerprint=JSON.stringify(data);if(this.loaded&&fingerprint===this.fingerprint)return;this.fingerprint=fingerprint;
+      this.loaded=true;el.empty();el.createEl('h2',{text:'Imports'});
+      el.createEl('p',{text:'Put files in '+data.folder+'. Finished files leave the folder after they are safely stored.'});
+      if(!data.items.length)el.createEl('p',{text:'No imports yet. Put a file in '+data.folder+' to get started.'});
+      for(const item of data.items){
+        const card=el.createDiv({cls:'coppermind-card'});card.createEl('h3',{text:item.filename});
+        const labels={stabilizing:'Waiting for the file to finish syncing',pending:'Waiting to import',importing:'Processing',succeeded:'Done',already_imported:'Done',failed:'Could not import',unsupported:'Unsupported file'};
+        card.createEl('p',{text:labels[item.state]||'Processing'});
+        if(item.error)card.createEl('p',{text:item.error});
+        const part=(item.parts||[]).find(p=>p.artifact_id);
+        if(part?.path){const open=card.createEl('button',{text:'Open artifact'});open.onclick=async()=>{
+          const file=this.app.vault.getAbstractFileByPath(part.path);
+          if(!file){new Notice('The artifact has not synced to this device yet. Try again after sync.');return;}
+          await this.app.workspace.getLeaf(false).openFile(file);
+        };}
+        else if((item.parts||[]).some(p=>p.artifact))card.createEl('p',{text:'Stored as an artifact. This key needs permission to read artifacts to open it.'});
+      }
+    }catch(e){if(generation!==this.generation)return;this.loaded=false;el.empty();el.createEl('h2',{text:'Imports'});el.createEl('p',{text:'Imports are unavailable. Try again.'});const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
+    finally{this.refreshing=false;}
+  }
 }
 class ReviewView extends ItemView {
   constructor(leaf, plugin) { super(leaf); this.plugin=plugin; this.generation=0; }
@@ -428,19 +463,23 @@ module.exports=class CoppermindReview extends Plugin {
     this.settings={url:'',secret:'',...await this.loadData()};
     this.registerView(WAITING_VIEW,leaf=>new WaitingView(leaf,this));
     this.registerView(PEOPLE_VIEW,leaf=>new PeopleView(leaf,this));
+    this.registerView(IMPORTS_VIEW,leaf=>new ImportsView(leaf,this));
     this.registerView(VIEW,leaf=>new ReviewView(leaf,this));
     this.addSettingTab(new Settings(this.app,this));
     this.addCommand({id:'meetings-to-review',name:'Meetings to review',callback:()=>this.openWaiting()});
     this.addRibbonIcon('list-checks','Meetings to review',()=>this.openWaiting());
+    this.addCommand({id:'show-imports',name:'Show imports',callback:()=>this.openImports()});
     this.addCommand({id:'manage-people',name:'Manage people and voice recognition',callback:()=>this.openPeople()});
     this.addCommand({id:'review-current-note',name:'Review current note',callback:()=>this.open()});
     this.addRibbonIcon('clipboard-check','Review with Coppermind',()=>this.open());
+    this.addRibbonIcon('inbox','Coppermind imports',()=>this.openImports());
     this.registerEvent(this.app.workspace.on('file-open',file=>{if(file)this.noteFile=file;}));
   }
   async openWaiting(){
     let leaf=this.app.workspace.getLeavesOfType(WAITING_VIEW)[0]||this.app.workspace.getRightLeaf(false);
     await leaf.setViewState({type:WAITING_VIEW,active:true});await this.app.workspace.revealLeaf(leaf);await leaf.view.refresh();
   }
+  async openImports(){let leaf=this.app.workspace.getLeavesOfType(IMPORTS_VIEW)[0]||this.app.workspace.getRightLeaf(false);await leaf.setViewState({type:IMPORTS_VIEW,active:true});await this.app.workspace.revealLeaf(leaf);}
   async openPeople(){
     const file=this.app.workspace.getActiveFile();
     let leaf=this.app.workspace.getLeavesOfType(PEOPLE_VIEW)[0]||this.app.workspace.getRightLeaf(false);

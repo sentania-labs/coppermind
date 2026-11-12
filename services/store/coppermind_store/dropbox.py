@@ -1,32 +1,32 @@
 """Transient intake receipts backed by durable original exports and import history.
 
-Calendar exports route themselves by their bytes. Anything else needs a kind
-marker to be taken at all: a sidecar `<filename>.kind` beside the dropped file
-(the word `artifact`, or JSON with `kind` and optional `title`, `tags` and
-`date`), or `kind=artifact` on the upload route. Without one the file is
-parked as unsupported rather than guessed at, because a guess is how a design
-package ends up filed as a meeting.
+Calendar exports route by their bytes; known artifact formats go to the artifact
+store. Optional kind markers provide artifact metadata.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import hashlib
 import json
 import logging
 import os
 import stat
 import time
+import uuid
+from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from coppermind.atomicio import atomic_write_bytes
+from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes, sync_directory
 from coppermind.store_protocol import CreateArtifact, CreatedArtifact, StoreError
 from coppermind_store.calendar_import import CALENDAR_ID, MAX_UPLOAD
+from coppermind_store.extraction import EXTENSION_TYPES
 
 if TYPE_CHECKING:
     from coppermind_store.context_service import ContextService
@@ -35,11 +35,30 @@ log = logging.getLogger(__name__)
 COMPLETED = {"succeeded", "already_imported"}
 RECEIPT_RETENTION_S = 7 * 86400
 KIND_SUFFIX = ".kind"
-OFFICE_SUFFIXES = {".pptx", ".docx", ".xlsx", ".odt", ".odp", ".ods", ".epub"}
-NO_KIND = (
-    "No kind marker. Drop a sidecar named <filename>.kind containing the word artifact, "
-    "or upload through POST /v1/artifacts with kind: artifact. Original preserved."
-)
+OFFICE_SUFFIXES = {
+    ".ppt",
+    ".pptx",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".odt",
+    ".odp",
+    ".ods",
+    ".epub",
+    ".rtf",
+}
+ARTIFACT_SUFFIXES = EXTENSION_TYPES.keys() | OFFICE_SUFFIXES
+NO_KIND = "This file type is not supported. Choose a supported format and try again."
+NEEDS_KIND = "This document needs kind=artifact on the upload to be stored as an artifact."
+
+
+def reason_name(name: str) -> str:
+    return name.encode()[:200].decode(errors="ignore") + ".reason.txt"
+
+
+def no_kind_message(filename: str) -> str:
+    return NEEDS_KIND if Path(filename).suffix.lower() in ARTIFACT_SUFFIXES else NO_KIND
 
 
 def read_kind_marker(data: bytes) -> dict[str, Any] | None:
@@ -97,6 +116,7 @@ class Dropbox:
         records = self.context.read("dropbox", {"items": {}, "history": {}, "observations": {}})
         records.setdefault("history", {})
         records.setdefault("observations", {})
+        records.setdefault("paths", {})
         return records
 
     def save(self, records: dict[str, Any]) -> None:
@@ -153,6 +173,8 @@ class Dropbox:
         }
         if duplicate:
             item["completed_at"] = time.time()
+        if existing and existing.get("failed_path"):
+            item["failed_path"] = existing["failed_path"]
         records["items"][digest] = item
         self.save(records)
         log.info("Dropbox %s export %s", "skip" if duplicate else "adopt", digest)
@@ -188,6 +210,7 @@ class Dropbox:
 
     async def process(self) -> None:
         records = self.records()
+        before = copy.deepcopy(records)
         self.expire(records)
         for item in records["items"].values():
             if item["state"] == "pending":
@@ -197,13 +220,13 @@ class Dropbox:
                     marker = item.get("kind") or {}
                     if marker.get("kind") == "artifact":
                         stored = await self._store_artifact(item, data, marker)
-                        item["parts"] = [{"artifact_id": stored.id}]
+                        item["parts"] = [{"artifact_id": stored.id, "path": stored.path}]
                         item["state"] = "succeeded"
                         item["completed_at"] = time.time()
                         log.info("Dropbox adopt artifact %s", item["id"])
                     elif handler is None:
                         item["state"] = "unsupported"
-                        item["error"] = NO_KIND
+                        item["error"] = no_kind_message(item["filename"])
                         log.info("Dropbox park export %s: no kind marker", item["id"])
                     else:
                         name = item["filename"]
@@ -242,7 +265,8 @@ class Dropbox:
                     log.info("Dropbox fail export %s", item["id"])
             if item["state"] not in {"pending", "importing"}:
                 records["history"][item["id"]] = dict(item)
-        self.save(records)
+        if records != before:
+            self.save(records)
 
     async def _store_artifact(
         self, item: dict[str, Any], data: bytes, marker: dict[str, Any]
@@ -267,6 +291,22 @@ class Dropbox:
         except ValidationError as exc:
             raise ValueError("; ".join(error["msg"] for error in exc.errors())) from exc
         return await self.context.store.create_artifact(request)
+
+    @staticmethod
+    def display_error(item: dict[str, Any]) -> str:
+        error = item.get("error", "")
+        if item.get("state") == "unsupported" and error.startswith("No kind marker."):
+            error = no_kind_message(item["filename"])
+        if item.get("state") in {"failed", "unsupported"} and item.get("original_path"):
+            if item.get("failed_path"):
+                error += (
+                    " Find the file in Dropbox/Failed, fix it and move it back to Dropbox to retry."
+                )
+            else:
+                error += (
+                    " The file is still in Dropbox while Coppermind tries to move it to Failed."
+                )
+        return error
 
     async def dismiss(self, payload: dict[str, Any]) -> dict[str, Any]:
         async with self.context.lock:
@@ -295,6 +335,7 @@ class Dropbox:
             items.append(
                 dict(
                     item,
+                    error=self.display_error(item),
                     event_count=sum(r.event_count for r in imports),
                     retryable=any(r.retryable for r in imports if r.state == "failed"),
                     first_imported_at=min(
@@ -308,13 +349,149 @@ class Dropbox:
             )
         items.extend(
             {"id": "", "filename": key, "state": "stabilizing", "parts": [], "error": ""}
-            for key, (signature, _) in self.seen.items()
-            if records["observations"].get(key) != list(signature)
+            for key in self.waiting(records)
         )
         return {
             "folder": self.context.config().dropbox_folder,
             "items": items,
         }
+
+    def waiting(self, records: dict[str, Any]) -> list[str]:
+        root = self.context.store.notes_root / self.context.config().dropbox_folder
+        if not root.is_dir() or root.is_symlink() or any(p.is_symlink() for p in root.parents):
+            return []
+        waiting = []
+        for path, _ in self.candidates(root):
+            try:
+                info = path.lstat()
+            except OSError:
+                continue
+            key = str(path.relative_to(root))
+            if stat.S_ISREG(info.st_mode) and not (
+                key in records["paths"]
+                and records["observations"].get(key) == list(self.observe(info, path))
+            ):
+                waiting.append(key)
+        return waiting
+
+    @classmethod
+    def observe(cls, info: os.stat_result, path: Path) -> tuple[int, int, int, int]:
+        return (info.st_mtime_ns, info.st_size) + cls.sidecar_signature(
+            path.with_name(path.name + KIND_SUFFIX)
+        )
+
+    @staticmethod
+    def candidates(root: Path) -> Iterator[tuple[Path, set[str]]]:
+        for directory, dirs, files in os.walk(root, followlinks=False):
+            dirs[:] = [
+                d
+                for d in dirs
+                if not d.startswith(".")
+                and not (Path(directory) / d).is_symlink()
+                and (Path(directory) / d) != root / "Failed"
+            ]
+            markers = {name for name in files if name.endswith(KIND_SUFFIX)}
+            for name in files:
+                path = Path(directory) / name
+                if name.startswith(".") or path.suffix.lower() == ".md" or name in markers:
+                    continue
+                yield path, markers
+
+    def clear_failed(self, root: Path, item: dict[str, Any]) -> bool:
+        """Drop the Failed copy of a drop that later succeeded, if the stored bytes match it."""
+        target = root / item["failed_path"]
+        failed = root / "Failed"
+        try:
+            info = target.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                return True
+            data = self.read_stable(target, (info.st_mtime_ns, info.st_size))
+            if data is None:
+                return False
+            reason = target.with_name(reason_name(target.name))
+            if hashlib.sha256(data).hexdigest() != item["id"]:
+                reason.write_text(
+                    "This import later succeeded, but this copy differs from the stored one "
+                    "and was left here.\n"
+                )
+                return True
+            target.unlink()
+            reason.unlink(missing_ok=True)
+            if target.parent != failed:
+                target.parent.rmdir()
+            sync_directory(failed)
+            return True
+        except FileNotFoundError:
+            return True
+        except (OSError, ValueError):
+            log.exception("Dropbox could not clear a recovered file from Failed")
+            return False
+
+    def dispose(self, root: Path, key: str, tracked: dict[str, Any], item: dict[str, Any]) -> bool:
+        """Move a settled input aside before verifying it; never discard changed bytes."""
+        path = root / key
+        try:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                return True
+            signature = (info.st_mtime_ns, info.st_size)
+            if list(signature) != tracked["signature"]:
+                return True
+            failed = root / "Failed"
+            if failed.is_symlink():
+                raise ValueError("Dropbox/Failed must not be a symlink")
+            failed.mkdir(exist_ok=True)
+            target = failed / path.name
+            kept = target.with_name(target.name + KIND_SUFFIX)
+            reason = target.with_name(reason_name(target.name))
+            if any(os.path.lexists(path) for path in (target, kept, reason)):
+                folder = failed / uuid.uuid4().hex[:8]
+                folder.mkdir()
+                target = folder / path.name
+                kept = target.with_name(target.name + KIND_SUFFIX)
+            reason = target.with_name(reason_name(target.name))
+            message = (
+                item.get("error")
+                or "Processing was interrupted. Move this file back to Dropbox to retry."
+            )
+            create_exclusive_bytes(reason, (message + "\n").encode(), mode=0o600)
+            sidecar = path.with_name(path.name + KIND_SUFFIX)
+            owned = tracked.get("sidecar") not in (None, [0, -1]) and (
+                list(self.sidecar_signature(sidecar)) == tracked["sidecar"]
+            )
+            os.rename(path, target)
+            if owned:
+                os.rename(sidecar, kept)
+            if item["state"] not in COMPLETED:
+                item["failed_path"] = str(target.relative_to(root))
+            sync_directory(path.parent)
+            sync_directory(target.parent)
+            moved = target.lstat()
+            if (moved.st_mtime_ns, moved.st_size) != signature:
+                reason.write_text(
+                    "The file changed during import. Move it back to Dropbox to retry.\n"
+                )
+                return True
+            if item["state"] in COMPLETED:
+                data = self.read_stable(target, signature)
+                if data is None or hashlib.sha256(data).hexdigest() != tracked["id"]:
+                    reason.write_text(
+                        "The file changed during import. Move it back to Dropbox to retry.\n"
+                    )
+                    return True
+                target.unlink()
+                reason.unlink()
+                if owned:
+                    kept.unlink()
+                if target.parent != failed:
+                    target.parent.rmdir()
+                sync_directory(failed)
+            return True
+        except FileNotFoundError:
+            return not path.exists()
+        except (OSError, ValueError):
+            log.exception("Dropbox could not move processed file")
+            return False
 
     async def scan(self) -> None:
         root = self.context.store.notes_root / self.context.config().dropbox_folder
@@ -323,81 +500,116 @@ class Dropbox:
             return
         if root.is_symlink() or any(p.is_symlink() for p in root.parents):
             raise ValueError("Dropbox must not be a symlink")
+        async with self.context.lock:
+            records = self.records()
+            before = copy.deepcopy(records)
+            for item in records["items"].values():
+                if (
+                    item.get("failed_path")
+                    and item["state"] in COMPLETED
+                    and await asyncio.to_thread(self.clear_failed, root, item)
+                ):
+                    item.pop("failed_path")
+                    history = records["history"].get(item["id"])
+                    if history:
+                        history.pop("failed_path", None)
+            for key, tracked in list(records["paths"].items()):
+                item = records["items"].get(tracked["id"]) or records["history"].get(tracked["id"])
+                if (
+                    item
+                    and item["state"] in COMPLETED | {"failed", "unsupported"}
+                    and await asyncio.to_thread(self.dispose, root, key, tracked, item)
+                ):
+                    del records["paths"][key]
+            if records != before:
+                self.save(records)
         present = set()
         count = 0
-        for directory, dirs, files in os.walk(root, followlinks=False):
-            dirs[:] = [
-                d for d in dirs if not d.startswith(".") and not (Path(directory) / d).is_symlink()
-            ]
-            markers = {name for name in files if name.endswith(KIND_SUFFIX)}
-            for name in files:
-                path = Path(directory) / name
-                if name.startswith(".") or path.suffix.lower() == ".md" or name in markers:
-                    continue
-                count += 1
-                if count > 1000:
-                    if count == 1001:
-                        log.info("Dropbox fail folder: more than 1000 files; extras not scanned")
-                    continue
-                info = path.lstat()
-                if not stat.S_ISREG(info.st_mode):
-                    continue
-                key = str(path.relative_to(root))
-                present.add(key)
-                signature = (info.st_mtime_ns, info.st_size)
-                observed = signature + self.sidecar_signature(path.parent / (name + KIND_SUFFIX))
+        records = self.records()
+        for path, markers in self.candidates(root):
+            name = path.name
+            count += 1
+            if count > 1000:
+                if count == 1001:
+                    log.info("Dropbox fail folder: more than 1000 files; extras not scanned")
+                continue
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            key = str(path.relative_to(root))
+            present.add(key)
+            signature = (info.st_mtime_ns, info.st_size)
+            observed = self.observe(info, path)
+            if key in records["paths"] and records["observations"].get(key) == list(observed):
+                continue
+            old = self.seen.get(key)
+            if old is None or old[0] != observed:
+                self.seen[key] = (observed, time.monotonic())
+                log.info("Dropbox park file: waiting for stable bytes")
+                continue
+            if time.monotonic() - old[1] < 30:
+                continue
+            async with self.context.lock:
                 records = self.records()
-                if records["observations"].get(key) == list(observed):
-                    continue
-                old = self.seen.get(key)
-                if old is None or old[0] != observed:
-                    self.seen[key] = (observed, time.monotonic())
-                    log.info("Dropbox park file: waiting for stable bytes")
-                    continue
-                if time.monotonic() - old[1] < 30:
-                    continue
-                async with self.context.lock:
-                    records = self.records()
-                    error = ""
-                    if info.st_size > MAX_UPLOAD:
-                        error = "File exceeds 200 MB. Original remains in Dropbox."
-                    else:
-                        try:
-                            data = await asyncio.to_thread(self.read_stable, path, signature)
-                            if data is None:
-                                continue
-                            marker = None
-                            if name + KIND_SUFFIX in markers:
-                                marker = read_kind_marker(
-                                    (path.parent / (name + KIND_SUFFIX)).read_bytes()
+                error = ""
+                if info.st_size > MAX_UPLOAD:
+                    error = "The file exceeds the 200 MB intake limit."
+                else:
+                    try:
+                        data = await asyncio.to_thread(self.read_stable, path, signature)
+                        if data is None:
+                            continue
+                        marker = None
+                        if name + KIND_SUFFIX in markers:
+                            marker = read_kind_marker(
+                                (path.parent / (name + KIND_SUFFIX)).read_bytes()
+                            )
+                            if marker is None:
+                                raise ValueError(
+                                    "The file instructions could not be understood. "
+                                    "Check them and try again."
                                 )
-                                if marker is None:
-                                    raise ValueError(
-                                        "The .kind sidecar does not declare artifact; "
-                                        "nothing was stored."
-                                    )
-                            await asyncio.to_thread(self.submit, name, data, marker)
-                            records = self.records()
-                        except ValueError as exc:
-                            error = str(exc)
-                        except OSError as exc:
-                            error = f"File could not be read: {exc.strerror or 'I/O error'}"
-                    if error:
-                        identity = hashlib.sha256(f"{key}:{signature}".encode()).hexdigest()
-                        records["items"][identity] = {
-                            "id": identity,
-                            "filename": name,
-                            "state": "failed",
-                            "parts": [],
-                            "error": error,
+                        if (
+                            marker is None
+                            and self.handler(data, name) is None
+                            and path.suffix.lower() in ARTIFACT_SUFFIXES
+                        ):
+                            marker = {"kind": "artifact"}
+                        submitted = await asyncio.to_thread(self.submit, name, data, marker)
+                        records = self.records()
+                        if submitted["id"] in records["items"]:
+                            records["items"][submitted["id"]]["original_path"] = key
+                        records["paths"][key] = {
+                            "id": submitted["id"],
+                            "signature": list(signature),
+                            "sidecar": list(observed[2:]),
                         }
-                        log.info("Dropbox fail file: intake rejected")
-                    records["observations"][key] = list(observed)
-                    self.save(records)
+                    except ValueError as exc:
+                        error = str(exc)
+                    except OSError as exc:
+                        error = f"File could not be read: {exc.strerror or 'I/O error'}"
+                if error:
+                    identity = hashlib.sha256(f"{key}:{signature}".encode()).hexdigest()
+                    records["items"][identity] = {
+                        "id": identity,
+                        "filename": name,
+                        "original_path": key,
+                        "state": "failed",
+                        "parts": [],
+                        "error": error,
+                    }
+                    records["paths"][key] = {
+                        "id": identity,
+                        "signature": list(signature),
+                        "sidecar": list(observed[2:]),
+                    }
+                    log.info("Dropbox fail file: intake rejected")
+                records["observations"][key] = list(observed)
+                self.save(records)
         async with self.context.lock:
             self.seen = {key: value for key, value in self.seen.items() if key in present}
             records = self.records()
-            records["observations"] = {
-                k: v for k, v in records["observations"].items() if k in present
-            }
-            self.save(records)
+            observations = {k: v for k, v in records["observations"].items() if k in present}
+            if observations != records["observations"]:
+                records["observations"] = observations
+                self.save(records)

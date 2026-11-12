@@ -112,18 +112,19 @@ def router(wiring: Wiring) -> APIRouter:
                 title = "Imports"
                 dropbox = data.get("dropbox", {"folder": "Dropbox", "items": [], "calendars": []})
                 body += (
-                    "<p>Drop ICS or ZIP files containing ICS into <strong>"
+                    "<p>Drop calendar exports or documents into <strong>"
                     + e(dropbox["folder"])
                     + (
-                        "</strong> in Obsidian. Markdown follows the normal note workflow. Ot"
-                        "her files are preserved and reported as unsupported.</p>"
+                        "</strong> in Obsidian. Calendar exports update your calendar; "
+                        "supported documents are stored as artifacts.</p>"
                     )
                 )
                 body += (
                     '<p class="muted">Files must stay unchanged for 30 seconds. '
                     "Intake limit: 200 MB. ZIP limit: 41.94 MB expanded, "
-                    "100 entries. No files are deleted.</p>"
-                    '<p>Every export merges into <a href="/admin/context?tab=calendar">'
+                    "100 entries. Completed files leave Dropbox after they are safely stored. "
+                    "Files that cannot be handled move to Dropbox/Failed with a reason.</p>"
+                    '<p>Every calendar export merges into <a href="/admin/context?tab=calendar">'
                     "your calendar</a>. Event details show which exports witnessed it. "
                     "Completed receipts clear automatically; import history and originals "
                     "remain. Failed receipts stay until you dismiss them.</p>"
@@ -156,7 +157,10 @@ def router(wiring: Wiring) -> APIRouter:
                         )
                         + "</p>"
                     )
-                    if item["state"] in {"succeeded", "already_imported"}:
+                    if item["state"] in {"succeeded", "already_imported"} and (
+                        item.get("first_imported_at")
+                        or any(part.get("import_id") for part in item["parts"])
+                    ):
                         body += "<p>" + e(_event_count(item.get("event_count", 0))) + "</p>"
                         if item.get("first_imported_at"):
                             body += (
@@ -177,7 +181,7 @@ def router(wiring: Wiring) -> APIRouter:
                 if not dropbox["items"]:
                     body += (
                         '<p class="notice">No receipts to show. '
-                        "Add an ICS or ZIP file to the "
+                        "Add a calendar export or document to the "
                         + e(dropbox["folder"])
                         + " folder in your Obsidian vault to import it.</p>"
                     )
