@@ -556,7 +556,8 @@ separate calendars. Calendar UID binding and identity claiming are removed.
 Dropbox states are `pending`, `importing`, `succeeded`, `already_imported`,
 `failed`, and `unsupported`. Completed receipts expire after seven days; failed receipts remain until dismissed.
 Dismissal never deletes original exports or calendar import history. An identical
-re-drop is `already_imported` and does not create another import. A filesystem
+re-drop of an imported export is `already_imported` and does not create another import;
+a re-drop of a failed one runs the import again. A filesystem
 drop that cannot be handled moves to `Dropbox/Failed` with a reason sidecar,
 whether or not its receipt is dismissed. Correct it and move it back to Dropbox
 to retry. Completed drops leave
