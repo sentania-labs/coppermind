@@ -116,7 +116,7 @@ def router(wiring: Wiring) -> APIRouter:
                     + e(dropbox["folder"])
                     + (
                         "</strong> in Obsidian. Calendar exports update your calendar; "
-                        "supported documents and other files are stored as artifacts.</p>"
+                        "supported documents are stored as artifacts.</p>"
                     )
                 )
                 body += (

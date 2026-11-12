@@ -1102,6 +1102,29 @@ async def test_a_failed_drop_that_later_succeeds_leaves_failed(tmp_path, monkeyp
     assert "failed_path" not in dropbox.records()["items"][stale["id"]]
 
 
+async def test_resubmitting_a_failed_drop_keeps_its_failed_copy_reference(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    dropbox = store.context.dropbox
+    dropbox.submit("one.ics", calendar())
+    await finish(store)
+    stale_bytes = calendar().replace(b"Planning", b"Conflict")
+    (root / "two.ics").write_bytes(stale_bytes)
+    await dropbox.scan()
+    clock[0] = 31
+    await dropbox.scan()
+    await finish(store)
+    await dropbox.scan()
+    (stale,) = [i for i in dropbox.records()["items"].values() if i["filename"] == "two.ics"]
+    failed_path = stale["failed_path"]
+    resubmitted = dropbox.submit("two.ics", stale_bytes)
+    assert resubmitted["failed_path"] == failed_path
+    assert dropbox.records()["items"][stale["id"]]["failed_path"] == failed_path
+
+
 async def test_a_changed_failed_copy_is_kept_when_the_drop_later_succeeds(tmp_path, monkeypatch):
     store = local_store(tmp_path)
     root = store.notes_root / "Dropbox"

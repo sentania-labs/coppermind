@@ -173,6 +173,8 @@ class Dropbox:
         }
         if duplicate:
             item["completed_at"] = time.time()
+        if existing and existing.get("failed_path"):
+            item["failed_path"] = existing["failed_path"]
         records["items"][digest] = item
         self.save(records)
         log.info("Dropbox %s export %s", "skip" if duplicate else "adopt", digest)
