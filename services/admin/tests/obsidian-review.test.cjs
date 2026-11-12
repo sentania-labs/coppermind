@@ -15,6 +15,8 @@ class El {
   createDiv(options){return this.createEl('div',options);}
   createSpan(options){return this.createEl('span',options);}
   all(){return [this,...this.children.flatMap(x=>x.all())];}
+  querySelectorAll(selectors){const tags=selectors.split(',').map(s=>s.trim());return this.all().filter(e=>tags.includes(e.tag));}
+  setText(text){this.text=text;}
 }
 class Setting {
   constructor(el){this.el=el;}
@@ -22,7 +24,8 @@ class Setting {
   addComponent(fn){fn(this.el);return this;}
   addText(fn){const control={inputEl:{},setValue(){return control;},onChange(){return control;}};fn(control);return this;}
   addToggle(fn){const toggle=this.el.createEl("toggle");const control={setDisabled(v){toggle.disabled=v;return control;},onChange(fn){toggle.onchange=fn;return control;},setValue(){return control;}};fn(control);return this;}
-  addButton(fn){const button=this.el.createEl('button');const control={setButtonText(v){button.text=v;return control;},onClick(fn){button.onclick=fn;return control;}};fn(control);return this;}
+  addButton(fn){const button=this.el.createEl('button');const control={setButtonText(v){button.text=v;return control;},setDisabled(v){button.disabled=v;return control;},onClick(fn){button.onclick=fn;return control;}};fn(control);return this;}
+  addDropdown(fn){const dropdown=this.el.createEl('select');const control={addOption(v,text){dropdown.createEl('option',{value:v,text});return control;},setValue(v){dropdown.value=v;return control;},onChange(fn){dropdown.onchange=()=>fn(dropdown.value);return control;}};fn(control);return this;}
 }
 async function fixture(local, overrides={}){
   const raw='---\nid: test-note\nreviewed: false\n---\nHuman prose.\n';
@@ -32,7 +35,7 @@ async function fixture(local, overrides={}){
   let factory;const factories={};const modals=[];
   class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(){}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
-  const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null}};
+  const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw,getAbstractFileByPath:path=>({path})},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null,openLinkText:()=>{}}};
   const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/recordings/waiting'))return {status:200,json:overrides.waiting};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
@@ -56,6 +59,56 @@ test('credential is read from secret storage, not plugin settings',async()=>{
   assert.equal(plugin.settings.secret,'local-secret-name');
   assert.ok(!JSON.stringify(plugin.settings).includes('synthetic-credential'));
   assert.equal(requests[0].headers.Authorization,'Bearer synthetic-credential');
+});
+
+test('a suggested meeting can be changed before confirming',async()=>{
+  const meeting={calendar_hash:'calendar',suggested_event_id:'a',candidates:[{event_id:'a',title:'Planning',people:[{name:'Alex'}]},{event_id:'b',title:'Budget',people:[{name:'Blair'}]}]};
+  const f=await fixture(undefined,{recording_meeting:meeting});
+  const radios=f.view.contentEl.all().filter(e=>e.tag==='input'&&['a','b'].includes(e.value));
+  assert.equal(radios.find(r=>r.value==='a').checked,true);
+  const choice=radios.find(r=>r.value==='b');choice.checked=true;choice.onchange();
+  await f.view.contentEl.all().find(e=>e.text==='Use selected meeting').onclick();
+  const request=f.requests.find(r=>r.url.endsWith('/recording-meeting'));
+  assert.equal(JSON.parse(request.body).event_id,'b');
+});
+
+test('merging requires a confirmation and uses the checked destination and summary',async()=>{
+  const raw='---\nid: test-note\nreviewed: false\n---\nHuman prose.\n';
+  const digest='sha256:'+Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(raw))).toString('hex');
+  const f=await fixture(undefined,{recording_merge:{state:'offered',transcript_path:'_Sources/Transcript.md',candidates:[{id:'target',title:'My meeting',path:'Notes/My meeting.md',content_hash:digest}]},meeting_summary:{summary:'Launch plan.',decisions:'',action_items:''},job_id:'job'});
+  f.view.contentEl.all().find(e=>e.text==='Review merge').onclick();
+  assert.equal(f.requests.filter(r=>r.url.endsWith('/recording-merge')).length,0);
+  assert.ok(f.modals[0].contentEl.all().some(e=>e.text==='View transcript'));
+  await f.modals[0].contentEl.all().find(e=>e.text==='Confirm merge').onclick();
+  const request=f.requests.find(r=>r.url.endsWith('/recording-merge'));
+  assert.equal(JSON.parse(request.body).target_id,'target');
+  assert.equal(JSON.parse(request.body).meeting_summary.summary,'Launch plan.');
+  assert.ok(f.view.contentEl.all().some(e=>e.text==='Recording added'));
+});
+
+test('merge shows progress and prevents conflicting actions until it resolves',async()=>{
+  const raw='---\nid: test-note\nreviewed: false\n---\nHuman prose.\n';
+  const digest='sha256:'+Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(raw))).toString('hex');
+  const f=await fixture(undefined,{recording_merge:{state:'offered',candidates:[{id:'target',title:'My meeting',path:'Notes/My meeting.md',content_hash:digest}]},meeting_summary:{summary:'Launch plan.',decisions:'',action_items:''},job_id:'job'});
+  let rejectMerge;const call=f.plugin.call.bind(f.plugin);
+  f.plugin.call=(url,...args)=>url.endsWith('/recording-merge')?new Promise((_,reject)=>{rejectMerge=reject;}):call(url,...args);
+  f.view.contentEl.all().find(e=>e.text==='Review merge').onclick();
+  const pending=f.modals[0].contentEl.all().find(e=>e.text==='Confirm merge').onclick();
+  await new Promise(resolve=>setTimeout(resolve,20));
+  assert.ok(f.view.contentEl.all().some(e=>e.text==='Adding the recording to your note…'));
+  for(const text of ['Review merge','Keep separate','Apply kept suggestions & mark reviewed','Mark reviewed without changes']){
+    const button=f.view.contentEl.all().find(e=>e.text===text);assert.ok(button,text);assert.equal(button.disabled,true,text);
+  }
+  rejectMerge(Error('Connection lost'));await pending;
+  assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('Refresh this panel to check its status before trying again.')));
+  assert.equal(f.view.contentEl.all().find(e=>e.text==='Refresh merge status').disabled,false);
+});
+
+test('an interrupted merge offers retry from the companion',async()=>{
+  const f=await fixture(undefined,{recording_merge:{state:'attention',error:'The destination note is unavailable.'}});
+  assert.ok(f.view.contentEl.all().some(e=>e.text==='The destination note is unavailable.'));
+  await f.view.contentEl.all().find(e=>e.text==='Retry merge').onclick();
+  assert.ok(f.requests.some(r=>r.url.endsWith('/recording-merge/retry')));
 });
 
 test('reviewed flag does not hide interrupted completion recovery',async()=>{

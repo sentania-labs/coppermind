@@ -15,7 +15,20 @@ from coppermind.schema import (
     note_start_time,
     parse_note_time,
 )
-from coppermind.store_protocol import NoteDocument, PatchFrontmatter, StoreError
+from coppermind.store_protocol import (
+    ArtifactsFilesystemUnavailable,
+    MetadataUnavailable,
+    NoteDocument,
+    NoteQuery,
+    NotesFilesystemUnavailable,
+    NotFound,
+    PatchFrontmatter,
+    SourcesFilesystemUnavailable,
+    StoreError,
+    StoreUnavailable,
+    ValidationFailed,
+    VersionConflict,
+)
 from coppermind_store import meeting_summary, speaker_names
 
 if TYPE_CHECKING:
@@ -61,6 +74,415 @@ class NoteLifecycle:
 
     def _default_timezone(self) -> str:
         return self.context.store.control.settings().general.timezone
+
+    async def merge_candidates(self, note: NoteDocument, recording: Any) -> list[dict[str, Any]]:
+        """Find human notes linked to the same event on the same day."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from coppermind_store.meeting_match import overlapping
+
+        schema = self.context.store.control.schema()
+        if (
+            not self.context.in_review_folder(note.path)
+            or note.frontmatter.get(schema.role("reviewed_key")) is True
+        ):
+            return []
+        if self.context.read("recording-merge-dismissals", {}).get(recording.source_id):
+            return []
+        field = self.context.config().assignments["enrichment"].event_field
+        choice = self.context.read("recording-meetings", {}).get(recording.source_id, {})
+        event_id = choice.get("event_id") or (note.frontmatter.get(field) if field else None)
+        associations = self.context.read("associations", {})
+        linked_events = associations.get(note.id, {}).get("events", [])
+        if not event_id and len(linked_events) == 1:
+            event_id = linked_events[0]
+        day = note_date(note.frontmatter, schema)
+        if not event_id or day is None:
+            return []
+        zone = ZoneInfo(self._default_timezone())
+        events = await self.context.recording_calendar_candidates(note)
+
+        def on_day(event: dict[str, Any]) -> bool:
+            try:
+                start = datetime.fromisoformat(event["start"])
+                return (start.astimezone(zone) if start.tzinfo else start).date() == day
+            except (KeyError, TypeError, ValueError):
+                return False
+
+        occurrences = [e for e in events if e["event_id"] == event_id and on_day(e)]
+        selected_occurrence = None
+        if len(occurrences) > 1:
+            captured = getattr(recording, "captured_at", "")
+            if not captured and (start := note_start_time(note.frontmatter, schema)):
+                captured = datetime.combine(day, start, zone).isoformat()
+            matching = overlapping(occurrences, captured)
+            if len(matching) != 1:
+                return []
+            selected_occurrence = matching[0]
+        generated = {r.note_id for r in self.context.recordings.jobs() if r.note_id}
+        matches = []
+        cursor = None
+        while True:
+            page = await self.context.store.list_notes(
+                NoteQuery.model_validate(
+                    {"from": day, "to": day, "state": "ok", "limit": 200, "cursor": cursor}
+                )
+            )
+            for item in page.items:
+                if item.id == note.id or item.id in generated:
+                    continue
+                candidate = await self.context.store.get_note(item.id)
+                if selected_occurrence is not None:
+                    start = note_start_time(candidate.frontmatter, schema)
+                    if not start or not overlapping(
+                        [selected_occurrence], datetime.combine(day, start, zone).isoformat()
+                    ):
+                        continue
+                source_opening = False
+                for source_id in candidate.sources:
+                    if not is_valid_id(source_id):
+                        source_opening = True
+                        break
+                    try:
+                        import json
+
+                        manifest = json.loads(
+                            (
+                                self.context.store.sources_root / source_id / "manifest.json"
+                            ).read_text()
+                        )
+                    except (OSError, ValueError):
+                        source_opening = True
+                        break
+                    merged = self.context.read("recording-merges/" + source_id, {})
+                    if manifest.get("note_id") == candidate.id and not (
+                        merged.get("state") == "complete"
+                        and merged.get("target_id") == candidate.id
+                    ):
+                        source_opening = True
+                        break
+                if source_opening:
+                    continue
+                linked = associations.get(item.id, {}).get("events", [])
+                if event_id in linked or (field and candidate.frontmatter.get(field) == event_id):
+                    matches.append(
+                        {
+                            "id": candidate.id,
+                            "title": candidate.title,
+                            "path": candidate.path,
+                            "content_hash": candidate.content_hash,
+                        }
+                    )
+            if not page.next_cursor:
+                return matches
+            cursor = page.next_cursor
+
+    async def choose_recording_meeting(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Confirm an overlapping event, rechecking the note and calendar at the write."""
+        async with self.lock:
+            note = await self.context.store.get_note(payload["note_id"])
+            if note.content_hash != payload.get("if_match"):
+                raise ValueError("note changed; refresh the review")
+            if await self.context.calendar_evidence_hash(note) != payload.get("calendar_hash"):
+                raise ValueError("calendar changed; refresh the review")
+            recording = next(
+                (r for r in self.context.recordings.jobs() if r.note_id == note.id and r.source_id),
+                None,
+            )
+            if not recording:
+                raise ValueError("recording is no longer attached to this note")
+            event_id = payload.get("event_id")
+            candidates = await self.context.recording_calendar_candidates(note)
+            selected_event = next(
+                (event for event in candidates if event["event_id"] == event_id), None
+            )
+            if selected_event is None:
+                raise ValueError("choose an event from the current matching meetings")
+            async with self.context.lock:
+                choices = self.context.read("recording-meetings", {})
+                previous_choice = choices.get(recording.source_id, {})
+                previous = previous_choice.get("event_id")
+                associations = self.context.read("associations", {})
+                record = associations.setdefault(
+                    note.id, {"events": [], "contacts": [], "attendees": []}
+                )
+                if any(value not in {previous, event_id} for value in record.get("events", [])):
+                    raise ValueError("the note already names a different meeting; edit it first")
+                field = self.context.config().assignments["enrichment"].event_field
+                existing = note.frontmatter.get(field) if field else None
+                if existing and existing not in {previous, event_id}:
+                    raise ValueError("the note already names a different meeting; edit it first")
+                title = str(selected_event.get("title", "")).strip()
+                old_title = previous_choice.get("title") or recording.title
+                prefix = "# " + old_title + "\n"
+                body = note.body
+                if title and not any(c in title for c in "\r\n\0") and body.startswith(prefix):
+                    body = "# " + title + "\n" + body[len(prefix) :]
+                if body != note.body:
+                    import base64
+
+                    from coppermind.store_protocol import ReplaceNote
+                    from coppermind_store.fs import content_hash
+
+                    data = (await self.context.store._locate(note.id))[1].read_bytes()
+                    if content_hash(data) != note.content_hash:
+                        raise ValueError("note changed; refresh the review")
+                    self.context.write(
+                        "recording-meeting-history/"
+                        + recording.source_id
+                        + "/"
+                        + note.content_hash.removeprefix("sha256:"),
+                        {
+                            "note_id": note.id,
+                            "path": note.path,
+                            "content": base64.b64encode(data).decode(),
+                        },
+                    )
+                    frontmatter = dict(note.frontmatter)
+                    if field:
+                        frontmatter[field] = event_id
+                    note = await self.context.store.replace_note(
+                        note.id,
+                        ReplaceNote(frontmatter=frontmatter, body=body),
+                        if_match=note.content_hash,
+                    )
+                elif field and existing != event_id:
+                    note = await self.context.store.patch_frontmatter(
+                        note.id, PatchFrontmatter(set={field: event_id}), if_match=note.content_hash
+                    )
+                record["events"] = [event_id]
+                self.context.write("associations", associations)
+                choices[recording.source_id] = {"event_id": event_id, "title": title}
+                self.context.write("recording-meetings", choices)
+            queued = False
+            if getattr(self.context.config().assignments["enrichment"], "enabled", False):
+                try:
+                    await self.context.queue_note(note.id)
+                    queued = True
+                except (ValueError, StoreError):
+                    pass
+            return {
+                "note_id": note.id,
+                "event_id": event_id,
+                "note_hash": note.content_hash,
+                "suggestions_queued": queued,
+            }
+
+    async def dismiss_recording_merge(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self.lock:
+            note = await self.context.store.get_note(payload["note_id"])
+            if note.content_hash != payload.get("if_match"):
+                raise ValueError("note changed; refresh the review")
+            recording = next(
+                (r for r in self.context.recordings.jobs() if r.note_id == note.id and r.source_id),
+                None,
+            )
+            if not recording:
+                raise ValueError("there is no current merge offer")
+            if self.context.read("recording-merge-dismissals", {}).get(recording.source_id):
+                return {"dismissed": True}
+            if not await self.merge_candidates(note, recording):
+                raise ValueError("there is no current merge offer")
+            async with self.context.lock:
+                dismissed = self.context.read("recording-merge-dismissals", {})
+                dismissed[recording.source_id] = True
+                self.context.write("recording-merge-dismissals", dismissed)
+            return {"dismissed": True}
+
+    async def merge_recording(self, payload: dict[str, Any]) -> dict[str, Any]:
+        import base64
+
+        from coppermind_store import artifacts, recording_merge
+        from coppermind_store.fs import content_hash
+        from coppermind_store.recordings import SUMMARY_PENDING, SUMMARY_PENDING_EARLIER
+
+        async with self.lock:
+            note = await self.context.store.get_note(payload["note_id"])
+            recording = next(
+                (r for r in self.context.recordings.jobs() if r.note_id == note.id and r.source_id),
+                None,
+            )
+            if not recording:
+                raise ValueError("The recording is no longer available for this note.")
+            key = "recording-merges/" + recording.source_id
+            receipt = self.context.read(key, {})
+            if receipt:
+                if receipt["target_id"] != payload.get("target_id"):
+                    raise ValueError("This recording already has a merge in progress.")
+                result = await recording_merge.apply(self.context, receipt)
+                return {"state": result["state"], "target_id": result["target_id"]}
+            if payload.get("confirmation") != "Merge recording":
+                raise ValueError("Confirm the merge before continuing.")
+            if note.content_hash != payload.get("if_match"):
+                raise ValueError("The recording note changed. Refresh the review.")
+            candidates = await self.merge_candidates(note, recording)
+            candidate = next((c for c in candidates if c["id"] == payload.get("target_id")), None)
+            if not candidate or candidate["content_hash"] != payload.get("target_hash"):
+                raise ValueError("The matching note changed. Refresh the review.")
+            job = self.context.newest_job(note.id)
+            if (
+                not job
+                or job.id != payload.get("job_id")
+                or job.state != "suggested"
+                or not job.result
+                or not job.result.meeting_summary
+                or job.note_hash != note.content_hash
+            ):
+                raise ValueError("The recording summary is not ready to merge. Refresh the review.")
+            summary = MeetingSummary.model_validate(payload.get("meeting_summary"))
+            manifest = await self.context.store.get_source(recording.source_id)
+            if (
+                job.source_versions.get(recording.source_id) != manifest.current_revision
+                or job.evidence_hash != await self.context.note_evidence_hash(note)
+            ):
+                raise ValueError("The recording or calendar changed. Refresh the review.")
+            recording_merge.append_summary("", summary, manifest.projection_path or "")
+            paths = await artifacts.known_paths(self.context.store, [recording.artifact_id])
+            artifact = artifacts.read_manifest(self.context.store, recording.artifact_id)
+            artifact_link = artifacts.link_for(
+                paths.get(recording.artifact_id), str(artifact["title"]), artifact.get("url")
+            )
+            projection = str(manifest.projection_path).removesuffix(".md")
+            chosen_title = (
+                self.context.read("recording-meetings", {})
+                .get(recording.source_id, {})
+                .get("title")
+            )
+            expected_bodies = {
+                artifacts.body_with_links(
+                    f"# {title}\n\n[[{projection}]]\n{pending}", [artifact_link]
+                ).strip()
+                for pending in (SUMMARY_PENDING, SUMMARY_PENDING_EARLIER)
+                for title in {recording.title, chosen_title}
+                if title
+            }
+            if note.body.strip() not in expected_bodies:
+                raise ValueError("The recording note has edits. Move them before merging.")
+            generated_path = (await self.context.store._locate(note.id))[1]
+            target = await self.context.store.get_note(candidate["id"])
+            target_path = (await self.context.store._locate(target.id))[1]
+            generated_bytes, target_bytes = generated_path.read_bytes(), target_path.read_bytes()
+            if (
+                content_hash(generated_bytes) != note.content_hash
+                or content_hash(target_bytes) != target.content_hash
+                or target.content_hash != candidate["content_hash"]
+            ):
+                raise ValueError("A note changed. Refresh the review.")
+            marker = f"<!-- coppermind-recording:{recording.source_id} -->"
+            if marker in target.body:
+                raise ValueError("This note already contains a recording merge marker.")
+            manifest_bytes = (
+                self.context.store.sources_root / recording.source_id / "manifest.json"
+            ).read_bytes()
+            receipt = {
+                "state": "applying",
+                "step": "prepared",
+                "source_id": recording.source_id,
+                "source_revision": manifest.current_revision,
+                "generated_id": note.id,
+                "artifact_id": recording.artifact_id,
+                "generated_path": note.path,
+                "generated_hash": note.content_hash,
+                "generated_snapshot": base64.b64encode(generated_bytes).decode(),
+                "target_id": target.id,
+                "target_hash": target.content_hash,
+                "target_snapshot": base64.b64encode(target_bytes).decode(),
+                "manifest_snapshot": base64.b64encode(manifest_bytes).decode(),
+                "summary": summary.model_dump(),
+                "projection_path": manifest.projection_path,
+            }
+            self.context.write(key, receipt)
+            result = await recording_merge.apply(self.context, receipt)
+            return {"state": result["state"], "target_id": result["target_id"]}
+
+    async def resume_recording_merges(self) -> None:
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from coppermind_store import recording_merge
+
+        async with self.lock:
+            for path in sorted((self.context.root / "recording-merges").glob("*.json")):
+                if not is_valid_id(path.stem):
+                    continue
+                try:
+                    receipt = self.context.read("recording-merges/" + path.stem, {})
+                except (ValueError, OSError):
+                    continue
+                if receipt.get("state") != "applying":
+                    continue
+                try:
+                    await recording_merge.apply(self.context, receipt)
+                except (
+                    ValueError,
+                    StoreError,
+                    OSError,
+                    SQLAlchemyError,
+                    KeyError,
+                    TypeError,
+                ) as exc:
+                    transient = isinstance(
+                        exc,
+                        (
+                            StoreUnavailable,
+                            MetadataUnavailable,
+                            NotesFilesystemUnavailable,
+                            SourcesFilesystemUnavailable,
+                            ArtifactsFilesystemUnavailable,
+                            VersionConflict,
+                        ),
+                    )
+                    if isinstance(exc, (ValueError, FileNotFoundError)) or (
+                        isinstance(exc, StoreError) and not transient
+                    ):
+                        receipt["state"] = "attention"
+                    if isinstance(exc, VersionConflict):
+                        receipt["error"] = "The destination note changed. Trying again."
+                    elif isinstance(exc, (ValueError, ValidationFailed)):
+                        receipt["error"] = str(exc)
+                    else:
+                        receipt["error"] = (
+                            "A note or recording is unavailable. It was kept; "
+                            "try again when it returns."
+                        )
+                    self.context.write("recording-merges/" + path.stem, receipt)
+
+    async def retry_recording_merge(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from coppermind_store import recording_merge
+
+        async with self.lock:
+            note = await self.context.store.get_note(payload["note_id"])
+            if note.content_hash != payload.get("if_match"):
+                raise ValueError("The recording note changed. Refresh the review.")
+            recording = next(
+                (r for r in self.context.recordings.jobs() if r.note_id == note.id and r.source_id),
+                None,
+            )
+            if not recording:
+                raise ValueError("The recording is unavailable.")
+            key = "recording-merges/" + recording.source_id
+            receipt = self.context.read(key, {})
+            if receipt.get("state") not in {"attention", "applying", "complete"}:
+                raise ValueError("There is no recording merge to retry.")
+            if receipt.get("state") != "complete":
+                receipt["state"] = "applying"
+                self.context.write(key, receipt)
+            try:
+                result = await recording_merge.apply(self.context, receipt)
+            except (NotFound, FileNotFoundError) as exc:
+                receipt["state"] = "attention"
+                receipt["error"] = (
+                    "The destination note is unavailable. The recording note was kept."
+                )
+                self.context.write(key, receipt)
+                raise ValueError(receipt["error"]) from exc
+            target = await self.context.store.get_note(result["target_id"])
+            return {
+                "state": result["state"],
+                "target_id": target.id,
+                "target_path": target.path,
+                "target_title": target.title,
+            }
 
     async def detail(self, payload: dict[str, Any]) -> dict[str, Any]:
         from coppermind_store.context_service import fingerprint
@@ -141,10 +563,44 @@ class NoteLifecycle:
         if update is not None:
             update = dict(update, candidates=await self.context.calendar_candidates(note))
         manual = None
-        if any(r.note_id == note.id and r.source_id for r in self.context.recordings.jobs()):
-            manual = await speaker_names.evidence(
-                self.context, note, await self.context.calendar_candidates(note)
-            )
+        recording = next(
+            (r for r in self.context.recordings.jobs() if r.note_id == note.id and r.source_id),
+            None,
+        )
+        meeting = None
+        merge = None
+        if recording:
+            candidates = await self.context.recording_calendar_candidates(note)
+            suggested = [
+                s.event_ids[0]
+                for s in (job.result.suggestions if job and job.result and not stale else [])
+                if s.kind == "event" and len(s.event_ids) == 1 and s.confidence >= 0.8
+            ]
+            meeting = {
+                "candidates": candidates,
+                "suggested_event_id": suggested[0] if len(suggested) == 1 else None,
+                "calendar_hash": await self.context.calendar_evidence_hash(note),
+                "selected_event_id": self.context.read("recording-meetings", {})
+                .get(recording.source_id, {})
+                .get("event_id"),
+            }
+            manual = await speaker_names.evidence(self.context, note, candidates)
+            receipt = self.context.read("recording-merges/" + recording.source_id, {})
+            if receipt:
+                merge = {
+                    "state": receipt.get("state"),
+                    "error": receipt.get("error", ""),
+                    "target_id": receipt.get("target_id"),
+                }
+            elif job and job.result and job.result.meeting_summary and not stale:
+                matches = await self.merge_candidates(note, recording)
+                if matches:
+                    source = await self.context.store.get_source(recording.source_id)
+                    merge = {
+                        "state": "offered",
+                        "candidates": matches,
+                        "transcript_path": source.projection_path,
+                    }
         if manual:
             from coppermind_store.voice_store import VoiceStore
 
@@ -195,6 +651,8 @@ class NoteLifecycle:
             "roles": self.context.store.control.schema().roles,
             "finalization": self.context.read("finalized", {}).get(note.id),
             "calendar_update": update,
+            "recording_meeting": meeting,
+            "recording_merge": merge,
             "body_hash": fingerprint(note.body),
             "completion": self.context.read("review-completions/" + note.id, {}),
         }
@@ -349,7 +807,7 @@ class NoteLifecycle:
                 }
                 if manual_choices:
                     manual = await speaker_names.evidence(
-                        self.context, note, await self.context.calendar_candidates(note)
+                        self.context, note, await self.context.recording_calendar_candidates(note)
                     )
                     if not manual or (manual["source_id"], manual["revision"]) != (
                         payload.get("manual_source_id"),
@@ -541,7 +999,7 @@ class NoteLifecycle:
             async with self.context.lock:
                 voice = VoiceStore(self.context)
                 for recording in self.context.recordings.jobs():
-                    if recording.note_id != identity:
+                    if self.context.recordings.parent_note_id(recording) != identity:
                         continue
                     if operation and recording.source_id == operation["source_id"]:
                         pending = self.context.read("voice-pending/" + recording.id, [])
@@ -557,7 +1015,9 @@ class NoteLifecycle:
                                 for candidate in candidates:
                                     proposed_id = candidate["id"].removeprefix("person:")
                                     if proposed_id != chosen_id:
-                                        voice.reject(identity, label, proposed_id)
+                                        voice.reject(
+                                            identity, label, proposed_id, recording.source_id
+                                        )
                         for speaker in pending:
                             if not isinstance(speaker, dict):
                                 continue
@@ -583,6 +1043,7 @@ class NoteLifecycle:
                                     now(),
                                     speaker.get("speech_seconds"),
                                     speaker.get("embeddings", []),
+                                    recording.source_id,
                                 )
                     (self.context.root / "voice-pending" / (recording.id + ".json")).unlink(
                         missing_ok=True

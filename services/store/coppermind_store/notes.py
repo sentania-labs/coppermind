@@ -34,7 +34,7 @@ import json
 import os
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, date, datetime
 from math import isfinite
 from pathlib import Path
@@ -924,6 +924,116 @@ class LocalStore:
                 sources=[str(source) for source in sources] if isinstance(sources, list) else [],
             )
         )
+
+    @writer
+    async def merge_note_update(
+        self, note_id: NoteId, changes: dict[str, Any], suffix: str, if_match: ETag
+    ) -> NoteDocument:
+        """Apply internal source citations and an append without rewriting existing prose."""
+        schema = self.control.schema()
+        allowed = {schema.role("sources_key"), schema.optional_role("artifacts_key")}
+        if not set(changes) <= allowed:
+            raise ValueError("merge can only add source and recording citations")
+
+        def build(text: str, current: dict[str, Any], before_body: str) -> tuple[str, str]:
+            for field, values in changes.items():
+                existing = current.get(field, [])
+                if (
+                    not isinstance(existing, list)
+                    or not isinstance(values, list)
+                    or values[: len(existing)] != existing
+                    or any(not is_valid_id(value) for value in values)
+                ):
+                    raise ValueError("merge citations must only add valid identities")
+            patched = fm.patch(text, _with_kinds(changes, schema)) if changes else text
+            return patched + suffix, before_body + suffix
+
+        return await self._merge_write(note_id, if_match, build)
+
+    @writer
+    async def settle_recording_audio(
+        self, note_id: NoteId, drop: str, old: str, new: str, if_match: ETag
+    ) -> NoteDocument:
+        """Drop one removed recording's citation and swap one span of Coppermind's own text."""
+        schema = self.control.schema()
+        artifacts_key = schema.optional_role("artifacts_key")
+
+        def build(text: str, current: dict[str, Any], before_body: str) -> tuple[str, str]:
+            cited = current.get(artifacts_key, []) if artifacts_key else []
+            kept = [item for item in cited if item != drop] if isinstance(cited, list) else []
+            patched = text
+            if drop and isinstance(cited, list) and kept != cited:
+                patched = fm.patch(text, _with_kinds({artifacts_key: kept}, schema))
+            body = before_body
+            if old:
+                if old not in before_body:
+                    raise ValueError("the recording text is no longer in the note")
+                body = before_body.replace(old, new, 1)
+            if not patched.endswith(before_body):
+                raise ValueError("merge would change existing note text")
+            return patched[: len(patched) - len(before_body)] + body, body
+
+        return await self._merge_write(note_id, if_match, build)
+
+    async def _merge_write(
+        self,
+        note_id: NoteId,
+        if_match: ETag,
+        build: Callable[[str, dict[str, Any], str], tuple[str, str]],
+    ) -> NoteDocument:
+        """Write `build`'s text through a frontmatter patch, refusing any other body change."""
+        schema = self.control.schema()
+        relative, path = await self._locate(note_id)
+        async with self._lock_for(note_id):
+            original, current, _ = _bytes_at(note_id, relative, path, schema, if_match)
+            text = original.decode("utf-8")
+            before_body = fm.parse(text)[1]
+            updated, expected = build(text, current, before_body)
+            frontmatter, body = fm.parse(updated)
+            if body != expected:
+                raise ValueError("merge would change existing note text")
+            problems = schema.validate_frontmatter(frontmatter)
+            problems += schema.tag_problems(frontmatter, current)
+            if problems:
+                raise ValidationFailed(problems)
+            await self._artifact_links(frontmatter, current)
+            data = updated.encode("utf-8")
+            now = datetime.now(tz=UTC)
+            digest = content_hash(data)
+            try:
+                async with transaction(self.session_factory) as session:
+                    await session.execute(
+                        sa.update(Note)
+                        .where(Note.id == note_id)
+                        .values(
+                            title=_title_of(body, path),
+                            content_hash=digest,
+                            size_bytes=len(data),
+                            mtime=now,
+                            frontmatter=_jsonable(frontmatter),
+                            **_mirror_columns(frontmatter, schema),
+                            state="ok",
+                            state_reason=None,
+                            updated_at=now,
+                        )
+                    )
+                    await index_note(
+                        session,
+                        note_id=note_id,
+                        path=relative,
+                        title=_title_of(body, path),
+                        body=body,
+                        version=digest,
+                        now=now,
+                        notes_folder=self.control.settings().notes.notes_folder,
+                    )
+                    _replace_if_unchanged(note_id, relative, path, data, schema, if_match)
+            except BaseException as exc:
+                typed = _metadata_failure(exc)
+                if typed is None:
+                    raise
+                raise typed from exc
+        return await self.get_note(note_id)
 
     @writer
     async def patch_frontmatter(

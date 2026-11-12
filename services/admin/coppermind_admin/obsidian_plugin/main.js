@@ -102,10 +102,71 @@ class ReviewView extends ItemView {
         return;
       }
       el.createEl('p',{text:'Edit the note and its properties as usual. Finish here when you are ready.'});
+      const meeting=data.recording_meeting;
+      if(meeting?.candidates?.length>1){
+        const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Which meeting was this?'});
+        box.createEl('p',{text:meeting.suggested_event_id?'Suggested from the conversation. Please check the choice.':'Several meetings could match. Choose one to use its context.'});
+        let choice=meeting.selected_event_id||meeting.suggested_event_id||'';
+        for(const event of meeting.candidates){
+          const row=box.createEl('label',{cls:'coppermind-meeting-option'});
+          const radio=row.createEl('input',{attr:{type:'radio',name:'coppermind-meeting-'+id},value:event.event_id});
+          radio.checked=choice===event.event_id;radio.onchange=()=>{if(radio.checked)choice=event.event_id;};
+          const people=(event.people||[]).map(p=>p.name).filter(Boolean).join(', ');
+          const when=event.start&&!Number.isNaN(Date.parse(event.start))?new Date(event.start).toLocaleString([],{dateStyle:'medium',timeStyle:'short'}):'';
+          row.createEl('span',{text:event.title+(when?' · '+when:'')+(event.event_id===meeting.suggested_event_id?' · Suggested':'')+(people?' · '+people:'')});
+        }
+        new Setting(box).addButton(b=>b.setButtonText('Use selected meeting').setDisabled(!synced).onClick(async()=>{
+          if(!choice){new Notice('Choose a meeting first.');return;}
+          if(await hash(await this.app.vault.read(file))!==data.note.content_hash){new Notice('The note changed. Wait for sync, then refresh.');return;}
+          try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-meeting','POST',{if_match:data.note.content_hash,calendar_hash:meeting.calendar_hash,event_id:choice});new Notice('Meeting selected. Refresh after sync.');await this.refresh();}catch(e){new Notice(e.message);}
+        }));
+      }
       const selected=new Set();
       const speakerChoices={}, manualSpeakers={}, cards=[];
       const ready=data.state==='suggested'&&!data.stale&&synced;
       const summary=data.meeting_summary?{...data.meeting_summary}:null;
+      const merge=data.recording_merge;
+      if(['applying','attention'].includes(merge?.state)){
+        const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Recording merge needs attention'});
+        box.createEl('p',{text:merge.error||'The recording is being added to your note. You can retry if it does not finish.',cls:'coppermind-notice'});
+        const retry=box.createEl('button',{text:'Retry merge'});retry.disabled=!synced;
+        retry.onclick=async()=>{try{
+          if(await hash(await this.app.vault.read(file))!==data.note.content_hash){new Notice('The note changed. Wait for sync, then refresh.');return;}
+          const result=await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-merge/retry','POST',{if_match:data.note.content_hash});
+          el.empty();el.createEl('h3',{text:'Recording added'});el.createEl('p',{text:'The recording is now part of '+result.target_title+'.'});
+          const open=el.createEl('button',{text:'Open '+result.target_title});open.onclick=()=>this.app.workspace.openLinkText(result.target_path,'',false);
+        }catch(e){new Notice(e.message);}};
+      }
+      if(merge?.state==='offered'&&summary){
+        const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'You already have a note for this meeting'});
+        let destination=merge.candidates[0];
+        if(merge.candidates.length>1)new Setting(box).setName('Your note').addDropdown(d=>{
+          for(const candidate of merge.candidates)d.addOption(candidate.id,candidate.title);
+          d.setValue(destination.id).onChange(v=>destination=merge.candidates.find(c=>c.id===v));
+        });
+        const open=box.createEl('a',{text:'Open your note',href:'#'});open.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(destination.path,'',false);};
+        box.createEl('p',{text:'Your words stay as they are. The recording summary will be added below them with a transcript link. This separate recording note will be retired.'});
+        const review=box.createEl('button',{text:'Review merge'});review.disabled=!ready;
+        let merging=false;
+        review.onclick=()=>new MergeModal(this.app,destination,summary,merge.transcript_path,async()=>{
+          if(merging)return;
+          merging=true;
+          for(const control of el.querySelectorAll('button, input, select, textarea'))control.disabled=true;
+          const progress=box.createEl('p',{text:'Adding the recording to your note…',cls:'coppermind-notice'});
+          try{
+            const targetFile=this.app.vault.getAbstractFileByPath(destination.path);
+            if(!targetFile||await hash(await this.app.vault.read(targetFile))!==destination.content_hash||await hash(await this.app.vault.read(file))!==data.note.content_hash)throw Error('A note changed. Wait for sync, then refresh.');
+            await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-merge','POST',{if_match:data.note.content_hash,target_id:destination.id,target_hash:destination.content_hash,job_id:data.job_id,meeting_summary:summary,confirmation:'Merge recording'});
+            el.empty();el.createEl('h3',{text:'Recording added'});el.createEl('p',{text:'The recording is now part of '+destination.title+'.'});
+            const openResult=el.createEl('button',{text:'Open '+destination.title});openResult.onclick=()=>this.app.workspace.openLinkText(destination.path,'',false);
+          }catch(e){
+            progress.setText('Could not confirm the merge: '+e.message+'. Refresh this panel to check its status before trying again.');
+            const refresh=box.createEl('button',{text:'Refresh merge status'});refresh.onclick=()=>this.refresh();
+          }
+        }).open();
+        const dismiss=box.createEl('button',{text:'Keep separate'});dismiss.disabled=!synced;
+        dismiss.onclick=async()=>{try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-merge/dismiss','POST',{if_match:data.note.content_hash});await this.refresh();}catch(e){new Notice(e.message);}};
+      }
       if(!data.suggestions_enabled)el.createEl('p',{text:'Suggestions are off. You can name speakers below, or turn on enrichment in Model connections.',cls:'coppermind-notice'});
       else if(data.suggestion_error){
         el.createEl('p',{text:'Suggestions could not be completed: '+data.suggestion_error,cls:'coppermind-notice'});
@@ -130,7 +191,7 @@ class ReviewView extends ItemView {
       const makeChooser=(card,label,people,initial,onSelect,disabled,voice=[])=>{
         const chooser=card.createEl('select');
         chooser.createEl('option',{text:'Leave as '+label,value:''});
-        const add=person=>{if(!people.some(p=>p.id===person.id)){people.push(person);chooser.createEl('option',{text:person.name+(person.email?' ('+person.email+')':''),value:person.id});}};
+        const add=person=>{if(!people.some(p=>p.id===person.id)){people.push(person);chooser.createEl('option',{text:person.name+(person.email?' ('+person.email+')':'')+(person.from_possible_meeting?' · possible meeting':''),value:person.id});}};
         const supplied=[...people];people.length=0;for(const person of supplied)add(person);
         for(const match of voice)add(match);
         chooser.value=initial||'';chooser.disabled=disabled;chooser.onchange=()=>{onSelect(chooser.value);updatePreview();};
@@ -184,6 +245,7 @@ class ReviewView extends ItemView {
         return {matches,strong,conflict,agreed,initial:conflict?'':voiceKey?(agreed?suggestion.value:strong[0].id):suggestion?.value||''};
       };
       for(const s of data.suggestions){
+        if(s.kind==='event'&&meeting?.candidates?.length>1)continue;
         if(s.kind==='speaker'&&!ready)continue;
         const card=el.createDiv({cls:'coppermind-card'});let toggle;
         const voice=s.kind==='speaker'?voicePlan(s.field,s):null;
@@ -317,6 +379,19 @@ class WaitingView extends ItemView {
     }catch(e){if(generation!==this.generation)return;status.setText('Could not load meetings and recordings. Check your connection and API credential, then try again.');status.addClass('coppermind-notice');const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
   }
 }
+class MergeModal extends Modal {
+  constructor(app,destination,summary,transcriptPath,confirm){super(app);this.destination=destination;this.summary=summary;this.transcriptPath=transcriptPath;this.confirm=confirm;}
+  onOpen(){
+    const el=this.contentEl;el.empty();el.createEl('h2',{text:'Add this recording to '+this.destination.title+'?'});
+    el.createEl('p',{text:'Your existing text stays word for word. The recording summary and a transcript link will be added below it.'});
+    for(const [key,label] of [['summary','Summary'],['decisions','Decisions'],['action_items','Action items']])if(this.summary[key]?.trim()){el.createEl('h3',{text:label});el.createEl('p',{text:this.summary[key]});}
+    if(this.transcriptPath){const link=el.createEl('a',{text:'View transcript',href:'#'});link.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(this.transcriptPath,'',false);};}
+    el.createEl('p',{text:'The recording will belong to your existing note and this separate recording note will be retired.'});
+    const confirm=el.createEl('button',{text:'Confirm merge',cls:'mod-cta'});confirm.onclick=async()=>{this.close();await this.confirm();};
+    const back=el.createEl('button',{text:'Go back'});back.onclick=()=>this.close();
+  }
+  onClose(){this.contentEl.empty();}
+}
 class DeleteVoiceModal extends Modal {
   constructor(app, person, confirm, options={}){super(app);this.person=person;this.confirm=confirm;this.options=options;this.done=false;}
   onOpen(){
@@ -362,7 +437,7 @@ class PeopleView extends ItemView {
       for(const assignment of voice.assignments||[]){const line=el.createDiv();
         try{const note=await this.plugin.call('/v1/notes/'+encodeURIComponent(assignment.note_id));const a=line.createEl('a',{text:note.title,href:'#'});a.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(note.path,'',false);};}
         catch{line.createSpan({text:'Source note unavailable'});}
-        const split=line.createEl('button',{text:'This is not '+person.name});split.onclick=()=>new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call('/v1/entities/voice/voices/'+encodeURIComponent(person.unknown?person.id:'person:'+person.id)+'/split','POST',{note_id:assignment.note_id,label:assignment.label});await this.show(person);}catch(e){new Notice(e.message);}},{title:'Separate this recording?',text:'This recording will use a new unknown voice label. Other recordings stay with '+person.name+'. Your own writing in reviewed notes stays intact.',action:'Separate recording'}).open();
+        const split=line.createEl('button',{text:'This is not '+person.name});split.onclick=()=>new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call('/v1/entities/voice/voices/'+encodeURIComponent(person.unknown?person.id:'person:'+person.id)+'/split','POST',{note_id:assignment.note_id,label:assignment.label,source_id:assignment.source_id});await this.show(person);}catch(e){new Notice(e.message);}},{title:'Separate this recording?',text:'This recording will use a new unknown voice label. Other recordings stay with '+person.name+'. Your own writing in reviewed notes stays intact.',action:'Separate recording'}).open();
       }
       if(person.unknown){
         el.createEl('p',{text:'Combine this voice with another unknown voice or attach it to a person. Earlier recordings will be relabelled; your own writing in reviewed notes stays intact.'});

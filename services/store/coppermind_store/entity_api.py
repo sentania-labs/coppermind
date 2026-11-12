@@ -71,7 +71,11 @@ async def entity_action(action: str, payload: dict[str, Any], request: Request) 
                     result = {"ok": True}
                 else:
                     identity = await separate(
-                        context, payload["id"], payload["note_id"], payload["label"]
+                        context,
+                        payload["id"],
+                        payload["note_id"],
+                        payload["label"],
+                        payload.get("source_id"),
                     )
                     result = {"id": identity}
         elif action == "voice-list":

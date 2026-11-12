@@ -106,6 +106,9 @@ class FeatureAssignment(ContextModel):
     event_field: str = ""
     contacts_field: str = ""
     automatic_after: str = ""
+    # Enrichment only: lets calendar descriptions go to the model, and only while it works
+    # out which of several matching meetings a recording belongs to.
+    send_calendar_descriptions: bool = False
     # Transcription only: the reply shape asked of the service. `diarized_json` carries a
     # speaker on every segment; `verbose_json` is for services that add one to Whisper's shape.
     response_format: Literal["diarized_json", "verbose_json"] = "diarized_json"

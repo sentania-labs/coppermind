@@ -188,10 +188,11 @@ def test_recurrence_lookup_handles_dst_exception_and_cancellation():
 
     from coppermind_store.calendar_worker import occurrences
 
-    recurring = event() + "\r\nRRULE:FREQ=WEEKLY;COUNT=5"
+    recurring = event() + "\r\nDESCRIPTION:Launch planning\r\nRRULE:FREQ=WEEKLY;COUNT=5"
     records = parse_export("work", "one.ics", ics(recurring))
     result = occurrences(records, date(2026, 11, 4), "America/Chicago")
     assert result[0]["start"] == "2026-11-04T09:00:00-06:00"
+    assert result[0]["description"] == "Launch planning"
     cancelled = parse_export(
         "work",
         "cancel.ics",
@@ -208,6 +209,17 @@ def test_recurrence_lookup_handles_dst_exception_and_cancellation():
         "America/Chicago",
     )
     assert result == []
+
+
+def test_occurrence_preserves_duration_for_recording_overlap():
+    from datetime import date
+
+    from coppermind_store.calendar_worker import occurrences
+
+    record = "UID:duration\r\nDTSTART:20261014T140000Z\r\nDURATION:PT45M\r\nSUMMARY:Planning"
+    events = parse_export("work", "one.ics", ics(record))
+    result = occurrences(events, date(2026, 10, 14), "America/Chicago")
+    assert result[0]["end"] == "2026-10-14T14:45:00+00:00"
 
 
 def test_parse_output_sends_each_timezone_definition_once():

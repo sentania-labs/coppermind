@@ -279,6 +279,12 @@ def router(wiring: Wiring) -> APIRouter:
                     "enabled", "Automatically enrich new unreviewed notes", assignment["enabled"]
                 )
                 fields += _check("paused", "Pause processing", assignment["paused"])
+                fields += _check(
+                    "send_calendar_descriptions",
+                    "Send calendar event descriptions to the model when it works out which of "
+                    "several meetings a recording belongs to",
+                    assignment["send_calendar_descriptions"],
+                )
                 fields += (
                     '<p><a href="/admin/workflow?tab=review">Choose existing notes separa'
                     "tely</a></p></fieldset>"

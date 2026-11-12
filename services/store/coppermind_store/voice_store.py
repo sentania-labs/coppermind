@@ -12,12 +12,33 @@ from typing import Any
 from coppermind_store.voice_matching import cosine, matches
 
 
+def _same_recording(entry: dict[str, Any], source_id: str | None) -> bool:
+    return not source_id or not entry.get("source_id") or entry["source_id"] == source_id
+
+
+def _attributed(data: dict[str, Any]) -> dict[str, Any]:
+    """Tag older merged-note rows with the one recording whose assignment they belong to."""
+    owners: dict[tuple[str, str], set[str]] = {}
+    for assignment in data.get("assignments", []):
+        if assignment.get("source_id"):
+            owners.setdefault((assignment["note_id"], assignment["label"]), set()).add(
+                assignment["source_id"]
+            )
+    rows = list(data.get("rejections", []))
+    rows += [s for voice in data.get("unknowns", {}).values() for s in voice.get("signatures", [])]
+    for row in rows:
+        found = owners.get((row.get("note_id"), row.get("label")), set())
+        if not row.get("source_id") and len(found) == 1:
+            row["source_id"] = next(iter(found))
+    return data
+
+
 class VoiceStore:
     def __init__(self, context: Any) -> None:
         self.context = context
 
     def _load(self) -> dict[str, Any]:
-        return self.context.read("voice-signatures", {"people": {}})
+        return _attributed(self.context.read("voice-signatures", {"people": {}}))
 
     def _save(self, data: dict[str, Any]) -> None:
         self.context.write("voice-signatures", data)
@@ -124,6 +145,26 @@ class VoiceStore:
                 assignment["note_id"] = note_id
         self._save(data)
 
+    def reparent_recording(self, old_note_id: str, note_id: str, source_id: str) -> None:
+        """Keep all voice data reachable after a recording note is merged."""
+        data = self._load()
+        for group in (data.get("people", {}), data.get("unknowns", {})):
+            for voice in group.values():
+                for signature in voice.get("signatures", []):
+                    if signature.get("note_id") == old_note_id:
+                        signature["note_id"] = note_id
+                        signature["source_id"] = source_id
+        for collection in ("assignments", "rejections", "deferred"):
+            for entry in data.get(collection, []):
+                if entry.get("note_id") == old_note_id:
+                    entry["note_id"] = note_id
+                    if collection in {"assignments", "rejections"}:
+                        entry["source_id"] = source_id
+                    if collection == "deferred" and isinstance(entry.get("assignment"), dict):
+                        entry["assignment"]["note_id"] = note_id
+                        entry["assignment"]["source_id"] = source_id
+        self._save(data)
+
     def unknown_summaries(self) -> dict[str, dict[str, Any]]:
         """Return source information without exposing biometric vectors."""
         data = self._load()
@@ -148,22 +189,40 @@ class VoiceStore:
         data = self._load()
         if identity not in data.get("unknowns", {}):
             raise ValueError("Unknown voice not found")
-        label = data["unknowns"][identity]["name"]
-        notes = {a["note_id"] for a in data.get("assignments", []) if a["voice_id"] == identity}
+        assignments = [a for a in data.get("assignments", []) if a["voice_id"] == identity]
+        self._clear_pending(assignments, data["unknowns"][identity]["name"])
+        del data["unknowns"][identity]
+        data["assignments"] = [a for a in data.get("assignments", []) if a["voice_id"] != identity]
+        data["deferred"] = [
+            item
+            for item in data.get("deferred", [])
+            if item.get("assignment", {}).get("voice_id") != identity
+        ]
+        self._save(data)
+
+    def _clear_pending(self, assignments: list[dict[str, Any]], name: str) -> None:
+        """Remove embeddings for these appearances, including merged recordings."""
         if self.context.recordings is not None:
             for recording in self.context.recordings.jobs():
-                if recording.note_id not in notes:
+                parent = getattr(self.context.recordings, "parent_note_id", lambda r: r.note_id)(
+                    recording
+                )
+                matches = [
+                    a
+                    for a in assignments
+                    if a["note_id"] in {parent, "recording:" + recording.id}
+                    and (not a.get("source_id") or a["source_id"] == recording.source_id)
+                ]
+                if not matches:
                     continue
                 key = "voice-pending/" + recording.id
                 pending = self.context.read(key, [])
+                labels = {a["label"] for a in matches} | {name}
                 for speaker in pending:
-                    if isinstance(speaker, dict) and speaker.get("label") == label:
+                    if isinstance(speaker, dict) and speaker.get("label") in labels:
                         speaker.pop("embeddings", None)
                 if pending:
                     self.context.write(key, pending)
-        del data["unknowns"][identity]
-        data["assignments"] = [a for a in data.get("assignments", []) if a["voice_id"] != identity]
-        self._save(data)
 
     def assignments(self, voice_id: str) -> list[dict[str, Any]]:
         return [a for a in self._load().get("assignments", []) if a["voice_id"] == voice_id]
@@ -229,6 +288,7 @@ class VoiceStore:
                 for s in source.get("signatures", [])
                 if s.get("note_id") == assignment["note_id"]
                 and s.get("label") == assignment["label"]
+                and _same_recording(s, assignment.get("source_id"))
             ]
             signatures.extend(selected)
             source["signatures"] = [s for s in source.get("signatures", []) if s not in selected]
@@ -239,14 +299,17 @@ class VoiceStore:
         }
         self._save(data)
 
-    def split_assignment(self, voice_id: str, note_id: str, label: str) -> str:
+    def split_assignment(
+        self, voice_id: str, note_id: str, label: str, source_id: str | None = None
+    ) -> str:
         """Move one speaker appearance and its signatures to a new unknown voice."""
         data = self._load()
         assignment = next(
             (
                 a
                 for a in data.get("assignments", [])
-                if (a["voice_id"], a["note_id"], a["label"]) == (voice_id, note_id, label)
+                if (a["voice_id"], a["note_id"], a["label"], a.get("source_id"))
+                == (voice_id, note_id, label, source_id)
             ),
             None,
         )
@@ -261,7 +324,9 @@ class VoiceStore:
         selected = [
             s
             for s in source.get("signatures", [])
-            if s.get("note_id") == note_id and s.get("label") == label
+            if s.get("note_id") == note_id
+            and s.get("label") == label
+            and _same_recording(s, source_id)
         ]
         serial = data.get("next_unknown", 1)
         identity = f"unknown:{serial}"
@@ -276,17 +341,25 @@ class VoiceStore:
         self._save(data)
         return identity
 
-    def reject(self, note_id: str, label: str, person_id: str) -> None:
+    def reject(
+        self, note_id: str, label: str, person_id: str, source_id: str | None = None
+    ) -> None:
         data = self._load()
         record = {"note_id": note_id, "label": label, "person_id": person_id}
+        if source_id:
+            record["source_id"] = source_id
         rejections = data.setdefault("rejections", [])
         if record not in rejections:
             rejections.append(record)
             self._save(data)
 
-    def rejected(self, note_id: str, label: str, person_id: str) -> bool:
-        return {"note_id": note_id, "label": label, "person_id": person_id} in self._load().get(
-            "rejections", []
+    def rejected(
+        self, note_id: str, label: str, person_id: str, source_id: str | None = None
+    ) -> bool:
+        return any(
+            (r["note_id"], r["label"], r["person_id"]) == (note_id, label, person_id)
+            and _same_recording(r, source_id)
+            for r in self._load().get("rejections", [])
         )
 
     @staticmethod
@@ -314,7 +387,18 @@ class VoiceStore:
 
     def delete(self, person_id: str) -> None:
         data = self._load()
+        assignments = [
+            a for a in data.get("assignments", []) if a["voice_id"] == "person:" + person_id
+        ]
+        entity_store = getattr(self.context.store, "entities", None)
+        person = entity_store.load().entities.get(person_id) if entity_store else None
+        self._clear_pending(assignments, person.name if person else "")
         self._clear(data, person_id)
+        data["deferred"] = [
+            item
+            for item in data.get("deferred", [])
+            if item.get("assignment", {}).get("voice_id") != "person:" + person_id
+        ]
         data["assignments"] = [
             a for a in data.get("assignments", []) if a["voice_id"] != "person:" + person_id
         ]
@@ -323,8 +407,8 @@ class VoiceStore:
     def defer_relabel(self, assignment: dict[str, Any], name: str) -> None:
         """Remember a speaker rename for a note that cannot be rewritten yet."""
         data = self._load()
-        key = (assignment["note_id"], assignment["label"])
-        kept = [d for d in data.get("deferred", []) if (d["note_id"], d["label"]) != key]
+        key = (assignment["note_id"], assignment["label"], assignment.get("source_id"))
+        kept = [d for d in data.get("deferred", []) if self._deferred_key(d) != key]
         kept.append(
             {
                 "note_id": assignment["note_id"],
@@ -336,20 +420,37 @@ class VoiceStore:
         data["deferred"] = kept
         self._save(data)
 
+    @staticmethod
+    def _deferred_key(item: dict[str, Any]) -> tuple[str, str, str | None]:
+        return item["note_id"], item["label"], item.get("assignment", {}).get("source_id")
+
     def deferred_relabels(self) -> list[dict[str, Any]]:
         return list(self._load().get("deferred", []))
 
-    def clear_deferred(self, note_id: str, label: str) -> None:
+    def clear_deferred(self, note_id: str, label: str, source_id: str | None = None) -> None:
         data = self._load()
         data["deferred"] = [
-            d for d in data.get("deferred", []) if (d["note_id"], d["label"]) != (note_id, label)
+            d
+            for d in data.get("deferred", [])
+            if self._deferred_key(d) != (note_id, label, source_id)
         ]
         self._save(data)
 
     def purge(self, person_ids: set[str], note_ids: set[str]) -> None:
         data = self._load()
-        data["deferred"] = [d for d in data.get("deferred", []) if d["note_id"] not in note_ids]
+        data["deferred"] = [
+            d
+            for d in data.get("deferred", [])
+            if d["note_id"] not in note_ids
+            and d.get("assignment", {}).get("voice_id") not in {"person:" + p for p in person_ids}
+        ]
+        entity_store = getattr(self.context.store, "entities", None)
+        people = entity_store.load().entities if entity_store and person_ids else {}
         for person_id in person_ids:
+            self._clear_pending(
+                [a for a in data.get("assignments", []) if a["voice_id"] == "person:" + person_id],
+                people[person_id].name if person_id in people else "",
+            )
             data["people"].pop(person_id, None)
         for person in data["people"].values():
             person["signatures"] = [
@@ -388,6 +489,7 @@ class VoiceStore:
         created_at: str,
         speech_seconds: float,
         embeddings: list[dict[str, Any]],
+        source_id: str | None = None,
     ) -> None:
         data = self._load()
         if not data.get("recognition_enabled", True):
@@ -417,7 +519,10 @@ class VoiceStore:
             ):
                 continue
             if any(
-                s["note_id"] == note_id and s["model"] == model and s["version"] == version
+                s["note_id"] == note_id
+                and s["model"] == model
+                and s["version"] == version
+                and _same_recording(s, source_id)
                 for s in signatures
             ):
                 continue
@@ -429,6 +534,7 @@ class VoiceStore:
                     "model": model,
                     "version": version,
                     "vector": vector,
+                    **({"source_id": source_id} if source_id else {}),
                 }
             )
         if signatures:

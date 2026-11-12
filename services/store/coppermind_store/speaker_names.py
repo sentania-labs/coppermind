@@ -83,7 +83,7 @@ def current_person(people: dict[str, Any], candidate: dict[str, Any]) -> dict[st
     entity = people.get(entity_id)
     if entity is None or entity.retired_at or entity.redirect:
         return None
-    return {**person_candidate(entity), "id": candidate["id"], "person_id": entity_id}
+    return {**candidate, **person_candidate(entity), "id": candidate["id"], "person_id": entity_id}
 
 
 def chosen_person(
@@ -274,18 +274,26 @@ async def evidence(
     linked = set(context.read("associations", {}).get(note.id, {}).get("events", []))
     if assignment.event_field and note.frontmatter.get(assignment.event_field):
         linked.add(note.frontmatter[assignment.event_field])
+    ambiguous = not linked and len({event["event_id"] for event in events}) > 1
     for event in events:
-        if event["event_id"] not in linked:
+        if event["event_id"] not in linked and not ambiguous:
             continue
         for person in event.get("people", []):
             identity = person.get("contact_id")
             name = person.get("name")
             if identity and name:
+                if (
+                    ambiguous
+                    and "contact:" + identity not in candidates
+                    and len(candidates) >= MAX_CANDIDATES
+                ):
+                    continue
                 candidates["contact:" + identity] = {
                     "id": "contact:" + identity,
                     "name": name,
                     "email": person.get("address", "").removeprefix("mailto:"),
                     "path": "",
+                    "from_possible_meeting": ambiguous,
                 }
     from coppermind_store.entities import email
 
@@ -463,7 +471,8 @@ def voice_suggestions(context: Any, note_id: str) -> dict[str, list[dict[str, An
     """Return names and strength only; pending and saved vectors stay private."""
     from coppermind_store.voice_store import VoiceStore
 
-    recording = next((r for r in context.recordings.jobs() if r.note_id == note_id), None)
+    parent = getattr(context.recordings, "parent_note_id", lambda r: r.note_id)
+    recording = next((r for r in context.recordings.jobs() if parent(r) == note_id), None)
     if recording is None:
         return {}
     pending = context.read("voice-pending/" + recording.id, [])
@@ -479,7 +488,9 @@ def voice_suggestions(context: Any, note_id: str) -> dict[str, list[dict[str, An
         matches = VoiceStore(context).match(embeddings, **settings)
         candidates = []
         for match in matches:
-            if VoiceStore(context).rejected(note_id, speaker["label"], match["person_id"]):
+            if VoiceStore(context).rejected(
+                note_id, speaker["label"], match["person_id"], recording.source_id
+            ):
                 continue
             person = people.get(match["person_id"])
             if not person or person.kind != "person" or person.retired_at or person.redirect:

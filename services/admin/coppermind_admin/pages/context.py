@@ -967,6 +967,12 @@ def router(wiring: Wiring) -> APIRouter:
                 "enabled", "Enable enrichment for new unreviewed notes", assignment["enabled"]
             )
             fields += _check("paused", "Pause model calls", assignment["paused"])
+            fields += _check(
+                "send_calendar_descriptions",
+                "Send calendar event descriptions to the model when it works out which of "
+                "several meetings a recording belongs to",
+                assignment["send_calendar_descriptions"],
+            )
             fields += "</fieldset>"
             body += (
                 '<h2>Enrichment setup</h2><p class="notice">When enabled, '
@@ -1325,6 +1331,7 @@ picker.addEventListener('change', () => {
                 ):
                     assignment[key] = int(form.get(key, assignment[key]))
                 assignment["enabled"], assignment["paused"] = "enabled" in form, "paused" in form
+                assignment["send_calendar_descriptions"] = "send_calendar_descriptions" in form
                 payload["assignment"] = assignment
             elif action == "save-transcription":
                 payload["assignment"] = {

@@ -331,3 +331,32 @@ def test_summary_review_accepts_owner_edits_with_note_write_scope(summary, expec
         assert fake.calls[-1][1]["meeting_summary"] == summary
     else:
         assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "scopes,expected",
+    [
+        (["notes:read", "notes:write", "sources:read"], 403),
+        (["notes:read", "notes:write", "sources:read", "sources:write"], 200),
+    ],
+)
+def test_recording_merge_requires_source_write(scopes, expected):
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    with TestClient(app) as client:
+        result = client.post(
+            "/v1/notes/note/recording-merge",
+            json={
+                "if_match": "hash",
+                "target_id": "target",
+                "target_hash": "target-hash",
+                "job_id": "job",
+                "confirmation": "Merge recording",
+                "meeting_summary": {"summary": "Summary", "decisions": "", "action_items": ""},
+            },
+        )
+    assert result.status_code == expected
+    assert len(fake.calls) == (expected == 200)

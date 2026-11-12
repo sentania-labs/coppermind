@@ -66,6 +66,58 @@ async def test_calendar_candidates_only_come_from_linked_events():
     data = await evidence(Context(), note, events)
     assert [c["name"] for c in data["candidates"]] == ["Alex"]
 
+    note.frontmatter = {}
+    data = await evidence(Context(), note, events)
+    assert {c["name"] for c in data["candidates"]} == {"Alex", "Blair"}
+    assert all(c["from_possible_meeting"] for c in data["candidates"])
+
+
+async def test_cap_applies_to_possible_meetings_not_one_linked_meeting():
+    import json
+    from types import SimpleNamespace
+
+    from coppermind_store.speaker_names import MAX_CANDIDATES, evidence
+
+    transcript = {"segments": [{"start": 0, "speaker": "Speaker 1", "text": "Hello"}]}
+
+    class Store:
+        entities = SimpleNamespace(load=lambda: SimpleNamespace(entities={}))
+
+        async def get_source(self, source_id):
+            return SimpleNamespace(current_revision=1)
+
+        async def get_source_artifact(self, source_id, revision, name):
+            return SimpleNamespace(content=json.dumps(transcript))
+
+    class Context:
+        store = Store()
+        recordings = SimpleNamespace(
+            jobs=lambda: [SimpleNamespace(note_id="note", source_id="src")]
+        )
+
+        def config(self):
+            return SimpleNamespace(assignments={"enrichment": SimpleNamespace(event_field="event")})
+
+        def read(self, name, default):
+            return default
+
+    def event(identity, count):
+        return {
+            "event_id": identity,
+            "people": [
+                {"contact_id": f"{identity}{i}", "name": f"P{identity}{i}", "address": ""}
+                for i in range(count)
+            ],
+        }
+
+    size = MAX_CANDIDATES + 10
+    note = SimpleNamespace(id="note", title="", body="", frontmatter={"event": "x"})
+    data = await evidence(Context(), note, [event("x", size)])
+    assert len(data["candidates"]) == size
+    note.frontmatter = {}
+    data = await evidence(Context(), note, [event("x", size), event("y", size)])
+    assert len(data["candidates"]) == MAX_CANDIDATES
+
 
 def _meeting(hours: float) -> dict:
     """Two speakers trading 20-second turns for the whole recording."""
@@ -182,3 +234,69 @@ def test_a_chosen_person_is_followed_through_a_rename_and_refused_once_retired()
     assert current_person(people, stale) is None
     contact = {"id": "contact:c1", "name": "Alex", "email": "", "path": ""}
     assert current_person(people, contact) == contact
+
+
+async def test_only_time_matching_meeting_supplies_speakers():
+    import json
+    from types import SimpleNamespace
+
+    from coppermind_store.context_service import ContextService
+    from coppermind_store.speaker_names import evidence
+
+    transcript = {"segments": [{"start": 0, "speaker": "Speaker 1", "text": "Hello"}]}
+
+    class Store:
+        entities = SimpleNamespace(load=lambda: SimpleNamespace(entities={}))
+
+        async def get_source(self, source_id):
+            return SimpleNamespace(current_revision=1)
+
+        async def get_source_artifact(self, source_id, revision, name):
+            return SimpleNamespace(content=json.dumps(transcript))
+
+    def event(identity, hour):
+        return {
+            "event_id": identity,
+            "start": f"2026-11-11T{hour:02d}:00:00-06:00",
+            "end": f"2026-11-11T{hour + 1:02d}:00:00-06:00",
+            "people": [
+                {"contact_id": f"{identity}{i}", "name": f"P{identity}{i}", "address": ""}
+                for i in range(30)
+            ],
+        }
+
+    events = [event("early", 8), event("morning", 9), event("afternoon", 15)]
+
+    class Context:
+        store = Store()
+        recordings = SimpleNamespace(
+            jobs=lambda: [
+                SimpleNamespace(
+                    note_id="note", source_id="src", captured_at="2026-11-11T15:05:00-06:00"
+                )
+            ]
+        )
+
+        async def calendar_candidates(self, note, descriptions=False):
+            return events
+
+        def config(self):
+            return SimpleNamespace(assignments={"enrichment": SimpleNamespace(event_field="event")})
+
+        linked = False
+
+        def read(self, name, default):
+            return {"note": {"events": ["afternoon"]}} if self.linked else default
+
+    context = Context()
+    note = SimpleNamespace(id="note", title="", body="", frontmatter={})
+    chosen = await ContextService.recording_calendar_candidates(context, note)
+    assert [event["event_id"] for event in chosen] == ["afternoon"]
+    # Until the meeting is linked, no other meeting's invitees are offered either.
+    assert (await evidence(context, note, chosen))["candidates"] == []
+    context.linked = True
+    data = await evidence(context, note, chosen)
+    assert len(data["candidates"]) == 30
+    assert {c["id"][: len("contact:afternoon")] for c in data["candidates"]} == {
+        "contact:afternoon"
+    }
