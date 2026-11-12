@@ -51,6 +51,7 @@ PAIRING_MINUTES = 10
 PAIRING_ATTEMPTS = 10
 NEW_DROP_FOLDER = "To Coppermind"
 # Problems that are not anybody's to fix: they are told once and can be put away.
+FILING_ACTIONS = {"note-check", "note-keep-both", "note-replace", "note-no-time"}
 NOTICE_KINDS = {"returned_note", "folder_kept", "reserved_type", "date_mismatch", "path_notice"}
 FOLDER_SETTINGS = {
     "review": "review_folder",
@@ -114,6 +115,21 @@ class AdminService:
     def setup_state(self) -> dict[str, Any]:
         return self.context.read("admin-setup", {"skipped": {}})
 
+    async def setup_finished(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Setup is finished and its owner has been told, so the guide stops saying so."""
+        state = self.setup_state()
+        if not state.get("finished_seen"):
+            state["finished_seen"] = True
+            self.context.write("admin-setup", state)
+        return state
+
+    async def setup_log(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Something Admin itself saw happen, for Home's "Recently"."""
+        text = " ".join(str(payload.get("text", "")).split())[:300]
+        if text:
+            self.log(text)
+        return {}
+
     async def setup_skip(self, payload: dict[str, Any]) -> dict[str, Any]:
         step = str(payload["step"])
         if step not in {"sugg", "trans", "cal"}:
@@ -139,6 +155,9 @@ class AdminService:
         status["devices"] = devices.get("devices", []) if isinstance(devices, dict) else []
         status["last_change"] = devices.get("last_change") if isinstance(devices, dict) else None
         status["used_bytes"] = devices.get("used_bytes") if isinstance(devices, dict) else None
+        status["last_activity_at"] = (
+            devices.get("last_activity_at") if isinstance(devices, dict) else None
+        )
         return status
 
     # -- connected apps ------------------------------------------------------------------
@@ -435,20 +454,28 @@ class AdminService:
     async def folders(self, payload: dict[str, Any]) -> dict[str, Any]:
         """The top-level folders a person can see in their notes, for the folder picker."""
 
+        from coppermind_store.entities import FOLDERS as OWN_PAGES
+
+        settings = self.store.control.settings()
+        # Folders Coppermind keeps for its own pages and records are never offered as a
+        # place to put something else.
+        own = {name.casefold() for name in (*OWN_PAGES, settings.notes.sources_folder)}
+
         def read() -> list[str]:
             try:
                 return sorted(
                     (
                         entry.name
                         for entry in self.store.notes_root.iterdir()
-                        if entry.is_dir() and not entry.name.startswith(".")
+                        if entry.is_dir()
+                        and not entry.name.startswith(".")
+                        and entry.name.casefold() not in own
                     ),
                     key=str.casefold,
                 )
             except OSError:
                 return []
 
-        settings = self.store.control.settings()
         async with self.store.session_factory() as session:
             import sqlalchemy as sa
 
@@ -496,8 +523,18 @@ class AdminService:
         for key, value in wanted.items():
             if not value or sanitize_folder(value) != value or value.startswith("."):
                 raise Refused(key, "Pick a folder, or type a name for the new one.")
+        from coppermind_store.entities import FOLDERS as OWN_PAGES
+
+        sources = self.store.control.settings().notes.sources_folder
+        own = {name.casefold() for name in (*OWN_PAGES, sources)}
         seen: dict[str, str] = {}
         for key, value in wanted.items():
+            if value.casefold() in own:
+                raise Refused(
+                    key,
+                    f'"{value}" is a folder Coppermind keeps for its own pages. '
+                    "Pick a different folder.",
+                )
             if value.casefold() in seen:
                 raise Refused(
                     key,
@@ -670,7 +707,39 @@ class AdminService:
             result = await handler(payload)
         except Refused as refusal:
             return refusal.body()
+        if isinstance(result, dict):
+            line = self._happened(action, result)
+            if line:
+                self.log(line)
         return result if isinstance(result, dict) else {"items": result}
+
+    @staticmethod
+    def _happened(action: str, result: dict[str, Any]) -> str:
+        """The line for Home's "Recently" when an action changed something worth recalling."""
+        if result.get("refused"):
+            return ""
+        if action == "suggestions-save" and result.get("was") == "none":
+            return f"Suggestions turned on, using {result.get('model') or 'the usual model'}."
+        if action == "transcription-save" and result.get("was") == "none":
+            return f"Transcription turned on, using {result['service']}."
+        if action == "calendar-add" and result.get("state") == "added":
+            return f'Calendar file "{result["name"]}" was added.'
+        if action in FILING_ACTIONS and result.get("filed"):
+            folder = str(Path(result["path"]).parent)
+            if result.get("reviewed"):
+                return f'You reviewed "{result["name"]}". Filed in {folder}.'
+            return f'"{result["name"]}" was filed in {folder}.'
+        if action == "note-restore" and result.get("title"):
+            return f'You brought back the deleted note "{result["title"]}".'
+        if action == "incoming-retry" and result.get("title"):
+            return f'You retried the recording "{result["title"]}". It is being written up.'
+        if action == "service-save":
+            name = result["service"]["name"]
+            if result.get("tested") and result.get("answering"):
+                return f'AI service "{name}" was changed and tested.'
+            if result.get("renamed"):
+                return f'AI service renamed to "{name}".'
+        return ""
 
     def _handlers(self) -> dict[str, Any]:
         features, notes, incoming = self.features, self.notes, self.incoming
@@ -692,6 +761,8 @@ class AdminService:
         return {
             "overview": self.overview,
             "setup-skip": self.setup_skip,
+            "setup-finished": self.setup_finished,
+            "setup-log": self.setup_log,
             "notice-dismiss": self.notice_dismiss,
             "apps": plain(_wrap(self.apps)),
             "key-used": self.key_used,
@@ -718,6 +789,10 @@ class AdminService:
             "suggestions-fill": features.suggestions_fill,
             "suggestions-tick": features.suggestions_tick,
             "suggestions-older": features.suggestions_older,
+            "summary-instructions": plain(_wrap(features.summary_instructions)),
+            "summary-instructions-save": features.summary_instructions_save,
+            "note-summary": notes.summary,
+            "note-summary-again": notes.summary_again,
             "transcription": plain(features.transcription),
             "transcription-save": features.transcription_save,
             "transcription-pause": features.transcription_pause,
@@ -733,6 +808,8 @@ class AdminService:
             "notes-find": lambda payload: notes.find(str(payload.get("q", ""))),
             "note": notes.detail,
             "note-check": notes.check_again,
+            "note-no-time": notes.no_set_time,
+            "note-gone": notes.gone_on_purpose,
             "note-keep-both": notes.keep_both,
             "note-replace": notes.replace,
             "note-copy": notes.resolve_copy,

@@ -32,6 +32,16 @@ if TYPE_CHECKING:
 _CACHE: dict[str, tuple[str, dict[str, Any]]] = {}
 
 
+def _distinct(people: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each person once. The organizer of a meeting is usually listed as invited as well."""
+    seen: dict[str, dict[str, Any]] = {}
+    for person in people:
+        key = str(person.get("address") or person.get("name") or "").strip().lower()
+        if key:
+            seen.setdefault(key, person)
+    return list(seen.values())
+
+
 def _summary(archive: Any) -> dict[str, Any]:
     """Every meeting in brief, and what each file contributed, read once per change."""
     key = str(archive.root)
@@ -60,7 +70,7 @@ def _summary(archive: Any) -> dict[str, Any]:
                     "title": record.get("title") or "Untitled meeting",
                     "start": record.get("start") or "",
                     "end": record.get("end") or "",
-                    "invited": len(record.get("people") or []),
+                    "invited": len(_distinct(record.get("people") or [])),
                     "cancelled": bool(record.get("cancelled")),
                     "sources": sources,
                 }
@@ -96,6 +106,8 @@ class AdminCalendar:
                     "name": receipt.export_filename or receipt.filename,
                     "added": receipt.received_at,
                     **entry,
+                    # What the file held, counting a meeting another file disagrees about.
+                    "has": receipt.event_count + receipt.kept_count or entry["has"],
                 }
             )
         return files
@@ -247,10 +259,12 @@ class AdminCalendar:
                 "start": event.start,
                 "end": event.end,
                 "cancelled": event.cancelled,
-                "invited": [
-                    {"name": person.name, "address": person.address, "role": person.role}
-                    for person in event.people
-                ],
+                "invited": _distinct(
+                    [
+                        {"name": person.name, "address": person.address, "role": person.role}
+                        for person in event.people
+                    ]
+                ),
                 "files": list(dict.fromkeys(p.filename for p in event.provenance)),
             }
 
@@ -313,7 +327,9 @@ class AdminCalendar:
         return {
             "state": "added",
             "name": filename,
-            "has": sum(counts.get(i, {}).get("has", 0) for i in ids),
+            # What the file itself held, which counts a meeting another file disagrees about.
+            "has": sum(r.event_count + r.kept_count for r in receipts)
+            or sum(counts.get(i, {}).get("has", 0) for i in ids),
             "new": sum(counts.get(i, {}).get("adds", 0) for i in ids),
             "from": starts[0] if starts else "",
             "to": starts[-1] if starts else "",

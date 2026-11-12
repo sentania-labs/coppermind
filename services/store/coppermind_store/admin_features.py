@@ -14,10 +14,15 @@ from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
-from coppermind.context_config import EmbeddingAssignment, FeatureAssignment
+from coppermind.context_config import (
+    SUMMARY_INSTRUCTIONS_MAX,
+    EmbeddingAssignment,
+    FeatureAssignment,
+)
 from coppermind.db.models import Note
 from coppermind.schema import KeyDefinition
 from coppermind.store_protocol import StoreError
+from coppermind_store import meeting_summary
 from coppermind_store.ai_services import UNREACHABLE, Refused
 
 if TYPE_CHECKING:
@@ -206,9 +211,24 @@ class Features:
         ]
 
     async def older_notes(self) -> list[dict[str, Any]]:
-        """Waiting notes that have never had suggestions asked for."""
-        asked = {job.note_id for job in self.context.jobs() if job.purpose != "dossier"}
-        return [note for note in await self._waiting_notes() if note["id"] not in asked]
+        """Waiting notes with no suggestions: never asked for, or the answer could not be used.
+
+        A note whose service was unreachable is not one of these. It is waiting, and is
+        done by itself when the service answers again.
+        """
+        latest = {job.note_id: job for job in self._latest_jobs()}
+        # The notes that were already waiting when suggestions were turned on. A newer note
+        # with nothing asked yet is simply next in line, and is asked for within a minute.
+        before = set(self.context.read("automatic_baseline", {}).get("ids", []))
+        without = []
+        for note in await self._waiting_notes():
+            job = latest.get(note["id"])
+            if job is None:
+                if note["id"] in before:
+                    without.append(note | {"why": "before"})
+            elif job.state == "failed" and job.error_rule not in UNREACHABLE:
+                without.append(note | {"why": "failed"})
+        return without
 
     async def suggestions(self) -> dict[str, Any]:
         config = self.context.config()
@@ -233,6 +253,7 @@ class Features:
             "fill_options": self.fill_options(),
             "descr": assignment.send_calendar_descriptions,
             "wait_s": assignment.timeout_s,
+            "summary_custom": bool(assignment.summary_instructions.strip()),
             "waiting": len(waiting),
             "older": older,
             "week": {
@@ -324,6 +345,40 @@ class Features:
         await self._update_enrichment(timeout_s=seconds)
         return {"seconds": seconds}
 
+    # -- how the meeting summary is written -----------------------------------------------
+
+    def summary_instructions(self) -> dict[str, Any]:
+        """The owner's instructions for a meeting summary, and what is always added to them."""
+        own = self.context.config().assignments["enrichment"].summary_instructions.strip()
+        return {
+            "text": meeting_summary.instructions(own),
+            "custom": bool(own),
+            "default": meeting_summary.DEFAULT_INSTRUCTIONS,
+            "locked": list(meeting_summary.LOCKED_WORDS),
+            "max": SUMMARY_INSTRUCTIONS_MAX,
+        }
+
+    async def summary_instructions_save(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Save the instructions. An empty box, or the default itself, means the default.
+
+        Nothing already written is touched: the next summary uses the new instructions, and
+        a summary that exists is only written again when its owner asks for that.
+        """
+        text = "" if payload.get("reset") else meeting_summary.instructions(payload.get("text"))
+        if text == meeting_summary.DEFAULT_INSTRUCTIONS:
+            text = ""
+        if len(text) > SUMMARY_INSTRUCTIONS_MAX:
+            raise Refused(
+                "text",
+                f"That is {len(text):,} characters and the most is "
+                f"{SUMMARY_INSTRUCTIONS_MAX:,}. Shorten it and save again. Nothing was changed.",
+            )
+        await self._update_enrichment(summary_instructions=text)
+        return {
+            "custom": bool(text),
+            "emptied": not text and not payload.get("reset") and not payload.get("text", ""),
+        }
+
     async def suggestions_fill(self, payload: dict[str, Any]) -> dict[str, Any]:
         keys = {str(item) for item in payload.get("fill", [])}
         async with self.context.lock:
@@ -360,7 +415,7 @@ class Features:
                 started.append(note["title"])
             except (ValueError, StoreError) as exc:
                 refused.append({"title": note["title"], "why": str(exc)})
-        return {"started": started, "refused": refused}
+        return {"started": started, "left_out": refused}
 
     async def suggestions_off(self) -> None:
         async with self.context.lock:
@@ -395,8 +450,13 @@ class Features:
             "attempts": assignment.attempts if assignment else 2,
             "week": {
                 "done": sum(1 for job in week if job.state == "succeeded"),
-                "waiting": sum(1 for job in jobs if job.state in {"queued", "running"}),
-                "failed": sum(1 for job in jobs if job.state == "failed" and not job.dismissed),
+                "waiting": sum(1 for job in jobs if job.state in {"queued", "running"})
+                + sum(1 for job in jobs if _held(job)),
+                "failed": sum(
+                    1
+                    for job in jobs
+                    if job.state == "failed" and not job.dismissed and not _held(job)
+                ),
             },
             "last": last,
             "revision": config.revision,
@@ -567,6 +627,11 @@ class Features:
             return f"Transcription now uses {service['name']}."
         await self.search_on({"connection": target})
         return f"Search by meaning now uses {service['name']}."
+
+
+def _held(job: Any) -> bool:
+    """A recording that stopped only because its service was not answering."""
+    return job.state == "failed" and job.error_rule in UNREACHABLE and not job.dismissed
 
 
 def recording_minutes(job: Any) -> int | None:

@@ -85,6 +85,11 @@ class ModelConnection(ContextModel):
 MAX_TRANSCRIBE_SECONDS = 4 * 3600
 
 
+# The most the owner's summary instructions may hold. Long enough for a careful brief,
+# short enough that the transcript still has the room.
+SUMMARY_INSTRUCTIONS_MAX = 4000
+
+
 class FeatureAssignment(ContextModel):
     connection: str = ""
     model: str = Field(default="", max_length=200)
@@ -98,6 +103,9 @@ class FeatureAssignment(ContextModel):
     # Recording summaries read the complete transcript in a separate call.
     summary_max_input_chars: int = Field(default=200000, ge=2000, le=2000000)
     summary_timeout_s: int = Field(default=900, ge=5, le=1800)
+    # The owner's own instructions for how a meeting summary is written. Empty means the
+    # default. The rules that keep a summary safe to file are not part of this text.
+    summary_instructions: str = Field(default="", max_length=SUMMARY_INSTRUCTIONS_MAX)
     # One worker serializes model calls and approvals. No unbounded fan-out.
     attempts: int = Field(default=2, ge=1, le=3)
     fields: list[str] = Field(default_factory=list, max_length=20)

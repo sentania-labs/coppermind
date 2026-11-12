@@ -18,6 +18,7 @@ import sqlalchemy as sa
 from coppermind.db.models import Artifact
 from coppermind.store_protocol import ArtifactMissing, StoreError
 from coppermind_store.admin_features import recording_minutes, took_minutes
+from coppermind_store.ai_services import UNREACHABLE
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
@@ -70,14 +71,19 @@ class AdminIncoming:
             speakers = len(
                 {s.get("speaker") for s in saved.get("segments", []) if s.get("speaker")}
             )
+        held = job.state == "failed" and job.error_rule in UNREACHABLE and not job.dismissed
         return {
             "id": "r:" + job.id,
+            "artifact_id": job.artifact_id,
             "kind": "recording",
             "title": job.title,
             "filename": job.filename,
             "minutes": recording_minutes(job),
             "when": job.created_at,
-            "state": "failed" if job.state == "failed" else RECORDING_STATES[job.state],
+            # A recording that stopped only because its service did not answer is waiting,
+            # not failed: it is sent again by itself once the service answers.
+            "state": "waiting" if held else RECORDING_STATES[job.state],
+            "held": held,
             "error": job.error,
             "rule": job.error_rule,
             "retry_after": job.retry_after if job.attempts < job.attempt_limit else "",
@@ -108,7 +114,12 @@ class AdminIncoming:
             rows = (
                 await session.scalars(
                     sa.select(Artifact)
-                    .where(Artifact.received_at >= cutoff, Artifact.url.is_(None))
+                    # A file written from a recording (its transcript) was not handed in.
+                    .where(
+                        Artifact.received_at >= cutoff,
+                        Artifact.url.is_(None),
+                        Artifact.source_id.is_(None),
+                    )
                     .order_by(Artifact.received_at.desc())
                     .limit(500)
                 )

@@ -1,4 +1,10 @@
-"""Server-rendered operator entry point."""
+"""Server-rendered operator entry point.
+
+Admin is the break-glass surface: the Obsidian companion is how the owner works
+day to day, and Admin is where setup happens and where something stuck gets
+fixed. Every page is plain HTML with forms, so it works with scripts off, and
+every form that changes something carries a token bound to the signed-in session.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +12,11 @@ import html
 import re
 import secrets
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from contextvars import ContextVar
+from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qs
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -22,7 +28,7 @@ from coppermind.logging import configure_logging, get_logger
 from coppermind.settings import ProductSettings, Wiring, read_settings
 from coppermind.statefiles import StateStore
 from coppermind.store_client import HttpStoreClient
-from coppermind_admin import __version__, layout
+from coppermind_admin import __version__, layout, ui
 from coppermind_admin.auth import (
     AdminCredentials,
     AdminRecordUnreadable,
@@ -33,69 +39,17 @@ from coppermind_admin.auth import (
     InvalidClaimCode,
     SignedSessions,
 )
-from coppermind_admin.pages import (
-    artifacts,
-    context,
-    field_index,
-    fields,
-    note_history,
-    problems,
-    properties,
-    purge,
-    search_index,
-    sync,
-    workflow,
-)
+from coppermind_admin.shell import COOKIE, csrf_token, with_csrf
 
 SERVICE = "coppermind-admin"
-COOKIE = "coppermind_admin_session"
-PUBLIC = {
-    "/admin/claim",
-    "/admin/login",
-    "/v1/admin/claim",
-    "/v1/admin/login",
-    "/healthz",
-    "/readyz",
-}
+PUBLIC = {"/admin/welcome", "/admin/signin", "/healthz", "/readyz"}
 log = get_logger(SERVICE)
 
-# Bound all form bodies, including the complete product settings form, so a
-# POST cannot make Admin buffer a body of any size it likes.
+# Bound every form body so a POST cannot make Admin buffer a body of any size it likes.
+# A file handed in from this computer is not a form: it is streamed, never buffered.
 MAX_FORM_BYTES = 65536
 CSRF_COOKIE = "coppermind_admin_csrf"
-csrf_token: ContextVar[str] = ContextVar("csrf_token", default="")
-admin_path: ContextVar[str] = ContextVar("admin_path", default="")
-
-# What each rejection tells the operator. The page named in the redirect is
-# the one that reads the notice, so a refused password is never reported as a
-# bad code.
-CLAIM_NOTICES = {
-    "invalid_claim_code": "That claim code was not accepted.",
-    "validation_error": "Enter the claim code and a password of at least 12 characters.",
-    "too_large": "That submission was too large to read. Try again.",
-}
-LOGIN_NOTICES = {
-    "unauthorized": "That password was not accepted.",
-    "already_claimed": "Admin has already been claimed. Log in with the admin password.",
-    "session_expired": "That session has ended. Log in again.",
-    "too_large": "That submission was too large to read. Try again.",
-}
-
-
-def page(title: str, body: str, *, wide: bool = False) -> str:
-    document = layout.render(title, body, admin_path.get())
-    return re.sub(
-        r"(<form\b[^>]*>)",
-        lambda match: match[0] + f'<input type="hidden" name="csrf" value="{csrf_token.get()}">',
-        document,
-    )
-
-
-def notice(notices: dict[str, str], error: str | None) -> str:
-    if not error:
-        return ""
-    message = notices.get(error, "That did not work. Try again.")
-    return f'<p class="error">{html.escape(message)}</p>'
+MIN_PASSWORD = 12
 
 
 class SubmissionTooLarge(Exception):
@@ -126,8 +80,8 @@ async def submitted(request: Request) -> dict[str, str]:
     return {key: values[-1] for key, values in parsed.items()}
 
 
-def error_response(destination: str, code: str) -> RedirectResponse:
-    return RedirectResponse(f"/admin/{destination}?error={code}", status_code=303)
+def is_upload(request: Request) -> bool:
+    return request.headers.get("content-type", "").startswith("multipart/form-data")
 
 
 def rejection_detail(error: Exception) -> str:
@@ -139,66 +93,120 @@ def rejection_detail(error: Exception) -> str:
     return str(error)
 
 
-SETTINGS_REMEDY = """Correct that file and log in again. Nothing was changed by this attempt.
-The rest of Coppermind reads the same file fresh, so a bad value stops note creation and
-reconciliation too, and correcting it restores all of them together."""
+SETTINGS_REMEDY = """Whoever runs the server should correct that file. Nothing was changed by
+this attempt. The rest of Coppermind reads the same file, so a bad value there stops notes being
+taken in too, and correcting it restores everything together."""
 
-ADMIN_RECORD_REMEDY = """Restore that file from a backup, or follow the password recovery steps in
-the README: remove the admin record from the state directory, bring the stack up, and claim Admin
-again with the code bootstrap issues. The notes filesystem and its database records stay
-untouched, though claiming again signs every open Admin session out, and rebuilding the data
-volume is neither needed nor appropriate."""
+ADMIN_RECORD_REMEDY = """Whoever runs the server should restore that file from a backup, or
+restart Coppermind with its "new Admin setup link" option and choose a new password from the
+link it shows. Notes and settings are not affected either way."""
 
-CLAIM_RECORD_REMEDY = """Nothing was claimed and your claim code is still good. Admin needs
-the state directory on the data volume to be writable by the user it runs as, so check that the
-volume has free space and that its ownership and permissions are intact, then submit this form
-again."""
+CLAIM_RECORD_REMEDY = """Nothing was saved and your setup code is still good. Admin needs to be
+able to write to its data folder, so whoever runs the server should check that it has free space
+and that its ownership is intact. Then press Start setup again."""
 
-CLAIM_CODE_REMEDY = """Nothing was claimed and your claim code is still good. Bootstrap writes that
-file and Admin only ever reads it, so it must be readable by the user Admin runs as. Check its
-ownership and permissions, then submit this form again."""
+CLAIM_CODE_REMEDY = """Nothing was saved and your setup code is still good. Admin could not read
+the code it was given at install, so whoever runs the server should check the ownership of that
+file. Then press Start setup again."""
 
 
-def claim_form(refusal: str) -> str:
-    return page(
-        "Claim Admin",
-        f"""<h1>Claim Coppermind</h1>{refusal}
-<p>Enter the one-time code from the bootstrap claim-code file, then choose the admin password.</p>
-<form method="post" action="/v1/admin/claim">
-<label>Claim code<input name="code" autocomplete="one-time-code" required></label>
-<label>Admin password<input type="password" name="password" autocomplete="new-password"
-minlength="12" required></label><button>Claim Admin</button></form>""",
-    )
+def public_page(title: str, body: str) -> str:
+    return with_csrf(layout.public(title, f'<section class="lat-card stack">{body}</section>'))
 
 
-def claim_state_refusal(error: ClaimStateProblem) -> HTMLResponse:
-    if isinstance(error, ClaimCodeUnreadable):
-        headline = f"Admin could not read the claim code at {html.escape(str(error.path))}"
-        remedy = CLAIM_CODE_REMEDY
-    else:
-        headline = f"Admin could not write {html.escape(str(error.path))}"
-        remedy = CLAIM_RECORD_REMEDY
+def problem_page(title: str, headline: str, problem: str, remedy: str) -> HTMLResponse:
     return HTMLResponse(
-        claim_form(
-            f"""<p class="error">{headline}, so the claim did not happen.</p>
-<p>What the filesystem reported:</p><pre>{html.escape(error.problem)}</pre>
-<p class="muted">{remedy}</p>"""
+        public_page(
+            title,
+            f"<div><h1>{html.escape(title)}</h1></div>"
+            + ui.banner("bad", html.escape(headline))
+            + f'<p class="muted">{remedy}</p>'
+            + ui.tech(problem),
         ),
         status_code=500,
     )
 
 
-def unreadable_state_file(path: Path, problem: str, remedy: str) -> HTMLResponse:
-    return HTMLResponse(
-        page(
-            "Unreadable control state",
-            f"""<h1>Admin cannot read {html.escape(path.name)}</h1>
-<p class="error">{html.escape(str(path))} could not be read, so Admin cannot start a session.</p>
-<p>What it rejected:</p><pre>{html.escape(problem)}</pre>
-<p class="muted">{remedy}</p>""",
-        ),
-        status_code=500,
+def welcome_body(code: str, errors: dict[str, str], *, reset: bool, banner: str = "") -> str:
+    hint = (
+        "Filled in from the link you opened. "
+        if code
+        else "It is in the link Coppermind showed when it was installed. "
+    ) + ui.reveal(
+        "Where does the code come from?",
+        '<div class="lat-hint">Coppermind shows a link when it first starts, in the same '
+        "window where it was installed. The link carries this code. If you only have the "
+        "code, type it here.</div>",
     )
+    lede = (
+        "Two things and you are back in: the setup code from the new link, and a new "
+        "password for these Admin screens."
+        if reset
+        else "Two things and you are in: the setup code, and a password for these Admin screens."
+    )
+    return f"""<div><h1>{"Choose a new password" if reset else "Welcome to Coppermind"}</h1>
+<p class="lede">{lede}</p></div>{banner}
+<form method="post" action="/admin/welcome" class="stack">
+<input type="hidden" name="tz" id="tz" value="">
+{
+        ui.text_input(
+            "code",
+            "Setup code",
+            code,
+            hint=hint,
+            error=errors.get("code", ""),
+            autocomplete="one-time-code",
+        )
+    }
+{
+        ui.text_input(
+            "pw1",
+            "Choose a password",
+            kind="password",
+            error=errors.get("pw1", ""),
+            hint=f"At least {MIN_PASSWORD} characters. You will use it to sign in to Admin.",
+            autocomplete="new-password",
+        )
+    }
+{
+        ui.text_input(
+            "pw2",
+            "Type the password again",
+            kind="password",
+            error=errors.get("pw2", ""),
+            autocomplete="new-password",
+        )
+    }
+<div class="actions">{ui.submit("Save the new password" if reset else "Start setup")}</div>
+</form>
+<script>try{{document.getElementById("tz").value=
+Intl.DateTimeFormat().resolvedOptions().timeZone||""}}catch(e){{}}</script>"""
+
+
+def signin_body(error: str, notice: str = "") -> str:
+    forgot = ui.reveal(
+        "Forgot the password?",
+        '<div class="lat-hint">For safety a forgotten password can only be reset from the '
+        "Coppermind server itself, by whoever installed it. They restart Coppermind with its "
+        '"new Admin setup link" option. It then shows a fresh setup link, the same kind you '
+        "used the first time. Open that link and choose a new password. Your notes and "
+        "settings are not affected.</div>",
+    )
+    return f"""<div><h1>Sign in to Coppermind Admin</h1>
+<p class="lede">Enter the Admin password you chose during setup.</p></div>{notice}
+<form method="post" action="/admin/signin" class="stack">
+{
+        ui.text_input(
+            "password",
+            "Password",
+            kind="password",
+            error=error,
+            autocomplete="current-password",
+            autofocus=True,
+        )
+    }
+<div class="actions">{ui.submit("Sign in")}</div></form>
+<div>{forgot}</div>"""
 
 
 def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = None) -> FastAPI:
@@ -206,7 +214,6 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
     configure_logging(SERVICE, settings.log_level)
     version = settings.running_version(__version__)
     credentials = AdminCredentials(settings.state_dir)
-
     state = StateStore(settings.state_dir)
 
     def product_settings() -> ProductSettings:
@@ -223,18 +230,23 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
 
     app = FastAPI(title="Coppermind Admin", version=version, lifespan=lifespan)
     app.state.sessions = sessions or SignedSessions(credentials)
+    app.state.credentials = credentials
     app.state.control = state
-    app.state.tag_counts = fields.store_tag_counter(settings)
-    app.include_router(sync.router(settings))
-    app.include_router(problems.router(settings))
-    app.include_router(artifacts.router(settings))
-    app.include_router(search_index.router(settings))
-    app.include_router(field_index.router(settings))
-    app.include_router(note_history.router(settings))
-    app.include_router(purge.router(settings))
-    app.include_router(context.router(settings))
-    app.include_router(workflow.router(settings))
-    app.include_router(properties.router)
+    app.state.wiring = settings
+    app.state.version = version
+    # One result message per signed-in browser, said once on the next page it opens.
+    app.state.flashes = {}
+
+    def refuse(status: int, message: str) -> HTMLResponse:
+        return HTMLResponse(
+            public_page(
+                "Not done",
+                "<div><h1>That was not done</h1></div>"
+                + ui.banner("bad", message)
+                + f'<div class="actions">{ui.go("Back to Admin", "/admin", "primary")}</div>',
+            ),
+            status,
+        )
 
     @app.middleware("http")
     async def protect_forms(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -249,7 +261,11 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
             token = secrets.token_hex(32)
         context = csrf_token.set(token)
         try:
-            if request.method == "POST":
+            if request.method == "POST" and is_upload(request):
+                # A file is streamed by its own handler, which checks the same token
+                # before it keeps a single byte of the file.
+                request.state.csrf_expected = token
+            elif request.method == "POST":
                 try:
                     # Cache the bounded body so route handlers use the same form parser.
                     body = bytearray()
@@ -260,15 +276,14 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
                     request._body = bytes(body)
                     fields = await submitted(request)
                 except SubmissionTooLarge:
-                    destination = request.url.path.rsplit("/", 1)[-1]
-                    if destination in {"claim", "login"}:
-                        return error_response(destination, "too_large")
-                    return HTMLResponse(page("Refused", "<p>Submission too large.</p>"), 413)
+                    return refuse(413, "That was too much to send in one go. Nothing was changed.")
                 supplied = fields.get("csrf", "")
                 if not supplied or not secrets.compare_digest(supplied.encode(), token.encode()):
-                    return HTMLResponse(
-                        page("Refused", "<p>CSRF token missing or invalid. Reload the form.</p>"),
+                    return refuse(
                         403,
+                        "This page was open too long, so Admin could not be sure the request "
+                        "came from you. Nothing was changed. Go back, reload the page and "
+                        "try again.",
                     )
             response = await call_next(request)
             response.headers["Cache-Control"] = "no-store"
@@ -281,7 +296,34 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
         finally:
             csrf_token.reset(context)
 
+    @app.exception_handler(Exception)
+    async def fault(request: Request, exc: Exception) -> HTMLResponse:
+        log.error("admin page failed: %s %s", request.method, request.url.path, exc_info=exc)
+        return HTMLResponse(
+            public_page(
+                "Something went wrong",
+                "<div><h1>Something went wrong in Admin</h1></div>"
+                + ui.banner(
+                    "bad",
+                    "Admin hit a fault of its own while doing that, so it may not have been "
+                    "done. Your notes are not affected. Go back and look at the page before "
+                    "trying again.",
+                )
+                + f'<div class="actions">{ui.go("Back to Admin", "/admin", "primary")}</div>'
+                + ui.tech(f"{request.method} {request.url.path}: {type(exc).__name__}"),
+            ),
+            status_code=500,
+        )
+
     log.info("admin started")
+
+    def unreadable(path: Path, problem: str, remedy: str) -> HTMLResponse:
+        return problem_page(
+            "Admin cannot start",
+            f"Admin could not read {path.name}, so nobody can sign in right now.",
+            f"{path}: {problem}",
+            remedy,
+        )
 
     @app.middleware("http")
     async def require_session(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -289,124 +331,175 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
         if path in PUBLIC or path == "/":
             return await call_next(request)
         if not credentials.is_claimed():
-            return RedirectResponse("/admin/claim", status_code=303)
+            return RedirectResponse("/admin/welcome", status_code=303)
         token = request.cookies.get(COOKIE, "")
         if token:
             try:
                 signed_in = request.app.state.sessions.valid(token)
             except AdminRecordUnreadable as exc:
-                return unreadable_state_file(credentials.path, str(exc), ADMIN_RECORD_REMEDY)
+                return unreadable(credentials.path, str(exc), ADMIN_RECORD_REMEDY)
             if signed_in:
-                context = admin_path.set(
-                    path + (("?" + request.url.query) if request.url.query else "")
-                )
-                try:
-                    return await call_next(request)
-                finally:
-                    admin_path.reset(context)
-        if token:
-            ended = error_response("login", "session_expired")
+                return await call_next(request)
+            ended = RedirectResponse("/admin/signin?ended=1", status_code=303)
             ended.delete_cookie(COOKIE, path="/")
             return ended
-        return RedirectResponse("/admin/login", status_code=303)
+        return RedirectResponse("/admin/signin", status_code=303)
+
+    def start_session(target: str) -> Response:
+        try:
+            product = product_settings()
+        except FileNotFoundError:
+            product = ProductSettings()
+        except (OSError, ValueError) as exc:
+            return unreadable(state.path_for("settings"), rejection_detail(exc), SETTINGS_REMEDY)
+        try:
+            token = app.state.sessions.create(timedelta(hours=product.admin.session_hours))
+        except AdminRecordUnreadable as exc:
+            return unreadable(credentials.path, str(exc), ADMIN_RECORD_REMEDY)
+        response: Response = RedirectResponse(target, status_code=303)
+        response.set_cookie(COOKIE, token, httponly=True, samesite="strict", secure=True, path="/")
+        return response
+
+    app.state.start_session = start_session
 
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:
-        return RedirectResponse("/admin/login" if credentials.is_claimed() else "/admin/claim")
+        return RedirectResponse("/admin/signin" if credentials.is_claimed() else "/admin/welcome")
 
-    @app.get("/admin/claim", response_class=HTMLResponse, include_in_schema=False)
-    async def claim_page(request: Request) -> Response:
-        if credentials.is_claimed():
-            return RedirectResponse("/admin/login", status_code=303)
-        refusal = notice(CLAIM_NOTICES, request.query_params.get("error"))
-        return HTMLResponse(claim_form(refusal))
+    @app.get("/admin/welcome", response_class=HTMLResponse, include_in_schema=False)
+    async def welcome(request: Request) -> Response:
+        reset = credentials.reset_offered()
+        if credentials.is_claimed() and not reset:
+            return RedirectResponse("/admin/signin", status_code=303)
+        code = request.query_params.get("code", "")
+        title = "Choose a new password" if reset else "Welcome"
+        return HTMLResponse(public_page(title, welcome_body(code, {}, reset=reset)))
 
-    @app.get("/admin/login", response_class=HTMLResponse, include_in_schema=False)
-    async def login_page(request: Request) -> Response:
-        if not credentials.is_claimed():
-            return RedirectResponse("/admin/claim", status_code=303)
-        refusal = notice(LOGIN_NOTICES, request.query_params.get("error"))
-        return HTMLResponse(
-            page(
-                "Login",
-                f"""<h1>Admin login</h1>{refusal}<form method="post" action="/v1/admin/login">
-<label>Password<input type="password" name="password" autocomplete="current-password"
-required></label><button>Log in</button></form>""",
-            )
-        )
-
-    @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
-    async def overview(request: Request) -> HTMLResponse:
-        counters = await problems.overview_counters(request, settings)
-        return HTMLResponse(
-            page(
-                "Home",
-                f"""<h1>Home</h1><p>Review notes in Obsidian.
-Coppermind files them when you check Reviewed.</p>
-{counters}""",
-            )
-        )
-
-    @app.post("/v1/admin/claim", include_in_schema=False)
+    @app.post("/admin/welcome", include_in_schema=False)
     async def claim(request: Request) -> Response:
-        try:
-            body = await submitted(request)
-        except SubmissionTooLarge:
-            return error_response("claim", "too_large")
-        code, password = body.get("code", ""), body.get("password", "")
-        if not code or len(password) < 12:
-            return error_response("claim", "validation_error")
-        try:
-            await credentials.claim(code, password)
-        except AlreadyClaimed:
-            return error_response("login", "already_claimed")
-        except InvalidClaimCode:
-            return error_response("claim", "invalid_claim_code")
-        except (ClaimCodeUnreadable, ClaimStateUnwritable) as exc:
-            return claim_state_refusal(exc)
-        return RedirectResponse("/admin/login", status_code=303)
+        reset = credentials.reset_offered()
+        if credentials.is_claimed() and not reset:
+            return RedirectResponse("/admin/signin?claimed=1", status_code=303)
+        body = await submitted(request)
+        code, first, second = body.get("code", ""), body.get("pw1", ""), body.get("pw2", "")
+        errors: dict[str, str] = {}
+        if not code.strip():
+            errors["code"] = "Enter the setup code."
+        if len(first) < MIN_PASSWORD:
+            errors["pw1"] = f"Use at least {MIN_PASSWORD} characters. You typed {len(first)}."
+        elif first != second:
+            errors["pw2"] = "The two passwords are different. Type the same one twice."
+        title = "Choose a new password" if reset else "Welcome"
 
-    @app.post("/v1/admin/login", include_in_schema=False)
-    async def login(request: Request) -> Response:
-        if not credentials.is_claimed():
-            return RedirectResponse("/admin/claim", status_code=303)
+        def again(status: int = 422, banner: str = "") -> HTMLResponse:
+            return HTMLResponse(
+                public_page(title, welcome_body(code, errors, reset=reset, banner=banner)), status
+            )
+
+        if errors:
+            return again()
         try:
-            password = (await submitted(request)).get("password", "")
-        except SubmissionTooLarge:
-            return error_response("login", "too_large")
+            if reset:
+                await credentials.reset(code, first)
+            else:
+                await credentials.claim(code, first)
+        except AlreadyClaimed:
+            return RedirectResponse("/admin/signin?claimed=1", status_code=303)
+        except InvalidClaimCode:
+            errors["code"] = (
+                "That setup code was not accepted. Check it against the link Coppermind "
+                "showed, or open that link again."
+            )
+            return again()
+        except (ClaimCodeUnreadable, ClaimStateUnwritable) as exc:
+            return _claim_refused(exc)
+        except AdminRecordUnreadable as exc:
+            return unreadable(credentials.path, str(exc), ADMIN_RECORD_REMEDY)
+        zone = body.get("tz", "")
+        if not reset and zone:
+            # The browser's time zone is a better first guess than a fixed default.
+            with suppress(OSError, ValueError, KeyError):
+                ZoneInfo(zone)
+                current = state.read("settings")
+                document = dict(current.body)
+                document.setdefault("general", {})["timezone"] = zone
+                ProductSettings.model_validate(
+                    {k: v for k, v in document.items() if k != "revision"}
+                )
+                state.write("settings", document, if_revision=current.revision)
+        response = start_session("/admin" if reset else "/admin/setup")
+        cookie = _session_cookie(response)
+        if cookie:
+            app.state.flashes[cookie] = {
+                "kind": "ok",
+                "html": "New password saved. You are signed in. Other browsers were signed out."
+                if reset
+                else "Password saved. You are signed in.",
+            }
+        return response
+
+    def _session_cookie(response: Response) -> str:
+        for name, value in response.raw_headers:
+            if name == b"set-cookie" and value.startswith(COOKIE.encode() + b"="):
+                return value.decode().split(";", 1)[0].split("=", 1)[1]
+        return ""
+
+    app.state.session_cookie = _session_cookie
+
+    def _claim_refused(error: ClaimStateProblem) -> HTMLResponse:
+        if isinstance(error, ClaimCodeUnreadable):
+            return problem_page(
+                "Setup could not finish",
+                "Admin could not read its setup code, so setup did not happen.",
+                f"{error.path}: {error.problem}",
+                CLAIM_CODE_REMEDY,
+            )
+        return problem_page(
+            "Setup could not finish",
+            "Admin could not save your password, so setup did not happen.",
+            f"{error.path}: {error.problem}",
+            CLAIM_RECORD_REMEDY,
+        )
+
+    @app.get("/admin/signin", response_class=HTMLResponse, include_in_schema=False)
+    async def signin_page(request: Request) -> Response:
+        if not credentials.is_claimed():
+            return RedirectResponse("/admin/welcome", status_code=303)
+        notice = ""
+        if request.query_params.get("ended"):
+            notice = ui.banner("info", "You were signed out because the sign-in ran out.")
+        elif request.query_params.get("claimed"):
+            notice = ui.banner(
+                "info", "Setup was already done on this server. Sign in with the Admin password."
+            )
+        elif request.query_params.get("out"):
+            notice = ui.banner("ok", "You are signed out.")
+        return HTMLResponse(public_page("Sign in", signin_body("", notice)))
+
+    @app.post("/admin/signin", include_in_schema=False)
+    async def signin(request: Request) -> Response:
+        if not credentials.is_claimed():
+            return RedirectResponse("/admin/welcome", status_code=303)
+        password = (await submitted(request)).get("password", "")
         if not password:
-            return error_response("login", "unauthorized")
+            return HTMLResponse(
+                public_page("Sign in", signin_body("Enter your password.")), status_code=422
+            )
         try:
             verified = await credentials.verify_password(password)
         except AdminRecordUnreadable as exc:
-            return unreadable_state_file(credentials.path, str(exc), ADMIN_RECORD_REMEDY)
+            return unreadable(credentials.path, str(exc), ADMIN_RECORD_REMEDY)
         if not verified:
-            return error_response("login", "unauthorized")
-        try:
-            product = product_settings()
-        except (OSError, ValueError) as exc:
-            return unreadable_state_file(
-                state.path_for("settings"), rejection_detail(exc), SETTINGS_REMEDY
+            return HTMLResponse(
+                public_page("Sign in", signin_body("That password was not accepted. Try again.")),
+                status_code=401,
             )
-        lifetime = timedelta(hours=product.admin.session_hours)
-        try:
-            token = request.app.state.sessions.create(lifetime)
-        except AdminRecordUnreadable as exc:
-            return unreadable_state_file(credentials.path, str(exc), ADMIN_RECORD_REMEDY)
-        response: Response = RedirectResponse("/admin", status_code=303)
-        response.set_cookie(
-            COOKIE,
-            token,
-            httponly=True,
-            samesite="strict",
-            secure=True,
-            path="/",
-        )
-        return response
+        return start_session("/admin")
 
-    @app.post("/v1/admin/logout", include_in_schema=False)
-    async def logout() -> Response:
-        response = RedirectResponse("/admin/login", status_code=303)
+    @app.post("/admin/signout", include_in_schema=False)
+    async def signout(request: Request) -> Response:
+        app.state.flashes.pop(request.cookies.get(COOKIE, ""), None)
+        response = RedirectResponse("/admin/signin?out=1", status_code=303)
         response.delete_cookie(COOKIE, path="/")
         return response
 
@@ -423,12 +516,9 @@ Coppermind files them when you check Reviewed.</p>
             content=readiness.model_dump(mode="json"),
         )
 
-    from coppermind_admin.pages import keys
-    from coppermind_admin.pages import settings as settings_page
+    from coppermind_admin.pages import register
 
-    app.include_router(keys.router)
-    app.include_router(settings_page.router)
-    app.include_router(fields.router)
+    register(app, settings)
     return app
 
 

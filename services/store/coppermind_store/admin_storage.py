@@ -134,6 +134,46 @@ class AdminStorage:
             if datetime.fromisoformat(item["removed_at"]) <= cutoff
         ]
 
+    def _still_kept(self) -> list[dict[str, Any]]:
+        """Removed files and people not yet past the keep time: still here to bring back."""
+        cutoff = datetime.now(UTC) - timedelta(days=self.keep_days())
+        kept = []
+        for manifest_file in self.store.artifacts_root.glob("*/manifest.json"):
+            try:
+                manifest = json.loads(manifest_file.read_bytes())
+                removed = manifest.get("removed_at")
+                if (
+                    not removed
+                    or manifest.get("removed_reason") not in artifacts.OWNER_REMOVAL_REASONS
+                    or datetime.fromisoformat(removed) <= cutoff
+                ):
+                    continue
+            except (OSError, ValueError):
+                continue
+            kept.append(
+                {
+                    "id": manifest_file.parent.name,
+                    "kind": "artifact",
+                    "what": KINDS["artifact"],
+                    "title": str(manifest.get("filename") or manifest.get("title") or ""),
+                    "deleted_at": removed,
+                }
+            )
+        for entity in self.store.entities.load().entities.values():
+            if entity.retired_at is None or entity.redirect or entity.retired_at <= cutoff:
+                continue
+            kept.append(
+                {
+                    "id": entity.id,
+                    "kind": "entity",
+                    "what": KINDS["entity"],
+                    "title": entity.name,
+                    "deleted_at": entity.retired_at.isoformat(),
+                }
+            )
+        kept.sort(key=lambda item: item["deleted_at"], reverse=True)
+        return kept
+
     async def interrupted(self) -> dict[str, Any] | None:
         record = await asyncio.to_thread(self._unfinished)
         if record is None:
@@ -181,6 +221,7 @@ class AdminStorage:
             )
         items.sort(key=lambda item: item["deleted_at"])
         return {
+            "kept": await asyncio.to_thread(self._still_kept),
             "token": result.token,
             "state": result.state,
             "items": items,

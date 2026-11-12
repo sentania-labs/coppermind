@@ -13,7 +13,7 @@ import base64
 import contextlib
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +25,7 @@ from coppermind.db.models import Note
 from coppermind.naming import sanitize_folder, unique_stem
 from coppermind.store_protocol import (
     NotFound,
+    PatchFrontmatter,
     PathCollision,
     ProblemInfo,
     RenameNote,
@@ -32,7 +33,10 @@ from coppermind.store_protocol import (
     StoreError,
     ValidationFailed,
 )
+from coppermind_store.admin_features import feature_state
+from coppermind_store.ai_services import UNREACHABLE, Refused
 from coppermind_store.fs import content_hash, existing_stems, resolve
+from coppermind_store.note_lifecycle import SETTLING
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
@@ -46,6 +50,36 @@ STUCK_KINDS = {
     "unreadable_note": "unreadable",
 }
 CONFIDENT = 0.8
+# A note deleted on a device is first seen as missing, and is confirmed as deleted once the
+# history of the notes has recorded the removal: a few minutes at most. Until this long has
+# passed a vanished note is not called a problem.
+MISSING_GRACE = timedelta(minutes=15)
+# The summary a note had before "Write the summary again", kept until the note is reviewed.
+EARLIER_SUMMARY = "meeting-summaries-earlier/"
+# Missing notes their owner has said are gone on purpose, so they stop being listed as problems.
+GONE = "admin-gone-notes"
+
+
+def _recent(since: datetime) -> bool:
+    return datetime.now(UTC) - since < MISSING_GRACE
+
+
+def why_not_filed(error: str) -> tuple[str, str]:
+    """Why a reviewed note was not filed: a short code Admin can act on, and plain words."""
+    if "confirm the meeting time" in error:
+        return "time", (
+            "It is a work note with no meeting time, and work notes are filed by when they "
+            "happened."
+        )
+    if "date" in error and error.startswith("ValueError"):
+        return "date", "It has no date Coppermind can read, and notes are filed by date."
+    if error == "SourceRevisionNeedsReview":
+        return "source", (
+            "The recording or document it was written from changed after you reviewed it."
+        )
+    if error in {"NotesFilesystemUnavailable", "PermissionError", "OSError"}:
+        return "disk", "Coppermind could not write to the folder it belongs in."
+    return "other", "Coppermind keeps trying by itself."
 
 
 def _now() -> str:
@@ -141,9 +175,16 @@ class AdminNotes:
     async def stuck(self, problems: list[ProblemInfo]) -> list[dict[str, Any]]:
         """Every note Coppermind could not deal with by itself, one entry per note."""
         found: dict[str, dict[str, Any]] = {}
+        gone = set(self.store.context.read(GONE, []))
         for problem in problems:
             kind = STUCK_KINDS.get(problem.kind)
             if kind is None or not problem.note_id:
+                continue
+            if kind == "missing" and problem.note_id in gone:
+                # Its owner said it is gone on purpose. It is not a problem any more.
+                continue
+            if kind == "notfiled" and SETTLING in self._filing_error(problem.note_id):
+                # Reviewed a moment ago and about to be filed. Nothing for anyone to fix.
                 continue
             entry = found.setdefault(
                 problem.note_id,
@@ -161,9 +202,12 @@ class AdminNotes:
             entry["title"] = (row.title if row else None) or Path(row.path if row else note_id).stem
             entry["path"] = row.path if row else ""
             entry["when"] = (row.mtime or row.updated_at).isoformat() if row else ""
-            entry["name_taken"] = entry["kind"] == "notfiled" and self._filing_error(note_id) == (
-                "PathCollision"
-            )
+            if entry["kind"] == "missing" and row and _recent(row.updated_at):
+                continue
+            error = self._filing_error(note_id)
+            entry["name_taken"] = entry["kind"] == "notfiled" and error == "PathCollision"
+            if entry["kind"] == "notfiled" and not entry["name_taken"]:
+                entry["why"], entry["reason"] = why_not_filed(error)
             out.append(entry)
         # Notes the store refused to take on are files, not notes yet: named by their path.
         for problem in problems:
@@ -227,6 +271,9 @@ class AdminNotes:
 
     async def waiting(self) -> list[dict[str, Any]]:
         asked = {job.note_id for job in self.store.context.jobs() if job.purpose != "dossier"}
+        without = {
+            note["id"]: note["why"] for note in await self.store.admin.features.older_notes()
+        }
         unsure = self._open_suggestions()
         rows = await self._rows(Note.state == "ok", Note.reviewed.is_(False))
         return [
@@ -236,7 +283,9 @@ class AdminNotes:
                 "path": row.path,
                 "arrived": row.first_seen_at.isoformat(),
                 "unsure": unsure.get(row.id, 0),
-                "no_suggestions": row.id not in asked,
+                # "before": waiting since before suggestions were on. "failed": the answer
+                # could not be used. "soon": new, and asked for within a minute. "": it has them.
+                "no_suggestions": without.get(row.id) or ("" if row.id in asked else "soon"),
             }
             for row in rows
         ]
@@ -375,6 +424,8 @@ class AdminNotes:
                 result["copy"] = _without_body(others[0])
                 result["difference"] = _difference(original["body"], others[0]["body"])
                 result["original_filed"] = bool(row.reviewed and row.filed)
+        elif SETTLING in error and row.state == "ok" and row.reviewed:
+            result["settling"] = True
         elif error and row.state == "ok" and row.reviewed:
             result["stuck"] = "notfiled"
             result["filing_error"] = error
@@ -394,11 +445,11 @@ class AdminNotes:
                         existing_stems(resolve(self.store.notes_root, folder)),
                     )
             if not result.get("name_taken"):
-                from coppermind_store.sources import _filing_reason
-
-                result["reason"] = _filing_reason(error)
+                result["why"], result["reason"] = why_not_filed(error)
         elif row.state == "missing":
             result["stuck"] = "missing"
+            result["gone"] = note_id in set(self.store.context.read(GONE, []))
+            result["recent"] = _recent(row.updated_at)
             try:
                 await self.store.preview_note_restore(note_id)
                 result["can_restore"] = True
@@ -455,6 +506,8 @@ class AdminNotes:
                     events.append(
                         (stamp, "Could not be filed: a file with that name is already there.")
                     )
+                elif SETTLING in str(plan.get("error")):
+                    events.append((stamp, "Waiting a moment for the file to stop changing."))
                 elif plan.get("error"):
                     events.append((stamp, "Could not be filed."))
                 elif plan.get("complete"):
@@ -485,12 +538,26 @@ class AdminNotes:
                 else type(exc).__name__
             )
             atomic_write_bytes(journal, json.dumps(state).encode(), mode=0o600)
-            return {"filed": False, "error": state["error"]}
+            return {"filed": False, "error": state["error"], "settling": SETTLING in state["error"]}
         note = await self.store.get_note(note_id)
         return {"filed": True, "path": note.path, "name": Path(note.path).stem}
 
+    async def no_set_time(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Say a work note had no set time, which is what was keeping it from being filed."""
+        note_id = str(payload["id"])
+        note = await self.store.get_note(note_id)
+        await self.store.patch_frontmatter(
+            note_id, PatchFrontmatter(set={"time_unknown": True}), if_match=note.content_hash
+        )
+        return await self._file_now(note_id)
+
     async def check_again(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._file_now(str(payload["id"]))
+        result = await self._file_now(str(payload["id"]))
+        if payload.get("reviewed"):
+            self.forget_earlier_summary(str(payload["id"]))
+            # Said by the review page, so Home can recall the review and not only the filing.
+            result["reviewed"] = True
+        return result
 
     async def keep_both(self, payload: dict[str, Any]) -> dict[str, Any]:
         """File the note beside the file that has its name, under the next free name."""
@@ -642,6 +709,130 @@ class AdminNotes:
             self.store, ConfirmPurge(token=preview.token, confirmation="Purge listed items")
         )
         return {"title": title}
+
+    # -- the meeting summary of a note written from a recording ------------------------------
+
+    def _recording_of(self, note_id: str) -> Any:
+        return next(
+            (
+                job
+                for job in self.store.context.recordings.jobs()
+                if job.note_id == note_id and job.source_id
+            ),
+            None,
+        )
+
+    def _latest_job(self, note_id: str) -> Any:
+        jobs = [
+            job
+            for job in self.store.context.jobs()
+            if job.note_id == note_id and job.purpose != "dossier"
+        ]
+        return max(jobs, key=lambda job: job.created_at, default=None)
+
+    async def summary(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """The summary proposed for a note written from a recording, and the one before it."""
+        note_id = str(payload["id"])
+        context = self.store.context
+        if self._recording_of(note_id) is None:
+            return {"recording": False}
+        job = self._latest_job(note_id)
+        proposed = (
+            job.result.meeting_summary.model_dump()
+            if job and job.result and job.result.meeting_summary and job.state == "suggested"
+            else None
+        )
+        earlier = context.read(EARLIER_SUMMARY + note_id, None)
+        assignment = context.config().assignments["enrichment"]
+        service = self.store.admin.features._service(assignment.connection)  # noqa: SLF001
+        return {
+            "recording": True,
+            "proposed": proposed,
+            # Kept from before "Write the summary again", until the note is reviewed.
+            "earlier": earlier["summary"] if earlier and earlier["summary"] != proposed else None,
+            "writing": bool(job and job.state in {"queued", "running"}),
+            "failed": bool(job and job.state == "failed"),
+            "waiting_on_service": bool(
+                job and job.state == "failed" and job.error_rule in UNREACHABLE
+            ),
+            "state": feature_state(assignment, service),
+            "service": service,
+        }
+
+    async def summary_again(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Write a fresh summary from the same transcript, with the instructions as they are now.
+
+        This is the ordinary "fresh suggestions" request, so there is one way a summary is
+        made. The recording is not sent anywhere again: the transcript already written is
+        what gets summarized. The summary proposed until now is kept so its owner can still
+        choose it, and nothing reaches the note until they mark it reviewed.
+        """
+        note_id = str(payload["id"])
+        context = self.store.context
+        async with self.store.session_factory() as session:
+            row = await session.get(Note, note_id)
+        if row is None or row.state != "ok":
+            raise NotFound(note_id)
+        if row.reviewed:
+            raise Refused(
+                "note",
+                "This note has already been reviewed, so its summary is yours now and "
+                "Coppermind does not write it again.",
+            )
+        if self._recording_of(note_id) is None:
+            raise Refused(
+                "note", "This note was not written from a recording, so it has no summary."
+            )
+        assignment = context.config().assignments["enrichment"]
+        service = self.store.admin.features._service(assignment.connection)  # noqa: SLF001
+        state = feature_state(assignment, service)
+        if state != "on":
+            raise Refused(
+                "service",
+                {
+                    "none": "Suggestions are off, and the summary is written by the same "
+                    "AI service. Turn suggestions on first.",
+                    "paused": "Suggestions are paused, and the summary is written by the "
+                    "same AI service. Resume them first.",
+                }.get(
+                    state,
+                    "The AI service that writes summaries is not answering. Test it, and "
+                    "write the summary again when it answers.",
+                ),
+            )
+        job = self._latest_job(note_id)
+        if job and job.state in {"queued", "running"}:
+            return {"title": row.title or Path(row.path).stem, "already": True}
+        if job and job.result and job.result.meeting_summary:
+            context.write(
+                EARLIER_SUMMARY + note_id,
+                {"summary": job.result.meeting_summary.model_dump(), "kept_at": _now()},
+            )
+        await context.queue_note(note_id, force=True, fresh=True)
+        return {"title": row.title or Path(row.path).stem, "already": False}
+
+    def forget_earlier_summary(self, note_id: str) -> None:
+        """Once a note is reviewed, the summary it did not use is no longer kept."""
+        (self.store.context.root / (EARLIER_SUMMARY + note_id + ".json")).unlink(missing_ok=True)
+
+    async def gone_on_purpose(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Stop listing a missing note as a problem: its owner removed it on purpose.
+
+        Nothing is deleted. If the file ever returns the note is an ordinary note again.
+        """
+        note_id = str(payload["id"])
+        async with self.store.session_factory() as session:
+            row = await session.get(Note, note_id)
+        if row is None or row.state != "missing":
+            raise ValidationFailed(["That note is not missing any more."])
+        async with self.store.context.lock:
+            known = {item.id for item in await self._rows(Note.state == "missing")}
+            # Notes that came back or were deleted for good drop off the list by themselves.
+            kept = [item for item in self.store.context.read(GONE, []) if item in known]
+            if note_id not in kept:
+                kept.append(note_id)
+            self.store.context.write(GONE, kept)
+        return {"title": row.title or Path(row.path).stem}
 
     async def remove_file(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Delete a note: its file leaves the notes filesystem and waits under Deleted."""

@@ -31,6 +31,10 @@ from coppermind_store.control import ControlState
 from coppermind_store.keys import ensure_default_key
 
 TOKEN_BYTES = 32
+# A setup code is carried by a link but may also be typed, so it is short, grouped, and
+# drawn from letters and digits that are not mistaken for one another.
+CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+CODE_GROUPS = 3
 
 
 def _own(path: Path, uid: int, gid: int, mode: int) -> None:
@@ -66,6 +70,27 @@ def _ensure_secret(path: Path, uid: int, gid: int, mode: int) -> bool:
     return True
 
 
+def _setup_code() -> str:
+    return "-".join(
+        "".join(secrets.choice(CODE_ALPHABET) for _ in range(4)) for _ in range(CODE_GROUPS)
+    )
+
+
+def _ensure_code(path: Path, uid: int, gid: int, *, fresh: bool = False) -> tuple[str, bool]:
+    """The setup code at `path`, made when it is missing or a fresh one is asked for."""
+    if not fresh and path.exists() and path.stat().st_size > 0:
+        _own(path, uid, gid, 0o600)
+        return path.read_text(encoding="utf-8").strip(), False
+    code = _setup_code()
+    atomic_write_text(path, code + "\n", mode=0o600)
+    _own(path, uid, gid, 0o600)
+    return code, True
+
+
+def _setup_link(settings: Wiring, code: str) -> str:
+    return f"{settings.admin_url.rstrip('/')}/admin/welcome?code={code}"
+
+
 def run(wiring: Wiring | None = None) -> int:
     settings = wiring or Wiring()
     uid, gid = settings.run_uid, settings.run_gid
@@ -85,11 +110,22 @@ def run(wiring: Wiring | None = None) -> int:
     created_password = _ensure_secret(settings.db_password_file, uid, gid, 0o644)
 
     claim_code_path = settings.state_dir / "internal" / "claim-code"
+    reset_code_path = settings.state_dir / "internal" / "reset-code"
+    setup_link = ""
     if (settings.state_dir / "admin.json").exists():
         claim_code_path.unlink(missing_ok=True)
         claim_code = "claimed"
+        if settings.admin_new_setup_link:
+            # Asked for from the server itself: a new link to choose a new Admin password.
+            code, _ = _ensure_code(reset_code_path, uid, gid, fresh=True)
+            setup_link = _setup_link(settings, code)
+            claim_code = "new setup link issued"
+        else:
+            reset_code_path.unlink(missing_ok=True)
     else:
-        claim_code = "generated" if _ensure_secret(claim_code_path, uid, gid, 0o600) else "kept"
+        code, created = _ensure_code(claim_code_path, uid, gid)
+        claim_code = "generated" if created else "kept"
+        setup_link = _setup_link(settings, code)
 
     control = ControlState(settings.state_dir)
     control.ensure_defaults()
@@ -109,6 +145,19 @@ def run(wiring: Wiring | None = None) -> int:
         f"default_api_key_file={settings.default_api_key_file}",
         flush=True,
     )
+    if setup_link:
+        # The one thing bootstrap shows on purpose: the link that starts Admin setup. Its
+        # code works once and is gone as soon as a password has been chosen with it.
+        print(
+            "\nOpen this link to "
+            + (
+                "choose a new Admin password"
+                if claim_code.startswith("new")
+                else "set up Coppermind"
+            )
+            + f":\n\n    {setup_link}\n",
+            flush=True,
+        )
     return 0
 
 

@@ -15,6 +15,7 @@ answer, and it clears on the first call that does.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import re
 import socket
@@ -171,6 +172,8 @@ class AiServices:
     def __init__(self, context: ContextService) -> None:
         self.context = context
         context.provider.observer = self.observe
+        self._resuming: set[asyncio.Task[Any]] = set()
+        self._testing = 0
 
     # -- what is recorded -----------------------------------------------------------------
 
@@ -215,6 +218,14 @@ class AiServices:
                     key_refused=False,
                     last_ok_at=now(),
                 )
+                # It answered again without anyone pressing Test: send what was waiting on it.
+                # A test in progress does this itself, so that it can say what it restarted.
+                with contextlib.suppress(RuntimeError):
+                    if self._testing:
+                        return
+                    task = asyncio.get_running_loop().create_task(self.resume(connection.id))
+                    self._resuming.add(task)
+                    task.add_done_callback(self._resuming.discard)
         except (OSError, ValueError):
             # Health is a convenience for the owner. It never fails the call it watched.
             return
@@ -411,6 +422,10 @@ class AiServices:
                     continue
                 speakers = list(dict.fromkeys(s["speaker"] for s in transcript["segments"]))
                 names = {name: f"Speaker {index + 1}" for index, name in enumerate(speakers)}
+                # One line for each speaker it told apart: the first thing each one said.
+                first: dict[str, dict[str, Any]] = {}
+                for segment in transcript["segments"]:
+                    first.setdefault(segment["speaker"], segment)
                 found.append(
                     {
                         "model": model,
@@ -419,7 +434,7 @@ class AiServices:
                         "speakers": len(speakers),
                         "lines": [
                             {"speaker": names[s["speaker"]], "text": s["text"][:200]}
-                            for s in transcript["segments"][:4]
+                            for s in list(first.values())[:4]
                         ],
                     }
                 )
@@ -441,17 +456,21 @@ class AiServices:
 
     async def _run(self, connection: ModelConnection, key: str) -> dict[str, Any]:
         """Find out what one service can do. Raises when nothing answers or the key fails."""
+        self._testing += 1
         try:
-            models = await self.context.provider.models(connection, key)
-        except ProviderError as exc:
-            if exc.rule in UNREACHABLE or http_status(exc) in {401, 403}:
-                raise
-            # No model list is an answer in itself: a transcription server often has none.
-            models = []
-        text = await self._test_text(connection, key, models)
-        embed = await self._test_embed(connection, key, models, text)
-        speech = await self._test_speech(connection, key, models)
-        return {"models": models, "text": text, "embed": embed, "speech": speech}
+            try:
+                models = await self.context.provider.models(connection, key)
+            except ProviderError as exc:
+                if exc.rule in UNREACHABLE or http_status(exc) in {401, 403}:
+                    raise
+                # No model list is an answer in itself: a transcription server often has none.
+                models = []
+            text = await self._test_text(connection, key, models)
+            embed = await self._test_embed(connection, key, models, text)
+            speech = await self._test_speech(connection, key, models)
+            return {"models": models, "text": text, "embed": embed, "speech": speech}
+        finally:
+            self._testing -= 1
 
     def _stamp(self, connection: ModelConnection, caps: dict[str, Any]) -> None:
         """Keep the older records the workers read in step with what the test found."""
