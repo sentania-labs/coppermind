@@ -1509,6 +1509,28 @@ async def test_a_voice_identified_after_review_adds_that_person_to_attendees_onc
     assert len(context.read("review-completions/" + note_id, {})["late_attendees"]) == 1
 
 
+async def test_a_failed_attendee_update_does_not_block_identifying_the_voice(
+    store, standin, monkeypatch
+):
+    from coppermind_store import speaker_names
+    from coppermind_store.voice_relabel import combine
+
+    context, _, note_id, voice = await reviewed_with_unknown_voice(store, standin)
+    blair = await store.entities.create(
+        EntityInput(kind="person", name="Blair Stone", emails=["blair@example.test"])
+    )
+    before = (await store.get_note(note_id)).frontmatter["attendees"]
+
+    def refuse(*args, **kwargs):
+        raise ValueError("people fields must be lists")
+
+    monkeypatch.setattr(speaker_names, "people_changes", refuse)
+    async with context.lifecycle.lock, context.lock:
+        await combine(context, "unknown:2", "person:" + blair["id"])
+    assert "unknown:2" not in voice.unknown_summaries()
+    assert (await store.get_note(note_id)).frontmatter["attendees"] == before
+
+
 async def test_someone_already_listed_is_not_added_again(store, standin):
     from coppermind_store.voice_relabel import combine
 

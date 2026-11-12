@@ -319,7 +319,8 @@ async def combine(context: Any, source: str, target: str, reviewing: str | None 
         else:
             await relabel_recording(context, assignment, None, name)
             if person_id and assignment["note_id"] != reviewing:
-                await add_late_attendee(context, assignment, person_id)
+                with contextlib.suppress(ValueError):
+                    await add_late_attendee(context, assignment, person_id)
     for assignment in deferred:
         voice.defer_relabel(assignment, name, person_id)
     voice.move_voice(source, target)
