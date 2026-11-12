@@ -404,7 +404,9 @@ class VoiceStore:
         ]
         self._save(data)
 
-    def defer_relabel(self, assignment: dict[str, Any], name: str) -> None:
+    def defer_relabel(
+        self, assignment: dict[str, Any], name: str, person_id: str | None = None
+    ) -> None:
         """Remember a speaker rename for a note that cannot be rewritten yet."""
         data = self._load()
         key = (assignment["note_id"], assignment["label"], assignment.get("source_id"))
@@ -415,6 +417,7 @@ class VoiceStore:
                 "label": assignment["label"],
                 "assignment": dict(assignment),
                 "name": name,
+                **({"person_id": person_id} if person_id else {}),
             }
         )
         data["deferred"] = kept
