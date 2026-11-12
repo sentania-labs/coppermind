@@ -131,7 +131,7 @@ def test_the_review_shows_the_summary_and_offers_to_write_it_again(admin):
     proposed = store.views["note-summary"]["proposed"]
     assert proposed["summary"] in page
     assert "Write the summary again" in page
-    assert f'formaction="{REVIEW.removesuffix("/review")}/summary-again"' in page
+    assert 'formaction="' + REVIEW.removesuffix("/review") + '/summary-again"' not in page
     assert "the recording is\nnot sent anywhere again" in page.replace("  ", " ") or (
         "the recording is not sent anywhere again" in page
     )
@@ -145,6 +145,38 @@ def test_writing_it_again_asks_the_store_and_says_the_old_one_is_kept(admin):
     assert store.asked("note-summary-again") == [{"id": NOTE}]
     assert "writing the summary again from the same transcript" in page
     assert "The one you had is kept" in page
+
+
+def review_form(page):
+    start = page.index(f'<form method="post" action="{REVIEW}"')
+    return page[start : page.index("</form>", start)]
+
+
+def test_pressing_enter_in_the_review_form_marks_the_note_reviewed_never_writes_the_summary(admin):
+    client, _, _ = admin
+    page = client.get(REVIEW).text
+    form = review_form(page)
+    buttons = re.findall(r"<button[^>]*>", form)
+    first_in_form = next(tag for tag in buttons if 'form="' not in tag)
+    assert 'value="file"' in first_in_form
+    again = next(tag for tag in buttons if 'form="summary-again-form"' in tag)
+    assert "formaction" not in again
+    outside = page.split("</form>", 1)[1]
+    assert re.search(
+        r'<form id="summary-again-form" method="post" action="[^"]*/summary-again">', outside
+    )
+
+
+def test_while_the_summary_is_written_only_the_summary_is_refreshed_not_the_form(admin):
+    client, _, store = admin
+    store.views["note-summary"].update(writing=True, proposed=None, earlier=EARLIER)
+    page = client.get(REVIEW).text
+    live = page.index("<div data-live>")
+    assert page.index("Coppermind is writing the summary now.") > live
+    assert live < page.index('name="how"')
+    assert page.count("<div data-live>") == 1
+    form = review_form(page)
+    assert "Coppermind is writing the summary now." in form
 
 
 def test_while_it_is_being_written_the_page_says_so_and_updates_itself(admin):
@@ -939,7 +971,8 @@ def test_an_interrupted_clean_up_with_nothing_left_can_still_be_cleared(admin):
 
 def test_a_files_page_address_with_a_bad_count_still_draws(admin):
     client, _, _ = admin
-    assert client.get("/admin/storage/files?shown=abc").status_code == 200
+    for odd in ("abc", "\u00b2", "\u2460", "-3", ""):
+        assert client.get("/admin/storage/files", params={"shown": odd}).status_code == 200
 
 
 def test_removing_a_tag_asks_first_and_says_its_other_spellings_go_with_it(admin):

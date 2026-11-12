@@ -19,7 +19,7 @@ async function waitFor(check, message, attempts = 150) {
   throw new Error(message);
 }
 
-async function harness(context, { fake = false, persisted = false, failure = "", level = "INFO", remoteNames = ["Phone notes"] } = {}) {
+async function harness(context, { fake = false, persisted = false, failure = "", level = "INFO", remoteNames = ["Phone notes"], env = {} } = {}) {
   const data = await mkdtemp(path.join(os.tmpdir(), "coppermind-sync-"));
   const stateDir = path.join(data, "state", "sync");
   await mkdir(stateDir, { recursive: true });
@@ -72,6 +72,7 @@ else if (args[0] === 'sync-setup') console.log('{}');
 else if (args[0] === 'login') {
   const signedOut = ${JSON.stringify(path.join(data, 'signed-out'))};
   const hold = ${JSON.stringify(path.join(data, 'login-hold'))};
+  if (!args.includes('--password') && fs.existsSync(${JSON.stringify(path.join(data, 'login-killed'))})) process.kill(process.pid, 'SIGKILL');
   while (!args.includes('--password') && fs.existsSync(hold)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   if (args.includes('--password')) fs.rmSync(signedOut, { force: true });
   else if (fs.existsSync(signedOut)) process.exit(1);
@@ -85,7 +86,7 @@ else if (args[0] === 'sync') { console.log(${JSON.stringify(secrets.join(' '))})
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, COPPERMIND_DATA_DIR: data,
       COPPERMIND_INTERNAL_TOKEN_FILE: tokenFile, COPPERMIND_SYNC_FAKE: fake ? "1" : "0",
       COPPERMIND_SYNC_PORT: "0", COPPERMIND_LOG_LEVEL: level,
-      COPPERMIND_SYNC_CREDENTIALS_DIR: credentials },
+      COPPERMIND_SYNC_CREDENTIALS_DIR: credentials, ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   supervisor.stdout.on("data", (chunk) => { log += chunk; });
@@ -488,6 +489,44 @@ test("real mode: signing in again with the password alone restarts a signed-out 
   assert.equal(body.needs_signin, false);
   const login = (await h.calls()).filter((a) => a[0] === "login" && a.includes("--password")).pop();
   assert.deepEqual(login, ["login", "--email", form.email, "--password", form.password]);
+  await h.clean();
+});
+
+test("real mode: a signed-out finding that stops being true lets sync come back by itself", async (context) => {
+  const h = await harness(context, {
+    persisted: true,
+    env: { COPPERMIND_SYNC_TICK_MS: "100", COPPERMIND_SYNC_SIGNIN_RECHECK_MS: "100" },
+  });
+  const syncs = async () => (await h.calls()).filter((a) => a[0] === "sync").length;
+  await waitFor(async () => (await syncs()) > 0, "boot did not sync");
+  await writeFile(path.join(h.data, "signed-out"), "");
+  await writeFile(path.join(h.data, "sync-exits"), "");
+  await h.request("/pause", {});
+  await h.request("/resume", {});
+  await waitFor(async () => { const s = await h.readStatus(); return s.needs_signin && s; }, "sign-out not noticed", 4000);
+  const before = await syncs();
+  await rm(path.join(h.data, "signed-out"));
+  await rm(path.join(h.data, "sync-exits"));
+  const back = await waitFor(async () => {
+    const s = await h.readStatus();
+    return !s.needs_signin && (await syncs()) > before && s;
+  }, "sync did not come back once the client was signed in again", 4000);
+  assert.equal(back.needs_signin, false);
+  await h.clean();
+});
+
+test("real mode: a sign-in check that never answered is not reported as being signed out", async (context) => {
+  const h = await harness(context, { persisted: true });
+  const syncs = async () => (await h.calls()).filter((a) => a[0] === "sync").length;
+  await waitFor(async () => (await syncs()) > 0, "boot did not sync");
+  await writeFile(path.join(h.data, "login-killed"), "");
+  await writeFile(path.join(h.data, "sync-exits"), "");
+  await h.request("/pause", {});
+  await h.request("/resume", {});
+  const logins = async () => (await h.calls()).filter((a) => a[0] === "login" && !a.includes("--password")).length;
+  await waitFor(async () => (await logins()) > 0, "the sign-in check never ran", 6000);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal((await h.readStatus()).needs_signin, false);
   await h.clean();
 });
 

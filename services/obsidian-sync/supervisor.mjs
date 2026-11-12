@@ -27,6 +27,7 @@ const ACCOUNT_FILE = path.join(CREDENTIALS_DIR, "coppermind-account");
 const PENDING_MS = 30 * 60 * 1000;
 // This many quick exits in a row and the client is asked whether it is still signed in.
 const SIGNIN_CHECK_AFTER = 3;
+const TICK_MS = Number(process.env.COPPERMIND_SYNC_TICK_MS || 15_000);
 const DEVICES_EVERY_MS = 60_000;
 const TOKEN_FILE =
   process.env.COPPERMIND_INTERNAL_TOKEN_FILE || "/run/coppermind/internal/internal-token";
@@ -51,6 +52,7 @@ let connection = null;
 let pending = null;
 let quickExits = 0;
 let signinEpoch = 0;
+const SIGNIN_RECHECK_MS = Number(process.env.COPPERMIND_SYNC_SIGNIN_RECHECK_MS || 60_000);
 let devicesReadAt = 0;
 let writeSequence = 0;
 let writeQueue = Promise.resolve();
@@ -228,12 +230,24 @@ async function startSync() {
 async function signedIn() {
   if (FAKE) return !existsSync(FAKE_SIGNED_OUT);
   try {
-    // With no arguments the client reports the account it is signed in to, or fails.
     await command(["login"]);
     return true;
-  } catch {
-    return false;
+  } catch (failure) {
+    return !(failure.refused || failure.mfa);
   }
+}
+
+let lastSigninProbe = 0;
+async function recheckSignin() {
+  if (!status.needs_signin || !connection || status.paused || stopping) return;
+  if (Date.now() - lastSigninProbe < SIGNIN_RECHECK_MS) return;
+  lastSigninProbe = Date.now();
+  const epoch = signinEpoch;
+  if (!(await signedIn()) || epoch !== signinEpoch || status.paused || stopping) return;
+  quickExits = 0;
+  restartAttempts = 0;
+  await publishStatus({ needs_signin: false, last_error: null, state: "starting" });
+  await startSync().catch(() => {});
 }
 
 function scheduleRestart() {
@@ -264,7 +278,15 @@ async function handleChildExit(proc, code, signal, error = null) {
   if (!expected) {
     log("WARNING", "sync process stopped unexpectedly", { code, signal });
     const epoch = signinEpoch;
-    if (quickExits >= SIGNIN_CHECK_AFTER && !(await signedIn()) && epoch === signinEpoch && !child) {
+    if (
+      quickExits >= SIGNIN_CHECK_AFTER &&
+      !(await signedIn()) &&
+      epoch === signinEpoch &&
+      !child &&
+      connection &&
+      !status.paused &&
+      !stopping
+    ) {
       // Restarting cannot help a client that is signed out. Say so and wait for a sign-in.
       clearTimeout(restartTimer);
       await publishStatus({ state: "error", needs_signin: true,
@@ -309,6 +331,7 @@ async function command(args, secrets = [], json = false, accepted = [0]) {
         const detail = secrets.length ? err.trim().slice(0, 1500) : "";
         const failure = new Error(`Obsidian ${args[0]} failed. Check credentials, MFA and connectivity.${detail ? ` ${detail}` : ""}`);
         failure.mfa = ASKS_FOR_CODE.test(out + err);
+        failure.refused = code !== null && !oversized;
         reject(failure);
       } else if (args[0] === "login" && ASKS_FOR_CODE.test(out + err)) {
         // The client asks for the code on a terminal it does not have and can still exit
@@ -842,8 +865,8 @@ server.listen(PORT, "0.0.0.0", async () => {
   const timer = setInterval(async () => {
     if (controlBusy || stopping) return;
     controlBusy = true;
-    try { await reconcileConfig(); await publishDevices(); } finally { controlBusy = false; }
-  }, 15_000);
+    try { await recheckSignin(); await reconcileConfig(); await publishDevices(); } finally { controlBusy = false; }
+  }, TICK_MS);
   timer.unref();
 });
 process.on("SIGTERM", () => shutdown("SIGTERM"));

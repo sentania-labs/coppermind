@@ -269,7 +269,19 @@ addEventListener("DOMContentLoaded",()=>{
     el.hidden=!on;$("input,select,textarea",el).forEach(i=>i.disabled=!on);});
   $("input[type=radio],select").forEach(i=>i.addEventListener("change",sync));sync();
   const wait=document.body.dataset.refresh;
-  if(wait)setTimeout(()=>location.reload(),Number(wait)*1000);
+  if(wait){const every=Number(wait)*1000;
+    const poll=async()=>{
+      if(!document.querySelector("[data-live]")){location.reload();return;}
+      let again=true;
+      try{const reply=await fetch(location.href,{credentials:"same-origin"});
+        const next=new DOMParser().parseFromString(await reply.text(),"text/html");
+        const part=next.querySelector("[data-live]");
+        if(part)document.querySelector("[data-live]").replaceWith(part);
+        again=Boolean(next.body.dataset.refresh);
+      }catch(error){}
+      if(again)setTimeout(poll,every);
+    };
+    setTimeout(poll,every);}
   const fresh=document.querySelector("[data-fresh]");
   if(fresh){const box=fresh.getBoundingClientRect();
     if(box.top<60||box.bottom>innerHeight)fresh.scrollIntoView({block:"center"});}

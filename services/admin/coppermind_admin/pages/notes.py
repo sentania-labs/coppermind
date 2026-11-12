@@ -141,7 +141,7 @@ def summary_card(
     notice = ""
     if state == "on":
         again = (
-            f'<button class="lat-btn" formaction="{e(here)}/summary-again" formnovalidate '
+            '<button class="lat-btn" type="submit" form="summary-again-form" '
             'data-busy="Starting…">Write the summary again</button>'
         )
         how = (
@@ -1292,6 +1292,12 @@ name="csrf" value="{{csrf}}">Save</button>
         summary_part, summary_notice, refresh = summary_card(
             await note_summary(ctx, identity), values, here
         )
+        live_summary = f"<div data-live>{summary_part}</div>" if summary_part else ""
+        again_form = (
+            f'<form id="summary-again-form" method="post" action="{here}/summary-again"></form>'
+            if summary_part
+            else ""
+        )
         lede = (
             "The same check you would do in Obsidian, for when Obsidian is not to hand. "
             "Nothing is filed until you press the button at the bottom."
@@ -1299,7 +1305,7 @@ name="csrf" value="{{csrf}}">Save</button>
         body = f"""{ui.head(f'Review "{e(note["title"])}"', lede, (here, "the note"))}
 <div class="stack">{ctx.flash()}{problem}{summary_notice}
 <form method="post" action="{here}/review" class="stack">
-{ui.hidden({"if_match": note["content_hash"]})}{unsure_card}{summary_part}
+{ui.hidden({"if_match": note["content_hash"]})}{unsure_card}{live_summary}
 {
             ui.card(
                 f'<div class="two"><div>{left}</div><div>{right}</div></div>',
@@ -1309,7 +1315,7 @@ name="csrf" value="{{csrf}}">Save</button>
 <div class="actions">
 {ui.submit("Mark as reviewed and file it", name="how", value="file", busy="Filing…")}
 {ui.submit("Save, but do not file yet", "", name="how", value="save", busy="Saving…")}
-{obsidian(view, note["path"])}</div></form></div>"""
+{obsidian(view, note["path"])}</div></form>{again_form}</div>"""
         return await ctx.page(
             "Review a note", body, "notes", status=status, refresh=refresh if status == 200 else 0
         )

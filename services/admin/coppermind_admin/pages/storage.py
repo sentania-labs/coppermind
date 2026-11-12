@@ -379,7 +379,7 @@ def router(wiring: Wiring) -> APIRouter:
             "Obsidian."
         )
         query = ctx.q("q").strip()
-        shown = int(ctx.q("shown")) if ctx.q("shown").isdigit() else 6
+        shown = int(ctx.q("shown")) if ctx.q("shown").isascii() and ctx.q("shown").isdigit() else 6
         try:
             data = await ctx.act("files", {"q": query, "shown": shown})
         except StoreError:
