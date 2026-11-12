@@ -166,7 +166,7 @@ append, so retrying an interrupted completion does not append a second copy.
 When several timed events overlap a recording's start (a recording that starts up to
 ten minutes early still matches), Review offers the matching meetings and may suggest
 one from names and the topic in the conversation, nearest start first. When exactly one
-event overlaps, it alone is the meeting and the source of speaker candidates. When none
+event overlaps, it alone is offered, and its invitees become speaker candidates once it is linked. When none
 overlaps, every event on the note's day stays a candidate, as before. The
 recording and summary do not wait for that choice. Choose the meeting to link it;
 the generated heading takes its title when that heading has not been edited. Until
