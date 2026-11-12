@@ -1183,7 +1183,7 @@ async def test_calendar_and_dropbox_problem_counts_and_dismissal_agree(store):
     assert (await store.get_status()).counters.active_problems == 1
     (conflict,) = store.context.archive.catalog().conflicts
     await store.context.dismiss_calendar_conflict(
-        {"id": conflict.identity, "version": conflict.semantic_hash}
+        {"id": conflict.identity, "version": conflict.conflict_version}
     )
     assert await store.get_problems() == []
     assert (await store.get_status()).counters.active_problems == 0
