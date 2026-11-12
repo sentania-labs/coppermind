@@ -253,6 +253,15 @@ def router(wiring: Wiring) -> APIRouter:
                 "want first. Notes you still have, and anything they use, are never in this "
                 f'list.</p><div class="actions">{buttons}</div>'
             )
+        elif interrupted:
+            listing = ui.card(
+                ui.empty(
+                    "The interrupted clean-up has nothing left to delete",
+                    "Everything it was working on is already gone. Clear it so it stops "
+                    "showing as unfinished.",
+                    ui.btn("Clear the interrupted clean-up", "/admin/storage/cleanup/cancel"),
+                )
+            )
         else:
             listing = ui.card(
                 ui.empty(
@@ -370,7 +379,7 @@ def router(wiring: Wiring) -> APIRouter:
             "Obsidian."
         )
         query = ctx.q("q").strip()
-        shown = int(ctx.q("shown") or 6)
+        shown = int(ctx.q("shown")) if ctx.q("shown").isdigit() else 6
         try:
             data = await ctx.act("files", {"q": query, "shown": shown})
         except StoreError:

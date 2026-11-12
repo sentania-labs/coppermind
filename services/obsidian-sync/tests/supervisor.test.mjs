@@ -62,6 +62,12 @@ else if (args[0] === 'sync-status') {
   try { console.log(fs.readFileSync(${JSON.stringify(path.join(data, 'client.json'))},'utf8')); }
   catch { console.log(JSON.stringify({vaultId:'remote-1',vaultName:'Phone notes',syncMode:'bidirectional',conflictStrategy:'merge',deviceName:'Kitchen server'})); }
 }
+else if (args[0] === 'sync-setup' && fs.existsSync(${JSON.stringify(path.join(data, 'vault-locked'))})) {
+  const at = args.indexOf('--password');
+  if (at < 0) { process.stderr.write('Password not provided'); process.exit(1); }
+  if (args[at + 1] !== 'vault-secret') { process.stderr.write('Failed to validate password'); process.exit(1); }
+  console.log('{}');
+}
 else if (args[0] === 'sync-setup') console.log('{}');
 else if (args[0] === 'login') {
   const signedOut = ${JSON.stringify(path.join(data, 'signed-out'))};
@@ -431,4 +437,73 @@ test("real mode: a client started while the signed-out check runs is not reporte
   await new Promise((resolve) => setTimeout(resolve, 1500));
   const status = await h.readStatus();
   assert.equal(status.needs_signin && status.syncing, false, "signed out and syncing at once");
+});
+
+test("real mode: a locked vault asks for its own password, a wrong one is refused, and the right one is used to connect", async (context) => {
+  const h = await harness(context, { remoteNames: ["Locked vault"] });
+  await writeFile(path.join(h.data, "vault-locked"), "");
+  let [code, body] = await h.request("/login", { email: form.email, password: form.password });
+  assert.equal(code, 200);
+  assert.deepEqual(body.vaults.map((v) => [v.id, v.name, v.locked]), [["remote-1", "Locked vault", true]]);
+  assert.equal(JSON.stringify(body).includes("vault-secret"), false);
+  assert.equal((await h.request("/vault", { vault_id: "remote-1" }))[1].error, "password_required");
+  assert.equal((await h.request("/vault", { vault_id: "remote-1", password: "nope" }))[1].error, "wrong_password");
+  [code, body] = await h.request("/vault", { vault_id: "remote-1", password: "vault-secret" });
+  assert.equal(code, 200);
+  assert.deepEqual(body.choice, { vault_id: "remote-1", vault_name: "Locked vault", new_vault: false });
+  [code, body] = await h.request("/connect", {});
+  assert.equal(code, 200);
+  assert.equal(body.vault_name, "Locked vault");
+  const setup = (await h.calls()).filter((a) => a[0] === "sync-setup" && a.includes(path.join(h.data, "notes")));
+  assert.equal(setup.length, 1);
+  assert.equal(setup[0][setup[0].indexOf("--password") + 1], "vault-secret");
+  assert.equal((await readFile(h.connectionFile, "utf8")).includes("vault-secret"), false);
+  assert.equal(h.log().includes("vault-secret"), false);
+});
+
+test("real mode: a vault that is not locked connects without asking for a password", async (context) => {
+  const h = await harness(context, { remoteNames: ["Open vault"] });
+  let [code, body] = await h.request("/login", { email: form.email, password: form.password });
+  assert.deepEqual(body.vaults.map((v) => v.locked), [false]);
+  [code, body] = await h.request("/vault", { vault_id: "remote-1" });
+  assert.equal(code, 200);
+  [code, body] = await h.request("/connect", {});
+  assert.equal(code, 200);
+  const setup = (await h.calls()).filter((a) => a[0] === "sync-setup" && a.includes(path.join(h.data, "notes")));
+  assert.equal(setup[0].includes("--password"), false);
+});
+
+test("real mode: signing in again with the password alone restarts a signed-out client", async (context) => {
+  const h = await harness(context, { persisted: true });
+  const syncs = async () => (await h.calls()).filter((a) => a[0] === "sync").length;
+  await waitFor(async () => (await syncs()) > 0, "boot did not sync");
+  await writeFile(path.join(h.data, "signed-out"), "");
+  await writeFile(path.join(h.data, "sync-exits"), "");
+  await h.request("/pause", {});
+  await h.request("/resume", {});
+  await waitFor(async () => { const s = await h.readStatus(); return s.needs_signin && s; }, "sign-out not noticed", 4000);
+  await rm(path.join(h.data, "sync-exits"));
+  const [code, body] = await h.request("/signin", { email: form.email, password: form.password });
+  assert.equal(code, 200);
+  assert.equal(body.needs_signin, false);
+  const login = (await h.calls()).filter((a) => a[0] === "login" && a.includes("--password")).pop();
+  assert.deepEqual(login, ["login", "--email", form.email, "--password", form.password]);
+  await h.clean();
+});
+
+test("real mode: pausing and resuming while signed out shows the signed-out state, not 'paused'", async (context) => {
+  const h = await harness(context, { persisted: true });
+  const syncs = async () => (await h.calls()).filter((a) => a[0] === "sync").length;
+  await waitFor(async () => (await syncs()) > 0, "boot did not sync");
+  await writeFile(path.join(h.data, "signed-out"), "");
+  await writeFile(path.join(h.data, "sync-exits"), "");
+  await h.request("/pause", {});
+  await h.request("/resume", {});
+  await waitFor(async () => { const s = await h.readStatus(); return s.needs_signin && s; }, "sign-out not noticed", 4000);
+  assert.equal((await h.request("/pause", {}))[1].state, "paused");
+  const [, resumed] = await h.request("/resume", {});
+  assert.equal(resumed.paused, false);
+  assert.equal(resumed.needs_signin, true);
+  assert.equal(resumed.state, "error");
+  assert.equal((await h.readStatus()).state, "error");
 });

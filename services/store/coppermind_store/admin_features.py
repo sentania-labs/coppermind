@@ -301,7 +301,7 @@ class Features:
                     "connection": service["id"],
                     "model": model,
                     "enabled": True,
-                    "paused": False,
+                    "paused": old.enabled and old.paused,
                 }
             )
             if "fill" in payload:
@@ -515,7 +515,7 @@ class Features:
                 connection=service["id"],
                 model=model,
                 enabled=True,
-                paused=False,
+                paused=old.enabled and old.paused,
                 wait_s=wait_s,
                 attempts=old.attempts,
                 response_format=reply_format,
@@ -652,10 +652,7 @@ class Features:
         if service is None:
             raise Refused("rm_" + feature, "Choose one before removing.")
         if feature == "sugg":
-            paused = self.context.config().assignments["enrichment"].paused
             await self.suggestions_save({"connection": target, "model": service["text"]["best"]})
-            if paused:
-                await self._update_enrichment(paused=True)
             return f"Suggestions now use {service['name']} ({service['text']['best']})."
         if feature == "trans":
             config = self.context.config()
@@ -665,8 +662,6 @@ class Features:
                 default=WAITS_TRANSCRIPTION_S[-1],
             )
             await self.transcription_save({"connection": target, "wait_s": wait_s})
-            if current.paused:
-                await self._update_transcription(paused=True)
             return f"Transcription now uses {service['name']}."
         await self.search_on({"connection": target})
         return f"Search by meaning now uses {service['name']}."

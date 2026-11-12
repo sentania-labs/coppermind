@@ -728,6 +728,7 @@ async function resume() {
   restartAttempts = 0;
   await saveConnection();
   await reconcileConfig();
+  if (status.needs_signin && !child) await publishStatus({ state: "error", syncing: false });
   return [status.config_matches ? 200 : 502, publicStatus()];
 }
 

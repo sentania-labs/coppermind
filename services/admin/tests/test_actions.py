@@ -513,7 +513,8 @@ def test_changing_the_model_of_a_service_that_stopped_answering_keeps_the_choice
     assert 'name="change" value="service"' in page
     chosen = store.views["services"]["services"][1]["id"]
     again = client.get(f"/admin/suggestions?step=2&svc={chosen}&change=service").text
-    assert "Which model?" in again or "cannot write suggestions" in again
+    assert "cannot write suggestions" in again
+    assert "Which model?" not in again
 
 
 # -- tags and note properties -------------------------------------------------------------------
@@ -570,17 +571,70 @@ def test_a_new_key_is_shown_once_and_only_once(admin):
     client, wiring, _ = admin
     form = {"kind": "custom", "name_custom": "Home automation", "can_read": "on", "can_hand": "on"}
     made = post(client, "/admin/apps/new", form, page="/admin/apps/new")
-    assert made.status_code == 201
+    assert made.status_code == 303
     control = StateStore(wiring.state_dir)
     (record,) = [key for key in load_keys(control).keys if key.name == "Home automation"]
-    credential = made.text.split('id="newkey">')[1].split("<")[0]
+    shown = client.get(made.headers["location"])
+    credential = shown.text.split('id="newkey">')[1].split("<")[0]
     assert credential.startswith(f"cm_{record.key_id}_")
-    assert (
-        "This is the only\ntime the key is shown." in made.text or "only time the key" in made.text
-    )
-    for path in ("/admin/apps", "/admin/apps/new", f"/admin/apps/{record.key_id}"):
+    assert "only time the key" in shown.text.replace("\n", " ")
+    for path in (
+        made.headers["location"],
+        "/admin/apps",
+        "/admin/apps/new",
+        f"/admin/apps/{record.key_id}",
+    ):
         assert credential not in client.get(path).text
     assert credential not in control.path_for("keys").read_text(encoding="utf-8")
+
+
+def test_reloading_the_page_that_showed_a_new_key_makes_no_other_key(admin):
+    client, wiring, _ = admin
+    form = {"kind": "agent", "name_agent": "Assistant"}
+    made = post(client, "/admin/apps/new", form, page="/admin/apps/new")
+    control = StateStore(wiring.state_dir)
+    assert "newkey" in client.get(made.headers["location"]).text
+    for _ in range(2):
+        again = client.get(made.headers["location"], follow_redirects=False)
+        assert again.status_code == 303
+    assert [key.name for key in load_keys(control).keys].count("Assistant") == 1
+
+
+def test_a_replaced_key_is_shown_once_and_a_reload_does_not_replace_it_again(admin):
+    client, wiring, store = admin
+    made = post(
+        client,
+        "/admin/apps/new",
+        {"kind": "agent", "name_agent": "Assistant"},
+        page="/admin/apps/new",
+    )
+    client.get(made.headers["location"])
+    control = StateStore(wiring.state_dir)
+    (record,) = [key for key in load_keys(control).keys if key.name == "Assistant"]
+    store.answers["apps"] = {
+        "items": [
+            {
+                "id": record.key_id,
+                "name": "Assistant",
+                "companion": False,
+                "device": "",
+                "can": "Read notes",
+                "permissions": ["read"],
+                "used": "",
+                "created": record.created_at if hasattr(record, "created_at") else "",
+            }
+        ]
+    }
+    path = f"/admin/apps/{record.key_id}"
+    replaced = post(client, path + "/replace", {}, page=path)
+    assert replaced.status_code == 303
+    after_replace = load_keys(control).keys
+    shown = client.get(replaced.headers["location"]).text
+    credential = shown.split('id="newkey">')[1].split("<")[0]
+    assert credential.startswith(f"cm_{record.key_id}_")
+    reloaded = client.get(replaced.headers["location"]).text
+    assert credential not in reloaded and "newkey" not in reloaded
+    assert load_keys(control).keys == after_replace
 
 
 def test_a_key_needs_a_name_and_something_it_may_do(admin):
@@ -796,3 +850,119 @@ def test_a_refusal_the_store_worded_for_a_person_is_shown_as_it_is(admin):
     )
     assert f"That recording could not be tried again. {sentence}" in page
     assert "Coppermind did not finish it." not in page
+
+
+# -- pausing, waits, models, clean-up, tags and removing a service --------------------------------
+
+
+def test_changing_the_model_of_a_paused_service_says_it_is_still_paused(admin):
+    client, _, store = admin
+    store.views["suggestions"]["state"] = "paused"
+    store.answers["suggestions-save"] = {
+        "was": "paused",
+        "model": "qwen2.5-14b",
+        "service": "Home AI server",
+        "resumed": {},
+    }
+    paused = follow(
+        client,
+        post(
+            client, "/admin/suggestions/model", {"model": "qwen2.5-14b"}, page="/admin/suggestions"
+        ),
+    )
+    assert "still paused" in paused
+    store.views["suggestions"]["state"] = "on"
+    running = follow(
+        client,
+        post(
+            client, "/admin/suggestions/model", {"model": "qwen2.5-14b"}, page="/admin/suggestions"
+        ),
+    )
+    assert "still paused" not in running
+
+
+def test_changing_the_service_of_paused_transcription_says_it_is_still_paused(admin):
+    client, _, store = admin
+    store.views["transcription"]["state"] = "paused"
+    store.answers["transcription-save"] = {
+        "was": "paused",
+        "service": "Home transcription",
+        "resumed": {},
+    }
+    form = {"svc": store.views["services"]["services"][1]["id"], "wait_s": "3600"}
+    paused = follow(
+        client, post(client, "/admin/transcription/save", form, page="/admin/transcription")
+    )
+    assert "still paused" in paused
+
+
+def selected(page, name):
+    block = re.search(rf'<select[^>]*name="{name}".*?</select>', page, re.S)
+    assert block is not None
+    return re.findall(r'<option value="(\d+)"( selected)?', block[0])
+
+
+def test_a_wait_the_store_would_refuse_is_shown_as_the_next_listed_one(admin):
+    client, _, store = admin
+    store.views["transcription"]["wait_s"] = 5400
+    store.views["suggestions"]["wait_s"] = 90
+    trans = selected(client.get("/admin/transcription").text, "seconds")
+    assert [value for value, _ in trans] == ["1800", "3600", "7200", "14400"]
+    assert [value for value, mark in trans if mark] == ["7200"]
+    sugg = selected(client.get("/admin/suggestions").text, "seconds")
+    assert [value for value, mark in sugg if mark] == ["120"]
+
+
+def test_a_model_that_failed_its_test_cannot_be_picked(admin):
+    client, _, store = admin
+    service = store.views["services"]["services"][0]
+    service["text"]["models"][1]["ok"] = False
+    page = client.get(f"/admin/suggestions?step=2&svc={service['id']}&change=service").text
+    assert 'value="llama-3.1-8b"' in page
+    assert 'value="qwen2.5-14b"' not in page
+    assert "qwen2.5-14b: did not give a usable answer" in page
+    final = client.get(
+        f"/admin/suggestions?step=3&svc={service['id']}&model=qwen2.5-14b&change=service"
+    ).text
+    assert re.search(r'name="model" value="llama-3.1-8b"', final)
+
+
+def test_an_interrupted_clean_up_with_nothing_left_can_still_be_cleared(admin):
+    client, _, store = admin
+    store.views["cleanup"].update(
+        items=[], interrupted={"token": "t", "done": 2, "total": 2, "left": 0}
+    )
+    page = client.get("/admin/storage/cleanup").text
+    assert "Clear the interrupted clean-up" in page
+    assert 'action="/admin/storage/cleanup/cancel"' in page
+
+
+def test_a_files_page_address_with_a_bad_count_still_draws(admin):
+    client, _, _ = admin
+    assert client.get("/admin/storage/files?shown=abc").status_code == 200
+
+
+def test_removing_a_tag_asks_first_and_says_its_other_spellings_go_with_it(admin):
+    client, _, _ = admin
+    page = "/admin/settings/tags"
+    post(client, page + "/save", {"tag": "work", "also": "job", "why": ""}, page=page)
+    listing = client.get(page).text
+    assert 'action="/admin/settings/tags/remove"' not in listing
+    asked = client.get(page + "?ask=work").text
+    dialog = asked.split('class="dialog"')[1]
+    assert 'action="/admin/settings/tags/remove"' in dialog
+    assert "job" in dialog and "other spellings" in dialog
+
+
+def test_a_refusal_about_transcription_is_not_shown_under_suggestions(admin):
+    client, _, store = admin
+    services = store.views["services"]["services"]
+    services[0]["used_by"] = ["sugg", "trans"]
+    store.answers["service-remove"] = {
+        "refused": {"field": "rm_trans", "message": "Home transcription is not answering."}
+    }
+    form = {"rm_sugg": services[1]["id"], "rm_trans": services[1]["id"]}
+    path = f"/admin/services/{services[0]['id']}/remove"
+    response = post(client, path, form, page=path)
+    assert response.status_code == 422
+    assert response.text.count("Home transcription is not answering.") == 1

@@ -443,7 +443,8 @@ def dialog(
     working = f' data-busy="{e(busy)}"' if busy else ""
     return (
         f'<div class="overlay"><div class="dialog" role="dialog" aria-modal="true" '
-        f'aria-label="{e(title)}"><form method="post" action="{e(action)}">{hidden(fields)}'
+        f'aria-label="{e(unescape(title))}">'
+        f'<form method="post" action="{e(action)}">{hidden(fields)}'
         f'<h2>{title}</h2><div class="muted">{body}</div><div class="actions actions--end">'
         f'<a class="lat-btn" href="{e(cancel)}" data-cancel>{no}</a>'
         f'<button class="lat-btn lat-btn--{kind}"{working}>{yes}</button>'

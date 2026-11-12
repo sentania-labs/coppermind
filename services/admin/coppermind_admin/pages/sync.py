@@ -82,7 +82,9 @@ def router(wiring: Wiring) -> APIRouter:
     routes = APIRouter()
     endpoint = os.environ.get("COPPERMIND_SYNC_URL", "http://obsidian-sync:8092").rstrip("/")
 
-    def call(action: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    def call(
+        action: str, body: dict[str, Any] | None = None, timeout: float = 300
+    ) -> dict[str, Any]:
         request = HTTPRequest(
             endpoint + "/" + action,
             data=None if body is None else json.dumps(body).encode(),
@@ -94,7 +96,7 @@ def router(wiring: Wiring) -> APIRouter:
         )
         try:
             # No exception detail, request body or upstream error body reaches HTML unread.
-            with urlopen(request, timeout=300) as response:  # noqa: S310
+            with urlopen(request, timeout=timeout) as response:  # noqa: S310
                 return json.load(response)
         except HTTPError as exc:
             try:
@@ -103,10 +105,12 @@ def router(wiring: Wiring) -> APIRouter:
                 refused = {}
             raise HelperRefused(refused if isinstance(refused, dict) else {}) from exc
 
-    async def helper(action: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def helper(
+        action: str, body: dict[str, Any] | None = None, timeout: float = 300
+    ) -> dict[str, Any]:
         for _ in range(20):
             try:
-                return await asyncio.to_thread(call, action, body)
+                return await asyncio.to_thread(call, action, body, timeout)
             except HelperRefused as exc:
                 # The helper does one thing at a time; a moment later it is free again.
                 if exc.body.get("error") != "control_busy":
@@ -119,7 +123,7 @@ def router(wiring: Wiring) -> APIRouter:
         view = await ctx.view()
         published = dict(view["sync"]) if view else {"configured": False}
         try:
-            live = await asyncio.wait_for(helper("status"), 4)
+            live = await asyncio.wait_for(helper("status", timeout=3), 4)
         except (OSError, ValueError, HelperRefused, TimeoutError):
             return published
         return {**published, **live}
@@ -406,36 +410,38 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
                     ui.btn("Send a test note", "/admin/sync/test", busy="Sending…"),
                 )
             )
-        paired = {app["device"].casefold(): app for app in view["companion"]["paired"]}
+        paired: dict[str, list[dict[str, Any]]] = {}
+        for app in view["companion"]["paired"]:
+            paired.setdefault(app["device"].casefold(), []).append(app)
         seen = {device["name"].casefold(): device for device in current.get("devices", [])}
         listed = ""
         for key in [*seen, *(name for name in paired if name not in seen)]:
             device = seen.get(key)
-            app = paired.get(key)
-            name = e(device["name"] if device else app["device"] if app else "")
+            companions = paired.get(key, [])
+            shown = e(device["name"] if device else companions[0]["device"])
             last = (
                 f"Last change {ui.ago(device['last_change_at'], ctx.zone)}."
                 if device
                 else "No change seen from it yet."
             )
-            if app:
+            for app in companions:
                 talked = (
                     f" Its companion last talked to Coppermind {ui.ago(app['used'], ctx.zone)}."
                     if app["used"]
                     else " Its companion is paired and has not been used yet."
                 )
                 listed += ui.item(
-                    f"{name} {ui.badge('ok', 'Companion paired')}",
+                    f"{shown} {ui.badge('ok', 'Companion paired')}",
                     last + talked,
                     ui.go("Companion details", "/admin/apps/" + segment(app["id"]))
                     + ui.go("Unpair companion", ui.url("/admin/sync", ask="unpair:" + app["id"])),
                 )
-            else:
+            if not companions:
                 listed += ui.item(
-                    f"{name} {ui.badge('', 'No companion')}",
+                    f"{shown} {ui.badge('', 'No companion')}",
                     last + " Notes sync to it, but it cannot review notes or hand in "
                     "recordings until the companion is paired.",
-                    ui.go("Pair companion", "/admin/apps/pair?new=1&from=sync"),
+                    ui.btn("Pair companion", "/admin/apps/pair/code", "", {"from": "sync"}),
                 )
         if not listed:
             listed = ui.empty(
@@ -447,7 +453,12 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
             f'<p class="muted">Phones and computers that open the vault "{vault}". A device '
             f"shows here the first time it changes a note.</p>{listed}"
             '<div class="actions">'
-            + ui.go("Pair the companion on another device", "/admin/apps/pair?new=1&from=sync")
+            + ui.btn(
+                "Pair the companion on another device",
+                "/admin/apps/pair/code",
+                "",
+                {"from": "sync"},
+            )
             + ui.btn(
                 "Put the companion in my vault again",
                 "/admin/setup/companion/place",

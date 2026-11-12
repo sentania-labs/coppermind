@@ -497,11 +497,11 @@ async def test_naming_a_voice_for_something_that_is_not_a_person_changes_nothing
     monkeypatch.setattr(
         VoiceStore, "unknown_summaries", lambda self: {"v1": {"assignments": [{"note_id": "n"}]}}
     )
-    with pytest.raises(ValueError, match="no longer listed"):
+    with pytest.raises(ValueError, match="That person is no longer listed"):
         await store.admin.act("voice-name", {"id": "v1", "person": company["id"]})
 
     monkeypatch.setattr(VoiceStore, "unknown_summaries", lambda self: {})
-    with pytest.raises(ValueError, match="no longer listed"):
+    with pytest.raises(ValueError, match="That voice is no longer listed"):
         await store.admin.act("voice-name", {"id": "gone", "new_name": "Dana Whitfield"})
     names = [item["name"] for item in (await store.entities.list(EntityQuery()))["items"]]
     assert names == ["Acme"]
@@ -509,6 +509,52 @@ async def test_naming_a_voice_for_something_that_is_not_a_person_changes_nothing
 
 async def test_a_file_still_being_taken_in_cannot_be_removed_as_if_it_had_failed(store):
     item = store.context.dropbox.submit("report.pdf", b"bytes", {"kind": "artifact"})
-    with pytest.raises(ValueError, match="no longer listed"):
+    with pytest.raises(ValueError, match="That file is no longer listed"):
         await store.admin.act("incoming-remove", {"id": "d:" + item["id"]})
     assert store.context.dropbox.records()["items"][item["id"]]["state"] == "pending"
+
+
+async def test_bringing_back_a_replaced_file_goes_beside_the_file_that_took_its_name(store):
+    store.notes_root.mkdir(parents=True, exist_ok=True)
+    taken = store.notes_root / "Budget.md"
+    taken.write_text("The replacement.\n")
+    key = store.admin.notes._keep_removed(
+        note_id="", title="Budget", path="Budget.md", data=b"The older file.\n", kind="note"
+    )
+    result = await store.admin.act("note-restore", {"key": key})
+    assert result["path"] == "Budget (2).md"
+    assert "The replacement." in taken.read_text()
+    assert "The older file." in (store.notes_root / "Budget (2).md").read_text()
+    assert store.admin.notes.removed() == []
+
+
+async def test_changing_the_service_of_a_paused_feature_leaves_it_paused(store, monkeypatch):
+    await configure(store)
+    _answers(
+        store,
+        monkeypatch,
+        {"One": {"text": TEXT, "speech": SPEECH}, "Two": {"text": TEXT, "speech": SPEECH}},
+    )
+    one, two = await _add(store, "One"), await _add(store, "Two")
+    await store.admin.act("suggestions-save", {"connection": one, "model": "m"})
+    await store.admin.act("transcription-save", {"connection": one, "wait_s": 3600})
+    features = store.admin.features
+    await features._update_enrichment(paused=True)
+    await features._update_transcription(paused=True)
+
+    await store.admin.act("suggestions-save", {"connection": two, "model": "m"})
+    await store.admin.act("transcription-save", {"connection": two, "wait_s": 3600})
+
+    config = store.context.config()
+    assert config.assignments["enrichment"].connection == two
+    assert config.assignments["enrichment"].paused is True
+    assert config.assignments["transcription"].connection == two
+    assert config.assignments["transcription"].paused is True
+
+
+async def test_turning_a_feature_on_for_the_first_time_is_not_paused(store, monkeypatch):
+    await configure(store)
+    _answers(store, monkeypatch, {"One": {"text": TEXT, "speech": SPEECH}})
+    one = await _add(store, "One")
+    await store.admin.act("transcription-save", {"connection": one, "wait_s": 3600})
+    assert store.context.config().assignments["transcription"].paused is False

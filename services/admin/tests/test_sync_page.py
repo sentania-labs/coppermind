@@ -36,6 +36,7 @@ class Helper:
         self.calls: list[tuple[str, Any]] = []
         self.status: dict[str, Any] = {"configured": False, "signed_in": False}
         self.refuse: dict[str, dict[str, Any]] = {}
+        self.timeouts: dict[str, list[float | None]] = {}
 
     def asked(self, action: str) -> list[Any]:
         return [body for name, body in self.calls if name == action]
@@ -43,6 +44,7 @@ class Helper:
     def __call__(self, request: Any, timeout: float | None = None) -> io.BytesIO:
         action = request.full_url.rsplit("/", 1)[1]
         self.calls.append((action, json.loads(request.data) if request.data else None))
+        self.timeouts.setdefault(action, []).append(timeout)
         if action in self.refuse:
             raise HTTPError(
                 request.full_url,

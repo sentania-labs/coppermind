@@ -693,15 +693,19 @@ class AdminNotes:
             if item is None:
                 raise ValidationFailed(["That deleted file is no longer kept."])
             target = resolve(self.store.notes_root, item["path"])
+            data = base64.b64decode(item["content"])
             try:
-                await asyncio.to_thread(
-                    create_exclusive_bytes, target, base64.b64decode(item["content"])
-                )
-            except FileExistsError as exc:
-                raise PathCollision(item["path"]) from exc
+                await asyncio.to_thread(create_exclusive_bytes, target, data)
+            except FileExistsError:
+                stem = unique_stem(target.stem, [entry.stem for entry in target.parent.iterdir()])
+                target = target.with_name(stem + target.suffix)
+                await asyncio.to_thread(create_exclusive_bytes, target, data)
             self._drop_removed(key)
             await self._rescan()
-            return {"title": item["title"], "path": item["path"]}
+            return {
+                "title": item["title"],
+                "path": target.relative_to(self.store.notes_root).as_posix(),
+            }
         note_id = _note_id(payload)
         preview = await self.store.preview_note_restore(note_id)
         result = await self.store.restore_note(

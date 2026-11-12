@@ -49,14 +49,10 @@ WAITS_TRANS = (
 )
 
 
-def with_current(choices: tuple[tuple[str, str], ...], seconds: int) -> list[tuple[str, str]]:
-    """The listed waits, plus the one in use now when it is not one of them."""
-    listed = list(choices)
-    if str(seconds) not in {value for value, _ in listed}:
-        minutes = max(1, round(seconds / 60))
-        listed.append((str(seconds), plural(minutes, "minute")))
-        listed.sort(key=lambda item: int(item[0]))
-    return listed
+def rounded_wait(choices: tuple[tuple[str, str], ...], seconds: int) -> str:
+    """The listed wait to show as chosen: the one in use, or the next longer one."""
+    values = [int(value) for value, _ in choices]
+    return str(next((value for value in values if value >= seconds), values[-1]))
 
 
 def wait_words(choices: tuple[tuple[str, str], ...], value: str) -> str:
@@ -191,7 +187,12 @@ def router(wiring: Wiring) -> APIRouter:
                     else "Did not give a usable answer.",
                     r["name"] == picked,
                 )
+                for r in working
+            ) + "".join(
+                f'<p class="muted">{e(r["name"])}: did not give a usable answer, so it cannot be '
+                "chosen.</p>"
                 for r in results
+                if not r["ok"]
             )
             quotes = "".join(
                 f'<div class="quote" data-if="model={e(r["name"])}">What {e(r["name"])} wrote '
@@ -221,7 +222,9 @@ def router(wiring: Wiring) -> APIRouter:
 <div class="actions">{back}{ui.submit("Continue")}{cancel}</div></form>"""
         else:
             assert chosen is not None
-            model = ctx.q("model") or chosen["text"]["best"]
+            model = ctx.q("model")
+            if model not in {r["name"] for r in chosen["text"]["models"] if r["ok"]}:
+                model = chosen["text"]["best"]
             back = ui.go(
                 "Back",
                 ui.url("/admin/suggestions", step=2, svc=chosen["id"], model=model, **carry),
@@ -367,8 +370,8 @@ touched.</p>
                     "/admin/suggestions/wait",
                     "seconds",
                     "Longest wait for an answer",
-                    with_current(WAITS_SUGG, data["wait_s"]),
-                    str(data["wait_s"]),
+                    WAITS_SUGG,
+                    rounded_wait(WAITS_SUGG, data["wait_s"]),
                 )
                 + ' <span class="lat-hint">for one note, before Coppermind gives up and tries '
                 "later.</span>",
@@ -451,6 +454,15 @@ touched.</p>
 {ui.card(ui.rows(*rows))}</div>"""
         return await ctx.page("Suggestions", page, "suggestions", dialog=dialog)
 
+    async def paused_note(ctx: Ctx, view: str) -> str:
+        try:
+            data = await ctx.act(view, {})
+        except StoreError:
+            return ""
+        if data.get("state") != "paused":
+            return ""
+        return " It is still paused, so nothing is sent until you press Resume."
+
     async def saved(
         ctx: Ctx, action: str, payload: dict[str, Any], to: str
     ) -> dict[str, Any] | Response:
@@ -492,7 +504,8 @@ touched.</p>
                 "notes will use it too."
                 if notes
                 else f"The next new note will get suggestions from {model} on {name}."
-            ),
+            )
+            + await paused_note(ctx, "suggestions"),
         )
         return ctx.go("/admin/suggestions")
 
@@ -517,7 +530,7 @@ touched.</p>
         ctx.say(
             "ok",
             f"Saved. The next new note will get suggestions from {e(result['model'])} on "
-            f"{e(result['service'])}.",
+            f"{e(result['service'])}." + await paused_note(ctx, "suggestions"),
         )
         return ctx.go("/admin/suggestions")
 
@@ -628,7 +641,11 @@ touched.</p>
             data = await ctx.act("suggestions", {})
         except StoreError as exc:
             return await ctx.refused(exc, "/admin/suggestions")
-        ctx.say("ok", f"Saved. From the next note on, suggestions fill in: {fill_text(data)}.")
+        ctx.say(
+            "ok",
+            f"Saved. From the next note on, suggestions fill in: {fill_text(data)}."
+            + await paused_note(ctx, "suggestions"),
+        )
         return ctx.go("/admin/suggestions")
 
     # -- how the meeting summary is written ----------------------------------------------
@@ -893,7 +910,7 @@ not yours to edit and cannot be switched off from here.</p><ul class="plain">{lo
 deletes the audio once you have reviewed the note.</p>
 <div class="field"><label class="lat-label" for="wait_s">Longest time to wait for one
 recording</label><select class="lat-select" style="max-width:160px" id="wait_s" name="wait_s">
-{ui.options(with_current(WAITS_TRANS, data["wait_s"]), str(data["wait_s"]))}</select>
+{ui.options(WAITS_TRANS, rounded_wait(WAITS_TRANS, data["wait_s"]))}</select>
 <div class="lat-hint">1 hour suits most people: an hour-long recording usually takes 10 to 20
 minutes. Pick more only if your recordings run for several hours.</div></div>
 <div class="actions">{back}
@@ -1013,8 +1030,8 @@ minutes. Pick more only if your recordings run for several hours.</div></div>
                     "/admin/transcription/wait",
                     "seconds",
                     "Longest time to wait for one recording",
-                    with_current(WAITS_TRANS, data["wait_s"]),
-                    str(data["wait_s"]),
+                    WAITS_TRANS,
+                    rounded_wait(WAITS_TRANS, data["wait_s"]),
                 )
                 + " for one recording, before Coppermind gives up and tries later.",
             ),
@@ -1086,7 +1103,8 @@ minutes. Pick more only if your recordings run for several hours.</div></div>
                 if recordings
                 else "To try it, record with the companion in Obsidian or add a recording "
                 "under " + ui.a("Recordings and imports", "/admin/incoming") + "."
-            ),
+            )
+            + await paused_note(ctx, "transcription"),
         )
         return ctx.go("/admin/transcription")
 

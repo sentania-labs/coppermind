@@ -143,6 +143,8 @@ async def receive(request: Request, limit: int | Callable[[str], int]) -> Upload
                 )
             if not filename:
                 raise UploadRefused("Choose a file first.")
+            if upload.path is not None:
+                raise UploadRefused("Add one file at a time. Nothing was added.")
             handle = tempfile.NamedTemporaryFile(  # noqa: SIM115 - closed below, kept on disk
                 prefix="coppermind-upload-", delete=False
             )

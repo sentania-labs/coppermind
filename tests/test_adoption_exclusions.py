@@ -124,6 +124,15 @@ def test_exclusion_snapshot_does_not_lose_paths_named_like_metadata(tmp_path):
 
 def test_admin_saves_the_folders_to_leave_alone(admin):
     client, wiring, _ = admin
+    control = StateStore(wiring.state_dir)
+    state = control.read("settings")
+    body = dict(state.body)
+    body["reconcile"] = {
+        **body.get("reconcile", {}),
+        "excluded_folders": [],
+        "excluded_patterns": ["*.canvas", "*.kanban.md"],
+    }
+    control.write("settings", body, if_revision=state.revision)
     form = {"d": "1", "templates": "on", "drawings": "on", "folder": "Archive"}
     form["csrf"] = token(client, "/admin/notes/leave-alone")
     saved = client.post("/admin/notes/leave-alone", data=form, follow_redirects=False)

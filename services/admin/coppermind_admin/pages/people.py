@@ -533,7 +533,7 @@ place shows in both.</p>
             kept = len(data["samples"])
             dialog = ui.dialog(
                 f"Never save {e(data['name'])}'s voice?",
-                f"Coppermind will not learn or keep {e(first)}'s voice, even from recordings "
+                f"Coppermind will not learn or keep {first}'s voice, even from recordings "
                 "you review. "
                 + (
                     f"The {plural(kept, 'saved sample is', 'saved samples are')} deleted for good. "

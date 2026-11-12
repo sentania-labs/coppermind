@@ -205,6 +205,41 @@ async def take_in(ctx: Ctx, upload: Upload) -> tuple[str, str]:
     )
 
 
+async def wrong_kind(ctx: Ctx, upload: Upload, replacing: str) -> str:
+    """Say why a file cannot take the place of a damaged one, when it is not the same kind."""
+    try:
+        damaged = (await ctx.act("incoming-item", {"id": replacing}))["kind"]
+    except StoreError:
+        return ""
+    calendar = Path(upload.filename).suffix.lower() in CALENDAR_SUFFIXES
+    if damaged == "calendar" and not calendar:
+        return (
+            f'"{e(upload.filename)}" is not a calendar file, so it cannot replace the damaged '
+            "one. Nothing was added and the damaged file is still listed. Choose the calendar "
+            "file you exported (its name usually ends in .ics)."
+        )
+    if damaged != "calendar" and calendar:
+        return (
+            f'"{e(upload.filename)}" is a calendar file, so it cannot replace the damaged '
+            "file. Nothing was added and the damaged file is still listed."
+        )
+    return ""
+
+
+async def clear_damaged(ctx: Ctx, replacing: str) -> str:
+    """Clear the damaged item once its replacement is in; failing to is not failing to add."""
+    try:
+        old = await ctx.act("incoming-replace-failed", {"id": replacing})
+    except StoreError:
+        return ""
+    if not old.get("title"):
+        return ""
+    return (
+        f' The damaged file "{e(old["title"])}" was removed, so there is nothing left to fix '
+        "for it."
+    )
+
+
 def calendar_message(result: dict[str, Any], ctx: Ctx) -> tuple[str, str]:
     name = e(result["name"])
     if result["state"] == "already":
@@ -475,13 +510,13 @@ def router(wiring: Wiring) -> APIRouter:
         target = target if target.startswith("/admin") else "/admin/incoming"
         replacing = upload.fields.get("replaces", "")
         try:
-            kind, said = await take_in(ctx, upload)
-            if replacing and kind in {"ok", "info"}:
-                old = await ctx.act("incoming-remove", {"id": replacing})
-                said += (
-                    f' The damaged file "{e(old["title"])}" was removed, so there is nothing '
-                    "left to fix for it."
-                )
+            wrong = await wrong_kind(ctx, upload, replacing) if replacing else ""
+            if wrong:
+                kind, said = "bad", wrong
+            else:
+                kind, said = await take_in(ctx, upload)
+                if replacing and kind in {"ok", "info"}:
+                    said += await clear_damaged(ctx, replacing)
         except StoreError as exc:
             kind, said = "bad", explain(exc, f'"{e(upload.filename)}" could not be added.')
         finally:
@@ -583,6 +618,7 @@ def router(wiring: Wiring) -> APIRouter:
                     "/admin/incoming/add",
                     here,
                     {"replaces": identity, "back": back[0]},
+                    accept=".ics,.zip,text/calendar" if item["kind"] == "calendar" else "",
                 )
             elif ctx.q("ask") == "remove":
                 dialog = remove_dialog(ctx, item, here, folder).replace(

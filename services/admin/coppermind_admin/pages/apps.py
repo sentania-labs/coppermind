@@ -27,7 +27,7 @@ from coppermind.statefiles import RevisionConflict
 from coppermind.store_protocol import StoreError
 from coppermind_admin import ui
 from coppermind_admin.pages.home import OBSIDIAN_STEPS, pairing_code
-from coppermind_admin.shell import Ctx
+from coppermind_admin.shell import COOKIE, Ctx
 from coppermind_admin.ui import e, segment
 
 LEDE = (
@@ -60,6 +60,25 @@ def key_card(title: str, credential: str, after: str) -> str:
         'data-copy="newkey">Copy key</button><span class="lat-badge lat-badge--ok" '
         'id="newkey-copied" role="status" hidden>Copied to the clipboard</span></div>' + after
     )
+
+
+def hold_key(ctx: Ctx, **shown: str) -> None:
+    """Keep a new key for the one page that shows it, so a reload cannot make or lose another."""
+    state = ctx.request.app.state
+    if not hasattr(state, "key_holds"):
+        state.key_holds = {}
+    state.key_holds[ctx.request.cookies.get(COOKIE, "")] = shown
+
+
+def take_held_key(ctx: Ctx, identity: str = "") -> dict[str, str] | None:
+    """The key waiting to be shown to this session, once. None when there is none for here."""
+    holds = getattr(ctx.request.app.state, "key_holds", {})
+    session = ctx.request.cookies.get(COOKIE, "")
+    held = holds.get(session)
+    if held is None or held.get("identity", "") != identity:
+        return None
+    del holds[session]
+    return held
 
 
 def router(wiring: Wiring) -> APIRouter:
@@ -165,7 +184,7 @@ removed here or on its device's line under {ui.a("Obsidian Sync", "/admin/sync")
 <div class="checks">{ticks}</div>{ui.field_error(errors.get("can", ""))}</div>
 <div data-if="kind=companion"><p class="muted">The companion in Obsidian does not need a key.
 It connects with a short pairing code that you type into Obsidian.</p>
-<div class="actions">{ui.go("Get a pairing code", "/admin/apps/pair?new=1", "primary")}
+<div class="actions">{ui.submit("Get a pairing code")}
 {ui.go("Cancel", "/admin/apps")}</div></div>
 <div data-if="kind=agent|intake|custom">{names}
 <div class="actions">{ui.submit("Create key")}{ui.go("Cancel", "/admin/apps")}</div></div>
@@ -190,7 +209,11 @@ It connects with a short pairing code that you type into Obsidian.</p>
         form = await ctx.form()
         kind = form.get("kind", "agent")
         if kind == "companion":
-            return ctx.go("/admin/apps/pair?new=1")
+            try:
+                await ctx.act("pairing-start", {"fresh": True})
+            except StoreError as exc:
+                return await ctx.refused(exc, "/admin/apps/new")
+            return ctx.go("/admin/apps/pair")
         if kind not in KINDS:
             kind = "agent"
         name = form.get("name_" + kind, "").strip()
@@ -230,6 +253,21 @@ It connects with a short pairing code that you type into Obsidian.</p>
         if not credential:
             ctx.say("bad", "The key could not be created just now. Nothing was changed.")
             return ctx.go("/admin/apps/new")
+        hold_key(ctx, name=name, kind=kind, credential=credential)
+        return ctx.go("/admin/apps/key")
+
+    @routes.get("/admin/apps/key", include_in_schema=False)
+    async def new_key(request: Request) -> Response:
+        ctx = Ctx(request, wiring)
+        held = take_held_key(ctx)
+        if held is None:
+            ctx.say(
+                "info",
+                "That key was shown once and is not kept. To get another, connect the app "
+                "again, or replace its key from its own page.",
+            )
+            return ctx.go("/admin/apps")
+        name, kind, credential = held["name"], held["kind"], held["credential"]
         address = e(wiring.public_url)
         after = f"""<p class="muted" style="margin-top:10px">This is the only time the key is
 shown. {PASTE[kind]} It will also ask for this server's address, which is:
@@ -247,7 +285,7 @@ clipboard</span></p>
         }
 <div class="stack">{ui.banner("ok", f'Key created for "{e(name)}".')}
 {key_card("Copy this key into the app now", credential, after)}</div>"""
-        return await ctx.page("Connect an app", body, "apps", status=201)
+        return await ctx.page("Connect an app", body, "apps")
 
     # -- pair the companion on another device --------------------------------------------
 
@@ -265,9 +303,6 @@ clipboard</span></p>
             "device has it as soon as it has synced."
         )
         try:
-            if ctx.q("new"):
-                await ctx.act("pairing-start", {"fresh": True})
-                return ctx.go(here)
             view = await ctx.view()
             state = await ctx.act("pairing-state", {})
             if not state["code"] and not state["done"]:
@@ -290,14 +325,14 @@ clipboard</span></p>
                     if origin == "sync"
                     else ui.go("Back to Connected apps", "/admin/apps", "primary")
                 )
-                + ui.go("Pair one more device", ui.url(here, new=1))
+                + ui.btn("Pair one more device", "/admin/apps/pair/code", "", {"from": origin})
                 + "</div>"
             )
         else:
             second = (
                 f'<span class="keybox keybox--code">{pairing_code(state["code"])}</span> '
                 '<span class="muted">Works for the next 10 minutes.</span> '
-                + ui.go("New code", ui.url(here, new=1))
+                + ui.btn("New code", "/admin/apps/pair/code", "", {"from": origin})
             )
             third = (
                 '<span class="muted">Waiting for the new device. This page updates by itself, '
@@ -331,6 +366,17 @@ clipboard</span></p>
         }</div>"""
         return await ctx.page("Pair another device", body, "apps", refresh=0 if done else 5)
 
+    @routes.post("/admin/apps/pair/code", include_in_schema=False)
+    async def pair_code(request: Request) -> Response:
+        ctx = Ctx(request, wiring)
+        form = await ctx.form()
+        here = ui.url("/admin/apps/pair", **{"from": form.get("from", "")})
+        try:
+            await ctx.act("pairing-start", {"fresh": True})
+        except StoreError as exc:
+            return await ctx.refused(exc, here)
+        return ctx.go(here)
+
     # -- one connected app ---------------------------------------------------------------
 
     @routes.get("/admin/apps/{identity}", include_in_schema=False)
@@ -343,7 +389,8 @@ clipboard</span></p>
         app = next((item for item in items if item["id"] == identity), None)
         if app is None:
             return ctx.go("/admin/apps")
-        return await render_app(ctx, app, {}, {})
+        held = take_held_key(ctx, identity)
+        return await render_app(ctx, app, {}, {}, new_key=held["credential"] if held else "")
 
     async def render_app(
         ctx: Ctx,
@@ -494,7 +541,8 @@ clipboard</span></p>
         except (ValueError, RevisionConflict, OSError):
             ctx.say("bad", "The key could not be replaced just now. The old key still works.")
             return ctx.go(app_path(identity))
-        return await render_app(ctx, app, {}, {}, 201, credential)
+        hold_key(ctx, identity=identity, credential=credential)
+        return ctx.go(app_path(identity))
 
     @routes.post("/admin/apps/{identity}/remove", include_in_schema=False)
     async def remove(identity: str, request: Request) -> Response:

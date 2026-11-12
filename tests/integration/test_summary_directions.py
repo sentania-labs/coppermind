@@ -69,9 +69,16 @@ async def test_the_default_directions_are_used_until_the_owner_writes_their_own(
     assert all(s["text"] == s["default"] and not s["custom"] for s in view["sections"])
     assert view["max"] == SUMMARY_DIRECTIONS_MAX
     await fresh_summary(context, note)
-    assert seen == [meeting_summary.prompt()]
+    (sent,) = seen
+    for owner_words in (
+        "three to six bullets",
+        "decisions that were actually made",
+        "Owner unknown",
+        "ideas are not action items",
+    ):
+        assert owner_words.casefold() in sent.casefold()
     for text in DEFAULTS.values():
-        assert text in seen[0]
+        assert text in sent
 
 
 async def test_edited_directions_reach_the_model_inside_the_locked_rules(store, standin):

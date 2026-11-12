@@ -1042,10 +1042,31 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
                 e(", ".join(schema.aliases_of(tag))) or nothing,
                 ui.go("Edit", ui.url("/admin/settings/tags", edit=tag))
                 + " "
-                + ui.btn("Remove", "/admin/settings/tags/remove", "", {"tag": tag}),
+                + ui.go("Remove", ui.url("/admin/settings/tags", ask=tag)),
             ]
             for tag, meaning in schema.tags.items()
         ]
+        asked = ctx.q("ask")
+        spellings = schema.aliases_of(asked) if asked in schema.tags else []
+        dialog = (
+            ui.dialog(
+                f'Remove the tag "{e(asked)}"?',
+                "Notes that already carry it keep it, but it is no longer on your list."
+                + (
+                    " Its other spellings (" + e(", ".join(spellings)) + ") go with it, so they "
+                    "stop being turned into this tag."
+                    if spellings
+                    else ""
+                ),
+                "/admin/settings/tags/remove",
+                "Remove",
+                "/admin/settings/tags",
+                danger=True,
+                fields={"tag": asked},
+            )
+            if asked in schema.tags
+            else ""
+        )
         current = editing if editing in schema.tags else ""
         form = f"""<h3 style="margin-top:12px">{
             f'Edit "{e(current)}"' if current else "Add a tag"
@@ -1082,7 +1103,7 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
             )
         }
 <div class="stack">{ctx.flash()}{mode}{ui.card(tick + listing + form, "Your tags")}</div>"""
-        return await ctx.page("Tags", body, "settings")
+        return await ctx.page("Tags", body, "settings", dialog=dialog)
 
     def tag_change(ctx: Ctx, change: Any) -> str:
         revision, schema = read_schema(ctx.control)

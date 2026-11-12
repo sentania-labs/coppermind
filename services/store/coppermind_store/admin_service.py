@@ -848,6 +848,7 @@ class AdminService:
             "incoming-retry": incoming.retry,
             "incoming-remove": incoming.remove,
             "incoming-accept": incoming.accept,
+            "incoming-replace-failed": incoming.replace_failed,
             "recording-delete": incoming.delete_recording,
             "calendar": calendar.view,
             "calendar-meeting": calendar.meeting,

@@ -720,12 +720,16 @@ Nothing of yours is sent.</p>
         except StoreError as exc:
             return await ctx.refused(exc, f"/admin/services/{segment(identity)}/remove")
         if "refused" in result:
+            about = str(result["refused"].get("field", "")).removeprefix("rm_")
             return await render_remove(
                 ctx,
                 service,
                 data["services"],
                 picked,
-                {key: e(result["refused"]["message"]) for key in picked},
+                {
+                    key: e(result["refused"]["message"])
+                    for key in (picked if about not in picked else [about])
+                },
                 422,
             )
         ctx.say(
