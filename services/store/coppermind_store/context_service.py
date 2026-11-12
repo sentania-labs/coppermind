@@ -652,10 +652,10 @@ class ContextService:
                     event.model_dump(exclude={"component", "timezone_components"})
                     | {
                         "id": event.identity,
-                        "version": event.semantic_hash,
-                        "reason": reasons.get((event.identity, event.semantic_hash), {}).get(
-                            "reason", ""
-                        ),
+                        "version": event.conflict_version or event.semantic_hash,
+                        "reason": reasons.get(
+                            (event.identity, event.conflict_version or event.semantic_hash), {}
+                        ).get("reason", ""),
                         "stored_title": catalog.events[event.identity].title,
                         "stored_sequence": catalog.events[event.identity].sequence,
                         "stored_modified": catalog.events[event.identity].modified,

@@ -115,6 +115,9 @@ class CalendarEvent(BaseModel):
     source_entries: list[str] = Field(default_factory=list)
     source_entry: str
     acknowledged: bool = False
+    # Only on a retained conflict record: the incoming semantic hash this stored copy
+    # disagreed with, which is the version an acknowledgement names.
+    conflict_version: str = ""
 
     @property
     def identity(self) -> str:

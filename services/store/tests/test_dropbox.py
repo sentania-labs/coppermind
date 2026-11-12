@@ -133,10 +133,13 @@ async def test_each_held_conflict_shows_its_own_reason(tmp_path):
     place = calendar().replace(b"SUMMARY", b"LOCATION:Room 9\r\nSUMMARY")
     archive.process(archive.submit("calendar", "b.ics", place).id)
     rows = (await store.context.snapshot())["calendar"]["conflicts"]
+    # Each disagreeing version is one record, keyed by the incoming version, so two
+    # versions of one event are two rows that differ in `version` and in their reason.
     assert len(rows) == 2
-    by_title = {row["title"]: row["reason"] for row in rows}
-    assert "title" in by_title["Other"] and "location" not in by_title["Other"]
-    assert "location" in by_title["Planning"] and "title" not in by_title["Planning"]
+    assert len({row["version"] for row in rows}) == 2
+    kinds = {row["reason"].split(": ", 1)[1].split(".")[0] for row in rows}
+    assert kinds == {"title", "location"}
+    assert all(row["stored_title"] == "Planning" for row in rows)
 
 
 async def test_dismissing_failed_receipt_acknowledges_import_failure(tmp_path):
@@ -181,6 +184,8 @@ async def test_retried_receipt_that_succeeds_completes_failed_dropbox_item(tmp_p
     await finish(store)
     assert store.context.archive.process(failed[0].id).state == "failed"
     await dropbox.process()
+    # Re-read the item after the retry, so the completed state is the one on record.
+    item = next(i for i in dropbox.records()["items"].values() if i["filename"] == "one.ics")
     assert item["state"] == "failed"
     assert item["error"] != ""
     good = next(i for i in dropbox.records()["items"].values() if i["filename"] == "two.ics")
@@ -536,7 +541,7 @@ async def test_calendar_history_dismisses_direct_and_dropbox_failures(tmp_path):
     # Two imports of the same bytes disagree with the stored event in the same way,
     # so the one disagreeing version is recorded once.
     assert len(conflicts) == 1
-    assert {event.title for event in conflicts} == {"Wrong title"}
+    assert {event.title for event in conflicts} == {"Planning"}
     snapshot = await store.context.snapshot()
     assert len(snapshot["calendar"]["conflicts"]) == 1
     assert all(item["reason"] for item in snapshot["calendar"]["conflicts"])
@@ -547,7 +552,7 @@ async def test_calendar_history_dismisses_direct_and_dropbox_failures(tmp_path):
     await store.context.dismiss_calendar_conflict(
         {
             "id": conflicts[0].identity,
-            "version": conflicts[0].semantic_hash,
+            "version": snapshot["calendar"]["conflicts"][0]["version"],
         }
     )
     assert len(archive.catalog().conflicts) == 0
@@ -565,7 +570,7 @@ async def test_an_acknowledged_conflict_stays_quiet_on_reimport(tmp_path):
     assert len(held) == 1
 
     await store.context.dismiss_calendar_conflict(
-        {"id": held[0].identity, "version": held[0].semantic_hash}
+        {"id": held[0].identity, "version": held[0].conflict_version}
     )
     assert archive.catalog().conflicts == []
 
@@ -578,7 +583,7 @@ async def test_an_acknowledged_conflict_stays_quiet_on_reimport(tmp_path):
     third = calendar().replace(b"Planning", b"Another title")
     latest = archive.process(archive.submit("calendar", "three.ics", third).id)
     assert len(latest.conflicts) == 1
-    assert [event.title for event in archive.catalog().conflicts] == ["Another title"]
+    assert [event.identity for event in archive.catalog().conflicts] == [held[0].identity]
     assert next(iter(archive.catalog().events.values())).title == "Planning"
 
 

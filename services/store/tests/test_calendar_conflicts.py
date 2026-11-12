@@ -165,3 +165,46 @@ def test_two_conflicting_copies_inside_one_export_are_rejected():
     data = ics(event(), event(title="Different"))
     with pytest.raises(CalendarImportError, match="twice with the same revision"):
         parse_export("calendar", "one.ics", data)
+
+
+def test_conflict_evidence_comes_from_the_kept_copy(tmp_path):
+    """A discarded version's extra attendee leaves no evidence behind (issue #122)."""
+    from services.store.tests.test_dropbox import local_store
+
+    store = local_store(tmp_path)
+    archive = store.context.archive
+    stored = (
+        b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VEVENT\r\n"
+        b"UID:event-1\r\nDTSTART:20261016T150000Z\r\nSUMMARY:Planning\r\n"
+        b"ATTENDEE;CN=Casey;PARTSTAT=ACCEPTED:mailto:casey@example.com\r\n"
+        b"END:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+    archive.process(archive.submit("calendar", "base.ics", stored).id)
+
+    # Same revision, same shown fields, plus an attendee only the discarded copy has.
+    incoming = stored.replace(
+        b"END:VEVENT",
+        b"ATTENDEE;CN=Dana;PARTSTAT=ACCEPTED:mailto:dana@example.com\r\nEND:VEVENT",
+    )
+    # PARTSTAT is ignored by the hash, so only Dana's presence is a difference: the
+    # semantic hash changes while the stored copy is kept.
+    receipt = archive.process(archive.submit("calendar", "two.ics", incoming).id)
+    assert receipt.state == "succeeded"
+    assert receipt.kept_count == 1
+
+    catalog = archive.catalog()
+    kept = next(iter(catalog.events.values()))
+    assert {person.name for person in kept.people} == {"Casey"}
+    contacts = {contact.id for contact in catalog.contacts()}
+    # Only the kept copy contributes evidence: Casey is witnessed once per import and
+    # Dana, who exists only on the discarded version, is no contact at all.
+    casey = next(iter(contacts))
+    dana = "mailto:dana@example.com"
+    assert catalog.contacts().addresses(casey) == {"casey@example.com"}
+    assert catalog.contacts().contact(casey).evidence_count == 2
+    assert not catalog.contacts().has(dana)
+
+    # Evidence records are deduplicated, so re-importing the kept bytes adds no witness.
+    archive.process(archive.submit("calendar", "three.ics", stored).id)
+    assert archive.catalog().contacts().contact(casey).evidence_count == 2
+    assert not archive.catalog().contacts().has(dana)
