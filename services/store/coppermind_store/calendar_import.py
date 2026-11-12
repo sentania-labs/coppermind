@@ -30,6 +30,35 @@ MEMORY_PER_EVENT = 5461
 MAX_SERIALIZED = 44 * 1024 * 1024
 MAX_ENTRIES = 100
 MAX_EVENTS = 50_000
+# Properties in this set still show for the event but are not part of the semantic
+# hash. Providers move them without bumping SEQUENCE, and the parts the owner sees
+# (title, times, location, description, attendees) are all matched from the hash's
+# own fields. ``X-WR-*``/``X-PUBLISHED-TTL`` are calendar-level housekeeping and
+# never appear on a VEVENT, so listing them costs nothing and keeps the set complete.
+IGNORED_PROPERTIES = frozenset(
+    {
+        "DTSTAMP",
+        "LAST-MODIFIED",
+        "PARTSTAT",
+        "X-WR-CALNAME",
+        "X-WR-TIMEZONE",
+        "X-WR-CALDESC",
+        "X-PUBLISHED-TTL",
+    }
+)
+# The plain-words name each property gets in a conflict report.
+PROPERTY_LABELS = {
+    "SUMMARY": "title",
+    "DTSTART": "start time",
+    "DTEND": "end time",
+    "RECURRENCE-ID": "repeated occurrence",
+    "LOCATION": "location",
+    "DESCRIPTION": "description",
+    "STATUS": "status",
+    "ORGANIZER": "organizer",
+    "ATTENDEE": "attendees",
+    "RRULE": "repeating pattern",
+}
 
 
 class CalendarImportError(ValueError):
@@ -105,10 +134,41 @@ class CalendarEvent(BaseModel):
     def semantic_hash(self) -> str:
         # Export ordering/filename and DTSTAMP can change without an event edit.
         component = Calendar.from_ical(self.component)
-        component.pop("DTSTAMP", None)
         return hashlib.sha256(
-            component.to_ical(sorted=True) + "".join(sorted(self.timezone_components)).encode()
+            _canonical(component) + "".join(sorted(self.timezone_components)).encode()
         ).hexdigest()
+
+
+def _canonical(component: Any) -> bytes:
+    """The component's bytes with the ignored properties removed, in property order."""
+    for key in IGNORED_PROPERTIES:
+        component.pop(key, None)
+    for subcomponent in component.subcomponents:
+        for key in IGNORED_PROPERTIES:
+            subcomponent.pop(key, None)
+        _strip_parameters(subcomponent)
+    _strip_parameters(component)
+    return component.to_ical(sorted=True)
+
+
+def _strip_parameters(component: Any) -> None:
+    """Drop ignored parameters, such as an attendee's PARTSTAT, from every property."""
+    for name in IGNORED_PROPERTIES:
+        for _key, value in component.property_items(sorted=False):
+            for candidate in value if isinstance(value, list) else [value]:
+                params = getattr(candidate, "params", None)
+                if isinstance(params, dict):
+                    params.pop(name, None)
+                    params.pop("", None)
+
+
+class CalendarProblem(BaseModel):
+    """One event-level conflict, reported alongside a successful import."""
+
+    model_config = ConfigDict(extra="forbid")
+    event_id: str
+    version: str
+    reason: str
 
 
 def _entries(filename: str, data: bytes, limit: int = MAX_UPLOAD) -> list[tuple[str, bytes]]:
@@ -285,23 +345,22 @@ def parse_export(
     return list(events.values())
 
 
-def merge_event_into(merged: dict[str, CalendarEvent], event: CalendarEvent) -> None:
-    """Merge one event in place; an equal-version conflict raises before any change."""
+def merge_event_into(
+    merged: dict[str, CalendarEvent],
+    event: CalendarEvent,
+    problems: list[CalendarProblem] | None = None,
+) -> None:
+    """Merge one event in place; an equal-version conflict keeps the stored copy."""
     previous = merged.get(event.identity)
     if previous is None:
         merged[event.identity] = event
         return
     if event.revision == previous.revision and event.semantic_hash != previous.semantic_hash:
-        raise CalendarImportError(
-            f'Event "{event.title or event.uid}" ({event.start or "date unknown"}, '
-            f"UID {event.uid}, entry {event.source_entry}) conflicts with stored event "
-            f'"{previous.title or previous.uid}". Incoming revision: SEQUENCE '
-            f"{event.sequence}, LAST-MODIFIED {event.modified or 'not supplied'}; "
-            f"stored revision: SEQUENCE {previous.sequence}, LAST-MODIFIED "
-            f"{previous.modified or 'not supplied'}. The revisions match but the "
-            "contents differ. Correct the event in its source calendar and export it "
-            "again, or dismiss this receipt."
-        )
+        # The stored copy wins and the rest of the export still lands, so one stale
+        # revision cannot cost the whole week. The conflict is reported per event.
+        if problems is not None:
+            problems.append(_conflict_problem(event, previous))
+        return
     winner = event if event.revision > previous.revision else previous
     witnesses = list(previous.provenance)
     for witness in event.provenance:
@@ -314,14 +373,58 @@ def merge_event_into(merged: dict[str, CalendarEvent], event: CalendarEvent) -> 
     )
 
 
+def _conflict_problem(event: CalendarEvent, previous: CalendarEvent) -> CalendarProblem:
+    return CalendarProblem(
+        event_id=event.identity,
+        version=event.semantic_hash,
+        reason=(
+            f'Event "{event.title or event.uid}" ({event.start or "date unknown"}, '
+            f"UID {event.uid}, entry {event.source_entry}) conflicts with the stored "
+            f"event: {_differences(event, previous)}. The stored version was kept and "
+            "nothing needs doing unless this event matters to you. If it does, correct "
+            "the event in its source calendar and drop the export again."
+        ),
+    )
+
+
+def _differences(event: CalendarEvent, previous: CalendarEvent) -> str:
+    """Plain-words list of what differs, without hashes or internal field names."""
+    incoming = _properties(Calendar.from_ical(event.component))
+    stored = _properties(Calendar.from_ical(previous.component))
+    parts = []
+    for key in sorted(set(incoming) | set(stored)):
+        if incoming.get(key) != stored.get(key):
+            parts.append(PROPERTY_LABELS.get(key, key.lower()))
+    return ", ".join(parts) if parts else "the details differ"
+
+
+def _properties(component: Any) -> dict[str, str]:
+    return {
+        str(key): str(value)
+        for key, value in component.items()
+        if str(key) not in IGNORED_PROPERTIES
+    }
+
+
 def merge_events(
     current: dict[str, CalendarEvent], incoming: list[CalendarEvent]
 ) -> dict[str, CalendarEvent]:
-    """A partial export never removes absent records; equal-version conflicts fail."""
+    """A partial export never removes absent records; conflicts keep the stored copy."""
     merged = dict(current)
     for event in incoming:
         merge_event_into(merged, event)
     return merged
+
+
+def merge_with_problems(
+    current: dict[str, CalendarEvent], incoming: list[CalendarEvent]
+) -> tuple[dict[str, CalendarEvent], list[CalendarProblem]]:
+    """Merge every event in one pass and report each equal-revision conflict separately."""
+    merged = dict(current)
+    problems: list[CalendarProblem] = []
+    for event in incoming:
+        merge_event_into(merged, event, problems)
+    return merged, problems
 
 
 def check_import_budget(

@@ -597,6 +597,8 @@ def router(wiring: Wiring) -> APIRouter:
                     "failed": "Import failed",
                     "pending": "Waiting to import",
                 }[state]
+                if state == "succeeded" and receipt.get("kept_count"):
+                    label += ", kept as stored (" + _event_count(receipt["kept_count"]) + ")"
                 if state == "failed" and receipt.get("dismissed"):
                     label += " (dismissed)"
                 body += "<tr><td>" + e(receipt["filename"]) + "</td><td>" + e(label)
@@ -614,7 +616,7 @@ def router(wiring: Wiring) -> APIRouter:
                 body += "</table>"
             for conflict in data["calendar"].get("conflicts", []):
                 body += (
-                    "<section><h2>Legacy calendar conflict</h2><p>"
+                    "<section><h2>Calendar conflict</h2><p>"
                     + e(
                         (conflict["title"] or "Untitled event")
                         + " · "
@@ -629,7 +631,9 @@ def router(wiring: Wiring) -> APIRouter:
                         + f"SEQUENCE {conflict['stored_sequence']}, "
                         + f"LAST-MODIFIED {conflict['stored_modified'] or 'not supplied'}"
                     )
-                    + "</p><p>Legacy exports disagree. The current event and original exports "
+                    + "</p><p>"
+                    + e(conflict.get("reason", ""))
+                    + "</p><p>The current event and original exports "
                     "are retained. Dismiss acknowledges this conflict.</p>"
                 )
                 body += (

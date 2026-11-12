@@ -17,7 +17,7 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import ijson
 import sqlalchemy as sa
@@ -35,9 +35,10 @@ from coppermind_store.calendar_import import (
     MAX_UPLOAD,
     CalendarEvent,
     CalendarImportError,
+    CalendarProblem,
     CalendarTransientError,
     EventProvenance,
-    merge_events,
+    merge_with_problems,
 )
 from coppermind_store.calendar_worker import parse_bounded
 
@@ -52,6 +53,10 @@ class ImportReceipt(BaseModel):
     content_hash: str
     state: Literal["pending", "succeeded", "failed"] = "pending"
     event_count: int = 0
+    # An equal-revision conflict keeps the stored copy: `kept_count` events were left
+    # as stored, `conflicts` carries one plain-words problem per such event.
+    kept_count: int = 0
+    conflicts: list[CalendarProblem] = Field(default_factory=list)
     error: str = ""
     received_at: str
     imported_at: str = ""
@@ -242,11 +247,22 @@ class CalendarArchive:
                     count = connection.execute(
                         sa.select(sa.func.count()).select_from(rows)
                     ).scalar_one()
+                    stored = {
+                        event.identity: CalendarEvent.model_validate_json(value)
+                        for event in events
+                        if (
+                            value := connection.execute(
+                                sa.select(rows.c.record).where(rows.c.id == event.identity)
+                            ).scalar()
+                        )
+                        is not None
+                    }
+                    # Every event merges in one pass: an equal-revision conflict keeps
+                    # the stored copy and is reported per event, the rest still lands.
+                    merged, problems = merge_with_problems(stored, events)
+                    written = 0
                     for event in events:
-                        value = connection.execute(
-                            sa.select(rows.c.record).where(rows.c.id == event.identity)
-                        ).scalar()
-                        previous = CalendarEvent.model_validate_json(value) if value else None
+                        previous = stored.get(event.identity)
                         if previous is None:
                             count += 1
                             if count > limits.calendar_max_events:
@@ -254,13 +270,10 @@ class CalendarArchive:
                                     "calendar event budget exceeded: "
                                     f"limits.calendar_max_events={limits.calendar_max_events}"
                                 )
-                        # Raises on an equal revision with different content; the whole
-                        # transaction rolls back and the receipt fails.
-                        merged = merge_events(
-                            {event.identity: previous} if previous else {}, [event]
-                        )[event.identity]
-                        if merged != previous:
-                            mirror.put_event(connection, event.identity, merged)
+                        winner = merged[event.identity]
+                        if winner != previous:
+                            written += 1
+                            mirror.put_event(connection, event.identity, winner)
                         for person in event.people:
                             if person.contact_id is not None:
                                 evidence = ContactEvidence(
@@ -274,8 +287,11 @@ class CalendarArchive:
                                 mirror.add_evidence(
                                     connection, person.contact_id, evidence.model_dump()
                                 )
-                    mirror.drop_superseded_conflicts(connection)
-                    receipt.event_count = len(events)
+                    receipt.event_count = written
+                    receipt.kept_count = len(problems)
+                    # The stored copy of each conflict is retained and reported per event,
+                    # in the shape the acknowledge path already keeps on the mirror.
+                    receipt.conflicts = _retain_conflicts(connection, problems)
                     # Persist the count before promotion so crash recovery can finish the receipt.
                     self._save_receipt(receipt)
                     # The atomic filesystem promotion precedes the database commit.
@@ -437,14 +453,15 @@ class CalendarArchive:
                                 sa.select(rows.c.record).where(rows.c.id == event.identity)
                             ).scalar()
                             current = CalendarEvent.model_validate_json(value) if value else None
-                            try:
-                                merged = merge_events(
-                                    {event.identity: current} if current else {}, [event]
-                                )[event.identity]
-                            except CalendarImportError:
+                            merged, problems = merge_with_problems(
+                                {event.identity: current} if current else {}, [event]
+                            )
+                            if problems:
+                                # Migration keeps the former shape: the disagreeing
+                                # record itself is retained in the conflict list.
                                 conflicts.append(event)
                                 continue
-                            mirror.put_event(connection, event.identity, merged)
+                            mirror.put_event(connection, event.identity, merged[event.identity])
                     with staged_evidence.open() as handle:
                         for line in handle:
                             contact_id, encoded = json.loads(line)
@@ -464,3 +481,35 @@ class CalendarArchive:
             "contacts": len(catalog.contacts()),
             "imports": [json.loads(receipt.model_dump_json()) for receipt in self.receipts()],
         }
+
+
+def _retain_conflicts(connection: Any, problems: list[CalendarProblem]) -> list[CalendarProblem]:
+    """Report each event once and keep the stored copy of it on the mirror.
+
+    The mirror list is the acknowledged shape: a later identical export compares
+    ``(identity, semantic_hash)`` against it, so an acknowledged conflict stays quiet
+    until its event is revised past it.
+    """
+    known = {
+        (event.identity, event.semantic_hash): event for event in mirror.get_conflicts(connection)
+    }
+    seen: set[str] = set()
+    retained: list[CalendarProblem] = []
+    for problem in problems:
+        if problem.event_id in seen:
+            continue
+        seen.add(problem.event_id)
+        if (problem.event_id, problem.version) in known:
+            retained.append(problem)
+            continue
+        value = connection.execute(
+            sa.select(rows.c.record).where(rows.c.id == problem.event_id)
+        ).scalar()
+        if value is None:
+            continue
+        # The stored copy, not the incoming one, is what the mirror retains.
+        known[(problem.event_id, problem.version)] = CalendarEvent.model_validate_json(value)
+        retained.append(problem)
+    if len(known) != len(mirror.get_conflicts(connection)):
+        mirror.put_conflicts(connection, list(known.values()))
+    return retained

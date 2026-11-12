@@ -822,13 +822,20 @@ branch work, not production availability.
 Calendar intake now merges every ICS/ZIP export into one calendar by event UID
 and recurrence instance, with per-event export/file/time provenance. Upgrade
 merges legacy calendars automatically and retains old calendar names as
-provenance. There is no identity claim or per-calendar folder watcher. Conflicts
-appear in Problems. Dropbox receipts are dismissible, completed receipts expire
+provenance. There is no identity claim or per-calendar folder watcher. A
+same-revision disagreement no longer rejects the export: the import succeeds,
+each conflicting event is reported once in plain words and keeps its stored
+copy, and every other event is imported. Dropbox receipts are dismissible, completed receipts expire
 after seven days, and identical re-drops show Already imported.
 The sources:read API exposes Dropbox receipts. The upload cap is 200,000,000
 bytes; expanded ZIP and event-count safeguards remain.
 
-Admin shows waiting files, event counts and original import times. Calendar failures identify the conflicting event
-and revisions, can be dismissed from import history, and stay marked dismissed.
+Admin shows waiting files, event counts and original import times, and reports
+for each import how many events were written and how many were kept as stored.
+Calendar failures identify the conflicting event
+and the property that disagrees, can be dismissed from import history, and stay
+marked dismissed.
 Home and Problems count the same active failures, including unsupported
 Dropbox files. Upgrade discards conflicts superseded by a newer event revision.
+Attendee response status and provider housekeeping properties are excluded from
+the semantic comparison, so a pure `PARTSTAT` or `DTSTAMP` move is not a conflict.

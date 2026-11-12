@@ -20,8 +20,10 @@ never calls a model. Limits are 200,000,000 bytes per upload, 100 ZIP entries an
 `limits.calendar_import_memory_mib` (see the sizing table below), never above a
 40 MiB zip-bomb guard. Encrypted archives,
 symlinks, nested archives, unsafe paths and unsupported components are refused.
-Parsing and recurrence lookup have memory and CPU limits. An invalid or
-conflicting export leaves the previous calendar intact and appears in Problems.
+Parsing and recurrence lookup have memory and CPU limits. An invalid export leaves the previous calendar intact and appears in Problems.
+A single event that disagrees at the same revision is reported as a conflict:
+the import still succeeds, the stored copy of that event is kept, and every
+other event of the export is imported.
 
 Send binary bytes to `POST /v1/dropbox?filename=export.zip` with `sources:write`.
 A 202 means the original and pending receipt are durable. Read receipts through
@@ -41,11 +43,17 @@ creates an **Already imported** receipt without another import, showing the
 event count and original import time. Files waiting for the 30-second stability
 check appear as waiting receipts.
 
-Conflict errors name the event, UID, archive entry and incoming and stored
-revisions. Correct the event in its source calendar and export it again, or
-use **Dismiss failure** in Calendar import history. Legacy calendar conflicts
+A conflict names the event in plain words (title, description, location, time
+and so on), says the stored version was kept, and appears once per event in
+Calendar import history and Problems. Nothing needs doing unless that event
+matters; if it does, correct the event in its source calendar and drop the
+export again, or use **Dismiss failure** in Calendar import history for a failed
+export. Legacy calendar conflicts
 can also be acknowledged on that page without removing the current event or
-originals. Problems includes unsupported and oversized Dropbox files, and
+originals. Acknowledging a conflict keeps it quiet until the event is revised
+past it. Attendee response status and provider housekeeping properties
+(`DTSTAMP`, `LAST-MODIFIED`, `PARTSTAT`, `X-WR-*`, `X-PUBLISHED-TTL`) do not
+take part in that comparison. Problems includes unsupported and oversized Dropbox files, and
 Home's Needs attention lists the same active problems.
 
 `GET /v1/calendars` retains its paginated response shape and describes the single

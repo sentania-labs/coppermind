@@ -80,15 +80,19 @@ async def test_two_exports_and_two_files_witness_one_event(tmp_path):
     )
 
 
-async def test_conflicting_source_fails_without_overwriting(tmp_path):
+async def test_conflicting_source_keeps_the_stored_copy_and_reports_the_event(tmp_path):
     store = local_store(tmp_path)
     store.context.dropbox.submit("one.ics", calendar())
     await finish(store)
     conflict = store.context.dropbox.submit("two.ics", calendar().replace(b"Planning", b"Conflict"))
     await finish(store)
     receipt = store.context.dropbox.records()["items"][conflict["id"]]
-    assert receipt["state"] == "failed"
-    assert "conflicts" in receipt["error"]
+    assert receipt["state"] == "succeeded"
+    stored = next(
+        r for r in store.context.archive.receipts() if r.id == receipt["parts"][0]["import_id"]
+    )
+    assert stored.event_count == 0 and stored.kept_count == 1
+    assert "title" in stored.conflicts[0].reason
     assert next(iter(store.context.archive.catalog().events.values())).title == "Planning"
 
 
@@ -99,15 +103,22 @@ async def test_dismissing_failed_receipt_acknowledges_import_failure(tmp_path):
     await finish(store)
     conflict = dropbox.submit("two.ics", calendar().replace(b"Planning", b"Conflict"))
     await finish(store)
+    # A conflict is reported per event, so the import itself succeeds.
+    assert dropbox.records()["items"][conflict["id"]]["state"] == "succeeded"
+    kept = [r for r in store.context.archive.receipts() if r.kept_count]
+    assert len(kept) == 1 and kept[0].state == "succeeded" and not kept[0].dismissed
+    # A real failure still behaves as before: dismissed, then shown again on re-drop.
+    dropbox.submit("bad.ics", b"not a calendar")
+    await finish(store)
     failed = [r for r in store.context.archive.receipts() if r.state == "failed"]
     assert [r.dismissed for r in failed] == [False]
-    await dropbox.dismiss({"id": conflict["id"]})
+    bad = next(
+        item for item in dropbox.records()["items"].values() if item["filename"] == "bad.ics"
+    )
+    await dropbox.dismiss({"id": bad["id"]})
     assert [r.dismissed for r in store.context.archive.receipts() if r.state == "failed"] == [True]
-    retried = store.context.archive.process(failed[0].id)
-    assert retried.state == "failed"
-    assert retried.dismissed is False
     store.context.archive.dismiss(failed[0].id)
-    redrop = dropbox.submit("again.ics", calendar().replace(b"Planning", b"Conflict"))
+    redrop = dropbox.submit("again.ics", b"not a calendar")
     await finish(store)
     assert dropbox.records()["items"][redrop["id"]]["state"] == "failed"
     assert [r.dismissed for r in store.context.archive.receipts() if r.state == "failed"] == [False]
@@ -116,49 +127,45 @@ async def test_dismissing_failed_receipt_acknowledges_import_failure(tmp_path):
 async def test_retried_receipt_that_succeeds_completes_failed_dropbox_item(tmp_path):
     store = local_store(tmp_path)
     dropbox = store.context.dropbox
-    dropbox.submit("one.ics", calendar())
-    await finish(store)
-    stale_bytes = calendar().replace(b"Planning", b"Conflict")
-    stale = dropbox.submit("two.ics", stale_bytes)
-    await finish(store)
-    assert dropbox.records()["items"][stale["id"]]["state"] == "failed"
-    newer = calendar().replace(b"Planning", b"Newer").replace(b"SUMMARY", b"SEQUENCE:1\r\nSUMMARY")
-    dropbox.submit("three.ics", newer)
+    dropbox.submit("one.ics", b"not a calendar")
     await finish(store)
     failed = [r for r in store.context.archive.receipts() if r.state == "failed"]
-    assert store.context.archive.process(failed[0].id).state == "succeeded"
+    assert len(failed) == 1
+    item = next(i for i in dropbox.records()["items"].values() if i["filename"] == "one.ics")
+    assert item["state"] == "failed"
+    newer = calendar().replace(b"Planning", b"Newer").replace(b"SUMMARY", b"SEQUENCE:1\r\nSUMMARY")
+    dropbox.submit("two.ics", newer)
+    await finish(store)
+    assert store.context.archive.process(failed[0].id).state == "failed"
     await dropbox.process()
-    item = dropbox.records()["items"][stale["id"]]
-    assert item["state"] == "succeeded"
-    assert item["error"] == ""
-    assert dropbox.submit("again.ics", stale_bytes)["state"] == "already_imported"
+    assert item["state"] == "failed"
+    assert item["error"] != ""
+    good = next(i for i in dropbox.records()["items"].values() if i["filename"] == "two.ics")
+    assert good["state"] == "succeeded"
+    assert dropbox.submit("again.ics", newer)["state"] == "already_imported"
 
 
 async def test_import_history_dismisses_direct_and_dropbox_failures(tmp_path):
     store = local_store(tmp_path)
     context = store.context
     context.archive.process(context.archive.submit("calendar", "first.ics", calendar()).id)
-    direct = context.archive.submit(
-        "calendar", "direct.ics", calendar().replace(b"Planning", b"Direct")
-    )
+    direct = context.archive.submit("calendar", "direct.ics", b"not a calendar")
     assert context.archive.process(direct.id).state == "failed"
     dropped = context.dropbox.submit("dropped.ics", calendar().replace(b"Planning", b"Dropped"))
     await finish(store)
-    assert context.dropbox.records()["items"][dropped["id"]]["state"] == "failed"
+    # A per-event conflict is not an import failure: the drop succeeds and keeps
+    # the stored copy, so only the malformed direct upload is a failed receipt.
+    assert context.dropbox.records()["items"][dropped["id"]]["state"] == "succeeded"
     failed = [r for r in context.archive.receipts() if r.state == "failed"]
-    assert len(failed) == 2
-    for receipt in failed:
-        assert await context.dismiss_import({"id": receipt.id}) == {"dismissed": receipt.id}
-        with pytest.raises(ValueError, match="dismissed"):
-            await context.retry_import({"id": receipt.id})
+    assert [r.filename for r in failed] == ["direct.ics"]
+    assert await context.dismiss_import({"id": failed[0].id}) == {"dismissed": failed[0].id}
+    with pytest.raises(ValueError, match="dismissed"):
+        await context.retry_import({"id": failed[0].id})
     assert all(r.dismissed for r in context.archive.receipts() if r.state == "failed")
-    assert dropped["id"] not in context.dropbox.records()["items"]
     snapshot = await context.snapshot()
     assert {r["filename"] for r in snapshot["calendar"]["imports"] if r["dismissed"]} == {
         "direct.ics",
-        "dropped.ics",
     }
-    assert len(context.archive.receipts()) == 3
     succeeded = next(r for r in context.archive.receipts() if r.state == "succeeded")
     with pytest.raises(ValueError, match="Only failed"):
         await context.dismiss_import({"id": succeeded.id})
@@ -170,7 +177,7 @@ async def test_dismissing_failed_import_before_reconcile_clears_importing_item(t
     store = local_store(tmp_path)
     context = store.context
     context.archive.process(context.archive.submit("calendar", "first.ics", calendar()).id)
-    dropped = context.dropbox.submit("late.ics", calendar().replace(b"Planning", b"Late"))
+    dropped = context.dropbox.submit("late.ics", b"not a calendar")
     await context.dropbox.process()
     assert context.dropbox.records()["items"][dropped["id"]]["state"] == "importing"
     receipt = next(r for r in context.archive.receipts() if r.state == "pending")
@@ -471,28 +478,39 @@ async def test_calendar_history_dismisses_direct_and_dropbox_failures(tmp_path):
     archive = store.context.archive
     archive.process(archive.submit("calendar", "base.ics", calendar()).id)
     bad = calendar().replace(b"Planning", b"Wrong title")
-    archive.process(archive.submit("calendar", "direct.ics", bad).id)
+    direct = archive.process(archive.submit("calendar", "direct.ics", bad).id)
     store.context.dropbox.submit("redrop.zip", zip_bytes({"Work/Meeting.ics": bad}))
     await finish(store)
-    failures = [r for r in archive.receipts() if r.state == "failed"]
-    assert len(failures) == 2
-    zipped = next(r for r in failures if r.filename.endswith("zip"))
-    for detail in (
-        "Wrong title",
-        "Planning",
-        "event-1",
-        "Work/Meeting.ics",
-        "Incoming revision",
-        "stored revision",
-    ):
-        assert detail in zipped.error
-    for receipt in failures:
-        await store.context.dismiss_import({"id": receipt.id})
-        with pytest.raises(ValueError, match="dismissed"):
-            await store.context.retry_import({"id": receipt.id})
-    assert store.context.dropbox.snapshot()["items"] == []
-    assert all(r.dismissed for r in archive.receipts() if r.state == "failed")
-    assert next(iter(archive.catalog().events.values())).title == "Planning"
+    # Both imports land: each reports its one conflicting event and keeps the stored copy.
+    assert direct.state == "succeeded" and direct.kept_count == 1
+    zipped = next(r for r in archive.receipts() if r.filename.endswith("zip"))
+    assert zipped.state == "succeeded" and zipped.kept_count == 1
+    assert store.context.dropbox.snapshot()["items"][0]["state"] == "succeeded"
+    reason = zipped.conflicts[0].reason
+    for detail in ("Wrong title", "event-1", "Work/Meeting.ics", "title", "stored version"):
+        assert detail in reason
+    conflicts = archive.catalog().conflicts
+    # Two imports of the same bytes, so the same stored event is reported once
+    # per import; each receipt keeps its own acknowledgement handle.
+    assert len(conflicts) == 2
+    assert {event.title for event in conflicts} == {"Planning"}
+    snapshot = await store.context.snapshot()
+    assert len(snapshot["calendar"]["conflicts"]) == 2
+    assert all(item["reason"] for item in snapshot["calendar"]["conflicts"])
+    assert {item["stored_title"] for item in snapshot["calendar"]["conflicts"]} == {"Planning"}
+    assert {item["id"] for item in snapshot["calendar"]["conflicts"]} == {
+        conflict.identity for conflict in conflicts
+    }
+    # Acknowledging removes that problem, and the stored event is untouched.
+    await store.context.dismiss_calendar_conflict(
+        {
+            "id": conflicts[0].identity,
+            "version": conflicts[0].semantic_hash,
+        }
+    )
+    # Both records carry the same identity and hash, so one acknowledgement clears
+    # the event, and the stored event is untouched.
+    assert len(archive.catalog().conflicts) == 0
 
 
 def test_migration_drops_superseded_conflicts_and_allows_acknowledgement(tmp_path):
@@ -597,19 +615,27 @@ async def test_redrop_of_deterministic_failure_returns_the_same_failed_receipt(t
     store = local_store(tmp_path)
     archive = store.context.archive
     archive.process(archive.submit("calendar", "base.ics", calendar()).id)
+    # Same revision, different contents: the import succeeds and reports the
+    # one conflicting event, so the deterministic answer is a kept count.
     data = b"not a calendar" if kind == "malformed" else calendar().replace(b"Planning", b"Other")
     store.context.dropbox.submit("bad.ics", data)
     await finish(store)
     receipt = next(r for r in archive.receipts() if r.filename == "bad.ics")
-    assert receipt.state == "failed" and not receipt.retryable
-    assert "Drop the export again to retry" not in receipt.error
-    assert not store.context.dropbox.snapshot()["items"][0]["retryable"]
+    expected = "failed" if kind == "malformed" else "succeeded"
+    assert receipt.state == expected and not receipt.retryable
+    if kind == "malformed":
+        assert "Drop the export again to retry" not in receipt.error
+        assert not store.context.dropbox.snapshot()["items"][0]["retryable"]
 
     store.context.dropbox.submit("bad.ics", data)
     await finish(store)
     receipts = [r for r in archive.receipts() if r.filename == "bad.ics"]
-    assert [(r.id, r.state, r.error) for r in receipts] == [(receipt.id, "failed", receipt.error)]
-    assert store.context.dropbox.snapshot()["items"][0]["state"] == "failed"
+    assert [(r.id, r.state, r.error) for r in receipts] == [
+        (receipt.id, receipt.state, receipt.error)
+    ]
+    if kind == "conflict":
+        assert receipt.kept_count == 1
+        assert len(receipts) == 1
 
 
 def test_worker_timeout_and_crash_are_transient_but_worker_errors_are_not(monkeypatch):
