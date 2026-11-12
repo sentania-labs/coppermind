@@ -159,7 +159,7 @@ async def generate(
             retry_after=exc.retry_after,
         ) from exc
     job.reply = json.dumps(output, ensure_ascii=False)[:4000]
-    summary = MeetingSummary.model_validate(output)
+    summary = MeetingSummary.from_answer(output)
     if not summary.text(shared.SECTIONS[0].key).strip():
         raise ValueError("the meeting summary was empty")
     recording = next(

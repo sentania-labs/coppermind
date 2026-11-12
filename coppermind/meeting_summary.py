@@ -8,7 +8,7 @@ edited all follow SECTIONS, so a section added here appears everywhere without a
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationInfo, model_validator
 
 SECTION_MAX = 12000
 
@@ -49,18 +49,32 @@ SECTIONS: tuple[Section, ...] = (
 class MeetingSummary(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
 
-    @model_validator(mode="after")
-    def _follows_the_sections(self) -> "MeetingSummary":
-        given: dict[str, Any] = self.model_extra or {}
+    @model_validator(mode="before")
+    @classmethod
+    def _known_parts_only(cls, data: Any, info: ValidationInfo) -> Any:
+        if not isinstance(data, dict):
+            return data
         keys = [section.key for section in SECTIONS]
-        if set(given) != set(keys):
+        if set(data) - set(keys):
+            raise ValueError("a meeting summary has only these parts: " + ", ".join(keys))
+        if (info.context or {}).get("complete") and set(data) != set(keys):
             raise ValueError("a meeting summary has exactly these parts: " + ", ".join(keys))
-        for key in keys:
-            if not isinstance(given[key], str):
-                raise ValueError(f"{key} must be text")
-            if len(given[key]) > SECTION_MAX:
-                raise ValueError(f"{key} is longer than {SECTION_MAX:,} characters")
+        return {**dict.fromkeys(keys, ""), **data}
+
+    @model_validator(mode="after")
+    def _text_of_a_sensible_size(self) -> "MeetingSummary":
+        given: dict[str, Any] = self.model_extra or {}
+        for section in SECTIONS:
+            if not isinstance(given[section.key], str):
+                raise ValueError(f"{section.key} must be text")
+            if len(given[section.key]) > SECTION_MAX:
+                raise ValueError(f"{section.key} is longer than {SECTION_MAX:,} characters")
         return self
+
+    @classmethod
+    def from_answer(cls, data: Any) -> "MeetingSummary":
+        """A summary written now: every part must be there, not only the ones that are known."""
+        return cls.model_validate(data, context={"complete": True})
 
     def text(self, key: str) -> str:
         return str((self.model_extra or {}).get(key, ""))

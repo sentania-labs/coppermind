@@ -173,9 +173,16 @@ def test_the_sections_are_defined_once_and_everything_follows_them(monkeypatch):
     note = append_summary("Mine.", summary, "_Sources/Transcript.md")
     assert "### Open risks\n\n- The vendor date may slip." in note
     assert summary.model_dump() == answer
+    saved_before = shared.MeetingSummary.model_validate(SECOND)
+    assert saved_before.text("risks") == ""
+    assert (
+        saved_before.markdown()
+        == shared.MeetingSummary.model_validate({**SECOND, "risks": ""}).markdown()
+    )
     with pytest.raises(ValueError, match="exactly these parts"):
-        shared.MeetingSummary.model_validate(SECOND)
-    with pytest.raises(ValueError, match="exactly these parts"):
+        shared.MeetingSummary.from_answer(SECOND)
+    assert shared.MeetingSummary.from_answer(answer).model_dump() == answer
+    with pytest.raises(ValueError, match="only these parts"):
         shared.MeetingSummary.model_validate({**answer, "notes": "invented"})
     with pytest.raises(ValueError, match="must be text"):
         shared.MeetingSummary.model_validate({**answer, "risks": 3})
