@@ -398,6 +398,36 @@ def test_a_feature_whose_service_was_removed_outside_admin_says_so_on_its_page_a
     assert "/admin/suggestions?change=service" in home.text
 
 
+# -- adding the companion -----------------------------------------------------------------------
+
+
+def place_companion(store):
+    store.views["overview"]["companion"].update(placed=True, paired=[])
+    store.answers["pairing-start"] = {"code": "123456"}
+
+
+def test_the_companion_step_warns_when_sync_will_not_carry_it_to_the_devices(admin):
+    client, _, store = admin
+    place_companion(store)
+    page = client.get("/admin/setup/companion").text
+    assert "only carries the companion to your devices" in page
+    assert 'href="/admin/sync/what"' in page
+    assert "It reaches your devices with the next sync" not in page
+
+
+def test_the_companion_step_says_nothing_of_the_kind_when_own_settings_are_synced(admin):
+    client, wiring, store = admin
+    place_companion(store)
+    control = StateStore(wiring.state_dir)
+    state = control.read("settings")
+    body = dict(state.body)
+    body.setdefault("sync", {})["sync_configs"] = ["community-plugin"]
+    control.write("settings", body, if_revision=state.revision)
+    page = client.get("/admin/setup/companion").text
+    assert "only carries the companion to your devices" not in page
+    assert "It reaches your devices with the next sync" in page
+
+
 # -- files Coppermind leaves alone ------------------------------------------------------------
 
 
