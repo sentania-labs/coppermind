@@ -1591,3 +1591,58 @@ async def test_marking_a_note_reviewed_does_not_wait_for_unknown_speakers_or_a_s
     note = await store.get_note(note_id)
     assert note.frontmatter["reviewed"] is True
     assert voice.unknown_summaries()
+
+
+async def test_a_person_already_listed_as_a_capitalised_link_is_not_added_by_email(store, standin):
+    from coppermind_store.voice_relabel import combine
+
+    from coppermind.store_protocol import PatchFrontmatter
+
+    context, _, note_id, _ = await reviewed_with_unknown_voice(store, standin)
+    blair = await store.entities.create(
+        EntityInput(kind="person", name="Blair Stone", emails=["blair@example.test"])
+    )
+    note = await store.get_note(note_id)
+    link = "[[" + blair["path"].removesuffix(".md") + "]]"
+    assert link != link.casefold()
+    listed = [*note.frontmatter["attendees"], link]
+    await store.patch_frontmatter(
+        note_id, PatchFrontmatter(set={"attendees": listed}), note.content_hash
+    )
+    async with context.lifecycle.lock, context.lock:
+        await combine(context, "unknown:2", "person:" + blair["id"])
+    assert (await store.get_note(note_id)).frontmatter["attendees"] == listed
+    assert "late_attendees" not in context.read("review-completions/" + note_id, {})
+
+
+@pytest.mark.parametrize("conflicts", [1, 2])
+async def test_a_note_edited_during_the_update_never_blocks_identifying_the_voice(
+    store, standin, monkeypatch, conflicts
+):
+    from coppermind_store.voice_relabel import combine
+
+    from coppermind.store_protocol import VersionConflict
+
+    context, _, note_id, voice = await reviewed_with_unknown_voice(store, standin)
+    blair = await store.entities.create(
+        EntityInput(kind="person", name="Blair Stone", emails=["blair@example.test"])
+    )
+    before = (await store.get_note(note_id)).frontmatter["attendees"]
+    real = store.patch_frontmatter
+    remaining = [conflicts]
+
+    async def edited_meanwhile(*args, **kwargs):
+        if remaining[0]:
+            remaining[0] -= 1
+            raise VersionConflict("note changed")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(store, "patch_frontmatter", edited_meanwhile)
+    async with context.lifecycle.lock, context.lock:
+        await combine(context, "unknown:2", "person:" + blair["id"])
+    assert "unknown:2" not in voice.unknown_summaries()
+    after = (await store.get_note(note_id)).frontmatter["attendees"]
+    # One conflict is retried; a second leaves attendees untouched.
+    assert ("blair@example.test" in after) == (conflicts == 1)
+    if conflicts == 2:
+        assert after == before

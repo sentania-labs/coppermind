@@ -184,6 +184,25 @@ async def relabel_recording(
 
 
 async def add_late_attendee(context: Any, assignment: dict[str, Any], person_id: str) -> bool:
+    """Best effort: a failed attendee update never stops the voice from being identified.
+
+    A note edited between the read and the write is read again once; after that, or when the
+    note's attendees cannot take the value, the attendees are left as they are.
+    """
+    from coppermind.store_protocol import VersionConflict
+
+    for attempt in range(2):
+        try:
+            return await _add_late_attendee(context, assignment, person_id)
+        except VersionConflict:
+            if attempt:
+                break
+        except ValueError:
+            break
+    return False
+
+
+async def _add_late_attendee(context: Any, assignment: dict[str, Any], person_id: str) -> bool:
     """Add a person identified after review to the attendees of the filed note.
 
     Only a reviewed note is touched; a note still in review gets its attendees from the review
@@ -224,7 +243,7 @@ async def add_late_attendee(context: Any, assignment: dict[str, Any], person_id:
     known = {person["name"].strip().casefold(), person["email"].strip().casefold()}
     known |= {a.strip().casefold() for a in entity.emails}
     if person["path"]:
-        known.add("[[" + person["path"].removesuffix(".md") + "]]")
+        known.add(("[[" + person["path"].removesuffix(".md") + "]]").casefold())
     if isinstance(listed, list) and any(
         isinstance(v, str) and v.strip().casefold() in known for v in listed
     ):
@@ -319,8 +338,7 @@ async def combine(context: Any, source: str, target: str, reviewing: str | None 
         else:
             await relabel_recording(context, assignment, None, name)
             if person_id and assignment["note_id"] != reviewing:
-                with contextlib.suppress(ValueError):
-                    await add_late_attendee(context, assignment, person_id)
+                await add_late_attendee(context, assignment, person_id)
     for assignment in deferred:
         voice.defer_relabel(assignment, name, person_id)
     voice.move_voice(source, target)
