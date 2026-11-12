@@ -180,6 +180,10 @@ class ContextService:
         self.dropbox = Dropbox(self)
         self.recordings = Recordings(self)
         self.provider = ModelProvider()
+        from coppermind_store.ai_services import AiServices
+
+        # Reads every provider call's outcome, so health is observed and never assumed.
+        self.services = AiServices(self)
         self.lock = asyncio.Lock()
         self.seen: dict[str, tuple[tuple[int, int, int, int], float]] = {}
         self.watch_status: dict[str, str] = {}
@@ -2365,6 +2369,7 @@ class ContextService:
             await asyncio.to_thread(self.archive.process, pending[0].id)
             async with self.lock:
                 await self.dropbox.process()
+        await self.dropbox.queue_recordings()
         if self.config().lifecycle_enabled:
             await self.lifecycle.check_calendars()
         assignment = self.config().assignments["enrichment"]

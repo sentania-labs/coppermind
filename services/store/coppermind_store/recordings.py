@@ -70,9 +70,8 @@ BUSY_LIMIT_S = 24 * 3600
 BUSY_RULE = "transcription-busy"
 BUSY_MESSAGE = "Waiting for the transcription service, which is busy."
 NOT_SET_UP = (
-    "No transcription service is set up, so a recording on its own cannot be accepted. "
-    "In Admin open Model connections, find Transcription setup, choose a connection "
-    "and a model and turn it on."
+    "Transcription is off, so this recording cannot be written up yet. "
+    "In Admin open Transcription, choose a service and turn it on."
 )
 # How much of a transcript the recording page shows; the whole text is in the note's source.
 DETAIL_TRANSCRIPT_CHARS = 200_000
@@ -219,9 +218,8 @@ class Recordings:
 
     def ready(self) -> FeatureAssignment:
         assignment = self.assignment()
-        if assignment is None or not (
-            assignment.enabled and assignment.connection and assignment.model
-        ):
+        # A model name is optional: a service that runs one model is not asked for its name.
+        if assignment is None or not (assignment.enabled and assignment.connection):
             raise ValueError(NOT_SET_UP)
         return assignment
 
@@ -403,8 +401,8 @@ class Recordings:
                         "Anthropic does not offer transcription. Choose an OpenAI-compatible "
                         "connection."
                     )
-            if given.enabled and not (given.connection and given.model.strip()):
-                raise ValueError("choose a connection and a model before turning transcription on")
+            if given.enabled and not given.connection:
+                raise ValueError("choose a service before turning transcription on")
             old = config.assignments.get("transcription") or FeatureAssignment()
             config.assignments["transcription"] = FeatureAssignment(
                 connection=given.connection,
@@ -439,7 +437,8 @@ class Recordings:
                 existing = None
         if existing is not None:
             return self.replay(existing, request)
-        assignment = self.ready()
+        # A recording is kept whether or not transcription is on. It waits until it is.
+        assignment = self.assignment() or FeatureAssignment()
         try:
             _, revision = await asyncio.to_thread(
                 artifacts.current_file, self.context.store, request.artifact_id

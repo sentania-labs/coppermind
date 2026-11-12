@@ -256,9 +256,19 @@ class _Stream:
         }
 
 
+# What a provider call's outcome says about the service behind it. `None` means it answered.
+Observer = Callable[[ModelConnection, "ProviderError | None"], None]
+
+
 class ModelProvider:
     def __init__(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.transport = transport
+        # Told the outcome of every call, so health is something observed and never assumed.
+        self.observer: Observer | None = None
+
+    def _observed(self, connection: ModelConnection, error: ProviderError | None) -> None:
+        if self.observer is not None:
+            self.observer(connection, error)
 
     async def request(
         self,
@@ -277,6 +287,18 @@ class ModelProvider:
         return result
 
     async def _exchange(
+        self, connection: ModelConnection, key: str, method: str, path: str, **options: Any
+    ) -> tuple[dict[str, Any], CallStats]:
+        """One HTTP call, with its outcome reported to the observer."""
+        try:
+            result = await self._call(connection, key, method, path, **options)
+        except ProviderError as exc:
+            self._observed(connection, exc)
+            raise
+        self._observed(connection, None)
+        return result
+
+    async def _call(
         self,
         connection: ModelConnection,
         key: str,

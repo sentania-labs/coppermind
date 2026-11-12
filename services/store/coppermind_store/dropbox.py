@@ -49,6 +49,8 @@ OFFICE_SUFFIXES = {
     ".rtf",
 }
 ARTIFACT_SUFFIXES = EXTENSION_TYPES.keys() | OFFICE_SUFFIXES
+# Audio dropped in the folder is a recording: it is stored, then written up.
+RECORDING_SUFFIXES = {".m4a", ".mp3", ".wav"}
 NO_KIND = "This file type is not supported. Choose a supported format and try again."
 NEEDS_KIND = "This document needs kind=artifact on the upload to be stored as an artifact."
 
@@ -267,6 +269,42 @@ class Dropbox:
                 records["history"][item["id"]] = dict(item)
         if records != before:
             self.save(records)
+
+    async def queue_recordings(self) -> None:
+        """Hand each recording that arrived through the folder to transcription.
+
+        Called without the context lock held, because accepting a recording takes it.
+        """
+        records = self.records()
+        waiting = [
+            item
+            for item in [*records["items"].values(), *records["history"].values()]
+            if item.get("state") == "succeeded"
+            and Path(item["filename"]).suffix.lower() in RECORDING_SUFFIXES
+            and any(part.get("artifact_id") and not part.get("recording") for part in item["parts"])
+        ]
+        for item in waiting:
+            part = next(p for p in item["parts"] if p.get("artifact_id"))
+            try:
+                status = await self.context.recordings.accept(
+                    {
+                        "artifact_id": part["artifact_id"],
+                        "provider": "dropbox",
+                        "external_source_id": item["id"],
+                        "title": Path(item["filename"]).stem,
+                        "origin": "dropbox",
+                    }
+                )
+                recording = status["id"]
+            except (ValueError, StoreError):
+                recording = "refused"
+            async with self.context.lock:
+                current = self.records()
+                for group in ("items", "history"):
+                    for stored in current[group].get(item["id"], {}).get("parts", []):
+                        if stored.get("artifact_id") == part["artifact_id"]:
+                            stored["recording"] = recording
+                self.save(current)
 
     async def _store_artifact(
         self, item: dict[str, Any], data: bytes, marker: dict[str, Any]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import time
 from collections.abc import Callable
@@ -13,7 +14,11 @@ import anyio.to_thread
 from coppermind.api_keys import ApiKeyRecord, split_credential, verify_secret
 from coppermind.store_protocol import Store
 
-CACHE_TTL_SECONDS = 300.0
+# How long the key records are trusted before they are read again. Short, so that a key
+# removed in Admin stops working at once and a change to what it may do applies at once.
+CACHE_TTL_SECONDS = 2.0
+# How often, at most, the store is told that a key was used.
+USE_REPORT_SECONDS = 60.0
 # Argon2 at the shipped cost holds 64 MiB per verification, so the number that
 # can run at once is capped rather than left to the default thread limiter.
 VERIFY_CONCURRENCY = 4
@@ -34,10 +39,15 @@ class Principal:
 
 @dataclass(frozen=True)
 class _Verified:
-    """A verification, valid no longer than the key records it was decided from."""
+    """A secret that was checked against one key record's hash.
 
-    principal: Principal
-    expires_at: float
+    Checking is expensive, so the answer is kept for as long as that record still
+    carries the same hash. Whether the key is still live, and what it may do, is read
+    from the current records every time.
+    """
+
+    key_id: str
+    hash: str
 
 
 class ApiKeyAuthenticator:
@@ -60,6 +70,8 @@ class ApiKeyAuthenticator:
         self._loading: asyncio.Task[dict[str, ApiKeyRecord]] | None = None
         self._lock = asyncio.Lock()
         self._verify_limiter = anyio.CapacityLimiter(VERIFY_CONCURRENCY)
+        self._use_reported: dict[str, float] = {}
+        self._reports: set[asyncio.Task[None]] = set()
 
     async def records(self) -> dict[str, ApiKeyRecord]:
         """Return the key records, loading them at most once per cache life."""
@@ -87,8 +99,36 @@ class ApiKeyAuthenticator:
         self._records = {record.key_id: record for record in key_set.keys}
         self._records_expire_at = self._clock() + self._ttl
         self._records_generation += 1
-        self._verified = {}
+        # A checked secret stays checked while its record keeps the hash it was checked
+        # against. A removed, revoked or replaced key drops out here.
+        self._verified = {
+            fingerprint: checked
+            for fingerprint, checked in self._verified.items()
+            if (record := self._records.get(checked.key_id)) is not None
+            and record.revoked_at is None
+            and record.hash == checked.hash
+        }
         return self._records
+
+    def _used(self, key_id: str) -> None:
+        """Tell the store this key was used, at most once a minute, without waiting."""
+        now = self._clock()
+        if now - self._use_reported.get(key_id, -USE_REPORT_SECONDS) < USE_REPORT_SECONDS:
+            return
+        self._use_reported[key_id] = now
+        report = getattr(self._store, "admin_action", None)
+        if report is None:
+            return
+
+        async def send() -> None:
+            # When a key was last used is a convenience for the owner, never a reason to
+            # fail the request that used it.
+            with contextlib.suppress(Exception):
+                await report("key-used", {"key_id": key_id})
+
+        task = asyncio.create_task(send())
+        self._reports.add(task)
+        task.add_done_callback(self._reports.discard)
 
     async def authenticate(self, authorization: str | None) -> Principal | None:
         if not authorization or not authorization.startswith("Bearer "):
@@ -99,18 +139,25 @@ class ApiKeyAuthenticator:
             return None
 
         fingerprint = hashlib.sha256(credential.encode("utf-8")).digest()
-        cached = self._verified.get(fingerprint)
-        if cached is not None and cached.expires_at > self._clock():
-            return cached.principal
-
         key_id, secret = parsed
+        records = await self.records()
+        cached = self._verified.get(fingerprint)
+        current = records.get(key_id)
+        if (
+            cached is not None
+            and current is not None
+            and current.revoked_at is None
+            and current.hash == cached.hash
+        ):
+            self._used(key_id)
+            return Principal(current.key_id, frozenset(current.scopes))
+
         # Verifying is slow enough for the records to expire and reload under
         # it, so the decision is only kept when it still stands against the
         # snapshot in force once the verification returns.
         while True:
             records = await self.records()
             generation = self._records_generation
-            decided_until = self._records_expire_at
             record = records.get(key_id)
             if record is None or record.revoked_at is not None:
                 return None
@@ -124,5 +171,6 @@ class ApiKeyAuthenticator:
 
         principal = Principal(record.key_id, frozenset(record.scopes))
         async with self._lock:
-            self._verified[fingerprint] = _Verified(principal, decided_until)
+            self._verified[fingerprint] = _Verified(record.key_id, record.hash)
+        self._used(key_id)
         return principal

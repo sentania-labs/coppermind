@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import secrets
+from collections.abc import Iterable
 from datetime import UTC, datetime
 
 from argon2 import PasswordHasher
@@ -39,6 +40,52 @@ DEFAULT_SCOPES = tuple(
     scope for scope in API_SCOPES if scope not in {"admin:purge", "entities:read", "entities:write"}
 )
 
+# What a connected app may do, in the words Admin shows, and the scopes each one grants.
+# One list, so the screen that grants a permission and the screen that shows it agree.
+PERMISSIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("read", "Read notes", ("notes:read", "sources:read", "artifacts:read", "journal:read")),
+    ("write", "Add and change notes", ("notes:write", "notes:move", "journal:write")),
+    ("delete", "Delete notes", ("notes:delete",)),
+    ("hand", "Hand in recordings and files", ("sources:write", "artifacts:write")),
+    ("search", "Search", ("search:read",)),
+    ("people", "Read and correct people and companies", ("entities:read", "entities:write")),
+    ("admin", "Change Coppermind settings", ("admin:read", "admin:write")),
+)
+# What each kind of app is given when it is connected.
+COMPANION_PERMISSIONS = ("read", "write", "hand", "search", "people")
+PRESETS: dict[str, tuple[str, ...]] = {
+    "companion": COMPANION_PERMISSIONS,
+    "agent": ("read", "search", "people"),
+    "intake": ("read", "write", "hand"),
+}
+
+
+def scopes_for(permissions: Iterable[str]) -> list[str]:
+    """The scopes a set of permissions grants, in the fixed order of the vocabulary."""
+    wanted = set(permissions)
+    granted = {scope for key, _, scopes in PERMISSIONS if key in wanted for scope in scopes}
+    return [scope for scope in API_SCOPES if scope in granted]
+
+
+def permissions_of(scopes: Iterable[str]) -> list[str]:
+    """The permissions a key holds in full. A scope outside every permission adds nothing."""
+    held = set(scopes)
+    return [key for key, _, needed in PERMISSIONS if set(needed) <= held]
+
+
+def describe(scopes: Iterable[str]) -> str:
+    """What a key may do, as one sentence fragment."""
+    held = permissions_of(scopes)
+    if len(held) == len(PERMISSIONS):
+        return "Everything, including settings"
+    if set(held) == set(COMPANION_PERMISSIONS):
+        return "Read and change notes, hand in recordings, search"
+    labels = [label for key, label, _ in PERMISSIONS if key in held]
+    if not labels:
+        return "Nothing yet"
+    return labels[0] + "".join(", " + label[0].lower() + label[1:] for label in labels[1:])
+
+
 KEY_ID_PATTERN = re.compile(r"^[a-z0-9]{16}$")
 KEY_PREFIX = "cm_"
 _HASHER = PasswordHasher()
@@ -58,6 +105,10 @@ class ApiKeyRecord(BaseModel):
     # The durable mark of the key bootstrap owns. A display name is an
     # operator's to choose, so it can never stand in for this.
     bootstrap_default: bool = False
+    # Set on a key the Obsidian companion was given when it paired with a code, with the
+    # name of the device it paired on. Such a key was never shown to anyone.
+    companion: bool = False
+    device: str = ""
 
     @field_validator("key_id")
     @classmethod
@@ -143,15 +194,68 @@ def load_keys(store: StateStore) -> ApiKeySet:
         return ApiKeySet(revision=0)
 
 
-def add_key(store: StateStore, name: str, scopes: list[str], *, if_revision: int) -> str:
+def add_key(
+    store: StateStore,
+    name: str,
+    scopes: list[str],
+    *,
+    if_revision: int,
+    companion: bool = False,
+    device: str = "",
+) -> str:
     """Append a key at the displayed revision and reveal its credential once."""
     key_set = load_keys(store)
     if key_set.revision != if_revision:
         raise RevisionConflict(key_set.revision)
     record, credential = create_key(name, scopes)
+    record.companion, record.device = companion, device
     key_set.keys.append(record)
     store.write("keys", key_set.model_dump(mode="json"), if_revision=if_revision or None)
     return credential
+
+
+def change_key(
+    store: StateStore,
+    key_id: str,
+    *,
+    name: str | None = None,
+    scopes: list[str] | None = None,
+    new_secret: bool = False,
+) -> str:
+    """Rename a live key, change what it may do, or replace its secret, in place.
+
+    Returns the new credential when the secret was replaced, and an empty string
+    otherwise. The key keeps its id, so the app it belongs to keeps its line.
+    """
+    key_set = load_keys(store)
+    record = next((key for key in key_set.keys if key.key_id == key_id), None)
+    if record is None or record.revoked_at is not None:
+        raise ValueError(f"no live API key with id {key_id}")
+    credential = ""
+    if name is not None:
+        if not name.strip():
+            raise ValueError("a key needs a name")
+        record.name = name.strip()
+    if scopes is not None:
+        record.scopes = ApiKeyRecord.validate_scopes(scopes)
+    if new_secret:
+        secret = secrets.token_urlsafe(32)
+        record.hash = _HASHER.hash(secret)
+        credential = f"{KEY_PREFIX}{record.key_id}_{secret}"
+    store.write("keys", key_set.model_dump(mode="json"), if_revision=key_set.revision)
+    return credential
+
+
+def remove_key(store: StateStore, key_id: str) -> ApiKeyRecord:
+    """Revoke a key now, whatever revision the caller last saw, and return its record."""
+    key_set = load_keys(store)
+    record = next((key for key in key_set.keys if key.key_id == key_id), None)
+    if record is None:
+        raise ValueError(f"no API key with id {key_id}")
+    if record.revoked_at is None:
+        record.revoked_at = datetime.now(tz=UTC)
+        store.write("keys", key_set.model_dump(mode="json"), if_revision=key_set.revision)
+    return record
 
 
 def revoke_key(store: StateStore, key_id: str, *, if_revision: int) -> None:
