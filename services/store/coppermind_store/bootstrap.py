@@ -151,7 +151,7 @@ def run(wiring: Wiring | None = None) -> int:
         print(
             "\nOpen this link to "
             + (
-                "choose a new Admin password"
+                "choose a new Admin password (it works for one hour)"
                 if claim_code.startswith("new")
                 else "set up Coppermind"
             )

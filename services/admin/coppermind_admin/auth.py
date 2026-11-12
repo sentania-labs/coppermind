@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,6 +21,10 @@ from coppermind.atomicio import create_exclusive_bytes
 from coppermind.statefiles import StateStore
 
 _HASHER = PasswordHasher()
+
+
+# How long a new setup link for a forgotten password works after the server issued it.
+RESET_LINK_SECONDS = 3600
 
 
 class AlreadyClaimed(Exception):
@@ -70,8 +75,18 @@ class AdminCredentials:
         return self.path.is_file()
 
     def reset_offered(self) -> bool:
-        """True while a new setup link, issued from the server itself, is waiting to be used."""
-        return self.is_claimed() and self.reset_code_path.is_file()
+        """Whether a new setup link was issued from the server and is still good.
+
+        The link is shown where the server was started, which is also where its log is kept,
+        so it works for an hour and then no longer.
+        """
+        if not self.is_claimed():
+            return False
+        try:
+            age = time.time() - self.reset_code_path.stat().st_mtime
+        except OSError:
+            return False
+        return age < RESET_LINK_SECONDS
 
     @staticmethod
     def _same_code(offered: str, expected: str) -> bool:
@@ -91,6 +106,8 @@ class AdminCredentials:
         is signed out. Notes and settings are not touched.
         """
         async with self._claim_lock:
+            if not self.reset_offered():
+                raise InvalidClaimCode
             try:
                 expected = self.reset_code_path.read_text(encoding="utf-8").strip()
             except FileNotFoundError as exc:

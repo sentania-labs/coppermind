@@ -11,8 +11,8 @@ const form = { email: "operator@example.invalid", password: "account-test-secret
   encryption_password: "encryption-test-secret", vault_name: "Phone notes", existing_vault: false };
 const secrets = [form.email, form.password, form.mfa_code, form.encryption_password];
 
-async function waitFor(check, message) {
-  for (let attempt = 0; attempt < 150; attempt += 1) {
+async function waitFor(check, message, attempts = 150) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try { const value = await check(); if (value) return value; } catch {}
     await new Promise((resolve) => setTimeout(resolve, 40));
   }
@@ -31,6 +31,9 @@ async function harness(context, { fake = false, persisted = false, failure = "",
     vault_id: "remote-1", device_name: "Kitchen server", paused: persisted === "paused" }));
   const bin = path.join(data, "bin");
   await mkdir(bin);
+  // Stands in for the credential volume, which is not under the data folder in a real install.
+  const credentials = path.join(data, "credentials");
+  await mkdir(credentials);
   const callsFile = path.join(data, "calls.jsonl");
   // Test-only argv capture intentionally contains synthetic secrets. Production
   // never records argv. Split stderr checks redaction across stream chunks.
@@ -67,7 +70,8 @@ else if (args[0] === 'sync') { console.log(${JSON.stringify(secrets.join(' '))})
   const supervisor = spawn(process.execPath, [path.join(ROOT, "supervisor.mjs")], {
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, COPPERMIND_DATA_DIR: data,
       COPPERMIND_INTERNAL_TOKEN_FILE: tokenFile, COPPERMIND_SYNC_FAKE: fake ? "1" : "0",
-      COPPERMIND_SYNC_PORT: "0", COPPERMIND_LOG_LEVEL: level },
+      COPPERMIND_SYNC_PORT: "0", COPPERMIND_LOG_LEVEL: level,
+      COPPERMIND_SYNC_CREDENTIALS_DIR: credentials },
     stdio: ["ignore", "pipe", "pipe"],
   });
   supervisor.stdout.on("data", (chunk) => { log += chunk; });
@@ -78,6 +82,8 @@ else if (args[0] === 'sync') { console.log(${JSON.stringify(secrets.join(' '))})
       supervisor.kill("SIGTERM");
       await exited;
     }
+    // A test leaves nothing behind in the temp folder.
+    await rm(data, { recursive: true, force: true });
   });
   const statusFile = path.join(stateDir, "status.json");
   const readStatus = async () => JSON.parse(await readFile(statusFile, "utf8"));
@@ -100,7 +106,7 @@ else if (args[0] === 'sync') { console.log(${JSON.stringify(secrets.join(' '))})
     const output = log + await readFile(statusFile, "utf8");
     for (const secret of secrets) assert.equal(output.includes(secret), false, "secret escaped to status or log");
   };
-  return { data, stateDir, connectionFile, supervisor, readStatus, request, calls, clean, log: () => log };
+  return { data, stateDir, connectionFile, credentials, supervisor, readStatus, request, calls, clean, log: () => log };
 }
 
 for (const fake of [false, true]) test(`${fake ? "fake" : "real"} lifecycle, auth, restart and disconnect`, async (context) => {
@@ -186,8 +192,9 @@ test("log level suppresses info", async (context) => {
   assert.equal(JSON.parse(normal.log().trim().split("\n")[0]).service, "obsidian-sync");
 });
 
-test("device settings default, scalar quoting and unknown sections", async () => {
+test("device settings default, scalar quoting and unknown sections", async (context) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "sync-settings-"));
+  context.after(() => rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, "settings.yaml");
   assert.equal(await deviceName(file), DEFAULT_DEVICE_NAME);
   for (const [text, expected] of [["other:\n  ignored: true\n", DEFAULT_DEVICE_NAME],
@@ -289,4 +296,70 @@ test("status stays available during a blocked configuration command", async (con
   assert.equal(code, 200);
   assert.equal(state.config_live, true);
   assert.equal(state.config_matches, true);
+});
+
+test("an account is signed in step by step, and signing in again needs only the password", async (context) => {
+  const h = await harness(context, { fake: true });
+  const account = path.join(h.credentials, "coppermind-account");
+  // A wrong password is a wrong password. Only a request for a code says a code is needed.
+  let [code, body] = await h.request("/login", { email: form.email, password: "wrong" });
+  assert.deepEqual([code, body.error, body.mfa_needed], [502, "login_failed", false]);
+  [code, body] = await h.request("/login", { email: form.email, password: "mfa" });
+  assert.deepEqual([code, body.mfa_needed], [502, true]);
+  [code, body] = await h.request("/vault", { vault_id: "fake-1" });
+  assert.deepEqual([code, body.error], [409, "not_signed_in"]);
+  [code, body] = await h.request("/login", { email: form.email, password: "mfa", mfa_code: "123456" });
+  assert.equal(code, 200);
+  assert.equal(body.signed_in, true);
+  // The vaults on the account, with whether each has a password of its own and never the password.
+  assert.deepEqual(body.vaults.map((v) => [v.id, v.name, v.locked]), [["fake-1", "My notes", true], ["fake-2", "Work archive", false]]);
+  assert.equal(JSON.stringify(body).includes("vault-password"), false);
+  // A locked vault needs its password, and the right one.
+  assert.deepEqual((await h.request("/vault", { vault_id: "fake-1" }))[1].error, "password_required");
+  assert.deepEqual((await h.request("/vault", { vault_id: "fake-1", password: "nope" }))[1].error, "wrong_password");
+  assert.equal((await h.request("/connect", {}))[0], 400);
+  [code, body] = await h.request("/vault", { vault_id: "fake-1", password: "vault-password" });
+  assert.equal(code, 200);
+  assert.deepEqual(body.choice, { vault_id: "fake-1", vault_name: "My notes", new_vault: false });
+  // Nothing is remembered until a vault is actually connected.
+  await assert.rejects(readFile(account), { code: "ENOENT" });
+  [code, body] = await h.request("/connect", {});
+  assert.equal(code, 200);
+  assert.equal(body.vault_name, "My notes");
+  assert.equal(body.account_known, true);
+  // The address is on the credential volume and nowhere a backup or a log would carry it.
+  assert.equal((await readFile(account, "utf8")).trim(), form.email);
+  for (const name of await readdir(h.stateDir)) {
+    assert.equal((await readFile(path.join(h.stateDir, name), "utf8")).includes(form.email), false, name);
+  }
+  assert.equal(h.log().includes(form.email), false);
+
+  // Obsidian signs this server out: the client keeps stopping, and the helper says why.
+  await writeFile(path.join(h.stateDir, "fake-signed-out"), "");
+  const stopped = await waitFor(async () => { const s = await h.readStatus(); return s.needs_signin && s; }, "sign-out not noticed", 2500);
+  assert.equal(stopped.syncing, false);
+  assert.equal(stopped.account_known, true);
+  // Only the password is asked for, and a wrong one changes nothing.
+  [code, body] = await h.request("/signin", { password: "wrong" });
+  assert.deepEqual([code, body.error, body.mfa_needed], [502, "login_failed", false]);
+  assert.equal((await h.readStatus()).needs_signin, true);
+  [code, body] = await h.request("/signin", { password: "the new password" });
+  assert.equal(code, 200);
+  assert.equal(body.needs_signin, false);
+  await waitFor(async () => (await h.readStatus()).syncing, "sync did not restart");
+  // Disconnecting forgets the account as well.
+  assert.equal((await h.request("/disconnect", {}))[0], 200);
+  await assert.rejects(readFile(account), { code: "ENOENT" });
+  assert.equal((await h.readStatus()).account_known, false);
+});
+
+test("a server that connected before the account was kept is asked for it once", async (context) => {
+  const h = await harness(context, { fake: true, persisted: true });
+  assert.equal((await h.readStatus()).account_known, false);
+  let [code, body] = await h.request("/signin", { password: "anything" });
+  assert.deepEqual([code, body.error], [400, "account_required"]);
+  [code, body] = await h.request("/signin", { email: form.email, password: "anything" });
+  assert.equal(code, 200);
+  assert.equal(body.account_known, true);
+  assert.equal((await h.request("/signin", { password: "anything" }))[0], 200);
 });

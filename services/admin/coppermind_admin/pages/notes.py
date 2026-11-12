@@ -146,8 +146,8 @@ def summary_card(
         )
         how = (
             " Writing it again uses the transcript Coppermind already has (the recording is "
-            "not sent anywhere again) and the instructions as they are now. "
-            + ui.a("Change the instructions", "/admin/suggestions/summary")
+            "not sent anywhere again) and the directions as they are now. "
+            + ui.a("Change the directions", "/admin/suggestions/summary")
         )
     elif state == "failing" and service:
         how = (
@@ -175,34 +175,62 @@ def summary_card(
             f"{'paused' if state == 'paused' else 'off'}. "
             + ui.a("Open Suggestions", "/admin/suggestions")
         )
+    proposed, earlier = summary.get("proposed"), summary.get("earlier")
+
+    def earlier_choice(picked: str) -> str:
+        """The summary from before, shown and on offer while there is no newer one."""
+        if not earlier:
+            return ui.hidden({"summary": "none"})
+        return (
+            '<div class="row-l" style="margin-top:10px">The summary from before</div>'
+            f"{summary_text(earlier)}"
+            + ui.choice(
+                "summary",
+                "earlier",
+                "Add the summary from before to the note",
+                "It goes at the end of the note when you mark it reviewed.",
+                picked != "none",
+            )
+            + ui.choice(
+                "summary",
+                "none",
+                "Leave the summary out",
+                "The note is filed without one.",
+                picked == "none",
+            )
+        )
+
     if summary["writing"]:
         body = (
             '<p><span class="lat-badge lat-badge--accent">Writing</span> Coppermind is writing '
             "the summary now. It usually takes a minute or two, and this page updates by "
             "itself. Nothing is added to the note until you mark it reviewed.</p>"
             + (
-                '<p class="muted">The summary from before is kept, and you can choose it '
-                "once the new one is here.</p>"
-                if summary.get("earlier")
+                '<p class="muted">The summary from before is kept. If you mark the note '
+                "reviewed before the new one is here, it is the one that is used unless you "
+                "choose to leave the summary out.</p>"
+                if earlier
                 else ""
             )
+            + earlier_choice(values.get("summary", ""))
         )
-        return ui.card(body + ui.hidden({"summary": "none"}), title), notice, 8
-    proposed, earlier = summary.get("proposed"), summary.get("earlier")
+        return ui.card(body, title), notice, 8
     if not proposed:
         body = (
             "<p>"
             + (
-                "The summary could not be written. The note can still be reviewed and filed "
-                "without one."
+                "The summary could not be written"
+                + (" again. The one from before is still here." if earlier else ".")
+                + ("" if earlier else " The note can still be reviewed and filed without one.")
                 if summary["failed"]
                 else "There is no summary for this note yet."
             )
             + how
             + "</p>"
             + (f'<div class="actions">{again}</div>' if again else "")
+            + earlier_choice(values.get("summary", ""))
         )
-        return ui.card(body + ui.hidden({"summary": "none"}), title), notice, 0
+        return ui.card(body, title), notice, 0
     picked = values.get("summary") or "new"
     choices = ui.choice(
         "summary",
@@ -786,6 +814,7 @@ name="csrf" value="{{csrf}}">Save</button>
                     here,
                     danger=True,
                     busy="Filing…",
+                    fields={"seen": taken.get("hash", "")},
                 )
             body = f"""{head}<div class="stack">{ctx.flash()}
 {
@@ -1024,7 +1053,12 @@ name="csrf" value="{{csrf}}">Save</button>
             title = (await ctx.act("note", {"id": identity}))["title"]
         except StoreError:
             return ctx.go("/admin/notes")
-        result = await fix(ctx, identity, "note-replace", {})
+        result = await fix(
+            ctx, identity, "note-replace", {"seen": (await ctx.form()).get("seen", "")}
+        )
+        if result is not None and "refused" in result:
+            ctx.say("warn", e(result["refused"]["message"]))
+            return ctx.go(here)
         if result is not None:
             ctx.say(
                 *filed_message(
@@ -1335,6 +1369,16 @@ name="csrf" value="{{csrf}}">Save</button>
         roles = data["roles"]
         note = data["note"]
         front = note["frontmatter"]
+        if form.get("if_match") and form["if_match"] != note["content_hash"]:
+            # The note was edited somewhere else after this page was drawn. What is on the
+            # page is older than the note, so none of it is written over the newer edit.
+            ctx.say(
+                "warn",
+                "This note was changed somewhere else while the page was open, so nothing "
+                "was saved. The page now shows the note as it is; check it and press the "
+                "button again.",
+            )
+            return ctx.go(here + "/review")
         _, schema = read_schema(ctx.control)
 
         def split(text: str) -> list[str]:
@@ -1382,11 +1426,17 @@ name="csrf" value="{{csrf}}">Save</button>
         offered = await note_summary(ctx, identity)
         wanted = form.get("summary", "new")
         summary = None
-        if offered.get("recording") and offered.get("proposed") and not offered["writing"]:
-            if wanted == "new":
-                summary = offered["proposed"]
+        # The review a summary is added through: the current one, or, when the newer summary
+        # is not here (still being written, or it failed), the one the earlier summary came with.
+        review_job = data["job_id"]
+        current = offered.get("proposed") if not offered.get("writing") else None
+        if offered.get("recording"):
+            if wanted == "new" and current:
+                summary = current
             elif wanted == "earlier" and offered.get("earlier"):
                 summary = offered["earlier"]
+                if not current:
+                    review_job = offered["earlier_job"]
         # The first write is held to the note as the page showed it; later ones follow on.
         expected = form.get("if_match", "") or note["content_hash"]
         calendar_hash = (data.get("recording_meeting") or {}).get("calendar_hash", "")
@@ -1427,7 +1477,7 @@ name="csrf" value="{{csrf}}">Save</button>
             request: dict[str, Any] = {
                 "note_id": identity,
                 "if_match": expected,
-                "job_id": data["job_id"],
+                "job_id": review_job if prose is not None else data["job_id"],
                 "confirmation": "Complete review",
                 "accept_link_risk": False,
                 "selected": chosen,

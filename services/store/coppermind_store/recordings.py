@@ -982,8 +982,8 @@ class Recordings:
             connection = self.context.connection(assignment.connection)
         except ValueError as exc:
             raise ProviderError(
-                "The Transcription connection is not set up: "
-                f"{exc}. Open Model connections, find Transcription setup, and choose one.",
+                "No AI service is chosen for transcription: "
+                f"{exc}. Open Transcription in Admin and choose one.",
                 "connection-missing",
             ) from exc
         path, revision = await asyncio.to_thread(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import time
@@ -222,7 +223,12 @@ class AdminStorage:
         items.sort(key=lambda item: item["deleted_at"])
         return {
             "kept": await asyncio.to_thread(self._still_kept),
-            "token": result.token,
+            # What the list holds, as one value: the confirmation is held to the list its
+            # owner was looking at, however many times the list has been drawn since.
+            "token": hashlib.sha256(
+                json.dumps(sorted(f"{item['kind']}:{item['id']}" for item in items)).encode()
+            ).hexdigest(),
+            "purge_token": result.token,
             "state": result.state,
             "items": items,
             "bytes": sum(item["bytes"] for item in items),
@@ -234,10 +240,22 @@ class AdminStorage:
     async def cleanup_count(self) -> dict[str, int]:
         """How many deleted things are past their keep time, without making a new list."""
         cutoff = datetime.now(UTC) - timedelta(days=self.keep_days())
+        from coppermind_store import note_history
+
+        # A note counts from the later of when it was seen gone and when its removal was
+        # recorded, which is the same moment the clean-up list itself goes by.
+        receipts = await asyncio.to_thread(note_history.receipts, self.store)
         async with self.store.session_factory() as session:
-            notes = await session.scalar(
-                sa.select(sa.func.count()).where(Note.state == "deleted", Note.updated_at <= cutoff)
-            )
+            rows = (
+                await session.execute(
+                    sa.select(Note.id, Note.updated_at).where(
+                        Note.state == "deleted", Note.updated_at <= cutoff
+                    )
+                )
+            ).all()
+        notes = sum(
+            1 for row in rows if row.id not in receipts or receipts[row.id].recorded_at <= cutoff
+        )
 
         def archives() -> int:
             count = 0
@@ -265,7 +283,7 @@ class AdminStorage:
             # The list changed after it was shown, so it is shown again, not acted on.
             return {"changed": True}
         await self.store.confirm_purge(
-            ConfirmPurge(token=before["token"], confirmation="Purge listed items")
+            ConfirmPurge(token=before["purge_token"], confirmation="Purge listed items")
         )
         for removed in self._old_removed():
             self.notes._drop_removed(removed["key"])

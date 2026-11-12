@@ -20,6 +20,7 @@ import ipaddress
 import re
 import socket
 import time
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -173,7 +174,7 @@ class AiServices:
         self.context = context
         context.provider.observer = self.observe
         self._resuming: set[asyncio.Task[Any]] = set()
-        self._testing = 0
+        self._testing: Counter[str] = Counter()
 
     # -- what is recorded -----------------------------------------------------------------
 
@@ -191,6 +192,17 @@ class AiServices:
         self.context.write(RECORD, records)
         return record
 
+    def _without_key(self, connection: ModelConnection, text: str) -> str:
+        """What a service said when it failed, with its key taken out if it repeated it."""
+        with contextlib.suppress(Exception):
+            key = self.context.key(connection.id)
+            if key:
+                text = text.replace(key, "[key]")
+                if len(key) > 12:
+                    # Some services quote the key with its middle starred out.
+                    text = text.replace(key[:8], "[key]").replace(key[-8:], "[key]")
+        return text[:500]
+
     def observe(self, connection: ModelConnection, error: ProviderError | None) -> None:
         """One provider call's outcome. Called for every call, so it writes only on a change."""
         try:
@@ -206,7 +218,7 @@ class AiServices:
                     down_since=record.get("down_since") or now(),
                     fails=int(record.get("fails", 0)) + 1,
                     last_failed_at=now(),
-                    detail=str(error)[:500],
+                    detail=self._without_key(connection, str(error)),
                     key_refused=refused,
                 )
             elif down:
@@ -221,7 +233,7 @@ class AiServices:
                 # It answered again without anyone pressing Test: send what was waiting on it.
                 # A test in progress does this itself, so that it can say what it restarted.
                 with contextlib.suppress(RuntimeError):
-                    if self._testing:
+                    if self._testing[connection.id]:
                         return
                     task = asyncio.get_running_loop().create_task(self.resume(connection.id))
                     self._resuming.add(task)
@@ -456,7 +468,7 @@ class AiServices:
 
     async def _run(self, connection: ModelConnection, key: str) -> dict[str, Any]:
         """Find out what one service can do. Raises when nothing answers or the key fails."""
-        self._testing += 1
+        self._testing[connection.id] += 1
         try:
             try:
                 models = await self.context.provider.models(connection, key)
@@ -470,7 +482,7 @@ class AiServices:
             speech = await self._test_speech(connection, key, models)
             return {"models": models, "text": text, "embed": embed, "speech": speech}
         finally:
-            self._testing -= 1
+            self._testing[connection.id] -= 1
 
     def _stamp(self, connection: ModelConnection, caps: dict[str, Any]) -> None:
         """Keep the older records the workers read in step with what the test found."""
@@ -512,7 +524,7 @@ class AiServices:
                     down_since=record.get("down_since") or now(),
                     last_failed_at=now(),
                     fails=int(record.get("fails", 0)) + 1,
-                    detail=str(exc)[:500],
+                    detail=self._without_key(connection, str(exc)),
                     key_refused=refused,
                 )
             return {"answering": False, "key_refused": refused, "service": self.get(connection.id)}
@@ -784,7 +796,7 @@ class AiServices:
                     down_since=now(),
                     last_failed_at=now(),
                     fails=1,
-                    detail=str(error)[:500] if error else "",
+                    detail=self._without_key(connection, str(error)) if error else "",
                     key_refused=refused,
                 )
                 return {

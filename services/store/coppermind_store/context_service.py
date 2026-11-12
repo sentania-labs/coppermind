@@ -282,8 +282,8 @@ class ContextService:
                 "wait_s",
                 "summary_max_input_chars",
                 "summary_timeout_s",
-                # New instructions are for the next summary. They never restart one made.
-                "summary_instructions",
+                # New directions are for the next summary. They never restart one made.
+                "summary_directions",
             }
         )
         connection = next(

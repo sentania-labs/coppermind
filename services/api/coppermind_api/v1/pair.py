@@ -7,7 +7,7 @@ and is spent by a handful of wrong guesses.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,11 +29,14 @@ class PairRequest(BaseModel):
 
 
 @router.post(PAIR_PATH)
-async def pair(payload: PairRequest, client: HttpStoreClient = Depends(store)) -> JSONResponse:
+async def pair(
+    payload: PairRequest, request: Request, client: HttpStoreClient = Depends(store)
+) -> JSONResponse:
     """Trade the pairing code shown in Admin for this device's own key."""
+    caller = request.client.host if request.client else ""
     try:
         result = await client.admin_action(
-            "pair-exchange", {"code": payload.code, "device": payload.device}
+            "pair-exchange", {"code": payload.code, "device": payload.device, "client": caller}
         )
     except StoreError as error:
         return failure(error)

@@ -43,6 +43,8 @@ from coppermind_admin.shell import COOKIE, csrf_token, with_csrf
 
 SERVICE = "coppermind-admin"
 PUBLIC = {"/admin/welcome", "/admin/signin", "/healthz", "/readyz"}
+# The only places a file is handed in. Each streams its body and checks the form token itself.
+UPLOADS = {"/admin/incoming/add", "/admin/calendar/add", "/admin/storage/files/add"}
 log = get_logger(SERVICE)
 
 # Bound every form body so a POST cannot make Admin buffer a body of any size it likes.
@@ -262,6 +264,14 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
         context = csrf_token.set(token)
         try:
             if request.method == "POST" and is_upload(request):
+                if path not in UPLOADS:
+                    # Only the pages that take a file read a body of this kind, and only
+                    # they check the token inside it. Anywhere else it would go unchecked.
+                    return refuse(
+                        403,
+                        "Admin could not be sure that request came from you, so nothing "
+                        "was changed. Go back, reload the page and try again.",
+                    )
                 # A file is streamed by its own handler, which checks the same token
                 # before it keeps a single byte of the file.
                 request.state.csrf_expected = token
@@ -364,7 +374,8 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
 
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:
-        return RedirectResponse("/admin/signin" if credentials.is_claimed() else "/admin/welcome")
+        # Admin itself sends anyone who is not signed in on to the sign-in page.
+        return RedirectResponse("/admin" if credentials.is_claimed() else "/admin/welcome")
 
     @app.get("/admin/welcome", response_class=HTMLResponse, include_in_schema=False)
     async def welcome(request: Request) -> Response:
@@ -465,6 +476,11 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
     async def signin_page(request: Request) -> Response:
         if not credentials.is_claimed():
             return RedirectResponse("/admin/welcome", status_code=303)
+        token = request.cookies.get(COOKIE, "")
+        with suppress(AdminRecordUnreadable):
+            if token and request.app.state.sessions.valid(token):
+                # Already signed in: asking again for the password would only be confusing.
+                return RedirectResponse("/admin", status_code=303)
         notice = ""
         if request.query_params.get("ended"):
             notice = ui.banner("info", "You were signed out because the sign-in ran out.")

@@ -7,6 +7,8 @@ from coppermind_api.v1.workflow import router
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from coppermind.api_keys import PERMISSIONS
+
 
 class Store:
     def __init__(self):
@@ -261,7 +263,8 @@ def test_review_returns_people_only_to_a_key_that_can_read_entities():
     assert narrow.json()["manual_speaker_review"] is None
     notice = narrow.json()["speakers_unavailable"]
     assert "cannot read people" in notice and "Connected apps" in notice
-    assert "create a new key" in notice and "Read people and companies" in notice
+    assert "pair this device with a code" in notice
+    assert "Read and correct people and companies" in notice
     assert "entities:read" not in notice
     assert wide.json()["people_access_notice"] == notice
     assert wide.json()["manual_speaker_review"]["candidates"] == [person]
@@ -269,17 +272,15 @@ def test_review_returns_people_only_to_a_key_that_can_read_entities():
     assert not wide.json().get("speakers_unavailable")
 
 
+# The notice names the ticks Admin shows for a key, so it is checked against that one list.
+TICK = {scope: label for _, label, scopes in PERMISSIONS for scope in scopes}
+
+
 @pytest.mark.parametrize(
-    "missing,label",
-    [
-        ("notes:read", "Read notes"),
-        ("notes:write", "Update notes"),
-        ("sources:read", "Read sources"),
-        ("sources:write", "Update sources"),
-        ("entities:read", "Read people and companies"),
-    ],
+    "missing", ["notes:read", "notes:write", "sources:read", "sources:write", "entities:read"]
 )
-def test_speaker_permission_notice_matches_required_review_scopes(missing, label):
+def test_speaker_permission_notice_matches_required_review_scopes(missing):
+    label = TICK[missing]
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[store] = lambda: Store()

@@ -51,9 +51,9 @@ def hide_artifact(item: dict[str, Any]) -> dict[str, Any]:
 
 PEOPLE_HIDDEN = (
     "This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, "
-    "open Connected apps (API Keys) and create a new key with Read notes, Update notes, "
-    "Read sources, Update sources, and Read people and companies, "
-    "then select that key in the companion settings."
+    "open Connected apps and either pair this device with a code, or open the key and tick "
+    "Read notes, Add and change notes, Hand in recordings and files, and Read and correct "
+    "people and companies."
 )
 
 

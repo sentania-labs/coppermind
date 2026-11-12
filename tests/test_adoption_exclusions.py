@@ -9,10 +9,8 @@ from coppermind_store.reconciler import MirrorEntry, _scan
 from coppermind.schema import default_schema
 from coppermind.settings import ReconcileSettings, read_settings
 from coppermind.statefiles import StateStore
-from coppermind.store_protocol import ProblemInfo
-from services.admin.tests.browser import admin_browser as admin_browser
-from services.admin.tests.test_keys_page import Inputs
-from services.admin.tests.test_problems_page import ReadOnlyStore
+from services.admin.tests.harness import admin as admin
+from services.admin.tests.harness import token
 
 
 def scan(root, *, settings=None, by_id=None, unidentified=None):
@@ -124,39 +122,36 @@ def test_exclusion_snapshot_does_not_lose_paths_named_like_metadata(tmp_path):
     assert ControlState(tmp_path).read_reconciler_excluded_count() == 0
 
 
-def test_admin_edits_exclusions_and_refuses_stale_revision(signed_in):
-    client, wiring = signed_in
-    form = Inputs(client.get("/admin/settings").text).values
-    assert form["reconcile.excluded_folders"] == '["Templates", "_Templates"]'
-    assert form["reconcile.excluded_patterns"] == '["*.excalidraw.md", "*.canvas", "*.kanban.md"]'
-    response = client.post(
-        "/v1/admin/settings",
-        data=form
-        | {
-            "reconcile.excluded_folders": '["Archive/"]',
-            "reconcile.excluded_patterns": '["*.tmp.md"]',
-        },
-    )
-    assert response.status_code == 200
+def test_admin_saves_the_folders_to_leave_alone(admin):
+    client, wiring, _ = admin
+    form = {"d": "1", "templates": "on", "drawings": "on", "folder": "Archive"}
+    form["csrf"] = token(client, "/admin/notes/leave-alone")
+    saved = client.post("/admin/notes/leave-alone", data=form, follow_redirects=False)
+    assert saved.status_code == 303
     settings = read_settings(StateStore(wiring.state_dir)).reconcile
-    assert settings.excluded_folders == ["Archive/"]
-    assert settings.excluded_patterns == ["*.tmp.md"]
-    assert client.post("/v1/admin/settings", data=form).status_code == 409
-    assert read_settings(StateStore(wiring.state_dir)).reconcile == settings
+    assert "Archive" in settings.excluded_folders
+    assert "Templates" in settings.excluded_folders
+    # Canvases and boards were unticked, so their patterns are gone and drawings stay.
+    assert not any("canvas" in pattern for pattern in settings.excluded_patterns)
+    assert any("excalidraw" in pattern for pattern in settings.excluded_patterns)
 
 
-def test_admin_problems_shows_count_path_and_rule_escaped(signed_in):
-    client, _ = signed_in
-    store = ReadOnlyStore()
-    store.problems = [
-        ProblemInfo(kind="excluded", reference="Templates/<draft>.md", reason="folder: Templates/")
-    ]
-    client.app.state.store = store
-    response = client.get("/admin/problems")
-    assert response.status_code == 200
-    assert "Files skipped by exclusion: 1" in response.text
-    assert "Templates/&lt;draft&gt;.md" in response.text
-    assert "folder: Templates/" in response.text
+def test_admin_says_why_each_file_is_left_alone_in_words(admin):
+    client, _, store = admin
+    store.views["notes-alone"] = {
+        "items": [
+            {"title": "<draft>", "path": "Templates/<draft>.md", "why": "folder: Templates/"},
+            {
+                "title": "sketch",
+                "path": "Review/sketch.excalidraw.md",
+                "why": "pattern: *.excalidraw.md",
+            },
+        ]
+    }
+    page = client.get("/admin/notes?tab=alone").text
+    assert "&lt;draft&gt;" in page
+    assert "It is in the Templates folder." in page
+    assert "It is a drawing, not a note." in page
 
 
 @pytest.mark.parametrize("folder", ["/Templates", "../Templates", "", "a//b", "a/../b"])

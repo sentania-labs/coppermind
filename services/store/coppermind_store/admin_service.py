@@ -48,7 +48,13 @@ SYNC_TEST_NAME = "Coppermind sync test.md"
 PLUGIN_FOLDER = ".obsidian/plugins/coppermind-review"
 PLUGIN_FILES = ("main.js", "manifest.json", "styles.css")
 PAIRING_MINUTES = 10
+# Wrong guesses one client may make at a pairing code, and all clients together, before the
+# code stops working for them. A six digit code guessed a hundred times is found one time
+# in ten thousand.
 PAIRING_ATTEMPTS = 10
+PAIRING_ATTEMPTS_IN_ALL = 100
+# The longest one client's tries may queue up before a further try is turned away at once.
+PAIRING_QUEUE_SECONDS = 10
 NEW_DROP_FOLDER = "To Coppermind"
 # Problems that are not anybody's to fix: they are told once and can be put away.
 FILING_ACTIONS = {"note-check", "note-keep-both", "note-replace", "note-no-time"}
@@ -77,7 +83,8 @@ class AdminService:
         self.people = AdminPeople(store)
         self.storage = AdminStorage(store, self.notes)
         self._pair_lock = asyncio.Lock()
-        self._last_pair_attempt = 0.0
+        # When each client may next try a pairing code: no faster than one try a second each.
+        self._pair_next: dict[str, float] = {}
 
     @property
     def state_dir(self) -> Path:
@@ -233,7 +240,7 @@ class AdminService:
             and current.get("code")
             and not current.get("done")
             and current.get("expires_at", "") > now()
-            and current.get("attempts", 0) < PAIRING_ATTEMPTS
+            and current.get("attempts", 0) < PAIRING_ATTEMPTS_IN_ALL
         ):
             return self.pairing_view(current)
         record = {
@@ -252,7 +259,7 @@ class AdminService:
             bool(record.get("code"))
             and not record.get("done")
             and record.get("expires_at", "") > now()
-            and record.get("attempts", 0) < PAIRING_ATTEMPTS
+            and record.get("attempts", 0) < PAIRING_ATTEMPTS_IN_ALL
         )
         return {
             "code": record.get("code", "") if live else "",
@@ -266,19 +273,32 @@ class AdminService:
     async def pair_exchange(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Trade a pairing code typed into the companion for the companion's own key.
 
-        The code is short, so it is guarded: it works once, for ten minutes, a handful
-        of wrong guesses spend it, and guesses are answered no faster than one a second.
+        The code is short, so it is guarded: it works once, for ten minutes, a client that
+        guesses wrong a handful of times is refused, and each client is answered no faster
+        than once a second.
         """
+        client = str(payload.get("client") or "unknown")[:64]
+        # Each client is slowed down by itself, so one that hammers the door does not make
+        # the real device wait behind it.
+        if len(self._pair_next) > 2000:
+            self._pair_next.clear()
+        clock = time.monotonic()
+        turn = max(clock, self._pair_next.get(client, 0.0))
+        if turn - clock > PAIRING_QUEUE_SECONDS:
+            # Already a queue of tries from this client: one more is not made to wait in it.
+            raise Refused("code", "Too many tries at once. Wait a few seconds and try again.")
+        self._pair_next[client] = turn + 1.0
+        if turn > clock:
+            await asyncio.sleep(turn - clock)
         async with self._pair_lock:
-            wait = 1.0 - (time.monotonic() - self._last_pair_attempt)
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._last_pair_attempt = time.monotonic()
             record = self._pairing()
             offered = "".join(c for c in str(payload.get("code", "")) if c.isdigit())
             live = self.pairing_view(record)["code"]
-            if not live or not secrets.compare_digest(offered.encode(), live.encode()):
-                if live:
+            guesses = record.setdefault("by", {})
+            spent = guesses.get(client, 0) >= PAIRING_ATTEMPTS
+            if spent or not live or not secrets.compare_digest(offered.encode(), live.encode()):
+                if live and not spent:
+                    guesses[client] = guesses.get(client, 0) + 1
                     record["attempts"] = record.get("attempts", 0) + 1
                     self.context.write("pairing", record)
                 raise Refused(
@@ -789,8 +809,8 @@ class AdminService:
             "suggestions-fill": features.suggestions_fill,
             "suggestions-tick": features.suggestions_tick,
             "suggestions-older": features.suggestions_older,
-            "summary-instructions": plain(_wrap(features.summary_instructions)),
-            "summary-instructions-save": features.summary_instructions_save,
+            "summary-directions": plain(_wrap(features.summary_directions)),
+            "summary-directions-save": features.summary_directions_save,
             "note-summary": notes.summary,
             "note-summary-again": notes.summary_again,
             "transcription": plain(features.transcription),

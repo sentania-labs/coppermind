@@ -3,7 +3,7 @@ const {Plugin, ItemView, PluginSettingTab, Setting, SecretComponent, Notice, req
 const VIEW = 'coppermind-review';
 const PEOPLE_VIEW = 'coppermind-people';
 const WAITING_VIEW = 'coppermind-waiting';
-const COMPANION_PERMISSIONS = 'Read notes, Read sources, Update sources, Update notes, Read artifacts, Read people and companies, and Update people and companies';
+const COMPANION_PERMISSIONS = 'Read notes, Add and change notes, Hand in recordings and files, Search, and Read and correct people and companies';
 const IMPORTS_VIEW = 'coppermind-imports';
 async function hash(text) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -359,7 +359,7 @@ class WaitingView extends ItemView {
           const button=card.createEl('button',{text:'Retry'}), feedback=card.createEl('p');
           button.onclick=async()=>{button.disabled=true;feedback.setText('Queuing retry…');
             try{await this.plugin.call('/v1/recordings/'+encodeURIComponent(recording.id)+'/retry','POST',{});await this.refresh();}
-            catch(e){feedback.setText(e.status===403?'This API credential is missing a permission the companion needs. In Coppermind Admin, create one with: '+COMPANION_PERMISSIONS+', then select it in companion settings.':'Could not queue retry. Check your connection and transcription settings, then try again.');button.disabled=false;}
+            catch(e){feedback.setText(e.status===403?'This key is missing something the companion needs. In Coppermind Admin, open Connected apps and either pair this device with a code, or make a key with: '+COMPANION_PERMISSIONS+', then select it in the companion settings.':'Could not queue retry. Check your connection and transcription settings, then try again.');button.disabled=false;}
           };
         }
         if(recording.can_dismiss){
@@ -483,7 +483,7 @@ class Settings extends PluginSettingTab {
   display(){const el=this.containerEl;el.empty();el.createEl('h2',{text:'Coppermind'});
     new Setting(el).setName('Server address').setDesc('The address of your Coppermind server. Filled in by Coppermind when it put this add-on in your vault.').addText(t=>t.setValue(this.plugin.settings.url).onChange(async v=>{this.plugin.settings.url=v.trim().replace(/\/$/,'');await this.plugin.saveData(this.plugin.settings);}));
     new Setting(el).setName('This device').setDesc(this.plugin.paired()?'Paired with Coppermind. To pair again, unpair this device in Coppermind Admin first, then press Pair.':'Not paired yet. '+PAIR_HELP).addButton(b=>b.setButtonText(this.plugin.paired()?'Pair again':'Pair this device').setCta().onClick(()=>new PairModal(this.app,this.plugin,()=>this.display()).open()));
-    new Setting(el).setName('Use a key instead').setDesc('Only if you made a key by hand in Coppermind Admin, under Connected apps, with: '+COMPANION_PERMISSIONS+'. Pairing with a code does this for you.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
+    new Setting(el).setName('Use a key instead').setDesc('Only if you would rather paste a key than pair with a code. In Coppermind Admin, open Connected apps, choose Connect an app, then Something else, and create a new key with: '+COMPANION_PERMISSIONS+'. Select that key here. Only the name of the saved key is kept in these settings.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
   }
 }
 module.exports=class CoppermindReview extends Plugin {
@@ -543,7 +543,7 @@ module.exports=class CoppermindReview extends Plugin {
     const key=this.app.secretStorage?.getSecret(this.settings.secret);if(!key)throw Error('This device is not paired with Coppermind yet. '+PAIR_HELP);
     const result=await requestUrl({url:this.settings.url+path,method,headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,throw:false});
     const namesSpeakers=Object.values(body?.manual_speakers||{}).some(Boolean)||(body?.selected||[]).some(i=>!!body?.speaker_choices?.[i]);
-    if(result.status===403&&method==='POST'&&path.endsWith('/review')&&namesSpeakers)throw Error('This device is not allowed to name speakers. In Coppermind Admin, open Connected apps, open this device\'s line and tick "Read and correct people and companies", or unpair it and pair it again.');
+    if(result.status===403&&method==='POST'&&path.endsWith('/review')&&namesSpeakers)throw Error('This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, open Connected apps and either pair this device with a code, or open the key and tick Read notes, Add and change notes, Hand in recordings and files, and Read and correct people and companies.');
     if(result.status>=400)throw Object.assign(Error(result.json?.message||'Coppermind could not complete the request. Check connectivity and permissions.'),{status:result.status});return result.json;
   }
 };

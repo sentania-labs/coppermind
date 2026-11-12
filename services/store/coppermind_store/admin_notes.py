@@ -54,6 +54,8 @@ CONFIDENT = 0.8
 # history of the notes has recorded the removal: a few minutes at most. Until this long has
 # passed a vanished note is not called a problem.
 MISSING_GRACE = timedelta(minutes=15)
+# The reason the scan records for a page Coppermind keeps about a person or a company.
+OWN_PAGE = "dossier marker"
 # The summary a note had before "Write the summary again", kept until the note is reviewed.
 EARLIER_SUMMARY = "meeting-summaries-earlier/"
 # Missing notes their owner has said are gone on purpose, so they stop being listed as problems.
@@ -334,6 +336,9 @@ class AdminNotes:
         return [
             {"title": Path(path).stem, "path": path, "why": reason}
             for path, reason in sorted(exclusions.items())
+            # The pages Coppermind keeps about people and companies are its own pages, shown
+            # under People and voices. They are not files of the owner's being left alone.
+            if reason != OWN_PAGE
         ]
 
     async def find(self, query: str) -> list[dict[str, Any]]:
@@ -397,6 +402,8 @@ class AdminNotes:
             "folder": str(Path(relative).parent),
             "edited": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
             "words": words(body),
+            # What the file held when it was looked at, so an action can be held to it.
+            "hash": content_hash(data),
             "body": body,
         }
 
@@ -587,6 +594,15 @@ class AdminNotes:
         detail = await self.detail({"id": note_id})
         if not detail.get("name_taken"):
             return await self._file_now(note_id)
+        seen = payload.get("seen")
+        if seen and seen != detail["taken"]["hash"]:
+            # The file in the way was edited after the page was drawn. What its owner
+            # agreed to move aside is not what is there now, so nothing is moved.
+            raise Refused(
+                "seen",
+                f'"{detail["taken"]["name"]}" was changed after you opened this page, so '
+                "nothing was replaced. Look at both files again and choose once more.",
+            )
         taken = detail["taken"]["path"]
         other = await self._rows(Note.path == taken, Note.state == "ok", limit=1)
         await self._take_away(
@@ -635,17 +651,20 @@ class AdminNotes:
             await self._take_away(copy["path"], note_id="", title=copy["name"], kind="copy")
         elif choice == "copy":
             data = await asyncio.to_thread(copy_file.read_bytes)
+            review = sanitize_folder(self.store.control.settings().notes.review_folder)
+            text = fm.patch(data.decode("utf-8"), {schema.role("reviewed_key"): False})
+            target = resolve(self.store.notes_root, f"{review}/{original['name']}.md")
+            original_file = resolve(self.store.notes_root, original["path"])
+            # Checked before anything moves: a name that is taken by a third file leaves
+            # both the original and the copy exactly where they are.
+            if target not in {copy_file, original_file} and target.exists():
+                raise PathCollision(f"{review}/{original['name']}.md")
             await self._take_away(
                 original["path"],
                 note_id="",
                 title=original["name"] + " (the original)",
                 kind="copy",
             )
-            review = sanitize_folder(self.store.control.settings().notes.review_folder)
-            text = fm.patch(data.decode("utf-8"), {schema.role("reviewed_key"): False})
-            target = resolve(self.store.notes_root, f"{review}/{original['name']}.md")
-            if target != copy_file and target.exists():
-                raise PathCollision(f"{review}/{original['name']}.md")
             await asyncio.to_thread(create_or_replace, copy_file, target, text.encode("utf-8"))
         else:
             raise ValidationFailed(["Choose what to do with the copy."])
@@ -743,6 +762,9 @@ class AdminNotes:
             else None
         )
         earlier = context.read(EARLIER_SUMMARY + note_id, None)
+        if earlier and not self._still_usable(earlier.get("job_id", "")):
+            # The note changed after that summary was written, so it can no longer be added.
+            earlier = None
         assignment = context.config().assignments["enrichment"]
         service = self.store.admin.features._service(assignment.connection)  # noqa: SLF001
         return {
@@ -750,6 +772,9 @@ class AdminNotes:
             "proposed": proposed,
             # Kept from before "Write the summary again", until the note is reviewed.
             "earlier": earlier["summary"] if earlier and earlier["summary"] != proposed else None,
+            # The review that carried the earlier summary. Marking the note reviewed with the
+            # earlier summary goes through it when there is no newer one to go through.
+            "earlier_job": earlier["job_id"] if earlier else "",
             "writing": bool(job and job.state in {"queued", "running"}),
             "failed": bool(job and job.state == "failed"),
             "waiting_on_service": bool(
@@ -758,6 +783,14 @@ class AdminNotes:
             "state": feature_state(assignment, service),
             "service": service,
         }
+
+    def _still_usable(self, job_id: str) -> bool:
+        """Whether the review that carried a summary can still be completed with it."""
+        try:
+            job = self.store.context.load_job(job_id)
+        except (OSError, ValueError, KeyError):
+            return False
+        return job.state == "suggested" and bool(job.result and job.result.meeting_summary)
 
     async def summary_again(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Write a fresh summary from the same transcript, with the instructions as they are now.
@@ -803,10 +836,14 @@ class AdminNotes:
         job = self._latest_job(note_id)
         if job and job.state in {"queued", "running"}:
             return {"title": row.title or Path(row.path).stem, "already": True}
-        if job and job.result and job.result.meeting_summary:
+        if job and job.state == "suggested" and job.result and job.result.meeting_summary:
             context.write(
                 EARLIER_SUMMARY + note_id,
-                {"summary": job.result.meeting_summary.model_dump(), "kept_at": _now()},
+                {
+                    "summary": job.result.meeting_summary.model_dump(),
+                    "job_id": job.id,
+                    "kept_at": _now(),
+                },
             )
         await context.queue_note(note_id, force=True, fresh=True)
         return {"title": row.title or Path(row.path).stem, "already": False}

@@ -598,23 +598,32 @@ async def test_the_same_request_is_one_intake_and_a_different_recording_is_refus
         assert len(context.recordings.jobs()) == 1
 
 
-async def test_nothing_is_accepted_without_a_transcription_service_or_a_recording(store):
+async def test_a_recording_is_kept_until_transcription_is_on_and_other_files_are_refused(store):
     async with Service() as service:
         context = store.context
         audio = await store_audio(store)
-        with pytest.raises(ValueError, match="No transcription service is set up"):
-            await context.accept_recording(request(audio))
+        # Handed in before any transcription service exists: kept, and nothing is sent.
+        kept = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+        assert context.recordings.load(kept["id"]).state == "queued"
+        assert service.requests == []
         context = await setup_transcription(store, service)
+        # Once transcription is on, the recording that waited is written up.
+        await context.recordings.tick()
+        assert context.recordings.load(kept["id"]).state == "succeeded"
+        assert len(service.requests) == 1
         with pytest.raises(ValueError, match="no stored file"):
-            await context.accept_recording(request("01ARZ3NDEKTSV4RRFFQ69G5FAV"))
+            await context.accept_recording(
+                request("01ARZ3NDEKTSV4RRFFQ69G5FAV", external_source_id="plaud/missing")
+            )
         note_file = await store.create_artifact(
             CreateArtifact(kind="artifact", filename="notes.txt", content_base64="aGk=")
         )
         with pytest.raises(ValueError, match="not a recording"):
-            await context.accept_recording(request(note_file.id))
+            await context.accept_recording(request(note_file.id, external_source_id="plaud/text"))
         video = await store_audio(store, name="clip.mp4", data=AUDIO + b"v", mime="video/mp4")
         with pytest.raises(ValueError, match="video/mp4, not a recording"):
-            await context.accept_recording(request(video))
+            await context.accept_recording(request(video, external_source_id="plaud/video"))
 
 
 async def test_a_refusal_lands_in_problems_keeps_the_audio_and_retries_on_request(store):
@@ -1001,9 +1010,10 @@ async def test_a_retried_request_still_finds_its_intake_after_transcription_is_o
         assert context.config().assignments["transcription"].enabled is False
         again = await context.accept_recording(request(audio))
         assert again["id"] == first["id"]
-        # A new request still needs the service.
-        with pytest.raises(ValueError, match="No transcription service is set up"):
-            await context.accept_recording(request(audio, external_source_id="plaud/rec-2"))
+        # A new recording is kept too, and waits for transcription to be turned on again.
+        later = await context.accept_recording(request(audio, external_source_id="plaud/rec-2"))
+        assert later["id"] != first["id"]
+        assert context.recordings.load(later["id"]).state == "queued"
 
 
 async def test_the_recording_page_reads_the_transcript_and_a_retry_needs_transcription_on(store):
@@ -1759,20 +1769,15 @@ async def test_companion_retry_permissions_and_waiting_count_through_real_store(
         / "services/admin/tests/companion-permission-requests.cjs"
     )
     captured = json.loads(subprocess.check_output(["node", str(driver)], text=True))
-    permission_labels = {
-        "Read notes": "notes:read",
-        "Read sources": "sources:read",
-        "Update sources": "sources:write",
-        "Update notes": "notes:write",
-        "Read artifacts": "artifacts:read",
-        "Read people and companies": "entities:read",
-        "Update people and companies": "entities:write",
-    }
+    # The ticks the settings name are Admin's own, so the two cannot drift apart.
+    from coppermind.api_keys import COMPANION_PERMISSIONS, PERMISSIONS, scopes_for
+
+    ticks = {label: key for key, label, _ in PERMISSIONS}
     description = next(text for text in captured["descriptions"] if "create a new key" in text)
     advertised = description.split("create a new key with: ", 1)[1].split(". Select", 1)[0]
     names = [part.removeprefix("and ") for part in advertised.split(", ")]
-    assert set(names) == set(permission_labels)
-    companion, companion_key = create_key("companion", [permission_labels[name] for name in names])
+    assert {ticks[name] for name in names} == set(COMPANION_PERMISSIONS)
+    companion, companion_key = create_key("companion", scopes_for(ticks[name] for name in names))
     current.keys.extend([reader, companion])
     store.control.store.write("keys", current.model_dump(mode="json"), if_revision=current.revision)
     async with Service() as service:

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from html import escape
+from html import escape, unescape
 from typing import Any
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
@@ -241,7 +241,14 @@ def stepper(labels: Sequence[str], current: int) -> str:
 
 
 def field_error(message: str) -> str:
-    return f'<div class="lat-hint lat-hint--bad" role="alert">{message}</div>' if message else ""
+    """The reason beside a field. Always shown as text, whoever wrote it.
+
+    Some reasons arrive already escaped and some arrive from the address bar, so the message
+    is brought back to plain text and escaped once: no tag in it is ever live.
+    """
+    if not message:
+        return ""
+    return f'<div class="lat-hint lat-hint--bad" role="alert">{escape(unescape(message))}</div>'
 
 
 def text_input(

@@ -3,7 +3,7 @@ const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const {webcrypto}=require('node:crypto');
 class El{constructor(){this.children=[];this.style={};}empty(){this.children=[];}createEl(){const e=new El();this.children.push(e);return e;}createDiv(){return this.createEl();}setText(){}addClass(){}}
 let descriptions=[];
-class Setting{setName(){return this;}setDesc(text){descriptions.push(text);return this;}addToggle(f){const c={setValue(){return c;},onChange(){return c;}};f(c);return this;}addText(f){const c={setValue(){return c;},onChange(){return c;}};f(c);return this;}addComponent(){return this;}}
+class Setting{setName(){return this;}setDesc(text){descriptions.push(text);return this;}addToggle(f){const c={setValue(){return c;},onChange(){return c;}};f(c);return this;}addText(f){const c={setValue(){return c;},onChange(){return c;}};f(c);return this;}addComponent(){return this;}addButton(f){const c={setButtonText(){return c;},setCta(){return c;},onClick(){return c;}};f(c);return this;}}
 const calls=[],views={};
 class Plugin{registerView(t,f){views[t]=f;}addSettingTab(tab){this.tab=tab;}addCommand(){}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'http://api',secret:'test'};}}
 class ItemView{constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}

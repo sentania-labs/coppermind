@@ -24,7 +24,7 @@ class Setting {
   addComponent(fn){fn(this.el);return this;}
   addText(fn){const control={inputEl:{},setValue(){return control;},onChange(){return control;}};fn(control);return this;}
   addToggle(fn){const toggle=this.el.createEl("toggle");const control={setDisabled(v){toggle.disabled=v;return control;},onChange(fn){toggle.onchange=fn;return control;},setValue(){return control;}};fn(control);return this;}
-  addButton(fn){const button=this.el.createEl('button');const control={setButtonText(v){button.text=v;return control;},setDisabled(v){button.disabled=v;return control;},onClick(fn){button.onclick=fn;return control;}};fn(control);return this;}
+  addButton(fn){const button=this.el.createEl('button');const control={setButtonText(v){button.text=v;return control;},setCta(){return control;},setDisabled(v){button.disabled=v;return control;},onClick(fn){button.onclick=fn;return control;}};fn(control);return this;}
   addDropdown(fn){const dropdown=this.el.createEl('select');const control={addOption(v,text){dropdown.createEl('option',{value:v,text});return control;},setValue(v){dropdown.value=v;return control;},onChange(fn){dropdown.onchange=()=>fn(dropdown.value);return control;}};fn(control);return this;}
 }
 async function fixture(local, overrides={}){
@@ -192,12 +192,12 @@ test('a key that cannot see people shows why speakers are missing',async()=>{
 });
 
 test('permission failures give plain recovery steps',async()=>{
-  const notice='This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, open Connected apps (API Keys) and create a new key with Read notes, Update notes, Read sources, Update sources, and Read people and companies, then select that key in the companion settings.';
+  const notice='This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, open Connected apps and either pair this device with a code, or open the key and tick Read notes, Add and change notes, Hand in recordings and files, and Read and correct people and companies.';
   const f=await fixture(undefined,{state:'failed',rejectPeople:true,rejectReview:true,people_access_notice:notice,manual_speaker_review:{revision:1,speakers:['Speaker 1'],candidates:[]}});
   f.view.contentEl.all().find(e=>e.tag==='input').value='Alex';
   await f.view.contentEl.all().find(e=>e.text==='Find a person').onclick();
   assert.ok(f.notices.includes(notice));
-  await assert.rejects(f.plugin.call('/v1/notes/test-note/review','POST',{manual_speakers:{'Speaker 1':'person:a'}}),/create a new key with Read notes, Update notes, Read sources, Update sources, and Read people and companies/);
+  await assert.rejects(f.plugin.call('/v1/notes/test-note/review','POST',{manual_speakers:{'Speaker 1':'person:a'}}),/or open the key and tick Read notes, Add and change notes, Hand in recordings and files, and Read and correct people and companies/);
   assert.ok(f.notices.every(n=>!n.includes('entities:read')));
 });
 
@@ -210,12 +210,27 @@ test('a server error during people search does not tell the owner to replace the
   assert.ok(f.notices.some(n=>n.includes('Check your connection')));
 });
 
-test('companion settings name the available key creation path',async()=>{
+test('companion settings offer pairing first and name the key-by-hand path',async()=>{
   const f=await fixture();f.plugin.settingTab.display();
   const text=f.plugin.settingTab.containerEl.all().map(e=>e.text||'').join(' ');
-  assert.match(text,/create a new key/);assert.match(text,/Read people and companies/);
-  assert.match(text,/Read notes, Read sources, Update sources, Update notes, Read artifacts, Read people and companies, and Update people and companies/);
-  assert.doesNotMatch(text,/entities:read|sources:write|change its permissions/);
+  assert.match(text,/Paired with Coppermind/);assert.match(text,/Pair again/);
+  assert.match(text,/create a new key with: Read notes, Add and change notes, Hand in recordings and files, Search, and Read and correct people and companies\. Select that key here/);
+  assert.doesNotMatch(text,/entities:read|sources:write|change its permissions|API Keys/);
+});
+
+test('pairing trades the six digit code for a key kept in secret storage only',async()=>{
+  const f=await fixture();let stored=null;
+  f.app.secretStorage.setSecret=(name,value)=>{stored=[name,value];};
+  await assert.rejects(f.plugin.pair('12 34'),/six-digit pairing code/);
+  assert.equal(f.requests.filter(r=>r.url.endsWith('/v1/pair')).length,0);
+  const before=f.requests.length;
+  await assert.rejects(f.plugin.pair('123 456'),/could not be reached|not accepted/);
+  const sent=f.requests[before];
+  assert.equal(sent.url,'https://coppermind.example/v1/pair');assert.equal(sent.method,'POST');
+  assert.deepEqual(Object.keys(JSON.parse(sent.body)).sort(),['code','device']);
+  assert.equal(JSON.parse(sent.body).code,'123456');
+  assert.equal(sent.headers.Authorization,undefined);
+  assert.equal(stored,null);
 });
 
 const summaryProposal={summary:'Launch discussion.',decisions:'- Ship Friday.',action_items:'- Casey: send the plan.'};
@@ -449,9 +464,9 @@ test('a credential forbidden to retry sees the required permissions',async()=>{
   const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
   const retry=view.contentEl.all().find(e=>e.text==='Retry');await retry.onclick();
   const message=view.contentEl.all().map(e=>e.text||'').join(' ');
-  assert.match(message,/missing a permission the companion needs/);
-  assert.match(message,/Read notes, Read sources, Update sources, Update notes, Read artifacts, Read people and companies, and Update people and companies/);
-  assert.match(message,/select it in companion settings/);assert.equal(retry.disabled,false);
+  assert.match(message,/missing something the companion needs/);
+  assert.match(message,/either pair this device with a code, or make a key with: Read notes, Add and change notes, Hand in recordings and files, Search, and Read and correct people and companies/);
+  assert.match(message,/select it in the companion settings/);assert.equal(retry.disabled,false);
   assert.doesNotMatch(message,/Check your connection/);
 });
 

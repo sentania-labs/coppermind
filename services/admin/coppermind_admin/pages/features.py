@@ -344,9 +344,9 @@ touched.</p>
             ui.row(
                 "How the meeting summary is written",
                 (
-                    "Your own instructions."
+                    "Your own directions for at least one section."
                     if data.get("summary_custom")
-                    else "The usual instructions."
+                    else "The usual directions for every section."
                 )
                 + " Used when a recording is written up.",
                 ui.go("Change", "/admin/suggestions/summary"),
@@ -625,99 +625,108 @@ touched.</p>
 
     SUMMARY_TITLE = "How the meeting summary is written"
     SUMMARY_LEDE = (
-        "When a recording is written up, Coppermind also writes a summary, the decisions "
-        "and the action items for you to check. These are the instructions it is given."
+        "When a recording is written up, Coppermind also writes a summary in fixed sections "
+        "for you to check. Each section has its own directions, and those are yours to change."
     )
 
-    def summary_page(data: dict[str, Any], text: str, error: str, dialog: str = "") -> str:
-        locked = "".join(f"<li>{e(rule)}</li>" for rule in data["locked"])
-        state = (
-            "These are your own instructions."
-            if data["custom"]
-            else "These are the instructions Coppermind starts with. Change anything you like."
-        )
-        reset = (
-            ui.go("Reset to the default", "/admin/suggestions/summary?ask=reset")
-            if data["custom"]
-            else ""
-        )
-        form = f"""<form method="post" action="/admin/suggestions/summary" class="stack">
-{
-            ui.text_area(
-                "text",
-                "Instructions for the summary",
-                text,
-                rows=12,
-                maxlength=data["max"],
-                hint=f"{state} Say what to cover, how long it should be, the tone, and how "
-                "decisions and action items should be listed. Up to "
-                f"{data['max']:,} characters. An empty box means the default.",
-                error=error,
+    def summary_page(
+        data: dict[str, Any], typed: dict[str, str], errors: dict[str, str], note: str = ""
+    ) -> str:
+        """One box of directions for each section the store says a summary has."""
+        boxes = ""
+        for section in data["sections"]:
+            key = section["key"]
+            state = "Your own directions." if section["custom"] else "The usual directions."
+            boxes += (
+                ui.text_area(
+                    "d_" + key,
+                    f"Directions for {e(section['name'])}",
+                    typed.get(key, section["text"]),
+                    rows=5,
+                    maxlength=data["max"],
+                    hint=f"{state} Up to {data['max']:,} characters. An empty box means the "
+                    "usual directions.",
+                    error=errors.get(key, ""),
+                )
+                + f'<div class="actions" style="margin:-4px 0 14px"><button class="lat-btn" '
+                f'name="how" value="reset:{e(key)}" formnovalidate>Reset to default</button>'
+                "</div>"
             )
-        }
+        form = f"""<form method="post" action="/admin/suggestions/summary" class="stack">
+{boxes}
 <p class="muted">Takes effect with the next summary Coppermind writes. Summaries already
-written are not changed. To have one written again with new instructions, open a note that
+written are not changed. To have one written again with new directions, open a note that
 is waiting for review and press Write the summary again.</p>
 <div class="actions"><button class="lat-btn lat-btn--primary" name="how" value="save"
-data-busy="Saving…">Save</button>{reset}{ui.go("Cancel", "/admin/suggestions")}</div></form>"""
-        rules = f"""<h3>Always added, whatever you write</h3>
-<p class="muted">Coppermind puts these rules around your instructions every time. They are
-what keeps a summary safe to file, so they are not yours to edit and cannot be switched off
-from here.</p><ul class="plain">{locked}</ul>"""
+data-busy="Saving…">Save</button>{ui.go("Cancel", "/admin/suggestions")}</div></form>"""
+        locked = "".join(f"<li>{e(rule)}</li>" for rule in data["locked"])
+        names = ui.sentence_list([e(section["name"]) for section in data["sections"]])
+        rules = f"""<h3>Always the same, whatever you write</h3>
+<p class="muted">The sections themselves ({names}) are fixed, and Coppermind puts these rules
+around your directions every time. They are what keeps a summary safe to file, so they are
+not yours to edit and cannot be switched off from here.</p><ul class="plain">{locked}</ul>"""
         return f"""{ui.head(SUMMARY_TITLE, SUMMARY_LEDE, ("/admin/suggestions", "Suggestions"))}
-<div class="stack">{ui.card(form)}{ui.card(rules)}</div>"""
+<div class="stack">{note}{ui.card(form)}{ui.card(rules)}</div>"""
 
     @routes.get("/admin/suggestions/summary", include_in_schema=False)
     async def summary(request: Request) -> Response:
         ctx = Ctx(request, wiring)
         try:
-            data = await ctx.act("summary-instructions", {})
+            data = await ctx.act("summary-directions", {})
         except StoreError:
             return await ctx.unavailable(SUMMARY_TITLE, SUMMARY_LEDE, "suggestions")
-        dialog = ""
-        if ctx.q("ask") == "reset" and data["custom"]:
-            dialog = ui.dialog(
-                "Reset to the default?",
-                "Your own instructions are replaced by the ones Coppermind starts with. Your "
-                "text is not kept anywhere, so copy it first if you may want it again. "
-                "Summaries already written are not changed.",
-                "/admin/suggestions/summary",
-                "Reset to the default",
-                "/admin/suggestions/summary",
-                fields={"how": "reset"},
-            )
-        return await ctx.page(
-            SUMMARY_TITLE, summary_page(data, data["text"], ""), "suggestions", dialog=dialog
-        )
+        return await ctx.page(SUMMARY_TITLE, summary_page(data, {}, {}), "suggestions")
 
     @routes.post("/admin/suggestions/summary", include_in_schema=False)
     async def summary_save(request: Request) -> Response:
         ctx = Ctx(request, wiring)
         form = await ctx.form()
-        reset = form.get("how") == "reset"
-        text = form.get("text", "")
         try:
-            result = await ctx.act(
-                "summary-instructions-save", {"reset": True} if reset else {"text": text}
+            data = await ctx.act("summary-directions", {})
+        except StoreError as exc:
+            return await ctx.refused(exc, "/admin/suggestions/summary")
+        typed = {
+            section["key"]: form["d_" + section["key"]]
+            for section in data["sections"]
+            if "d_" + section["key"] in form
+        }
+        how = form.get("how", "save")
+        if how.startswith("reset:"):
+            # Putting a default back is a draft like any other: nothing is saved until Save.
+            section = next((s for s in data["sections"] if s["key"] == how[6:]), None)
+            if section is None:
+                return ctx.go("/admin/suggestions/summary")
+            typed[section["key"]] = section["default"]
+            note = ui.banner(
+                "info",
+                f"The usual directions for {e(section['name'])} are back in the box. Nothing "
+                "is saved until you press Save.",
+                fresh=True,
             )
+            return await ctx.page(SUMMARY_TITLE, summary_page(data, typed, {}, note), "suggestions")
+        try:
+            result = await ctx.act("summary-directions-save", {"directions": typed})
         except StoreError as exc:
             return await ctx.refused(exc, "/admin/suggestions/summary")
         if "refused" in result:
             # Too long: the page comes back with what was typed, so nothing has to be redone.
-            data = await ctx.act("summary-instructions", {})
-            page = summary_page(data, text, e(result["refused"]["message"]))
+            refusal = result["refused"]
+            page = summary_page(data, typed, {refusal["field"]: e(refusal["message"])})
             return await ctx.page(SUMMARY_TITLE, page, "suggestions", status=422)
-        if reset:
-            said = "Reset. Coppermind is using its usual instructions again."
-        elif result["emptied"]:
-            said = (
-                "The box was empty, so Coppermind is using its usual instructions. A summary "
-                "always needs some."
+        own = [s["name"] for s in data["sections"] if s["key"] in result["custom"]]
+        said = (
+            f"Saved. The next summary is written with your directions for "
+            f"{ui.sentence_list([e(name) for name in own])}."
+            if own
+            else "Saved. Every section uses its usual directions."
+        )
+        if result["emptied"]:
+            empty = ui.sentence_list([e(name) for name in result["emptied"]])
+            said += (
+                f" The box for {empty} was empty, so "
+                f"{'it uses its' if len(result['emptied']) == 1 else 'they use their'} usual "
+                "directions."
             )
-        elif result["custom"]:
-            said = "Saved. The next summary is written with your instructions."
-        else:
-            said = "Saved. These are the usual instructions, so nothing changes."
         ctx.say("ok", said + " Summaries already written were not changed.")
         return ctx.go("/admin/suggestions")
 

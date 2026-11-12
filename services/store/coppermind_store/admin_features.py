@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import sqlalchemy as sa
 
 from coppermind.context_config import (
-    SUMMARY_INSTRUCTIONS_MAX,
+    SUMMARY_DIRECTIONS_MAX,
     EmbeddingAssignment,
     FeatureAssignment,
 )
@@ -253,7 +253,7 @@ class Features:
             "fill_options": self.fill_options(),
             "descr": assignment.send_calendar_descriptions,
             "wait_s": assignment.timeout_s,
-            "summary_custom": bool(assignment.summary_instructions.strip()),
+            "summary_custom": bool(assignment.summary_directions),
             "waiting": len(waiting),
             "older": older,
             "week": {
@@ -347,37 +347,56 @@ class Features:
 
     # -- how the meeting summary is written -----------------------------------------------
 
-    def summary_instructions(self) -> dict[str, Any]:
-        """The owner's instructions for a meeting summary, and what is always added to them."""
-        own = self.context.config().assignments["enrichment"].summary_instructions.strip()
+    def summary_directions(self) -> dict[str, Any]:
+        """Each section of a meeting summary with its directions, and what is always added."""
+        own = self.context.config().assignments["enrichment"].summary_directions
+        sent = meeting_summary.directions(own)
         return {
-            "text": meeting_summary.instructions(own),
-            "custom": bool(own),
-            "default": meeting_summary.DEFAULT_INSTRUCTIONS,
+            "sections": [
+                {
+                    "key": section.key,
+                    "name": section.name,
+                    "text": sent[section.key],
+                    "default": section.default,
+                    "custom": sent[section.key] != section.default,
+                }
+                for section in meeting_summary.SECTIONS
+            ],
             "locked": list(meeting_summary.LOCKED_WORDS),
-            "max": SUMMARY_INSTRUCTIONS_MAX,
+            "max": SUMMARY_DIRECTIONS_MAX,
         }
 
-    async def summary_instructions_save(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Save the instructions. An empty box, or the default itself, means the default.
+    async def summary_directions_save(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Save the directions for each section. An empty box, or the default, means the default.
 
-        Nothing already written is touched: the next summary uses the new instructions, and
+        Nothing already written is touched: the next summary uses the new directions, and
         a summary that exists is only written again when its owner asks for that.
         """
-        text = "" if payload.get("reset") else meeting_summary.instructions(payload.get("text"))
-        if text == meeting_summary.DEFAULT_INSTRUCTIONS:
-            text = ""
-        if len(text) > SUMMARY_INSTRUCTIONS_MAX:
-            raise Refused(
-                "text",
-                f"That is {len(text):,} characters and the most is "
-                f"{SUMMARY_INSTRUCTIONS_MAX:,}. Shorten it and save again. Nothing was changed.",
-            )
-        await self._update_enrichment(summary_instructions=text)
-        return {
-            "custom": bool(text),
-            "emptied": not text and not payload.get("reset") and not payload.get("text", ""),
-        }
+        given = payload.get("directions") or {}
+        kept: dict[str, str] = {}
+        emptied: list[str] = []
+        for section in meeting_summary.SECTIONS:
+            if section.key not in given:
+                # A section the page did not send keeps what it had.
+                current = self.context.config().assignments["enrichment"].summary_directions
+                if current.get(section.key):
+                    kept[section.key] = current[section.key]
+                continue
+            text = meeting_summary._clean(given[section.key])  # noqa: SLF001
+            if not text:
+                emptied.append(section.name)
+                continue
+            if len(text) > SUMMARY_DIRECTIONS_MAX:
+                raise Refused(
+                    section.key,
+                    f"The directions for {section.name} are {len(text):,} characters and the "
+                    f"most is {SUMMARY_DIRECTIONS_MAX:,}. Shorten them and save again. "
+                    "Nothing was changed.",
+                )
+            if text != section.default:
+                kept[section.key] = text
+        await self._update_enrichment(summary_directions=kept)
+        return {"custom": sorted(kept), "emptied": emptied}
 
     async def suggestions_fill(self, payload: dict[str, Any]) -> dict[str, Any]:
         keys = {str(item) for item in payload.get("fill", [])}
