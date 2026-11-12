@@ -657,6 +657,23 @@ async def test_a_refusal_lands_in_problems_keeps_the_audio_and_retries_on_reques
     assert not [p for p in await store.get_problems() if p.kind == "recording"]
 
 
+async def test_a_failed_recording_can_be_retried_when_the_service_needs_no_model_name(store):
+    service = Service(status=404, reply={"error": "nope"})
+    async with service:
+        context = await setup_transcription(store, service)
+        job = await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+        assert (await context.recording_status({"id": job["id"]}))["state"] == "failed"
+        config = context.config()
+        assignment = config.assignments["transcription"].model_copy(update={"model": ""})
+        await context.save_transcription(
+            {"revision": config.revision, "assignment": assignment.model_dump()}
+        )
+        (row,) = (await context.recording_waiting({}))["failed"]
+        assert row["can_retry"] is True
+        assert "Set up" not in row["message"] and "set up" not in row["message"]
+
+
 async def test_an_unreadable_recording_is_not_reported_as_a_filing_failure(store, monkeypatch):
     async with Service() as service:
         context = await setup_transcription(store, service)

@@ -330,7 +330,7 @@ class Recordings:
         assignment = self.assignment()
         enabled = bool(assignment and assignment.enabled)
         paused = bool(assignment and assignment.paused)
-        ready = bool(assignment and enabled and assignment.connection and assignment.model)
+        ready = bool(assignment and enabled and assignment.connection)
         reviewed_key = self.context.store.control.schema().role("reviewed_key")
         meetings, failed = [], []
         seen = set()

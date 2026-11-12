@@ -52,6 +52,15 @@ def _summary(archive: Any) -> dict[str, Any]:
             return cached[1]
         events = []
         files: dict[str, dict[str, int]] = {}
+        records = {
+            (c.identity, c.conflict_version or c.semantic_hash)
+            for c in mirror.get_conflicts(connection)
+        }
+        held: dict[str, set[str]] = {}
+        for receipt in archive.receipts():
+            for problem in receipt.conflicts:
+                if (problem.event_id, problem.version) in records:
+                    held.setdefault(problem.event_id, set()).add(receipt.id)
         for row in connection.execute(sa.select(rows.c.id, rows.c.record)):
             record = json.loads(row.record)
             provenance = record.get("provenance") or []
@@ -62,7 +71,7 @@ def _summary(archive: Any) -> dict[str, Any]:
             if sources:
                 first = min(provenance, key=lambda item: item["imported_at"])["source_id"]
                 files[first]["adds"] += 1
-                if len(sources) == 1:
+                if len(sources) == 1 and not held.get(row.id, set()) - {sources[0]}:
                     files[sources[0]]["only"] += 1
             events.append(
                 {
@@ -124,10 +133,12 @@ class AdminCalendar:
             if receipt.state == "failed" and not receipt.dismissed
         ]
 
-    def _incoming(self, event_id: str, version: str) -> tuple[CalendarEvent, Any] | None:
+    def _incoming(
+        self, event_id: str, version: str, exclude: str = ""
+    ) -> tuple[CalendarEvent, Any] | None:
         """The other version of a disagreement, read back from the file that carried it."""
         cache = self.archive.root / "conflict-incoming" / f"{event_id}-{version}.json"
-        receipts = {receipt.id: receipt for receipt in self.archive.receipts()}
+        receipts = {r.id: r for r in self.archive.receipts() if r.id != exclude}
         if cache.exists():
             saved = json.loads(cache.read_bytes())
             receipt = receipts.get(saved["receipt"])
@@ -371,7 +382,12 @@ class AdminCalendar:
         receipt = next((r for r in self.archive.receipts() if r.id == identity), None)
         if receipt is None:
             raise ValueError("That calendar file is no longer listed.")
-        counts = await asyncio.to_thread(self.archive.remove_import, identity)
+
+        def other_file_version(event_id: str, version: str) -> CalendarEvent | None:
+            found = self._incoming(event_id, version, exclude=identity)
+            return found[0] if found else None
+
+        counts = await asyncio.to_thread(self.archive.remove_import, identity, other_file_version)
         async with context.lock:
             records = context.dropbox.records()
             for group in ("items", "history"):

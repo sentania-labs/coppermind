@@ -389,19 +389,31 @@ class CalendarArchive:
                 )
                 mirror.write_catalog(connection, self.root / "catalog.json", list(catalog.imports))
 
-    def remove_import(self, receipt_id: str) -> dict[str, int]:
+    def remove_import(
+        self,
+        receipt_id: str,
+        incoming: Callable[[str, str], CalendarEvent | None] | None = None,
+    ) -> dict[str, int]:
         """Take one calendar file out: the meetings only it supplied go, the rest stay.
 
         A meeting another file also holds keeps its content and loses only this file from
-        the list of files it was found in. The archived original and its receipt are
-        removed last, so an interrupted removal can simply be asked for again.
+        the list of files it was found in. When this file supplied the stored version of a
+        meeting that another file disagreed about, that file's version (read through
+        ``incoming``) becomes the stored one and the disagreement ends. The archived
+        original and its receipt are removed last, so an interrupted removal can simply be
+        asked for again.
         """
         if not re.fullmatch(r"[a-f0-9]{64}", receipt_id):
             raise CalendarImportError("invalid import identity")
         removed = kept = 0
         with self._lock:
             catalog = self.catalog()
+            holders: dict[tuple[str, str], set[str]] = {}
+            for receipt in self.receipts():
+                for problem in receipt.conflicts:
+                    holders.setdefault((problem.event_id, problem.version), set()).add(receipt.id)
             with self.engine.begin() as connection:
+                conflicts = mirror.get_conflicts(connection)
                 for row in connection.execute(sa.select(rows.c.id, rows.c.record)).all():
                     event = CalendarEvent.model_validate_json(row.record)
                     if not any(p.source_id == receipt_id for p in event.provenance):
@@ -412,28 +424,35 @@ class CalendarArchive:
                         mirror.put_event(
                             connection, row.id, event.model_copy(update={"provenance": remaining})
                         )
-                    else:
-                        removed += 1
-                        connection.execute(rows.delete().where(rows.c.id == row.id))
-                        connection.execute(
-                            evidence_rows.delete().where(
-                                evidence_rows.c.record.like(f'%"event_id": "{row.id}"%')
-                                | evidence_rows.c.record.like(f'%"event_id":"{row.id}"%')
-                            )
+                        continue
+                    successor = None
+                    for conflict in conflicts:
+                        if conflict.identity == row.id and incoming is not None:
+                            successor = incoming(row.id, _conflict_version(conflict))
+                        if successor is not None:
+                            conflicts.remove(conflict)
+                            break
+                    if successor is not None:
+                        kept += 1
+                        mirror.put_event(connection, row.id, successor)
+                        continue
+                    removed += 1
+                    connection.execute(rows.delete().where(rows.c.id == row.id))
+                    connection.execute(
+                        evidence_rows.delete().where(
+                            evidence_rows.c.record.like(f'%"event_id": "{row.id}"%')
+                            | evidence_rows.c.record.like(f'%"event_id":"{row.id}"%')
                         )
+                    )
+                live = {identity for (identity,) in connection.execute(sa.select(rows.c.id)).all()}
                 mirror.put_conflicts(
                     connection,
                     [
-                        event
-                        for event in mirror.get_conflicts(connection)
-                        if not (
-                            event.provenance
-                            and all(p.source_id == receipt_id for p in event.provenance)
-                        )
-                        and connection.execute(
-                            sa.select(rows.c.id).where(rows.c.id == event.identity)
-                        ).scalar()
-                        is not None
+                        conflict
+                        for conflict in conflicts
+                        if conflict.identity in live
+                        and holders.get((conflict.identity, _conflict_version(conflict)))
+                        != {receipt_id}
                     ],
                 )
                 mirror.write_catalog(

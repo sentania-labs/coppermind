@@ -1,5 +1,7 @@
 """The service Admin reads and acts through, against a real store."""
 
+import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -198,3 +200,116 @@ def test_what_a_key_may_do_is_said_in_words():
     )
     assert describe([]) == "Nothing yet"
     assert describe(scopes_for(["read", "search"])) == "Read notes, search"
+
+
+TEXT = {
+    "ok": True,
+    "models": [{"name": "m", "ok": True}],
+    "best": "m",
+}
+SPEECH = {"ok": True, "models": [], "model": "w", "format": "diarized_json"}
+NO_SPEECH = {"ok": False, "models": [], "reason": ""}
+NO_EMBED = {"ok": False, "model": ""}
+
+
+def _answers(store, monkeypatch, by_name, delay=0.0):
+    async def run(connection, key):
+        if delay:
+            await asyncio.sleep(delay)
+        return {"models": ["m"], "embed": NO_EMBED, **by_name[connection.name]}
+
+    monkeypatch.setattr(store.context.services, "_run", run)
+
+
+async def _add(store, name):
+    result = await store.admin.act(
+        "service-add", {"kind": "own", "address": f"http://{name}.example/v1", "name": name}
+    )
+    return result["service"]["id"]
+
+
+async def _suggestions_connection(store):
+    return store.context.config().assignments["enrichment"].connection
+
+
+async def test_removing_a_service_checks_every_takeover_before_moving_any(store, monkeypatch):
+    await configure(store)
+    _answers(
+        store,
+        monkeypatch,
+        {
+            "Both": {"text": TEXT, "speech": SPEECH},
+            "TextOnly": {"text": TEXT, "speech": NO_SPEECH},
+        },
+    )
+    both = await _add(store, "Both")
+    text_only = await _add(store, "TextOnly")
+    await store.admin.act("suggestions-save", {"connection": both, "model": "m"})
+    await store.admin.act("transcription-save", {"connection": both, "wait_s": 3600})
+
+    # The second feature's new service cannot write up recordings: nothing moves.
+    refused = await store.admin.act(
+        "service-remove", {"id": both, "takeover": {"sugg": text_only, "trans": text_only}}
+    )
+    assert refused["refused"]["field"] == "rm_trans"
+    assert await _suggestions_connection(store) == both
+    assert both in [item["id"] for item in store.context.services.listing()]
+
+    # A service cannot take over from itself.
+    again = await store.admin.act(
+        "service-remove", {"id": both, "takeover": {"sugg": both, "trans": "off"}}
+    )
+    assert again["refused"]["field"] == "rm_sugg"
+    assert await _suggestions_connection(store) == both
+
+    # With every target sound, both move and the service goes.
+    done = await store.admin.act(
+        "service-remove", {"id": both, "takeover": {"sugg": text_only, "trans": "off"}}
+    )
+    assert "refused" not in done
+    assert await _suggestions_connection(store) == text_only
+    assert both not in [item["id"] for item in store.context.services.listing()]
+
+
+async def test_the_same_server_entered_twice_at_once_is_kept_once(store, monkeypatch):
+    await configure(store)
+    _answers(store, monkeypatch, {"Twice": {"text": TEXT, "speech": NO_SPEECH}}, delay=0.05)
+    payload = {"kind": "own", "address": "http://twice.example/v1", "name": "Twice"}
+    first, second = await asyncio.gather(
+        store.admin.act("service-add", payload), store.admin.act("service-add", payload)
+    )
+    assert sorted("refused" in result for result in (first, second)) == [False, True]
+    assert [s["name"] for s in store.context.services.listing()].count("Twice") == 1
+
+
+def _removed_copy(store, title, age_days):
+    notes = store.admin.notes
+    key = notes._keep_removed(
+        note_id="", title=title, path=f"{title}.md", data=b"words", kind="note"
+    )
+    path = notes.removed_dir / f"{key}.json"
+    record = json.loads(path.read_bytes())
+    record["removed_at"] = (datetime.now(UTC) - timedelta(days=age_days)).isoformat()
+    path.write_text(json.dumps(record))
+    return key
+
+
+async def test_confirming_a_clean_up_deletes_only_what_was_listed(store, monkeypatch):
+    await configure(store)
+    store.sources_root.mkdir(parents=True, exist_ok=True)
+    old = store.admin.storage.keep_days() + 5
+    listed = _removed_copy(store, "Listed", old)
+    shown = await store.admin.act("cleanup", {})
+    assert [item["id"] for item in shown["items"]] == [listed]
+
+    real = store.confirm_purge
+    late = []
+
+    async def slow(request):
+        late.append(_removed_copy(store, "Aged meanwhile", old))
+        return await real(request)
+
+    monkeypatch.setattr(store, "confirm_purge", slow)
+    result = await store.admin.act("cleanup-confirm", {"token": shown["token"]})
+    assert result["changed"] is False and result["count"] == 1
+    assert [item["key"] for item in store.admin.notes.removed()] == late
