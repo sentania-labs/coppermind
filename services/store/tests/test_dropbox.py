@@ -504,27 +504,53 @@ async def test_calendar_history_dismisses_direct_and_dropbox_failures(tmp_path):
     for detail in ("Wrong title", "event-1", "Work/Meeting.ics", "title", "stored version"):
         assert detail in reason
     conflicts = archive.catalog().conflicts
-    # Two imports of the same bytes, so the same stored event is reported once
-    # per import; each receipt keeps its own acknowledgement handle.
-    assert len(conflicts) == 2
-    assert {event.title for event in conflicts} == {"Planning"}
+    # Two imports of the same bytes disagree with the stored event in the same way,
+    # so the one disagreeing version is recorded once.
+    assert len(conflicts) == 1
+    assert {event.title for event in conflicts} == {"Wrong title"}
     snapshot = await store.context.snapshot()
-    assert len(snapshot["calendar"]["conflicts"]) == 2
+    assert len(snapshot["calendar"]["conflicts"]) == 1
     assert all(item["reason"] for item in snapshot["calendar"]["conflicts"])
     assert {item["stored_title"] for item in snapshot["calendar"]["conflicts"]} == {"Planning"}
     assert {item["id"] for item in snapshot["calendar"]["conflicts"]} == {
         conflict.identity for conflict in conflicts
     }
-    # Acknowledging removes that problem, and the stored event is untouched.
     await store.context.dismiss_calendar_conflict(
         {
             "id": conflicts[0].identity,
             "version": conflicts[0].semantic_hash,
         }
     )
-    # Both records carry the same identity and hash, so one acknowledgement clears
-    # the event, and the stored event is untouched.
     assert len(archive.catalog().conflicts) == 0
+    assert next(iter(archive.catalog().events.values())).title == "Planning"
+
+
+async def test_an_acknowledged_conflict_stays_quiet_on_reimport(tmp_path):
+    store = local_store(tmp_path)
+    archive = store.context.archive
+    archive.process(archive.submit("calendar", "base.ics", calendar()).id)
+    wrong = calendar().replace(b"Planning", b"Wrong title")
+    first = archive.process(archive.submit("calendar", "one.ics", wrong).id)
+    assert first.kept_count == 1 and len(first.conflicts) == 1
+    held = archive.catalog().conflicts
+    assert len(held) == 1
+
+    await store.context.dismiss_calendar_conflict(
+        {"id": held[0].identity, "version": held[0].semantic_hash}
+    )
+    assert archive.catalog().conflicts == []
+
+    reexport = wrong.replace(b"SUMMARY", b"DTSTAMP:20261001T000000Z\r\nSUMMARY")
+    again = archive.process(archive.submit("calendar", "two.ics", reexport).id)
+    assert again.state == "succeeded" and again.conflicts == []
+    assert archive.catalog().conflicts == []
+    assert (await store.context.snapshot())["calendar"]["conflicts"] == []
+
+    third = calendar().replace(b"Planning", b"Another title")
+    latest = archive.process(archive.submit("calendar", "three.ics", third).id)
+    assert len(latest.conflicts) == 1
+    assert [event.title for event in archive.catalog().conflicts] == ["Another title"]
+    assert next(iter(archive.catalog().events.values())).title == "Planning"
 
 
 def test_migration_drops_superseded_conflicts_and_allows_acknowledgement(tmp_path):

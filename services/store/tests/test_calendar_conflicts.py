@@ -78,20 +78,6 @@ def test_every_conflict_in_an_export_is_reported_in_one_pass():
     assert all(problem.version for problem in problems)
 
 
-def test_an_acknowledged_conflict_stays_quiet_on_reimport():
-    stored = parse_export("calendar", "one.ics", ics(event()))
-    current = {item.identity: item for item in stored}
-    incoming = parse_export("calendar", "two.ics", ics(event(title="Changed")))
-    first, problems = merge_with_problems(current, incoming)
-    assert len(problems) == 1
-
-    # The durable mirror keeps the stored copy, so the acknowledgement matches it.
-    retained = {item.identity: item for item in stored}
-    _, again = merge_with_problems(retained, incoming)
-    assert again == problems
-    assert first[stored[0].identity] == stored[0]
-
-
 def test_a_difference_only_in_ignored_properties_is_not_a_conflict():
     stored = parse_export(
         "calendar", "one.ics", ics(event() + "\r\nLAST-MODIFIED:20261014T150000Z")

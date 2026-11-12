@@ -114,6 +114,7 @@ class CalendarEvent(BaseModel):
     provenance: list[EventProvenance] = Field(default_factory=list)
     source_entries: list[str] = Field(default_factory=list)
     source_entry: str
+    acknowledged: bool = False
 
     @property
     def identity(self) -> str:

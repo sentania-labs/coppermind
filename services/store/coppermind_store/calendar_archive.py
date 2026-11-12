@@ -290,9 +290,9 @@ class CalendarArchive:
                     mirror.drop_superseded_conflicts(connection)
                     receipt.event_count = written
                     receipt.kept_count = len(problems)
-                    # The stored copy of each conflict is retained and reported per event,
-                    # in the shape the acknowledge path already keeps on the mirror.
-                    receipt.conflicts = _retain_conflicts(connection, problems)
+                    # Each disagreeing incoming version is recorded once per event, in the
+                    # shape the acknowledge path already keeps on the mirror.
+                    receipt.conflicts = _retain_conflicts(connection, problems, events)
                     # Persist the count before promotion so crash recovery can finish the receipt.
                     self._save_receipt(receipt)
                     # The atomic filesystem promotion precedes the database commit.
@@ -329,9 +329,10 @@ class CalendarArchive:
                 mirror.put_conflicts(
                     connection,
                     [
-                        event
+                        event.model_copy(update={"acknowledged": True})
+                        if (event.identity, event.semantic_hash) == (event_id, version)
+                        else event
                         for event in mirror.get_conflicts(connection)
-                        if (event.identity, event.semantic_hash) != (event_id, version)
                     ],
                 )
                 mirror.write_catalog(connection, self.root / "catalog.json", list(catalog.imports))
@@ -484,33 +485,26 @@ class CalendarArchive:
         }
 
 
-def _retain_conflicts(connection: Any, problems: list[CalendarProblem]) -> list[CalendarProblem]:
-    """Report each event once and keep the stored copy of it on the mirror.
+def _retain_conflicts(
+    connection: Any, problems: list[CalendarProblem], events: list[CalendarEvent]
+) -> list[CalendarProblem]:
+    """Record each disagreeing incoming version once and report only new ones.
 
-    The mirror list is the acknowledged shape: a later identical export compares
-    ``(identity, semantic_hash)`` against it, so an acknowledged conflict stays quiet
-    until its event is revised past it.
+    A record is keyed by ``(identity, semantic_hash)`` of the incoming event. The stored
+    copy stays in the mirror's events; dismissing marks the record acknowledged instead of
+    deleting it, so the same export imported again adds nothing and stays quiet.
     """
-    known = {
-        (event.identity, event.semantic_hash): event for event in mirror.get_conflicts(connection)
-    }
-    seen: set[str] = set()
+    incoming = {event.identity: event for event in events}
+    held = mirror.get_conflicts(connection)
+    known = {(event.identity, event.semantic_hash): event for event in held}
     retained: list[CalendarProblem] = []
     for problem in problems:
-        if problem.event_id in seen:
+        key = (problem.event_id, problem.version)
+        if key not in known:
+            known[key] = incoming[problem.event_id]
+        elif known[key].acknowledged:
             continue
-        seen.add(problem.event_id)
-        if (problem.event_id, problem.version) in known:
-            retained.append(problem)
-            continue
-        value = connection.execute(
-            sa.select(rows.c.record).where(rows.c.id == problem.event_id)
-        ).scalar()
-        if value is None:
-            continue
-        # The stored copy, not the incoming one, is what the mirror retains.
-        known[(problem.event_id, problem.version)] = CalendarEvent.model_validate_json(value)
         retained.append(problem)
-    if len(known) != len(mirror.get_conflicts(connection)):
+    if len(known) != len(held):
         mirror.put_conflicts(connection, list(known.values()))
     return retained
