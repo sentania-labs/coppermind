@@ -113,7 +113,9 @@ Drop ICS files or ZIPs containing ICS files into Dropbox, or send binary bytes t
 `POST /v1/dropbox?filename=export.ics` with `sources:write`. A 202 means the original
 and intake receipt are durable, not that parsing has completed. Inspect Dropbox
 in Admin for processing and failure status. The vault scanner
-waits 30 seconds for stable bytes. It never deletes dropped files.
+waits 30 seconds for stable bytes. A completed drop leaves Dropbox only after its
+original is durable and the stored bytes are checked again; a file that cannot be
+handled moves to `Dropbox/Failed` with a reason sidecar, and moving it back retries it.
 
 All exports merge automatically into the owner's one calendar by event UID and
 recurrence instance. Calendar UID and filename never create a separate calendar.
@@ -124,8 +126,9 @@ explicit cancellation is different from absence.
 Originals and import history remain under the state volume. Completed and failed
 receipts can be dismissed; completed receipts also clear after seven days. An identical re-drop displays
 **Already imported** without a new import.
-`GET /v1/dropbox` requires `sources:read`. Unsupported files remain preserved.
-Markdown in the vault Dropbox follows ordinary note adoption; the binary API does
+`GET /v1/dropbox` requires `sources:read`. Unsupported files are preserved in
+`Dropbox/Failed`. Supported documents, images, audio and video are stored as
+artifacts (see [the API](api.md#artifacts)). Markdown in the vault Dropbox follows ordinary note adoption; the binary API does
 not adopt Markdown. Use the notes API for authored notes.
 
 Limits: 200,000,000 bytes input, expanded size bounded by

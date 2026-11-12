@@ -370,11 +370,15 @@ The tree of Markdown files is the **notes filesystem**. The word "vault"
 appears only for Obsidian's own remote vault object, which is a thing on
 Obsidian's servers, not a thing here.
 
-Calendar exports belong in the vault's **Dropbox** folder. ICS and ZIP exports
-merge automatically into your one calendar; event details show their export and
-file provenance. No calendar identification is required. Admin Dropbox shows
-receipts you can dismiss, while Calendar keeps import history. Completed receipts
-clear after seven days; failures remain until dismissed. Uploads support
+Anything you want processed belongs in the vault's **Dropbox** folder, routed
+by type. ICS and ZIP calendar exports merge automatically into your one calendar;
+event details show their export and file provenance. No calendar identification
+is required. Supported documents, images, audio and video are stored as artifacts.
+Markdown is not an artifact: it follows the normal note workflow. Once a file is
+safely stored the folder empties itself; a file that cannot be handled moves to
+`Dropbox/Failed` with a reason sidecar, and moving it back retries it. Admin
+Dropbox shows receipts you can dismiss, while Calendar keeps import history.
+Completed receipts clear after seven days; failures remain until dismissed. Uploads support
 200,000,000 bytes with bounded ZIP expansion. See
 [calendar intake and upgrade](docs/calendar-enrichment.md) and the
 [API](docs/api.md#calendar-exports-and-dropbox-receipts).

@@ -907,3 +907,28 @@ async def test_an_archive_that_fails_verification_is_refused_before_any_byte_is_
     archived.write_bytes(b"b" * 4096)
     with pytest.raises(artifacts.ArtifactsFilesystemUnavailable, match="verification"):
         await store.get_artifact_bytes(created.id)
+
+
+async def test_dropbox_files_a_deck_and_cleans_up_after_archive_is_durable(store, tmp_path):
+    data = pptx_bytes(tmp_path, "Dropbox package", "Distinctive dropbox quokka")
+    root = store.notes_root / "Dropbox"
+    root.mkdir(exist_ok=True)
+    path = root / "package.pptx"
+    path.write_bytes(data)
+    dropbox = store.context.dropbox
+    await dropbox.scan()
+    signature, _ = dropbox.seen["package.pptx"]
+    dropbox.seen["package.pptx"] = (signature, 0)
+    await dropbox.scan()
+    await dropbox.process()
+    item = next(iter(dropbox.records()["items"].values()))
+    assert item["state"] == "succeeded"
+    artifact = item["parts"][0]
+    assert (store.notes_root / artifact["path"]).read_bytes() == data
+    assert (
+        store.artifacts_root / artifact["artifact_id"] / "r0001" / path.name
+    ).read_bytes() == data
+    assert await hits(store, "quokka")
+    await dropbox.scan()
+    assert not path.exists()
+    assert (store.context.root / "dropbox-originals" / item["id"]).read_bytes() == data
