@@ -685,7 +685,7 @@ async def test_redrop_retries_a_transient_import_failure(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("kind", ["malformed", "conflict"])
-async def test_redrop_of_deterministic_failure_returns_the_same_failed_receipt(tmp_path, kind):
+async def test_redrop_of_deterministic_failure_reprocesses_into_the_same_receipt(tmp_path, kind):
     store = local_store(tmp_path)
     archive = store.context.archive
     archive.process(archive.submit("calendar", "base.ics", calendar()).id)
@@ -1261,3 +1261,61 @@ async def test_a_changed_failed_copy_is_kept_when_the_drop_later_succeeds(tmp_pa
     await dropbox.scan()
     assert (root / "Failed" / "two.ics").read_bytes() == b"edited by hand"
     assert "differs" in (root / "Failed" / "two.ics.reason.txt").read_text()
+
+
+OLD_CONFLICT = (
+    'Event "Planning" (2026-10-16, UID event-1, entry two.ics) conflicts with stored event '
+    '"Planning". The revisions match but the contents differ. Correct the event in its '
+    "source calendar and export it again, or dismiss this receipt."
+)
+
+
+@pytest.mark.parametrize("dismissed", [False, True])
+async def test_moving_a_stale_failed_file_back_retries_it_with_current_code(
+    tmp_path, monkeypatch, dismissed
+):
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    root.mkdir()
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    archive, dropbox = store.context.archive, store.context.dropbox
+    dropbox.submit("one.ics", calendar())
+    await finish(store)
+    event_2 = calendar(event="event-2").split(b"BEGIN:VEVENT\r\n", 1)[1]
+    other = calendar().replace(b"Planning", b"Other").replace(b"END:VCALENDAR\r\n", b"")
+    dropped = other + b"BEGIN:VEVENT\r\n" + event_2
+    # The file as an older version left it: failed, non-retryable, old wording, in Failed.
+    receipt = archive.submit("calendar", "two.ics", dropped, export_filename="two.ics")
+    receipt.state, receipt.error, receipt.retryable = "failed", OLD_CONFLICT, False
+    receipt.dismissed = dismissed
+    archive._save_receipt(receipt)
+    records = dropbox.records()
+    records["items"][receipt.content_hash] = {
+        "id": receipt.content_hash,
+        "filename": "two.ics",
+        "state": "failed",
+        "parts": [{"import_id": receipt.id}],
+        "error": OLD_CONFLICT,
+        "received_at": receipt.received_at,
+        "kind": {},
+        "original_path": "two.ics",
+        "failed_path": "Failed/two.ics",
+    }
+    dropbox.save(records)
+    (root / "Failed").mkdir()
+    (root / "Failed" / "two.ics").write_bytes(dropped)
+    # The owner moves it back to Dropbox unchanged.
+    (root / "two.ics").write_bytes(dropped)
+    await dropbox.scan()
+    clock[0] = 31
+    await dropbox.scan()
+    await finish(store)
+    await dropbox.scan()
+    (item,) = [i for i in dropbox.records()["items"].values() if i["filename"] == "two.ics"]
+    assert item["state"] == "succeeded" and item["error"] == ""
+    (current,) = [r for r in archive.receipts() if r.content_hash == receipt.content_hash]
+    assert current.state == "succeeded" and OLD_CONFLICT not in current.error
+    assert current.kept_count == 1
+    assert not (root / "two.ics").exists()
+    assert list((root / "Failed").iterdir()) == []

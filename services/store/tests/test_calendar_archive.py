@@ -87,3 +87,64 @@ def test_cancellation_without_invitees_does_not_forget_contact_corpus(tmp_path):
     preserved = archive.catalog().contacts()[0]
     assert preserved.id == contact.id
     assert preserved.evidence[0].source_import == first.id
+
+
+OLD_WORDING = (
+    'Event "Planning" (2026-10-14, UID a, entry old.ics) conflicts with stored event '
+    '"Planning". The revisions match but the contents differ. Correct the event in its '
+    "source calendar and export it again, or dismiss this receipt."
+)
+
+
+def stale_failed_receipt(archive, payload, *, dismissed=False):
+    """A receipt an older version stored as failed, non-retryable, in its old wording."""
+    receipt = archive.submit("work", "old.ics", payload)
+    receipt.state, receipt.error = "failed", OLD_WORDING
+    receipt.retryable, receipt.dismissed = False, dismissed
+    archive._save_receipt(receipt)
+    return receipt
+
+
+@pytest.mark.parametrize("dismissed", [False, True])
+def test_redropping_a_stale_failed_receipt_reprocesses_it_with_current_code(tmp_path, dismissed):
+    archive = CalendarArchive(tmp_path)
+    archive.process(archive.submit("work", "base.ics", ics(event("a"), event("b"))).id)
+    payload = ics(event("a", title="Changed"), event("b"), event("c"))
+    stale = stale_failed_receipt(archive, payload, dismissed=dismissed)
+
+    again = archive.submit("work", "old.ics", payload)
+    assert again.id == stale.id
+    assert (again.state, again.error, again.dismissed, again.retryable) == (
+        "pending",
+        "",
+        False,
+        False,
+    )
+
+    done = archive.process(again.id)
+    assert done.state == "succeeded" and done.error == ""
+    assert done.kept_count == 1 and done.event_count >= 1
+    assert "Changed" not in {e.title for e in archive.catalog().events}
+    assert len(archive.catalog().events) == 3
+    assert len(archive.receipts()) == 2
+
+
+def test_redropping_a_succeeded_receipt_is_already_imported(tmp_path):
+    archive = CalendarArchive(tmp_path)
+    payload = ics(event())
+    first = archive.process(archive.submit("work", "one.ics", payload).id)
+    again = archive.submit("work", "one.ics", payload)
+    assert again.state == "succeeded" and again.imported_at == first.imported_at
+
+
+def test_redropping_unparseable_bytes_fails_again_in_current_wording(tmp_path):
+    archive = CalendarArchive(tmp_path)
+    receipt = archive.submit("work", "bad.ics", b"not a calendar")
+    archive.process(receipt.id)
+    stale = archive.submit("work", "bad.ics", b"not a calendar")
+    stale.state, stale.error = "failed", "wording from an older version"
+    archive._save_receipt(stale)
+    again = archive.submit("work", "bad.ics", b"not a calendar")
+    assert again.state == "pending" and again.error == ""
+    failed = archive.process(again.id)
+    assert failed.state == "failed" and "older version" not in failed.error

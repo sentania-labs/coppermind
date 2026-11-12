@@ -222,9 +222,9 @@ An over-budget import retains its original, marks its receipt failed with the
 setting name and ceiling, and appears in **Problems**. The previous calendar
 remains queryable. Raise the budget only after sizing the deployment, or submit a
 smaller partial export, then drop the corrected export. A budget refusal is a
-deterministic failure: its failed receipt stays until dismissed in Admin, and an
-identical re-drop does not retry it. Restarting does not automatically retry
-failed imports.
+deterministic failure: its failed receipt stays until dismissed in Admin. Dropping
+the same export again re-runs it, so raise the budget first. Restarting does not
+automatically retry failed imports.
 
 ## Filing rules (`/data/state/rules.yaml`)
 

@@ -170,10 +170,16 @@ class CalendarArchive:
         with self._lock:
             existing = next((r for r in self.receipts() if r.content_hash == digest), None)
             if existing is not None:
-                if existing.dismissed or (existing.state == "failed" and existing.retryable):
+                # A failed receipt is never a final answer: dropping the same bytes again
+                # re-runs the import with the current code, whether or not the failure was
+                # marked retryable or had been dismissed. Its error text may come from an
+                # older version, so it is cleared rather than served. A succeeded receipt
+                # still answers "already imported".
+                if existing.dismissed or existing.state == "failed":
                     existing.dismissed = False
-                    if existing.state == "failed" and existing.retryable:
-                        existing.state, existing.error = "pending", ""
+                    if existing.state == "failed":
+                        existing.state, existing.error, existing.retryable = "pending", "", False
+                        existing.kept_count, existing.conflicts = 0, []
                     self._save_receipt(existing)
                 return existing
             receipt_path = self.root / "imports" / identity / "receipt.json"
