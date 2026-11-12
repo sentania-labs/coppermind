@@ -1,9 +1,7 @@
 """Import receipts survive restart and prevent partial calendar promotion."""
 
 import pytest
-from coppermind_store import admin_calendar
 from coppermind_store.calendar_archive import CalendarArchive, ImportReceipt
-from coppermind_store.calendar_import import CALENDAR_ID, EventProvenance, parse_export
 
 from services.store.tests.test_calendar_import import event, ics
 
@@ -150,65 +148,3 @@ def test_redropping_unparseable_bytes_fails_again_in_current_wording(tmp_path):
     assert again.state == "pending" and again.error == ""
     failed = archive.process(again.id)
     assert failed.state == "failed" and "older version" not in failed.error
-
-
-def _two_files_disagreeing(archive):
-    """File A holds meetings a and b; file B holds a different version of meeting a."""
-    first = archive.process(archive.submit("work", "a.ics", ics(event("a"), event("b"))).id)
-    second = archive.process(archive.submit("work", "b.ics", ics(event("a", title="Changed"))).id)
-    assert second.kept_count == 1 and len(second.conflicts) == 1
-    return first, second
-
-
-def _version_from(archive, receipt):
-    def read(event_id, version):
-        for found in parse_export(CALENDAR_ID, receipt.filename, ics(event("a", title="Changed"))):
-            if found.identity == event_id and found.semantic_hash == version:
-                found.provenance = [
-                    EventProvenance(
-                        source_id=receipt.id,
-                        filename=receipt.filename,
-                        entry=found.source_entry,
-                        imported_at=receipt.received_at,
-                    )
-                ]
-                return found
-        return None
-
-    return read
-
-
-def test_removing_the_file_that_held_the_disagreeing_version_ends_the_disagreement(tmp_path):
-    archive = CalendarArchive(tmp_path)
-    _, second = _two_files_disagreeing(archive)
-    counts = archive.remove_import(second.id)
-    assert counts == {"removed": 0, "kept": 0}
-    catalog = archive.catalog()
-    assert sorted(e.title for e in catalog.events.values()) == ["Planning", "Planning"]
-    assert catalog.conflicts == []
-
-
-def test_removing_the_file_that_held_the_stored_version_keeps_the_meeting_the_other_file_has(
-    tmp_path,
-):
-    archive = CalendarArchive(tmp_path)
-    first, second = _two_files_disagreeing(archive)
-    assert admin_calendar._summary(archive)["files"][first.id]["only"] == 1
-    counts = archive.remove_import(first.id, _version_from(archive, second))
-    catalog = archive.catalog()
-    assert counts == {"removed": 1, "kept": 1}
-    assert [e.title for e in catalog.events.values()] == ["Changed"]
-    (kept,) = catalog.events.values()
-    assert {p.source_id for p in kept.provenance} == {second.id}
-    assert catalog.conflicts == []
-    assert admin_calendar._summary(archive)["files"][second.id]["only"] == 1
-
-
-def test_a_meeting_only_the_removed_file_held_is_deleted(tmp_path):
-    archive = CalendarArchive(tmp_path)
-    only = archive.process(archive.submit("work", "a.ics", ics(event("a"), event("b"))).id)
-    other = archive.process(archive.submit("work", "c.ics", ics(event("a"))).id)
-    counts = archive.remove_import(only.id)
-    assert counts == {"removed": 1, "kept": 1}
-    (left,) = archive.catalog().events.values()
-    assert {p.source_id for p in left.provenance} == {other.id}

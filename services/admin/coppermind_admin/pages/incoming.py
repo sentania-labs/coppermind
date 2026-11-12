@@ -362,7 +362,7 @@ def router(wiring: Wiring) -> APIRouter:
             elif item["kind"] == "recording":
                 action = ui.go("Open", link)
             elif item["kind"] == "calendar":
-                action = ui.go("Remove", ui.url("/admin/calendar", tab="files", ask=item["id"][2:]))
+                action = ui.go("Open", ui.url("/admin/calendar", tab="files"))
             else:
                 action = ui.go("Remove", ui.url(here, ask=item["id"]))
             rows.append(

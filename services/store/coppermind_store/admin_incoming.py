@@ -261,7 +261,7 @@ class AdminIncoming:
             if receipt is None:
                 raise ValueError("That file is no longer listed.")
             if receipt.state != "failed":
-                raise ValueError("Remove a calendar file from the Calendar page.")
+                raise ValueError("A calendar file that was read stays in past imports.")
             await self.context.dismiss_import({"id": key})
             for item in self.context.dropbox.records()["history"].values():
                 if any(part.get("import_id") == key for part in item.get("parts", [])):

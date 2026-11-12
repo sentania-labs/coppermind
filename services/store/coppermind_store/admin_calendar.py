@@ -52,27 +52,16 @@ def _summary(archive: Any) -> dict[str, Any]:
             return cached[1]
         events = []
         files: dict[str, dict[str, int]] = {}
-        records = {
-            (c.identity, c.conflict_version or c.semantic_hash)
-            for c in mirror.get_conflicts(connection)
-        }
-        held: dict[str, set[str]] = {}
-        for receipt in archive.receipts():
-            for problem in receipt.conflicts:
-                if (problem.event_id, problem.version) in records:
-                    held.setdefault(problem.event_id, set()).add(receipt.id)
         for row in connection.execute(sa.select(rows.c.id, rows.c.record)):
             record = json.loads(row.record)
             provenance = record.get("provenance") or []
             sources = list(dict.fromkeys(item["source_id"] for item in provenance))
             for source in sources:
-                entry = files.setdefault(source, {"has": 0, "adds": 0, "only": 0})
+                entry = files.setdefault(source, {"has": 0, "adds": 0})
                 entry["has"] += 1
             if sources:
                 first = min(provenance, key=lambda item: item["imported_at"])["source_id"]
                 files[first]["adds"] += 1
-                if len(sources) == 1 and not held.get(row.id, set()) - {sources[0]}:
-                    files[sources[0]]["only"] += 1
             events.append(
                 {
                     "id": row.id,
@@ -108,7 +97,7 @@ class AdminCalendar:
         for receipt in sorted(self.archive.receipts(), key=lambda r: r.received_at, reverse=True):
             if receipt.state != "succeeded":
                 continue
-            entry = counts.get(receipt.id, {"has": 0, "adds": 0, "only": 0})
+            entry = counts.get(receipt.id, {"has": 0, "adds": 0})
             files.append(
                 {
                     "id": receipt.id,
@@ -133,12 +122,10 @@ class AdminCalendar:
             if receipt.state == "failed" and not receipt.dismissed
         ]
 
-    def _incoming(
-        self, event_id: str, version: str, exclude: str = ""
-    ) -> tuple[CalendarEvent, Any] | None:
+    def _incoming(self, event_id: str, version: str) -> tuple[CalendarEvent, Any] | None:
         """The other version of a disagreement, read back from the file that carried it."""
         cache = self.archive.root / "conflict-incoming" / f"{event_id}-{version}.json"
-        receipts = {r.id: r for r in self.archive.receipts() if r.id != exclude}
+        receipts = {receipt.id: receipt for receipt in self.archive.receipts()}
         if cache.exists():
             saved = json.loads(cache.read_bytes())
             receipt = receipts.get(saved["receipt"])
@@ -374,34 +361,6 @@ class AdminCalendar:
             return {"title": conflict["title"], "start": chosen["start"], "file": chosen["file"]}
 
         return await asyncio.to_thread(apply)
-
-    async def remove_file(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Remove one calendar file and the meetings that came only from it."""
-        identity = str(payload["id"])
-        context = self.store.context
-        receipt = next((r for r in self.archive.receipts() if r.id == identity), None)
-        if receipt is None:
-            raise ValueError("That calendar file is no longer listed.")
-
-        def other_file_version(event_id: str, version: str) -> CalendarEvent | None:
-            found = self._incoming(event_id, version, exclude=identity)
-            return found[0] if found else None
-
-        counts = await asyncio.to_thread(self.archive.remove_import, identity, other_file_version)
-        async with context.lock:
-            records = context.dropbox.records()
-            for group in ("items", "history"):
-                for key, item in list(records[group].items()):
-                    if any(part.get("import_id") == identity for part in item.get("parts", [])):
-                        del records[group][key]
-            context.dropbox.save(records)
-        summary = await asyncio.to_thread(_summary, self.archive)
-        return {
-            "name": receipt.export_filename or receipt.filename,
-            "removed": counts["removed"],
-            "total": len(summary["events"]),
-            "files": len(await asyncio.to_thread(self._files)),
-        }
 
     async def set_max(self, payload: dict[str, Any]) -> dict[str, Any]:
         value = int(payload["max_events"])

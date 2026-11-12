@@ -30,7 +30,7 @@ PAGES = [
     ("/admin/incoming", "Recordings and imports"),
     (f"/admin/incoming/{ITEM}", "what has happened to it"),
     ("/admin/calendar", "Calendar"),
-    ("/admin/calendar?tab=files", "Calendar files"),
+    ("/admin/calendar?tab=files", "Past imports"),
     (f"/admin/calendar/{MEETING}", "A meeting from your calendar"),
     ("/admin/people", "People and voices"),
     ("/admin/people?tab=companies", "Companies"),

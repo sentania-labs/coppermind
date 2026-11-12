@@ -846,7 +846,6 @@ class AdminService:
             "calendar-meeting": calendar.meeting,
             "calendar-add": calendar.add,
             "calendar-choose": calendar.choose,
-            "calendar-remove-file": calendar.remove_file,
             "calendar-max": calendar.set_max,
             "people": plain(people.listing),
             "person": people.detail,

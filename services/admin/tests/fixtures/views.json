@@ -100,16 +100,14 @@
     "adds": 1,
     "has": 2,
     "id": "26a914c5d4a69c2ebb1f84fc6384f22f1ffe3e886c73bc60dee307b08dd165e7",
-    "name": "calendar-b.ics",
-    "only": 1
+    "name": "calendar-b.ics"
    },
    {
     "added": "2026-11-12T16:49:57.049001+00:00",
     "adds": 3,
     "has": 3,
     "id": "d0a5a95608dc11d0b4322f589f507b9b2ed37179ba04d3283daf0282e595885d",
-    "name": "calendar-a.ics",
-    "only": 2
+    "name": "calendar-a.ics"
    }
   ],
   "matches": 3,

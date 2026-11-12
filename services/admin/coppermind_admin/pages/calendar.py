@@ -84,51 +84,13 @@ def router(wiring: Wiring) -> APIRouter:
                 {"replaces": asked[4:], "back": here},
                 accept=".ics,.zip,text/calendar",
             )
-        elif asked.startswith("gone:"):
-            target = next((item for item in bad if item["id"] == asked[5:]), None)
-            if target:
-                dialog = ui.dialog(
-                    f'Remove "{e(target["name"])}"?',
-                    "It was never imported, so nothing else changes. The file is removed "
-                    f'from the "{e(folder)}" folder in your vault.',
-                    f"/admin/incoming/{segment(target['id'])}/remove",
-                    "Remove",
-                    here,
-                    danger=True,
-                    fields={"back": here},
-                )
-        elif asked:
-            target = next((item for item in files if item["id"] == asked), None)
-            if target:
-                only = target["only"]
-                last = (
-                    " This is your only calendar file, so Coppermind will have no calendar "
-                    "until you add one."
-                    if len(files) == 1
-                    else ""
-                )
-                dialog = ui.dialog(
-                    f'Remove "{e(target["name"])}"?',
-                    f"The {plural(only, 'meeting')} that came only from this file "
-                    f"{'is' if only == 1 else 'are'} removed from your calendar. Meetings also "
-                    f"found in another file stay.{last} Notes already matched to a meeting "
-                    "keep what is written in them.",
-                    "/admin/calendar/remove",
-                    "Remove",
-                    here,
-                    danger=True,
-                    fields={"id": target["id"], "back": here},
-                    busy="Removing…",
-                )
         damaged = "".join(
             ui.banner(
                 "warn",
                 f'<b>"{e(item["name"])}" could not be read</b>, so nothing was added from it. '
                 "The usual cause is a download that was cut short: export the calendar again "
                 "from your calendar app, then add the fresh file. "
-                + ui.go("Add the new file", ui.url(here, ask="new:" + item["id"]), "primary")
-                + " "
-                + ui.go("Remove the damaged file", ui.url(here, ask="gone:" + item["id"])),
+                + ui.go("Add the new file", ui.url(here, ask="new:" + item["id"]), "primary"),
             )
             for item in bad
         )
@@ -224,12 +186,11 @@ def router(wiring: Wiring) -> APIRouter:
                     ui.date_only(item["added"], ctx.zone),
                     f"{item['has']:,}",
                     f"{item['adds']:,}",
-                    ui.go("Remove", ui.url(here, ask=item["id"])),
                 ]
                 for item in files
             ]
             inner = (
-                ui.table(["File", "Added", "Meetings in the file", "New to Coppermind", ""], rows)
+                ui.table(["File", "Added", "Meetings in the file", "New to Coppermind"], rows)
                 + '<div class="actions">'
                 + ui.go("Add a calendar file", ui.url(here, ask="add"))
                 + '</div><p class="lat-hint" style="margin-top:8px">Meetings that appear in '
@@ -263,7 +224,7 @@ def router(wiring: Wiring) -> APIRouter:
         )
         tabs = ui.seg(
             "/admin/calendar",
-            [("meet", "Recent meetings"), ("files", f"Calendar files ({len(files)})")],
+            [("meet", "Recent meetings"), ("files", f"Past imports ({len(files)})")],
             tab,
         )
         body = f"""{ui.head("Calendar", LEDE)}<div class="stack">{setup_strip(view, "cal")}
@@ -292,23 +253,6 @@ def router(wiring: Wiring) -> APIRouter:
         finally:
             upload.discard()
         return ctx.go(target)
-
-    @routes.post("/admin/calendar/remove", include_in_schema=False)
-    async def remove(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        form = await ctx.form()
-        target = ctx.back("/admin/calendar?tab=files")
-        try:
-            result = await ctx.act("calendar-remove-file", {"id": form.get("id", "")})
-        except StoreError as exc:
-            return await ctx.refused(exc, target)
-        ctx.say(
-            "ok",
-            f'Removed "{e(result["name"])}" and the {plural(result["removed"], "meeting")} that '
-            f"came only from it. Your calendar now has {plural(result['total'], 'meeting')} from "
-            f"{plural(result['files'], 'calendar file')}.",
-        )
-        return ctx.go(target if result["files"] else "/admin/calendar")
 
     @routes.post("/admin/calendar/choose", include_in_schema=False)
     async def choose(request: Request) -> Response:
