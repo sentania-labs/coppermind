@@ -185,8 +185,10 @@ are stored in the state volume before changes. An interrupted merge resumes on t
 worker's next pass; if a note is unavailable or the recording note has been edited,
 it is kept and Review reports what needs attention. Once the note is available again,
 use **Retry merge** in Review. Merging requires `sources:write`
-in addition to the review scopes. The audio is retained after a merge so automatic
-audio cleanup does not rewrite text in the hand-written note.
+in addition to the review scopes. After you review and file the merged note, the
+audio is removed as usual. Its removal receipt is written only inside the recording
+section the merge added, and the recording's citation is dropped from the
+frontmatter. Your own text and frontmatter comments are left untouched.
 
 ## State, recovery and rollback
 
