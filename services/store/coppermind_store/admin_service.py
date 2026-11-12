@@ -685,6 +685,7 @@ class AdminService:
         for feature in service["used_by"]:
             if not takeover.get(feature):
                 raise Refused("rm_" + feature, "Choose one before removing.")
+            self.features.check_takeover(feature, str(takeover[feature]), service["id"])
         done = [
             await self.features.take_over(feature, str(takeover[feature]))
             for feature in service["used_by"]

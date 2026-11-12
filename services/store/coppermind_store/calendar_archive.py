@@ -426,7 +426,11 @@ class CalendarArchive:
                     [
                         event
                         for event in mirror.get_conflicts(connection)
-                        if connection.execute(
+                        if not (
+                            event.provenance
+                            and all(p.source_id == receipt_id for p in event.provenance)
+                        )
+                        and connection.execute(
                             sa.select(rows.c.id).where(rows.c.id == event.identity)
                         ).scalar()
                         is not None

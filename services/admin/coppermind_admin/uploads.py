@@ -151,7 +151,7 @@ async def receive(request: Request, limit: int) -> Upload:
             finally:
                 handle.close()
             upload.sha256 = sink.digest.hexdigest()
-    except UploadRefused:
+    except BaseException:
         upload.discard()
         raise
     if upload.path is None or not upload.size:

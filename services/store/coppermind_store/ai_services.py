@@ -590,14 +590,10 @@ class AiServices:
     def suggest_name(self) -> str:
         return self._fresh_name()
 
-    async def add(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Enter a service once: find it, test it, and only then keep it."""
-        kind = str(payload.get("kind", "own"))
-        key = str(payload.get("key", "")).strip()
-        if kind not in PROVIDERS or len(key) > 4096:
-            raise ValueError("unknown kind of service")
-        provider = PROVIDERS[kind]
-        config = self.context.config()
+    @staticmethod
+    def _refuse_duplicate(
+        config: Any, kind: str, provider: str, bases: list[str], name: str
+    ) -> None:
         if kind != "own":
             same = next((c for c in config.connections if c.provider == provider), None)
             if same:
@@ -607,6 +603,36 @@ class AiServices:
                     "A service is entered once.",
                     existing=same.id,
                 )
+            return
+        same = next(
+            (
+                c
+                for c in config.connections
+                if c.provider == "compatible" and address_key(c.base_url) == address_key(bases[0])
+            ),
+            None,
+        )
+        if same:
+            raise Refused(
+                "address",
+                f'That server is already in the list as "{same.name}". A service is entered once.',
+                existing=same.id,
+            )
+        if any(c.name == name for c in config.connections):
+            raise Refused(
+                "name",
+                f'You already have a service called "{name}". Give this one a different '
+                "name so you can tell them apart.",
+            )
+
+    async def add(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Enter a service once: find it, test it, and only then keep it."""
+        kind = str(payload.get("kind", "own"))
+        key = str(payload.get("key", "")).strip()
+        if kind not in PROVIDERS or len(key) > 4096:
+            raise ValueError("unknown kind of service")
+        provider = PROVIDERS[kind]
+        if kind != "own":
             if not key:
                 raise Refused("key", "Paste your API key.")
             name = "OpenAI" if kind == "openai" else "Anthropic"
@@ -617,29 +643,8 @@ class AiServices:
                 raise Refused(
                     "address", "Type the address of your server, for example 192.168.1.20:8000"
                 )
-            same = next(
-                (
-                    c
-                    for c in config.connections
-                    if c.provider == "compatible"
-                    and address_key(c.base_url) == address_key(bases[0])
-                ),
-                None,
-            )
-            if same:
-                raise Refused(
-                    "address",
-                    f'That server is already in the list as "{same.name}". '
-                    "A service is entered once.",
-                    existing=same.id,
-                )
             name = str(payload.get("name", "")).strip() or display_address(bases[0])
-            if any(c.name == name for c in config.connections):
-                raise Refused(
-                    "name",
-                    f'You already have a service called "{name}". Give this one a different '
-                    "name so you can tell them apart.",
-                )
+        self._refuse_duplicate(self.context.config(), kind, provider, bases, name)
         identity = "conn_" + new_id().lower()
         caps: dict[str, Any] | None = None
         chosen: ModelConnection | None = None
@@ -692,6 +697,7 @@ class AiServices:
         outside = kind != "own" or await asyncio.to_thread(is_outside, chosen.base_url)
         async with self.context.lock:
             config = self.context.config()
+            self._refuse_duplicate(config, kind, provider, bases, name)
             chosen.credential_version = 1
             config.connections.append(chosen)
             config.automatic_connection_ids.append(chosen.id)

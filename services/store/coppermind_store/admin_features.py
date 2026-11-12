@@ -622,6 +622,19 @@ class Features:
 
     # -- taking over from a service that is being removed -----------------------------------
 
+    def check_takeover(self, feature: str, target: str, removed: str) -> None:
+        """Refuse, before anything is changed, a target that could not take the feature over."""
+        if target == "off":
+            return
+        service = self._service(target)
+        if service is None or service["id"] == removed:
+            raise Refused("rm_" + feature, "Choose one before removing.")
+        if not service["answering"]:
+            raise Refused("rm_" + feature, f"{service['name']} is not answering right now.")
+        capable = {"sugg": "text", "trans": "speech"}.get(feature, "embed")
+        if not service[capable]["ok"]:
+            raise Refused("rm_" + feature, f"{service['name']} cannot do this.")
+
     async def take_over(self, feature: str, target: str) -> str:
         """Point one feature at another service, or turn it off. Returns what was done."""
         if target == "off":

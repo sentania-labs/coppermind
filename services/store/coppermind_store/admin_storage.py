@@ -285,8 +285,9 @@ class AdminStorage:
         await self.store.confirm_purge(
             ConfirmPurge(token=before["purge_token"], confirmation="Purge listed items")
         )
-        for removed in self._old_removed():
-            self.notes._drop_removed(removed["key"])
+        for item in before["items"]:
+            if item["kind"] == "copy":
+                self.notes._drop_removed(item["id"])
         _USAGE.clear()
         usage = await self.usage()
         return {
