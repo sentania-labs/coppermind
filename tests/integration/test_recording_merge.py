@@ -72,6 +72,64 @@ async def prepare(store):
     return context, recording, generated, target, payload
 
 
+async def test_merge_keeps_voice_data_through_worker_and_purges_real_deletion(store):
+    import httpx
+    import sqlalchemy as sa
+    from coppermind_store.auth import InternalAuth
+    from coppermind_store.entity_api import router as entity_router
+    from coppermind_store.voice_store import VoiceStore
+    from fastapi import FastAPI
+
+    from coppermind.db.models import Note
+    from coppermind.db.session import transaction
+    from coppermind.entities import EntityInput
+    from coppermind.store_client import HttpStoreClient
+    from tests.integration.test_store_write_protocol import authorized_api
+
+    context, recording, generated, target, payload = await prepare(store)
+    person = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
+    voice = VoiceStore(context)
+    vector = {"model": "voice", "version": "1", "vector": [1.0, 0.0]}
+    other = {"model": "voice", "version": "1", "vector": [0.0, 1.0]}
+    named = voice.capture_unknown(generated.id, "Speaker 1", "today", 30, [vector])
+    voice.move_voice(named, "person:" + person["id"])
+    unknown = voice.capture_unknown(generated.id, "Speaker 2", "today", 30, [other])
+    pending = [{"label": "Speaker 1", "embeddings": [vector]}]
+    context.write("voice-pending/" + recording.id, pending)
+
+    await context.lifecycle.merge_recording(payload)
+    await context.recordings.tick()
+    assert context.read("voice-pending/" + recording.id, None) == pending
+    assert voice.summary(person["id"])["signatures"][0]["note_id"] == target.id
+    assert voice.assignments("person:" + person["id"])[0]["note_id"] == target.id
+    assert voice.unknown_summaries()[unknown]["signatures"][0]["note_id"] == target.id
+    assert voice.assignments(unknown)[0]["note_id"] == target.id
+
+    internal = FastAPI()
+    internal.state.store = store
+    internal.state.auth = InternalAuth("synthetic-internal-token")
+    internal.include_router(entity_router)
+    app, headers = authorized_api(store)
+    app.state.store = HttpStoreClient(
+        "http://store", "synthetic-internal-token", transport=httpx.ASGITransport(app=internal)
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://api", headers=headers
+    ) as api:
+        people = (await api.get("/v1/entities/voice/people")).json()
+        unknowns = (await api.get("/v1/entities/voice/unknowns")).json()
+        assert people[person["id"]]["assignments"][0]["note_id"] == target.id
+        assert unknowns[unknown]["assignments"][0]["note_id"] == target.id
+
+    async with transaction(store.session_factory) as session:
+        await session.execute(sa.update(Note).where(Note.id == target.id).values(state="deleted"))
+    await context.recordings.tick()
+    assert context.read("voice-pending/" + recording.id, None) is None
+    assert voice.summary(person["id"])["signatures"] == []
+    assert voice.assignments("person:" + person["id"]) == []
+    assert unknown not in voice.unknown_summaries()
+
+
 @pytest.mark.parametrize(
     "crash",
     [
@@ -88,10 +146,19 @@ async def test_merge_replays_each_interruption_and_preserves_intervening_edit(
     store, monkeypatch, crash
 ):
     from coppermind_store import indexer
+    from coppermind_store.voice_store import VoiceStore
 
     from coppermind import atomicio
 
     context, recording, generated, target, payload = await prepare(store)
+    voice = VoiceStore(context)
+    voice_id = voice.capture_unknown(
+        generated.id,
+        "Speaker 1",
+        "today",
+        30,
+        [{"model": "voice", "version": "1", "vector": [1.0, 0.0]}],
+    )
     before = target.body
     original_write = context.write
     original_drop = indexer.drop_note
@@ -170,6 +237,8 @@ async def test_merge_replays_each_interruption_and_preserves_intervening_edit(
     await context.lifecycle.resume_recording_merges()
     receipt = context.read("recording-merges/" + recording.source_id, {})
     assert receipt["state"] == "complete", receipt.get("error")
+    assert voice.unknown_summaries()[voice_id]["signatures"][0]["note_id"] == target.id
+    assert voice.assignments(voice_id)[0]["note_id"] == target.id
     result = await store.get_note(target.id)
     assert result.body.startswith(before)
     assert result.body.count("## Recording summary") == 1

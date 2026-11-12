@@ -80,7 +80,17 @@ async def relabel_recording(
         VoiceStore(context).purge(set(), {assignment["note_id"]})
         return
     recording = next(
-        (r for r in context.recordings.jobs() if r.note_id == note.id and r.source_id), None
+        (
+            r
+            for r in context.recordings.jobs()
+            if r.source_id
+            and (
+                r.source_id == assignment.get("source_id")
+                if assignment.get("source_id")
+                else r.note_id == note.id
+            )
+        ),
+        None,
     )
     if recording is None:
         return

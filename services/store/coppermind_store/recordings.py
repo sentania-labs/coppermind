@@ -647,23 +647,29 @@ class Recordings:
         try:
             if not job.transcribed or not job.note_id:
                 return False
+            receipt = (
+                self.context.read("recording-merges/" + job.source_id, {}) if job.source_id else {}
+            )
+            if receipt and receipt.get("state") != "complete":
+                return False
+            note_id = self.parent_note_id(job)
             async with store.session_factory() as session:
-                row = await session.get(Note, job.note_id)
+                row = await session.get(Note, note_id)
             if (
                 row is not None
                 and row.state != "deleted"
-                and self.context.read("review-completions/" + job.note_id, {}).get("state")
+                and self.context.read("review-completions/" + note_id, {}).get("state")
                 == "applying"
             ):
                 return False
             if row is None:
-                if not await self._purged(job.note_id):
+                if not await self._purged(note_id):
                     return False
             elif row.state == "deleted":
                 (self.context.root / "voice-pending" / (job.id + ".json")).unlink(missing_ok=True)
                 from coppermind_store.voice_store import VoiceStore
 
-                VoiceStore(self.context).purge(set(), {job.note_id})
+                VoiceStore(self.context).purge(set(), {note_id})
                 if not (row.filed and row.reviewed):
                     return False
             elif not (row.filed and row.reviewed):
@@ -681,7 +687,7 @@ class Recordings:
             if deleted:
                 await self._remove_audio(job)
                 return self._audio_removed(job)
-            note = await store.get_note(job.note_id)
+            note = await store.get_note(note_id)
             reviewed_key = store.control.schema().role("reviewed_key")
             if note.frontmatter.get(reviewed_key) is not True or not note.filed:
                 return False
@@ -718,20 +724,20 @@ class Recordings:
                 if isinstance(cited, list):
                     fields[artifacts_key] = [item for item in cited if item != job.artifact_id]
                 note = await store.replace_note(
-                    job.note_id,
+                    note_id,
                     ReplaceNote(frontmatter=fields, body=body),
                     note.content_hash,
                 )
             # Serialize against API note edits and recheck both the file and filing mirror.
             from coppermind_store.notes import _bytes_at
 
-            relative, path = await store._locate(job.note_id)
-            async with store._lock_for(job.note_id):
+            relative, path = await store._locate(note_id)
+            async with store._lock_for(note_id):
                 _, fields, _ = _bytes_at(
-                    job.note_id, relative, path, store.control.schema(), note.content_hash
+                    note_id, relative, path, store.control.schema(), note.content_hash
                 )
                 async with store.session_factory() as session:
-                    row = await session.get(Note, job.note_id)
+                    row = await session.get(Note, note_id)
                     if (
                         not row
                         or not row.filed
@@ -740,10 +746,10 @@ class Recordings:
                     ):
                         return False
                 await self._remove_audio(job)
-            note = await store.get_note(job.note_id)
+            note = await store.get_note(note_id)
             if receipt in note.body:
                 await store.replace_note(
-                    job.note_id,
+                    note_id,
                     ReplaceNote(
                         frontmatter=note.frontmatter, body=note.body.replace(receipt, finished)
                     ),

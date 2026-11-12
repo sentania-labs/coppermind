@@ -124,6 +124,25 @@ class VoiceStore:
                 assignment["note_id"] = note_id
         self._save(data)
 
+    def reparent_recording(self, old_note_id: str, note_id: str, source_id: str) -> None:
+        """Keep all voice data reachable after a recording note is merged."""
+        data = self._load()
+        for group in (data.get("people", {}), data.get("unknowns", {})):
+            for voice in group.values():
+                for signature in voice.get("signatures", []):
+                    if signature.get("note_id") == old_note_id:
+                        signature["note_id"] = note_id
+        for collection in ("assignments", "rejections", "deferred"):
+            for entry in data.get(collection, []):
+                if entry.get("note_id") == old_note_id:
+                    entry["note_id"] = note_id
+                    if collection == "assignments":
+                        entry["source_id"] = source_id
+                    if collection == "deferred" and isinstance(entry.get("assignment"), dict):
+                        entry["assignment"]["note_id"] = note_id
+                        entry["assignment"]["source_id"] = source_id
+        self._save(data)
+
     def unknown_summaries(self) -> dict[str, dict[str, Any]]:
         """Return source information without exposing biometric vectors."""
         data = self._load()

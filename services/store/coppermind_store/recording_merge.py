@@ -42,6 +42,7 @@ async def apply(context, receipt):
     from coppermind_store import indexer
     from coppermind_store.fs import content_hash, resolve
     from coppermind_store.sources import _external_id_claim_path
+    from coppermind_store.voice_store import VoiceStore
 
     source_id, generated_id, target_id = (
         receipt["source_id"],
@@ -143,7 +144,7 @@ async def apply(context, receipt):
         # Do not remove a recording note with human edits, even after confirmation.
         target_path = (await store._locate(target_id))[1]
         generated_path = resolve(store.notes_root, receipt["generated_path"])
-        async with store._lock_for(target_id), store._lock_for(generated_id):
+        async with context.lock, store._lock_for(target_id), store._lock_for(generated_id):
             target_bytes = target_path.read_bytes()
             target_frontmatter, target_body = fm.parse(target_bytes.decode())
             if (
@@ -173,10 +174,13 @@ async def apply(context, receipt):
                     raise ValueError(
                         "A note changed. The recording note was kept; refresh and retry."
                     )
+                VoiceStore(context).reparent_recording(generated_id, target_id, source_id)
                 generated_path.unlink()
                 sync_directory(generated_path.parent)
             elif not context.read("retired-recordings/" + generated_id, {}):
                 raise ValueError("The recording note is unavailable. It was not retired.")
+            else:
+                VoiceStore(context).reparent_recording(generated_id, target_id, source_id)
             async with transaction(store.session_factory) as session:
                 await session.execute(
                     sa.update(Note)
