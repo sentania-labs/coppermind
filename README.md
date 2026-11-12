@@ -33,53 +33,69 @@ credentials and a default API key, and writes the settings, frontmatter
 schema and API key hash with working defaults. Nothing has to be hand
 populated before the stack runs.
 
-Open Admin at `http://127.0.0.1:8082/admin`. On the first visit it asks for the
-one-time claim code and the admin password you want to use, which has to be at
-least 12 characters. Read the code from the restricted bootstrap file:
+On first start the bootstrap container prints a setup link, a one-time
+setup code on the end of Admin's address:
+
+```text
+Open this link to set up Coppermind:
+
+    http://127.0.0.1:8082/admin/welcome?code=XXXX-XXXX-XXXX
+```
+
+Read it again at any time with `docker compose logs bootstrap`; the same code
+is also in the restricted bootstrap file:
 
 ```bash
 docker compose run --rm --no-deps --entrypoint cat bootstrap \
   /data/state/internal/claim-code
 ```
 
-Claiming deletes that code. Admin then requires a password-backed browser
-session, which lasts the configured 12-hour default. The session lives in the
-signed cookie itself, not in a database row: Log out clears it from that
-browser, and the same session cannot be cut off anywhere else, so a token
-already copied out stays good until its 12 hours are up. Re-claiming with a
-new password is what ends every session at once, and the recovery steps below
-are how you do it. Admin's Home lists what needs attention (failed imports,
-suggestions and filing, with a link to the remedy) and the menu is Home,
-Imports, Review status, Calendar, People and Settings. Obsidian's 'Default
-location for new attachments' is a per-device setting that defaults to the
-notes filesystem root; set it from Settings > Files & links > Default location
-for attachments so new attachments land where your filing rules expect them.
+The link opens "Welcome to Coppermind" with the code filled in. Type the
+admin password you want to use twice; it has to be at least 12 characters.
+Saving it uses up the code, signs you straight in and opens the setup guide
+at `/admin/setup`: the password, Obsidian Sync, the Obsidian companion, then
+the optional suggestions, transcription and calendar. The link starts with
+`COPPERMIND_ADMIN_URL` (see `.env.example`).
 
-Forgot the admin password, or need to cut off a session cookie that got away
-from you? Both have the same answer: remove the admin record and claim again.
-The bootstrap container issues a fresh claim code whenever that record is
-absent:
+Admin then requires a password-backed browser session, which lasts the
+configured 12-hour default (Settings, Password and signing in). The session
+lives in the signed cookie itself, not in a database row: Sign out clears it
+from that browser, and the same session cannot be cut off anywhere else by
+signing out, so a token already copied out stays good until its 12 hours are
+up. Changing the password, under Settings, Password and signing in, is what
+ends every other session at once. Admin's Home lists what needs you, with a
+link to the remedy, and the menu is Home, Setup guide (until setup is finished), Notes,
+Recordings and imports, Calendar, People and voices, Obsidian Sync, AI services,
+Suggestions, Transcription, Connected apps, Storage and Settings. Obsidian's
+'Default location for new attachments' is a per-device setting that defaults
+to the notes filesystem root; set it from Settings > Files & links > Default
+location for attachments so new attachments land where your filing rules
+expect them.
+
+Forgot the admin password? Start the stack once asking for a new setup link:
 
 ```bash
-docker compose run --rm --no-deps --entrypoint rm bootstrap /data/state/admin.json
-docker compose up -d
+COPPERMIND_ADMIN_NEW_SETUP_LINK=1 docker compose up -d
+docker compose logs bootstrap
 ```
 
-Then read the new code the same way as above and claim Admin a second time.
-Claiming writes a new session signing secret beside the new password hash, so
-every cookie issued under the old password is refused immediately. PostgreSQL
-is not involved. Nothing else is touched: the notes filesystem, its database
-records, the API keys and the internal credentials all stay as they are. Do
-not rebuild the `data` volume for this. That destroys the notes filesystem to
-reset one password.
+Bootstrap prints "Open this link to choose a new Admin password". The link
+works once, and for one hour after it was issued; choosing a password with it signs you in and writes a new session
+signing secret beside the new password hash, so every cookie issued under the
+old password is refused immediately. Start again without the variable (or
+with it at 0) afterwards, because every start with it at 1 issues a fresh
+link. PostgreSQL is not involved. Nothing else is touched: the notes
+filesystem, its database records, the API keys and the internal credentials
+all stay as they are. Do not rebuild the `data` volume for this. That
+destroys the notes filesystem to reset one password.
 
 Admin is published on `127.0.0.1:8082` and nowhere else, with no setting to
 move it. Its session cookie is always Secure, which a browser honours on that
-loopback address and not on a plain HTTP one, and its login has no attempt
+loopback address and not on a plain HTTP one, and its sign-in has no attempt
 limiting yet, so reaching Admin from another machine is a later increment and
 not a value to change here. That cookie is a live credential for its 12 hours:
-if one gets out of the browser holding it, re-claim with a new password as
-described above, because clicking Log out will not reach it.
+if one gets out of the browser holding it, change the password as described
+above, because clicking Sign out will not reach it.
 
 Read the default API key from its restricted bootstrap volume into the
 current shell:
@@ -90,8 +106,8 @@ COPPERMIND_KEY="$(docker compose run --rm --no-deps --entrypoint cat bootstrap \
 ```
 
 Revoke that default once you have minted your own key. A revoked default is
-never minted again, and it stops authenticating as soon as the API's cache
-next loads, but the file above still holds the dead credential until the next
+never minted again, and it stops authenticating within about two seconds,
+but the file above still holds the dead credential until the next
 `docker compose up` replaces it with a sentence saying it was revoked.
 
 Bootstrap mints the default once and never a second time. Lose the
@@ -251,14 +267,21 @@ does not reduce memory use. The key needs both `sources:write` and
 
 The generated OpenAPI document is at `http://127.0.0.1:8080/openapi.json`.
 
-Use Admin's [API Keys page](http://127.0.0.1:8082/admin/keys) to list, create
-and revoke keys. Creation shows the credential exactly once; copy it before
-leaving the result page. Choose its scopes, move callers to it, then confirm
-revocation of the old key. Changes reach the API within five minutes.
+Use Admin's [Connected apps page](http://127.0.0.1:8082/admin/apps) to list,
+add and remove keys. Adding one starts from what is being connected (an AI
+assistant or agent, an automation that sends things in, or something else
+with its permissions ticked one by one); the key is shown exactly once, with
+this server's address, so copy it before leaving the page. Each app's own
+page changes what it may do, replaces its key or removes it. The Obsidian
+companion needs no pasted key: it pairs with a six-digit code shown in Admin
+(see `POST /v1/pair` in [the API reference](docs/api.md)). The API reads the
+key records again when they are more than two seconds old, so a removed key
+stops working at once and a new key works within about two seconds.
 
-The [Settings page](http://127.0.0.1:8082/admin/settings) edits every product
-setting with its default and help text. A stale form is refused; reload it
-before saving again.
+The [Settings page](http://127.0.0.1:8082/admin/settings) holds the time
+zone, password and signing in, folders, note properties, tags, search and
+advanced timing. A save is made against the settings file's current revision,
+so a change made elsewhere in the meantime is not overwritten.
 
 If Admin is unavailable, the Store command remains a recovery path. It prints
 a new credential once and keeps only its hash:
@@ -277,25 +300,36 @@ docker compose exec git git -C /data/notes log --stat
 ```
 
 Open [Obsidian Sync in Admin](http://127.0.0.1:8082/admin/sync) after signing
-in. Choose Standard or Plus, a new encrypted remote vault name (or explicitly
-join an existing remote vault), and a device name. Enter the Obsidian email,
-password, optional MFA code, and the encryption password twice. Joining an
-existing remote vault merges its content with this notes filesystem.
+in. It connects in steps. Sign in to Obsidian with the account's email and
+password, and the sign-in code if the account asks for one. Pick a vault from
+the account's list (a vault locked with its own password asks for that
+password) or make a new one for Coppermind, which starts empty. Name this
+server, which is how it appears in Obsidian's list of devices, and connect.
+Joining an existing remote vault merges its content with this notes
+filesystem.
 
-The helper installs official `obsidian-headless` 0.0.14. Connect logs in,
-creates or finds the named remote vault, configures `/data/notes`, and starts
-continuous sync. Pause, resume and disconnect are on the same Admin page.
-A restart resumes a saved connection unless it was paused. Disconnect unlinks
-the local client and logs out; it does not delete the remote vault.
+The helper installs official `obsidian-headless` 0.0.14. Connect sets the
+chosen remote vault up on `/data/notes` and starts continuous sync. Pause,
+resume and disconnect are on the same Admin page. A restart resumes a saved
+connection unless it was paused. If Obsidian later signs this server out,
+Admin asks to sign in again, and only the password is needed: the helper
+remembers which account it connected with in
+`/var/lib/obsidian-sync/coppermind-account` on its credential volume. Disconnect
+unlinks the local client, logs out and forgets that account; it does not
+delete the remote vault.
 
-Submitted credentials are not saved or rendered back. The resulting account
+Submitted passwords and sign-in codes are not saved or rendered back; only the
+account's email address is kept, in the file above. The resulting account
 token and encryption key belong on `obsidian-sync-credentials`, mounted at
 `/var/lib/obsidian-sync`, outside the data backup. The client also keeps its
 configuration and sync database there. Restoring data without that volume
 requires disconnecting the stale connection and connecting again.
 
 Status includes `real_sync_supported: true`, remote vault and device names,
-and the configuration returned by `ob sync-status --json`. Version 0.0.14
+the configuration returned by `ob sync-status --json`, `needs_signin` (Obsidian
+signed this server out and sync waits for a sign-in) and `account_known`
+(signing in again asks only for the password). The devices that changed notes
+most recently are published in `/data/state/sync/devices.json`. Version 0.0.14
 does not report delivery time, so `last_sync_at` is null. `liveness` remains
 `child_process_only`: a running child does not prove that a note reached a
 phone. `simulated` identifies the stand-in used by `make sync-smoke`.
@@ -306,7 +340,7 @@ lifecycle through Admin; neither ran in the FDY-0179 worker, which has no
 Node or Docker. No real account is used in CI. The operator must connect the
 phone to the same remote vault and verify delivery there.
 
-The plan selector resolves the configured file and total limits using the
+The `sync.plan` setting resolves the configured file and total limits using the
 [Obsidian plan limits](https://obsidian.md/help/sync/plans), with existing
 explicit overrides preserved. It does not change the purchased subscription;
 the remote service enforces the account's actual limits.
@@ -319,7 +353,7 @@ JSON request from stdin or a file path; never put credentials in its arguments.
 
 | Service | Does | State |
 |---|---|---|
-| `api` | the public contract on `:8080` | five-minute key cache; no durable state |
+| `api` | the public contract on `:8080` | two-second key cache; no durable state |
 | `admin` | server-rendered operator interface on `:8082` | password hash and session signing secret in `/data/state/admin.json`; session state in its signed cookie |
 | `store` | the only process that writes the notes filesystem | `/data`, one replica always |
 | `git` | records the history of the notes filesystem; no network, no credential | `/data/notes/.git`, one replica always |
@@ -376,8 +410,9 @@ event details show their export and file provenance. No calendar identification
 is required. Supported documents, images, audio and video are stored as artifacts.
 Markdown is not an artifact: it follows the normal note workflow. Once a file is
 safely stored the folder empties itself; a file that cannot be handled moves to
-`Dropbox/Failed` with a reason sidecar, and moving it back retries it. Admin
-Dropbox shows receipts you can dismiss, while Calendar keeps import history.
+`Dropbox/Failed` with a reason sidecar, and moving it back retries it. Admin's
+Recordings and imports page lists files that could not be taken in, each with
+a Remove, while Calendar keeps import history.
 Completed receipts clear after seven days; failures remain until dismissed. Uploads support
 200,000,000 bytes with bounded ZIP expansion. See
 [calendar intake and upgrade](docs/calendar-enrichment.md) and the

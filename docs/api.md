@@ -13,7 +13,8 @@ The story behind these decisions is [architecture.md](architecture.md).
   The `cm_` prefix exists so an automated secret scanner can recognize a
   leaked key on sight. Keys are hashed (argon2) and shown exactly once, at
   creation.
-- Every route needs a scope: `sources:read`, `sources:write`, `notes:read`,
+- Every route except `POST /v1/pair` (see [Companion pairing](#companion-pairing))
+  needs a scope: `sources:read`, `sources:write`, `notes:read`,
   `notes:write`, `notes:move`, `notes:delete`, `artifacts:read`,
   `artifacts:write`, `journal:read`, `journal:write`, `search:read`,
   `admin:read`, `admin:write`, `admin:purge`, `entities:read`,
@@ -22,8 +23,9 @@ The story behind these decisions is [architecture.md](architecture.md).
   every scope except `admin:purge`, `entities:read` and `entities:write`,
   which are granted only when named. Keys minted before the artifact scopes
   existed do not gain them; mint a key that holds them.
-- Admin's own pages use a signed session cookie; its `/v1/admin/*` API
-  endpoints accept either that cookie or a key holding an `admin:*` scope.
+- Admin's own pages use a signed session cookie and a CSRF form token; Admin
+  has no `/v1` routes of its own. The public API's `/v1/admin/purge/*` routes
+  take a key holding `admin:purge`.
 - Every non-2xx response is the same shape: `{"error": "<code>", "message":
   "<human text>", ...extra fields the specific error needs}`.
 - Listing endpoints page with an opaque cursor: `?cursor=<opaque>&limit=<1 to
@@ -111,9 +113,8 @@ never match. No note body or frontmatter is rewritten by filtering or backfill.
 Declaring or changing a field automatically schedules a typed-index rebuild.
 Until it finishes, queries involving that field return 503
 `field_index_not_ready` with a `job_id`, never misleading empty results.
-Unchanged ready fields remain queryable. Admin's **Field index** page shows
-per-field readiness, progress, failed rebuilds, and paginated paths with invalid
-values. Rebuild retries a failed job or reconstructs this derived index. Requests made
+Unchanged ready fields remain queryable. Rebuilding retries a failed job or
+reconstructs this derived index. Requests made
 while a refresh is running are persisted for the next pass and survive restart. The
 worker checks for schema changes every ten seconds. A rebuild uses a database
 write barrier of up to 30 seconds plus a two-second lock acquisition timeout;
@@ -131,8 +132,8 @@ notes only, never generated source pages.
 
 The internal Admin calls are `POST /internal/v1/field-index/status?offset=0`
 and `POST /internal/v1/field-index/rebuild` (202). They require the internal
-token. `/admin/field-index` and its rebuild form require an Admin session and
-CSRF token. Index rows are maintained in the same transaction as mirror writes;
+token. In Admin, Settings, Search's Rebuild search button rebuilds this index
+together with the text index, behind the Admin session and CSRF token. Index rows are maintained in the same transaction as mirror writes;
 metadata reconstruction repopulates them. Migration 0009 adds only derived
 tables and a trigger. Its downgrade removes those objects without changing notes.
 
@@ -303,10 +304,12 @@ and searchable by its title and metadata.
 
 A recording can be handed in without a transcript or a summary. Coppermind sends it to
 a transcription service, files the speaker-labelled text as the note's source, and
-lands the note in Review like any other intake. This needs a transcription service set
-up under Settings, then Model connections, in Transcription setup in Admin (see
-[Transcription service](data-and-settings.md#transcription-service)); without one the
-route refuses with a plain message.
+lands the note in Review like any other intake. This needs transcription turned on in
+Admin's Transcription page, with an AI service whose test showed it can write up
+recordings (see
+[Transcription service](data-and-settings.md#transcription-service)); a recording
+handed in while transcription is off is accepted and kept, waits with a plain message,
+and is written up once transcription is turned on.
 
 It takes two steps, so the recording never has to be held whole in a request:
 
@@ -417,36 +420,51 @@ again under a new `external_source_id`, which transcribes it again.
 
 | Method and path | Scope | What it does | Success | Failure |
 |---|---|---|---|---|
-| `GET /v1/search` | `notes:read`; artifact hits only with `artifacts:read` (without it they are left out and the search still succeeds) | Full-text search over reviewed, successfully filed note bodies and titles, their approved generated source pages under the sources folder, and the extracted text of every stored artifact (indexed when stored, with no review gate, because nothing about an artifact is a person's unreviewed draft). `q` (1 to 500 characters) is read the way a search box is: words, `"quoted phrases"`, `or`, and `-word` to exclude. English stemming applies, so `runs` also finds `running`, and an excluded word is excluded in every form: `budget -runs` finds no note that says `running`. Takes every listing filter (`folder, reviewed, type, context, account, from, to, tag, state`) with listing's meaning (`account` matches any entry of a note's list, `from` and `to` take the day from `date`; a frontmatter filter matches notes only, while `tag` matches notes and artifacts), plus `kind` (`note`, `source` or `artifact`) and `citing_note` (only artifacts that note cites), and pages the same way, by `cursor` and `limit`. `mode` is `hybrid` (the default) or `keyword`: with an embeddings model set up under Admin's Search index page and answering, `hybrid` also finds passages by meaning (so "the call about the licensing change" finds a transcript that never says "licensing") and fuses the two rankings, and `keyword` never calls the model. With no embeddings model, or one that is not answering, either mode answers from full-text search alone and the search still succeeds; it never waits long on the model. A cursor belongs to the ranking that produced its page, so if the ranking changes between pages (the model stopped answering, or started again) the next page answers 422 and the client searches again from the first page; a cursor from before meaning search existed pages as `keyword`. A hybrid answer covers the best 500 keyword matches and the 100 nearest passages by meaning, so use `mode=keyword` to page through every keyword match | 200, page of `{id, kind, title, path, folder, excerpt, rank, state, match}`, best match first. `match` is `keyword`, `meaning` or `both`, how the hit was found. A hit found only by meaning has an excerpt taken from its closest passage, with no `**` markers. `kind` is `note`, `source` for a generated source page (whose `id` is the source identifier), or `artifact` (whose `id` is the artifact identifier and whose `excerpt` comes from the extracted text, so an agent can use the hit without fetching the file). `excerpt` is a short passage with every matched word between `**` markers. `rank` orders one answer and means nothing across answers | 422 `validation_error` for an empty `q`, a bad filter, a cursor from a different `q`, or a cursor whose ranking has changed since its page; 503 `metadata_unavailable`, never an empty page |
-| `GET /v1/notices` | `notes:read`; a notice about an artifact only with `artifacts:read` (without it, those are left out) | Current notices, newest first: what Coppermind moved back after a move or rename by hand in the vault. Each is `{note_id, title, from_path, path, reason, at, kind}`: `kind` is `note`, `folder` or `artifact`, `note_id` is the note's or the artifact's identifier, `from_path` is where the file was found and `path` where it went back. An artifact's reason says it is filed by the month it arrived, a move or rename in Obsidian is not kept, and nothing needs doing. The same list Admin's Home and Artifacts page show. A notice about a note or artifact that no longer exists is dropped | 200, list | 503 `metadata_unavailable` |
+| `GET /v1/search` | `notes:read`; artifact hits only with `artifacts:read` (without it they are left out and the search still succeeds) | Full-text search over reviewed, successfully filed note bodies and titles, their approved generated source pages under the sources folder, and the extracted text of every stored artifact (indexed when stored, with no review gate, because nothing about an artifact is a person's unreviewed draft). `q` (1 to 500 characters) is read the way a search box is: words, `"quoted phrases"`, `or`, and `-word` to exclude. English stemming applies, so `runs` also finds `running`, and an excluded word is excluded in every form: `budget -runs` finds no note that says `running`. Takes every listing filter (`folder, reviewed, type, context, account, from, to, tag, state`) with listing's meaning (`account` matches any entry of a note's list, `from` and `to` take the day from `date`; a frontmatter filter matches notes only, while `tag` matches notes and artifacts), plus `kind` (`note`, `source` or `artifact`) and `citing_note` (only artifacts that note cites), and pages the same way, by `cursor` and `limit`. `mode` is `hybrid` (the default) or `keyword`: with search by meaning turned on under Admin's Settings, Search and its AI service answering, `hybrid` also finds passages by meaning (so "the call about the licensing change" finds a transcript that never says "licensing") and fuses the two rankings, and `keyword` never calls the model. With no embeddings model, or one that is not answering, either mode answers from full-text search alone and the search still succeeds; it never waits long on the model. A cursor belongs to the ranking that produced its page, so if the ranking changes between pages (the model stopped answering, or started again) the next page answers 422 and the client searches again from the first page; a cursor from before meaning search existed pages as `keyword`. A hybrid answer covers the best 500 keyword matches and the 100 nearest passages by meaning, so use `mode=keyword` to page through every keyword match | 200, page of `{id, kind, title, path, folder, excerpt, rank, state, match}`, best match first. `match` is `keyword`, `meaning` or `both`, how the hit was found. A hit found only by meaning has an excerpt taken from its closest passage, with no `**` markers. `kind` is `note`, `source` for a generated source page (whose `id` is the source identifier), or `artifact` (whose `id` is the artifact identifier and whose `excerpt` comes from the extracted text, so an agent can use the hit without fetching the file). `excerpt` is a short passage with every matched word between `**` markers. `rank` orders one answer and means nothing across answers | 422 `validation_error` for an empty `q`, a bad filter, a cursor from a different `q`, or a cursor whose ranking has changed since its page; 503 `metadata_unavailable`, never an empty page |
+| `GET /v1/notices` | `notes:read`; a notice about an artifact only with `artifacts:read` (without it, those are left out) | Current notices, newest first: what Coppermind moved back after a move or rename by hand in the vault. Each is `{note_id, title, from_path, path, reason, at, kind}`: `kind` is `note`, `folder` or `artifact`, `note_id` is the note's or the artifact's identifier, `from_path` is where the file was found and `path` where it went back. An artifact's reason says it is filed by the month it arrived, a move or rename in Obsidian is not kept, and nothing needs doing. The same list Admin's Home shows. A notice about a note or artifact that no longer exists is dropped | 200, list | 503 `metadata_unavailable` |
 | `POST /v1/notices/{note_id}/dismiss` | `notes:write`; an artifact's notice also needs `artifacts:write` | Hide a notice. Nothing moves: the file stays where Coppermind put it. Dismissing a notice that is already gone succeeds | 204 | 403 `forbidden`; 503 |
 | `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, artifacts, artifacts_returned, rejected_ingests, name_collisions, unparseable_files, excluded_count, notes_folder, notes_to_refile, notes_returned, folders_kept, filing_failures, filing_queue_depth, filing_ready_depth, filing_estimated_drain_s, filing_last_progress_at, filing_stalled, calendar_import_failures, known_unreadable, purge_problems, active_problems}`, computed from the metadata mirror, recorded rejections and import receipts; `active_problems` counts every Problems row except intentional exclusions and returned-note notices, including calendar, Dropbox, retention purge and artifact problems; `purge_problems` counts the retention purge ones; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false`; `notes_folder` is the fallback reviewed-notes root, `notes_to_refile` counts reviewed notes still awaiting the move into their `{type}/{yyyy}/{yyyy-mm}/` layout, and `notes_returned` and `folders_kept` count the current `returned_note` and `folder_kept` notices | 200 | 503 `metadata_unavailable` or `store_unavailable` |
 | `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /openapi.json` | none | Process liveness, real readiness (checks PostgreSQL and the notes filesystem), Prometheus metrics, the generated API contract | 200 | 503 on `/readyz` when a real dependency is down |
 
+## Companion pairing
+
+| Method and path | Scope | What it does | Success | Failure |
+|---|---|---|---|---|
+| `POST /v1/pair` | none (the one `/v1` route that takes no API key: the companion has none yet) | Trade the six-digit pairing code shown in Admin (Setup guide, or Connected apps, Pair) for the Obsidian companion's own key, from `{code, device}`; `device` (optional, up to 120 characters) names the key "Obsidian companion on <device>". The code works once, for ten minutes. A client that guesses wrong ten times is refused for that code, a hundred wrong guesses from anywhere spend it, and each client is answered no faster than once a second | 200, `{credential, name}`: the key, shown this once, and its name | 403 `pairing_refused` for a wrong, spent or expired code; 422 `validation_error` |
+
 ## Admin: pages and their endpoints
 
-Admin is server-rendered; every page below has a matching JSON endpoint.
-Every product setting that exists gets a page and control here, with a
+Admin is server-rendered. Every page is behind the signed session cookie, and
+every form carries a CSRF token. Admin has no JSON API of its own: each page
+reads and acts through one internal store route, `POST
+/internal/v1/admin/{action}` with a JSON body, protected by the internal token
+(the action table is `_handlers` in
+`services/store/coppermind_store/admin_service.py`). A refusal a person can act
+on comes back as `{"refused": {...}}` with status 200, so the page can say why
+on the page it was asked from; other failures use the usual error shape.
+Settings, keys and the schema are control state files Admin writes itself,
+under their revision check, and Obsidian Sync goes to the sync helper's control
+endpoint. Every product setting a person needs has a control here, with a
 working default already in place, per the standing rule that nothing ships
 requiring hand-populated configuration.
 
 | Page | Endpoints | What it is for |
 |---|---|---|
-| Claim (first boot) | `POST /v1/admin/claim {code, password}` | Set the admin password using the one-time code the store logged and wrote to `/data/state/internal/claim-code` |
-| Login, logout | `POST /v1/admin/login`, `POST /v1/admin/logout` | Password-backed session |
-| Home (`/admin`, formerly Overview) | `GET /v1/admin/status`, `POST /v1/admin/notices/{id}/dismiss` | Opens with Needs attention: every open item from Problems, failed imports and Dropbox files, a stopped suggestion worker and failed initial suggestion jobs, each with a link to its remedy, or an all-clear only when every read succeeded; a failed suggestion job for a note that is reviewed and filed, or whose note is gone, is settled and not shown. The attention read is capped at 50 items per list and reports failed jobs not checked once 50 open ones are found. Then the number of notes awaiting review (a link to Review status), recent activity (the latest imports, and every artifact or note moved or renamed by hand in Obsidian and returned to its folder: the title, where it was found, where it went back, when and why, with a Dismiss that only hides the notice) and a collapsed filing summary (Filing in progress, Filing needs attention or Filing complete, with counts and last progress) |
-| Problems | `GET /v1/admin/notes/problems` | Every refused ingest, name collision (several files carrying one note identity) and unparseable file, each linked to the note or source it is about. Also lists failed calendar imports, unsupported or failed Dropbox receipts and calendar conflicts, unfinished or abandoned retention purges, unreadable purge receipts and damaged source bundles, artifacts whose browsable copy changed on a device or whose text could not be extracted (`artifact`), and bare notes the store refused to adopt, with the cause (`adoption`), per-note filing errors (`filing`), missing notes (`missing`), path disagreements (`path_notice`), unreadable notes (`unreadable_note`), hand-moved reviewed notes returned to their filed folder (`returned_note`), old month folders left because they still hold files (`folder_kept`), and reviewed notes whose type names a folder Coppermind owns, which file under the configured notes folder instead (`reserved_type`). The Admin page opens with the same filing summary as Home (without Home's link back to this page), built from `GET /v1/status`. Each row has a snake_case `kind` slug; the calendar, Dropbox and artifact rows use `calendar_import` (a failed import receipt), `dropbox` (a failed or unsupported Dropbox file), `calendar_conflict` (two sources disagree on one event at the same revision: the stored copy is kept and the import still succeeds) and `artifact`. For calendar conflicts the receipt counts are the events actually written (`event_count`) and the events kept as stored (`kept_count`). Computed from the mirror, recorded rejections and import receipts; nothing is ever written into a note |
-| Artifacts (`/admin/artifacts`) | `POST /v1/admin/artifacts/{id}/remove`, `POST /v1/admin/notices/{id}/dismiss` | Every stored artifact: title (with, when it did not arrive through the API, where it came from), received date, size, path in Obsidian or link, the citing notes by title, text status and revision, laid out to read at 1280 pixels wide without a date, path or button wrapping. Artifacts moved by hand and returned to their folder are listed above the table with the same notices Home shows. Remove, after a confirmation page that shows the identifier and says what happens to a file (the copy in Obsidian is deleted, search forgets it, the stored file is kept until the retention purge) or to a link (nothing in Obsidian changes; it is no longer listed or searchable; notes keep the address), takes the browsable copy, the record and the search entry away; the archived bytes stay under the artifact identity until the retention purge removes them (see [Retention purge](#retention-purge-implemented)) |
-| API keys | `GET/POST /v1/admin/keys`, `DELETE /v1/admin/keys/{key_id}` | Create (secret shown once), list, and revoke keys graphically instead of through the store's command line |
-| Obsidian Sync | `GET /v1/admin/sync`, `POST /v1/admin/sync/connect`, `POST /v1/admin/sync/token`, `POST /v1/admin/sync/pause`, `/resume`, `/disconnect` | Connect with email, password, optional MFA, and a vault name or a pasted token; reveal a token once, with a hint for sealing it into GitOps; pause and resume around bulk operations |
-| Settings | `GET/PUT /v1/admin/settings {if_revision, body}` | Every key in the settings table below, grouped by section |
-| Frontmatter schema | `GET/PUT /v1/admin/schema`, `POST /v1/admin/schema/rename-key {from, to}` | Keys, kinds, and vocabularies; a save is refused, with the reason, when an enum's `default`, or a `required_when` value, is not among the allowed values of the key it names, which also blocks removing an allowed value the default uses; renaming a key runs the migration job that rewrites every note through the store |
-| Fields and tags (`/admin/fields`) | `POST /v1/admin/fields {revision, ...}` | Add, edit and retire keys (kind, required and required when, allowed values each with a one-line meaning, default, guidance); every tag in use with its note count from the mirror, a meaning and aliases per listed tag, and open or closed tags. Saves with the same revision check Settings uses; the role map is carried over untouched, and nothing here rewrites a note |
-| Filing rules | `GET/PUT /v1/admin/rules`, `POST /v1/admin/rules/preview {note_id}` | The ordered rules a note is filed by, with a dry run ("what would this note file as") before committing to a change |
-| Search index (`/admin/search-index`) | `POST /v1/admin/search-index/rebuild`, `POST /v1/admin/search-index/embeddings` | Search by meaning: the connection and embeddings model to use, and a wait limit, an "Add or edit connection" link to the Connections page that returns here, and an on switch (turning it on first asks the model for one test embedding; a refused test keeps what was typed and says what to check, always ending "Nothing was saved"), with progress through the existing content in words and a bar, what search does meanwhile, and why and until when when the model is not answering. The number of notes, source pages and artifacts indexed, the known unreadable count, when the index last changed and when it was last rebuilt, in the operator's timezone, and a Rebuild index button. A rebuild runs in the store's background, reads the notes filesystem again and replaces each entry in place, dropping those whose file is gone but keeping the last indexed text of a note that is currently unparsed; an entry whose version is unchanged keeps its embeddings, so a rebuild sends nothing to the embeddings connection; search keeps answering from the old entries until the new ones commit |
-| Retention purge (`/admin/purge`) | `POST /v1/admin/purge/preview`, `/confirm`, `/abandon`, `/settings` | Edit the retention window, preview what a manual purge would remove, confirm it, retry or abandon an unfinished one. See [Retention purge](#retention-purge-implemented) |
-| Jobs | `GET /v1/admin/jobs`, `POST /v1/admin/jobs {kind}`, `GET /v1/admin/jobs/{id}` | Run reconcile, a full rehash, rebuild metadata from disk, reindex, or rebuild projections, and see the history of each |
-| Sources | `GET /v1/admin/sources`, `GET /v1/admin/notes/problems` | Browse sources; see notes the reconciler could not parse or file |
+| Welcome (first run) | `GET/POST /admin/welcome` | Opened from the setup link bootstrap prints, `{COPPERMIND_ADMIN_URL}/admin/welcome?code=XXXX-XXXX-XXXX` (the code is also in `/data/state/internal/claim-code`). The code, prefilled, and a password typed twice; saving signs the owner in and opens the setup guide. With a new setup link (bootstrap started with `COPPERMIND_ADMIN_NEW_SETUP_LINK=1`) the same page chooses a new password once and signs every other browser out |
+| Sign in, sign out | `GET/POST /admin/signin`, `POST /admin/signout` | Password-backed session |
+| Home (`/admin`) | `overview`, `notice-dismiss` | What needs you, each with a link to its remedy, then recent activity, including notes and files moved by hand in Obsidian and returned to their folder, with a Dismiss that only hides the notice |
+| Setup guide (`/admin/setup`, `/admin/setup/companion`) | `overview`, `setup-skip`, `setup-finished`, `companion-install`, `pairing-start` | Six steps: the password, Obsidian Sync, the Obsidian companion (placed in the notes filesystem and paired with a code), then suggestions, transcription and calendar, which can be skipped. The guide leaves the menu once finished |
+| Notes (`/admin/notes`, `/admin/notes/{id}`, `/admin/notes/{id}/review`, `/admin/notes/leave-alone`) | `notes-waiting`, `notes-deleted`, `notes-alone`, `notes-find`, `note`, `note-check`, `note-no-time`, `note-gone`, `note-keep-both`, `note-replace`, `note-copy`, `note-restore`, `note-delete-for-good`, `note-summary`, `note-summary-again` | Tabs Need you, Waiting for review, Left alone on purpose and Deleted, and a find box. A note's own page says what is wrong and offers the remedy; the review page is the fallback for reviewing without the companion. On a note from a recording that is still waiting for review, Write the summary again makes a fresh summary from the same transcript with the current directions; the earlier proposal is kept until the note is reviewed, and the recording is not transcribed again. Leave alone edits the folders and patterns adoption skips |
+| Recordings and imports (`/admin/incoming`) | `incoming`, `incoming-item`, `incoming-retry`, `incoming-remove`, `incoming-accept`, `recording-delete`, `folders`, `folders-save` | Recordings, calendar files and documents handed in, and files that could not be taken in, each with its state; retry, remove, or delete a recording's audio. A recording handed in while transcription is off is kept and written up when it is turned on |
+| Calendar (`/admin/calendar`) | `calendar`, `calendar-meeting`, `calendar-add`, `calendar-choose`, `calendar-remove-file`, `calendar-max` | Calendar files, meetings and import history |
+| People and voices (`/admin/people`) | `people`, `person`, `person-remove`, `fact-correct`, `fact-add`, `fact-remove`, `voice-*` | Dossiers and voice recognition (see [dossiers](dossiers.md)) |
+| Obsidian Sync (`/admin/sync`, `/admin/sync/what`) | the sync helper's `/status`, `/login`, `/vault`, `/forget-login`, `/connect`, `/signin`, `/configure`, `/pause`, `/resume`, `/disconnect` | Connect step by step: sign in to Obsidian (email, password, sign-in code if asked), pick a vault from the account's list (a locked vault asks for its password) or make a new one, name this server, connect. Sign in again with only the password when Obsidian signs the server out; pause, resume, disconnect; what is synced |
+| AI services (`/admin/services`) | `services`, `service`, `service-add`, `service-test`, `service-save`, `service-remove` | A server or account entered once. Coppermind tests what it can do (text, embeddings, recordings) with a made-up meeting and a made-up 10-second recording, and the features choose only among services whose test showed they can do the job |
+| Suggestions (`/admin/suggestions`, `/fill`, `/summary`) | `suggestions`, `suggestions-save`, `suggestions-pause`, `suggestions-wait`, `suggestions-fill`, `suggestions-tick`, `suggestions-older`, `summary-directions`, `summary-directions-save` | Turn suggestions on with a tested service, which fields to fill, older notes. How the meeting summary is written: one box of directions per summary section (Summary, Decisions, Action items), each with Reset to default, around fixed rules that cannot be edited; used from the next summary on, and a summary already made is not written again |
+| Transcription (`/admin/transcription`) | `transcription`, `transcription-save`, `transcription-pause`, `transcription-wait`, `transcription-tries`, `transcription-retry-failed` | Turn transcription on with a service whose test showed it can write up recordings; the model and reply format are the ones the test found |
+| Connected apps (`/admin/apps`, `/new`, `/pair`, `/{id}`) | `apps`, `pairing-start`, `pairing-state` | Add a key by saying what is being connected (an AI assistant or agent, an automation, or something else with its permissions ticked); the key is shown once with this server's address. Pair the Obsidian companion with a six-digit code (see `POST /v1/pair`). Change what an app may do, replace its key, or remove it |
+| Storage (`/admin/storage`, `/cleanup`, `/deleted`, `/files`) | `storage`, `storage-keep`, `cleanup`, `cleanup-confirm`, `cleanup-cancel`, `cleanup-bring-back`, `files`, `file-remove`, `notes-deleted` | Space used, the keep time (`retention.days`), Clean up (see [Retention purge](#retention-purge-implemented)), deleted things with a way to bring them back, and stored files |
+| Settings (`/admin/settings`, `/timezone`, `/signin`, `/folders`, `/properties`, `/tags`, `/search`, `/advanced`) | `folders`, `folders-save`, `search`, `search-on`, `search-off`, `search-try`, `search-rebuild`, `support` | Time zone; password and how long a sign-in lasts; folders; note properties and tags (the frontmatter schema); search, with search by meaning and Rebuild search; advanced timing and details for support |
 
 ## The internal contract behind the public one
 
@@ -570,7 +588,7 @@ Timestamps use ISO 8601 with an offset. Multiple witnesses are expected, even
 when the event revision is unchanged or older. Pagination remains 100 records per
 section, following `next_offset`. No source filter is supported. Expanded ZIP
 limits remain 40 MiB and 100 entries; an invalid export fails atomically and
-appears in Admin Problems, while a same-revision disagreement is reported per
+appears under Admin's Recordings and imports, while a same-revision disagreement is reported per
 event on a successful receipt that keeps the stored copy. Without authentication these routes return 401;
 without the named scope they return 403.
 
@@ -605,11 +623,13 @@ abandoned token is refused with 422; run a new preview. Preview, confirm and aba
 can run long on a large vault, so the store client allows them 10 minutes.
 
 Internal equivalents are `POST /internal/v1/purge/preview`, `/confirm` and `/abandon`,
-protected by the internal token. Admin's `/admin/purge` page uses the same store
-contract through its session and CSRF guarded forms at `/v1/admin/purge/preview`
-`/confirm` and `/abandon` on the separate Admin service. `/v1/admin/purge/settings` on
-Admin saves `days` and `revision` from its form; the setting takes effect on the
-next preview. The two services keep their existing authentication boundaries.
+protected by the internal token. Admin's Storage, Clean up page
+(`/admin/storage/cleanup`) reaches the same store operations through its
+internal action route (`cleanup`, `cleanup-confirm`, `cleanup-cancel`): it lists
+what is past the keep time and deletes nothing until that list is confirmed;
+if the list changed since it was shown, it is shown again rather than acted
+on. Storage's keep time saves `retention.days`, which takes effect on the next
+list. The two services keep their existing authentication boundaries.
 
 Purge is a separate removal operation. PUT, PATCH and DELETE on
 `/v1/sources/**` still always return 405. No live-reference override exists.

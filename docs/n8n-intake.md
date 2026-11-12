@@ -182,8 +182,9 @@ Use a distinct submission ID for new material that needs its own reviewable note
 ## Available now: the recording on its own
 
 When no transcript or summary exists yet, send only the recording and let Coppermind
-transcribe it. This needs a transcription service set up in Admin (Settings, Model connections, then
-Transcription setup); without one the second call below is refused with a plain message.
+transcribe it. This needs transcription turned on in Admin (Transcription, with a service from
+AI services); while it is off the second call below is accepted, and the recording waits with a
+plain message until transcription is turned on, then is written up.
 Use an API key with `artifacts:write`, `artifacts:read`, `sources:write`, `sources:read` and
 `notes:write`; naming a stored recording for transcription needs `artifacts:read` because
 the service is sent its bytes.

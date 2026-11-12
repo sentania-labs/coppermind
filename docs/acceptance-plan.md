@@ -36,7 +36,7 @@ pass a case. Exclude credentials from anything recorded.
 
 **Timing to expect** (current defaults; use whatever is actually configured
 if it has been changed): roughly six minutes for a Git snapshot to appear
-after an edit settles; up to five minutes for a key change to take effect;
+after an edit settles; about two seconds for a key change to take effect;
 a 60-second filesystem scan with 30 seconds of quiet before a device-created
 note gets an identity; a five-minute filing sweep once the curator exists;
 a ten-minute search catch-up backstop once the indexer exists. Real phone
@@ -65,7 +65,7 @@ here, since these depend on specific pieces of work by name.
 | P2. Retry without making a mess | Resend the identical request. Then correct one source sentence and resend the same external identity after personally editing the note. | An identical replay answers 200 with `created: false`, the same source and note identifiers, one note. The changed source becomes a new revision; the earlier one stays intact on disk, and the captain's own note edit survives untouched. | Duplicate Review notes; an overwritten original; a replay that resets `reviewed` or replaces his prose. |
 | P3. See it on my phone | Follow the delivered one-time connection instructions, open the matching remote vault on the phone, and open UAT Lantern. Add "edited on my phone"; read the same ID through Coppermind. Then save another sentence through Coppermind and reopen it on the phone. | Exact content travels both directions, with the same note ID, and no repeated login on restart. | "Connected" shown next to an absent or stale note; the wrong remote vault; only a server-side stand-in was ever exercised; a login that did not actually start continuous sync. |
 | P4. Read where it came from | Follow the note's source link on the phone. Compare its transcript with the original, then repeat after P2's source correction. Retrieve the earlier revision through the documented source interface. | A readable source page, the correct source identity and latest revision, with the original artifact unchanged and still available. | A broken link or credential wall on the phone; a stale generated page; the original bytes changed; the generated page mistaken for a second, separate note. |
-| P5. Start without setup chores | Start the delivered package with no settings prepared in advance. Open Admin, claim access through the documented flow, create a scoped key, connect Obsidian graphically, and repeat P1 and P3. Change a benign setting, such as Git's debounce interval, through its control; restart and check it persisted. | Default operation works immediately. Keys and the sync connection are usable entirely from the interface. A changed setting persists and actually changes behavior. | The Admin login page renders but Keys, Connect, or Settings do not work; a save that shows success without the value actually taking effect; needing hidden YAML edits, a shell login, or a direct database edit to get there. Every advertised configurable setting needs a graphical control, not just the one exercised here. |
+| P5. Start without setup chores | Start the delivered package with no settings prepared in advance. Open Admin from the setup link bootstrap prints and choose the password, create a scoped key, connect Obsidian graphically, and repeat P1 and P3. Change a benign setting, such as Git's debounce interval, through its control; restart and check it persisted. | Default operation works immediately. Keys and the sync connection are usable entirely from the interface. A changed setting persists and actually changes behavior. | The Admin login page renders but Keys, Connect, or Settings do not work; a save that shows success without the value actually taking effect; needing hidden YAML edits, a shell login, or a direct database edit to get there. Every advertised configurable setting needs a graphical control, not just the one exercised here. |
 
 ## Later: review, filing, finding
 
@@ -126,7 +126,7 @@ suffix, and a stale mirror row can name the wrong note as unparseable.
 
 | Milestone | What the captain checks | Pass / fail |
 |---|---|---|
-| Milestone 3, lab deployment | Open the actual Admin URL, use Keys and Connect, and repeat the earlier cases with the phone against the deployed release. | Real pages and content work through the deployed route; healthy pods next to a broken Admin page is a failure. |
+| Milestone 3, lab deployment | Open the actual Admin URL, use Connected apps and Obsidian Sync, and repeat the earlier cases with the phone against the deployed release. | Real pages and content work through the deployed route; healthy pods next to a broken Admin page is a failure. |
 | Milestone 4, restore | Follow the delivered restore runbook into a separate installation, then open a known note, its original source, and its earlier history; use a restored key, search, and round-trip a phone edit. | Identifiers, content, settings, usable access, and sync all survive. Matching counts alone, empty source artifacts, missing key access, or a requirement to restore a database backup all contradict the promised recovery path. |
 | Milestone 4, attachments, trash, schema rename | Add an allowed attachment and open it on the phone; try one over the displayed plan limit. Trash a synthetic note. Rename a property through Admin's migration action. | The allowed attachment opens; the oversized one is clearly refused; the trashed note is recoverable through its documented location; the renamed property and its content stay usable on devices. |
 
@@ -141,7 +141,7 @@ through the normal build process, not around it.
 
 Use a dedicated acceptance vault. First let a synthetic note reach a Git
 snapshot, then delete it in Obsidian. Observe `missing` until Git commits the
-removal, then `deleted`, with the saved contents visible in Admin Note recovery.
+removal, then `deleted`, with the note listed in Admin's Notes, Deleted tab.
 Verify the note is absent from search and active review counts. Restore from
 the preview, confirm the original ID and bytes, and open it on the phone after
 sync. Its search eligibility must still obey review and monthly filing.
