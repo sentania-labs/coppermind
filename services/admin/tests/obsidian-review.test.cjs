@@ -264,7 +264,7 @@ test('a page that is not Coppermind during a normal request is also told in plai
 });
 
 test('a successful pairing keeps the key in secret storage only and uses it for later requests',async()=>{
-  const credential='cm_pairedkey_0123456789abcdef';
+  const credential='synthetic-paired-credential';
   const f=await fixture(undefined,{pair:()=>({status:200,json:{credential,name:'Obsidian companion on Mac'}})});
   const vault={};f.app.secretStorage.setSecret=(name,value)=>{vault[name]=value;};
   f.app.secretStorage.getSecret=name=>vault[name];
