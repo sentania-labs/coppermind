@@ -63,7 +63,9 @@ def test_review_suggestions_never_expose_vectors_and_stop_after_deletion():
     from coppermind_store.speaker_names import voice_suggestions
 
     context = Context()
-    context.recordings = SimpleNamespace(jobs=lambda: [SimpleNamespace(id="job", note_id="note")])
+    context.recordings = SimpleNamespace(
+        jobs=lambda: [SimpleNamespace(id="job", note_id="note", source_id="src")]
+    )
     alice = SimpleNamespace(
         id="alice",
         kind="person",
@@ -177,3 +179,109 @@ def test_relabel_skips_turns_already_renamed_elsewhere():
     }
     result = relabel_transcript(transcript, [0, 1], "Unknown voice 3", "Bob")
     assert [s["speaker"] for s in result["segments"]] == ["Alice Smith", "Bob"]
+
+
+def merged_pair():
+    store = VoiceStore(Context())
+    vector = {"model": "m", "version": "v", "vector": [1, 0]}
+    first = store.capture_unknown("recording:a", "Speaker 1", "today", 30, [vector])
+    second = store.capture_unknown("recording:b", "Speaker 1", "today", 30, [vector])
+    assert first == second
+    store.reject("recording:a", "Speaker 1", "alice")
+    store.reject("recording:b", "Speaker 1", "alice")
+    store.reparent_recording("recording:a", "dest", "src-a")
+    store.reparent_recording("recording:b", "dest", "src-b")
+    return store, first
+
+
+def test_split_on_one_merged_recording_leaves_the_other_intact():
+    store, voice = merged_pair()
+    new = store.split_assignment(voice, "dest", "Speaker 1", "src-a")
+    data = store._load()
+    assert [s["source_id"] for s in data["unknowns"][new]["signatures"]] == ["src-a"]
+    assert [s["source_id"] for s in data["unknowns"][voice]["signatures"]] == ["src-b"]
+    assert [(a["voice_id"], a["source_id"]) for a in data["assignments"]] == [
+        (new, "src-a"),
+        (voice, "src-b"),
+    ]
+    store.restore_unknown(new)
+    assert [s["source_id"] for s in store._load()["unknowns"][voice]["signatures"]] == ["src-b"]
+
+
+def test_restore_on_one_merged_recording_leaves_the_other_intact():
+    store, voice = merged_pair()
+    new = store.split_assignment(voice, "dest", "Speaker 1", "src-a")
+    store.move_voice(new, voice)
+    store.delete_unknown(voice)
+    assert store._load()["assignments"] == []
+    store, voice = merged_pair()
+    new = store.split_assignment(voice, "dest", "Speaker 1", "src-a")
+    store.move_voice(new, voice)
+    store.restore_unknown(new)
+    data = store._load()
+    assert [s["source_id"] for s in data["unknowns"][new]["signatures"]] == ["src-a"]
+    assert [s["source_id"] for s in data["unknowns"][voice]["signatures"]] == ["src-b"]
+
+
+def test_assignment_without_its_recording_is_not_found():
+    store, voice = merged_pair()
+    try:
+        store.split_assignment(voice, "dest", "Speaker 1")
+    except ValueError as exc:
+        assert "not found" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_rejection_on_one_merged_recording_does_not_reject_the_other():
+    store = VoiceStore(Context())
+    store.reject("dest", "Speaker 1", "alice", "src-a")
+    assert store.rejected("dest", "Speaker 1", "alice", "src-a")
+    assert not store.rejected("dest", "Speaker 1", "alice", "src-b")
+
+
+def test_deferred_rename_is_kept_per_merged_recording():
+    store, voice = merged_pair()
+    for source in ("src-a", "src-b"):
+        assignment = next(a for a in store.assignments(voice) if a["source_id"] == source)
+        store.defer_relabel(assignment, source)
+    assert {d["name"] for d in store.deferred_relabels()} == {"src-a", "src-b"}
+    store.clear_deferred("dest", "Speaker 1", "src-a")
+    assert [d["name"] for d in store.deferred_relabels()] == ["src-b"]
+
+
+def test_confirming_each_merged_recording_keeps_its_own_signature():
+    store = VoiceStore(Context())
+    vector = {"model": "m", "version": "v", "vector": [1, 0]}
+    store.confirm("alice", "dest", "today", 30, [vector], "src-a")
+    store.confirm("alice", "dest", "today", 30, [vector], "src-b")
+    store.confirm("alice", "dest", "today", 30, [vector], "src-b")
+    assert len(store.summary("alice")["signatures"]) == 2
+
+
+def test_older_merged_rows_are_attributed_to_their_one_recording():
+    context = Context()
+    context.data["voice-signatures"] = {
+        "people": {},
+        "next_unknown": 2,
+        "unknowns": {
+            "unknown:1": {
+                "name": "Unknown voice 1",
+                "signatures": [{"note_id": "dest", "label": "Speaker 1", "vector": [1, 0]}],
+            }
+        },
+        "assignments": [
+            {
+                "note_id": "dest",
+                "label": "Speaker 1",
+                "voice_id": "unknown:1",
+                "source_id": "src-a",
+            }
+        ],
+        "rejections": [{"note_id": "dest", "label": "Speaker 1", "person_id": "alice"}],
+    }
+    store = VoiceStore(context)
+    assert store.rejected("dest", "Speaker 1", "alice", "src-a")
+    assert not store.rejected("dest", "Speaker 1", "alice", "src-b")
+    store.split_assignment("unknown:1", "dest", "Speaker 1", "src-a")
+    assert store._load()["unknowns"]["unknown:1"]["signatures"] == []

@@ -174,6 +174,7 @@ class VoiceSplit(BaseModel):
     model_config = ConfigDict(extra="forbid")
     note_id: str
     label: str
+    source_id: str | None = None
 
 
 @router.post("/voice/unknowns/{voice_id}/combine")

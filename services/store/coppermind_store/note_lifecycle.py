@@ -1015,7 +1015,9 @@ class NoteLifecycle:
                                 for candidate in candidates:
                                     proposed_id = candidate["id"].removeprefix("person:")
                                     if proposed_id != chosen_id:
-                                        voice.reject(identity, label, proposed_id)
+                                        voice.reject(
+                                            identity, label, proposed_id, recording.source_id
+                                        )
                         for speaker in pending:
                             if not isinstance(speaker, dict):
                                 continue
@@ -1041,6 +1043,7 @@ class NoteLifecycle:
                                     now(),
                                     speaker.get("speech_seconds"),
                                     speaker.get("embeddings", []),
+                                    recording.source_id,
                                 )
                     (self.context.root / "voice-pending" / (recording.id + ".json")).unlink(
                         missing_ok=True

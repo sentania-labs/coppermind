@@ -488,7 +488,9 @@ def voice_suggestions(context: Any, note_id: str) -> dict[str, list[dict[str, An
         matches = VoiceStore(context).match(embeddings, **settings)
         candidates = []
         for match in matches:
-            if VoiceStore(context).rejected(note_id, speaker["label"], match["person_id"]):
+            if VoiceStore(context).rejected(
+                note_id, speaker["label"], match["person_id"], recording.source_id
+            ):
                 continue
             person = people.get(match["person_id"])
             if not person or person.kind != "person" or person.retired_at or person.redirect:

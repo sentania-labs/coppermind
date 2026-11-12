@@ -210,7 +210,9 @@ async def apply_deferred(context: Any, note_id: str | None = None) -> bool:
             continue
         with contextlib.suppress(ValueError):
             await relabel_recording(context, item["assignment"], None, item["name"])
-        voice.clear_deferred(item["note_id"], item["label"])
+        voice.clear_deferred(
+            item["note_id"], item["label"], item.get("assignment", {}).get("source_id")
+        )
         ran = True
     return ran
 
@@ -249,13 +251,19 @@ async def combine(context: Any, source: str, target: str, reviewing: str | None 
     voice.move_voice(source, target)
 
 
-async def separate(context: Any, voice_id: str, note_id: str, label: str) -> str:
+async def separate(
+    context: Any, voice_id: str, note_id: str, label: str, source_id: str | None = None
+) -> str:
     """Separate a single recording appearance from its current voice."""
     from coppermind_store.voice_store import VoiceStore
 
     voice = VoiceStore(context)
     assignment = next(
-        (a for a in voice.assignments(voice_id) if a["note_id"] == note_id and a["label"] == label),
+        (
+            a
+            for a in voice.assignments(voice_id)
+            if (a["note_id"], a["label"], a.get("source_id")) == (note_id, label, source_id)
+        ),
         None,
     )
     if assignment is None:
@@ -268,7 +276,7 @@ async def separate(context: Any, voice_id: str, note_id: str, label: str) -> str
     serial = voice._load().get("next_unknown", 1)
     new_label = f"Unknown voice {serial}"
     await relabel_recording(context, assignment, None, new_label)
-    result = voice.split_assignment(voice_id, note_id, label)
+    result = voice.split_assignment(voice_id, note_id, label, source_id)
     if voice_id.startswith("person:"):
-        voice.reject(note_id, new_label, voice_id.removeprefix("person:"))
+        voice.reject(note_id, new_label, voice_id.removeprefix("person:"), source_id)
     return result
