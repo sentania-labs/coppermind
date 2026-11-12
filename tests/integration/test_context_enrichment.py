@@ -1172,17 +1172,19 @@ async def test_calendar_and_dropbox_problem_counts_and_dismissal_agree(store):
     dropbox = store.context.dropbox
     dropbox.submit("base.ics", calendar())
     await finish(store)
-    failed = dropbox.submit("conflict.ics", calendar().replace(b"Planning", b"Changed"))
+    dropbox.submit("conflict.ics", calendar().replace(b"Planning", b"Changed"))
     unsupported = dropbox.submit("handout.pdf", b"%PDF-1.4 unsupported")
     await finish(store)
     await finish(store)
     problems = await store.get_problems()
-    assert {p.kind for p in problems} == {"calendar_import", "dropbox"}
+    assert {p.kind for p in problems} == {"calendar_conflict", "dropbox"}
     assert (await store.get_status()).counters.active_problems == len(problems) == 2
     await dropbox.dismiss({"id": unsupported["id"]})
     assert (await store.get_status()).counters.active_problems == 1
-    receipt_id = dropbox.records()["items"][failed["id"]]["parts"][0]["import_id"]
-    await store.context.dismiss_import({"id": receipt_id})
+    (conflict,) = store.context.archive.catalog().conflicts
+    await store.context.dismiss_calendar_conflict(
+        {"id": conflict.identity, "version": conflict.semantic_hash}
+    )
     assert await store.get_problems() == []
     assert (await store.get_status()).counters.active_problems == 0
 
