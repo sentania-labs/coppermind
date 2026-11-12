@@ -832,7 +832,7 @@ class Recordings:
         for other in await asyncio.to_thread(self.jobs):
             if other.id == job.id or other.artifact_id != job.artifact_id or other.audio_removed:
                 continue
-            if other.state != "succeeded" or not await finished(other.note_id):
+            if other.state != "succeeded" or not await finished(self.parent_note_id(other)):
                 return True
         async with store.session_factory() as session:
             # Deleted and missing notes remain restorable and can still need the audio.
@@ -842,9 +842,10 @@ class Recordings:
                 )
             ).all()
         own = {
-            other.note_id
+            note_id
             for other in await asyncio.to_thread(self.jobs)
             if other.artifact_id == job.artifact_id
+            for note_id in (other.note_id, self.parent_note_id(other))
         }
         return any(note_id not in own for note_id in citing)
 
