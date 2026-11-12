@@ -602,7 +602,7 @@ class ContextService:
         receipts = sorted(self.archive.receipts(), key=lambda item: item.received_at, reverse=True)
         reasons = {
             problem.event_id: problem.model_dump()
-            for receipt in receipts
+            for receipt in reversed(receipts)
             for problem in receipt.conflicts
         }
         window = slice(offset, offset + 100)

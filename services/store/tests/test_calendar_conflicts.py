@@ -1,7 +1,9 @@
 """Equal-revision conflicts keep the stored copy and report per event (issue #122)."""
 
+import pytest
 from coppermind_store.calendar_import import (
     CalendarEvent,
+    CalendarImportError,
     merge_event_into,
     merge_events,
     merge_with_problems,
@@ -171,3 +173,9 @@ def test_merge_events_keeps_the_same_shape_as_before():
     merged: dict[str, CalendarEvent] = dict(current)
     merge_event_into(merged, incoming[0])
     assert merged == merge_events(current, incoming)
+
+
+def test_two_conflicting_copies_inside_one_export_are_rejected():
+    data = ics(event(), event(title="Different"))
+    with pytest.raises(CalendarImportError, match="twice with the same revision"):
+        parse_export("calendar", "one.ics", data)

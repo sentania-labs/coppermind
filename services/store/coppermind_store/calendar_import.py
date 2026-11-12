@@ -325,7 +325,17 @@ def _parse_calendar(
             source_entries=[entry],
         )
         prior = events.get(event.identity)
-        merged = merge_events({event.identity: prior} if prior else {}, [event])[event.identity]
+        merged_events, clashes = merge_with_problems(
+            {event.identity: prior} if prior else {}, [event]
+        )
+        if clashes:
+            raise CalendarImportError(
+                f'The export lists event "{event.title or event.uid}" '
+                f"({event.start or 'date unknown'}, UID {event.uid}) twice with the same "
+                "revision but different contents. Correct the event in its source "
+                "calendar and export it again."
+            )
+        merged = merged_events[event.identity]
         merged.source_entries = sorted(set((prior.source_entries if prior else []) + [entry]))
         events[event.identity] = merged
     return count

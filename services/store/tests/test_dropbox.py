@@ -96,6 +96,20 @@ async def test_conflicting_source_keeps_the_stored_copy_and_reports_the_event(tm
     assert next(iter(store.context.archive.catalog().events.values())).title == "Planning"
 
 
+async def test_conflict_ends_when_the_event_is_later_revised(tmp_path):
+    store = local_store(tmp_path)
+    store.context.dropbox.submit("one.ics", calendar())
+    await finish(store)
+    store.context.dropbox.submit("two.ics", calendar().replace(b"Planning", b"Conflict"))
+    await finish(store)
+    assert len(mirror.get_conflicts(store.context.archive.engine.connect())) == 1
+    newer = calendar().replace(b"Planning", b"Newer").replace(b"SUMMARY", b"SEQUENCE:1\r\nSUMMARY")
+    store.context.dropbox.submit("three.ics", newer)
+    await finish(store)
+    with store.context.archive.engine.connect() as connection:
+        assert mirror.get_conflicts(connection) == []
+
+
 async def test_dismissing_failed_receipt_acknowledges_import_failure(tmp_path):
     store = local_store(tmp_path)
     dropbox = store.context.dropbox

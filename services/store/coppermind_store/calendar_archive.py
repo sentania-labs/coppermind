@@ -287,6 +287,7 @@ class CalendarArchive:
                                 mirror.add_evidence(
                                     connection, person.contact_id, evidence.model_dump()
                                 )
+                    mirror.drop_superseded_conflicts(connection)
                     receipt.event_count = written
                     receipt.kept_count = len(problems)
                     # The stored copy of each conflict is retained and reported per event,
