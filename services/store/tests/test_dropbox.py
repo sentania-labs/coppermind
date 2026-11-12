@@ -992,6 +992,25 @@ async def test_failed_files_keep_their_name_and_a_taken_name_gets_a_folder(tmp_p
     assert (moved[0] / "odd.xyz.reason.txt").exists()
 
 
+async def test_failed_reason_name_collision_preserves_existing_file(tmp_path, monkeypatch):
+    store = local_store(tmp_path)
+    root = store.notes_root / "Dropbox"
+    failed = root / "Failed"
+    failed.mkdir(parents=True)
+    existing = failed / "report.bin.reason.txt"
+    existing.write_bytes(b"previously failed original")
+    (root / "report.bin").write_bytes(b"new unsupported file")
+    clock = [0.0]
+    monkeypatch.setattr("coppermind_store.dropbox.time.monotonic", lambda: clock[0])
+    await store.context.dropbox.scan()
+    await settle(store.context.dropbox, clock)
+    assert existing.read_bytes() == b"previously failed original"
+    folders = [path for path in failed.iterdir() if path.is_dir()]
+    assert len(folders) == 1
+    assert (folders[0] / "report.bin").read_bytes() == b"new unsupported file"
+    assert (folders[0] / "report.bin.reason.txt").is_file()
+
+
 async def test_a_kind_sidecar_is_consumed_with_its_file(tmp_path, monkeypatch):
     from coppermind.store_protocol import CreatedArtifact
 

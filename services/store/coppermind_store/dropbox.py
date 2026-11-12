@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from coppermind.atomicio import atomic_write_bytes, sync_directory
+from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes, sync_directory
 from coppermind.store_protocol import CreateArtifact, CreatedArtifact, StoreError
 from coppermind_store.calendar_import import CALENDAR_ID, MAX_UPLOAD
 from coppermind_store.extraction import EXTENSION_TYPES
@@ -443,7 +443,8 @@ class Dropbox:
             failed.mkdir(exist_ok=True)
             target = failed / path.name
             kept = target.with_name(target.name + KIND_SUFFIX)
-            if os.path.lexists(target) or os.path.lexists(kept):
+            reason = target.with_name(reason_name(target.name))
+            if any(os.path.lexists(path) for path in (target, kept, reason)):
                 folder = failed / uuid.uuid4().hex[:8]
                 folder.mkdir()
                 target = folder / path.name
@@ -453,7 +454,7 @@ class Dropbox:
                 item.get("error")
                 or "Processing was interrupted. Move this file back to Dropbox to retry."
             )
-            atomic_write_bytes(reason, (message + "\n").encode(), mode=0o600)
+            create_exclusive_bytes(reason, (message + "\n").encode(), mode=0o600)
             sidecar = path.with_name(path.name + KIND_SUFFIX)
             owned = tracked.get("sidecar") not in (None, [0, -1]) and (
                 list(self.sidecar_signature(sidecar)) == tracked["sidecar"]
