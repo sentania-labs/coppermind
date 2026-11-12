@@ -582,6 +582,9 @@ class AiServices:
                     continue
                 async with self.context.lock:
                     current = self.context.recordings.load(recording.id)
+                    held = current.state == "failed" and current.error_rule in UNREACHABLE
+                    if not (held or (current.state == "queued" and current.retry_after)):
+                        continue
                     current.state, current.attempts, current.busy_since = "queued", 0, ""
                     current.set_error()
                     self.context.recordings.save(current)

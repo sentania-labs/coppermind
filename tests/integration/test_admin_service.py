@@ -12,7 +12,7 @@ from coppermind_store.ai_services import candidates
 from coppermind_store.note_lifecycle import SETTLING
 
 from coppermind.api_keys import COMPANION_PERMISSIONS, describe, load_keys, scopes_for
-from coppermind.entities import EntityInput
+from coppermind.entities import EntityInput, EntityQuery
 from coppermind.store_protocol import CreateNote, ValidationFailed
 from tests.integration.test_context_enrichment import configure
 
@@ -481,3 +481,34 @@ async def test_directions_that_are_not_text_per_section_are_refused_not_crashed(
 async def test_a_disagreement_is_only_settled_with_one_of_the_two_versions(store):
     with pytest.raises(ValueError, match="Choose which version"):
         await store.admin.act("calendar-choose", {"id": "x", "version": "y", "pick": "stored "})
+
+
+async def test_naming_a_voice_for_something_that_is_not_a_person_changes_nothing(
+    store, monkeypatch
+):
+    from coppermind_store import voice_relabel
+    from coppermind_store.voice_store import VoiceStore
+
+    async def refuse(*args):
+        raise AssertionError("voices were merged")
+
+    monkeypatch.setattr(voice_relabel, "combine", refuse)
+    company = await store.entities.create(EntityInput(kind="company", name="Acme"))
+    monkeypatch.setattr(
+        VoiceStore, "unknown_summaries", lambda self: {"v1": {"assignments": [{"note_id": "n"}]}}
+    )
+    with pytest.raises(ValueError, match="no longer listed"):
+        await store.admin.act("voice-name", {"id": "v1", "person": company["id"]})
+
+    monkeypatch.setattr(VoiceStore, "unknown_summaries", lambda self: {})
+    with pytest.raises(ValueError, match="no longer listed"):
+        await store.admin.act("voice-name", {"id": "gone", "new_name": "Dana Whitfield"})
+    names = [item["name"] for item in (await store.entities.list(EntityQuery()))["items"]]
+    assert names == ["Acme"]
+
+
+async def test_a_file_still_being_taken_in_cannot_be_removed_as_if_it_had_failed(store):
+    item = store.context.dropbox.submit("report.pdf", b"bytes", {"kind": "artifact"})
+    with pytest.raises(ValueError, match="no longer listed"):
+        await store.admin.act("incoming-remove", {"id": "d:" + item["id"]})
+    assert store.context.dropbox.records()["items"][item["id"]]["state"] == "pending"

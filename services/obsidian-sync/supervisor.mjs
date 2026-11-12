@@ -264,7 +264,7 @@ async function handleChildExit(proc, code, signal, error = null) {
   if (!expected) {
     log("WARNING", "sync process stopped unexpectedly", { code, signal });
     const epoch = signinEpoch;
-    if (quickExits >= SIGNIN_CHECK_AFTER && !(await signedIn()) && epoch === signinEpoch) {
+    if (quickExits >= SIGNIN_CHECK_AFTER && !(await signedIn()) && epoch === signinEpoch && !child) {
       // Restarting cannot help a client that is signed out. Say so and wait for a sign-in.
       clearTimeout(restartTimer);
       await publishStatus({ state: "error", needs_signin: true,
@@ -385,7 +385,7 @@ async function reconcileConfig() {
     connection.device_name = desired.device_name;
     await saveConnection();
     await publishStatus({ config_matches: true, config_error: null, device_name: desired.device_name,
-      state: status.paused ? "paused" : "starting" });
+      state: status.paused ? "paused" : status.needs_signin ? "error" : "starting" });
     if (!status.paused) await startSync();
   } catch {
     await publishStatus({ config_matches: false, config_error: "Sync settings could not be applied and verified. Retrying automatically." });

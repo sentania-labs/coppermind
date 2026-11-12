@@ -173,12 +173,7 @@ class Dropbox:
             "received_at": datetime.now(UTC).isoformat(),
             "kind": kind or {},
         }
-        if (
-            not duplicate
-            and Path(filename).suffix.lower() in RECORDING_SUFFIXES
-            and self.context.recordings.enabled()
-        ):
-            item["intake"] = "recording"
+
         if duplicate:
             item["completed_at"] = time.time()
         if existing and existing.get("failed_path"):
@@ -229,6 +224,12 @@ class Dropbox:
                     if marker.get("kind") == "artifact":
                         stored = await self._store_artifact(item, data, marker)
                         item["parts"] = [{"artifact_id": stored.id, "path": stored.path}]
+                        if (
+                            stored.created
+                            and Path(item["filename"]).suffix.lower() in RECORDING_SUFFIXES
+                            and self.context.recordings.enabled()
+                        ):
+                            item["intake"] = "recording"
                         item["state"] = "succeeded"
                         item["completed_at"] = time.time()
                         log.info("Dropbox adopt artifact %s", item["id"])

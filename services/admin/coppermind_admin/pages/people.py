@@ -490,17 +490,27 @@ place shows in both.</p>
                     )
                     + "</p>"
                 )
+            if data["never"]:
+                switch = (
+                    f'<form class="act" method="post" action="{here}/never">'
+                    + ui.check(
+                        "never",
+                        "Never save this person's voice",
+                        f"Coppermind will not learn or keep {first}'s voice, even from "
+                        "recordings you review. Untick to let it learn the voice again.",
+                        checked=True,
+                    ).replace("<input ", "<input data-auto ", 1)
+                    + '<noscript><button class="lat-btn">Save</button></noscript></form>'
+                )
+            else:
+                ask = ui.go("Never save this person's voice", ui.url(here, ask="never"))
+                switch = (
+                    f'<p class="muted">Coppermind may learn {first}\'s voice from recordings '
+                    f'you review.</p><div class="actions">{ask}</div>'
+                )
             never = (
                 '<div style="border-top:1px solid var(--line-soft);margin-top:10px;'
-                f'padding-top:8px"><form class="act" method="post" action="{here}/never">'
-                + ui.check(
-                    "never",
-                    "Never save this person's voice",
-                    f"Coppermind will not learn or keep {first}'s voice, even from recordings "
-                    "you review.",
-                    checked=data["never"],
-                ).replace("<input ", "<input data-auto ", 1)
-                + '<noscript><button class="lat-btn">Save</button></noscript></form></div>'
+                f'padding-top:8px">{switch}</div>'
             )
             voice = ui.card(top + never, "Saved voice")
         dialog = ""
@@ -519,6 +529,24 @@ place shows in both.</p>
                     danger=True,
                     fields={"fact_id": fact["id"]},
                 )
+        elif asked == "never" and not company and not data["never"]:
+            kept = len(data["samples"])
+            dialog = ui.dialog(
+                f"Never save {e(data['name'])}'s voice?",
+                f"Coppermind will not learn or keep {e(first)}'s voice, even from recordings "
+                "you review. "
+                + (
+                    f"The {plural(kept, 'saved sample is', 'saved samples are')} deleted for good. "
+                    if kept
+                    else ""
+                )
+                + "Notes already written do not change.",
+                f"{here}/never",
+                "Never save this voice",
+                here,
+                danger=True,
+                fields={"never": "on"},
+            )
         elif asked == "voice" and not company and data["samples"]:
             dialog = voice_dialog(
                 {"id": identity, "name": data["name"], "samples": len(data["samples"])}, here

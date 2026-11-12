@@ -143,7 +143,7 @@ def router(wiring: Wiring) -> APIRouter:
             else:
                 error = f"{e(chosen['name'])} cannot write suggestions. Choose another."
             step = 1
-        carry = {"change": "service" if changing and not model_only else ""}
+        carry = {"change": "service" if changing and (not model_only or step == 1) else ""}
         cancel = ui.go("Cancel the change", "/admin/suggestions?cancelled=1") if changing else ""
         labels = ["Choose an AI service", "Pick a model", "Choose what it fills in"]
         if step == 1:

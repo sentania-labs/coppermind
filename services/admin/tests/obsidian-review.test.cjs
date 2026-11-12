@@ -6,7 +6,7 @@ const path=require('node:path');
 const vm=require('node:vm');
 const {webcrypto}=require('node:crypto');
 class El {
-  constructor(tag='',options={}){this.tag=tag;this.text=options.text;this.value=options.value;this.children=[];this.disabled=false;this.style={};}
+  constructor(tag='',options={}){this.tag=tag;this.cls=options.cls;this.attr=options.attr;this.text=options.text;this.value=options.value;this.children=[];this.disabled=false;this.style={};}
   empty(){this.children=[];}
   setText(text){this.text=text;}
   addClass(){}
@@ -33,10 +33,10 @@ async function fixture(local, overrides={}){
   const requests=[];const notices=[];
   const file={basename:'Note',path:'Review/Note.md'};
   let factory;const factories={};const modals=[];
-  class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(){}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
+  class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(command){(this.commands??={})[command.id]=command;}async saveData(data){(this.saved??=[]).push(JSON.parse(JSON.stringify(data)));}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw,getAbstractFileByPath:path=>({path})},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null,openLinkText:()=>{}}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/recordings/waiting'))return {status:200,json:overrides.waiting};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return {status:200,json:overrides.waiting};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
@@ -224,13 +224,60 @@ test('pairing trades the six digit code for a key kept in secret storage only',a
   await assert.rejects(f.plugin.pair('12 34'),/six-digit pairing code/);
   assert.equal(f.requests.filter(r=>r.url.endsWith('/v1/pair')).length,0);
   const before=f.requests.length;
-  await assert.rejects(f.plugin.pair('123 456'),/could not be reached|not accepted/);
+  await assert.rejects(f.plugin.pair('123 456'),/did not answer like Coppermind|not accepted/);
   const sent=f.requests[before];
   assert.equal(sent.url,'https://coppermind.example/v1/pair');assert.equal(sent.method,'POST');
   assert.deepEqual(Object.keys(JSON.parse(sent.body)).sort(),['code','device']);
   assert.equal(JSON.parse(sent.body).code,'123456');
   assert.equal(sent.headers.Authorization,undefined);
   assert.equal(stored,null);
+});
+
+const webPage=()=>({status:404,get json(){throw new SyntaxError("Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON");},text:'<!DOCTYPE html><html><body>404 Not Found</body></html>'});
+test('an address that answers with a web page is told in plain words, with the raw error behind details',async()=>{
+  const f=await fixture(undefined,{pair:webPage});
+  const stored=[];f.app.secretStorage.setSecret=(name,value)=>stored.push([name,value]);
+  const error=await f.plugin.pair('123 456').then(()=>null,e=>e);
+  assert.match(error.message,/did not answer like Coppermind/);
+  assert.doesNotMatch(error.message,/SyntaxError|Unexpected token|DOCTYPE/);
+  assert.match(error.details,/HTTP 404: <!DOCTYPE html>/);
+  assert.deepEqual(stored,[]);
+  f.plugin.commands['pair-device'].callback();
+  const modal=f.modals.at(-1);
+  const code=modal.contentEl.all().find(e=>e.tag==='input'&&e.attr?.inputmode==='numeric');
+  code.value='123 456';
+  await modal.contentEl.all().find(e=>e.tag==='button'&&e.text==='Pair this device').onclick();
+  const shown=modal.contentEl.all();
+  assert.match(shown.find(e=>e.tag==='p'&&e.cls==='coppermind-notice').text,/did not answer like Coppermind/);
+  const details=shown.find(e=>e.tag==='details');
+  assert.equal(details.children[0].text,'Details for support');
+  assert.match(details.children[1].text,/HTTP 404/);
+});
+
+test('a page that is not Coppermind during a normal request is also told in plain words',async()=>{
+  const f=await fixture(undefined,{page:webPage});
+  const error=await f.plugin.call('/v1/anything').then(()=>null,e=>e);
+  assert.match(error.message,/did not answer like Coppermind|could not complete the request/);
+  assert.doesNotMatch(error.message,/SyntaxError|Unexpected token|DOCTYPE/);
+  assert.match(error.details,/HTTP 404/);
+  assert.equal(error.status,404);
+});
+
+test('a successful pairing keeps the key in secret storage only and uses it for later requests',async()=>{
+  const credential='cm_pairedkey_0123456789abcdef';
+  const f=await fixture(undefined,{pair:()=>({status:200,json:{credential,name:'Obsidian companion on Mac'}})});
+  const vault={};f.app.secretStorage.setSecret=(name,value)=>{vault[name]=value;};
+  f.app.secretStorage.getSecret=name=>vault[name];
+  assert.equal(f.plugin.paired(),false);
+  assert.equal(await f.plugin.pair('123 456'),'Obsidian companion on Mac');
+  assert.deepEqual(vault,{'coppermind-companion':credential});
+  assert.equal(f.plugin.settings.secret,'coppermind-companion');
+  assert.equal(f.plugin.paired(),true);
+  assert.ok(!JSON.stringify(f.plugin.settings).includes(credential));
+  assert.ok(f.plugin.saved.length>0&&f.plugin.saved.every(blob=>!JSON.stringify(blob).includes(credential)));
+  f.requests.length=0;
+  await f.plugin.call('/v1/schema');
+  assert.equal(f.requests[0].headers.Authorization,'Bearer '+credential);
 });
 
 const summaryProposal={summary:'Launch discussion.',decisions:'- Ship Friday.',action_items:'- Casey: send the plan.'};

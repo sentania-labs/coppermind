@@ -65,6 +65,8 @@ else if (args[0] === 'sync-status') {
 else if (args[0] === 'sync-setup') console.log('{}');
 else if (args[0] === 'login') {
   const signedOut = ${JSON.stringify(path.join(data, 'signed-out'))};
+  const hold = ${JSON.stringify(path.join(data, 'login-hold'))};
+  while (!args.includes('--password') && fs.existsSync(hold)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   if (args.includes('--password')) fs.rmSync(signedOut, { force: true });
   else if (fs.existsSync(signedOut)) process.exit(1);
   console.log(${JSON.stringify(secrets.join(' '))});
@@ -391,4 +393,42 @@ test("real mode: a signed-out client is left alone by resume and configure until
   assert.equal(code, 200);
   assert.equal(body.needs_signin, false);
   await waitFor(async () => (await syncs()) > before, "sync did not restart after signing in");
+});
+
+test("real mode: changing sync settings while signed out shows the signed-out state, not 'starting'", async (context) => {
+  const h = await harness(context, { persisted: true });
+  const syncs = async () => (await h.calls()).filter((a) => a[0] === "sync").length;
+  await waitFor(async () => (await syncs()) > 0, "boot did not sync");
+  await writeFile(path.join(h.data, "signed-out"), "");
+  await writeFile(path.join(h.data, "sync-exits"), "");
+  await h.request("/pause", {});
+  await h.request("/resume", {});
+  await waitFor(async () => { const s = await h.readStatus(); return s.needs_signin && s; }, "sign-out not noticed", 4000);
+  await writeFile(path.join(h.data, "state", "settings.yaml"), "sync:\n  device_name: 'Renamed server'\n");
+  await h.request("/configure", {});
+  const after = await h.readStatus();
+  assert.equal(after.needs_signin, true);
+  assert.equal(after.state, "error");
+  assert.equal(after.syncing, false);
+});
+
+test("real mode: a client started while the signed-out check runs is not reported as signed out", async (context) => {
+  const h = await harness(context, { persisted: true });
+  const syncs = async () => (await h.calls()).filter((a) => a[0] === "sync").length;
+  const probes = async () => (await h.calls()).filter((a) => a.length === 1 && a[0] === "login").length;
+  await waitFor(async () => (await syncs()) > 0, "boot did not sync");
+  await writeFile(path.join(h.data, "signed-out"), "");
+  await writeFile(path.join(h.data, "sync-exits"), "");
+  await writeFile(path.join(h.data, "login-hold"), "");
+  await h.request("/pause", {});
+  await h.request("/resume", {});
+  await waitFor(async () => (await probes()) > 0, "the signed-out check never started", 200);
+  await rm(path.join(h.data, "sync-exits"));
+  const before = await syncs();
+  await h.request("/resume", {});
+  await waitFor(async () => (await syncs()) > before, "a client was not started during the check");
+  await rm(path.join(h.data, "login-hold"));
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  const status = await h.readStatus();
+  assert.equal(status.needs_signin && status.syncing, false, "signed out and syncing at once");
 });

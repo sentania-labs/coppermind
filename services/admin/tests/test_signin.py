@@ -116,8 +116,14 @@ def test_too_much_sent_at_once_is_refused_in_words(admin):
     assert "too much to send in one go" in big.text
 
 
+def session_cookie(client):
+    (name,) = [cookie.name for cookie in client.cookies.jar if "session" in cookie.name.lower()]
+    return name, client.cookies[name]
+
+
 def test_a_new_setup_link_lets_a_forgotten_password_be_replaced(admin):
     client, wiring, _ = admin
+    name, before = session_cookie(client)
     reset = wiring.state_dir / "internal" / "reset-code"
     reset.write_text("QRST-UVWX-YZ23\n", encoding="utf-8")
     client.cookies.clear()
@@ -142,6 +148,9 @@ def test_a_new_setup_link_lets_a_forgotten_password_be_replaced(admin):
         "/admin/signin", data={"password": PASSWORD, "csrf": token(client, "/admin/signin")}
     )
     assert old.status_code == 401
+    client.cookies.set(name, before)
+    replayed = client.get("/admin/storage", follow_redirects=False)
+    assert replayed.headers["location"].startswith("/admin/signin")
 
 
 def test_a_file_shaped_request_to_a_page_that_takes_no_file_is_refused(admin):
@@ -174,6 +183,7 @@ def test_the_new_setup_link_stops_working_after_an_hour(admin):
 
 def test_the_password_is_changed_from_settings_and_the_old_one_stops_working(admin):
     client, _, _ = admin
+    name, before = session_cookie(client)
     new = "a completely different phrase"
     wrong = client.post(
         "/admin/settings/signin",
@@ -207,6 +217,13 @@ def test_the_password_is_changed_from_settings_and_the_old_one_stops_working(adm
         follow_redirects=False,
     )
     assert done.status_code == 303
+    assert client.get("/admin/storage", follow_redirects=False).status_code == 200
+    _, after = session_cookie(client)
+    assert after != before
+    client.cookies.set(name, before)
+    replayed = client.get("/admin/storage", follow_redirects=False)
+    assert replayed.headers["location"].startswith("/admin/signin")
+    client.cookies.set(name, after)
     assert client.get("/admin/storage", follow_redirects=False).status_code == 200
     client.cookies.clear()
     old = client.post(

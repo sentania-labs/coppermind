@@ -368,7 +368,9 @@ def router(wiring: Wiring) -> APIRouter:
         pairing: dict[str, Any] = {}
         if placed and not paired:
             try:
-                pairing = await ctx.act("pairing-start", {})
+                pairing = await ctx.act("pairing-state", {})
+                if not pairing.get("expires_at"):
+                    pairing = await ctx.act("pairing-start", {})
             except StoreError:
                 pairing = {}
         carried = "community-plugin" in ctx.settings().sync.sync_configs
@@ -405,6 +407,13 @@ def router(wiring: Wiring) -> APIRouter:
                 "by itself, usually within a few seconds of you typing the code in "
                 "Obsidian.</span> " + ui.go("Check now", "/admin/setup/companion")
             )
+        elif placed and pairing.get("expires_at") and not pairing.get("done"):
+            third = (
+                '<span class="muted">That code has run out, or too many wrong codes were '
+                "typed. Press New code to get another.</span> "
+                + ui.btn("New code", "/admin/setup/companion/code", "primary")
+            )
+            fourth = '<span class="muted">Starts once you have a new code.</span>'
         else:
             third = '<span class="muted">The code appears here after step 1.</span>'
             fourth = '<span class="muted">Starts after step 1.</span>'

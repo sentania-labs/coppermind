@@ -236,7 +236,7 @@ class AdminIncoming:
             job = self.context.recordings.load(key)
             job.audio_removed = True
             job.dismissed = True
-            if job.state in {"queued", "running"}:
+            if job.state != "succeeded":
                 job.state = "failed"
                 job.set_error("You deleted this recording.", DELETED_RULE)
             self.context.recordings.save(job)
@@ -252,7 +252,7 @@ class AdminIncoming:
             return {"title": record.filename or record.title, "kind": "document"}
         if prefix == "d":
             item = self.context.dropbox.records()["items"].get(key)
-            if item is None:
+            if item is None or item["state"] not in {"failed", "unsupported"}:
                 raise ValueError("That file is no longer listed.")
             await self._discard_drop(item)
             await self.context.dropbox.dismiss({"id": key})
@@ -316,8 +316,11 @@ class AdminIncoming:
 
     async def replace_failed(self, payload: dict[str, Any]) -> dict[str, Any]:
         """A fresh file was added in place of one that could not be read: clear the old one."""
+        identity = str(payload["id"])
+        if identity.partition(":")[0] not in {"d", "c"}:
+            return {"title": "", "kind": "refused"}
         try:
-            return await self.remove({"id": str(payload["id"])})
+            return await self.remove({"id": identity})
         except (ValueError, StoreError):
             return {"title": "", "kind": "refused"}
 

@@ -327,8 +327,15 @@ class AdminPeople:
                 'Choose who this voice belongs to, or pick "Someone new" and type their name, '
                 "then press Save.",
             )
-        if not person_id:
-            ledger, active = self._active()
+        async with self.context.lock:
+            unknown = self._voice().unknown_summaries().get(voice_id)
+        if unknown is None:
+            raise ValueError("That voice is no longer listed.")
+        ledger, active = self._active()
+        if person_id:
+            if not any(entity.id == person_id and entity.kind == "person" for entity in active):
+                raise ValueError("That person is no longer listed.")
+        else:
             known = next(
                 (
                     entity
@@ -344,10 +351,6 @@ class AdminPeople:
                 person_id = created["id"]
             else:
                 person_id = known.id
-        async with self.context.lock:
-            unknown = self._voice().unknown_summaries().get(voice_id)
-        if unknown is None:
-            raise ValueError("That voice is no longer listed.")
         recordings = len({a["note_id"] for a in unknown["assignments"]})
         async with self.context.lifecycle.lock, self.context.lock:
             await combine(self.context, voice_id, "person:" + person_id)

@@ -1896,27 +1896,44 @@ async def test_audio_stored_before_the_upgrade_is_never_queued_or_sent(store):
         assert service.requests == []
 
 
+async def drop(context, data=AUDIO, name="interview.m4a"):
+    item = context.dropbox.submit(name, data, {"kind": "artifact"})
+    await context.dropbox.process()
+    return context.dropbox.records()["items"][item["id"]]
+
+
 async def test_a_recording_dropped_while_transcription_is_on_is_queued_once(store):
     async with Service() as service:
         context = await setup_transcription(store, service)
-        audio = await store_audio(store, name="interview.m4a")
-        item = context.dropbox.submit("interview.m4a", b"drop bytes")
-        assert item["intake"] == "recording"
-        drop_record(context, item["id"], audio, intake="recording")
+        item = await drop(context)
+        assert item["state"] == "succeeded" and item["intake"] == "recording"
         await context.dropbox.queue_recordings()
         await context.dropbox.queue_recordings()
         (job,) = context.recordings.jobs()
-        assert (job.provider, job.artifact_id) == ("dropbox", audio)
+        assert (job.provider, job.artifact_id) == ("dropbox", item["parts"][0]["artifact_id"])
 
 
-async def test_a_recording_dropped_while_transcription_is_off_is_not_marked_for_intake(store):
+async def test_a_recording_dropped_while_transcription_is_off_is_not_queued(store):
     context = store.context
-    item = context.dropbox.submit("interview.m4a", b"drop bytes")
-    assert "intake" not in item
-    audio = await store_audio(store, name="interview.m4a")
-    drop_record(context, item["id"], audio)
+    item = await drop(context)
+    assert item["state"] == "succeeded" and "intake" not in item
     await context.dropbox.queue_recordings()
     assert context.recordings.jobs() == []
+
+
+async def test_the_same_audio_dropped_again_is_not_adopted_as_a_recording(store):
+    async with Service() as service:
+        context = store.context
+        first = await drop(context)
+        assert "intake" not in first
+        await setup_transcription(store, service)
+        again = await drop(context)
+        assert again["parts"][0]["artifact_id"] == first["parts"][0]["artifact_id"]
+        assert "intake" not in again
+        await context.dropbox.queue_recordings()
+        await context.recordings.tick()
+        assert context.recordings.jobs() == []
+        assert service.requests == []
 
 
 async def test_audio_another_note_links_to_is_kept_after_the_recording_is_reviewed(store):
@@ -1954,3 +1971,36 @@ async def test_deleting_a_recording_while_it_is_being_written_up_keeps_it_delete
     assert job.audio_removed and job.dismissed
     assert job.state in {"succeeded", "failed"}
     assert await context.recordings.tick() is False
+
+
+async def test_deleting_a_failed_recording_waiting_to_retry_keeps_it_deleted(store):
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        accepted = await context.accept_recording(request(await store_audio(store)))
+        job = context.recordings.load(accepted["id"])
+        job.state, job.attempts = "failed", 1
+        job.set_error("timed out", "transcription-timeout", retry_after="2020-01-01T00:00:00+00:00")
+        context.recordings.save(job)
+        await store.admin.act("recording-delete", {"id": "r:" + accepted["id"]})
+        assert await context.recordings.tick() is False
+        assert service.requests == []
+    assert context.recordings.load(accepted["id"]).audio_removed
+
+
+async def test_a_service_answering_again_does_not_requeue_what_is_running_or_done(
+    store, monkeypatch
+):
+    from coppermind_store.ai_services import UNREACHABLE
+
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        accepted = await context.accept_recording(request(await store_audio(store)))
+        running = context.recordings.load(accepted["id"])
+        running.state, running.attempts = "running", 1
+        context.recordings.save(running)
+        stale = running.model_copy(update={"state": "failed", "error_rule": sorted(UNREACHABLE)[0]})
+        monkeypatch.setattr(context.recordings, "jobs", lambda: [stale])
+        connection = context.config().assignments["transcription"].connection
+        assert (await context.services.resume(connection))["recordings"] == 0
+    after = context.recordings.load(accepted["id"])
+    assert (after.state, after.attempts) == ("running", 1)

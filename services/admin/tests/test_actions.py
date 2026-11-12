@@ -405,6 +405,7 @@ def test_a_feature_whose_service_was_removed_outside_admin_says_so_on_its_page_a
 
 def place_companion(store):
     store.views["overview"]["companion"].update(placed=True, paired=[])
+    store.answers["pairing-state"] = {}
     store.answers["pairing-start"] = {"code": "123456"}
 
 
@@ -434,6 +435,100 @@ def test_the_companion_step_says_nothing_of_the_kind_when_add_ons_are_synced(adm
     page = client.get("/admin/setup/companion").text
     assert "only carries the companion to your devices" not in page
     assert "It reaches your devices with the next sync" in page
+
+
+def test_the_companion_step_does_not_hand_out_a_new_code_when_the_old_one_ran_out(admin):
+    client, _, store = admin
+    place_companion(store)
+    store.answers["pairing-state"] = {
+        "code": "",
+        "done": None,
+        "expires_at": "2026-11-12T10:00:00+00:00",
+    }
+    page = client.get("/admin/setup/companion").text
+    assert "Press New code" in page
+    assert "123456" not in page
+    assert store.asked("pairing-start") == []
+
+
+def test_the_companion_step_starts_a_code_the_first_time_only(admin):
+    client, _, store = admin
+    place_companion(store)
+    page = client.get("/admin/setup/companion").text
+    assert "123 456" in page or "123456" in page
+    assert len(store.asked("pairing-start")) == 1
+
+
+# -- never saving a voice -----------------------------------------------------------------------
+
+
+def test_never_saving_a_voice_asks_first_and_says_the_samples_go_for_good(admin):
+    client, _, store = admin
+    person = store.views["person"]
+    person.update(never=False, samples=[{"title": "Standup", "at": "2026-11-01T10:00:00+00:00"}])
+    path = f"/admin/people/{person['id']}"
+    page = client.get(path).text
+    assert not re.search(r"<input[^>]*data-auto", page)
+    assert "ask=never" in page
+    asked = client.get(path + "?ask=never").text
+    dialog = asked.split('class="dialog"')[1]
+    assert "deleted for good" in dialog
+    assert f'action="{path}/never"' in dialog
+    assert 'name="never" value="on"' in dialog
+    assert store.asked("voice-never") == []
+
+
+def test_turning_never_saving_off_needs_no_question(admin):
+    client, _, store = admin
+    person = store.views["person"]
+    person.update(never=True, samples=[])
+    page = client.get(f"/admin/people/{person['id']}").text
+    assert re.search(r"<input[^>]*data-auto", page)
+    assert "ask=never" not in page
+
+
+# -- suggestions: changing only the model -------------------------------------------------------
+
+
+def test_changing_the_model_of_a_service_that_stopped_answering_keeps_the_choice_of_service(admin):
+    client, _, store = admin
+    store.views["services"]["services"][0]["answering"] = False
+    page = client.get("/admin/suggestions?change=model").text
+    assert "is not answering right now" in page
+    assert 'name="change" value="service"' in page
+    chosen = store.views["services"]["services"][1]["id"]
+    again = client.get(f"/admin/suggestions?step=2&svc={chosen}&change=service").text
+    assert "Which model?" in again or "cannot write suggestions" in again
+
+
+# -- tags and note properties -------------------------------------------------------------------
+
+
+def test_adding_a_tag_that_exists_keeps_its_aliases_and_meaning(admin):
+    client, wiring, _ = admin
+    page = "/admin/settings/tags"
+    saved = post(
+        client,
+        page + "/save",
+        {"tag": "work", "also": "job", "why": "Anything for the day job"},
+        page=page,
+    )
+    assert saved.status_code == 303
+    again = follow(client, post(client, page + "/save", {"tag": "work", "was": ""}, page=page))
+    assert "already on your list" in again
+    schema = StateStore(wiring.state_dir).read("schema").body
+    assert schema["tags"]["work"] == "Anything for the day job"
+    assert schema["tag_aliases"] == {"job": "work"}
+
+
+def test_a_tag_the_schema_refuses_is_said_in_plain_words_with_the_raw_text_behind_support(admin):
+    client, _, _ = admin
+    page = "/admin/settings/tags"
+    shown = follow(client, post(client, page + "/save", {"tag": "follow up"}, page=page))
+    assert "That tag could not be saved." in shown
+    main, _, support = shown.partition("Details for support")
+    assert "ValidationError" not in main and "validation error" not in main.lower()
+    assert support
 
 
 # -- files Coppermind leaves alone ------------------------------------------------------------

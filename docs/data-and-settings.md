@@ -194,7 +194,7 @@ test found, so nobody types either, the wait limit (default 3,600 seconds, chose
 since most send nothing until they have finished), the total attempts per recording
 (default 2) and the on and pause switches. It is off until switched on, and the
 recording is sent only to that service. A recording handed in while transcription is
-off is kept and written up once it is turned on. The services and what each test found
+off is refused with a plain message and nothing is queued to run later. The services and what each test found
 are kept in `/data/state/context/ai-services.json`. Saved in `/data/state/context/config.json` as `assignments.transcription`;
 each intake is one small file under `/data/state/context/recordings/` and its saved
 transcript under `/data/state/context/recording-transcripts/`. Voice signatures are

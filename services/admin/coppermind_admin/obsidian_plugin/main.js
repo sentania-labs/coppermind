@@ -451,6 +451,16 @@ class PeopleView extends ItemView {
     }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});}
   }
 }
+const NOT_COPPERMIND='That address did not answer like Coppermind. Check the address and try again.';
+function readJson(result){try{const value=result.json;return value&&typeof value==='object'?value:null;}catch{return null;}}
+function withDetails(message,result,json){
+  const raw=json?null:String(result.text??'').replace(/\s+/g,' ').trim().slice(0,200);
+  return Object.assign(Error(message),{details:'HTTP '+result.status+(raw?': '+raw:'')});
+}
+function showError(el,status,e){
+  status.setText(e.message);
+  if(e.details){const more=el.createEl('details');more.createEl('summary',{text:'Details for support'});more.createEl('p',{text:e.details});}
+}
 const PAIR_SECRET='coppermind-companion';
 const PAIR_HELP='In Coppermind Admin open Obsidian Sync, press Pair companion on this device\'s line, and type the six-digit code it shows.';
 class PairModal extends Modal {
@@ -473,7 +483,7 @@ class PairModal extends Modal {
         new Notice('Coppermind is paired with this device.');
         if(this.done)this.done();
         this.close();
-      }catch(e){status.setText(e.message);button.disabled=false;}
+      }catch(e){showError(el,status,e);button.disabled=false;}
     };
   }
   onClose(){this.contentEl.empty();}
@@ -521,10 +531,11 @@ module.exports=class CoppermindReview extends Plugin {
     const digits=String(code||'').replace(/\D/g,'');
     if(digits.length!==6)throw Error('Type the six-digit pairing code shown in Coppermind Admin.');
     const result=await requestUrl({url:this.settings.url+'/v1/pair',method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:digits,device:this.deviceName()}),throw:false});
-    if(result.status>=400||!result.json?.credential)throw Error(result.json?.message||'Coppermind could not be reached at that address. Check the address and try again.');
-    this.app.secretStorage.setSecret(PAIR_SECRET,result.json.credential);
+    const json=readJson(result);
+    if(result.status>=400||!json?.credential)throw withDetails(json?.message||NOT_COPPERMIND,result,json);
+    this.app.secretStorage.setSecret(PAIR_SECRET,json.credential);
     this.settings.secret=PAIR_SECRET;await this.saveData(this.settings);
-    return result.json.name;
+    return json.name;
   }
   async openWaiting(){
     let leaf=this.app.workspace.getLeavesOfType(WAITING_VIEW)[0]||this.app.workspace.getRightLeaf(false);
@@ -544,6 +555,10 @@ module.exports=class CoppermindReview extends Plugin {
     const result=await requestUrl({url:this.settings.url+path,method,headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,throw:false});
     const namesSpeakers=Object.values(body?.manual_speakers||{}).some(Boolean)||(body?.selected||[]).some(i=>!!body?.speaker_choices?.[i]);
     if(result.status===403&&method==='POST'&&path.endsWith('/review')&&namesSpeakers)throw Error('This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, open Connected apps and either pair this device with a code, or open the key and tick Read notes, Add and change notes, Hand in recordings and files, and Read and correct people and companies.');
-    if(result.status>=400)throw Object.assign(Error(result.json?.message||'Coppermind could not complete the request. Check connectivity and permissions.'),{status:result.status});return result.json;
+    const json=readJson(result);
+    if(result.status>=400)throw Object.assign(withDetails(json?.message||'Coppermind could not complete the request. Check connectivity and permissions.',result,json),{status:result.status});
+    if(json)return json;
+    if(!String(result.text??'').trim())return {};
+    throw withDetails(NOT_COPPERMIND,result,json);
   }
 };

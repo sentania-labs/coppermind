@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo, available_timezones
 
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
+from pydantic import ValidationError
 
 from coppermind.schema import KEY_NAME_PATTERN, FrontmatterSchema, KeyDefinition
 from coppermind.settings import Wiring
@@ -235,6 +236,21 @@ def properties(schema: FrontmatterSchema) -> list[dict[str, Any]]:
     order = ["Date", "Type", "Context", "Account", "Tags", "Attendees", "Invitees", "Meeting"]
     built.sort(key=lambda item: order.index(str(item["label"])))
     return built + own
+
+
+def schema_problem(error: Exception) -> str:
+    """Why a change to the note schema was not kept, in a plain sentence."""
+    if isinstance(error, RevisionConflict):
+        return (
+            "Settings were changed somewhere else while you were editing. Reload the page and "
+            "try again." + ui.tech(str(error))
+        )
+    if isinstance(error, ValidationError):
+        return (
+            "Coppermind could not keep that. Check the name and options and try again."
+            + ui.tech(str(error))
+        )
+    return e(str(error))
 
 
 def router(wiring: Wiring) -> APIRouter:
@@ -879,7 +895,7 @@ edit their descriptions and options.</p></div>"""
             + (". It comes with Coppermind, so its name and kind are fixed." if built else ".")
         )
         body = f"""{ui.head(title, lede, ("/admin/settings/properties", "Note properties"))}
-<div class="stack">{
+<div class="stack">{ui.banner("bad", errors["save"]) if errors.get("save") else ""}{
             ui.card(f'''<form method="post"
 action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why}{fill}
 <div class="actions">{ui.submit("Add property" if new else "Save")}
@@ -951,7 +967,7 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
         try:
             write_schema(ctx.control, schema, revision)
         except (ValueError, RevisionConflict) as exc:
-            errors["name" if not built else "options"] = e(str(exc))
+            errors["save"] = schema_problem(exc)
             return await edit_page(ctx, name, form, errors, 422)
         said = (
             f'Added "{e(wanted)}". New notes carry it from now on.'
@@ -1075,7 +1091,7 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
             checked = FrontmatterSchema.model_validate(schema.model_dump())
             write_schema(ctx.control, checked, revision)
         except (ValueError, RevisionConflict) as exc:
-            return str(exc)
+            return schema_problem(exc)
         return ""
 
     @routes.post("/admin/settings/tags/mode", include_in_schema=False)
@@ -1086,7 +1102,7 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
         problem = tag_change(ctx, lambda schema: setattr(schema, "tag_mode", mode))
         _, schema = read_schema(ctx.control)
         if problem:
-            ctx.say("bad", "That could not be saved: " + e(problem))
+            ctx.say("bad", "That could not be saved. " + problem)
         else:
             ctx.say(
                 "ok",
@@ -1125,6 +1141,10 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
         aliases = [alias for alias in aliases if alias and alias != tag]
 
         def change(schema: FrontmatterSchema) -> None:
+            if tag != was and tag in schema.tags:
+                raise ValueError(
+                    f'The tag "{tag}" is already on your list. Edit that one to change it.'
+                )
             if was and was in schema.tags:
                 tags = {}
                 for name, meaning in schema.tags.items():
@@ -1144,7 +1164,7 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
 
         problem = tag_change(ctx, change)
         if problem:
-            ctx.say("bad", "That tag could not be saved: " + e(problem))
+            ctx.say("bad", "That tag could not be saved. " + problem)
             return ctx.go(ui.url("/admin/settings/tags", edit=was))
         ctx.say("ok", f'Saved the tag "{e(tag)}".' if was else f'Added the tag "{e(tag)}".')
         return ctx.go("/admin/settings/tags")
@@ -1161,7 +1181,7 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
 
         problem = tag_change(ctx, change)
         if problem:
-            ctx.say("bad", "That tag could not be removed: " + e(problem))
+            ctx.say("bad", "That tag could not be removed. " + problem)
         else:
             ctx.say(
                 "ok",
