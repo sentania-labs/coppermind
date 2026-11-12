@@ -407,7 +407,7 @@ def router(wiring: Wiring) -> APIRouter:
                 "by itself, usually within a few seconds of you typing the code in "
                 "Obsidian.</span> " + ui.go("Check now", "/admin/setup/companion")
             )
-        elif placed and pairing.get("expires_at") and not pairing.get("done"):
+        elif placed and pairing.get("expires_at"):
             third = (
                 '<span class="muted">That code has run out, or too many wrong codes were '
                 "typed. Press New code to get another.</span> "

@@ -451,6 +451,21 @@ def test_the_companion_step_does_not_hand_out_a_new_code_when_the_old_one_ran_ou
     assert store.asked("pairing-start") == []
 
 
+def test_the_companion_step_offers_a_new_code_after_a_paired_device_was_cut_off(admin):
+    client, _, store = admin
+    place_companion(store)
+    store.answers["pairing-state"] = {
+        "code": "",
+        "done": {"device": "My iPhone", "at": "2026-11-12T10:05:00+00:00"},
+        "expires_at": "2026-11-12T10:10:00+00:00",
+    }
+    page = client.get("/admin/setup/companion").text
+    assert "Press New code" in page
+    assert 'action="/admin/setup/companion/code"' in page
+    assert "appears here after step 1" not in page
+    assert store.asked("pairing-start") == []
+
+
 def test_the_companion_step_starts_a_code_the_first_time_only(admin):
     client, _, store = admin
     place_companion(store)
