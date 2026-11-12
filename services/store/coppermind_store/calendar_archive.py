@@ -272,14 +272,13 @@ class CalendarArchive:
                         one: dict[str, CalendarEvent] = {}
                         if previous is not None:
                             one[event.identity] = previous
+                        reported = len(problems)
                         merge_event_into(one, event, problems)
                         winner = one[event.identity]
                         if winner != previous:
                             written += 1
                             mirror.put_event(connection, event.identity, winner)
-                        if previous is not None and winner.semantic_hash == previous.semantic_hash:
-                            # The stored copy won on its own, so this is the kept copy whose
-                            # people the record shows; a discarded version adds no evidence.
+                        if len(problems) > reported:
                             kept[event.identity] = winner
                         for person in winner.people:
                             if person.contact_id is not None:
