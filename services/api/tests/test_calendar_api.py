@@ -110,3 +110,45 @@ def test_dropbox_read_requires_sources_read(tmp_path):
         assert response.status_code == 200
         assert response.json()["items"][0]["filename"] == "export.zip"
         assert calls == ["dropbox-list"]
+
+
+def test_dropbox_artifact_parts_name_the_artifact_only_with_artifact_read(tmp_path):
+    from datetime import UTC, datetime
+
+    from coppermind.api_keys import ApiKeySet, create_key
+
+    app, fake = client_for(tmp_path)
+    created = datetime.now(UTC)
+    fake.full_record, fake.full_key = create_key("reader", ["sources:read"], created_at=created)
+    fake.artifact_record, fake.artifact_key = create_key(
+        "artifact reader", ["sources:read", "artifacts:read"], created_at=created
+    )
+
+    async def context_action(action, payload):
+        return {
+            "folder": "Dropbox",
+            "items": [
+                {
+                    "filename": "report.pdf",
+                    "state": "succeeded",
+                    "parts": [{"artifact_id": "A1", "path": "Artifacts/report.pdf"}],
+                },
+                {"filename": "a.ics", "state": "succeeded", "parts": [{"import_id": "I1"}]},
+            ],
+        }
+
+    async def get_api_keys():
+        return ApiKeySet(keys=[fake.full_record, fake.artifact_record])
+
+    fake.context_action = context_action
+    fake.get_api_keys = get_api_keys
+    with TestClient(app) as client:
+        app.state.store = fake
+        app.state.api_key_auth._store = fake
+        plain = client.get("/v1/dropbox", headers={"Authorization": f"Bearer {fake.full_key}"})
+        named = client.get("/v1/dropbox", headers={"Authorization": f"Bearer {fake.artifact_key}"})
+    assert plain.json()["items"][0]["parts"] == [{"artifact": "stored"}]
+    assert plain.json()["items"][1]["parts"] == [{"import_id": "I1"}]
+    assert named.json()["items"][0]["parts"] == [
+        {"artifact_id": "A1", "path": "Artifacts/report.pdf"}
+    ]

@@ -171,7 +171,7 @@ async def test_dropbox_requires_stability_and_legacy_folders_are_ordinary(store)
     assert len((await store.list_notes(NoteQuery())).items) == 1
 
 
-async def test_a_kind_sidecar_added_after_the_file_was_parked_rescues_it(store):
+async def test_a_parked_file_moved_back_with_a_kind_sidecar_is_stored(store):
     context = await configure(store)
     folder = store.notes_root / "Dropbox"
     folder.mkdir(parents=True)
@@ -188,7 +188,10 @@ async def test_a_kind_sidecar_added_after_the_file_was_parked_rescues_it(store):
     await settle()
     parked = [item for item in context.dropbox.snapshot()["items"] if item["id"]]
     assert [item["state"] for item in parked] == ["unsupported"]
+    await context.dropbox.scan()
+    assert not (folder / "design.bin").exists()
 
+    (folder / "Failed" / "design.bin").rename(folder / "design.bin")
     (folder / "design.bin.kind").write_text("artifact\n")
     await settle()
 
@@ -234,7 +237,7 @@ async def test_a_dismissed_parked_drop_stays_dismissed_while_the_file_is_unchang
     assert [item["state"] for item in remaining] == ["unsupported"]
 
 
-async def test_a_dismissed_parked_drop_returns_when_a_sidecar_is_added(store):
+async def test_a_dismissed_parked_drop_is_stored_when_moved_back_with_a_sidecar(store):
     context = await configure(store)
     folder = store.notes_root / "Dropbox"
     folder.mkdir(parents=True)
@@ -244,7 +247,9 @@ async def test_a_dismissed_parked_drop_returns_when_a_sidecar_is_added(store):
     await context.dropbox.dismiss({"id": parked["id"]})
     await settle(context)
     assert receipts(context) == []
+    assert not (folder / "design.bin").exists()
 
+    (folder / "Failed" / "design.bin").rename(folder / "design.bin")
     (folder / "design.bin.kind").write_text("artifact\n")
     await settle(context)
 

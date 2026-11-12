@@ -73,6 +73,34 @@ def test_a_drop_that_declares_a_kind_needs_the_artifact_write_scope(scopes, kind
     assert [action for action, _ in fake.calls] == (["upload-drop"] if expected == 202 else [])
 
 
+@pytest.mark.parametrize(
+    "scopes,expected",
+    [
+        (["sources:write"], [{"artifact": "stored"}]),
+        (
+            ["sources:write", "artifacts:read"],
+            [{"artifact_id": "A1", "path": "Artifacts/deck.pptx"}],
+        ),
+    ],
+)
+def test_an_already_imported_answer_names_the_artifact_only_with_artifact_read(scopes, expected):
+    class Answering(Store):
+        async def context_action(self, action, payload):
+            return {
+                "state": "already_imported",
+                "parts": [{"artifact_id": "A1", "path": "Artifacts/deck.pptx"}],
+            }
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: Answering()
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    with TestClient(app) as client:
+        result = client.post("/v1/dropbox", params={"filename": "deck.pptx"}, content=b"PK")
+    assert result.status_code == 202
+    assert result.json()["parts"] == expected
+
+
 def test_a_declared_drop_is_bounded_by_the_artifact_limit_before_it_is_buffered():
     app = FastAPI()
     fake = Store()

@@ -59,9 +59,9 @@ has not been exercised by this slice.
   `/data` alone. `_Attachments/` is retired:
   filing lands source material under `Artifacts/` as artifacts the note
   cites, and legacy attachment files are moved there by the reconciler with
-  every link repointed. Dropbox takes an artifact only beside a
-  `<filename>.kind` sidecar saying `artifact`, or with `kind=artifact` on the
-  upload route. The schema gains `kind` (default `note`), `artifacts` and the
+  every link repointed. Dropbox routes supported document, image, audio
+  and video formats to artifacts by type; a `<filename>.kind` sidecar supplies
+  metadata, and the upload route needs `kind=artifact`. The schema gains `kind` (default `note`), `artifacts` and the
   listed `reference` tag; saved schema files gain them on the next start.
   Proven by `tests/integration/test_artifacts.py` against PostgreSQL and the
   unit suites under the store, API and Admin.
