@@ -323,7 +323,17 @@ class AdminStorage:
     async def files(self, payload: dict[str, Any]) -> dict[str, Any]:
         query = str(payload.get("q") or "").strip()
         shown = max(6, min(int(payload.get("shown") or 6), 500))
-        conditions = [sa.or_(Artifact.mime_type.is_(None), ~Artifact.mime_type.like("audio/%"))]
+        # A recording is managed under Recordings and imports. Audio with no recording behind
+        # it (added while transcription was off) is a stored file like any other, so it is
+        # listed here and can be found and removed here.
+        recorded = {job.artifact_id for job in self.store.context.recordings.jobs()}
+        conditions = [
+            sa.or_(
+                Artifact.mime_type.is_(None),
+                ~Artifact.mime_type.like("audio/%"),
+                Artifact.id.notin_(recorded),
+            )
+        ]
         async with self.store.session_factory() as session:
             total = await session.scalar(sa.select(sa.func.count()).where(*conditions))
             if query:

@@ -2092,6 +2092,10 @@ async def test_audio_added_while_transcription_is_off_is_listed_and_can_be_remov
     assert listed["a:" + audio]["audio"] is True
     assert listed["a:" + audio]["title"] == "standup.m4a"
 
+    # Recordings and imports shows only what came in lately, so Storage lists it too.
+    stored = await store.admin.act("files", {})
+    assert [item["id"] for item in stored["items"]] == [audio]
+
     removed = await store.admin.act("incoming-remove", {"id": "a:" + audio})
     assert removed == {"title": "standup.m4a", "kind": "document"}
     after = (await store.admin.act("incoming", {}))["items"]
@@ -2104,4 +2108,6 @@ async def test_audio_that_became_a_recording_is_listed_once_as_the_recording(sto
         audio = await store_audio(store)
         accepted = await context.accept_recording(request(audio))
         listed = [item["id"] for item in (await store.admin.act("incoming", {}))["items"]]
+        stored = await store.admin.act("files", {})
     assert listed == ["r:" + accepted["id"]]
+    assert stored["items"] == [] and stored["total"] == 0
