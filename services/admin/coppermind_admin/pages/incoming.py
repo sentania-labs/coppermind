@@ -130,6 +130,11 @@ def why(item: dict[str, Any], ctx: Ctx, transcription: str) -> str:
         if item.get("unsupported"):
             return "Coppermind does not accept this kind of file, so nothing was stored from it."
         return "Could not be taken in, so nothing was stored from it."
+    if item.get("audio"):
+        return (
+            "Kept as a file. It has not been written up. To have it written up, turn "
+            "transcription on and add the recording again."
+        )
     return (
         "Stored. Its text can be searched."
         if item.get("searchable")
@@ -418,9 +423,8 @@ def router(wiring: Wiring) -> APIRouter:
                 if item["kind"] == "recording" or item["state"] == "failed"
                 else e(item["title"])
             )
-            kind = KIND_WORDS[item["kind"]] + (
-                f", {plural(item['minutes'], 'minute')}" if item.get("minutes") else ""
-            )
+            what = "Recording kept as a file" if item.get("audio") else KIND_WORDS[item["kind"]]
+            kind = what + (f", {plural(item['minutes'], 'minute')}" if item.get("minutes") else "")
             if item["state"] == "failed" and item["kind"] == "recording":
                 action = ui.btn(
                     "Try again", f"{link}/retry", "primary", {"back": here}, busy="Trying again…"

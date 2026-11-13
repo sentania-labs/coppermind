@@ -113,6 +113,10 @@ class AdminIncoming:
                     .limit(500)
                 )
             ).all()
+        # Audio that became a recording is listed as that recording. Audio with no recording
+        # behind it (added while transcription was off) is a stored file like any other, so
+        # it is listed here, where it can be seen and removed.
+        recorded = {job.artifact_id for job in self.context.recordings.jobs()}
         return [
             {
                 "id": "a:" + row.id,
@@ -121,10 +125,11 @@ class AdminIncoming:
                 "when": row.received_at.isoformat(),
                 "state": "done",
                 "searchable": row.text_status == "extracted",
+                "audio": (row.mime_type or "").startswith("audio/"),
                 "size": row.size_bytes,
             }
             for row in rows
-            if not (row.mime_type or "").startswith("audio/")
+            if not ((row.mime_type or "").startswith("audio/") and row.id in recorded)
         ]
 
     def calendar_files(self) -> list[dict[str, Any]]:

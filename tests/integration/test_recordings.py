@@ -2079,3 +2079,29 @@ async def test_a_recording_turned_away_at_the_door_says_why_and_is_never_queued_
         await context.dropbox.queue_recordings()
         await context.recordings.tick()
         assert context.recordings.jobs() == []
+
+
+async def test_audio_added_while_transcription_is_off_is_listed_and_can_be_removed(store):
+    audio = await store_audio(store)
+    taken = await store.admin.act("incoming-accept", {"artifact_id": audio})
+    assert taken == {"kind": "audio", "title": "standup", "id": "a:" + audio}
+    assert store.context.recordings.jobs() == []
+
+    listed = {item["id"]: item for item in (await store.admin.act("incoming", {}))["items"]}
+    assert listed["a:" + audio]["kind"] == "document"
+    assert listed["a:" + audio]["audio"] is True
+    assert listed["a:" + audio]["title"] == "standup.m4a"
+
+    removed = await store.admin.act("incoming-remove", {"id": "a:" + audio})
+    assert removed == {"title": "standup.m4a", "kind": "document"}
+    after = (await store.admin.act("incoming", {}))["items"]
+    assert "a:" + audio not in {item["id"] for item in after}
+
+
+async def test_audio_that_became_a_recording_is_listed_once_as_the_recording(store):
+    async with Service(delay=0.1) as service:
+        context = await setup_transcription(store, service)
+        audio = await store_audio(store)
+        accepted = await context.accept_recording(request(audio))
+        listed = [item["id"] for item in (await store.admin.act("incoming", {}))["items"]]
+    assert listed == ["r:" + accepted["id"]]
