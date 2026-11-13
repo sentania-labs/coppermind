@@ -92,6 +92,22 @@ from coppermind.store_protocol import (
 INTERNAL_PREFIX = "/internal/v1"
 PURGE_TIMEOUT_S = 600.0
 MODEL_TEST_TIMEOUT_S = 900.0
+# One service test tries each model in turn and sends a sample recording.
+SERVICE_TEST_TIMEOUT_S = 900.0
+SLOW_ADMIN_ACTIONS = frozenset(
+    {
+        "service-add",
+        "service-test",
+        "service-save",
+        "service-remove",
+        "search-on",
+        "cleanup",
+        "cleanup-confirm",
+        "note-restore",
+        "note-copy",
+        "folders-save",
+    }
+)
 _NOTE_SOURCES = TypeAdapter(list[NoteSourceInfo])
 _PROBLEMS = TypeAdapter(list[ProblemInfo])
 _RECONCILER_NOTICES = TypeAdapter(list[ReconcilerNotice])
@@ -135,6 +151,29 @@ class HttpStoreClient:
                 if action in {"test-model", "save-embeddings"}
                 else httpx.USE_CLIENT_DEFAULT
             ),
+        )
+        return response.json()
+
+    async def admin_action(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """One Admin operation. Testing a service tries its models, so those calls may wait."""
+        response = await self._send(
+            "POST",
+            f"{INTERNAL_PREFIX}/admin/{_segment(action)}",
+            json=payload,
+            timeout=(
+                SERVICE_TEST_TIMEOUT_S if action in SLOW_ADMIN_ACTIONS else httpx.USE_CLIENT_DEFAULT
+            ),
+        )
+        return response.json()
+
+    async def add_calendar_file(self, filename: str, data: AsyncIterator[bytes]) -> dict[str, Any]:
+        """Hand a calendar file to the store as the raw request body, streamed as it is read."""
+        response = await self._send(
+            "POST",
+            f"{INTERNAL_PREFIX}/admin/calendar-file",
+            params={"filename": filename},
+            content=data,
+            timeout=SERVICE_TEST_TIMEOUT_S,
         )
         return response.json()
 

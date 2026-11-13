@@ -93,6 +93,7 @@ class EntityChange(BaseModel):
         "rename",
         "aliases",
         "claim",
+        "add",
         "correct",
         "withdraw",
         "restore",
@@ -116,7 +117,7 @@ class EntityChange(BaseModel):
 
     @model_validator(mode="after")
     def valid_claim(self) -> EntityChange:
-        if self.action in {"claim", "correct"}:
+        if self.action in {"claim", "add", "correct"}:
             self.predicate = EntityInput.single_line(self.predicate)
             if not self.value.strip() or "\0" in self.value or "\0" in self.quote:
                 raise ValueError("facts need a nonblank value without NUL characters")

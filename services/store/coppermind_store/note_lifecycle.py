@@ -65,6 +65,11 @@ def validate_review(
         raise ValueError("confirm the meeting time, or select Time unknown")
 
 
+# A reviewed note is filed once its file has stopped changing, so an edit still arriving from
+# a device is not filed half written. This is a short wait, not a fault.
+SETTLING = "waiting for the reviewed file to remain stable"
+
+
 class NoteLifecycle:
     def __init__(self, context: ContextService) -> None:
         self.context = context
@@ -1078,9 +1083,9 @@ class NoteLifecycle:
             previous_observation = self.observed.get(note.id)
             if previous_observation is None or previous_observation[0] != note.content_hash:
                 self.observed[note.id] = (note.content_hash, clock.monotonic())
-                raise ValueError("waiting for the reviewed file to remain stable")
+                raise ValueError(SETTLING)
             if clock.monotonic() - previous_observation[1] < 30:
-                raise ValueError("waiting for the reviewed file to remain stable")
+                raise ValueError(SETTLING)
         assignment = self.context.config().assignments["enrichment"]
         fields = note.frontmatter
         # Only final human-owned metadata becomes a confirmed fact. No model

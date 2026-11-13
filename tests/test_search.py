@@ -19,7 +19,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
-from coppermind_admin.pages.search_index import local_time
+from coppermind_admin import ui
 from coppermind_api.deps import store
 from coppermind_api.main import create_app
 from coppermind_store.embeddings import QueryVector
@@ -377,11 +377,12 @@ def test_indexed_text_drops_nul_and_is_bounded():
     assert len(indexable("x" * (MAX_INDEXED_CHARS + 10))) == MAX_INDEXED_CHARS
 
 
-def test_admin_shows_index_times_in_local_time():
-    moment = datetime(2026, 10, 9, 19, 5, tzinfo=UTC)
+def test_admin_shows_times_in_the_owners_own_zone_and_words():
+    zone = ZoneInfo("America/Chicago")
+    moment = datetime(2020, 10, 9, 19, 5, tzinfo=UTC)
 
-    assert local_time(moment, ZoneInfo("America/Chicago")) == "October 9, 2026, 2:05 PM CDT"
-    assert local_time(None, ZoneInfo("America/Chicago")) == "never"
+    assert ui.when(moment, zone) == "Oct 9, 2020, 2:05 pm"
+    assert ui.when(None, zone) == "an unknown time"
 
 
 # --- the public route ----------------------------------------------------------

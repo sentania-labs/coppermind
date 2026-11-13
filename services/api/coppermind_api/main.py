@@ -33,6 +33,8 @@ from coppermind_api.v1.folders import router as folders_router
 from coppermind_api.v1.ingest import router as ingest_router
 from coppermind_api.v1.notes import router as notes_router
 from coppermind_api.v1.notices import router as notices_router
+from coppermind_api.v1.pair import PAIR_PATH
+from coppermind_api.v1.pair import router as pair_router
 from coppermind_api.v1.purge import router as purge_router
 from coppermind_api.v1.recordings import router as recordings_router
 from coppermind_api.v1.schema import router as schema_router
@@ -51,8 +53,9 @@ The Coppermind public contract.
 
 Notes live as Markdown files in the notes filesystem, and artifacts (files and
 links handed in beside them) live as bytes under the artifacts folder. This
-service has only a five-minute authentication cache: every operation is a
-call to the store, which is the only process that writes those files.
+service keeps nothing but a brief authentication cache: every operation is a
+call to the store, which is the only process that writes those files. A key
+removed in Admin stops working within two seconds.
 """.strip()
 
 
@@ -113,7 +116,8 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
     async def _authenticate_v1(request: Request, call_next: RequestResponseEndpoint) -> Response:
         """Make authentication the default for the complete public API prefix."""
         path = request.url.path
-        if path == "/v1" or path.startswith("/v1/"):
+        # Pairing is the one route a caller reaches without a key: it is how one is obtained.
+        if path.rstrip("/") != PAIR_PATH and (path == "/v1" or path.startswith("/v1/")):
             try:
                 principal = await request.app.state.api_key_auth.authenticate(
                     request.headers.get("Authorization")
@@ -155,6 +159,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             content=readiness.model_dump(mode="json"),
         )
 
+    app.include_router(pair_router)
     app.include_router(folders_router, prefix="/v1", tags=["folders"])
     app.include_router(ingest_router)
     app.include_router(purge_router)

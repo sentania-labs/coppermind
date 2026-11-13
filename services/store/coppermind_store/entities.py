@@ -1653,6 +1653,11 @@ class EntityService:
                         ),
                     )
                 )
+            elif change.action == "add":
+                # A fact its owner typed in Admin. It stands on their word, like a correction.
+                self.correction(
+                    entity, change.predicate, change.value, change.model_dump_json().encode()
+                )
             elif change.action == "correct":
                 self.correction(
                     entity,

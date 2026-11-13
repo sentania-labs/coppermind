@@ -1,7 +1,14 @@
 """Import receipts survive restart and prevent partial calendar promotion."""
 
 import pytest
+from coppermind_store import calendar_mirror as mirror
 from coppermind_store.calendar_archive import CalendarArchive, ImportReceipt
+from coppermind_store.calendar_import import (
+    CALENDAR_ID,
+    CalendarImportError,
+    EventProvenance,
+    parse_export,
+)
 
 from services.store.tests.test_calendar_import import event, ics
 
@@ -148,3 +155,42 @@ def test_redropping_unparseable_bytes_fails_again_in_current_wording(tmp_path):
     assert again.state == "pending" and again.error == ""
     failed = archive.process(again.id)
     assert failed.state == "failed" and "older version" not in failed.error
+
+
+def test_choosing_the_other_files_version_replaces_the_stored_one_and_settles_the_disagreement(
+    tmp_path,
+):
+    archive = CalendarArchive(tmp_path)
+    first = archive.process(archive.submit("work", "a.ics", ics(event("a"))).id)
+    changed = event("a", title="Changed") + (
+        "\r\nATTENDEE;CN=Bob;PARTSTAT=ACCEPTED:mailto:bob@example.com"
+    )
+    second = archive.process(archive.submit("work", "b.ics", ics(changed)).id)
+    (problem,) = second.conflicts
+    (incoming,) = parse_export(CALENDAR_ID, "b.ics", ics(changed))
+    incoming.provenance = [
+        EventProvenance(
+            source_id=second.id,
+            filename="b.ics",
+            entry=incoming.source_entry,
+            imported_at=second.received_at,
+        )
+    ]
+    assert archive.catalog().events[problem.event_id].title == "Planning"
+
+    archive.choose_incoming(problem.event_id, problem.version, incoming)
+
+    catalog = archive.catalog()
+    chosen = catalog.events[problem.event_id]
+    assert chosen.title == "Changed"
+    assert {p.source_id for p in chosen.provenance} == {first.id, second.id}
+    assert catalog.conflicts == []
+    bob = next(
+        c for c in catalog.contacts() if any("bob@example.com" in e.address for e in c.evidence)
+    )
+    assert [e.event_id for e in bob.evidence] == [problem.event_id]
+    with archive.engine.connect() as connection:
+        (settled,) = mirror.get_conflicts(connection)
+    assert settled.acknowledged is True
+    with pytest.raises(CalendarImportError):
+        archive.choose_incoming(problem.event_id, "not-that-version", incoming)

@@ -1,28 +1,30 @@
 # Note workflow and shared Dropbox
 
-Enable **Admin > Note workflow** to add optional attendees,
-invitees, calendar reference and time-unknown properties. Existing
-notes, type choices and schema roles are preserved. Conflicting property types stop setup.
-The common Dropbox defaults to `Dropbox` in the vault. Old per-calendar folders are ordinary vault folders after automatic migration.
+The note workflow is on from the first start; Admin has no switch for it. Starting adds
+the optional attendees, invitees, calendar reference and time-unknown properties.
+Existing notes, type choices and schema roles are preserved. Conflicting property types stop setup.
+The common drop folder (called Dropbox here) defaults to `Dropbox` in the vault on an existing
+install and **To Coppermind** on a new one. Old per-calendar folders are ordinary vault folders after automatic migration.
 
 ## Review once
 
 New valid unreviewed notes receive one initial enrichment pass when enrichment
 is enabled. The existing backlog is opt-in. Ordinary edits do not run the model
-again. **Refresh suggestions** explicitly requests another pass. Related calendar
+again. Related calendar
 changes can generate a calendar-only pass, without repeating filename or general
 property proposals. An unrelated calendar change does not regenerate suggestions. A recording's meeting
 summary is read from the transcript once per transcript revision: automatic refreshes
-carry it forward, and only **Refresh suggestions** or a changed transcript reads it again.
+carry it forward, and only **Write the summary again** (see [calendar-enrichment](calendar-enrichment.md)) or a changed transcript reads it again.
 
-The **Review notes** screen shows the note and proposals together. Select changes
+A waiting note's review page in Admin (Notes, Waiting for review) shows the note and proposals together. Select changes
 and complete review once, or leave everything unchecked to retain only your edits.
 A filename change requires acknowledgement that existing filename links can need
 repair. The authored heading and body stay unchanged. Stale suggestions cannot
-be applied; reload or explicitly request fresh suggestions.
+be applied; reload the page.
 
-Install the companion ZIP from **Note workflow** into
-`.obsidian/plugins/coppermind-review/`. Enable it in Community plugins. It requires
+Coppermind places the companion in the vault at
+`.obsidian/plugins/coppermind-review/` (from Admin's Setup guide) and Obsidian Sync
+carries it to your devices. Enable it in Community plugins. It requires
 Obsidian 1.11 or later and a Coppermind API key with `notes:read`, `notes:write` and
 `sources:read`. Naming speakers also needs `sources:write` and `entities:read`; a key
 without `entities:read` still reviews everything else, and the panel says that speakers
@@ -113,8 +115,8 @@ company-profile synthesis.
 
 Drop ICS files or ZIPs containing ICS files into Dropbox, or send binary bytes to
 `POST /v1/dropbox?filename=export.ics` with `sources:write`. A 202 means the original
-and intake receipt are durable, not that parsing has completed. Inspect Dropbox
-in Admin for processing and failure status. The vault scanner
+and intake receipt are durable, not that parsing has completed. Admin's Calendar and Recordings and imports
+pages show processing and failure status. The vault scanner
 waits 30 seconds for stable bytes. A completed drop leaves Dropbox only after its
 original is durable and the stored bytes are checked again; a file that cannot be
 handled moves to `Dropbox/Failed` with a reason sidecar, and moving it back retries it.

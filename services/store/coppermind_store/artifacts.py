@@ -1336,11 +1336,66 @@ async def remove_artifact(
     browsable copy a device changed is left where it is, because it is no
     longer the bytes this store put there.
     """
-    async with store._artifact_lock:
+    async with store.maintenance.shared(), store._artifact_lock:
         manifest = await asyncio.to_thread(read_manifest, store, artifact_id)
         if manifest.get("removed_at"):
             raise ArtifactMissing(artifact_id)
         await _retire(store, manifest, reason=reason)
+
+
+async def restore_artifact(store: LocalStore, artifact_id: str) -> str:
+    """Bring back an artifact its owner removed, while the archive still holds it.
+
+    The removal mark comes off the manifest, the browsable copy returns to the name it
+    had (or to a free name beside whatever took it), and the record, row and search
+    entry are rebuilt from the archived bytes. Returns the artifact's title.
+    """
+    async with store.maintenance.shared(), store._artifact_lock:
+        manifest = await asyncio.to_thread(read_manifest, store, artifact_id)
+        if not manifest.get("removed_at"):
+            return str(manifest.get("title") or "")
+        if manifest.get("removed_reason") not in OWNER_REMOVAL_REASONS:
+            raise ArtifactMissing(artifact_id)
+        current = _current_revision(manifest)
+        if current.get("filename"):
+            archived = _revision_file(store, artifact_id, current)
+            if not archived.exists():
+                raise ArtifactMissing(artifact_id)
+            await asyncio.to_thread(
+                _verify_file, archived, str(current["sha256"]), int(current["size_bytes"])
+            )
+            settings = store.control.settings()
+            folder = browse_folder(_time(manifest["received_at"], "received_at"), settings)
+            recorded = manifest.get("path")
+            try:
+                target = (
+                    resolve(store.notes_root, str(recorded))
+                    if recorded
+                    else resolve(store.notes_root, folder) / str(current["filename"])
+                )
+            except ValueError as exc:
+                raise ArtifactsFilesystemUnavailable(str(exc)) from exc
+            if target.exists() and _file_sha256(target) != current.get("sha256"):
+                target = target.parent / unique_filename(target.name, _entries(target.parent))
+            if not target.exists():
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    await asyncio.to_thread(create_exclusive_bytes, target, archived)
+                except OSError as exc:
+                    raise NotesFilesystemUnavailable(str(exc)) from exc
+            manifest["path"] = target.relative_to(store.notes_root).as_posix()
+        for key in ("removed_at", "removed_reason", "removal_commit"):
+            manifest.pop(key, None)
+        now = datetime.now(tz=UTC)
+        try:
+            _write_manifest(store, manifest, new=False)
+            record = await asyncio.to_thread(_extract_record, store, manifest)
+            write_record(store, record)
+        except OSError as exc:
+            raise ArtifactsFilesystemUnavailable(str(exc)) from exc
+        async with transaction(store.session_factory) as session:
+            await mirror_record(session, record, now)
+        return str(manifest.get("title") or manifest.get("filename") or "")
 
 
 async def remove_recording_audio(store: LocalStore, artifact_id: str, revision: int) -> None:

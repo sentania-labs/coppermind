@@ -27,6 +27,7 @@ from coppermind.logging import configure_logging, get_logger
 from coppermind.settings import Wiring
 from coppermind.store_protocol import StoreError
 from coppermind_store import __version__
+from coppermind_store.admin_api import router as admin_router
 from coppermind_store.auth import InternalAuth
 from coppermind_store.context_api import router as context_router
 from coppermind_store.control import ControlState
@@ -63,6 +64,10 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             calendar_database_url=settings.database_url_for("psycopg"),
             artifacts_root=settings.artifacts_dir,
         )
+        try:
+            await app.state.store.admin.startup()
+        except Exception as exc:  # noqa: BLE001 - a store that starts is worth more than this
+            log.warning("note workflow could not be switched on at startup", error=str(exc))
         app.state.reconcile_status = ReconcilerStatus()
         reconcile_task = asyncio.create_task(
             run_reconciler(app.state.store, app.state.reconcile_status),
@@ -201,6 +206,7 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
     app.include_router(internal_router)
     app.include_router(context_router)
     app.include_router(entity_router)
+    app.include_router(admin_router)
     return app
 
 

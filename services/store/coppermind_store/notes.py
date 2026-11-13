@@ -312,6 +312,9 @@ class LocalStore:
         self.embeddings = EmbeddingService(self)
         # The one search index rebuild this process may be running.
         self._search_rebuild: asyncio.Task[None] | None = None
+        from coppermind_store.admin_service import AdminService
+
+        self.admin = AdminService(self)
 
     async def get_note_history_status(self) -> HistoryStatus:
         async with self._reconcile_lock:
