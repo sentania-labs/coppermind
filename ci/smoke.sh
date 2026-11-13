@@ -231,7 +231,7 @@ admin_csrf="$(admin_page -f "$ADMIN/admin" | form_value csrf | head -1)"
 [ -n "$admin_csrf" ] || fail "Signed-in page has no CSRF token"
 
 step "connect an app through Admin and see its key only once"
-key_result="$(admin_page -f -X POST "$ADMIN/admin/apps/new" \
+key_result="$(admin_page -f -L "$ADMIN/admin/apps/new" \
     --data-urlencode "csrf=$admin_csrf" --data-urlencode 'kind=custom' \
     --data-urlencode 'name_custom=smoke-read-only' --data-urlencode 'can_read=on')"
 wrong_scope_key="$(printf '%s' "$key_result" | python3 -c 'import re,sys
