@@ -95,7 +95,8 @@ def router(wiring: Wiring) -> APIRouter:
             for item in bad
         )
         if not files:
-            body = f"""{ui.head("Calendar", LEDE)}<div class="stack">{ctx.flash()}{damaged}
+            strip = setup_strip(view, "cal")
+            body = f"""{ui.head("Calendar", LEDE)}<div class="stack">{strip}{ctx.flash()}{damaged}
 {
                 ui.card(
                     ui.empty(

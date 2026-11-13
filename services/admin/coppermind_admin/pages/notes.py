@@ -278,6 +278,20 @@ def invited(meeting: dict[str, Any]) -> int:
     )
 
 
+def history_line(entry: dict[str, Any], here: str) -> str:
+    """One line of a note's history: a plain sentence, with any raw text kept for support."""
+    line = e(entry["text"])
+    if entry.get("summary_again"):
+        line += (
+            " To have Coppermind try once more, open "
+            + ui.a("its review page", f"{here}/review")
+            + " and press Write the summary again."
+        )
+    if entry.get("details"):
+        line += ui.tech(entry["details"])
+    return line
+
+
 def router(wiring: Wiring) -> APIRouter:
     routes = APIRouter()
 
@@ -506,12 +520,11 @@ def router(wiring: Wiring) -> APIRouter:
         body = f"""{ui.head("Notes", LEDE)}<div class="stack">{ctx.flash()}
 <form method="get" action="/admin/notes">
 {
-            ui.text_input(
+            ui.find_box(
                 "q",
                 "Find any note by name",
                 query,
-                live=True,
-                autofocus=bool(query),
+                "Find",
                 hint="Searches every note, including the ones already filed.",
             )
         }</form>
@@ -697,7 +710,10 @@ name="csrf" value="{{csrf}}">Save</button>
         head = ui.head(e(data["title"]), "A note, and what has happened to it.", back)
         history = ui.card(
             ui.timeline(
-                [(ui.when(entry["at"], ctx.zone), e(entry["text"])) for entry in data["history"]]
+                [
+                    (ui.when(entry["at"], ctx.zone), history_line(entry, here))
+                    for entry in data["history"]
+                ]
             ),
             "What happened",
         )

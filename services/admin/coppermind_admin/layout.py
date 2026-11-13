@@ -27,6 +27,8 @@ a.lat-btn{text-decoration:none;display:inline-block}
 form.act{display:inline}
 .skip{position:absolute;left:8px;top:-100px;background:var(--surface);padding:8px;z-index:30}
 .skip:focus{top:8px}
+.find{display:flex;gap:8px;align-items:center}
+.find .lat-input{flex:1;min-width:0}
 .frame{container-type:inline-size;container-name:app;background:var(--bg)}
 .shell{display:grid;grid-template-columns:236px minmax(0,1fr);min-height:100vh}
 .side{background:var(--surface);border-right:1px solid var(--line);padding:14px 10px;

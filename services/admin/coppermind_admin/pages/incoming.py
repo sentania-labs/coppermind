@@ -37,6 +37,8 @@ STATES = {
     "failed": ("bad", "Failed"),
     "waiting": ("warn", "Waiting"),
     "working": ("accent", "Working"),
+    # A recording that is stored but was never sent to be written up: not done, not failed.
+    "kept": ("", "Not written up"),
     "done": ("ok", "Done"),
 }
 KIND_WORDS = {
@@ -45,6 +47,11 @@ KIND_WORDS = {
     "document": "Document",
     "file": "File",
 }
+# Said once when a recording is added with transcription off. The standing notice about
+# transcription being off is left out while this one is on the page.
+KEPT_BECAUSE = "because transcription is off"
+# How often, in seconds, a page with a recording on the move asks for its own latest state.
+WATCH_EVERY = 5
 CALENDAR_SUFFIXES = {".ics", ".zip"}
 CALENDAR_LIMIT = 200_000_000
 RECORDING_SUFFIXES = {".m4a", ".mp3", ".wav", ".ogg", ".opus", ".flac", ".aac"}
@@ -84,6 +91,16 @@ def estimate(minutes: int | None) -> str:
 
 def why(item: dict[str, Any], ctx: Ctx, transcription: str) -> str:
     """One sentence about what happened to an item, from what was observed."""
+    if item["kind"] == "recording" and item["state"] == "kept":
+        if transcription == "none":
+            return (
+                "Kept, but not written up, because transcription was off when it came in. Turn "
+                "transcription on, then press Write it up now on this line."
+            )
+        return (
+            "Kept, but not written up: it came in while transcription was off. Press Write it "
+            "up now and Coppermind writes it up from the file it kept."
+        )
     if item["kind"] == "recording":
         if item["state"] == "done":
             if item["audio_removed"]:
@@ -130,16 +147,20 @@ def why(item: dict[str, Any], ctx: Ctx, transcription: str) -> str:
         if item.get("unsupported"):
             return "Coppermind does not accept this kind of file, so nothing was stored from it."
         return "Could not be taken in, so nothing was stored from it."
-    if item.get("audio"):
-        return (
-            "Kept as a file. It has not been written up. To have it written up, turn "
-            "transcription on and add the recording again."
-        )
     return (
         "Stored. Its text can be searched."
         if item.get("searchable")
         else "Stored beside your notes."
     )
+
+
+def on_the_move(item: dict[str, Any], transcription: str) -> bool:
+    """True while a recording can change by itself, so its page should keep itself current."""
+    if item["kind"] != "recording":
+        return False
+    if item["state"] == "working":
+        return True
+    return item["state"] == "waiting" and transcription not in {"none", "paused"}
 
 
 def upload_limit(ctx: Ctx, filename: str) -> int:
@@ -198,9 +219,9 @@ async def take_in(ctx: Ctx, upload: Upload) -> tuple[str, str]:
     result = await ctx.act("incoming-accept", {"artifact_id": receipt.artifact.id})
     if result["kind"] == "audio":
         return "warn", (
-            f'Added "{e(result["title"])}" as a file, but transcription is off, so it is not '
-            "being written up. Turn transcription on under Transcription, then add the "
-            "recording again."
+            f'Added "{e(result["title"])}". It is kept, but not written up, {KEPT_BECAUSE}. '
+            "Turn transcription on under Transcription, then press Write it up now on its "
+            "line here."
         )
     if result["kind"] == "recording":
         return "ok", (
@@ -368,6 +389,10 @@ def router(wiring: Wiring) -> APIRouter:
             if transcription == "none"
             else ""
         )
+        # One notice, not two: a recording just added with transcription off already says so.
+        flash = ctx.flash()
+        if KEPT_BECAUSE in flash:
+            off = ""
         dialog = ""
         asked = ctx.q("ask")
         if asked == "add":
@@ -398,7 +423,7 @@ def router(wiring: Wiring) -> APIRouter:
                 dialog = remove_dialog(ctx, target, here, folder)
         if not items:
             body = f"""{ui.head("Recordings and imports", LEDE)}<div class="stack">
-{ctx.flash()}{off}{
+{flash}{off}{
                 ui.card(
                     ui.empty(
                         "Nothing has come in yet",
@@ -420,12 +445,30 @@ def router(wiring: Wiring) -> APIRouter:
             link = model.incoming_path(item["id"])
             name = (
                 ui.a(e(item["title"]), link)
-                if item["kind"] == "recording" or item["state"] == "failed"
+                if (item["kind"] == "recording" and item["state"] != "kept")
+                or item["state"] == "failed"
                 else e(item["title"])
             )
-            what = "Recording kept as a file" if item.get("audio") else KIND_WORDS[item["kind"]]
-            kind = what + (f", {plural(item['minutes'], 'minute')}" if item.get("minutes") else "")
-            if item["state"] == "failed" and item["kind"] == "recording":
+            kind = KIND_WORDS[item["kind"]] + (
+                f", {plural(item['minutes'], 'minute')}" if item.get("minutes") else ""
+            )
+            if item["state"] == "kept":
+                # Only the owner's press sends kept audio to be written up, and only once
+                # transcription is on. It can always be removed.
+                action = ui.go("Remove", ui.url(here, ask=item["id"]))
+                if transcription != "none":
+                    action = (
+                        ui.btn(
+                            "Write it up now",
+                            f"{link}/write-up",
+                            "primary",
+                            {"back": here},
+                            busy="Adding it to the queue…",
+                        )
+                        + " "
+                        + action
+                    )
+            elif item["state"] == "failed" and item["kind"] == "recording":
                 action = ui.btn(
                     "Try again", f"{link}/retry", "primary", {"back": here}, busy="Trying again…"
                 )
@@ -482,9 +525,23 @@ def router(wiring: Wiring) -> APIRouter:
             ],
             tab,
         )
-        body = f"""{ui.head("Recordings and imports", LEDE)}<div class="stack">{ctx.flash()}{off}
-<div class="spread">{tabs}{add}</div>{ui.card(table)}{drop_row(ctx, folder)}</div>"""
-        return await ctx.page("Recordings and imports", body, "incoming", dialog=dialog)
+        moving = any(on_the_move(item, transcription) for item in items)
+        watching = (
+            '<p class="lat-hint" role="status">A recording is on its way to being written up. '
+            "This list updates by itself; there is no need to reload it.</p>"
+            if moving
+            else ""
+        )
+        body = f"""{ui.head("Recordings and imports", LEDE)}<div class="stack">{flash}{off}
+<div data-live class="stack"><div class="spread">{tabs}{add}</div>{watching}{ui.card(table)}</div>
+{drop_row(ctx, folder)}</div>"""
+        return await ctx.page(
+            "Recordings and imports",
+            body,
+            "incoming",
+            dialog=dialog,
+            refresh=WATCH_EVERY if moving else 0,
+        )
 
     def remove_dialog(ctx: Ctx, item: dict[str, Any], back: str, folder: str) -> str:
         days = keep_words(ctx.settings().retention.days)
@@ -702,10 +759,17 @@ def router(wiring: Wiring) -> APIRouter:
                 else ui.go("Set up transcription", "/admin/transcription", "primary"),
             )
         elif item["state"] == "waiting":
-            top = ui.status("warn", "Waiting", why(item, ctx, transcription))
+            top = ui.status(
+                "warn",
+                "Waiting",
+                why(item, ctx, transcription)
+                + (" This page updates by itself." if on_the_move(item, transcription) else ""),
+            )
         elif item["state"] == "working":
             top = ui.status(
-                "ok", "Being written up", estimate(item["minutes"]) + " You can leave this page."
+                "ok",
+                "Being written up",
+                estimate(item["minutes"]) + " This page updates by itself, and you can leave it.",
             )
         else:
             note = model.note_path(item["note_id"]) if item["note_id"] else ""
@@ -777,9 +841,33 @@ def router(wiring: Wiring) -> APIRouter:
             else f"<p>{ui.go('Delete this recording…', ui.url(here, ask='delete'), 'ghost')}</p>"
         )
         body = f"""{ui.head(e(item["title"]), "A recording, and what has happened to it.", back)}
-<div class="stack">{ctx.flash()}{top}{sent_to}
-{ui.card(ui.timeline(events), "What happened")}{listen}{delete}</div>"""
-        return await ctx.page(item["title"], body, "incoming", dialog=dialog)
+<div class="stack">{ctx.flash()}<div data-live class="stack">{top}{sent_to}
+{ui.card(ui.timeline(events), "What happened")}</div>{listen}{delete}</div>"""
+        return await ctx.page(
+            item["title"],
+            body,
+            "incoming",
+            dialog=dialog,
+            refresh=WATCH_EVERY if on_the_move(item, transcription) else 0,
+        )
+
+    @routes.post("/admin/incoming/{identity}/write-up", include_in_schema=False)
+    async def write_up(identity: str, request: Request) -> Response:
+        """Send a recording that was kept as a file to be written up, from the stored audio."""
+        ctx = Ctx(request, wiring)
+        await ctx.form()
+        target = ctx.back("/admin/incoming")
+        try:
+            result = await ctx.act("incoming-write-up", {"id": identity})
+        except StoreError as exc:
+            ctx.say("bad", explain(exc, "That recording was not sent to be written up."))
+            return ctx.go(target)
+        ctx.say(
+            "ok",
+            f'"{e(result["title"])}" is in the queue to be written up, from the file Coppermind '
+            "kept. Nothing needs adding again. When it is done, the note appears in Review.",
+        )
+        return ctx.go(target)
 
     @routes.post("/admin/incoming/{identity}/retry", include_in_schema=False)
     async def retry(identity: str, request: Request) -> Response:

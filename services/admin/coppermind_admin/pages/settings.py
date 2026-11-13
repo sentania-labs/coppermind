@@ -1278,12 +1278,11 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
             )
             + f"""<form method="get" action="/admin/settings/search">
 {
-                ui.text_input(
+                ui.find_box(
                     "q",
                     "Try a search",
                     query,
-                    live=True,
-                    autofocus=bool(query),
+                    "Search",
                     hint="Searches your notes, files and people the way your assistants and "
                     "Obsidian do.",
                 )

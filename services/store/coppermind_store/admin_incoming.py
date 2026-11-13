@@ -114,23 +114,37 @@ class AdminIncoming:
                 )
             ).all()
         # Audio that became a recording is listed as that recording. Audio with no recording
-        # behind it (added while transcription was off) is a stored file like any other, so
-        # it is listed here, where it can be seen and removed.
+        # behind it (added while transcription was off) is still a recording to its owner: it
+        # is listed as one that is kept and not written up, never as a finished document.
         recorded = {job.artifact_id for job in self.context.recordings.jobs()}
-        return [
-            {
-                "id": "a:" + row.id,
-                "kind": "document",
-                "title": row.filename or row.title,
-                "when": row.received_at.isoformat(),
-                "state": "done",
-                "searchable": row.text_status == "extracted",
-                "audio": (row.mime_type or "").startswith("audio/"),
-                "size": row.size_bytes,
-            }
-            for row in rows
-            if not ((row.mime_type or "").startswith("audio/") and row.id in recorded)
-        ]
+        out = []
+        for row in rows:
+            name = row.filename or row.title
+            if not (row.mime_type or "").startswith("audio/"):
+                out.append(
+                    {
+                        "id": "a:" + row.id,
+                        "kind": "document",
+                        "title": name,
+                        "when": row.received_at.isoformat(),
+                        "state": "done",
+                        "searchable": row.text_status == "extracted",
+                        "size": row.size_bytes,
+                    }
+                )
+            elif row.id not in recorded:
+                out.append(
+                    {
+                        "id": "a:" + row.id,
+                        "kind": "recording",
+                        "title": Path(name).stem,
+                        "filename": name,
+                        "when": row.received_at.isoformat(),
+                        "state": "kept",
+                        "size": row.size_bytes,
+                    }
+                )
+        return out
 
     def calendar_files(self) -> list[dict[str, Any]]:
         from coppermind_store.admin_calendar import file_counts
@@ -186,7 +200,7 @@ class AdminIncoming:
             *await self.documents(),
             *self.refused_drops(),
         ]
-        order = {"failed": 0, "waiting": 1, "working": 2, "done": 3}
+        order = {"failed": 0, "kept": 1, "waiting": 1, "working": 2, "done": 3}
         items.sort(key=lambda item: item["when"], reverse=True)
         items.sort(key=lambda item: order[item["state"]])
         return items
@@ -313,6 +327,41 @@ class AdminIncoming:
                 and not (self.context.recordings.assignment() or _Off()).paused,
             }
         return {"kind": "document", "title": filename, "id": "a:" + artifact_id}
+
+    async def write_up(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Queue a recording that was kept as a file, from the audio already stored.
+
+        Only ever on the owner's own press: kept audio is never queued by itself.
+        """
+        prefix, _, artifact_id = str(payload["id"]).partition(":")
+        if prefix != "a":
+            raise ValueError("That recording is no longer listed.")
+        try:
+            record = await self.store.get_artifact(artifact_id)
+        except StoreError as exc:
+            raise ValueError("That recording is no longer listed.") from exc
+        if not (record.mime_type or "").startswith("audio/"):
+            raise ValueError("That file is not a recording, so it cannot be written up.")
+        if any(job.artifact_id == artifact_id for job in self.context.recordings.jobs()):
+            raise ValueError("That recording is already in the list of recordings.")
+        try:
+            self.context.recordings.ready()
+        except ValueError as exc:
+            raise ValueError(
+                "Transcription is off. Turn it on under Transcription, then press "
+                "Write it up now again."
+            ) from exc
+        filename = record.filename or record.title
+        status = await self.context.recordings.accept(
+            {
+                "artifact_id": artifact_id,
+                "provider": "admin",
+                "external_source_id": record.sha256 or artifact_id,
+                "title": Path(filename).stem,
+                "origin": "admin",
+            }
+        )
+        return {"kind": "recording", "title": Path(filename).stem, "id": "r:" + status["id"]}
 
     async def replace_failed(self, payload: dict[str, Any]) -> dict[str, Any]:
         """A fresh file was added in place of one that could not be read: clear the old one."""

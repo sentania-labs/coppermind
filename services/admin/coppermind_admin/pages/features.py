@@ -264,7 +264,8 @@ touched.</p>
             if use and chosen and step == 2
             else ""
         )
-        page = f"""{ui.head("Suggestions", SUGG_LEDE)}<div class="stack">{ctx.flash()}
+        strip = setup_strip(await ctx.view(), "sugg")
+        page = f"""{ui.head("Suggestions", SUGG_LEDE)}<div class="stack">{strip}{ctx.flash()}
 {picked_note}{top}{ui.card(("" if model_only else ui.stepper(labels, step)) + body)}</div>"""
         return await ctx.page("Suggestions", page, "suggestions")
 
@@ -932,7 +933,8 @@ minutes. Pick more only if your recordings run for several hours.</div></div>
             if use and chosen and step == 2
             else ""
         )
-        page = f"""{ui.head("Transcription", TRANS_LEDE)}<div class="stack">{ctx.flash()}
+        strip = setup_strip(await ctx.view(), "trans")
+        page = f"""{ui.head("Transcription", TRANS_LEDE)}<div class="stack">{strip}{ctx.flash()}
 {picked_note}{top}{ui.card(ui.stepper(labels, step) + body)}</div>"""
         return await ctx.page("Transcription", page, "transcription")
 

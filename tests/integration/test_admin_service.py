@@ -678,3 +678,67 @@ async def test_an_address_typed_without_http_or_https_keeps_the_one_already_save
     assert result["tested"] is False
     saved = next(c.base_url for c in store.context.config().connections if c.id == home)
     assert saved == "http://Home.example/v1"
+
+
+async def test_a_failed_suggestion_is_in_the_note_history_in_plain_words(store):
+    from tests.integration.test_context_enrichment import RULE_CASES, _answer
+
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+    build = next(case[1] for case in RULE_CASES if case[0] == "quote-not-found")
+
+    async def answer(connection, key, assignment, system, evidence):
+        return _answer(build(evidence)), {}
+
+    context.provider.suggest = answer
+    await context.run_job(context.load_job(job_id))
+    raw = context.load_job(job_id).error
+    assert "(quote-not-found)" in raw and "Retry the job" in raw
+
+    history = (await store.admin.act("note", {"id": note.id}))["history"]
+    (line,) = [entry for entry in history if "could not be written" in entry["text"]]
+    assert line["text"] == "Suggestions could not be written for this note."
+    # The rule name and the remedy that is not on the page are kept for support only.
+    assert line["details"] == raw
+    # Not written from a recording, so there is no summary to write again.
+    assert line["summary_again"] is False
+
+
+async def test_a_changed_address_that_does_not_answer_remembers_the_one_that_did(
+    store, monkeypatch
+):
+    from coppermind_store.model_provider import ProviderError
+
+    await configure(store)
+    _answers(store, monkeypatch, {"Home": {"text": TEXT, "speech": NO_SPEECH}})
+    home = await _add(store, "Home")
+    assert store.context.services.get(home)["address_before"] == ""
+
+    async def down(connection, key):
+        raise ProviderError("no answer", "provider-connect")
+
+    monkeypatch.setattr(store.context.services, "_run", down)
+    first = await store.admin.act(
+        "service-save", {"id": home, "name": "Home", "address": "http://typo.example/v1"}
+    )
+    # Saved but flagged, as before; and the page can now name the address to go back to.
+    assert first["answering"] is False and first["moved"] is True
+    assert first["service"]["address"] == "typo.example"
+    assert first["service"]["address_before"] == "Home.example"
+
+    # A second slip still points back at the address that last worked.
+    second = await store.admin.act(
+        "service-save", {"id": home, "name": "Home", "address": "http://typo2.example/v1"}
+    )
+    assert second["service"]["address_before"] == "Home.example"
+
+    # Once something answers, there is nothing to go back to.
+    _answers(store, monkeypatch, {"Home": {"text": TEXT, "speech": NO_SPEECH}})
+    back = await store.admin.act(
+        "service-save", {"id": home, "name": "Home", "address": "http://Home.example/v1"}
+    )
+    assert back["answering"] is True
+    assert back["service"]["address_before"] == ""

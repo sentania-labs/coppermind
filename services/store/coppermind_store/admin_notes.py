@@ -469,8 +469,13 @@ class AdminNotes:
         return result
 
     async def _history(self, row: Note) -> list[dict[str, str]]:
-        """What happened to one note, as sentences, oldest first."""
+        """What happened to one note, as sentences, oldest first.
+
+        A line may carry `details` (raw text, for support only) and `summary_again` (the
+        review page of this note offers Write the summary again).
+        """
         events: list[tuple[str, str]] = []
+        extras: dict[tuple[str, str], dict[str, Any]] = {}
         recording = next(
             (
                 job
@@ -500,7 +505,14 @@ class AdminNotes:
                     )
                 )
             elif job.state == "failed" and job.error:
-                events.append((job.created_at, "Suggestions could not be written: " + job.error))
+                # The job's own wording names an internal rule and a remedy that is not on the
+                # page, so it stays behind Details for support.
+                line = (job.created_at, "Suggestions could not be written for this note.")
+                events.append(line)
+                extras[line] = {
+                    "details": job.error,
+                    "summary_again": recording is not None and not row.reviewed,
+                }
         review = self.store.control.store.state_dir / "reviews" / f"{row.id}.json"
         if row.reviewed and review.exists():
             stamp = datetime.fromtimestamp(review.stat().st_mtime, tz=UTC).isoformat()
@@ -523,7 +535,7 @@ class AdminNotes:
         if row.state == "deleted":
             events.append((row.updated_at.isoformat(), "Deleted."))
         events.sort(key=lambda item: item[0])
-        return [{"at": at, "text": text} for at, text in events]
+        return [{"at": at, "text": text, **extras.get((at, text), {})} for at, text in events]
 
     # -- fixes ---------------------------------------------------------------------------
 

@@ -601,8 +601,13 @@ Nothing of yours is sent.</p>
                 (
                     f"Saved, but {name} refused the key. Check the key and save again."
                     if result.get("key_refused")
-                    else f"Saved, but nothing answers at {e(service['address'])}. Check the "
-                    "address and save again."
+                    else f"Saved, but nothing answers at {e(service['address'])}. "
+                    + (
+                        f"The address before was {e(service['address_before'])}. If that one "
+                        "was right, type it back in and save."
+                        if service.get("address_before")
+                        else "Check the address and save again."
+                    )
                     if service["address"]
                     else f"Saved, but {name} did not answer. Check the key and save again."
                 ),

@@ -2087,10 +2087,12 @@ async def test_audio_added_while_transcription_is_off_is_listed_and_can_be_remov
     assert taken == {"kind": "audio", "title": "standup", "id": "a:" + audio}
     assert store.context.recordings.jobs() == []
 
+    # It is a recording that is kept and not written up, never a finished document.
     listed = {item["id"]: item for item in (await store.admin.act("incoming", {}))["items"]}
-    assert listed["a:" + audio]["kind"] == "document"
-    assert listed["a:" + audio]["audio"] is True
-    assert listed["a:" + audio]["title"] == "standup.m4a"
+    assert listed["a:" + audio]["kind"] == "recording"
+    assert listed["a:" + audio]["state"] == "kept"
+    assert listed["a:" + audio]["title"] == "standup"
+    assert listed["a:" + audio]["filename"] == "standup.m4a"
 
     # Recordings and imports shows only what came in lately, so Storage lists it too.
     stored = await store.admin.act("files", {})
@@ -2100,6 +2102,51 @@ async def test_audio_added_while_transcription_is_off_is_listed_and_can_be_remov
     assert removed == {"title": "standup.m4a", "kind": "document"}
     after = (await store.admin.act("incoming", {}))["items"]
     assert "a:" + audio not in {item["id"] for item in after}
+
+
+async def test_kept_audio_is_written_up_from_the_stored_file_only_when_asked(store):
+    audio = await store_audio(store)
+    await store.admin.act("incoming-accept", {"artifact_id": audio})
+
+    # Asked while transcription is still off: refused in plain words, nothing queued.
+    with pytest.raises(ValueError, match="Transcription is off. Turn it on under Transcription"):
+        await store.admin.act("incoming-write-up", {"id": "a:" + audio})
+    assert store.context.recordings.jobs() == []
+
+    async with Service(delay=0.1) as service:
+        context = await setup_transcription(store, service)
+        # Turning transcription on queues nothing by itself, however long it is left.
+        assert await context.recordings.tick() is False
+        assert context.recordings.jobs() == []
+        assert service.requests == []
+        kept = [i for i in (await store.admin.act("incoming", {}))["items"] if i["state"] == "kept"]
+        assert [item["id"] for item in kept] == ["a:" + audio]
+
+        queued = await store.admin.act("incoming-write-up", {"id": "a:" + audio})
+        assert queued["kind"] == "recording" and queued["title"] == "standup"
+        (job,) = context.recordings.jobs()
+        assert job.artifact_id == audio and "r:" + job.id == queued["id"]
+        # It is now one recording in the list, not also a kept file.
+        listed = [item["id"] for item in (await store.admin.act("incoming", {}))["items"]]
+        assert listed == [queued["id"]]
+
+        assert await context.recordings.tick() is True
+        # The audio sent to be written up is the audio that was stored: nothing new came in.
+        assert AUDIO in service.requests[0]["body"]
+        # A second press does not queue it twice.
+        with pytest.raises(ValueError, match="already in the list of recordings"):
+            await store.admin.act("incoming-write-up", {"id": "a:" + audio})
+    assert len(store.context.recordings.jobs()) == 1
+
+
+async def test_only_stored_audio_can_be_sent_to_be_written_up(store):
+    async with Service(delay=0.1) as service:
+        await setup_transcription(store, service)
+        with pytest.raises(ValueError, match="no longer listed"):
+            await store.admin.act("incoming-write-up", {"id": "a:01NOTTHERE00000000000000000"})
+        with pytest.raises(ValueError, match="no longer listed"):
+            await store.admin.act("incoming-write-up", {"id": "r:something"})
+    assert store.context.recordings.jobs() == []
 
 
 async def test_audio_that_became_a_recording_is_listed_once_as_the_recording(store):

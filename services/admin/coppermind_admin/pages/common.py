@@ -96,6 +96,15 @@ def down_help(service: dict[str, Any]) -> str:
             f" <b>What to do:</b> {e(service['name'])} answered, but it refused the key. "
             "Replace the key with one that works, then press Test now."
         )
+    if service.get("address_before"):
+        # The address was just changed, so that is the first thing to doubt, not the computer.
+        return (
+            f" <b>What to do:</b> the address of {e(service['name'])} was changed, and nothing "
+            f"has answered at the new one{address}. Check it for a slip. The address before "
+            f"was {e(service['address_before'])}: to go back to it, edit this service, type it "
+            "in and save. If the new address is right, start the service there, then press "
+            "Test now."
+        )
     if service["outside"]:
         return (
             f" <b>What to do:</b> check that this server can reach the internet and that your "
@@ -213,9 +222,21 @@ def setup_strip(view: dict[str, Any] | None, key: str) -> str:
         return ""
     steps = model.setup_steps(view)
     mine = next((step for step in steps if step.key == key), None)
-    if mine is None or not mine.done:
+    if mine is None:
         return ""
     following = model.setup_next(steps)
+    if not mine.done:
+        # An optional step that is still to do says so on its own page, with the way past it.
+        if mine.needed or mine.skipped or following is None:
+            return ""
+        return ui.banner(
+            "info",
+            f"<b>Setup: {model.setup_done(steps)} of {len(steps)} done.</b> "
+            f"This step ({mine.title}) is optional. "
+            + ui.btn("Skip for now", "/admin/setup/skip", "", {"step": mine.key})
+            + " "
+            + ui.go("See all steps", "/admin/setup"),
+        )
     if following is None:
         if view["setup"].get("finished_seen"):
             return ""
@@ -231,6 +252,11 @@ def setup_strip(view: dict[str, Any] | None, key: str) -> str:
         f"Next: {following.title}{optional}. "
         + ui.go("Continue", following.to, "primary")
         + " "
+        + (
+            ""
+            if following.needed
+            else ui.btn("Skip for now", "/admin/setup/skip", "", {"step": following.key}) + " "
+        )
         + ui.go("See all steps", "/admin/setup"),
     )
 

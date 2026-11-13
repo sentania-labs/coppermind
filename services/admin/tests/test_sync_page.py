@@ -162,3 +162,44 @@ def test_your_own_obsidian_settings_is_off_until_chosen_and_never_forced(admin, 
 
     post(client, "/admin/sync/what", {"image": "on", "conflict": "merge"}, page="/admin/sync/what")
     assert saved_configs(wiring) == []
+
+
+CARRIES = (
+    "Your own Obsidian settings sync too, which is what carries the Coppermind companion to "
+    "your other devices."
+)
+
+
+def test_what_syncs_says_beside_the_tick_that_the_companion_needs_it(admin, helper):
+    client, _, _ = admin
+    helper.status = {"configured": True, "vault_name": "My notes", "state": "syncing"}
+    page = client.get("/admin/sync/what").text
+    tick = page[page.index('name="own"') :]
+    tick = tick[: tick.index("</label>")]
+    assert (
+        "The Coppermind companion is an add-on, so it reaches your other devices only when "
+        "this is ticked." in tick
+    )
+    # The page no longer tells the owner to leave off what the companion step asks for.
+    assert "Most people leave this off" not in page
+
+
+def test_the_saved_banner_and_the_sync_page_mention_the_tick_only_when_it_is_on(admin, helper):
+    client, wiring, _ = admin
+    helper.status = {"configured": True, "vault_name": "My notes", "state": "syncing"}
+    sent = post(
+        client,
+        "/admin/sync/what",
+        {"image": "on", "own": "on", "conflict": "merge"},
+        page="/admin/sync/what",
+    )
+    landed = follow(client, sent)
+    # Once in the banner that says what was saved, once in the What syncs line.
+    assert landed.count(CARRIES) == 2
+    assert client.get("/admin/sync").text.count(CARRIES) == 1
+
+    sent = post(
+        client, "/admin/sync/what", {"image": "on", "conflict": "merge"}, page="/admin/sync/what"
+    )
+    assert CARRIES not in follow(client, sent)
+    assert saved_configs(wiring) == []

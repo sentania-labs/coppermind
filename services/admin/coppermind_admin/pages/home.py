@@ -300,12 +300,11 @@ def router(wiring: Wiring) -> APIRouter:
                 action = ui.a("Change", step.to) if step.to else ""
             elif is_next:
                 action = ui.go("Start" if step.needed else "Set up", step.to, "primary")
-                if not step.needed:
-                    action += " " + ui.btn(
-                        "Skip for now", "/admin/setup/skip", "", {"step": step.key}
-                    )
             else:
                 action = ui.go("Set up", step.to)
+            # An optional step can be skipped from the start, not only when its turn comes.
+            if not step.needed and not step.done and not step.skipped:
+                action += " " + ui.btn("Skip for now", "/admin/setup/skip", "", {"step": step.key})
             listed += ui.item(
                 f"{number}. {step.title} {state}", step.summary if step.done else step.why, action
             )

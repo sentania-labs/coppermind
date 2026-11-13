@@ -139,26 +139,3 @@ def test_text_inside_a_file_name_cannot_pass_itself_off_as_another_field(admin):
     )
     follow(client, sent)
     assert [name for name, _ in store.calendar_files] == ["a; name=csrf; x.ics"]
-
-
-def test_a_recording_kept_only_as_a_file_is_listed_with_a_way_to_remove_it(admin):
-    client, _, store = admin
-    store.answers["incoming"] = {
-        "items": [
-            {
-                "id": "a:AUDIO1",
-                "kind": "document",
-                "title": "standup.m4a",
-                "when": "2026-11-12T17:16:39+00:00",
-                "state": "done",
-                "searchable": False,
-                "audio": True,
-                "size": 179200,
-            }
-        ]
-    }
-    page = client.get("/admin/incoming").text
-    assert "standup.m4a" in page
-    assert "Recording kept as a file" in page
-    assert "It has not been written up" in page
-    assert "/admin/incoming?ask=a%3AAUDIO1" in page or "/admin/incoming?ask=a:AUDIO1" in page

@@ -198,6 +198,10 @@ class AiServices:
         records = self.records()
         key = self.context.storage_identity(connection_id)
         record = {**records.get(key, {}), **changes}
+        # The address a service had before a change is only worth saying while nothing
+        # answers at the new one. Once it answers, that is forgotten.
+        if changes.get("down_since") == "" and "address_before" not in changes:
+            record.pop("address_before", None)
         records[key] = record
         self.context.write(RECORD, records)
         return record
@@ -279,6 +283,9 @@ class AiServices:
             "has_key": bool(self.context.key(connection.id)),
             "answering": not record.get("down_since"),
             "down_since": record.get("down_since", ""),
+            # Set while a changed address has not answered yet, so the page can name the
+            # address to go back to instead of guessing at a sleeping computer.
+            "address_before": record.get("address_before", "") if record.get("down_since") else "",
             "key_refused": bool(record.get("key_refused")),
             "fails": int(record.get("fails", 0)),
             "last_failed_at": record.get("last_failed_at", ""),
@@ -818,8 +825,15 @@ class AiServices:
             self.context.save_config(config)
             if caps is None:
                 refused = error is not None and http_status(error) in {401, 403}
+                moved = {}
+                if moved_to:
+                    # Two slips in a row still point back at the address that last worked.
+                    moved["address_before"] = self.record(connection).get(
+                        "address_before"
+                    ) or display_address(connection.base_url)
                 self._update(
                     identity,
+                    **moved,
                     down_since=now(),
                     last_failed_at=now(),
                     fails=1,

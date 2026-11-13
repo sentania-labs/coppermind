@@ -67,6 +67,18 @@ class HelperRefused(Exception):
         self.body = body
 
 
+# Said wherever what syncs is summed up, so the tick that carries the companion is never a
+# surprise: it is off unless the owner ticks it, and nothing turns it on for them.
+OWN_ON = (
+    " Your own Obsidian settings sync too, which is what carries the Coppermind companion to "
+    "your other devices."
+)
+
+
+def own_text(on: bool) -> str:
+    return OWN_ON if on else ""
+
+
 def kinds_text(kinds: list[str]) -> str:
     yes = [words for key, words, _, _ in KINDS if key in kinds]
     no = [words for key, words, _, _ in KINDS if key not in kinds]
@@ -394,7 +406,7 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
             name_row,
             ui.row(
                 "What syncs",
-                kinds_text(list(settings.file_types)),
+                kinds_text(list(settings.file_types)) + own_text(bool(settings.sync_configs)),
                 ui.go("Change", "/admin/sync/what"),
             ),
             ui.row(
@@ -870,9 +882,11 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
             "own",
             "Your own Obsidian settings",
             "Your themes, hotkeys, and the files and saved data of every add-on you have "
-            "installed, which can include sign-ins that other add-ons keep. Most people leave "
-            "this off. When it is off, none of that is pulled: no add-on files or data, "
-            "including the Coppermind companion's, travel between devices.",
+            "installed, which can include sign-ins that other add-ons keep. <b>The Coppermind "
+            "companion is an add-on, so it reaches your other devices only when this is "
+            "ticked.</b> Tick it if you want the companion on your phone or another computer. "
+            "Leave it off if you do not: while it is off, no add-on files or data travel "
+            "between devices, the companion's included.",
             checked=draft["own"],
         )
         chips = "".join(
@@ -984,7 +998,8 @@ formaction="/admin/sync/what" name="csrf" value="{csrf_token.get()}" data-busy="
                 if applied
                 else "Saved. Sync picks up your choices within a minute: "
             )
-            + kinds_text(kinds),
+            + kinds_text(kinds)
+            + own_text("own" in fields),
         )
         return ctx.go("/admin/sync")
 

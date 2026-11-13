@@ -281,6 +281,19 @@ def text_input(
     )
 
 
+def find_box(name: str, label: str, value: str, button: str, *, hint: str = "") -> str:
+    """A box that looks something up: as you type, on Enter, or with the button beside it."""
+    focus = " autofocus" if value else ""
+    return (
+        f'<div class="field"><label class="lat-label" for="{e(name)}">{label}</label>'
+        f'<div class="find"><input class="lat-input" id="{e(name)}" name="{e(name)}" '
+        f'type="text" value="{e(value)}" data-live{focus}>'
+        f'<button type="submit" class="lat-btn">{e(button)}</button></div>'
+        + (f'<div class="lat-hint">{hint}</div>' if hint else "")
+        + "</div>"
+    )
+
+
 def text_area(
     name: str,
     label: str,
