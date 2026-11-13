@@ -753,7 +753,14 @@ class AiServices:
                 bases = candidates(typed)
                 if not bases:
                     raise Refused("address", "Type the address of the server.")
-                if address_key(bases[0]) != address_key(connection.base_url):
+                # A scheme the owner typed is theirs to choose: http changed to https (or back)
+                # is a move even though the server is the same one, so it is saved and tested.
+                typed_scheme = typed.partition("://")[0].lower() if "://" in typed else ""
+                stored_scheme = urlsplit(connection.base_url).scheme.lower()
+                if address_key(bases[0]) == address_key(connection.base_url):
+                    if typed_scheme and typed_scheme != stored_scheme:
+                        moved_to = bases
+                else:
                     clash = next(
                         (
                             c

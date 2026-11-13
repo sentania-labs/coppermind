@@ -633,3 +633,48 @@ async def test_moving_the_review_folder_inside_itself_does_not_nest_waiting_note
     moved = await store.get_note(note.id)
     assert moved.path.startswith(inner + "/")
     assert not moved.path.startswith(inner + "/Inbox/")
+
+
+async def test_changing_only_http_to_https_moves_the_service_and_tests_it_there(store, monkeypatch):
+    await configure(store)
+    _answers(store, monkeypatch, {"Home": {"text": TEXT, "speech": NO_SPEECH}})
+    home = await _add(store, "Home")
+
+    def address():
+        return next(c.base_url for c in store.context.config().connections if c.id == home)
+
+    assert address() == "http://Home.example/v1"
+    tried = []
+
+    async def run(connection, key):
+        tried.append(connection.base_url)
+        return {"models": ["m"], "embed": NO_EMBED, "text": TEXT, "speech": NO_SPEECH}
+
+    monkeypatch.setattr(store.context.services, "_run", run)
+    result = await store.admin.act(
+        "service-save", {"id": home, "name": "Home", "address": "https://Home.example/v1"}
+    )
+    assert result["tested"] is True and result["moved"] is True and result["answering"] is True
+    assert tried == ["https://Home.example/v1"]
+    assert address() == "https://Home.example/v1"
+
+    # Saved again with the address as the page shows it, nothing moves and https stays.
+    shown = store.context.services.get(home)["address"]
+    again = await store.admin.act("service-save", {"id": home, "name": "Home", "address": shown})
+    assert again["tested"] is False
+    assert tried == ["https://Home.example/v1"]
+    assert address() == "https://Home.example/v1"
+
+
+async def test_an_address_typed_without_http_or_https_keeps_the_one_already_saved(
+    store, monkeypatch
+):
+    await configure(store)
+    _answers(store, monkeypatch, {"Home": {"text": TEXT, "speech": NO_SPEECH}})
+    home = await _add(store, "Home")
+    result = await store.admin.act(
+        "service-save", {"id": home, "name": "Home", "address": "Home.example"}
+    )
+    assert result["tested"] is False
+    saved = next(c.base_url for c in store.context.config().connections if c.id == home)
+    assert saved == "http://Home.example/v1"
