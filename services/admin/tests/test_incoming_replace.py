@@ -105,3 +105,60 @@ def test_a_request_carrying_two_files_is_refused_and_nothing_is_taken(admin):
     assert "Add one file at a time" in follow(client, refused)
     assert store.calendar_files == []
     assert set(Path(tempfile.gettempdir()).glob("coppermind-upload-*")) == leftovers
+
+
+def test_a_file_whose_name_holds_a_semicolon_keeps_its_whole_name(admin):
+    # A browser sends the name in quotes, so the semicolon is part of the name.
+    client, _, store = admin
+    store.answers["calendar-add"] = {**ADDED, "name": "Q3; review.ics"}
+    sent = client.post(
+        "/admin/incoming/add",
+        data={"csrf": token(client, "/admin/incoming")},
+        files={"file": ("Q3; review.ics", ICS, "text/calendar")},
+        follow_redirects=False,
+    )
+    follow(client, sent)
+    assert [name for name, _ in store.calendar_files] == ["Q3; review.ics"]
+
+
+def test_text_inside_a_file_name_cannot_pass_itself_off_as_another_field(admin):
+    client, _, store = admin
+    store.answers["calendar-add"] = ADDED
+    body = (
+        b'--B\r\nContent-Disposition: form-data; name="csrf"\r\n\r\n'
+        + token(client, "/admin/incoming").encode()
+        + b'\r\n--B\r\nContent-Disposition: form-data; name="file"; '
+        b'filename="a; name=csrf; x.ics"\r\n'
+        b"Content-Type: text/calendar\r\n\r\n" + ICS + b"\r\n--B--\r\n"
+    )
+    sent = client.post(
+        "/admin/incoming/add",
+        content=body,
+        headers={"content-type": "multipart/form-data; boundary=B"},
+        follow_redirects=False,
+    )
+    follow(client, sent)
+    assert [name for name, _ in store.calendar_files] == ["a; name=csrf; x.ics"]
+
+
+def test_a_recording_kept_only_as_a_file_is_listed_with_a_way_to_remove_it(admin):
+    client, _, store = admin
+    store.answers["incoming"] = {
+        "items": [
+            {
+                "id": "a:AUDIO1",
+                "kind": "document",
+                "title": "standup.m4a",
+                "when": "2026-11-12T17:16:39+00:00",
+                "state": "done",
+                "searchable": False,
+                "audio": True,
+                "size": 179200,
+            }
+        ]
+    }
+    page = client.get("/admin/incoming").text
+    assert "standup.m4a" in page
+    assert "Recording kept as a file" in page
+    assert "It has not been written up" in page
+    assert "/admin/incoming?ask=a%3AAUDIO1" in page or "/admin/incoming?ask=a:AUDIO1" in page

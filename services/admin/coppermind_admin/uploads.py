@@ -9,6 +9,7 @@ counted. Nothing of the file is kept unless the token was right.
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 import tempfile
 from collections.abc import AsyncIterator, Callable
@@ -97,14 +98,19 @@ class _Counting:
         return self.handle.write(chunk)
 
 
+# One parameter of a Content-Disposition header. A value in quotes may hold a semicolon,
+# which is how a browser sends a file called "Q3; review.ics".
+_PARAMETER = re.compile(r';\s*([^\s=;"]+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^;]*))')
+
+
 def _disposition(headers: bytes) -> tuple[str, str | None]:
     name, filename = "", None
     for line in headers.decode("utf-8", errors="replace").split("\r\n"):
         if not line.lower().startswith("content-disposition:"):
             continue
-        for part in line.split(";")[1:]:
-            key, _, value = part.strip().partition("=")
-            value = value.strip().strip('"')
+        for found in _PARAMETER.finditer(line):
+            key = found[1].lower()
+            value = found[2] if found[2] is not None else found[3].strip()
             if key == "name":
                 name = value
             elif key == "filename":
