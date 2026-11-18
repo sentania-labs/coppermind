@@ -1,316 +1,205 @@
+"""Obsidian Sync in Admin: signing in, connecting, and what syncs, against a stand-in helper.
+
+The stand-in answers the way the sync helper's control endpoint does (its documented
+JSON over HTTP), so the page is driven end to end without Obsidian.
+"""
+
 from __future__ import annotations
 
+import io
 import json
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError
+from urllib.parse import unquote
 
 import pytest
-from coppermind_admin.main import create_app
-from fastapi.testclient import TestClient
 
-from coppermind.settings import Wiring, default_settings, read_settings
 from coppermind.statefiles import StateStore
-from services.admin.tests.test_admin import form_token
+from services.admin.tests.harness import admin as admin
+from services.admin.tests.harness import follow, post
 
-FORM = {
-    "email": "operator@example.invalid",
-    "password": "test-account-password",
-    "mfa_code": "123789",
-    "encryption_password": "test-encryption-password",
-    "encryption_confirm": "test-encryption-password",
-    "vault_name": "Phone notes",
-    "device_name": "Kitchen server",
-    "existing_vault": "false",
-    "plan": "plus",
-}
-SECRETS = [FORM[key] for key in ("email", "password", "mfa_code", "encryption_password")]
+EMAIL = "operator@example.invalid"
+CONFIGS = [
+    "app",
+    "appearance",
+    "appearance-data",
+    "hotkey",
+    "core-plugin",
+    "core-plugin-data",
+    "community-plugin",
+    "community-plugin-data",
+]
+
+
+class Helper:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Any]] = []
+        self.status: dict[str, Any] = {"configured": False, "signed_in": False}
+        self.refuse: dict[str, dict[str, Any]] = {}
+        self.timeouts: dict[str, list[float | None]] = {}
+
+    def asked(self, action: str) -> list[Any]:
+        return [body for name, body in self.calls if name == action]
+
+    def __call__(self, request: Any, timeout: float | None = None) -> io.BytesIO:
+        action = request.full_url.rsplit("/", 1)[1]
+        self.calls.append((action, json.loads(request.data) if request.data else None))
+        self.timeouts.setdefault(action, []).append(timeout)
+        if action in self.refuse:
+            raise HTTPError(
+                request.full_url,
+                502,
+                "refused",
+                {},  # type: ignore[arg-type]
+                io.BytesIO(json.dumps(self.refuse[action]).encode()),
+            )
+        return io.BytesIO(json.dumps(self.status).encode())
 
 
 @pytest.fixture
-def sync_client(tmp_path, monkeypatch):
-    calls = []
-    status = {"configured": False, "state": "not_connected"}
-    fail: list[bool] = []
-
-    class Helper(BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-
-        def do_GET(self):
-            assert self.headers["Authorization"] == "Bearer helper-test-token"
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(json.dumps(status).encode())
-
-        def do_POST(self):
-            assert self.headers["Authorization"] == "Bearer helper-test-token"
-            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            calls.append((self.path, body))
-            if fail:
-                self.send_response(502)
-                self.end_headers()
-                self.wfile.write(json.dumps({"detail": " ".join(SECRETS)}).encode())
-                return
-            if self.path == "/connect":
-                status.update(
-                    configured=True,
-                    state="syncing",
-                    vault_name=body["vault_name"],
-                    device_name=body["device_name"],
-                )
-            elif self.path == "/configure":
-                status.update(
-                    configured=True,
-                    config_matches=True,
-                    config_live=True,
-                    client_status={"fileTypes": ["unsupported"], "excludedFolders": []},
-                )
-            elif self.path == "/pause":
-                status["state"] = "paused"
-            elif self.path == "/resume":
-                status["state"] = "syncing"
-            elif self.path == "/disconnect":
-                status.update(configured=False, state="not_connected")
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(json.dumps(status).encode())
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Helper)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    monkeypatch.setenv("COPPERMIND_SYNC_URL", f"http://127.0.0.1:{server.server_port}")
-    token = tmp_path / "internal-token"
-    token.write_text("helper-test-token")
-    wiring = Wiring(data_dir=tmp_path, internal_token_file=token)
-    state = StateStore(wiring.state_dir)
-    state.ensure("settings", default_settings().model_dump())
-    claim = wiring.state_dir / "internal" / "claim-code"
-    claim.parent.mkdir()
-    claim.write_text("test-claim")
-    with TestClient(create_app(wiring), base_url="https://testserver") as client:
-        yield client, state, calls, fail
-    server.shutdown()
-    server.server_close()
-    worker.join()
+def helper(admin, monkeypatch):
+    client, wiring, store = admin
+    monkeypatch.setattr(type(wiring), "read_internal_token", lambda self: "token")
+    store.views["overview"]["sync"].update(configured=False, state="not_connected")
+    stand_in = Helper()
+    monkeypatch.setattr("coppermind_admin.pages.sync.urlopen", stand_in)
+    return stand_in
 
 
-def sign_in(client):
-    client.post(
-        "/v1/admin/claim",
-        data={
-            "code": "test-claim",
-            "password": "test-admin-password",
-            "csrf": form_token(client, "/admin/claim"),
-        },
+def test_a_refused_sign_in_sends_the_owner_back_without_their_address_in_the_url(admin, helper):
+    client, _, _ = admin
+    helper.refuse["login"] = {"error": "login_failed", "mfa_needed": False}
+    response = post(
+        client,
+        "/admin/sync/signin",
+        {"email": EMAIL, "password": "wrong"},
+        page="/admin/sync",
     )
-    client.post(
-        "/v1/admin/login",
-        data={"password": "test-admin-password", "csrf": form_token(client, "/admin/login")},
+    assert response.status_code == 303
+    location = unquote(response.headers["location"])
+    assert location.startswith("/admin/sync?")
+    assert "operator" not in location and "example.invalid" not in location
+    page = client.get(response.headers["location"]).text
+    assert "Obsidian did not accept that email and password" in page
+
+
+def test_the_sign_in_code_request_does_not_put_the_address_in_the_url_either(admin, helper):
+    client, _, _ = admin
+    helper.refuse["login"] = {"error": "login_failed", "mfa_needed": True}
+    response = post(
+        client,
+        "/admin/sync/signin",
+        {"email": EMAIL, "password": "right"},
+        page="/admin/sync",
     )
+    assert "operator" not in unquote(response.headers["location"])
+    assert "sign-in code" in client.get(response.headers["location"]).text
 
 
-def assert_clean(response):
-    for secret in SECRETS:
-        assert secret not in response.text
-        assert secret not in str(response.headers)
+def test_connecting_goes_sign_in_then_vault_then_name_and_ends_connected(admin, helper):
+    client, _, _ = admin
+    post(client, "/admin/sync/signin", {"email": EMAIL, "password": "pw"}, page="/admin/sync")
+    assert helper.asked("login") == [{"email": EMAIL, "password": "pw", "mfa_code": ""}]
 
-
-def test_guided_connect_and_lifecycle(sync_client):
-    client, state, calls, _ = sync_client
-    assert client.get("/admin/sync", follow_redirects=False).status_code == 303
-    sign_in(client)
-    page = client.get("/admin/sync")
-    assert 'value="coppermind-server"' in page.text
-    assert 'value="standard" selected' in page.text
-    response = client.post(
-        "/admin/sync/connect", data=FORM | {"csrf": form_token(client, "/admin")}
-    )
-    assert response.status_code == 200
-    assert "Phone notes" in response.text
-    assert "Kitchen server" in response.text
-    assert_clean(response)
-    assert calls[0] == (
-        "/connect",
-        {
-            key: value
-            for key, value in FORM.items()
-            if key not in {"plan", "encryption_confirm", "existing_vault"}
-        }
-        | {"existing_vault": False},
-    )
-    assert read_settings(state).sync.plan == "plus"
-    assert read_settings(state).sync.device_name == "Kitchen server"
-    for action, expected in [
-        ("pause", "paused"),
-        ("resume", "syncing"),
-        ("disconnect", "not_connected"),
-    ]:
-        response = client.post(
-            f"/admin/sync/{action}", data={"submit": "yes", "csrf": form_token(client, "/admin")}
-        )
-        assert expected in response.text
-        assert_clean(response)
-    for file in state.state_dir.rglob("*"):
-        if file.is_file():
-            assert all(secret not in file.read_text() for secret in SECRETS)
-
-
-@pytest.mark.parametrize(
-    "change",
-    [
-        {"encryption_confirm": "mismatch"},
-        {"email": ""},
-        {"plan": "invalid"},
-        {"vault_name": FORM["password"]},
-        {"device_name": FORM["email"]},
-    ],
-)
-def test_validation_never_echoes_credentials(sync_client, change):
-    client, _, calls, _ = sync_client
-    sign_in(client)
-    response = client.post(
-        "/admin/sync/connect", data=FORM | change | {"csrf": form_token(client, "/admin")}
-    )
-    assert "Check the required fields" in response.text
-    assert_clean(response)
-    assert calls == []
-
-
-def test_helper_error_body_is_never_rendered(sync_client):
-    client, _, calls, fail = sync_client
-    sign_in(client)
-    fail.append(True)
-    response = client.post(
-        "/admin/sync/connect",
-        data=FORM | {"existing_vault": "true", "csrf": form_token(client, "/admin")},
-    )
-    assert "Sync request failed" in response.text
-    assert_clean(response)
-    assert calls[0][1]["existing_vault"] is True
-
-
-def test_helper_device_default_matches_shared_settings():
-    root = Path(__file__).resolve().parents[3]
-    source = (root / "services/obsidian-sync/settings.mjs").read_text()
-    assert f'DEFAULT_DEVICE_NAME = "{default_settings().sync.device_name}"' in source
-
-
-def preferences(client, state, **changes):
-    return {
-        "revision": str(state.read("settings").revision),
-        "device_name": "coppermind-server",
-        "mode": "bidirectional",
-        "conflict_strategy": "merge",
-        "plan": "plus",
-        "excluded_folders": "_Trash",
-        "max_file_bytes": "",
-        "max_total_bytes": "",
-        "preset": "all-files",
-        "csrf": form_token(client, "/admin"),
-    } | changes
-
-
-def test_apply_all_files_live_display_and_stale_revision(sync_client):
-    client, state, calls, _ = sync_client
-    sign_in(client)
-    form = preferences(client, state)
-    response = client.post("/admin/sync/configure", data=form)
-    assert "saved and verified" in response.text
-    assert "Saved settings match" in response.text
-    assert "unsupported" in response.text
-    assert "unsupported" in read_settings(state).sync.file_types
-    assert read_settings(state).sync.max_file_bytes is None
-    assert calls[-1] == ("/configure", {})
-    count = len(calls)
-    response = client.post("/admin/sync/configure", data=form | {"device_name": "stale"})
-    assert "Settings changed in another tab" in response.text
-    assert len(calls) == count
-    assert read_settings(state).sync.device_name == "coppermind-server"
-
-
-def test_empty_selections_and_failed_apply_remain_pending(sync_client):
-    client, state, _, fail = sync_client
-    sign_in(client)
-    fail.append(True)
-    response = client.post(
-        "/admin/sync/configure",
-        data=preferences(client, state, preset="save", excluded_folders="", file_pdf="yes"),
-    )
-    assert "Application is pending" in response.text
-    assert "saved and verified" not in response.text
-    saved = read_settings(state).sync
-    assert saved.file_types == ["pdf"]
-    assert saved.excluded_folders == saved.sync_configs == []
-    assert_clean(response)
-
-
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"mode": "invalid"},
-        {"preset": "save"},
-        {"mode": "mirror-remote"},
-        {"excluded_folders": "../notes"},
-        {"excluded_folders": "one,two"},
-        {"max_file_bytes": "-1"},
-        {"device_name": "bad\nname"},
-    ],
-)
-def test_invalid_preferences_do_not_write_or_apply(sync_client, changes):
-    client, state, calls, _ = sync_client
-    sign_in(client)
-    revision = state.read("settings").revision
-    response = client.post("/admin/sync/configure", data=preferences(client, state, **changes))
-    assert "Invalid sync preferences" in response.text
-    assert state.read("settings").revision == revision
-    assert calls == []
-
-
-def test_live_values_are_escaped_and_unavailable_is_explicit():
-    from coppermind_admin.pages.sync import configuration_form
-
-    from coppermind.settings import ProductSettings
-
-    page = configuration_form(
-        ProductSettings(),
-        1,
-        {
-            "configured": True,
-            "config_live": True,
-            "client_status": {"excludedFolders": ["<script>bad</script>"]},
-        },
-    )
-    assert "<script>" not in page
-    assert "&lt;script&gt;" in page
-    page = configuration_form(ProductSettings(), 1, {"configured": True})
-    assert "Live configuration unavailable" in page
-
-
-def test_busy_helper_retains_connected_controls_without_claiming_live_config(
-    sync_client, monkeypatch
-):
-    import io
-
-    client, _, _, _ = sync_client
-    sign_in(client)
-    status = {
-        "configured": True,
-        "state": "syncing",
-        "vault_name": "Existing vault",
-        "control_busy": True,
-        "config_live": False,
-        "config_matches": False,
-        "client_status": {"fileTypes": ["unsupported"]},
+    helper.status = {
+        "configured": False,
+        "signed_in": True,
+        "vaults": [{"id": "v1", "name": "My notes", "locked": False}],
     }
-    monkeypatch.setattr(
-        "coppermind_admin.pages.sync.urlopen",
-        lambda *args, **kwargs: io.BytesIO(json.dumps(status).encode()),
+    page = client.get("/admin/sync").text
+    assert "Which vault should Coppermind join?" in page and "My notes" in page
+    post(client, "/admin/sync/vault", {"vault": "v1"}, page="/admin/sync")
+    assert helper.asked("vault") == [{"vault_id": "v1", "password": ""}]
+
+    helper.status = {**helper.status, "choice": {"vault_id": "v1", "vault_name": "My notes"}}
+    assert "Ready to connect" in client.get("/admin/sync").text
+    helper.status = {"configured": True, "vault_name": "My notes", "state": "syncing"}
+    landed = follow(
+        client,
+        post(client, "/admin/sync/connect", {"device_name": "Kitchen"}, page="/admin/sync"),
     )
-    response = client.get("/admin/sync")
-    assert response.status_code == 200
-    assert "Existing vault" in response.text
-    assert "Sync control is busy" in response.text
-    assert 'action="/admin/sync/connect"' not in response.text
-    assert 'action="/admin/sync/pause"' in response.text
-    assert "Saved settings match" not in response.text
+    assert helper.asked("connect") == [{"device_name": "Kitchen"}]
+    assert 'Connected. Coppermind is now syncing with "My notes"' in landed
+
+
+def test_a_failed_connect_says_what_to_do_and_keeps_the_helper_text_behind_support(admin, helper):
+    client, _, _ = admin
+    helper.status = {
+        "configured": False,
+        "signed_in": True,
+        "choice": {"vault_id": "v1", "vault_name": "My notes"},
+    }
+    helper.refuse["connect"] = {"error": "connect_failed", "detail": "Obsidian said 0xDEAD"}
+    landed = follow(
+        client,
+        post(client, "/admin/sync/connect", {"device_name": "Kitchen"}, page="/admin/sync"),
+    )
+    assert "could not connect to that vault, so nothing was changed" in landed
+    assert landed.index("Details for support") < landed.index("Obsidian said 0xDEAD")
+    before_details = landed[: landed.index("Details for support")]
+    assert "0xDEAD" not in before_details
+
+
+def saved_configs(wiring: Any) -> list[str]:
+    return StateStore(wiring.state_dir).read("settings").body["sync"]["sync_configs"]
+
+
+def test_your_own_obsidian_settings_is_off_until_chosen_and_never_forced(admin, helper):
+    client, wiring, _ = admin
+    helper.status = {"configured": True, "vault_name": "My notes", "state": "syncing"}
+    post(client, "/admin/sync/what", {"image": "on", "conflict": "merge"}, page="/admin/sync/what")
+    assert saved_configs(wiring) == []
+    assert 'name="own" value="on" checked' not in client.get("/admin/sync/what").text
+
+    post(
+        client,
+        "/admin/sync/what",
+        {"image": "on", "own": "on", "conflict": "merge"},
+        page="/admin/sync/what",
+    )
+    assert saved_configs(wiring) == CONFIGS
+    assert 'name="own" value="on" checked' in client.get("/admin/sync/what").text
+
+    post(client, "/admin/sync/what", {"image": "on", "conflict": "merge"}, page="/admin/sync/what")
+    assert saved_configs(wiring) == []
+
+
+CARRIES = (
+    "Your own Obsidian settings sync too, which is what carries the Coppermind companion to "
+    "your other devices."
+)
+
+
+def test_what_syncs_says_beside_the_tick_that_the_companion_needs_it(admin, helper):
+    client, _, _ = admin
+    helper.status = {"configured": True, "vault_name": "My notes", "state": "syncing"}
+    page = client.get("/admin/sync/what").text
+    tick = page[page.index('name="own"') :]
+    tick = tick[: tick.index("</label>")]
+    assert (
+        "The Coppermind companion is an add-on, so it reaches your other devices only when "
+        "this is ticked." in tick
+    )
+    # The page no longer tells the owner to leave off what the companion step asks for.
+    assert "Most people leave this off" not in page
+
+
+def test_the_saved_banner_and_the_sync_page_mention_the_tick_only_when_it_is_on(admin, helper):
+    client, wiring, _ = admin
+    helper.status = {"configured": True, "vault_name": "My notes", "state": "syncing"}
+    sent = post(
+        client,
+        "/admin/sync/what",
+        {"image": "on", "own": "on", "conflict": "merge"},
+        page="/admin/sync/what",
+    )
+    landed = follow(client, sent)
+    # Once in the banner that says what was saved, once in the What syncs line.
+    assert landed.count(CARRIES) == 2
+    assert client.get("/admin/sync").text.count(CARRIES) == 1
+
+    sent = post(
+        client, "/admin/sync/what", {"image": "on", "conflict": "merge"}, page="/admin/sync/what"
+    )
+    assert CARRIES not in follow(client, sent)
+    assert saved_configs(wiring) == []

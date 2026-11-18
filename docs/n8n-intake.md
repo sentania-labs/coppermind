@@ -164,9 +164,9 @@ filed artifact stay in the artifact archive.
 Audio submitted through the recordings API is removed after its transcript is reviewed
 and filed, including when that note is later deleted. A note deleted before review keeps
 its audio until the note is permanently purged; other source audio remains in the source archive.
-Audio that another unfinished recording or note still uses is kept until that one is
-finished. A removal that keeps failing becomes one Problems entry with a Retry action.
-Filing errors appear in Admin Problems
+Audio that another unfinished recording still uses, or that any other note links to, is
+never removed by this clean-up. A removal that keeps failing becomes one Problems entry with a Retry action.
+Filing errors are Problems entries
 and retry automatically. Human edits of a filed note retain review and update search.
 
 A changed payload under the same external ID creates an archive revision and
@@ -182,8 +182,9 @@ Use a distinct submission ID for new material that needs its own reviewable note
 ## Available now: the recording on its own
 
 When no transcript or summary exists yet, send only the recording and let Coppermind
-transcribe it. This needs a transcription service set up in Admin (Settings, Model connections, then
-Transcription setup); without one the second call below is refused with a plain message.
+transcribe it. This needs transcription turned on in Admin (Transcription, with a service from
+AI services); while it is off the second call below is refused with a plain message and nothing
+is queued to run later.
 Use an API key with `artifacts:write`, `artifacts:read`, `sources:write`, `sources:read` and
 `notes:write`; naming a stored recording for transcription needs `artifacts:read` because
 the service is sent its bytes.
@@ -239,8 +240,8 @@ is enabled.
 The owner edits or drops its summary, decisions and actions in the companion or
 review API before completing review. See [Recording summaries](note-workflow.md#recording-summaries)
 for approval and [limits](calendar-enrichment.md) for long transcripts.
-A failure appears in Admin under Problems with the
-reason, the recording stays stored, and a person can retry it under Suggestions and backlog. See
+A failure appears with its reason on Admin's Recordings and imports page (and under Problems), the
+recording stays stored, and a person can press Try again there. See
 [Recordings](api.md#recordings-audio-on-its-own) for every field and failure.
 
 ## Proposed next contract: staged bundles

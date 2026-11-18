@@ -6,7 +6,7 @@ const path=require('node:path');
 const vm=require('node:vm');
 const {webcrypto}=require('node:crypto');
 class El {
-  constructor(tag='',options={}){this.tag=tag;this.text=options.text;this.value=options.value;this.children=[];this.disabled=false;this.style={};}
+  constructor(tag='',options={}){this.tag=tag;this.cls=options.cls;this.attr=options.attr;this.text=options.text;this.value=options.value;this.children=[];this.disabled=false;this.style={};}
   empty(){this.children=[];}
   setText(text){this.text=text;}
   addClass(){}
@@ -24,7 +24,7 @@ class Setting {
   addComponent(fn){fn(this.el);return this;}
   addText(fn){const control={inputEl:{},setValue(){return control;},onChange(){return control;}};fn(control);return this;}
   addToggle(fn){const toggle=this.el.createEl("toggle");const control={setDisabled(v){toggle.disabled=v;return control;},onChange(fn){toggle.onchange=fn;return control;},setValue(){return control;}};fn(control);return this;}
-  addButton(fn){const button=this.el.createEl('button');const control={setButtonText(v){button.text=v;return control;},setDisabled(v){button.disabled=v;return control;},onClick(fn){button.onclick=fn;return control;}};fn(control);return this;}
+  addButton(fn){const button=this.el.createEl('button');const control={setButtonText(v){button.text=v;return control;},setCta(){return control;},setDisabled(v){button.disabled=v;return control;},onClick(fn){button.onclick=fn;return control;}};fn(control);return this;}
   addDropdown(fn){const dropdown=this.el.createEl('select');const control={addOption(v,text){dropdown.createEl('option',{value:v,text});return control;},setValue(v){dropdown.value=v;return control;},onChange(fn){dropdown.onchange=()=>fn(dropdown.value);return control;}};fn(control);return this;}
 }
 async function fixture(local, overrides={}){
@@ -33,10 +33,10 @@ async function fixture(local, overrides={}){
   const requests=[];const notices=[];
   const file={basename:'Note',path:'Review/Note.md'};
   let factory;const factories={};const modals=[];
-  class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(){}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
+  class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(command){(this.commands??={})[command.id]=command;}async saveData(data){(this.saved??=[]).push(JSON.parse(JSON.stringify(data)));}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw,getAbstractFileByPath:path=>({path})},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null,openLinkText:()=>{}}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/recordings/waiting'))return {status:200,json:overrides.waiting};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return {status:200,json:overrides.waiting};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
@@ -192,12 +192,12 @@ test('a key that cannot see people shows why speakers are missing',async()=>{
 });
 
 test('permission failures give plain recovery steps',async()=>{
-  const notice='This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, open Connected apps (API Keys) and create a new key with Read notes, Update notes, Read sources, Update sources, and Read people and companies, then select that key in the companion settings.';
+  const notice='This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, open Connected apps and either pair this device with a code, or open the key and tick Read notes, Add and change notes, Hand in recordings and files, and Read and correct people and companies.';
   const f=await fixture(undefined,{state:'failed',rejectPeople:true,rejectReview:true,people_access_notice:notice,manual_speaker_review:{revision:1,speakers:['Speaker 1'],candidates:[]}});
   f.view.contentEl.all().find(e=>e.tag==='input').value='Alex';
   await f.view.contentEl.all().find(e=>e.text==='Find a person').onclick();
   assert.ok(f.notices.includes(notice));
-  await assert.rejects(f.plugin.call('/v1/notes/test-note/review','POST',{manual_speakers:{'Speaker 1':'person:a'}}),/create a new key with Read notes, Update notes, Read sources, Update sources, and Read people and companies/);
+  await assert.rejects(f.plugin.call('/v1/notes/test-note/review','POST',{manual_speakers:{'Speaker 1':'person:a'}}),/or open the key and tick Read notes, Add and change notes, Hand in recordings and files, and Read and correct people and companies/);
   assert.ok(f.notices.every(n=>!n.includes('entities:read')));
 });
 
@@ -210,12 +210,74 @@ test('a server error during people search does not tell the owner to replace the
   assert.ok(f.notices.some(n=>n.includes('Check your connection')));
 });
 
-test('companion settings name the available key creation path',async()=>{
+test('companion settings offer pairing first and name the key-by-hand path',async()=>{
   const f=await fixture();f.plugin.settingTab.display();
   const text=f.plugin.settingTab.containerEl.all().map(e=>e.text||'').join(' ');
-  assert.match(text,/create a new key/);assert.match(text,/Read people and companies/);
-  assert.match(text,/Read notes, Read sources, Update sources, Update notes, Read artifacts, Read people and companies, and Update people and companies/);
-  assert.doesNotMatch(text,/entities:read|sources:write|change its permissions/);
+  assert.match(text,/Paired with Coppermind/);assert.match(text,/Pair again/);
+  assert.match(text,/create a new key with: Read notes, Add and change notes, Hand in recordings and files, Search, and Read and correct people and companies\. Select that key here/);
+  assert.doesNotMatch(text,/entities:read|sources:write|change its permissions|API Keys/);
+});
+
+test('pairing trades the six digit code for a key kept in secret storage only',async()=>{
+  const f=await fixture();let stored=null;
+  f.app.secretStorage.setSecret=(name,value)=>{stored=[name,value];};
+  await assert.rejects(f.plugin.pair('12 34'),/six-digit pairing code/);
+  assert.equal(f.requests.filter(r=>r.url.endsWith('/v1/pair')).length,0);
+  const before=f.requests.length;
+  await assert.rejects(f.plugin.pair('123 456'),/did not answer like Coppermind|not accepted/);
+  const sent=f.requests[before];
+  assert.equal(sent.url,'https://coppermind.example/v1/pair');assert.equal(sent.method,'POST');
+  assert.deepEqual(Object.keys(JSON.parse(sent.body)).sort(),['code','device']);
+  assert.equal(JSON.parse(sent.body).code,'123456');
+  assert.equal(sent.headers.Authorization,undefined);
+  assert.equal(stored,null);
+});
+
+const webPage=()=>({status:404,get json(){throw new SyntaxError("Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON");},text:'<!DOCTYPE html><html><body>404 Not Found</body></html>'});
+test('an address that answers with a web page is told in plain words, with the raw error behind details',async()=>{
+  const f=await fixture(undefined,{pair:webPage});
+  const stored=[];f.app.secretStorage.setSecret=(name,value)=>stored.push([name,value]);
+  const error=await f.plugin.pair('123 456').then(()=>null,e=>e);
+  assert.match(error.message,/did not answer like Coppermind/);
+  assert.doesNotMatch(error.message,/SyntaxError|Unexpected token|DOCTYPE/);
+  assert.match(error.details,/HTTP 404: <!DOCTYPE html>/);
+  assert.deepEqual(stored,[]);
+  f.plugin.commands['pair-device'].callback();
+  const modal=f.modals.at(-1);
+  const code=modal.contentEl.all().find(e=>e.tag==='input'&&e.attr?.inputmode==='numeric');
+  code.value='123 456';
+  await modal.contentEl.all().find(e=>e.tag==='button'&&e.text==='Pair this device').onclick();
+  const shown=modal.contentEl.all();
+  assert.match(shown.find(e=>e.tag==='p'&&e.cls==='coppermind-notice').text,/did not answer like Coppermind/);
+  const details=shown.find(e=>e.tag==='details');
+  assert.equal(details.children[0].text,'Details for support');
+  assert.match(details.children[1].text,/HTTP 404/);
+});
+
+test('a page that is not Coppermind during a normal request is also told in plain words',async()=>{
+  const f=await fixture(undefined,{page:webPage});
+  const error=await f.plugin.call('/v1/anything').then(()=>null,e=>e);
+  assert.match(error.message,/did not answer like Coppermind|could not complete the request/);
+  assert.doesNotMatch(error.message,/SyntaxError|Unexpected token|DOCTYPE/);
+  assert.match(error.details,/HTTP 404/);
+  assert.equal(error.status,404);
+});
+
+test('a successful pairing keeps the key in secret storage only and uses it for later requests',async()=>{
+  const credential='synthetic-paired-credential';
+  const f=await fixture(undefined,{pair:()=>({status:200,json:{credential,name:'Obsidian companion on Mac'}})});
+  const vault={};f.app.secretStorage.setSecret=(name,value)=>{vault[name]=value;};
+  f.app.secretStorage.getSecret=name=>vault[name];
+  assert.equal(f.plugin.paired(),false);
+  assert.equal(await f.plugin.pair('123 456'),'Obsidian companion on Mac');
+  assert.deepEqual(vault,{'coppermind-companion':credential});
+  assert.equal(f.plugin.settings.secret,'coppermind-companion');
+  assert.equal(f.plugin.paired(),true);
+  assert.ok(!JSON.stringify(f.plugin.settings).includes(credential));
+  assert.ok(f.plugin.saved.length>0&&f.plugin.saved.every(blob=>!JSON.stringify(blob).includes(credential)));
+  f.requests.length=0;
+  await f.plugin.call('/v1/schema');
+  assert.equal(f.requests[0].headers.Authorization,'Bearer '+credential);
 });
 
 const summaryProposal={summary:'Launch discussion.',decisions:'- Ship Friday.',action_items:'- Casey: send the plan.'};
@@ -449,9 +511,9 @@ test('a credential forbidden to retry sees the required permissions',async()=>{
   const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
   const retry=view.contentEl.all().find(e=>e.text==='Retry');await retry.onclick();
   const message=view.contentEl.all().map(e=>e.text||'').join(' ');
-  assert.match(message,/missing a permission the companion needs/);
-  assert.match(message,/Read notes, Read sources, Update sources, Update notes, Read artifacts, Read people and companies, and Update people and companies/);
-  assert.match(message,/select it in companion settings/);assert.equal(retry.disabled,false);
+  assert.match(message,/missing something the companion needs/);
+  assert.match(message,/either pair this device with a code, or make a key with: Read notes, Add and change notes, Hand in recordings and files, Search, and Read and correct people and companies/);
+  assert.match(message,/select it in the companion settings/);assert.equal(retry.disabled,false);
   assert.doesNotMatch(message,/Check your connection/);
 });
 

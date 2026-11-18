@@ -17,6 +17,45 @@ reviewed-note extraction and dossier-aware blank-field enrichment in the existin
 optional worker, with no additional acceptance step. Phone synchronization
 has not been exercised by this slice.
 
+## Admin redesign (November 12, 2026)
+
+Admin was rebuilt from scratch to the approved redesign; the old pages and
+their addresses are gone. First start prints a setup link
+(`{COPPERMIND_ADMIN_URL}/admin/welcome?code=XXXX-XXXX-XXXX`); choosing the
+password there signs the owner in and opens a six-step setup guide at
+`/admin/setup`. Sign in and sign out are `/admin/signin` and `/admin/signout`;
+a forgotten password is replaced through a new setup link printed when the
+stack starts once with `COPPERMIND_ADMIN_NEW_SETUP_LINK=1`. The menu is Home,
+Setup guide, Notes (Need you, Waiting for review, Left alone on purpose,
+Deleted, and a find box), Recordings and imports, Calendar, People and voices,
+Obsidian Sync, AI services, Suggestions, Transcription, Connected apps,
+Storage and Settings. Where the old pages went: Problems and Note recovery
+are the Notes tabs and Home's list of what needs you; API Keys is Connected
+apps; Model connections and Transcription setup are AI services and
+Transcription; Fields and tags is Settings, Properties and Tags; Search index
+is Settings, Search; Artifacts is Storage, Files; Retention purge is Storage,
+Clean up. Every page is server rendered behind the session cookie and a CSRF
+form token, and reads and acts through one internal store route,
+`POST /internal/v1/admin/{action}`.
+
+An AI service is entered once and tested with a made-up meeting and a made-up
+10-second recording; Suggestions, Transcription and search by meaning choose
+only among services whose test showed they can do that job, so nobody types a
+model name or a transcription reply format. A key is created by saying what
+is being connected, and the Obsidian companion pairs with a six-digit code
+through `POST /v1/pair` instead of a pasted key. Obsidian Sync connects in
+steps (sign in, pick or make a vault, name this server). A recording is only
+taken in while transcription is on; audio that was already stored, or that a note
+already links to, is never queued or deleted by it.
+Storage, Clean up lists what is past the keep time and deletes nothing until
+that list is confirmed. Suggestions has "How the meeting summary is written",
+directions per summary section around fixed rules, used from the next
+summary on; a note from a recording that is still waiting for review can have
+its summary written again from the same transcript. Proved by the rendered
+page and action tests under `services/admin/tests/`,
+`tests/integration/test_admin_service.py` and
+`tests/integration/test_summary_directions.py`.
+
 ## Working
 
 - **Artifacts (issue 77).** A second first-class kind beside notes. `POST
@@ -44,14 +83,12 @@ has not been exercised by this slice.
   is reported `missing` and the archive stays. Moving or renaming the file in
   Obsidian returns it to its filed place and leaves a notice (what moved, from
   where, where it went back, why, and that nothing needs doing) on Admin's
-  Home and Artifacts page and at `GET /v1/notices` for the companion
+  Home and at `GET /v1/notices` for the companion
   plugin or an agent, dismissable without moving anything. One edited on a
-  device is reported under Problems and never rewritten. `DELETE
+  device is reported as a problem and never rewritten. `DELETE
   /v1/artifacts/{id}` (`artifacts:write`) removes one for an agent; Admin's
-  Artifacts page lists every artifact with its received date, size, place in
-  Obsidian and the citing notes by title, readable at 1280 pixels wide, and
-  removes one after a confirmation that says what happens to a file or to a
-  link. A file over the 10 MiB limit is refused with the limit and what to do
+  Storage, Files page (`/admin/storage/files`) lists stored files and removes
+  one. A file over the 10 MiB limit is refused with the limit and what to do
   now, the same for multipart and JSON; the staged upload path (`POST
   /v1/staged`, then a streamed `PUT`, then finalize) takes files up to 1 GiB. Removed archives are purged through
   the retention purge's dry run and confirm flow, each candidate showing its
@@ -68,8 +105,9 @@ has not been exercised by this slice.
 - A recording can be handed in on its own. Store it through the staged upload,
   then `POST /v1/recordings` (`sources:write`, `notes:write`, `artifacts:read`) names it; a worker
   loop of its own sends it, streamed from disk, to the transcription service
-  chosen under Admin Settings, Model connections, Transcription setup (OpenAI-compatible
-  `/audio/transcriptions`, `diarized_json` or `verbose_json`), waiting on
+  chosen on Admin's Transcription page from the AI services whose test showed they
+  can write up recordings (OpenAI-compatible `/audio/transcriptions`, with
+  `diarized_json` or `verbose_json` as the test found), waiting on
   silence rather than total time and backing off after a timeout. A busy
   service (429) is waited for without using an attempt, recordings over two hours
   go to the jobs path and are polled (a job the service loses or fails is sent again
@@ -79,8 +117,8 @@ has not been exercised by this slice.
   note's source, so a draft lands in Review; the recording stays an artifact
   the note cites until the note is reviewed and filed, then its audio is removed
   and a receipt (hash, size, duration, optional `metadata.archive_url`) replaces
-  the link. Each intake is listed with its state and a Retry under Suggestions
-  and backlog, and a failure also appears under Problems with its reason. Naming
+  the link. Each intake is listed with its state and a Retry under Recordings
+  and imports, and a failure also appears under Problems with its reason. Naming
   the speakers is part of Review (see [note workflow](docs/note-workflow.md)).
   Recognising recurring speakers by voice keeps signatures for known and unknown voices,
   has a global off switch and lets the owner delete voice data (see
@@ -92,35 +130,32 @@ has not been exercised by this slice.
   `tests/integration/test_recordings.py`); try it against the real service
   before relying on it.
 - Admin is a separate service and image on loopback port 8082. A fresh install
-  opens on a server-rendered Claim page. Bootstrap creates the one-time code
-  at `/data/state/internal/claim-code`, records that location in its log, and
-  keeps the same code across restarts. A successful claim accepts the code,
-  writes the Argon2 password hash, claim time and a random session signing
-  secret to mode 0600 `admin.json`, then removes the code. Later claim
-  attempts are refused, and a login submitted on a system that is not claimed
-  returns to the Claim page rather than reporting a bad password. Password
-  login creates an expiring HMAC-signed cookie with the shipped 12-hour
-  default and no database session state. The protected Home page opens with
-  Needs attention (see `docs/api.md`), or a plain notice when the store cannot
-  answer; the menu is Home, Imports, Review status, Calendar, People and Settings.
-  Logout clears the cookie from that browser and the protected
-  page redirects to Login again; because the session is the signed cookie and
-  not a row, an issued token stays valid until its expiry no matter where Log
-  out is clicked, and re-claiming is the only thing that ends every session at
-  once. Claim, login and logout accept the rendered forms only, and every
+  opens on a server-rendered Welcome page. Bootstrap creates the one-time setup
+  code at `/data/state/internal/claim-code`, prints it as a setup link
+  starting with `COPPERMIND_ADMIN_URL`, and keeps the same code across
+  restarts. A successful setup accepts the code (dashes, spaces and letter case
+  do not count), writes the Argon2 password hash, setup time and a random
+  session signing secret to mode 0600 `admin.json`, removes the code, signs the
+  owner in and opens the setup guide. Later setup attempts are sent to Sign in,
+  and a sign-in on a system that is not set up returns to Welcome rather than
+  reporting a bad password. Password sign-in creates an expiring HMAC-signed
+  cookie with the shipped 12-hour default and no database session state. The
+  protected Home page opens with what needs you, or a plain notice when the
+  store cannot answer. Sign out clears the cookie from that browser and the
+  protected page redirects to Sign in again; because the session is the signed
+  cookie and not a row, an issued token stays valid until its expiry no matter
+  where Sign out is clicked. Changing the password (Settings, Password and
+  signing in) or choosing a new one through a new setup link (start once with
+  `COPPERMIND_ADMIN_NEW_SETUP_LINK=1`) replaces the signing secret, which
+  immediately refuses every cookie issued under the old password. Every
   refusal returns to the page that names its own cause, including a control
-  state file Admin cannot read, a claim code on the volume it cannot read, and
+  state file Admin cannot read, a setup code on the volume it cannot read, and
   a state directory that will not take the record, each named on screen along
   with what was rejected. The session cookie is always Secure, which browsers
   honour on the loopback address Admin is fixed to; there is no setting that
   publishes it anywhere else. Admin mounts only `/data/state`, so the notes
-  filesystem is not reachable from it at all. Re-claiming after password
-  recovery replaces the signing secret, which immediately refuses every cookie
-  issued under the old password. This path was driven through its rendered
-  pages in Chrome against a fresh compose stack, and `ci/smoke.sh` now drives
-  it unattended across the bootstrap and Admin containers: it reads the claim
-  code the documented way, claims, refuses a second claim, signs in, renders
-  Home, signs out and loses it again.
+  filesystem is not reachable from it at all. `ci/smoke.sh` drives this
+  unattended across the bootstrap and Admin containers.
 - `docker compose up -d` on a clean checkout reaches a healthy stack with no
   manual setup and no hand populated setting. The one-shot `bootstrap`
   container creates `/data`, generates the internal bearer token and the
@@ -129,7 +164,7 @@ has not been exercised by this slice.
   entity scopes) in a separate restricted volume, and writes `settings.yaml`, `schema.yaml` and the key's
   Argon2 hash at revision 1. Running it again keeps every existing secret, key and setting. Revoke
   that default and it stays revoked. The revocation takes effect for
-  authentication as soon as the API's cache next loads; the reveal file is
+  authentication within about two seconds; the reveal file is
   replaced by a sentence saying so at the next `docker compose up`, so until
   that restart it still holds the dead credential. Bootstrap mints the default
   once, on the install with no record of one, and decides that from the
@@ -143,8 +178,9 @@ has not been exercised by this slice.
   patches need both `notes:read` and `notes:write`; source and artifact reads
   need `sources:read`; ingest needs both `sources:write` and `notes:write`, so
   a key holding one of the two answers 403. Successful verification and key
-  hashes are cached for five minutes, so a key created after a load is picked
-  up at the next cache expiry rather than at once.
+  hashes are kept, but the key records are read again once they are more than
+  two seconds old, so a removed key stops working within about two seconds and
+  a new key works within about two seconds.
   Health, readiness and OpenAPI remain open, and Compose remains bound to
   loopback by default.
   The content-typed journal scopes, `journal:read` and `journal:write`, are
@@ -174,10 +210,12 @@ has not been exercised by this slice.
   rejected ingests, name collisions, unparseable files and known unreadable
   search entries. Only the counters
   are live; version, capabilities and helper ages are not yet in it.
-- Admin's Problems page lists every refused ingest (over the size limit or
-  failing the schema), every note identity two files carry, and every
-  unparseable file, each linked to a read-only page for the note or source,
-  and every search entry known to be unreadable with its reason.
+- Problem records cover every refused ingest (over the size limit or failing
+  the schema), every note identity two files carry, every unparseable file
+  and every search entry known to be unreadable, with its reason. Admin's
+  Notes, Need you tab shows the ones about a note (two files carrying one
+  identity, unreadable or missing notes, filing failures), each linked to the
+  note's own page.
   Collisions are recomputed on every reconciliation pass; refused ingests are
   persisted under `/data/state/rejections/` and mirrored as rows, restored
   by reconciliation after database loss. Nothing is ever written into a note
@@ -277,8 +315,8 @@ has not been exercised by this slice.
   long silence with no scan landing; the first scan after a start gets a grace
   of its own first, because it reads everything and there is no measured
   runtime yet to judge it by. The interval, the quiet period and the rehash
-  time are product settings with working defaults; their graphical controls
-  arrive with Admin's later settings page.
+  time are product settings with working defaults, changed under Admin's
+  Settings, Advanced.
 - **What adoption will and will not write into.** Adoption skips `.git`,
   `.obsidian` and `.trash`, everything below the configured trash, sources,
   artifacts and legacy attachments folders (`_Trash`, `_Sources`, `Artifacts`
@@ -288,8 +326,9 @@ has not been exercised by this slice.
   files are still read, so a known note moved into one of those folders is
   followed there rather than reported gone; they are only never given an
   identity. Adoption exclusions are now built and remove the adoption
-  prerequisite for migration. Admin Settings exposes `reconcile.excluded_folders`
-  and `reconcile.excluded_patterns` as plain inputs using JSON arrays and the
+  prerequisite for migration. Admin's Notes, Left alone on purpose
+  (`/admin/notes/leave-alone`) edits `reconcile.excluded_folders` and
+  `reconcile.excluded_patterns` with ticks for the shipped ones and the
   existing revision check. Default folders are `Templates/` and `_Templates/`
   relative to the notes root, including their descendants. Trailing slashes
   are optional. Default patterns are `*.excalidraw.md`, `*.canvas` and
@@ -303,8 +342,8 @@ has not been exercised by this slice.
   only Markdown files are adoption candidates. Settings changes take effect on
   the next pass without restart, including removal of a rule for an unchanged
   file. Excluded files are reread each pass to keep this true.
-  Admin Problems shows the skipped count and each path with its first matching
-  rule (folder, then pattern, then plugin marker); Home links to that page.
+  Admin's Notes, Left alone on purpose tab lists each skipped path with its
+  first matching rule (folder, then pattern, then plugin marker).
   One atomic state snapshot records the last completed pass, survives a
   restart, and is rebuilt by reconciliation. Verification for this change uses
   rendered Admin tests and PostgreSQL reconciliation tests; Compose was not
@@ -590,10 +629,10 @@ has not been exercised by this slice.
   projection deleted by hand stays in the index until the next rebuild, because
   nothing mirrors projections. Bodies are indexed up to their first 250,000
   characters.
-  Admin's Search index page (`/admin/search-index`, linked from Settings)
-  shows the notes and source pages indexed, when the index last changed and
-  when it was last rebuilt, in the operator's timezone (America/Chicago by
-  default), and a Rebuild index button. The rebuild runs in the store's
+  Admin's Settings, Search page (`/admin/settings/search`) says whether the
+  index is up to date and how many notes and files can be searched, has a
+  try-a-search box, and a Rebuild search button that also rebuilds the
+  property index behind declared frontmatter filters. The rebuild runs in the store's
   background, one at a time: it deletes every entry except the last indexed
   text of a note the mirror holds as unparsed, which stays findable, and reads
   every note file and generated source page again, using the mirror only to know which
@@ -604,13 +643,13 @@ has not been exercised by this slice.
   reconciliation interval.
   Proved by `tests/test_search.py` (query building, every filter alone and
   combined, paging, cursors, the public route's scope and parameters),
-  `services/admin/tests/test_search_index_page.py`, and
+  the Admin page tests under `services/admin/tests/`, and
   `tests/integration/test_search_index.py` against a real PostgreSQL 16 server
   (indexing through every API write, device edits, moves, deletes and
   adoption, sources, filters, paging, catch-up and rebuild). No compose stack
   ran in this worker, which has no Docker.
 - **Obsidian Sync update, 2026-09-30 (unit-tested Admin, runtime proof pending).**
-  `/admin/sync` provides guided create-or-join setup, plan and device controls,
+  `/admin/sync` provided guided create-or-join setup, plan and device controls,
   status, pause, resume and disconnect. Python tests drove these forms against
   an authenticated fake HTTP helper and checked that submitted credentials do
   not return in pages or state files. The image pins official
@@ -694,19 +733,16 @@ in the tree, so do not read the absence as a decision to leave it out.
   replace, which is why it is its own piece of work.
 - **General history browsing.** Arbitrary revisions still require Git access.
   Deleted-note recovery is available through Admin and the API as described below.
-- **Remaining Admin pages.** Schema, filing rules, jobs, source problems and
-  real overview counters are not built. The one job with a button is the
-  search index rebuild, on its own Search index page; a general jobs page with
-  history does not exist. API Keys (`/admin/keys`), Settings
-  (`/admin/settings`) and Obsidian Sync (`/admin/sync`) now exist:
-  signed-in operators can create and revoke keys, edit every product setting
-  with revision checks, and guide the sync client through email, password,
-  optional MFA and a vault name. Problems (`/admin/problems`), Fields and tags
-  (`/admin/fields`) are also available: operators can view durable problem
-  records, manage frontmatter field kinds and tag vocabularies.
-  `python3 -m coppermind_store.keys` remains a recovery path when Admin is
-  unavailable. Rendered-page tests and a local uvicorn/curl run exercise the
-  pages; compose smoke covers them but requires Docker to execute.
+- **Remaining Admin pages.** Filing rules, jobs and a general jobs page with
+  history are not built; the one job with a button is the search rebuild on
+  Settings, Search. Connected apps (`/admin/apps`), Settings
+  (`/admin/settings`) and Obsidian Sync (`/admin/sync`) exist: signed-in
+  owners can add and remove keys, edit the settings a person needs with
+  revision checks, and connect the sync client step by step. Note properties
+  and tags are under Settings (`/admin/settings/properties`,
+  `/admin/settings/tags`), and what needs attention is on Home and the Notes
+  tabs. `python3 -m coppermind_store.keys` remains a recovery path when Admin
+  is unavailable.
 - **Helm packaging and lab deployment.** The Helm chart and the lab handoff
   are not built. Publishing the existing service images and a release from a
   version tag is in place and is under Working above; no automation pushes a
@@ -758,8 +794,8 @@ search, review counts, filing, and path ownership; the listing API can filter
 both explicitly. A returning identity recovers automatically at its observed
 path, subject to the existing publication rules.
 
-Admin's Note recovery page lists missing/deleted notes and reports Git helper
-health, pending files, and last commit in local time. Deleted notes have an
+Admin's Notes, Deleted tab lists deleted notes (Storage, Deleted lists them
+too). Deleted notes have an
 escaped content preview and an explicit restore confirmation. Restore creates
 the original path exclusively, preserves the ID and bytes, and refuses an
 occupied destination or a returned identity. It warns that the restored file

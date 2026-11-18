@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,6 +21,10 @@ from coppermind.atomicio import create_exclusive_bytes
 from coppermind.statefiles import StateStore
 
 _HASHER = PasswordHasher()
+
+
+# How long a new setup link for a forgotten password works after the server issued it.
+RESET_LINK_SECONDS = 3600
 
 
 class AlreadyClaimed(Exception):
@@ -63,10 +68,78 @@ class AdminCredentials:
         self.state = StateStore(state_dir)
         self.path = self.state.path_for("admin")
         self.claim_code_path = state_dir / "internal" / "claim-code"
+        self.reset_code_path = state_dir / "internal" / "reset-code"
         self._claim_lock = asyncio.Lock()
 
     def is_claimed(self) -> bool:
         return self.path.is_file()
+
+    def reset_offered(self) -> bool:
+        """Whether a new setup link was issued from the server and is still good.
+
+        The link is shown where the server was started, which is also where its log is kept,
+        so it works for an hour and then no longer.
+        """
+        if not self.is_claimed():
+            return False
+        try:
+            age = time.time() - self.reset_code_path.stat().st_mtime
+        except OSError:
+            return False
+        return age < RESET_LINK_SECONDS
+
+    @staticmethod
+    def _same_code(offered: str, expected: str) -> bool:
+        """A setup code is typed by hand, so dashes, spaces and letter case do not count."""
+
+        def plain(value: str) -> bytes:
+            return "".join(c for c in value if c.isalnum()).upper().encode()
+
+        # Compared as bytes: a code pasted out of a terminal can carry a
+        # non-ASCII character, which compare_digest refuses on str.
+        return bool(plain(expected)) and secrets.compare_digest(plain(offered), plain(expected))
+
+    async def reset(self, code: str, password: str) -> None:
+        """Choose a new password with a setup link issued from the server.
+
+        The session secret is replaced with it, so every browser signed in before
+        is signed out. Notes and settings are not touched.
+        """
+        async with self._claim_lock:
+            if not self.reset_offered():
+                raise InvalidClaimCode
+            try:
+                expected = self.reset_code_path.read_text(encoding="utf-8").strip()
+            except FileNotFoundError as exc:
+                raise InvalidClaimCode from exc
+            except OSError as exc:
+                raise ClaimCodeUnreadable(self.reset_code_path, str(exc)) from exc
+            if not self._same_code(code, expected):
+                raise InvalidClaimCode
+            await self._replace_password(password)
+            with contextlib.suppress(OSError):
+                self.reset_code_path.unlink(missing_ok=True)
+
+    async def _replace_password(self, password: str) -> None:
+        password_hash = await asyncio.to_thread(_HASHER.hash, password)
+        try:
+            current = self.state.read("admin")
+        except (OSError, ValueError) as exc:
+            raise AdminRecordUnreadable(str(exc)) from exc
+        body = dict(current.body)
+        body["password_hash"] = password_hash
+        body["session_secret"] = secrets.token_hex(32)
+        try:
+            self.state.write("admin", body, if_revision=current.revision)
+        except OSError as exc:
+            raise ClaimStateUnwritable(self.path, str(exc)) from exc
+
+    async def change_password(self, current: str, new: str) -> bool:
+        """Change the password from inside Admin. False when the current one is wrong."""
+        if not await self.verify_password(current):
+            return False
+        await self._replace_password(new)
+        return True
 
     async def claim(self, code: str, password: str) -> None:
         """Take the admin record for the holder of the claim code."""
@@ -79,9 +152,7 @@ class AdminCredentials:
                 raise InvalidClaimCode from exc
             except OSError as exc:
                 raise ClaimCodeUnreadable(self.claim_code_path, str(exc)) from exc
-            # Compared as bytes: a code pasted out of a terminal can carry a
-            # non-ASCII character, which compare_digest refuses on str.
-            if not expected or not secrets.compare_digest(code.strip().encode(), expected.encode()):
+            if not self._same_code(code, expected):
                 raise InvalidClaimCode
             password_hash = await asyncio.to_thread(_HASHER.hash, password)
             body = {

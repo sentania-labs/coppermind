@@ -288,7 +288,7 @@ async def test_confirm_failing_before_removal_says_to_preview_again(store, monke
     assert (store.sources_root / ingested.source.id).exists()
     problems = [p for p in await store.get_problems() if p.kind.startswith("purge")]
     assert [p.reference for p in problems] == [preview.token]
-    assert "new preview" in problems[0].reason
+    assert "try again" in problems[0].reason
     assert "abandon" not in problems[0].reason
     monkeypatch.setattr(purge, "disk_references", real)
     fresh = await store.preview_purge()

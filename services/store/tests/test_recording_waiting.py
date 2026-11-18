@@ -254,7 +254,7 @@ async def test_every_refusal_that_a_retry_would_repeat_gets_its_own_next_step(tm
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("enabled, model", [(False, "m"), (True, "")])
+@pytest.mark.parametrize("enabled, model", [(False, "m"), (False, "")])
 async def test_retry_advice_waits_for_transcription_to_be_set_up(tmp_path, enabled, model):
     failures = [
         job(1, state="failed", error_rule="connection-missing"),
@@ -272,6 +272,18 @@ async def test_retry_advice_waits_for_transcription_to_be_set_up(tmp_path, enabl
         )
         assert rows[failure.id]["can_retry"] is False
     assert "Set up and turn on" not in rows[failures[2].id]["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_service_that_runs_one_model_needs_no_model_name_to_retry(tmp_path):
+    failures = [job(1, state="failed", error_rule="transcription-http")]
+    recordings, _, _ = waiting_recordings(tmp_path, failures, enabled=True)
+    recordings.assignment = lambda: SimpleNamespace(
+        enabled=True, paused=False, connection="c", model=""
+    )
+    (row,) = (await recordings.waiting())["failed"]
+    assert "Set up and turn on" not in row["message"]
+    assert row["can_retry"] is True
 
 
 @pytest.mark.asyncio

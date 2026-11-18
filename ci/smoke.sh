@@ -9,8 +9,8 @@
 # on the volume converges in the scheduled scan while the API keeps answering,
 # a PDF uploaded as an artifact lands as a file under Artifacts/ and is found
 # by its text as an artifact rather than a note,
-# the operator claims Admin with the code bootstrap left on the state volume
-# and signs in and out of the protected page,
+# the operator sets Admin up with the code bootstrap left on the state volume,
+# is signed straight in, and signs out of and back in to the protected pages,
 # readiness fails honestly when PostgreSQL is stopped, and everything recovers
 # when it returns. Read from the volume, never through the API, whenever the
 # claim is about a file.
@@ -26,8 +26,9 @@ COMPOSE_FILES="${COMPOSE_FILES:--f docker-compose.yml}"
 export COMPOSE_PROFILES="${COMPOSE_PROFILES:-smoke}"
 API="${API:-http://127.0.0.1:8080}"
 ADMIN="${ADMIN:-http://127.0.0.1:8082}"
-# The API's bounded key cache life, as README.md and STATUS.md document it.
-KEY_CACHE_SECONDS=300
+# How long the API may go on trusting the key records it last read, as README.md and
+# STATUS.md document it: a new key works, and a removed key stops, within this long.
+KEY_CACHE_SECONDS=2
 # shellcheck disable=SC2086
 compose() { docker compose $COMPOSE_FILES "$@"; }
 
@@ -166,82 +167,92 @@ Inputs().feed(sys.stdin.read())' "$1"
 }
 has_session_cookie() { grep -q coppermind_admin_session "$admin_jar"; }
 
-step "claim Admin with the code bootstrap left on the state volume"
+step "set Admin up with the code bootstrap left on the state volume"
 admin_jar="$(mktemp)"
 wait_for_status 200 "$ADMIN/healthz"
-[ "$(admin "$ADMIN/admin")" = "$ADMIN/admin/claim" ] \
-    || fail "an unclaimed Admin did not send the operator to the Claim page"
+[ "$(admin "$ADMIN/admin")" = "$ADMIN/admin/welcome" ] \
+    || fail "an Admin nobody has set up did not send the operator to the Welcome page"
 
 # The README's own instruction, run as written: the one-time code crosses from
 # the bootstrap container to the operator through the state volume, and Admin
 # reads the same file back through its own subpath mount.
-claim_code="$(compose run --rm --no-deps --entrypoint cat bootstrap \
+setup_code="$(compose run --rm --no-deps --entrypoint cat bootstrap \
     /data/state/internal/claim-code | tr -d '[:space:]')"
-[ -n "$claim_code" ] || fail "bootstrap left no claim code on the state volume"
+[ -n "$setup_code" ] || fail "bootstrap left no setup code on the state volume"
+# The link bootstrap prints carries the code, and the page fills it in from the link.
+admin_page "$ADMIN/admin/welcome?code=$setup_code" | grep -Fq "value=\"$setup_code\"" \
+    || fail "the Welcome page did not fill in the code from the setup link"
 
-admin_csrf="$(admin_page "$ADMIN/admin/claim" | form_value csrf)"
-[ -n "$admin_csrf" ] || fail "Claim form has no CSRF token"
+admin_csrf="$(admin_page "$ADMIN/admin/welcome" | form_value csrf)"
+[ -n "$admin_csrf" ] || fail "Welcome form has no CSRF token"
 admin_password='smoke admin password'
-[ "$(admin -X POST "$ADMIN/v1/admin/claim" \
-    --data-urlencode 'code=not the code' --data-urlencode "password=$admin_password")" \
-    = "$ADMIN/admin/claim?error=invalid_claim_code" ] \
-    || fail "a wrong claim code was not refused on the Claim page"
-[ "$(admin -X POST "$ADMIN/v1/admin/claim" \
-    --data-urlencode "code=$claim_code" --data-urlencode "password=$admin_password")" \
-    = "$ADMIN/admin/login" ] \
+admin_page -X POST "$ADMIN/admin/welcome" --data-urlencode "csrf=$admin_csrf" \
+    --data-urlencode 'code=AAAA-AAAA-AAAA' --data-urlencode "pw1=$admin_password" \
+    --data-urlencode "pw2=$admin_password" | grep -Fq 'That setup code was not accepted.' \
+    || fail "a wrong setup code was not refused on the Welcome page"
+has_session_cookie && fail "a refused setup code issued a session cookie"
+[ "$(admin -X POST "$ADMIN/admin/welcome" --data-urlencode "code=$setup_code" \
+    --data-urlencode "pw1=$admin_password" --data-urlencode "pw2=$admin_password")" \
+    = "$ADMIN/admin/setup" ] \
     || fail "the code bootstrap printed was not accepted by Admin"
+has_session_cookie || fail "setting Admin up did not sign the operator in"
 compose run --rm --no-deps --entrypoint sh bootstrap \
     -c 'test ! -e /data/state/internal/claim-code' \
-    || fail "claiming did not consume the code on the shared state volume"
-[ "$(admin -X POST "$ADMIN/v1/admin/claim" \
-    --data-urlencode "code=$claim_code" --data-urlencode "password=$admin_password")" \
-    = "$ADMIN/admin/login?error=already_claimed" ] \
-    || fail "a second claim was not refused"
-ok "the printed code claimed Admin once, was consumed, and a second claim was refused"
+    || fail "setup did not consume the code on the shared state volume"
+admin_page -f "$ADMIN/admin/setup" | grep -Fq '<h1>Setup guide</h1>' \
+    || fail "the setup guide did not render after setup"
+admin_csrf="$(admin_page -f "$ADMIN/admin/setup" | form_value csrf | head -1)"
+[ -n "$admin_csrf" ] || fail "Signed-in page has no CSRF token"
+ok "the printed code set Admin up once, was consumed, and signed the operator in"
 
-step "sign in, reach the protected overview, and sign out"
-[ "$(admin "$ADMIN/admin")" = "$ADMIN/admin/login" ] \
-    || fail "the overview was reachable without signing in"
-[ "$(admin -X POST "$ADMIN/v1/admin/login" --data-urlencode 'password=wrong password')" \
-    = "$ADMIN/admin/login?error=unauthorized" ] \
-    || fail "a wrong password was not refused on the Login page"
+step "sign out, be refused with a wrong password, and sign in again"
+[ "$(admin -X POST "$ADMIN/admin/signout")" = "$ADMIN/admin/signin?out=1" ] \
+    || fail "signing out did not return to the sign-in page"
+has_session_cookie && fail "signing out left the session cookie in the browser"
+[ "$(admin "$ADMIN/admin")" = "$ADMIN/admin/signin" ] \
+    || fail "Home was reachable without signing in"
+# Setup cannot be run a second time, even by someone holding the old code.
+[ "$(admin "$ADMIN/admin/welcome")" = "$ADMIN/admin/signin" ] \
+    || fail "the Welcome page was offered again after setup"
+admin_csrf="$(admin_page "$ADMIN/admin/signin" | form_value csrf)"
+[ -n "$admin_csrf" ] || fail "Sign-in form has no CSRF token"
+[ "$(status_of -b "$admin_jar" -c "$admin_jar" -X POST "$ADMIN/admin/signin" \
+    --data-urlencode "csrf=$admin_csrf" --data-urlencode 'password=wrong password')" = "401" ] \
+    || fail "a wrong password was not refused on the sign-in page"
 has_session_cookie && fail "a refused password issued a session cookie"
-[ "$(admin -X POST "$ADMIN/v1/admin/login" --data-urlencode "password=$admin_password")" \
+[ "$(admin -X POST "$ADMIN/admin/signin" --data-urlencode "password=$admin_password")" \
     = "$ADMIN/admin" ] \
-    || fail "the admin password chosen at claim did not sign in"
+    || fail "the Admin password chosen at setup did not sign in"
 has_session_cookie || fail "signing in did not issue a session cookie"
-overview_page="$(admin_page "$ADMIN/admin")"
-printf '%s' "$overview_page" | grep -Fq '<h1>Home</h1>' \
-    || fail "the protected overview did not render for a signed in operator"
+admin_page -f "$ADMIN/admin" | grep -Fq '<h1>Home</h1>' \
+    || fail "Home did not render for a signed in operator"
 
 admin_csrf="$(admin_page -f "$ADMIN/admin" | form_value csrf | head -1)"
 [ -n "$admin_csrf" ] || fail "Signed-in page has no CSRF token"
 
-step "create an API key through Admin and reveal it only once"
-keys_revision="$(admin_page "$ADMIN/admin/keys" | form_value revision | head -1)"
-key_result="$(admin_page -f -X POST "$ADMIN/v1/admin/keys/create" \
-    --data-urlencode "csrf=$admin_csrf" --data-urlencode "revision=$keys_revision" \
-    --data-urlencode 'name=smoke-read-only' --data-urlencode 'scope:notes:read=on')"
+step "connect an app through Admin and see its key only once"
+key_result="$(admin_page -f -L "$ADMIN/admin/apps/new" \
+    --data-urlencode "csrf=$admin_csrf" --data-urlencode 'kind=custom' \
+    --data-urlencode 'name_custom=smoke-read-only' --data-urlencode 'can_read=on')"
 wrong_scope_key="$(printf '%s' "$key_result" | python3 -c 'import re,sys
-print(re.search(r"<pre id=\"credential\">([^<]+)</pre>", sys.stdin.read())[1])')"
+print(re.search(r"id=\"newkey\">([^<]+)<", sys.stdin.read())[1])')"
 unset key_result
-[ -n "$wrong_scope_key" ] || fail "Admin did not reveal the new credential"
-keys_page="$(admin_page -f "$ADMIN/admin/keys")"
-if printf '%s' "$keys_page" | grep -Fq "$wrong_scope_key"; then
-    fail "a later view revealed the credential again"
+[ -n "$wrong_scope_key" ] || fail "Admin did not show the new key"
+if admin_page -f "$ADMIN/admin/apps" | grep -Fq "$wrong_scope_key"; then
+    fail "a later view showed the key again"
 fi
 deadline=$(( SECONDS + KEY_CACHE_SECONDS + 10 ))
 while :; do
     code="$(status_of -H "Authorization: Bearer $wrong_scope_key" "$API/v1/notes")"
     [ "$code" = "401" ] || break
     [ "$SECONDS" -lt "$deadline" ] || break
-    sleep 5
+    sleep 1
 done
-[ "$code" = "200" ] || fail "the Admin-created key could not list notes: $code"
-ok "the Admin-created key authenticated an API read and was not revealed again"
+[ "$code" = "200" ] || fail "the key made in Admin could not list notes: $code"
+ok "the key made in Admin authenticated an API read and was not shown again"
 
-step "save a product setting through its rendered form and read it back"
-settings_form="$(admin_page -f "$ADMIN/admin/settings?section=git" | python3 -c 'import sys
+step "save a setting through its rendered form and read it back"
+advanced_form="$(admin_page -f "$ADMIN/admin/settings/advanced" | python3 -c 'import sys
 from html.parser import HTMLParser
 from urllib.parse import urlencode
 class Inputs(HTMLParser):
@@ -260,24 +271,25 @@ class Inputs(HTMLParser):
             self.select_name = None
 parser = Inputs()
 parser.feed(sys.stdin.read())
-parser.values["git.debounce_s"] = "17"
+parser.values["history"] = "30"
 print(urlencode(parser.values))')"
-admin_page -f -X POST "$ADMIN/v1/admin/settings?section=git" --data "$settings_form" \
-    | grep -F 'Saved revision' >/dev/null || fail "Settings save did not report its new revision"
-[ "$(admin_page -f "$ADMIN/admin/settings" | form_value git.debounce_s)" = "17" ] \
-    || fail "the Settings page did not read back git.debounce_s"
+[ "$(admin_page -X POST -o /dev/null -w '%{redirect_url}' "$ADMIN/admin/settings/advanced" \
+    --data "$advanced_form")" = "$ADMIN/admin/settings/advanced" ] \
+    || fail "saving the Advanced settings did not return to the page"
+admin_page -f "$ADMIN/admin/settings/advanced" | grep -Fq 'Saved. The new values are in use' \
+    || fail "the Advanced page did not say the setting was saved"
 compose exec -T store python3 -c 'from coppermind_store.control import ControlState
 from pathlib import Path
-assert ControlState(Path("/data/state")).settings().git.debounce_s == 17' \
+assert ControlState(Path("/data/state")).settings().git.debounce_s == 30' \
     || fail "the Store did not read the changed setting from disk"
-ok "git.debounce_s saved through Admin and read back from the page and state file"
+ok "the history wait saved through Admin and was read back from the state file"
 
-[ "$(admin -X POST "$ADMIN/v1/admin/logout")" = "$ADMIN/admin/login" ] \
-    || fail "logout did not return to the Login page"
-has_session_cookie && fail "logout left the session cookie in the browser"
-[ "$(admin "$ADMIN/admin")" = "$ADMIN/admin/login" ] \
-    || fail "the overview was still reachable after logout"
-ok "the operator signed in, saw the overview, signed out and lost the overview again"
+[ "$(admin -X POST "$ADMIN/admin/signout")" = "$ADMIN/admin/signin?out=1" ] \
+    || fail "signing out did not return to the sign-in page"
+has_session_cookie && fail "signing out left the session cookie in the browser"
+[ "$(admin "$ADMIN/admin")" = "$ADMIN/admin/signin" ] \
+    || fail "Home was still reachable after signing out"
+ok "the operator signed in, saw Home, signed out and lost Home again"
 
 step "the bootstrapped default key is usable without a setup step"
 default_key="$(compose run --rm --no-deps --entrypoint cat bootstrap \
@@ -557,17 +569,17 @@ cmp -s "$served" "$artifact_pdf" || fail "the served bytes differ from the uploa
 [ "$(curl -sS -G "${AUTH[@]}" "$API/v1/notes" --data-urlencode 'folder=Artifacts' | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["items"]))')" = "0" ] \
     || fail "the artifact was listed as a note"
 # The operator signed out earlier in the storyline, so sign in again to read the page.
-admin_csrf="$(admin_page -f "$ADMIN/admin/login" | form_value csrf | head -1)"
-[ "$(admin -X POST "$ADMIN/v1/admin/login" --data-urlencode "password=$admin_password")" \
+admin_csrf="$(admin_page -f "$ADMIN/admin/signin" | form_value csrf | head -1)"
+[ "$(admin -X POST "$ADMIN/admin/signin" --data-urlencode "password=$admin_password")" \
     = "$ADMIN/admin" ] \
-    || fail "the admin password did not sign in before reading the artifacts page"
-artifacts_page="$(admin_page -f "$ADMIN/admin/artifacts")"
-printf '%s' "$artifacts_page" | grep -Fq "/admin/artifacts/$artifact_id/remove" \
-    || fail "Admin's artifacts page does not list the artifact with a remove action"
-printf '%s' "$artifacts_page" | grep -Fq 'Smoke deck' \
-    || fail "Admin's artifacts page does not show the artifact's title"
+    || fail "the Admin password did not sign in before reading the files page"
+files_page="$(admin_page -f "$ADMIN/admin/storage/files")"
+printf '%s' "$files_page" | grep -Fq "/admin/storage/files?ask=$artifact_id" \
+    || fail "Admin's files page does not list the file with a Remove button"
+printf '%s' "$files_page" | grep -Fq 'Smoke deck' \
+    || fail "Admin's files page does not show the file's name"
 admin_csrf="$(admin_page -f "$ADMIN/admin" | form_value csrf | head -1)"
-admin -X POST "$ADMIN/v1/admin/logout" >/dev/null
+admin -X POST "$ADMIN/admin/signout" >/dev/null
 ok "the PDF is a browsable file under Artifacts/, archived, searchable by its text as an artifact, and not a note"
 
 step "create a note through the API"
@@ -621,8 +633,10 @@ step "edit the file on the volume behind the store's back, as a device would"
 # From the editor container, never the store: the store is the process under
 # test, so an edit made through it would prove only that it can change its own
 # volume.
+# The note is a work note with a day and no time, so the person ticking Reviewed also says
+# there was no set time: a reviewed work note is filed once its time is known or ruled out.
 compose exec -T editor python3 -c \
-    'import sys; p = sys.argv[1]; t = open(p).read(); open(p, "w").write(t.replace("reviewed: false", "reviewed: true", 1))' \
+    'import sys; p = sys.argv[1]; t = open(p).read(); open(p, "w").write(t.replace("reviewed: false", "reviewed: true\ntime_unknown: true", 1))' \
     "/data/notes/$note_path"
 month_path="work/2026/2026-09/${note_path##*/}"
 wait_for_note_path "$note_id" "$month_path"

@@ -1,0 +1,3 @@
+# Synthetic test credential in an earlier commit of this branch; the current
+# file uses a non-key-shaped value. Not a real secret.
+25aadcfd04c330afa7c2fc85a97d4f6f9398cc11:services/admin/tests/obsidian-review.test.cjs:generic-api-key:267

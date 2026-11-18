@@ -46,6 +46,20 @@ class VoiceStore:
     def recognition_enabled(self) -> bool:
         return self._load().get("recognition_enabled", True)
 
+    def never_saved(self) -> set[str]:
+        """People whose voice is never learned or kept, whatever is reviewed."""
+        return set(self._load().get("never", []))
+
+    def set_never(self, person_id: str, never: bool) -> None:
+        """Switch one person's "never save this voice" on or off. On also deletes what is saved."""
+        if never:
+            self.delete(person_id)
+        data = self._load()
+        marked = set(data.get("never", []))
+        marked = marked | {person_id} if never else marked - {person_id}
+        data["never"] = sorted(marked)
+        self._save(data)
+
     def set_recognition_enabled(self, enabled: bool) -> None:
         data = self._load()
         data["recognition_enabled"] = enabled
@@ -255,7 +269,10 @@ class VoiceStore:
             )
         else:
             raise ValueError("Target voice not found")
-        destination.setdefault("signatures", []).extend(unknowns[source]["signatures"])
+        # Naming a voice as someone whose voice is never saved names the speaker and
+        # keeps nothing of the voice itself.
+        if target.removeprefix("person:") not in data.get("never", []):
+            destination.setdefault("signatures", []).extend(unknowns[source]["signatures"])
         del unknowns[source]
         moved = []
         for assignment in data.get("assignments", []):
@@ -495,7 +512,7 @@ class VoiceStore:
         source_id: str | None = None,
     ) -> None:
         data = self._load()
-        if not data.get("recognition_enabled", True):
+        if not data.get("recognition_enabled", True) or person_id in data.get("never", []):
             return
         person = data["people"].setdefault(person_id, {"signatures": []})
         if (

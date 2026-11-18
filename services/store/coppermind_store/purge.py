@@ -384,10 +384,12 @@ def _row_fingerprint(row) -> str:
 
 
 async def candidates(
-    store: LocalStore, now: datetime
+    store: LocalStore, now: datetime, only: str | None = None
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """What a purge would remove. `only` names one deleted note to remove whatever its age,
+    which is how a person deletes a single note for good before its keep time is up."""
     days = store.control.settings().retention.days
-    cutoff = now - timedelta(days=days)
+    cutoff = now if only else now - timedelta(days=days)
     disk_ids, disk_sources, pages = await asyncio.to_thread(disk_references, store)
     saved = await asyncio.to_thread(note_history.receipts, store)
     complete = await asyncio.to_thread(records, store, "complete")
@@ -444,6 +446,20 @@ async def candidates(
         abandoned,
         live_artifacts,
     )
+    if only:
+        # Just the one note, and any automatic person only it supported. Anything else that
+        # is past its keep time is left for the next ordinary clean-up.
+        chosen = [
+            item
+            for item in items
+            if item["candidate"]["kind"] == "note" and item["candidate"]["id"] == only
+        ]
+        chosen.extend(
+            item
+            for item in store.entities.purge_items(cutoff, {only})
+            if not item["candidate"]["deleted_at"]
+        )
+        return chosen, kept
     note_ids = {item["candidate"]["id"] for item in items if item["candidate"]["kind"] == "note"}
     items.extend(store.entities.purge_items(cutoff, note_ids))
     return items, kept
@@ -782,15 +798,19 @@ async def scan_problems(store: LocalStore) -> None:
         await _rescan(store)
 
 
-async def preview(store: LocalStore) -> PurgeResult:
+async def preview(store: LocalStore, only: str | None = None) -> PurgeResult:
     async with store.maintenance.exclusive():
         existing = await asyncio.to_thread(records, store)
         unfinished = [r for r in existing if r["state"] in {"applying", "failed"}]
         if unfinished:
+            if only:
+                raise ValidationFailed(
+                    ["Finish or cancel the interrupted clean-up before deleting one note."]
+                )
             return result(unfinished[0])
         await store.entities.refresh()
         now = datetime.now(UTC)
-        items, kept = await candidates(store, now)
+        items, kept = await candidates(store, now, only)
         record = {
             "token": secrets.token_hex(32),
             "state": "preview",
@@ -801,6 +821,8 @@ async def preview(store: LocalStore) -> PurgeResult:
             "kept": kept,
             "completed": [],
         }
+        if only:
+            record["only"] = only
         save(store, record)
         for old in existing:
             if old["state"] == "preview":
@@ -918,7 +940,8 @@ async def confirm(store: LocalStore, request: ConfirmPurge) -> PurgeResult:
         if not resuming:
             if (
                 record["retention_days"] != store.control.settings().retention.days
-                or record["items"] != (await candidates(store, datetime.now(UTC)))[0]
+                or record["items"]
+                != (await candidates(store, datetime.now(UTC), record.get("only")))[0]
             ):
                 raise PurgeChanged()
         else:

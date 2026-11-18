@@ -498,7 +498,7 @@ async def test_speakers_are_renamed_when_no_attendees_property_is_set_up(store, 
     )
     detail = await context.lifecycle_detail({"note_id": note.id})
     assert "no attendees property is set up" in detail["speaker_attendees_notice"]
-    assert "Model connections" in detail["speaker_attendees_notice"]
+    assert "What it fills in" in detail["speaker_attendees_notice"]
     completed = await context.complete_review(await completion(context, store, result, job_id))
     assert completed["state"] == "complete"
     text = (await store.get_source_artifact(result.source.id, 2, "transcript.txt")).content

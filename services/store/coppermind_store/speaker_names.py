@@ -56,7 +56,7 @@ OMITTED_NOTICE = (
 ATTENDEES_UNSET_NOTICE = (
     "Attendees will not be updated because no attendees property is set up. Speaker names "
     "are still written to the transcript. To update attendees too, open Coppermind Admin, "
-    "go to Model connections, and choose a property under Confirmed attendees."
+    "go to Suggestions, What it fills in, and tick Attendees and invitees."
 )
 REFRESH_NOTICE = (
     "Speaker suggestions could not be refreshed after the calendar event was linked; "

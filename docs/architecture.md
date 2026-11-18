@@ -60,7 +60,7 @@ blast radius if it goes down.
 | Service | Job | If it stops |
 |---|---|---|
 | `store` | The only thing that ever writes a note file. Owns the notes filesystem, the source bundles, and the control-state files under `/data/state`. Watches the filesystem on a schedule and mirrors what it finds into PostgreSQL. | Notes stop being creatable or editable through the API; files already on disk are untouched. |
-| `api` | The public HTTP contract. Holds no state of its own beyond a five-minute key cache. Talks to the store for everything that touches a file. | API calls fail; nothing on disk is affected; a restart loses nothing. |
+| `api` | The public HTTP contract. Holds no state of its own beyond a key cache it refreshes once its copy is two seconds old. Talks to the store for everything that touches a file. | API calls fail; nothing on disk is affected; a restart loses nothing. |
 | `admin` | The operator interface, on its own port, its own image, its own login. Never touches the notes filesystem directly, only `/data/state`. | The web control panel is unreachable; the rest of the system keeps running exactly as it was. |
 | `git` | Watches the notes filesystem and commits a snapshot of it on a debounce. No network, no credential, nothing it can push anywhere. | History stops accumulating; nothing already committed is at risk; catches up automatically once restarted. |
 | `obsidian-sync` | Supervises the client that will carry the notes filesystem to a phone and a laptop through Obsidian's own Sync service. | No devices see new notes; nothing on the server side is affected. |

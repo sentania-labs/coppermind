@@ -1479,7 +1479,7 @@ async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
             ProblemInfo(
                 kind="purge",
                 reference="receipts",
-                reason="Retention purge receipts could not be read. Check storage health.",
+                reason="The record of clean-ups could not be read. Check storage health.",
             )
         ]
     problems = [
@@ -1509,8 +1509,8 @@ async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
                     kind="purge_unfinished",
                     reference=receipt["token"],
                     reason=(
-                        "Retention purge is unfinished. Open Retention purge "
-                        "to retry the saved list or abandon it."
+                        "A clean-up is unfinished. Open Storage, Clean up in Admin "
+                        "to finish it or cancel it."
                     ),
                 )
             )
@@ -1520,8 +1520,8 @@ async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
                     kind="purge",
                     reference=receipt["token"],
                     reason=(
-                        "Retention purge failed before anything was removed. "
-                        "Run a new preview from Retention purge."
+                        "A clean-up failed before anything was removed. "
+                        "Open Storage, Clean up in Admin to try again."
                     ),
                 )
             )
@@ -1540,10 +1540,10 @@ async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
                 kind="purge",
                 reference=entry["token"],
                 reason=(
-                    f"Retention purge was abandoned. {entry['removed']} listed items "
+                    f"A clean-up was cancelled part way. {entry['removed']} listed items "
                     f"were removed. {len(remaining)} were not and still need "
                     f"attention: {', '.join(titles)}{more}. "
-                    "Preview again from Retention purge to finish removing them."
+                    "Open Storage, Clean up in Admin to finish removing them."
                 ),
             )
         )

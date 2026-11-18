@@ -85,6 +85,13 @@ class ModelConnection(ContextModel):
 MAX_TRANSCRIBE_SECONDS = 4 * 3600
 
 
+# The most one section's directions may hold. Long enough for a careful brief, short enough
+# that the transcript still has the room.
+SUMMARY_DIRECTIONS_MAX = 1500
+# How many sections may carry directions. Far more than the summary has today.
+SUMMARY_SECTIONS_MAX = 40
+
+
 class FeatureAssignment(ContextModel):
     connection: str = ""
     model: str = Field(default="", max_length=200)
@@ -98,6 +105,23 @@ class FeatureAssignment(ContextModel):
     # Recording summaries read the complete transcript in a separate call.
     summary_max_input_chars: int = Field(default=200000, ge=2000, le=2000000)
     summary_timeout_s: int = Field(default=900, ge=5, le=1800)
+    # The owner's own directions for each section of a meeting summary, by the section's
+    # key. A section that is absent or empty uses its default. The sections themselves and
+    # the rules that keep a summary safe to file are fixed in code, not in this text.
+    summary_directions: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("summary_directions")
+    @classmethod
+    def _directions_fit(cls, value: dict[str, str]) -> dict[str, str]:
+        if len(value) > SUMMARY_SECTIONS_MAX:
+            raise ValueError("too many summary sections")
+        for key, text in value.items():
+            if not key or len(key) > 64:
+                raise ValueError("a summary section key must be 1 to 64 characters")
+            if len(text) > SUMMARY_DIRECTIONS_MAX:
+                raise ValueError(f"directions for {key} are longer than {SUMMARY_DIRECTIONS_MAX}")
+        return value
+
     # One worker serializes model calls and approvals. No unbounded fan-out.
     attempts: int = Field(default=2, ge=1, le=3)
     fields: list[str] = Field(default_factory=list, max_length=20)

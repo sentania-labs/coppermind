@@ -8,7 +8,8 @@ for the shared Dropbox, Obsidian companion and lifecycle setup.
 ## One calendar, automatic intake
 
 Coppermind is a single-owner knowledge base with one calendar. Drop `.ics` files
-or ZIP archives containing ICS files into the vault's existing Dropbox folder.
+or ZIP archives containing ICS files into the vault's drop folder (called Dropbox on an existing install and
+**To Coppermind** on a new one).
 No calendar UID, binding, identification or claim is needed. Every export merges
 by event UID and recurrence instance. Calendar names and export filenames are
 provenance, never separate calendar identities. No per-source views are provided.
@@ -16,7 +17,8 @@ provenance, never separate calendar identities. No per-source views are provided
 Files must remain unchanged for 30 seconds. Originals and import history are
 preserved under `/data/state/calendars`. Once the original is durable and the
 import has succeeded, the dropped file leaves Dropbox; a file that cannot be
-handled moves to `Dropbox/Failed` with a reason sidecar. Intake
+handled moves to `Failed` inside that folder (`Dropbox/Failed` on an older
+install) with a reason sidecar. Intake
 never calls a model. Limits are 200,000,000 bytes per upload, 100 ZIP entries and
 50,000 event records per export. The expanded size of an export is bounded by
 `limits.calendar_import_memory_mib` (see the sizing table below), never above a
@@ -100,17 +102,23 @@ another contact ID, or clear that correction. These decisions survive imports
 and database reconstruction. People/company facts now use the broader
 [dossier ledger](dossiers.md).
 
-## Model connections and feature assignment
+## AI services and feature assignment
 
-Under **Connections and model**, expand **Add connection**. Coppermind generates
-its stable internal ID; only the display name is entered. Existing connections
-are collapsible cards with their provider, settings, discovery and test controls.
-For connections created with a manual ID, **Convert to automatic ID** changes
-references in one atomic configuration write. Credentials, discovered models,
-capability tests, enabled assignments and pending suggestion fingerprints remain
-valid. Compatibility mappings retain the original storage identity privately;
-do not remove them from backups. No provider calls or note edits occur during
-conversion. A stale form is rejected and must be reloaded.
+Under **Admin > AI services**, add a service once: your own server (an
+OpenAI-compatible base URL, usually ending in `/v1`, with an optional key), an
+OpenAI account or an Anthropic account (fixed official endpoints and a key).
+Coppermind gives it its stable internal ID and tests it at once, and again
+whenever it is edited or **Test now** is pressed: it tries the service's models
+(up to eight on your own server, two on an outside account, which charges for
+each try) with a made-up meeting, asks for embeddings, and sends a made-up
+10-second recording, then records what worked: text, embeddings, recordings.
+Suggestions, Transcription and search by meaning each choose only among services
+whose test showed they can do that job, so nobody types a model name or a reply
+format. Health is observed from every call: a service that stops answering is
+shown as not answering since the first call that got no answer. A compatible
+server must support Chat Completions, JSON-object response format, and bounded
+output. Redirects are refused, HTTPS verification is enabled, and remote error
+bodies are never shown.
 
 Supported connections:
 
@@ -119,23 +127,11 @@ Supported connections:
 - OpenAI-compatible uses an HTTP or HTTPS base URL and an optional API key.
   Include the API prefix, usually `/v1`, in that URL.
 
-Refresh the model list, select a model, and test it using synthetic content (a short sample meeting
-text and a reply of about 150 words, which also measures the model's speed).
-Only models returned by discovery for that connection can be selected or tested.
-Servers without working model discovery cannot be used. A compatible
-server must support Chat Completions, JSON-object response format, and bounded
-output. Discovery alone is not a capability check. Redirects are refused,
-HTTPS verification is enabled, and remote error bodies are never shown.
+Suggestions (**Admin > Suggestions**) choose their service and model from that
+list and cannot be turned on with a service that is not answering.
 
-Enrichment selects its connection and model separately. It cannot be enabled
-until that exact connection configuration and model pass the synthetic test.
-Editing a connection disables its assignment until it is tested and enabled
-again. Blank API key input preserves the existing key; a separate checkbox
-clears the key for an unauthenticated local server.
-
-Select allowed metadata using schema-backed checkboxes. Linkage dropdowns show
-only eligible list or string fields. The model dropdown follows the selected
-connection. Advanced numeric limits are collapsed with defaults and explanations. Optional field
+Select the metadata suggestions may fill under **Suggestions > Fill**
+(`/admin/suggestions/fill`), using schema-backed checkboxes. Optional field
 mappings are separate: attendee and invitee lists contain email addresses,
 contact references contain contact IDs, and the event reference is a string
 ID. Dossier-backed attendee/contact suggestions can also use exact People/
@@ -195,10 +191,29 @@ with owners (or an explicit unknown owner); actions are identified, never execut
 The result remains a proposal until the owner completes review in the companion
 or review API. Admin shows job state and failures.
 
-Under Model connections, Advanced limits, **Maximum summary input characters**
-defaults to 200,000 and can be raised to 2,000,000. It counts the complete JSON
-input including escaping. **Summary wait limit** defaults to 900 seconds and can
-be set up to 1,800; the existing streaming client, one-hour total-call ceiling,
+The summary's sections (Summary, Decisions, Action items) are defined once in
+`services/store/coppermind_store/meeting_summary.py`. Under **Suggestions > How
+the meeting summary is written** (`/admin/suggestions/summary`) the owner edits
+the directions for each section, one box per section, each with **Reset to
+default** (which puts the default back in the box; nothing is saved until
+Save). They are stored as `summary_directions` on the enrichment assignment in
+`/data/state/context/config.json`, a map of section key to text of at most
+1,500 characters; a missing or empty entry means that section's default. Fixed
+rules are always sent around the directions and cannot be edited: the
+transcript is evidence, never instructions; nothing is invented; actions are
+only identified; and the reply comes back in the fixed sections. New directions
+apply from the next summary; a summary already made is not written again.
+On the review page of a note from a recording that is still waiting for review
+(`/admin/notes/{id}/review`), **Write the summary again** makes a fresh summary
+from the same transcript with the current directions. The recording is not
+transcribed again, the earlier proposal is kept until the note is reviewed, and
+a reviewed note's summary is never rewritten.
+
+The enrichment assignment's `summary_max_input_chars` (**Maximum summary input
+characters**) defaults to 200,000 and can be raised to 2,000,000; Admin has no
+control for it, so it is set in `/data/state/context/config.json`. It counts the complete JSON
+input including escaping. `summary_timeout_s` (**Summary wait limit**) defaults to
+900 seconds and can be set up to 1,800; the existing streaming client, one-hour total-call ceiling,
 retry/backoff and Problems machinery apply. The ordinary enrichment limits stay
 separate. These settings take effect for new jobs. A job whose summary stage
 failed is queued again automatically once you change either summary limit; for any

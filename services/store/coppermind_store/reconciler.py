@@ -974,8 +974,14 @@ def _scan(
     )
 
 
+# The note Admin sends so a person can watch sync reach a device. It is never a note.
+SYNC_TEST_NAME = "Coppermind sync test.md"
+
+
 def _path_exclusion(path: Path, folders: list[str], patterns: list[str]) -> str | None:
     """Return the first matching rule, with folders relative to the notes root."""
+    if path.as_posix() == SYNC_TEST_NAME:
+        return "sync test note"
     for folder in folders:
         parts = tuple(folder.rstrip("/").split("/"))
         if path.parts[: len(parts)] == parts:

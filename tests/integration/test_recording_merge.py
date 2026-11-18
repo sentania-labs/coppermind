@@ -534,3 +534,24 @@ async def test_merge_preserves_owner_frontmatter_comments_and_body(store):
         for line in reviewed_text.split("---\n")[1].splitlines()
         if line.strip() != f"- {recording.artifact_id}"
     ]
+
+
+async def test_a_merged_recordings_audio_is_not_held_back_by_the_note_it_was_merged_into(store):
+    context, recording, _, target, payload = await prepare(store)
+    await context.lifecycle.merge_recording(payload)
+    context.recordings.save(recording)
+    assert target.id in {
+        n.id
+        for n in [await store.get_note(target.id)]
+        if recording.artifact_id in n.frontmatter.get("artifacts", [])
+    }
+    assert await context.recordings.shared_audio(recording) is False
+
+    await store.create_note(
+        CreateNote(
+            title="Another note",
+            body="Links the same audio.\n",
+            frontmatter={"artifacts": [recording.artifact_id]},
+        )
+    )
+    assert await context.recordings.shared_audio(recording) is True

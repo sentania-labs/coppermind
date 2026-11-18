@@ -1453,3 +1453,21 @@ async def test_merging_a_person_away_deletes_their_voice_signatures(store):
     )
     assert voice.summary(source["id"]) == {"signatures": [], "assignments": []}
     assert source["id"] not in voice.summaries()
+
+
+async def test_deleting_one_note_for_good_also_clears_the_person_only_it_supported(store):
+    from tests.integration.test_note_recovery import commit, git
+
+    retention(store, 30)
+    note = await reviewed_note(store)
+    await store.entities.refresh()
+    p = (await store.entities.list(EntityQuery()))["items"][0]
+    await claim(store, p, note)
+    git(store.notes_root, "init", "-q")
+    commit(store.notes_root)
+    (store.notes_root / note.path).unlink()
+    commit(store.notes_root)
+    await reconcile_once(store)
+    await store.admin.act("note-delete-for-good", {"id": note.id})
+    assert [item["id"] for item in (await store.entities.list(EntityQuery()))["items"]] == []
+    assert not (store.notes_root / p["path"]).exists()

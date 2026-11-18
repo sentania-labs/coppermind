@@ -180,6 +180,10 @@ class ContextService:
         self.dropbox = Dropbox(self)
         self.recordings = Recordings(self)
         self.provider = ModelProvider()
+        from coppermind_store.ai_services import AiServices
+
+        # Reads every provider call's outcome, so health is observed and never assumed.
+        self.services = AiServices(self)
         self.lock = asyncio.Lock()
         self.seen: dict[str, tuple[tuple[int, int, int, int], float]] = {}
         self.watch_status: dict[str, str] = {}
@@ -278,6 +282,8 @@ class ContextService:
                 "wait_s",
                 "summary_max_input_chars",
                 "summary_timeout_s",
+                # New directions are for the next summary. They never restart one made.
+                "summary_directions",
             }
         )
         connection = next(
@@ -951,7 +957,10 @@ class ContextService:
             ]:
                 if name and allowed[name] != "list":
                     raise ValueError("attendee, invitee and contact mappings must be list fields")
-            if assignment.enabled and not (self.root / "automatic_baseline.json").exists():
+            turning_on = not config.assignments["enrichment"].enabled
+            if assignment.enabled and (
+                turning_on or not (self.root / "automatic_baseline.json").exists()
+            ):
                 identities: list[str] = []
                 cursor = None
                 while True:
@@ -2365,6 +2374,7 @@ class ContextService:
             await asyncio.to_thread(self.archive.process, pending[0].id)
             async with self.lock:
                 await self.dropbox.process()
+        await self.dropbox.queue_recordings()
         if self.config().lifecycle_enabled:
             await self.lifecycle.check_calendars()
         assignment = self.config().assignments["enrichment"]

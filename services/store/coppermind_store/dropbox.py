@@ -49,6 +49,8 @@ OFFICE_SUFFIXES = {
     ".rtf",
 }
 ARTIFACT_SUFFIXES = EXTENSION_TYPES.keys() | OFFICE_SUFFIXES
+# Audio dropped in the folder is a recording: it is stored, then written up.
+RECORDING_SUFFIXES = {".m4a", ".mp3", ".wav"}
 NO_KIND = "This file type is not supported. Choose a supported format and try again."
 NEEDS_KIND = "This document needs kind=artifact on the upload to be stored as an artifact."
 
@@ -171,6 +173,7 @@ class Dropbox:
             "received_at": datetime.now(UTC).isoformat(),
             "kind": kind or {},
         }
+
         if duplicate:
             item["completed_at"] = time.time()
         if existing and existing.get("failed_path"):
@@ -221,6 +224,12 @@ class Dropbox:
                     if marker.get("kind") == "artifact":
                         stored = await self._store_artifact(item, data, marker)
                         item["parts"] = [{"artifact_id": stored.id, "path": stored.path}]
+                        if (
+                            stored.created
+                            and Path(item["filename"]).suffix.lower() in RECORDING_SUFFIXES
+                            and self.context.recordings.accepting()
+                        ):
+                            item["intake"] = "recording"
                         item["state"] = "succeeded"
                         item["completed_at"] = time.time()
                         log.info("Dropbox adopt artifact %s", item["id"])
@@ -267,6 +276,49 @@ class Dropbox:
                 records["history"][item["id"]] = dict(item)
         if records != before:
             self.save(records)
+
+    async def queue_recordings(self) -> None:
+        """Hand each recording that arrived through the folder to transcription.
+
+        Called without the context lock held, because accepting a recording takes it.
+        """
+        records = self.records()
+        waiting = [
+            (item, number, part)
+            for item in [*records["items"].values(), *records["history"].values()]
+            if item.get("state") == "succeeded" and item.get("intake") == "recording"
+            for number, part in enumerate(item["parts"])
+            if part.get("artifact_id") and not part.get("recording")
+        ]
+        for item, number, part in waiting:
+            try:
+                status = await self.context.recordings.accept(
+                    {
+                        "artifact_id": part["artifact_id"],
+                        "provider": "dropbox",
+                        "external_source_id": item["id"]
+                        if not number
+                        else f"{item['id']}-{number}",
+                        "title": Path(item["filename"]).stem,
+                        "origin": "dropbox",
+                    }
+                )
+                recording, why = status["id"], ""
+            except (ValueError, StoreError) as exc:
+                recording, why = "refused", str(exc)
+                log.warning("Dropbox did not queue recording %s: %s", item["id"], why)
+            except OSError:
+                log.warning("Dropbox could not queue recording %s", item["id"], exc_info=True)
+                continue
+            async with self.context.lock:
+                current = self.records()
+                for group in ("items", "history"):
+                    for stored in current[group].get(item["id"], {}).get("parts", []):
+                        if stored.get("artifact_id") == part["artifact_id"]:
+                            stored["recording"] = recording
+                            if why:
+                                stored["why"] = why
+                self.save(current)
 
     async def _store_artifact(
         self, item: dict[str, Any], data: bytes, marker: dict[str, Any]

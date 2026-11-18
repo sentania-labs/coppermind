@@ -118,34 +118,61 @@ if len(parser.values) != 1:
     raise SystemExit("Expected one distinct form token")
 print(parser.values.pop())' "$1"
 }
-claim_code="$(compose exec -T admin sh -c 'cat /data/state/internal/claim-code 2>/dev/null || true')"
-if [ -n "$claim_code" ]; then
-    admin_csrf="$(admin_page "$ADMIN/admin/claim" | form_value csrf)"
-    [ -n "$admin_csrf" ] || fail "Claim form has no CSRF token"
+setup_code="$(compose exec -T admin sh -c 'cat /data/state/internal/claim-code 2>/dev/null || true' | tr -d '[:space:]')"
+if [ -n "$setup_code" ]; then
+    # A fresh installation: setting Admin up signs the operator straight in.
+    admin_csrf="$(admin_page "$ADMIN/admin/welcome" | form_value csrf)"
+    [ -n "$admin_csrf" ] || fail "Welcome form has no CSRF token"
     curl -fsS -b "$admin_jar" -c "$admin_jar" -o /dev/null \
-        --data-urlencode "csrf=$admin_csrf" --data-urlencode "code=$claim_code" \
-        --data-urlencode 'password=smoke admin password' "$ADMIN/v1/admin/claim"
+        --data-urlencode "csrf=$admin_csrf" --data-urlencode "code=$setup_code" \
+        --data-urlencode 'pw1=smoke admin password' --data-urlencode 'pw2=smoke admin password' \
+        "$ADMIN/admin/welcome"
+else
+    admin_csrf="$(admin_page "$ADMIN/admin/signin" | form_value csrf)"
+    [ -n "$admin_csrf" ] || fail "Sign-in form has no CSRF token"
+    curl -fsS -b "$admin_jar" -c "$admin_jar" -o /dev/null \
+        --data-urlencode "csrf=$admin_csrf" --data-urlencode 'password=smoke admin password' \
+        "$ADMIN/admin/signin"
 fi
-admin_csrf="$(admin_page "$ADMIN/admin/login" | form_value csrf)"
-[ -n "$admin_csrf" ] || fail "Sign-in form has no CSRF token"
-curl -fsS -b "$admin_jar" -c "$admin_jar" -o /dev/null \
-    --data-urlencode "csrf=$admin_csrf" --data-urlencode 'password=smoke admin password' \
-    "$ADMIN/v1/admin/login"
-sync_page="$(admin_page -f "$ADMIN/admin/sync")" || fail "Admin did not render Connect"
-printf '%s' "$sync_page" | grep -Fq 'Encryption password' || fail "Admin did not render Connect"
+sync_page="$(admin_page -f "$ADMIN/admin/sync")" || fail "Admin did not render Obsidian Sync"
+printf '%s' "$sync_page" | grep -Fq 'Sign in to your Obsidian account' \
+    || fail "Admin did not offer the first step of connecting"
 admin_csrf="$(printf '%s' "$sync_page" | form_value csrf)"
 [ -n "$admin_csrf" ] || fail "Sync page has no CSRF token"
+# Every sync button answers by sending the browser back to the Sync page. A step that was
+# refused goes back with the reason in the address, so the exact address is the check.
 admin_action() {
     local action="$1" form="${2:-submit=yes}" result
     result="$(printf 'csrf=%s&%s' "$admin_csrf" "$form" | curl -fsS -b "$admin_jar" -o /dev/null \
         -w '%{redirect_url}' --data-binary @- "$ADMIN/admin/sync/$action")"
-    [ "$result" = "$ADMIN/admin/sync?result=saved" ] || fail "Admin $action failed"
+    [ "$result" = "$ADMIN/admin/sync" ] || fail "Admin $action failed: $result"
 }
-admin_action connect 'email=smoke%40example.invalid&password=simulated-account&encryption_password=simulated-encryption&encryption_confirm=simulated-encryption&mfa_code=&vault_name=Simulated+remote+vault&device_name=coppermind-server&plan=standard&existing_vault=false'
+# The three steps a person takes: sign in, pick the vault, connect.
+admin_action signin 'email=smoke%40example.invalid&password=simulated-account'
+admin_page -f "$ADMIN/admin/sync" | grep -Fq 'Which vault should Coppermind join?' \
+    || fail "signing in did not lead to the list of vaults"
+# The simulated account's first vault is locked with its own password.
+result="$(printf 'csrf=%s&vault=fake-1&password_fake-1=not-it' "$admin_csrf" \
+    | curl -fsS -b "$admin_jar" -o /dev/null -w '%{redirect_url}' --data-binary @- \
+        "$ADMIN/admin/sync/vault")"
+case "$result" in
+    "$ADMIN/admin/sync?"*) ;;
+    *) fail "a wrong vault password was not refused: $result" ;;
+esac
+admin_action vault 'vault=fake-1&password_fake-1=vault-password'
+admin_page -f "$ADMIN/admin/sync" | grep -Fq 'Ready to connect' \
+    || fail "choosing a vault did not lead to the last step"
+admin_action connect 'device_name=coppermind-server'
 connected="$(control status)"
 [ "$(printf '%s' "$connected" | field state)" = "syncing" ] || fail "connect did not start sync"
-[ "$(printf '%s' "$connected" | field vault_name)" = "Simulated remote vault" ] \
-    || fail "connect did not record the vault name it was given"
+[ "$(printf '%s' "$connected" | field vault_name)" = "My notes" ] \
+    || fail "connect did not record the vault that was chosen"
+[ "$(printf '%s' "$connected" | field account_known)" = "True" ] \
+    || fail "the helper did not remember which account it connected with"
+# The account address is kept on the credential volume only, never in the data backup.
+compose exec -T obsidian-sync sh -c \
+    'test -s /var/lib/obsidian-sync/coppermind-account && ! grep -rqs "smoke@example.invalid" /data/state' \
+    || fail "the account address is not where it belongs"
 
 admin_action pause
 paused="$(control status)"

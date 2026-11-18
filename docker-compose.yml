@@ -17,6 +17,13 @@ name: coppermind
 # to be forwarded here or it silently does nothing.
 x-wiring: &wiring
   COPPERMIND_LOG_LEVEL: ${COPPERMIND_LOG_LEVEL:-INFO}
+  # Where your own devices and apps reach this server. The Obsidian companion is told the
+  # first address; the setup link bootstrap shows starts with the second.
+  COPPERMIND_PUBLIC_URL: ${COPPERMIND_PUBLIC_URL:-http://127.0.0.1:8080}
+  COPPERMIND_ADMIN_URL: ${COPPERMIND_ADMIN_URL:-http://127.0.0.1:8082}
+  # Forgotten the Admin password? Start once with this set to 1: bootstrap then shows a new
+  # setup link to choose a new password from. Notes and settings are not affected.
+  COPPERMIND_ADMIN_NEW_SETUP_LINK: ${COPPERMIND_ADMIN_NEW_SETUP_LINK:-0}
 
 x-store-image: &store-image
   image: ghcr.io/sentania-labs/coppermind/store:latest

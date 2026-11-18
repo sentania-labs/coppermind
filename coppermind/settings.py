@@ -504,6 +504,14 @@ class Wiring(BaseSettings):
     internal_token_file: Path = Path("/run/coppermind/internal/internal-token")
     default_api_key_file: Path = Path("/run/coppermind/api/default-api-key")
 
+    # Where a person's own devices and apps reach this server. The companion in Obsidian is
+    # given `public_url`, and the setup link bootstrap prints starts with `admin_url`.
+    public_url: str = "http://127.0.0.1:8080"
+    admin_url: str = "http://127.0.0.1:8082"
+    # Set for one start to be shown a new Admin setup link: how a forgotten Admin password
+    # is reset, from the server itself. Notes and settings are not affected.
+    admin_new_setup_link: bool = False
+
     log_level: str = "INFO"
 
     # The image build stamps the tag it built from here. A checkout run
