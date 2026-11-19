@@ -130,6 +130,11 @@ async def setup_recording(store, standin, *, limit=200000, failure=None, recordi
             assert evidence["transcript"] == text  # entire 168k input, including the ending
             if failure == "context":
                 return httpx.Response(400, json={"error": {"message": "context length exceeded"}})
+            if failure == "filtered":
+                return httpx.Response(
+                    200,
+                    json={"choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]},
+                )
             if failure == "incomplete":
                 return httpx.Response(
                     200,
@@ -342,7 +347,8 @@ async def test_summary_failures_are_durable_problems_with_no_partial_note(
         assert "No partial transcript was sent" in job.error
         assert "summary_max_input_chars" in job.error
     else:
-        assert sum("transcript" in request for request in requests) == 1
+        sent = sum("transcript" in request for request in requests)
+        assert sent == (2 if failure == "context" else 1)
 
 
 async def test_raising_summary_limit_retries_the_whole_transcript(store, standin):
@@ -562,3 +568,14 @@ async def test_incomplete_summary_keeps_usage_and_is_not_retried(store, standin)
     assert job.attempts == job.attempt_limit == 1
     await context.tick()
     assert len(requests) == 2
+
+
+async def test_a_reply_stopped_for_another_reason_is_retried_up_to_the_attempts(store, standin):
+    context, _, job, requests = await setup_recording(store, standin, failure="filtered")
+    assert job.state == "failed"
+    assert job.error_rule == "provider-incomplete"
+    assert job.attempts == 1
+    assert job.attempt_limit > 1
+    await context.tick()
+    assert context.load_job(job.id).attempts == 2
+    assert sum("transcript" in request for request in requests) >= 2

@@ -100,9 +100,11 @@ class ProviderError(ValueError):
         waiting: bool = False,
         retry_after: float | None = None,
         usage: dict[str, Any] | None = None,
+        cut_short: bool = False,
     ) -> None:
         super().__init__(message)
         self.rule = rule
+        self.cut_short = cut_short
         self.reply = reply[:REPLY_KEPT_CHARS]
         self.waiting = waiting
         # Seconds the service asked to wait before it is asked again, when it said.
@@ -681,6 +683,7 @@ class ModelProvider:
                 "provider-incomplete",
                 reply=output,
                 usage=usage,
+                cut_short=cut_short,
             )
         if not output.strip():
             raise ProviderError(
