@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import hashlib
 import json
+import os
+import re
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
+from coppermind.companion import fingerprint
 from coppermind.settings import Wiring
 from coppermind.store_protocol import StoreError
 from coppermind_admin import model, ui
@@ -39,33 +41,38 @@ OBSIDIAN_STEPS = (
 def companion_files() -> dict[str, bytes]:
     files = {name: (PLUGIN / name).read_bytes() for name in PLUGIN_FILES}
     manifest = json.loads(files["manifest.json"])
-    manifest.pop("version", None)
-    digest = hashlib.sha256()
-    for name in PLUGIN_FILES:
-        content = (
-            json.dumps(manifest, sort_keys=True).encode()
-            if name == "manifest.json"
-            else files[name]
-        )
-        digest.update(name.encode() + b"\0" + content + b"\0")
-    manifest["version"] = f"1.0.{int.from_bytes(digest.digest()[:6], 'big')}"
+    release = os.environ.get("COPPERMIND_BUILD_VERSION", "")
+    match = re.fullmatch(r"v?(\d+\.\d+\.\d+)", release)
+    if match:
+        manifest["version"] = match.group(1)
     files["manifest.json"] = json.dumps(manifest).encode()
     return files
+
+
+def companion_needs_update(view: dict[str, Any]) -> bool:
+    companion = view["companion"]
+    return bool(
+        companion["placed"]
+        and (
+            not companion.get("version")
+            or companion.get("fingerprint") != fingerprint(companion_files())
+        )
+    )
 
 
 def companion_status(view: dict[str, Any], back: str) -> str:
     companion = view["companion"]
     if not companion["placed"]:
         return ""
-    version = json.loads(companion_files()["manifest.json"])["version"]
     installed = companion.get("version")
-    if installed == version:
-        return f'<span class="muted">Companion version {e(version)} is current.</span>'
+    version = json.loads(companion_files()["manifest.json"])["version"]
+    if not companion_needs_update(view):
+        return f'<span class="muted">Companion version {e(installed)} is current.</span>'
     message = (
-        "The companion in your vault is out of date."
+        f"The companion in your vault is out of date. You have version {e(installed)}. "
         if installed
-        else "Could not read the companion version in your vault."
-    )
+        else "Could not read the companion version in your vault. "
+    ) + f"The update installs version {e(version)}."
     return (
         ui.badge("warn", "Update available")
         + " "
@@ -126,6 +133,9 @@ def tiles(view: dict[str, Any], ctx: Ctx) -> str:
             else f"{len(paired)} devices paired",
         )
         companion_to = "/admin/sync"
+    if companion_needs_update(view):
+        companion = ("warn", "Update available", "Update the companion")
+        companion_to = "/admin/setup/companion"
     sugg = view["sugg"]
     sugg_tile = {
         "none": ("off", "Off", "Optional"),
@@ -515,6 +525,8 @@ def router(wiring: Wiring) -> APIRouter:
                 )
                 + "Reload the companion in Obsidian. Paired devices stay paired.",
             )
+        else:
+            ctx.say("ok", "The companion is in your vault. Turn it on in Obsidian next.")
         return ctx.go(target)
 
     @routes.post("/admin/setup/companion/code", include_in_schema=False)

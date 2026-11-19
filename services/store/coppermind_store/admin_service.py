@@ -13,6 +13,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import re
 import secrets
 import time
 from datetime import UTC, datetime, timedelta
@@ -28,6 +29,7 @@ from coppermind.api_keys import (
     scopes_for,
 )
 from coppermind.atomicio import atomic_write_bytes, atomic_write_text
+from coppermind.companion import fingerprint
 from coppermind.context_config import ContextConfig
 from coppermind.naming import sanitize_folder
 from coppermind.settings import ProductSettings
@@ -216,7 +218,18 @@ class AdminService:
                 (self.store.notes_root / PLUGIN_FOLDER / "manifest.json").read_bytes()
             )
             version = manifest["version"]
-            return version if isinstance(version, str) and version else None
+            return (
+                version
+                if isinstance(version, str) and re.fullmatch(r"\d{1,4}\.\d{1,4}\.\d{1,4}", version)
+                else None
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def companion_fingerprint(self) -> str | None:
+        try:
+            folder = self.store.notes_root / PLUGIN_FOLDER
+            return fingerprint({name: (folder / name).read_bytes() for name in PLUGIN_FILES})
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
@@ -386,6 +399,7 @@ class AdminService:
             "companion": {
                 "placed": await asyncio.to_thread(self.companion_placed),
                 "version": await asyncio.to_thread(self.companion_version),
+                "fingerprint": await asyncio.to_thread(self.companion_fingerprint),
                 "paired": [app for app in apps if app["companion"]],
             },
             "setup": self.setup_state(),

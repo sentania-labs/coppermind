@@ -1,74 +1,85 @@
 import json
-import re
-import shutil
+from types import SimpleNamespace
 
 import pytest
 from coppermind_admin.pages import home
+from coppermind_store.admin_service import PLUGIN_FOLDER, AdminService
 
+from coppermind.companion import fingerprint
 from services.admin.tests.harness import admin as admin
+from services.admin.tests.harness import follow, post
 
 
-def test_version_changes_with_each_shipped_file(tmp_path, monkeypatch):
-    shutil.copytree(home.PLUGIN, tmp_path / "plugin")
-    monkeypatch.setattr(home, "PLUGIN", tmp_path / "plugin")
-    original = json.loads(home.companion_files()["manifest.json"])["version"]
-    assert re.fullmatch(r"\d+\.\d+\.\d+", original)
-    for name in home.PLUGIN_FILES:
-        path = home.PLUGIN / name
-        content = path.read_bytes()
-        if name == "manifest.json":
-            manifest = json.loads(content)
-            manifest["description"] += " changed"
-            path.write_text(json.dumps(manifest))
-        else:
-            path.write_bytes(content + b" changed")
-        assert json.loads(home.companion_files()["manifest.json"])["version"] != original
-        path.write_bytes(content)
+def test_release_version_and_file_changes(monkeypatch):
+    monkeypatch.setenv("COPPERMIND_BUILD_VERSION", "v2.3.4")
+    files = home.companion_files()
+    assert json.loads(files["manifest.json"])["version"] == "2.3.4"
+    original = fingerprint(files)
+    monkeypatch.setenv("COPPERMIND_BUILD_VERSION", "v2.3.5")
+    assert fingerprint(home.companion_files()) == original
+    for name in ("main.js", "styles.css"):
+        changed = dict(files)
+        changed[name] += b"changed"
+        assert fingerprint(changed) != original
+    manifest = json.loads(files["manifest.json"])
+    manifest["description"] += " changed"
+    changed = dict(files, **{"manifest.json": json.dumps(manifest).encode()})
+    assert fingerprint(changed) != original
 
 
 @pytest.mark.parametrize("installed", [None, "0.1.0"])
-def test_outdated_companion_offers_update(admin, installed):
+def test_outdated_companion_offers_update_on_setup_and_links_on_home_and_sync(admin, installed):
     client, _, store = admin
-    store.views["overview"]["companion"].update(placed=True, version=installed)
+    store.views["overview"]["companion"].update(placed=True, version=installed, fingerprint="old")
     page = client.get("/admin/setup/companion").text
     assert "Update the companion" in page
     assert (
         "Could not read the companion version" in page
         if installed is None
-        else "out of date" in page
+        else "You have version 0.1.0" in page
     )
+    assert "The update installs version" in page
     assert page.count('action="/admin/setup/companion/place"') == 1
+    for path in ("/admin", "/admin/sync"):
+        page = client.get(path).text
+        assert "Update available" in page
+        assert "/admin/setup/companion" in page
+    assert "Put the companion in my vault again" in client.get("/admin/sync").text
 
 
-def test_current_companion_shows_version(admin):
+def test_current_companion_and_release_only_change_do_not_nag(admin, monkeypatch):
     client, _, store = admin
-    version = json.loads(home.companion_files()["manifest.json"])["version"]
-    store.views["overview"]["companion"].update(placed=True, version=version)
+    monkeypatch.setenv("COPPERMIND_BUILD_VERSION", "v2.3.5")
+    store.views["overview"]["companion"].update(
+        placed=True, version="2.3.4", fingerprint=fingerprint(home.companion_files())
+    )
     page = client.get("/admin/setup/companion").text
-    assert f"Companion version {version} is current" in page
-    assert "Update the companion" not in page
+    assert "Companion version 2.3.4 is current" in page
+    for path in ("/admin", "/admin/sync", "/admin/setup/companion"):
+        assert "Update available" not in client.get(path).text
 
 
-def test_store_reads_installed_manifest(tmp_path):
-    from types import SimpleNamespace
-
-    from coppermind_store.admin_service import PLUGIN_FOLDER, AdminService
-
+def test_store_reads_version_and_detects_modified_files(tmp_path):
     service = object.__new__(AdminService)
     service.store = SimpleNamespace(notes_root=tmp_path)
     folder = tmp_path / PLUGIN_FOLDER
     folder.mkdir(parents=True)
     assert service.companion_version() is None
+    assert service.companion_fingerprint() is None
+    for name, data in home.companion_files().items():
+        (folder / name).write_bytes(data)
+    assert service.companion_fingerprint() == fingerprint(home.companion_files())
+    (folder / "main.js").write_bytes(b"modified")
+    assert service.companion_fingerprint() != fingerprint(home.companion_files())
+    (folder / "manifest.json").write_text('{"version": "1.0.209927058280035"}')
+    assert service.companion_version() is None
     (folder / "manifest.json").write_text("{broken")
     assert service.companion_version() is None
-    (folder / "manifest.json").write_text('{"version": "1.2.3"}')
-    assert service.companion_version() == "1.2.3"
+    assert service.companion_fingerprint() is None
 
 
 def test_update_installs_current_files_and_explains_reload(admin):
     import base64
-
-    from services.admin.tests.harness import follow, post
 
     client, _, store = admin
     store.views["overview"]["companion"].update(placed=True, version="0.1.0")
