@@ -1259,3 +1259,16 @@ def test_existing_cutoff_error_links_to_current_setting(admin):
     store.views["lifecycle"]["suggestion_error"] = "Raise Maximum response tokens."
     page = client.get(REVIEW).text
     assert 'href="/admin/suggestions#answer-length">Longest answer the model may write</a>' in page
+
+
+def test_storage_shows_an_unknown_count_honestly_and_saves_its_interval(admin):
+    client, _, store = admin
+    store.views["storage"]["cleanup"] = None
+    page = client.get("/admin/storage")
+    assert page.status_code == 200
+    assert "Not yet counted" in page.text
+    assert "Nothing to clean up" not in page.text
+    store.answers["storage-count-interval"] = {"seconds": 900}
+    saved = post(client, "/admin/storage/count-interval", {"seconds": "900"})
+    assert store.asked("storage-count-interval") == [{"seconds": 900}]
+    assert "The clean-up count updates in the background" in follow(client, saved)

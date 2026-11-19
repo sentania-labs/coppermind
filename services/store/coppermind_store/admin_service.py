@@ -944,6 +944,7 @@ class AdminService:
             "voice-clip": people.clip,
             "storage": self.storage_view,
             "storage-keep": storage.set_keep,
+            "storage-count-interval": storage.set_count_interval,
             "cleanup": plain(storage.cleanup),
             "cleanup-confirm": storage.cleanup_confirm,
             "cleanup-cancel": storage.cleanup_cancel,

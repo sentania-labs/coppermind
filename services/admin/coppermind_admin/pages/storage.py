@@ -64,6 +64,9 @@ def router(wiring: Wiring) -> APIRouter:
                 f"{plural(interrupted['left'], 'item is', 'items are')} left."
             )
             clean_action = ui.go("Finish or cancel", "/admin/storage/cleanup")
+        elif count is None:
+            clean = "Not yet counted. The clean-up count is updated in the background."
+            clean_action = ui.go("See what is kept", "/admin/storage/cleanup")
         elif count:
             clean = (
                 f"{plural(count, 'deleted item is', 'deleted items are')} past the {keep} keep "
@@ -93,6 +96,31 @@ def router(wiring: Wiring) -> APIRouter:
             ),
             ui.row("Clean up", clean, clean_action),
             ui.row(
+                "Update clean-up count every",
+                ui.quick_select(
+                    "/admin/storage/count-interval",
+                    "seconds",
+                    "Update clean-up count every",
+                    [
+                        ("60", "1 minute"),
+                        ("300", "5 minutes"),
+                        ("900", "15 minutes"),
+                        ("3600", "1 hour"),
+                        *(
+                            []
+                            if ctx.settings().retention.count_interval_s in {60, 300, 900, 3600}
+                            else [
+                                (
+                                    str(ctx.settings().retention.count_interval_s),
+                                    f"{ctx.settings().retention.count_interval_s} seconds",
+                                )
+                            ]
+                        ),
+                    ],
+                    str(ctx.settings().retention.count_interval_s),
+                ),
+            ),
+            ui.row(
                 "Bring back a deleted note",
                 f"{plural(deleted, 'deleted note')} can still be brought back."
                 if deleted
@@ -120,18 +148,22 @@ def router(wiring: Wiring) -> APIRouter:
             result = await ctx.act("storage-keep", {"days": int(form.get("days") or 0)})
         except (StoreError, ValueError) as exc:
             return await ctx.refused(exc, "/admin/storage")
-        count = result["count"]
         ctx.say(
             "ok",
             f"Saved. Deleted notes and removed files are now kept for "
-            f"{keep_words(result['days'])}. "
-            + (
-                f"{plural(count, 'item is', 'items are')} older than that and "
-                f"{'waits' if count == 1 else 'wait'} under Clean up."
-                if count
-                else "Nothing deleted is older than that, so there is nothing to clean up."
-            ),
+            f"{keep_words(result['days'])}. The clean-up count will update in the background.",
         )
+        return ctx.go("/admin/storage")
+
+    @routes.post("/admin/storage/count-interval", include_in_schema=False)
+    async def count_interval(request: Request) -> Response:
+        ctx = Ctx(request, wiring)
+        form = await ctx.form()
+        try:
+            await ctx.act("storage-count-interval", {"seconds": int(form.get("seconds") or 0)})
+        except (StoreError, ValueError) as exc:
+            return await ctx.refused(exc, "/admin/storage")
+        ctx.say("ok", "Saved. The clean-up count updates in the background.")
         return ctx.go("/admin/storage")
 
     # -- deleted notes -------------------------------------------------------------------

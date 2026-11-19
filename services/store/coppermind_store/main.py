@@ -84,6 +84,9 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         embeddings_task = asyncio.create_task(
             app.state.store.embeddings.run(), name="coppermind-embeddings"
         )
+        cleanup_count_task = asyncio.create_task(
+            app.state.store.admin.storage.run_cleanup_count(), name="coppermind-cleanup-count"
+        )
         app.state.engine = engine
         log.info(
             "store started",
@@ -93,6 +96,9 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         try:
             yield
         finally:
+            cleanup_count_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await cleanup_count_task
             embeddings_task.cancel()
             with suppress(asyncio.CancelledError):
                 await embeddings_task

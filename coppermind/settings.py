@@ -362,6 +362,14 @@ class IndexerSettings(BaseModel):
 class RetentionSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    count_interval_s: int = Field(
+        default=300,
+        ge=60,
+        le=86400,
+        strict=True,
+        description="Seconds between background clean-up counts.",
+    )
+
     days: int = Field(
         default=30,
         ge=0,
