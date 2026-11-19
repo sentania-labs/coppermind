@@ -27,7 +27,9 @@ import json
 import logging
 import math
 import random
+import tempfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import sqlalchemy as sa
@@ -426,6 +428,9 @@ class Recordings:
                 enabled=given.enabled,
                 paused=given.paused,
                 wait_s=given.wait_s,
+                job_limit_s=given.job_limit_s
+                if "job_limit_s" in given.model_fields_set
+                else old.job_limit_s,
                 attempts=given.attempts,
                 response_format=given.response_format,
                 automatic_after=old.automatic_after,
@@ -639,16 +644,19 @@ class Recordings:
         job.busy_since = since.isoformat()
         if (now - since).total_seconds() >= BUSY_LIMIT_S:
             job.state = "failed"
+            prefix = str(exc).split(" failed:", 1)[0] + ": " if str(exc).startswith("Part ") else ""
             job.set_error(
-                "The transcription service stayed busy for 24 hours, so the app stopped asking. "
-                "Press Retry when it is free.",
+                prefix + "The transcription service stayed busy for 24 hours, so the app stopped "
+                "asking. Press Retry when it is free.",
                 "transcription-busy-limit",
             )
             return
         wait = exc.retry_after or BUSY_WAIT_S * random.uniform(1.0, 1.5)
         job.state = "queued"
         job.set_error(
-            BUSY_MESSAGE, BUSY_RULE, retry_after=(now + timedelta(seconds=wait)).isoformat()
+            str(exc) if str(exc).startswith("Part ") else BUSY_MESSAGE,
+            BUSY_RULE,
+            retry_after=(now + timedelta(seconds=wait)).isoformat(),
         )
 
     async def remove_reviewed_audio(self, job: TranscriptionJob) -> bool:
@@ -1047,24 +1055,103 @@ class Recordings:
         from coppermind_store.voice_store import VoiceStore
 
         voice_enabled = VoiceStore(self.context).recognition_enabled()
-        transcript, usage = await self.context.provider.transcribe(
-            connection,
-            self.context.key(connection.id),
-            assignment,
-            path,
-            filename=job.filename,
-            mime_type=job.mime_type,
-            size_bytes=int(revision["size_bytes"]),
-            job_id=job.id,
-            remote_job_id=job.remote_job_id,
-            job_started=job.remote_job_started,
-            job_resubmits=job.remote_job_resubmits,
-            job_update=save_remote,
-            duration_seconds=duration,
+        from coppermind_store import audio_parts
+
+        try:
+            actual_duration = await audio_parts.duration(path)
+        except ProviderError:
+            # Let the service handle formats it understands that ffprobe does not,
+            # unless metadata already proves this recording needs splitting.
+            if duration is not None and duration > assignment.job_limit_s:
+                raise
+            actual_duration = 0
+        options = dict(
             num_speakers=speakers,
             max_speakers=maximum,
             include_speaker_embeddings=voice_enabled,
         )
+        if actual_duration <= assignment.job_limit_s:
+            transcript, usage = await self.context.provider.transcribe(
+                connection,
+                self.context.key(connection.id),
+                assignment,
+                path,
+                filename=job.filename,
+                mime_type=job.mime_type,
+                size_bytes=int(revision["size_bytes"]),
+                job_id=job.id,
+                remote_job_id=job.remote_job_id,
+                job_started=job.remote_job_started,
+                job_resubmits=job.remote_job_resubmits,
+                job_update=save_remote,
+                duration_seconds=duration,
+                **options,
+            )
+        else:
+            # Leave a second of headroom for the service's duration measurement.
+            part_length = assignment.job_limit_s - 1
+            count = math.ceil(actual_duration / part_length)
+            transcript = {
+                "language": "",
+                "duration": actual_duration,
+                "segments": [],
+                "speakers": [],
+            }
+            usage = {"model": assignment.model}
+            with tempfile.TemporaryDirectory(prefix="coppermind-audio-") as directory:
+                for index in range(count):
+                    start = index * part_length
+                    length = min(part_length, actual_duration - start)
+                    part = Path(directory) / f"part-{index + 1}.flac"
+                    try:
+                        await audio_parts.cut(path, part, start, length)
+                        result, part_usage = await self.context.provider.transcribe(
+                            connection,
+                            self.context.key(connection.id),
+                            assignment,
+                            part,
+                            filename=part.name,
+                            mime_type="audio/flac",
+                            size_bytes=part.stat().st_size,
+                            job_id=hashlib.sha256(
+                                f"{job.id}:{part_length}:{index}".encode()
+                            ).hexdigest(),
+                            duration_seconds=length,
+                            **options,
+                        )
+                    except ProviderError as exc:
+                        raise ProviderError(
+                            f"Part {index + 1} of {count} failed: {exc}",
+                            exc.rule,
+                            reply=exc.reply,
+                            waiting=exc.waiting,
+                            retry_after=exc.retry_after,
+                        ) from exc
+                    except OSError as exc:
+                        raise ProviderError(
+                            f"Part {index + 1} of {count} could not be prepared.",
+                            "recording-unreadable",
+                        ) from exc
+                    finally:
+                        part.unlink(missing_ok=True)
+                    if not transcript["language"]:
+                        transcript["language"] = result.get("language", "")
+                    for segment in result["segments"]:
+                        segment["speaker"] = (
+                            f"Part {index + 1}: {segment['speaker']}" if segment["speaker"] else ""
+                        )
+                        for key in ("start", "end"):
+                            if segment[key] is not None:
+                                segment[key] += start
+                        transcript["segments"].append(segment)
+                    for speaker in result.get("speakers", []):
+                        if isinstance(speaker, dict) and isinstance(speaker.get("label"), str):
+                            transcript["speakers"].append(
+                                {**speaker, "label": f"Part {index + 1}: {speaker['label']}"}
+                            )
+                    for key, value in part_usage.items():
+                        if isinstance(value, int) and not isinstance(value, bool):
+                            usage[key] = usage.get(key, 0) + value
         pending = transcript.pop("speakers", [])
         async with self.context.lock:
             if voice_enabled and VoiceStore(self.context).recognition_enabled():

@@ -139,6 +139,8 @@ class FeatureAssignment(ContextModel):
     # Transcription only: how long the service may take to answer one recording. A service
     # that does not stream sends nothing until it has finished, so this is the whole job.
     wait_s: int = Field(default=3600, ge=5, le=MAX_TRANSCRIBE_SECONDS)
+    # Maximum audio duration accepted by one transcription job.
+    job_limit_s: int = Field(default=14400, ge=2, le=86400)
 
     @field_validator("timeout_s", mode="before")
     @classmethod

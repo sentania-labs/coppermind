@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import io
 import json
 import os
 import re
+import wave
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -144,6 +146,36 @@ async def test_a_recording_alone_becomes_a_transcribed_note_in_review(store):
     # Review has not happened, so the audio is still stored.
     kept = await store.get_artifact_bytes(audio)
     assert await drain(kept) == AUDIO
+
+
+async def test_long_recording_becomes_one_note_with_continuous_transcript(store):
+    data = io.BytesIO()
+    with wave.open(data, "wb") as stream:
+        stream.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
+        stream.writeframes(b"\0\0" * 8000 * 9)
+    async with Service() as service:
+        context = await setup_transcription(store, service, job_limit_s=5)
+        audio = await store_audio(store, name="long.wav", data=data.getvalue(), mime="audio/wav")
+        accepted = await context.accept_recording(request(audio))
+        await context.recordings.tick()
+    done = await context.recording_status({"id": accepted["id"]})
+    assert done["state"] == "succeeded"
+    assert len(service.requests) == 3
+    note = await store.get_note(done["note_id"])
+    sources = await store.get_note_sources(note.id)
+    assert len(sources) == 1
+    transcript = json.loads(
+        (await store.get_source_artifact(sources[0].id, 1, "transcript.json")).content
+    )
+    assert [segment["start"] for segment in transcript["segments"]] == [0, 3.4, 4, 7.4, 8, 11.4]
+    assert [segment["speaker"] for segment in transcript["segments"]] == [
+        "Part 1: Speaker 1",
+        "Part 1: Speaker 2",
+        "Part 2: Speaker 1",
+        "Part 2: Speaker 2",
+        "Part 3: Speaker 1",
+        "Part 3: Speaker 2",
+    ]
 
 
 async def test_reviewed_recording_is_removed_with_a_receipt_and_transcript(store):
