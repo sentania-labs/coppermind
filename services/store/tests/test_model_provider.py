@@ -450,15 +450,17 @@ def test_output_limit_accepts_thinking_model_budget():
 
 async def test_incomplete_reply_keeps_reasoning_usage():
     def serve(request):
-        return httpx.Response(
-            200,
-            json={
-                "choices": [{"finish_reason": "length", "message": {"content": "{"}}],
-                "usage": {
-                    "completion_tokens": 2048,
-                    "completion_tokens_details": {"reasoning_tokens": 2000},
+        return _sse(
+            [
+                {"choices": [{"delta": {"content": "{"}, "finish_reason": "length"}]},
+                {
+                    "choices": [],
+                    "usage": {
+                        "completion_tokens": 2048,
+                        "completion_tokens_details": {"reasoning_tokens": 2000},
+                    },
                 },
-            },
+            ]
         )
 
     provider = ModelProvider(httpx.MockTransport(serve))
