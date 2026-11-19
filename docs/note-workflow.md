@@ -24,7 +24,10 @@ be applied; reload the page.
 
 Coppermind places the companion in the vault at
 `.obsidian/plugins/coppermind-review/` (from Admin's Setup guide) and Obsidian Sync
-carries it to your devices. Enable it in Community plugins. It requires
+carries it to your devices. Its version is stamped from its files, so it changes
+whenever the companion does; the Setup guide says when the copy in your vault is out of
+date and offers to update it (reload the companion in Obsidian afterwards). Enable it in
+Community plugins. It requires
 Obsidian 1.11 or later and a Coppermind API key with `notes:read`, `notes:write` and
 `sources:read`. Naming speakers also needs `sources:write` and `entities:read`; a key
 without `entities:read` still reviews everything else, and the panel says that speakers
