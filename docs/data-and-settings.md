@@ -166,6 +166,7 @@ in Admin. Nothing here needs to be set before the system runs.
 | indexer | `language` | `english` |
 | indexer | `reconcile_interval_s` | 600 |
 | retention | `days` | 30 (integer, 0 through 36500; 0 permits immediate manual purge). The one window for deleted notes and for removed artifacts, whether removed in Admin, through the API or by deleting the file in Obsidian |
+| retention | `count_interval_s` | 300 (integer, 60 through 86400). Seconds between background clean-up counts; see [Retention purge receipts](#retention-purge-receipts) |
 | events | `retention_days` | 7 |
 | events | `poll_fallback_s` | 5 |
 | limits | `calendar_max_events` | 50,000 retained events across calendars |
