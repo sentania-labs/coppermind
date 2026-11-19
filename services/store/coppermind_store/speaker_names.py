@@ -7,16 +7,23 @@ import re
 from typing import Any
 
 
+_LABEL = re.compile(r"(?:Part ([1-9][0-9]*): )?(?:Speaker|Unknown voice) ([1-9][0-9]*)")
+
+
 def speaker_labels(transcript: dict[str, Any]) -> list[str]:
-    """Only diarized labels are eligible for a name proposal."""
+    """Only diarized labels, with the part prefix of a split recording, are eligible."""
+    matches = {
+        segment["speaker"]: _LABEL.fullmatch(segment["speaker"])
+        for segment in transcript.get("segments", [])
+        if isinstance(segment.get("speaker"), str)
+    }
     return sorted(
-        {
-            segment["speaker"]
-            for segment in transcript.get("segments", [])
-            if isinstance(segment.get("speaker"), str)
-            and re.fullmatch(r"(?:Speaker|Unknown voice) [1-9][0-9]*", segment["speaker"])
-        },
-        key=lambda label: (int(label.rsplit(" ", 1)[1]), label),
+        (label for label, match in matches.items() if match),
+        key=lambda label: (
+            int(_LABEL.fullmatch(label).group(1) or 0),
+            int(_LABEL.fullmatch(label).group(2)),
+            label,
+        ),
     )
 
 
