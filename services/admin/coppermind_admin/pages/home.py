@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +34,51 @@ OBSIDIAN_STEPS = (
     'If "Coppermind" is not in the list yet, open Settings, then Sync, switch on "Installed '
     'community plugins", and wait a minute.'
 )
+
+
+def companion_files() -> dict[str, bytes]:
+    files = {name: (PLUGIN / name).read_bytes() for name in PLUGIN_FILES}
+    manifest = json.loads(files["manifest.json"])
+    manifest.pop("version", None)
+    digest = hashlib.sha256()
+    for name in PLUGIN_FILES:
+        content = (
+            json.dumps(manifest, sort_keys=True).encode()
+            if name == "manifest.json"
+            else files[name]
+        )
+        digest.update(name.encode() + b"\0" + content + b"\0")
+    manifest["version"] = f"1.0.{int.from_bytes(digest.digest()[:6], 'big')}"
+    files["manifest.json"] = json.dumps(manifest).encode()
+    return files
+
+
+def companion_status(view: dict[str, Any], back: str) -> str:
+    companion = view["companion"]
+    if not companion["placed"]:
+        return ""
+    version = json.loads(companion_files()["manifest.json"])["version"]
+    installed = companion.get("version")
+    if installed == version:
+        return f'<span class="muted">Companion version {e(version)} is current.</span>'
+    message = (
+        "The companion in your vault is out of date."
+        if installed
+        else "Could not read the companion version in your vault."
+    )
+    return (
+        ui.badge("warn", "Update available")
+        + " "
+        + message
+        + " "
+        + ui.btn(
+            "Update the companion",
+            "/admin/setup/companion/place",
+            "primary",
+            {"again": "1", "back": back},
+            busy="Updating…",
+        )
+    )
 
 
 def pairing_code(code: str) -> str:
@@ -374,7 +421,7 @@ def router(wiring: Wiring) -> APIRouter:
                 pairing = {}
         carried = "community-plugin" in ctx.settings().sync.sync_configs
         if placed:
-            first = ui.badge("ok", "Done") + (
+            first = companion_status(view, "/admin/setup/companion") + (
                 ' <span class="muted">It reaches your devices with the next sync.</span>'
                 if carried
                 else ""
@@ -466,7 +513,7 @@ def router(wiring: Wiring) -> APIRouter:
                     else "It only reaches your devices if \u201cYour own Obsidian settings\u201d "
                     "is ticked under What syncs. "
                 )
-                + "Paired devices stay paired.",
+                + "Reload the companion in Obsidian. Paired devices stay paired.",
             )
         return ctx.go(target)
 
@@ -485,5 +532,5 @@ def router(wiring: Wiring) -> APIRouter:
 
 async def place_companion(ctx: Ctx, wiring: Wiring) -> None:
     """Hand the companion's files to the store, which writes them into the notes filesystem."""
-    files = {name: base64.b64encode((PLUGIN / name).read_bytes()).decode() for name in PLUGIN_FILES}
+    files = {name: base64.b64encode(data).decode() for name, data in companion_files().items()}
     await ctx.act("companion-install", {"files": files, "url": wiring.public_url})

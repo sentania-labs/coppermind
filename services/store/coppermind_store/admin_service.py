@@ -210,6 +210,16 @@ class AdminService:
     def companion_placed(self) -> bool:
         return (self.store.notes_root / PLUGIN_FOLDER / "main.js").is_file()
 
+    def companion_version(self) -> str | None:
+        try:
+            manifest = json.loads(
+                (self.store.notes_root / PLUGIN_FOLDER / "manifest.json").read_bytes()
+            )
+            version = manifest["version"]
+            return version if isinstance(version, str) and version else None
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
     async def companion_install(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Write the companion add-on where Obsidian looks for it, with this server's address."""
         files = payload["files"]
@@ -375,6 +385,7 @@ class AdminService:
             },
             "companion": {
                 "placed": await asyncio.to_thread(self.companion_placed),
+                "version": await asyncio.to_thread(self.companion_version),
                 "paired": [app for app in apps if app["companion"]],
             },
             "setup": self.setup_state(),

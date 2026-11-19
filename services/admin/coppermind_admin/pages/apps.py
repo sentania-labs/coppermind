@@ -26,7 +26,7 @@ from coppermind.settings import Wiring
 from coppermind.statefiles import RevisionConflict
 from coppermind.store_protocol import StoreError
 from coppermind_admin import ui
-from coppermind_admin.pages.home import OBSIDIAN_STEPS, pairing_code
+from coppermind_admin.pages.home import OBSIDIAN_STEPS, companion_status, pairing_code
 from coppermind_admin.shell import COOKIE, Ctx
 from coppermind_admin.ui import e, segment
 
@@ -94,6 +94,12 @@ def router(wiring: Wiring) -> APIRouter:
             items = await apps(ctx)
         except StoreError:
             return await ctx.unavailable("Connected apps", LEDE, "apps")
+        view = await ctx.view()
+        status = (
+            ui.card(companion_status(view, "/admin/apps"))
+            if view and view["companion"]["placed"]
+            else ""
+        )
         rows = ""
         for app in items:
             here = app_path(app["id"])
@@ -130,6 +136,7 @@ def router(wiring: Wiring) -> APIRouter:
             dialog = remove_dialog(target, "/admin/apps")
         body = f"""{ui.head("Connected apps", LEDE)}<div class="stack">{ctx.flash()}{made}
 <div class="actions actions--top">{ui.go("Connect an app", "/admin/apps/new", "primary")}</div>
+{status}
 {ui.card(rows or ui.empty("No apps connected", "Connect the Obsidian companion or an assistant."))}
 <p class="lat-hint">The Obsidian companion on each of your devices is listed here, and can be
 removed here or on its device's line under {ui.a("Obsidian Sync", "/admin/sync")}.</p></div>"""
