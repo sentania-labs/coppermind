@@ -269,6 +269,18 @@ touched.</p>
 {picked_note}{top}{ui.card(("" if model_only else ui.stepper(labels, step)) + body)}</div>"""
         return await ctx.page("Suggestions", page, "suggestions")
 
+    def response_choices(current: int) -> list[tuple[str, str]]:
+        choices = [
+            ("2048", "Short (2,048)"),
+            ("8192", "Standard (8,192)"),
+            ("16384", "Long (16,384)"),
+            ("32768", "For models that think first (32,768)"),
+            ("65536", "Longest (65,536)"),
+        ]
+        if str(current) not in {value for value, _ in choices}:
+            choices.append((str(current), f"Current ({current:,})"))
+        return choices
+
     async def suggestions_now(ctx: Ctx, data: dict[str, Any]) -> Response:
         service = data["service"]
         state = data["state"]
@@ -366,15 +378,17 @@ touched.</p>
                 ui.go("Change", "/admin/suggestions/summary"),
             ),
             ui.row(
-                "Maximum response tokens",
-                '<form class="act" method="post" action="/admin/suggestions/response-limit">'
-                + ui.hidden({})
-                + '<input type="number" name="max_output_tokens" '
-                + 'aria-label="Maximum response tokens" min="256" max="65536" required '
-                + f'value="{int(data.get("max_output_tokens", 2048))}"> '
-                + ui.submit("Save")
-                + "</form>"
-                + ' <span class="lat-hint">For suggestions and meeting summaries.</span>',
+                "Longest answer the model may write",
+                '<span id="answer-length"></span>'
+                + ui.quick_select(
+                    "/admin/suggestions/response-limit",
+                    "max_output_tokens",
+                    "Longest answer the model may write",
+                    response_choices(data["max_output_tokens"]),
+                    str(data["max_output_tokens"]),
+                )
+                + ' <span class="lat-hint">Raise this if summaries stop early or fail '
+                "on a thinking model.</span>",
             ),
             ui.row(
                 "Longest wait for an answer",
@@ -430,7 +444,7 @@ touched.</p>
                 + (
                     plural(data["waiting"], "is", "are") + " waiting."
                     if data["waiting"]
-                    else plural(week["failed"], "failed") + "."
+                    else f"{week['failed']:,} failed."
                     if week["failed"]
                     else "None failed."
                 )

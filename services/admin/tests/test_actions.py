@@ -1212,8 +1212,50 @@ def test_response_limit_is_visible_and_saved(admin):
     store.views["suggestions"]["max_output_tokens"] = 16384
     page = client.get("/admin/suggestions").text
     assert 'name="max_output_tokens"' in page
-    assert 'value="16384"' in page
+    assert 'value="16384" selected' in page
+    assert 'aria-label="Longest answer the model may write" data-auto' in page
+    assert "Long (16,384)" in page
+    assert "Longest (65,536)" in page
+    assert "3 failed." in page
     store.answers["suggestions-response-limit"] = {"max_output_tokens": 65536}
     response = post(client, "/admin/suggestions/response-limit", {"max_output_tokens": "65536"})
     assert store.asked("suggestions-response-limit") == [{"max_output_tokens": "65536"}]
     assert "Saved." in follow(client, response)
+
+
+def test_response_limit_keeps_an_existing_custom_value(admin):
+    client, _, store = admin
+    store.views["suggestions"]["max_output_tokens"] = 12345
+    page = client.get("/admin/suggestions").text
+    assert 'value="12345" selected' in page
+    assert "Current (12,345)" in page
+
+
+def test_cutoff_error_links_to_suggestion_setting(admin):
+    client, _, store = admin
+    item = store.views["incoming-item"]
+    item["state"] = "failed"
+    item["error"] = (
+        "The model ran out of response space. On the Suggestions page in Admin, raise "
+        "Longest answer the model may write. <unsafe>"
+    )
+    page = client.get("/admin/incoming/" + item["id"]).text
+    assert 'href="/admin/suggestions#answer-length">Longest answer the model may write</a>' in page
+    assert "&lt;unsafe&gt;" in page
+    assert "<unsafe>" not in page
+
+
+def test_failed_suggestions_show_link_on_note_review(admin):
+    client, _, store = admin
+    store.views["lifecycle"]["suggestion_error"] = (
+        "On the Suggestions page in Admin, raise Longest answer the model may write."
+    )
+    page = client.get(REVIEW).text
+    assert 'href="/admin/suggestions#answer-length">Longest answer the model may write</a>' in page
+
+
+def test_existing_cutoff_error_links_to_current_setting(admin):
+    client, _, store = admin
+    store.views["lifecycle"]["suggestion_error"] = "Raise Maximum response tokens."
+    page = client.get(REVIEW).text
+    assert 'href="/admin/suggestions#answer-length">Longest answer the model may write</a>' in page

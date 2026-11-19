@@ -676,8 +676,9 @@ class ModelProvider:
         if not finished:
             cut_short = stopped in {"length", "max_tokens"}
             raise ProviderError(
-                "The model ran out of response space before it finished its answer. Raise "
-                "Maximum response tokens, or use a model that spends less on thinking first."
+                "The model ran out of response space before it finished its answer. On the "
+                "Suggestions page in Admin, raise Longest answer the model may write, or "
+                "use a model that spends less on thinking first."
                 if cut_short
                 else "The model stopped before it finished its answer.",
                 "provider-incomplete",
@@ -688,8 +689,8 @@ class ModelProvider:
         if not output.strip():
             raise ProviderError(
                 "The model sent back an empty answer. A model that thinks first may have used "
-                "all of its response tokens before answering; raise Maximum response tokens "
-                "or use a model that thinks less.",
+                "all of its response space before answering. On the Suggestions page in Admin, "
+                "raise Longest answer the model may write or use a model that thinks less.",
                 "provider-empty-reply",
             )
         try:

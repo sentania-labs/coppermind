@@ -161,7 +161,7 @@ attempt limit before processing. Interrupted requests consume an attempt, even
 when their outcome is unknown; restarting the worker never resets the budget.
 Unexpected provider-response errors also consume the recorded attempt. An explicit
 retry may repeat a previously billed request.
-The response limit (**Maximum response tokens** on Admin's Suggestions page, 2,048 by default,
+The response limit (**Longest answer the model may write** on Admin's Suggestions page, 2,048 by default,
 256 to 65,536) covers a thinking model's reasoning as well as its answer. Calls ask the model
 for low reasoning effort where the provider accepts it. A reply cut off by that limit is not
 retried automatically, because the same limit would cut it off again; raise the limit and ask
