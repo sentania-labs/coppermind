@@ -178,6 +178,13 @@ def a(label: str, to: str) -> str:
     return f'<a href="{e(to)}">{label}</a>'
 
 
+def linked_answer_limit_error(text: str) -> str:
+    """Escape the provider message and link its fixed setting name inside Admin."""
+    label = "Longest answer the model may write"
+    link = a(label, "/admin/suggestions#answer-length")
+    return e(text).replace(label, link).replace("Maximum response tokens", link)
+
+
 def banner(kind: str, inner: str, *, fresh: bool = False) -> str:
     role = "alert" if kind == "bad" else "status"
     mark = " data-fresh" if fresh else ""

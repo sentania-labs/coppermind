@@ -37,6 +37,7 @@ from coppermind_store.internal_api import router as internal_router
 from coppermind_store.notes import LocalStore
 from coppermind_store.purge import scan_problems
 from coppermind_store.reconciler import ReconcilerStatus, run_reconciler
+from coppermind_store.request_timing import RequestTiming
 
 SERVICE = "coppermind-store"
 
@@ -119,6 +120,8 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         ),
         lifespan=lifespan,
     )
+
+    app.add_middleware(RequestTiming)
 
     # Registered on Starlette's HTTPException rather than FastAPI's subclass so
     # that routing 404s and 405s, which Starlette raises directly, answer in the
