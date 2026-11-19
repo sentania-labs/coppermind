@@ -13,6 +13,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import re
 import secrets
 import time
 from datetime import UTC, datetime, timedelta
@@ -28,6 +29,7 @@ from coppermind.api_keys import (
     scopes_for,
 )
 from coppermind.atomicio import atomic_write_bytes, atomic_write_text
+from coppermind.companion import fingerprint
 from coppermind.context_config import ContextConfig
 from coppermind.naming import sanitize_folder
 from coppermind.settings import ProductSettings
@@ -47,7 +49,7 @@ if TYPE_CHECKING:
 
 SYNC_TEST_NAME = "Coppermind sync test.md"
 PLUGIN_FOLDER = ".obsidian/plugins/coppermind-review"
-PLUGIN_FILES = ("main.js", "manifest.json", "styles.css")
+PLUGIN_FILES = ("main.js", "styles.css", "manifest.json")
 PAIRING_MINUTES = 10
 # Wrong guesses one client may make at a pairing code, and all clients together, before the
 # code stops working for them. A six digit code guessed a hundred times is found one time
@@ -210,6 +212,27 @@ class AdminService:
 
     def companion_placed(self) -> bool:
         return (self.store.notes_root / PLUGIN_FOLDER / "main.js").is_file()
+
+    def companion_version(self) -> str | None:
+        try:
+            manifest = json.loads(
+                (self.store.notes_root / PLUGIN_FOLDER / "manifest.json").read_bytes()
+            )
+            version = manifest["version"]
+            return (
+                version
+                if isinstance(version, str) and re.fullmatch(r"\d{1,4}\.\d{1,4}\.\d{1,4}", version)
+                else None
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def companion_fingerprint(self) -> str | None:
+        try:
+            folder = self.store.notes_root / PLUGIN_FOLDER
+            return fingerprint({name: (folder / name).read_bytes() for name in PLUGIN_FILES})
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
 
     async def companion_install(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Write the companion add-on where Obsidian looks for it, with this server's address."""
@@ -394,6 +417,10 @@ class AdminService:
                     "placed": await timing.read(
                         "companion_placed",
                         timing.to_thread("companion_placed", self.companion_placed),
+                    ),
+                    "version": await timing.to_thread("companion_version", self.companion_version),
+                    "fingerprint": await timing.to_thread(
+                        "companion_fingerprint", self.companion_fingerprint
                     ),
                     "paired": [app for app in apps if app["companion"]],
                 },

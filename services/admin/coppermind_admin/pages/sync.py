@@ -25,6 +25,7 @@ from coppermind.statefiles import RevisionConflict
 from coppermind.store_protocol import StoreError
 from coppermind_admin import model, ui
 from coppermind_admin.pages.common import setup_strip
+from coppermind_admin.pages.home import companion_needs_update
 from coppermind_admin.pages.settings import folder_dialog
 from coppermind_admin.shell import Ctx, not_saved
 from coppermind_admin.ui import e, segment
@@ -464,7 +465,14 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
         devices = ui.card(
             f'<p class="muted">Phones and computers that open the vault "{vault}". A device '
             f"shows here the first time it changes a note.</p>{listed}"
-            '<div class="actions">'
+            + (
+                "<p>Update available. "
+                + ui.go("Update the companion", "/admin/setup/companion")
+                + "</p>"
+                if companion_needs_update(view)
+                else ""
+            )
+            + '<div class="actions">'
             + ui.btn(
                 "Pair the companion on another device",
                 "/admin/apps/pair/code",

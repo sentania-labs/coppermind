@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import json
+import os
+import re
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
+from coppermind.companion import fingerprint
 from coppermind.settings import Wiring
 from coppermind.store_protocol import StoreError
 from coppermind_admin import model, ui
@@ -32,6 +36,56 @@ OBSIDIAN_STEPS = (
     'If "Coppermind" is not in the list yet, open Settings, then Sync, switch on "Installed '
     'community plugins", and wait a minute.'
 )
+
+
+def companion_files() -> dict[str, bytes]:
+    files = {name: (PLUGIN / name).read_bytes() for name in PLUGIN_FILES}
+    manifest = json.loads(files["manifest.json"])
+    release = os.environ.get("COPPERMIND_BUILD_VERSION", "")
+    match = re.fullmatch(r"v?(\d+\.\d+\.\d+)", release)
+    if match:
+        manifest["version"] = match.group(1)
+    files["manifest.json"] = json.dumps(manifest).encode()
+    return files
+
+
+def companion_needs_update(view: dict[str, Any]) -> bool:
+    companion = view["companion"]
+    return bool(
+        companion["placed"]
+        and (
+            not companion.get("version")
+            or companion.get("fingerprint") != fingerprint(companion_files())
+        )
+    )
+
+
+def companion_status(view: dict[str, Any], back: str) -> str:
+    companion = view["companion"]
+    if not companion["placed"]:
+        return ""
+    installed = companion.get("version")
+    version = json.loads(companion_files()["manifest.json"])["version"]
+    if not companion_needs_update(view):
+        return f'<span class="muted">Companion version {e(installed)} is current.</span>'
+    message = (
+        f"The companion in your vault is out of date. You have version {e(installed)}. "
+        if installed
+        else "Could not read the companion version in your vault. "
+    ) + f"The update installs version {e(version)}."
+    return (
+        ui.badge("warn", "Update available")
+        + " "
+        + message
+        + " "
+        + ui.btn(
+            "Update the companion",
+            "/admin/setup/companion/place",
+            "primary",
+            {"again": "1", "back": back},
+            busy="Updating…",
+        )
+    )
 
 
 def pairing_code(code: str) -> str:
@@ -79,6 +133,9 @@ def tiles(view: dict[str, Any], ctx: Ctx) -> str:
             else f"{len(paired)} devices paired",
         )
         companion_to = "/admin/sync"
+    if companion_needs_update(view):
+        companion = ("warn", "Update available", "Update the companion")
+        companion_to = "/admin/setup/companion"
     sugg = view["sugg"]
     sugg_tile = {
         "none": ("off", "Off", "Optional"),
@@ -374,7 +431,7 @@ def router(wiring: Wiring) -> APIRouter:
                 pairing = {}
         carried = "community-plugin" in ctx.settings().sync.sync_configs
         if placed:
-            first = ui.badge("ok", "Done") + (
+            first = companion_status(view, "/admin/setup/companion") + (
                 ' <span class="muted">It reaches your devices with the next sync.</span>'
                 if carried
                 else ""
@@ -466,8 +523,10 @@ def router(wiring: Wiring) -> APIRouter:
                     else "It only reaches your devices if \u201cYour own Obsidian settings\u201d "
                     "is ticked under What syncs. "
                 )
-                + "Paired devices stay paired.",
+                + "Reload the companion in Obsidian. Paired devices stay paired.",
             )
+        else:
+            ctx.say("ok", "The companion is in your vault. Turn it on in Obsidian next.")
         return ctx.go(target)
 
     @routes.post("/admin/setup/companion/code", include_in_schema=False)
@@ -485,5 +544,5 @@ def router(wiring: Wiring) -> APIRouter:
 
 async def place_companion(ctx: Ctx, wiring: Wiring) -> None:
     """Hand the companion's files to the store, which writes them into the notes filesystem."""
-    files = {name: base64.b64encode((PLUGIN / name).read_bytes()).decode() for name in PLUGIN_FILES}
+    files = {name: base64.b64encode(data).decode() for name, data in companion_files().items()}
     await ctx.act("companion-install", {"files": files, "url": wiring.public_url})
