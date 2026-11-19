@@ -132,7 +132,7 @@ def why(item: dict[str, Any], ctx: Ctx, transcription: str) -> str:
                     else "Waiting for the transcription service."
                 )
             return "Waiting for its turn. Recordings are written up one at a time."
-        return e(item.get("error") or "It could not be written up.")
+        return ui.linked_answer_limit_error(item.get("error") or "It could not be written up.")
     if item["kind"] == "calendar":
         if item["state"] == "done":
             return (
@@ -819,7 +819,12 @@ def router(wiring: Wiring) -> APIRouter:
                 )
             )
         elif item["state"] == "failed":
-            events.append(("Most recent try", e(item["error"]) + " Coppermind stopped trying."))
+            events.append(
+                (
+                    "Most recent try",
+                    ui.linked_answer_limit_error(item["error"]) + " Coppermind stopped trying.",
+                )
+            )
         if ctx.q("ask") == "delete":
             dialog = ui.dialog(
                 f'Delete the recording "{e(item["title"])}"?',

@@ -1302,6 +1302,11 @@ name="csrf" value="{{csrf}}">Save</button>
             )
         )
         problem = ui.banner("warn", e(data["review_problem"])) if data.get("review_problem") else ""
+        suggestion_error = (
+            ui.banner("warn", ui.linked_answer_limit_error(data["suggestion_error"]))
+            if data.get("suggestion_error")
+            else ""
+        )
         summary_part, summary_notice, refresh = summary_card(
             await note_summary(ctx, identity), values, here
         )
@@ -1316,7 +1321,7 @@ name="csrf" value="{{csrf}}">Save</button>
             "Nothing is filed until you press the button at the bottom."
         )
         body = f"""{ui.head(f'Review "{e(note["title"])}"', lede, (here, "the note"))}
-<div class="stack">{ctx.flash()}{problem}{summary_notice}
+<div class="stack">{ctx.flash()}{problem}{suggestion_error}{summary_notice}
 <form method="post" action="{here}/review" class="stack">
 {ui.hidden({"if_match": note["content_hash"]})}{unsure_card}{live_summary}
 {
