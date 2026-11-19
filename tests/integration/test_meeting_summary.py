@@ -133,7 +133,9 @@ async def setup_recording(store, standin, *, limit=200000, failure=None, recordi
             if failure == "filtered":
                 return httpx.Response(
                     200,
-                    json={"choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]},
+                    json={
+                        "choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]
+                    },
                 )
             if failure == "incomplete":
                 return httpx.Response(

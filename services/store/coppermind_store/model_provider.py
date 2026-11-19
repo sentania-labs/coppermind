@@ -667,7 +667,7 @@ class ModelProvider:
             for k, v in (raw if isinstance(raw, dict) else {}).items()
             if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)
         }
-        # Plain JSON replies (not streamed) nest the reasoning count under completion_tokens_details.
+        # Plain JSON replies (not streamed) nest the reasoning count in completion_tokens_details.
         if isinstance(raw, dict) and isinstance(raw.get("completion_tokens_details"), dict):
             reasoning = raw["completion_tokens_details"].get("reasoning_tokens")
             if isinstance(reasoning, int) and not isinstance(reasoning, bool):
