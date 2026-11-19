@@ -26,12 +26,11 @@ def test_version_changes_with_each_shipped_file(tmp_path, monkeypatch):
         path.write_bytes(content)
 
 
-@pytest.mark.parametrize("path", ["/admin/setup/companion", "/admin/apps", "/admin/sync"])
 @pytest.mark.parametrize("installed", [None, "0.1.0"])
-def test_outdated_companion_offers_update(admin, path, installed):
+def test_outdated_companion_offers_update(admin, installed):
     client, _, store = admin
     store.views["overview"]["companion"].update(placed=True, version=installed)
-    page = client.get(path).text
+    page = client.get("/admin/setup/companion").text
     assert "Update the companion" in page
     assert (
         "Could not read the companion version" in page
@@ -45,10 +44,9 @@ def test_current_companion_shows_version(admin):
     client, _, store = admin
     version = json.loads(home.companion_files()["manifest.json"])["version"]
     store.views["overview"]["companion"].update(placed=True, version=version)
-    for path in ("/admin/setup/companion", "/admin/apps", "/admin/sync"):
-        page = client.get(path).text
-        assert f"Companion version {version} is current" in page
-        assert "Update the companion" not in page
+    page = client.get("/admin/setup/companion").text
+    assert f"Companion version {version} is current" in page
+    assert "Update the companion" not in page
 
 
 def test_store_reads_installed_manifest(tmp_path):

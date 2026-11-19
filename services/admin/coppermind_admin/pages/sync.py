@@ -25,7 +25,6 @@ from coppermind.statefiles import RevisionConflict
 from coppermind.store_protocol import StoreError
 from coppermind_admin import model, ui
 from coppermind_admin.pages.common import setup_strip
-from coppermind_admin.pages.home import companion_files, companion_status
 from coppermind_admin.pages.settings import folder_dialog
 from coppermind_admin.shell import Ctx, not_saved
 from coppermind_admin.ui import e, segment
@@ -465,26 +464,19 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
         devices = ui.card(
             f'<p class="muted">Phones and computers that open the vault "{vault}". A device '
             f"shows here the first time it changes a note.</p>{listed}"
-            + companion_status(view, "/admin/sync")
-            + '<div class="actions">'
+            '<div class="actions">'
             + ui.btn(
                 "Pair the companion on another device",
                 "/admin/apps/pair/code",
                 "",
                 {"from": "sync"},
             )
-            + (
-                ui.btn(
-                    "Put the companion in my vault again",
-                    "/admin/setup/companion/place",
-                    "",
-                    {"again": "1", "back": "/admin/sync"},
-                    busy="Adding…",
-                )
-                if not view["companion"]["placed"]
-                or view["companion"].get("version")
-                == json.loads(companion_files()["manifest.json"])["version"]
-                else ""
+            + ui.btn(
+                "Put the companion in my vault again",
+                "/admin/setup/companion/place",
+                "",
+                {"again": "1", "back": "/admin/sync"},
+                busy="Adding…",
             )
             + '</div><p class="lat-hint" style="margin-top:8px">To add a device, install '
             "Obsidian on it and open the vault. A lost or sold device: unpair its companion "
