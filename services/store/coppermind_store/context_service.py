@@ -280,6 +280,7 @@ class ContextService:
                 "automatic_after",
                 "response_format",
                 "wait_s",
+                "job_limit_s",
                 "summary_max_input_chars",
                 "summary_timeout_s",
                 # New directions are for the next summary. They never restart one made.
