@@ -232,7 +232,7 @@ the service is sent its bytes.
    has reviewed it.
 
 The note's source is the transcript (`transcript.txt` with the speaker labels as the
-service gave them, `Speaker 1` and so on, and `transcript.json` with timings), and the
+service gave them, `Speaker 1` and so on, prefixed `Part 2:` and so on when a long recording was split, and `transcript.json` with timings), and the
 recording is a stored artifact the note cites until the note is reviewed and filed, when
 the audio is removed (see [Recordings](api.md#recordings-audio-on-its-own)). The
 summary is proposed from the complete transcript by the configured model when enrichment
