@@ -1098,6 +1098,7 @@ class Recordings:
                 "speakers": [],
             }
             usage = {"model": assignment.model}
+            silence: ProviderError | None = None
             with tempfile.TemporaryDirectory(prefix="coppermind-audio-") as directory:
                 for index in range(count):
                     start = index * part_length
@@ -1120,6 +1121,9 @@ class Recordings:
                             **options,
                         )
                     except ProviderError as exc:
+                        if exc.rule in NO_SPEECH_RULES:
+                            silence = exc
+                            continue
                         raise ProviderError(
                             f"Part {index + 1} of {count} failed: {exc}",
                             exc.rule,
@@ -1152,6 +1156,8 @@ class Recordings:
                     for key, value in part_usage.items():
                         if isinstance(value, int) and not isinstance(value, bool):
                             usage[key] = usage.get(key, 0) + value
+            if not transcript["segments"] and silence is not None:
+                raise silence
         pending = transcript.pop("speakers", [])
         async with self.context.lock:
             if voice_enabled and VoiceStore(self.context).recognition_enabled():
@@ -1265,6 +1271,11 @@ NO_AUTOMATIC_RETRY = frozenset(
         "note-rejected",
         "connection-missing",
     }
+)
+
+
+NO_SPEECH_RULES = frozenset(
+    {"transcription-no_speech", "transcript-empty", "transcript-no-speakers"}
 )
 
 

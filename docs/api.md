@@ -365,7 +365,9 @@ Coppermind probes the audio and cuts recordings longer than `assignments.transcr
 (default 14,400 seconds) into FLAC parts at fixed boundaries, with one second of headroom.
 Each part is transcribed in order, and the results form one transcript and note with
 timestamps offset to the original recording. Speaker labels are distinct per part; voice
-recognition can subsequently identify known speakers. A failed part names its number.
+recognition can subsequently identify known speakers. A part with no speech adds nothing and
+the recording succeeds if any part has speech; if none does it fails as a silent recording
+does. Any other failed part names its number.
 If the audio cannot be probed, the service handles it as before unless its supplied
 duration already shows that splitting is needed.
 

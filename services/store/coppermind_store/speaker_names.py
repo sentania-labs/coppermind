@@ -6,7 +6,6 @@ import copy
 import re
 from typing import Any
 
-
 _LABEL = re.compile(r"(?:Part ([1-9][0-9]*): )?(?:Speaker|Unknown voice) ([1-9][0-9]*)")
 
 
