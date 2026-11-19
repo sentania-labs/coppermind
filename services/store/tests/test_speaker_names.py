@@ -1,5 +1,5 @@
 import pytest
-from coppermind_store.speaker_names import rename_speakers, speaker_labels
+from coppermind_store.speaker_names import is_unrecognised, rename_speakers, speaker_labels
 
 
 def test_renaming_only_changes_matching_segment_labels():
@@ -328,3 +328,18 @@ async def test_only_time_matching_meeting_supplies_speakers():
     assert {c["id"][: len("contact:afternoon")] for c in data["candidates"]} == {
         "contact:afternoon"
     }
+
+
+@pytest.mark.parametrize(
+    "label, expected",
+    [
+        ("Speaker 3", True),
+        ("Part 2: Speaker 3", True),
+        ("Unknown voice 3", False),
+        ("Part 2: Unknown voice 3", False),
+        ("Alex Morgan", False),
+        ("Part 2: Alex Morgan", False),
+    ],
+)
+def test_only_labels_the_service_gave_count_as_unrecognised(label, expected):
+    assert is_unrecognised(label) is expected
