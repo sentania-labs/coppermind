@@ -51,8 +51,54 @@ async def duration(path: Path) -> float:
         ) from exc
 
 
-async def cut(source: Path, target: Path, start: float, length: float) -> None:
-    # Decode at the boundary so the timestamps and cuts do not depend on codec keyframes.
+# Containers accepted by the transcription API and supported by ffmpeg stream copy.
+_COPY_FORMATS = {
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".wav": "audio/wav",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".webm": "audio/webm",
+    ".aac": "audio/aac",
+}
+
+
+async def cut(
+    source: Path, target: Path, start: float, length: float, filename: str
+) -> tuple[Path, str]:
+    """Copy compressed audio where its container permits it, otherwise encode FLAC."""
+    suffix = Path(filename).suffix.lower()
+    if suffix in _COPY_FORMATS:
+        part = target.with_suffix(suffix)
+        try:
+            await _run(
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-ss",
+                str(start),
+                "-i",
+                str(source),
+                "-t",
+                str(length),
+                "-map",
+                "0:a:0",
+                "-vn",
+                "-c:a",
+                "copy",
+                "-y",
+                str(part),
+            )
+            # Packet boundaries can add duration. Leave a margin under the job limit.
+            measured = await duration(part)
+            if measured <= length + 0.9:
+                return part, _COPY_FORMATS[suffix]
+        except ProviderError:
+            pass
+        part.unlink(missing_ok=True)
+    part = target.with_suffix(".flac")
     await _run(
         "ffmpeg",
         "-nostdin",
@@ -68,5 +114,6 @@ async def cut(source: Path, target: Path, start: float, length: float) -> None:
         "-c:a",
         "flac",
         "-y",
-        str(target),
+        str(part),
     )
+    return part, "audio/flac"

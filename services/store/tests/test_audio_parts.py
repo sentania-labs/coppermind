@@ -203,3 +203,65 @@ async def test_a_recording_silent_in_every_part_fails_as_a_silent_one_does(
     assert caught.value.rule == rule and not str(caught.value).startswith("Part ")
     assert transcribe.await_count == 3
     assert not job.transcribed
+
+
+async def test_speech_without_speaker_labels_fails_the_part(tmp_path, monkeypatch):
+    worker, job, transcribe = await transcribe_parts(
+        tmp_path,
+        monkeypatch,
+        9,
+        [speech(), ProviderError("speaker labels missing", "transcript-no-speakers"), speech()],
+    )
+    with pytest.raises(ProviderError, match="Part 2 of 3 failed") as caught:
+        await worker.transcribe(job)
+    assert caught.value.rule == "transcript-no-speakers"
+    assert transcribe.await_count == 2
+    assert not job.transcribed
+
+
+async def test_compressed_stereo_part_retains_codec_and_size(tmp_path):
+    source = tmp_path / "source.mp3"
+    await audio_parts._run(
+        "ffmpeg",
+        "-nostdin",
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "anoisesrc=d=20:r=44100",
+        "-ac",
+        "2",
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        "128k",
+        "-y",
+        str(source),
+    )
+    part, mime = await audio_parts.cut(source, tmp_path / "part-1", 4, 8, source.name)
+    assert mime == "audio/mpeg" and part.suffix == ".mp3"
+    assert part.stat().st_size < source.stat().st_size * 0.5
+    assert 7.9 <= await audio_parts.duration(part) < 9
+    probe = await audio_parts._run(
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=codec_name,channels,sample_rate",
+        "-of",
+        "csv=p=0",
+        str(part),
+    )
+    assert probe.strip() == b"mp3,44100,2"
+
+
+async def test_unsupported_copy_container_falls_back_to_flac(tmp_path):
+    source = tmp_path / "source.wav"
+    make_audio(source, 6)
+    part, mime = await audio_parts.cut(source, tmp_path / "part", 0, 4, "source.unknown")
+    assert mime == "audio/flac"
+    assert part.suffix == ".flac"
+    assert await audio_parts.duration(part) == pytest.approx(4)

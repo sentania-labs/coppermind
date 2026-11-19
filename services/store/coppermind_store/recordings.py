@@ -1103,16 +1103,18 @@ class Recordings:
                 for index in range(count):
                     start = index * part_length
                     length = min(part_length, actual_duration - start)
-                    part = Path(directory) / f"part-{index + 1}.flac"
+                    part = Path(directory) / f"part-{index + 1}"
                     try:
-                        await audio_parts.cut(path, part, start, length)
+                        part, part_mime = await audio_parts.cut(
+                            path, part, start, length, job.filename
+                        )
                         result, part_usage = await self.context.provider.transcribe(
                             connection,
                             self.context.key(connection.id),
                             assignment,
                             part,
                             filename=part.name,
-                            mime_type="audio/flac",
+                            mime_type=part_mime,
                             size_bytes=part.stat().st_size,
                             job_id=hashlib.sha256(
                                 f"{job.id}:{part_length}:{index}".encode()
@@ -1274,9 +1276,7 @@ NO_AUTOMATIC_RETRY = frozenset(
 )
 
 
-NO_SPEECH_RULES = frozenset(
-    {"transcription-no_speech", "transcript-empty", "transcript-no-speakers"}
-)
+NO_SPEECH_RULES = frozenset({"transcription-no_speech", "transcript-empty"})
 
 
 def repeats_only(rule: str) -> bool:

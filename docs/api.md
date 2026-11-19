@@ -362,7 +362,8 @@ again, and if the service has lost it the recording is sent again under the same
 start their sequence again after a restart, using a stable idempotency key for each part.
 
 Coppermind probes the audio and cuts recordings longer than `assignments.transcription.job_limit_s`
-(default 14,400 seconds) into FLAC parts at fixed boundaries, with one second of headroom.
+(default 14,400 seconds) into parts at fixed boundaries, with one second of headroom. It copies the audio stream
+into its original container when possible and otherwise encodes the part as FLAC.
 Each part is transcribed in order, and the results form one transcript and note with
 timestamps offset to the original recording. Speaker labels are distinct per part; voice
 recognition can subsequently identify known speakers. A part with no speech adds nothing and
