@@ -100,7 +100,7 @@ class FeatureAssignment(ContextModel):
     # How long the provider may stay silent (before the first byte, or mid-reply) before the
     # call is given up. It is not a cap on total time: a streamed reply may run longer.
     timeout_s: int = Field(default=120, ge=5, le=1800)
-    max_output_tokens: int = Field(default=2048, ge=256, le=8192)
+    max_output_tokens: int = Field(default=2048, ge=256, le=65536)
     max_input_chars: int = Field(default=60000, ge=2000, le=200000)
     # Recording summaries read the complete transcript in a separate call.
     summary_max_input_chars: int = Field(default=200000, ge=2000, le=2000000)

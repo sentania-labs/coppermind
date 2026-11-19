@@ -40,6 +40,7 @@ from coppermind_store.admin_notes import AdminNotes
 from coppermind_store.admin_people import AdminPeople
 from coppermind_store.admin_storage import AdminStorage
 from coppermind_store.ai_services import Refused
+from coppermind_store.request_timing import SlowOperation
 
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
@@ -333,56 +334,79 @@ class AdminService:
     # -- the overview every page reads ---------------------------------------------------
 
     async def overview(self, payload: dict[str, Any]) -> dict[str, Any]:
-        problems = await self.store.get_problems()
-        services = self.context.services.listing()
-        sugg = await self.features.suggestions()
-        trans = await self.features.transcription()
-        search = await self.features.search()
-        incoming = await self.incoming.listing()
-        calendar = await self.calendar.attention()
-        files = await asyncio.to_thread(self.calendar._files)
-        apps = self.apps()
-        waiting = await self.notes.waiting()
-        cleanup = await self.storage.cleanup_count()
-        return {
-            "sync": self.sync_status(),
-            "services": services,
-            "sugg": {key: sugg[key] for key in ("state", "service", "model", "waiting", "week")},
-            "trans": {key: trans[key] for key in ("state", "service", "week")},
-            "search": {key: search[key] for key in ("state", "service")},
-            "notes": {
-                "stuck": await self.notes.stuck(problems),
-                "unsure": await self.notes.unsure(),
-                "waiting": len(waiting),
-            },
-            "incoming": {
-                "failed": self.incoming.failed(incoming),
-                "total": len(incoming),
-            },
-            "calendar": {
-                **calendar,
-                "files": len(files),
-                "events": sum(item["adds"] for item in files),
-            },
-            "storage": {
-                "interrupted": await self.storage.interrupted(),
-                "cleanup": cleanup["count"],
-                "damaged": [
-                    {"reference": problem.reference, "reason": problem.reason}
-                    for problem in problems
-                    if problem.kind in {"artifact", "damaged_source"}
-                ],
-            },
-            "companion": {
-                "placed": await asyncio.to_thread(self.companion_placed),
-                "paired": [app for app in apps if app["companion"]],
-            },
-            "setup": self.setup_state(),
-            "notices": self._notices(problems),
-            "recent": await self.recent(),
-            "drop_folder": self.context.config().dropbox_folder,
-            "timezone": self.store.control.settings().general.timezone,
-        }
+        with SlowOperation("admin.overview") as timing:
+            with timing.step("problems"):
+                problems = await self.store.get_problems()
+            with timing.step("services"):
+                services = self.context.services.listing()
+            with timing.step("sugg"):
+                sugg = await self.features.suggestions()
+            with timing.step("trans"):
+                trans = await self.features.transcription()
+            with timing.step("search"):
+                search = await self.features.search()
+            with timing.step("incoming"):
+                incoming = await self.incoming.listing()
+            with timing.step("calendar"):
+                calendar = await self.calendar.attention()
+            with timing.step("files"):
+                files = await timing.to_thread("calendar_files", self.calendar._files)
+            with timing.step("apps"):
+                apps = self.apps()
+            with timing.step("waiting"):
+                waiting = await self.notes.waiting()
+            with timing.step("cleanup"):
+                cleanup = await self.storage.cleanup_count()
+            return {
+                "sync": timing.call("sync", self.sync_status),
+                "services": services,
+                "sugg": {
+                    key: sugg[key] for key in ("state", "service", "model", "waiting", "week")
+                },
+                "trans": {key: trans[key] for key in ("state", "service", "week")},
+                "search": {key: search[key] for key in ("state", "service")},
+                "notes": {
+                    "stuck": await timing.read("stuck", self.notes.stuck(problems)),
+                    "unsure": await timing.read("unsure", self.notes.unsure()),
+                    "waiting": len(waiting),
+                },
+                "incoming": {
+                    "failed": timing.call(
+                        "incoming_failed", lambda: self.incoming.failed(incoming)
+                    ),
+                    "total": len(incoming),
+                },
+                "calendar": {
+                    **calendar,
+                    "files": len(files),
+                    "events": sum(item["adds"] for item in files),
+                },
+                "storage": {
+                    "interrupted": await timing.read("interrupted", self.storage.interrupted()),
+                    "cleanup": cleanup["count"],
+                    "damaged": [
+                        {"reference": problem.reference, "reason": problem.reason}
+                        for problem in problems
+                        if problem.kind in {"artifact", "damaged_source"}
+                    ],
+                },
+                "companion": {
+                    "placed": await timing.read(
+                        "companion_placed",
+                        timing.to_thread("companion_placed", self.companion_placed),
+                    ),
+                    "paired": [app for app in apps if app["companion"]],
+                },
+                "setup": timing.call("setup", self.setup_state),
+                "notices": timing.call("notices", lambda: self._notices(problems)),
+                "recent": await timing.read("recent", self.recent()),
+                "drop_folder": timing.call(
+                    "drop_folder", lambda: self.context.config().dropbox_folder
+                ),
+                "timezone": timing.call(
+                    "timezone", lambda: self.store.control.settings().general.timezone
+                ),
+            }
 
     def _notices(self, problems: list[Any]) -> list[dict[str, Any]]:
         dismissed = set(self.context.read("admin-dismissed", []))
@@ -836,6 +860,7 @@ class AdminService:
             "suggestions-save": features.suggestions_save,
             "suggestions-pause": features.suggestions_pause,
             "suggestions-wait": features.suggestions_wait,
+            "suggestions-response-limit": features.suggestions_response_limit,
             "suggestions-fill": features.suggestions_fill,
             "suggestions-tick": features.suggestions_tick,
             "suggestions-older": features.suggestions_older,

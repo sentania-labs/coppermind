@@ -12,11 +12,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import quote, unquote
+from uuid import uuid4
 
 import httpx
 from pydantic import TypeAdapter
 
 from coppermind.api_keys import ApiKeySet
+from coppermind.logging import get_logger
 from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
 from coppermind.store_protocol import (
     ArtifactBytes,
@@ -90,6 +92,43 @@ from coppermind.store_protocol import (
 )
 
 INTERNAL_PREFIX = "/internal/v1"
+log = get_logger("coppermind-store-client")
+
+
+async def _request_identity(request: httpx.Request) -> None:
+    request.headers["X-Request-ID"] = uuid4().hex
+
+
+def _unavailable(exc: httpx.HTTPError) -> StoreUnavailable:
+    if isinstance(exc, httpx.TimeoutException):
+        phase = next(
+            (
+                name
+                for kind, name in (
+                    (httpx.ConnectTimeout, "connect"),
+                    (httpx.PoolTimeout, "pool"),
+                    (httpx.ReadTimeout, "read"),
+                    (httpx.WriteTimeout, "write"),
+                )
+                if isinstance(exc, kind)
+            ),
+            "unknown",
+        )
+        fields: dict[str, Any] = {"phase": phase}
+        try:
+            request = exc.request
+        except RuntimeError:
+            pass
+        else:
+            fields.update(
+                method=request.method,
+                path=request.url.path,
+                request_id=request.headers.get("X-Request-ID", ""),
+            )
+        log.warning("store request timed out", **fields)
+    return StoreUnavailable(str(exc))
+
+
 PURGE_TIMEOUT_S = 600.0
 MODEL_TEST_TIMEOUT_S = 900.0
 # One service test tries each model in turn and sends a sample recording.
@@ -139,6 +178,7 @@ class HttpStoreClient:
             headers={"Authorization": f"Bearer {token}"},
             timeout=timeout,
             transport=transport,
+            event_hooks={"request": [_request_identity]},
         )
 
     async def context_action(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -422,12 +462,12 @@ class HttpStoreClient:
                 stream=True,
             )
         except httpx.HTTPError as exc:
-            raise StoreUnavailable(str(exc)) from exc
+            raise _unavailable(exc) from exc
         if not response.is_success:
             try:
                 await response.aread()
             except httpx.HTTPError as exc:
-                raise StoreUnavailable(str(exc)) from exc
+                raise _unavailable(exc) from exc
             finally:
                 await response.aclose()
             raise _as_typed_error(response)
@@ -511,7 +551,7 @@ class HttpStoreClient:
         try:
             response = await self._client.request(method, url, **kwargs)  # type: ignore[arg-type]
         except httpx.HTTPError as exc:
-            raise StoreUnavailable(str(exc)) from exc
+            raise _unavailable(exc) from exc
         if response.is_success:
             return response
         raise _as_typed_error(response)
@@ -522,7 +562,7 @@ async def _stream_body(response: httpx.Response) -> AsyncIterator[bytes]:
         async for chunk in response.aiter_bytes():
             yield chunk
     except httpx.HTTPError as exc:
-        raise StoreUnavailable(str(exc)) from exc
+        raise _unavailable(exc) from exc
     finally:
         await response.aclose()
 

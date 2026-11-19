@@ -30,6 +30,7 @@ from coppermind.store_protocol import (
     VersionConflict,
 )
 from coppermind_store import meeting_summary, speaker_names
+from coppermind_store.request_timing import SlowOperation
 
 if TYPE_CHECKING:
     from coppermind_store.context_service import ContextService
@@ -492,175 +493,209 @@ class NoteLifecycle:
     async def detail(self, payload: dict[str, Any]) -> dict[str, Any]:
         from coppermind_store.context_service import fingerprint
 
-        note = await self.context.store.get_note(payload["note_id"])
-        jobs = sorted(
-            [j for j in self.context.jobs() if j.note_id == note.id and j.purpose != "dossier"],
-            key=lambda j: j.created_at,
-            reverse=True,
-        )
-        job = jobs[0] if jobs else None
-        suggestions = []
-        if job and job.result:
-            decided = {d.get("index") for d in job.decisions}
-            suggestions = [
-                dict(s.model_dump(), index=i)
-                for i, s in enumerate(job.result.suggestions)
-                if i not in decided
-            ]
-        people = self.context.store.entities.load().entities
-        for suggestion in suggestions:
-            labels = []
-            for event in job.evidence.get("events", []) if job else []:
-                if event["event_id"] in suggestion["event_ids"]:
-                    labels.append(event["title"])
-                for person in event.get("people", []):
-                    if person["contact_id"] in suggestion["contact_ids"]:
-                        labels.append(person["address"])
-            if suggestion["kind"] == "speaker":
-                saved = (
-                    (job.evidence.get("speaker_review") or {}).get("candidates", []) if job else []
+        with SlowOperation("review.detail") as timing:
+            with timing.step("get_note"):
+                note = await self.context.store.get_note(payload["note_id"])
+            with timing.step("job_scan"):
+                jobs = sorted(
+                    [
+                        j
+                        for j in self.context.jobs()
+                        if j.note_id == note.id and j.purpose != "dossier"
+                    ],
+                    key=lambda j: j.created_at,
+                    reverse=True,
                 )
-                candidate_list = [
-                    current
-                    for candidate in saved
-                    if (current := speaker_names.current_person(people, candidate)) is not None
-                ]
-                if suggestion["value"] and not any(
-                    candidate["id"] == suggestion["value"] for candidate in candidate_list
-                ):
-                    suggestion["value"] = None
-                    suggestion["reason"] = (
-                        "The suggested person is no longer active. Choose someone else "
-                        "or leave this speaker unnamed."
+            with timing.step("suggestions"):
+                job = jobs[0] if jobs else None
+                suggestions = []
+                if job and job.result:
+                    decided = {d.get("index") for d in job.decisions}
+                    suggestions = [
+                        dict(s.model_dump(), index=i)
+                        for i, s in enumerate(job.result.suggestions)
+                        if i not in decided
+                    ]
+            with timing.step("entities"):
+                people = self.context.store.entities.load().entities
+            with timing.step("suggestion_labels"):
+                for suggestion in suggestions:
+                    labels = []
+                    for event in job.evidence.get("events", []) if job else []:
+                        if event["event_id"] in suggestion["event_ids"]:
+                            labels.append(event["title"])
+                        for person in event.get("people", []):
+                            if person["contact_id"] in suggestion["contact_ids"]:
+                                labels.append(person["address"])
+                    if suggestion["kind"] == "speaker":
+                        saved = (
+                            (job.evidence.get("speaker_review") or {}).get("candidates", [])
+                            if job
+                            else []
+                        )
+                        candidate_list = [
+                            current
+                            for candidate in saved
+                            if (current := speaker_names.current_person(people, candidate))
+                            is not None
+                        ]
+                        if suggestion["value"] and not any(
+                            candidate["id"] == suggestion["value"] for candidate in candidate_list
+                        ):
+                            suggestion["value"] = None
+                            suggestion["reason"] = (
+                                "The suggested person is no longer active. Choose someone else "
+                                "or leave this speaker unnamed."
+                            )
+                            suggestion["confidence"] = 0
+                        suggestion["candidates"] = candidate_list
+                        suggestion["display_value"] = next(
+                            (c["name"] for c in candidate_list if c["id"] == suggestion["value"]),
+                            "No person suggested",
+                        )
+                        continue
+                    value = suggestion["value"]
+                    suggestion["display_value"] = (
+                        ", ".join(dict.fromkeys(labels))
+                        if value is None
+                        else ", ".join(str(v) for v in value)
+                        if isinstance(value, list)
+                        else str(value)
                     )
-                    suggestion["confidence"] = 0
-                suggestion["candidates"] = candidate_list
-                suggestion["display_value"] = next(
-                    (c["name"] for c in candidate_list if c["id"] == suggestion["value"]),
-                    "No person suggested",
+            with timing.step("evidence"):
+                stale = bool(job and job.note_hash != note.content_hash)
+                if job and not stale:
+                    try:
+                        stale = job.evidence_hash != await self.context.note_evidence_hash(note)
+                    except ValueError:
+                        stale = True
+            with timing.step("validation"):
+                problem = ""
+                try:
+                    validate_review(
+                        note, self.context.store.control.schema(), self._default_timezone()
+                    )
+                except ValueError as exc:
+                    problem = str(exc)
+                from coppermind_store.reconciler import note_collisions
+
+            with timing.step("collisions"):
+                copies = await note_collisions(self.context.store, note.id)
+                if copies:
+                    problem = " ".join(dict.fromkeys([*([problem] if problem else []), *copies]))
+            with timing.step("calendar_and_recording"):
+                update = self.context.read("calendar-followups", {}).get(note.id)
+                if update is not None:
+                    update = dict(update, candidates=await self.context.calendar_candidates(note))
+                manual = None
+                recording = next(
+                    (
+                        r
+                        for r in self.context.recordings.jobs()
+                        if r.note_id == note.id and r.source_id
+                    ),
+                    None,
                 )
-                continue
-            value = suggestion["value"]
-            suggestion["display_value"] = (
-                ", ".join(dict.fromkeys(labels))
-                if value is None
-                else ", ".join(str(v) for v in value)
-                if isinstance(value, list)
-                else str(value)
-            )
-        stale = bool(job and job.note_hash != note.content_hash)
-        if job and not stale:
-            try:
-                stale = job.evidence_hash != await self.context.note_evidence_hash(note)
-            except ValueError:
-                stale = True
-        problem = ""
-        try:
-            validate_review(note, self.context.store.control.schema(), self._default_timezone())
-        except ValueError as exc:
-            problem = str(exc)
-        from coppermind_store.reconciler import note_collisions
-
-        copies = await note_collisions(self.context.store, note.id)
-        if copies:
-            problem = " ".join(dict.fromkeys([*([problem] if problem else []), *copies]))
-        update = self.context.read("calendar-followups", {}).get(note.id)
-        if update is not None:
-            update = dict(update, candidates=await self.context.calendar_candidates(note))
-        manual = None
-        recording = next(
-            (r for r in self.context.recordings.jobs() if r.note_id == note.id and r.source_id),
-            None,
-        )
-        meeting = None
-        merge = None
-        if recording:
-            candidates = await self.context.recording_calendar_candidates(note)
-            suggested = [
-                s.event_ids[0]
-                for s in (job.result.suggestions if job and job.result and not stale else [])
-                if s.kind == "event" and len(s.event_ids) == 1 and s.confidence >= 0.8
-            ]
-            meeting = {
-                "candidates": candidates,
-                "suggested_event_id": suggested[0] if len(suggested) == 1 else None,
-                "calendar_hash": await self.context.calendar_evidence_hash(note),
-                "selected_event_id": self.context.read("recording-meetings", {})
-                .get(recording.source_id, {})
-                .get("event_id"),
-            }
-            manual = await speaker_names.evidence(self.context, note, candidates)
-            receipt = self.context.read("recording-merges/" + recording.source_id, {})
-            if receipt:
-                merge = {
-                    "state": receipt.get("state"),
-                    "error": receipt.get("error", ""),
-                    "target_id": receipt.get("target_id"),
-                }
-            elif job and job.result and job.result.meeting_summary and not stale:
-                matches = await self.merge_candidates(note, recording)
-                if matches:
-                    source = await self.context.store.get_source(recording.source_id)
-                    merge = {
-                        "state": "offered",
-                        "candidates": matches,
-                        "transcript_path": source.projection_path,
+                meeting = None
+                merge = None
+                if recording:
+                    candidates = await self.context.recording_calendar_candidates(note)
+                    suggested = [
+                        s.event_ids[0]
+                        for s in (
+                            job.result.suggestions if job and job.result and not stale else []
+                        )
+                        if s.kind == "event" and len(s.event_ids) == 1 and s.confidence >= 0.8
+                    ]
+                    meeting = {
+                        "candidates": candidates,
+                        "suggested_event_id": suggested[0] if len(suggested) == 1 else None,
+                        "calendar_hash": await self.context.calendar_evidence_hash(note),
+                        "selected_event_id": self.context.read("recording-meetings", {})
+                        .get(recording.source_id, {})
+                        .get("event_id"),
                     }
-        if manual:
-            from coppermind_store.voice_store import VoiceStore
+                    manual = await speaker_names.evidence(self.context, note, candidates)
+                    receipt = self.context.read("recording-merges/" + recording.source_id, {})
+                    if receipt:
+                        merge = {
+                            "state": receipt.get("state"),
+                            "error": receipt.get("error", ""),
+                            "target_id": receipt.get("target_id"),
+                        }
+                    elif job and job.result and job.result.meeting_summary and not stale:
+                        matches = await self.merge_candidates(note, recording)
+                        if matches:
+                            source = await self.context.store.get_source(recording.source_id)
+                            merge = {
+                                "state": "offered",
+                                "candidates": matches,
+                                "transcript_path": source.projection_path,
+                            }
+            with timing.step("speaker_details"):
+                if manual:
+                    from coppermind_store.voice_store import VoiceStore
 
-            people = self.context.store.entities.load().entities
-            manual = {
-                key: manual[key] for key in ("source_id", "revision", "speakers", "candidates")
-            }
-            manual["voice_matches"] = speaker_names.voice_suggestions(self.context, note.id)
-            recording = next(r for r in self.context.recordings.jobs() if r.note_id == note.id)
-            voice_map = self.context.read("voice-mappings/" + recording.id, None)
-            manual["voice_unavailable"] = (
-                [label for label in manual["speakers"] if speaker_names.is_unrecognised(label)]
-                if isinstance(voice_map, dict)
-                else []
-            )
-            manual["voice_appearances"] = {
-                voice["name"]: len(voice["assignments"])
-                for voice in VoiceStore(self.context).unknown_summaries().values()
-                if voice["name"] in manual["speakers"]
-            }
-            manual["candidates"] = [
-                person
-                for candidate in manual["candidates"]
-                if (person := speaker_names.current_person(people, candidate)) is not None
-            ]
-        return {
-            "manual_speaker_review": manual,
-            "review_problem": problem,
-            "note": note.model_dump(mode="json"),
-            "job_id": job.id if job else None,
-            "state": job.state if job else "awaiting_suggestions",
-            "suggestions_enabled": self.context.config().assignments["enrichment"].enabled,
-            "suggestion_error": job.error if job and job.state == "failed" else "",
-            "stale": stale,
-            "speaker_notice": speaker_names.OMITTED_NOTICE
-            if job and (job.evidence.get("speaker_review") or {}).get("omitted")
-            else job.notice
-            if job
-            else "",
-            "speaker_attendees_notice": ""
-            if self.context.config().assignments["enrichment"].attendees_field
-            else speaker_names.ATTENDEES_UNSET_NOTICE,
-            "meeting_summary": job.result.meeting_summary.model_dump()
-            if job and job.result and job.result.meeting_summary
-            else None,
-            "suggestions": suggestions,
-            "unresolved": job.result.unresolved if job and job.result else [],
-            "roles": self.context.store.control.schema().roles,
-            "finalization": self.context.read("finalized", {}).get(note.id),
-            "calendar_update": update,
-            "recording_meeting": meeting,
-            "recording_merge": merge,
-            "body_hash": fingerprint(note.body),
-            "completion": self.context.read("review-completions/" + note.id, {}),
-        }
+                    people = self.context.store.entities.load().entities
+                    manual = {
+                        key: manual[key]
+                        for key in ("source_id", "revision", "speakers", "candidates")
+                    }
+                    manual["voice_matches"] = speaker_names.voice_suggestions(self.context, note.id)
+                    recording = next(
+                        r for r in self.context.recordings.jobs() if r.note_id == note.id
+                    )
+                    voice_map = self.context.read("voice-mappings/" + recording.id, None)
+                    manual["voice_unavailable"] = (
+                        [
+                            label
+                            for label in manual["speakers"]
+                            if speaker_names.is_unrecognised(label)
+                        ]
+                        if isinstance(voice_map, dict)
+                        else []
+                    )
+                    manual["voice_appearances"] = {
+                        voice["name"]: len(voice["assignments"])
+                        for voice in VoiceStore(self.context).unknown_summaries().values()
+                        if voice["name"] in manual["speakers"]
+                    }
+                    manual["candidates"] = [
+                        person
+                        for candidate in manual["candidates"]
+                        if (person := speaker_names.current_person(people, candidate)) is not None
+                    ]
+            with timing.step("response"):
+                return {
+                    "manual_speaker_review": manual,
+                    "review_problem": problem,
+                    "note": note.model_dump(mode="json"),
+                    "job_id": job.id if job else None,
+                    "state": job.state if job else "awaiting_suggestions",
+                    "suggestions_enabled": self.context.config().assignments["enrichment"].enabled,
+                    "suggestion_error": job.error if job and job.state == "failed" else "",
+                    "stale": stale,
+                    "speaker_notice": speaker_names.OMITTED_NOTICE
+                    if job and (job.evidence.get("speaker_review") or {}).get("omitted")
+                    else job.notice
+                    if job
+                    else "",
+                    "speaker_attendees_notice": ""
+                    if self.context.config().assignments["enrichment"].attendees_field
+                    else speaker_names.ATTENDEES_UNSET_NOTICE,
+                    "meeting_summary": job.result.meeting_summary.model_dump()
+                    if job and job.result and job.result.meeting_summary
+                    else None,
+                    "suggestions": suggestions,
+                    "unresolved": job.result.unresolved if job and job.result else [],
+                    "roles": self.context.store.control.schema().roles,
+                    "finalization": self.context.read("finalized", {}).get(note.id),
+                    "calendar_update": update,
+                    "recording_meeting": meeting,
+                    "recording_merge": merge,
+                    "body_hash": fingerprint(note.body),
+                    "completion": self.context.read("review-completions/" + note.id, {}),
+                }
 
     async def complete(self, payload: dict[str, Any]) -> dict[str, Any]:
         from coppermind_store.context_service import fingerprint, now, same_evidence
