@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 SYNC_TEST_NAME = "Coppermind sync test.md"
 PLUGIN_FOLDER = ".obsidian/plugins/coppermind-review"
-PLUGIN_FILES = ("main.js", "manifest.json", "styles.css")
+PLUGIN_FILES = ("main.js", "styles.css", "manifest.json")
 PAIRING_MINUTES = 10
 # Wrong guesses one client may make at a pairing code, and all clients together, before the
 # code stops working for them. A six digit code guessed a hundred times is found one time
