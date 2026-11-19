@@ -1,5 +1,5 @@
 import pytest
-from coppermind_store.speaker_names import rename_speakers, speaker_labels
+from coppermind_store.speaker_names import is_unrecognised, rename_speakers, speaker_labels
 
 
 def test_renaming_only_changes_matching_segment_labels():
@@ -19,6 +19,34 @@ def test_renaming_only_changes_matching_segment_labels():
     ]
     assert renamed["segments"][0]["text"] == "Speaker 1 is mentioned."
     assert transcript["segments"][0]["speaker"] == "Speaker 1"
+
+
+def test_speakers_of_a_split_recording_are_listed_and_renamed_per_part():
+    transcript = {
+        "segments": [
+            {"speaker": "Part 1: Speaker 2", "text": "One"},
+            {"speaker": "Part 2: Speaker 1", "text": "Two"},
+            {"speaker": "Part 10: Speaker 1", "text": "Three"},
+            {"speaker": "Part 1: Speaker 1", "text": "Four"},
+            {"speaker": "", "text": "Unlabelled"},
+            {"speaker": "Part 1: Narrator", "text": "Not diarized"},
+        ]
+    }
+    assert speaker_labels(transcript) == [
+        "Part 1: Speaker 1",
+        "Part 1: Speaker 2",
+        "Part 2: Speaker 1",
+        "Part 10: Speaker 1",
+    ]
+    renamed = rename_speakers(transcript, {"Part 2: Speaker 1": "Alex Morgan"})
+    assert [s["speaker"] for s in renamed["segments"]] == [
+        "Part 1: Speaker 2",
+        "Alex Morgan",
+        "Part 10: Speaker 1",
+        "Part 1: Speaker 1",
+        "",
+        "Part 1: Narrator",
+    ]
 
 
 async def test_calendar_candidates_only_come_from_linked_events():
@@ -300,3 +328,18 @@ async def test_only_time_matching_meeting_supplies_speakers():
     assert {c["id"][: len("contact:afternoon")] for c in data["candidates"]} == {
         "contact:afternoon"
     }
+
+
+@pytest.mark.parametrize(
+    "label, expected",
+    [
+        ("Speaker 3", True),
+        ("Part 2: Speaker 3", True),
+        ("Unknown voice 3", False),
+        ("Part 2: Unknown voice 3", False),
+        ("Alex Morgan", False),
+        ("Part 2: Alex Morgan", False),
+    ],
+)
+def test_only_labels_the_service_gave_count_as_unrecognised(label, expected):
+    assert is_unrecognised(label) is expected

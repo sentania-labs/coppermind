@@ -647,7 +647,11 @@ class NoteLifecycle:
                     )
                     voice_map = self.context.read("voice-mappings/" + recording.id, None)
                     manual["voice_unavailable"] = (
-                        [label for label in manual["speakers"] if label.startswith("Speaker ")]
+                        [
+                            label
+                            for label in manual["speakers"]
+                            if speaker_names.is_unrecognised(label)
+                        ]
                         if isinstance(voice_map, dict)
                         else []
                     )

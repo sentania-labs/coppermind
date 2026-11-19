@@ -197,8 +197,12 @@ recording is sent only to that service. A recording handed in while transcriptio
 off is refused with a plain message and nothing is queued to run later. A recording added
 from Admin while it is off is kept as a file, listed as not written up, and written up
 later only if its owner presses "Write it up now" on its line. The services and what each test found
-are kept in `/data/state/context/ai-services.json`. Saved in `/data/state/context/config.json` as `assignments.transcription`;
-each intake is one small file under `/data/state/context/recordings/` and its saved
+are kept in `/data/state/context/ai-services.json`. The transcription assignment is saved
+in `/data/state/context/config.json`. Its `job_limit_s` setting defaults to 14,400 seconds
+(four hours) and can be changed through the transcription assignment API. Longer recordings
+are cut at fixed boundaries with one second of headroom and sent part by part. The stitched
+transcript has continuous timestamps and distinct labels for speakers from each part.
+Each intake is one small file under `/data/state/context/recordings/` and its saved
 transcript under `/data/state/context/recording-transcripts/`. Voice signatures are
 private state in the same folder (mode 0600, never in the vault or an API response):
 `voice-signatures.json` (global recognition setting, saved signatures, recording

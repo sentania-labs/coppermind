@@ -119,3 +119,22 @@ async def test_renamed_schema_version_is_not_an_enrichment_target(store, target)
     with pytest.raises(ValueError, match="cannot be system fields"):
         await store.context.save_assignment({"revision": 0, "assignment": assignment})
     assert store.context.config().revision == 0
+
+
+async def test_the_transcription_job_limit_does_not_change_the_enrichment_fingerprint(store):
+    context = store.context
+    connection = ModelConnection(id="my-made-up-id", name="Existing", provider="openai")
+    config = ContextConfig(
+        connections=[connection],
+        assignments={
+            "enrichment": FeatureAssignment(
+                connection=connection.id, model="test-model", enabled=True
+            )
+        },
+    )
+    context.save_config(config)
+    before = context.config_hash()
+    config.assignments["enrichment"].job_limit_s = 7200
+    context.save_config(config)
+    assert context.config().assignments["enrichment"].job_limit_s == 7200
+    assert context.config_hash() == before

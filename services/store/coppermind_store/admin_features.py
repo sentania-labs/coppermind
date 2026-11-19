@@ -529,6 +529,7 @@ class Features:
                 enabled=True,
                 paused=old.enabled and old.paused,
                 wait_s=wait_s,
+                job_limit_s=old.job_limit_s,
                 attempts=old.attempts,
                 response_format=reply_format,
                 automatic_after=old.automatic_after,

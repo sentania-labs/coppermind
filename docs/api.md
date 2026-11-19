@@ -358,7 +358,19 @@ of continuous busy answers it becomes a failed intake (`transcription-busy-limit
 Problems, with Retry and no automatic try. A store restart in the middle of a
 transcription is not a failed attempt either: on the jobs path the saved job is polled
 again, and if the service has lost it the recording is sent again under the same
-`Idempotency-Key`; if the service is busy the intake waits as above.
+`Idempotency-Key`; if the service is busy the intake waits as above. Split recordings
+start their sequence again after a restart, using a stable idempotency key for each part.
+
+Coppermind probes the audio and cuts recordings longer than `assignments.transcription.job_limit_s`
+(default 14,400 seconds) into parts at fixed boundaries, with one second of headroom. It copies the audio stream
+into its original container when possible and otherwise encodes the part as FLAC.
+Each part is transcribed in order, and the results form one transcript and note with
+timestamps offset to the original recording. Speaker labels are distinct per part; voice
+recognition can subsequently identify known speakers. A part with no speech adds nothing and
+the recording succeeds if any part has speech; if none does it fails as a silent recording
+does. Any other failed part names its number.
+If the audio cannot be probed, the service handles it as before unless its supplied
+duration already shows that splitting is needed.
 
 A recording whose length is given as over two hours is posted to the jobs path. When the
 length is not given, or is wrong, and the service refuses the direct call as too long (its
@@ -383,12 +395,11 @@ multipart upload of the file with `model`, `response_format` (`diarized_json` or
 `metadata.num_speakers` is a whole number of 1 or more it is passed along as `num_speakers`,
 a hint for separating voices. Without it, a calendar event linked to the note (or the one
 same-day event with the note's title) sends its attendee count as `max_speakers`; no
-single match, or no attendees, sends neither. Every request also sets
+single match, or no attendees, sends neither. When voice recognition is enabled, requests set
 `include_speaker_embeddings=true`; the reply's `speakers` list (each with a `label`,
 `speech_seconds` and `embeddings` of `model`, `version` and `vector`) is held privately for
 voice recognition (see [dossiers](dossiers.md#voice-recognition)) and is never part of the
-transcript. The labels stay the service's own (`Speaker 2`), because it
-does not say who anyone is. The reply must carry
+transcript. For an unsplit recording labels start as the service's own (`Speaker 2`); split parts receive distinct prefixes. The reply must carry
 `segments`, each with `text` and a `speaker`. The assignment's wait limit
 (`wait_s`, one hour by default, up to four hours) is how long the connection may stay
 quiet. Most services send nothing until the transcript is finished, so it has to cover the
@@ -398,7 +409,7 @@ for any one recording, and a recording that runs into that ceiling is not tried 
 itself.
 
 On success the note's source holds `transcript.txt`, one line per segment with the
-speaker label exactly as the service gave it (`[00:03:12] Speaker 2: text`), and
+speaker label (`[00:03:12] Speaker 2: text`), and
 `transcript.json` with the segments and their timings. With enrichment enabled, the
 configured model reads the complete transcript in a separate summary stage of the
 existing enrichment job. Summary, decisions and action items remain durable proposals
