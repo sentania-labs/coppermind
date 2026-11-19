@@ -836,6 +836,7 @@ class AdminService:
             "suggestions-save": features.suggestions_save,
             "suggestions-pause": features.suggestions_pause,
             "suggestions-wait": features.suggestions_wait,
+            "suggestions-response-limit": features.suggestions_response_limit,
             "suggestions-fill": features.suggestions_fill,
             "suggestions-tick": features.suggestions_tick,
             "suggestions-older": features.suggestions_older,

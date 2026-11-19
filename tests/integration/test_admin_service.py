@@ -742,3 +742,13 @@ async def test_a_changed_address_that_does_not_answer_remembers_the_one_that_did
     )
     assert back["answering"] is True
     assert back["service"]["address_before"] == ""
+
+
+async def test_suggestions_response_limit_is_saved_and_validated(store):
+    await configure(store)
+    assert (await store.admin.act("suggestions", {}))["max_output_tokens"] == 2048
+    await store.admin.act("suggestions-response-limit", {"max_output_tokens": "65536"})
+    assert (await store.admin.act("suggestions", {}))["max_output_tokens"] == 65536
+    with pytest.raises(ValueError):
+        await store.admin.act("suggestions-response-limit", {"max_output_tokens": "65537"})
+    assert store.context.config().assignments["enrichment"].max_output_tokens == 65536

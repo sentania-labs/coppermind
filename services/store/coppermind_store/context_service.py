@@ -1713,6 +1713,9 @@ class ContextService:
             elif isinstance(exc, JobRejected):
                 job.set_error(str(exc), exc.rule, reply=job.reply)
             elif isinstance(exc, ProviderError):
+                if exc.rule == "provider-incomplete":
+                    job.attempt_limit = job.attempts
+                    job.usage = exc.usage
                 wait = (
                     ""
                     if not exc.waiting or job.attempts >= job.attempt_limit

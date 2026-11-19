@@ -34,6 +34,7 @@ async def test_discovery_and_json_contract(provider):
             )
         assert request.headers["authorization"] == "Bearer synthetic-key"
         assert payload["response_format"] == {"type": "json_object"}
+        assert payload["reasoning_effort"] == "low"
         return httpx.Response(
             200,
             json={
@@ -420,3 +421,50 @@ async def test_streamed_metadata_other_than_counters_is_not_kept():
     )
     assert usage["completion_tokens"] == 7 and "blob" not in usage
     assert len(usage["provider_model_version"]) == 200
+
+
+async def test_low_reasoning_is_sent_and_rejected_parameter_is_remembered():
+    seen = []
+
+    def serve(request):
+        payload = json.loads(request.content)
+        seen.append(payload)
+        if "reasoning_effort" in payload:
+            return httpx.Response(400, json={"error": "unsupported parameter"})
+        return httpx.Response(
+            200, json={"choices": [{"finish_reason": "stop", "message": {"content": "{}"}}]}
+        )
+
+    provider = ModelProvider(httpx.MockTransport(serve))
+    connection = ModelConnection(
+        id="test", name="Test", provider="compatible", base_url="http://local.example"
+    )
+    for _ in range(2):
+        await provider.suggest(connection, "", FeatureAssignment(model="m"), "JSON", {})
+    assert [p.get("reasoning_effort") for p in seen] == ["low", None, None]
+
+
+def test_output_limit_accepts_thinking_model_budget():
+    assert FeatureAssignment(max_output_tokens=65536).max_output_tokens == 65536
+
+
+async def test_incomplete_reply_keeps_reasoning_usage():
+    def serve(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "length", "message": {"content": "{"}}],
+                "usage": {
+                    "completion_tokens": 2048,
+                    "completion_tokens_details": {"reasoning_tokens": 2000},
+                },
+            },
+        )
+
+    provider = ModelProvider(httpx.MockTransport(serve))
+    connection = ModelConnection(id="test", name="Test", provider="openai")
+    with pytest.raises(ProviderError) as caught:
+        await provider.suggest(connection, "key", FeatureAssignment(model="m"), "JSON", {})
+    assert caught.value.rule == "provider-incomplete"
+    assert caught.value.usage["completion_tokens"] == 2048
+    assert caught.value.usage["reasoning_tokens"] == 2000

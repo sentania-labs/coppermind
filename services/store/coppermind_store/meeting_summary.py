@@ -157,6 +157,7 @@ async def generate(
             reply=exc.reply,
             waiting=exc.waiting,
             retry_after=exc.retry_after,
+            usage=exc.usage,
         ) from exc
     job.reply = json.dumps(output, ensure_ascii=False)[:4000]
     summary = MeetingSummary.from_answer(output)

@@ -99,6 +99,7 @@ class ProviderError(ValueError):
         reply: str = "",
         waiting: bool = False,
         retry_after: float | None = None,
+        usage: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.rule = rule
@@ -106,6 +107,7 @@ class ProviderError(ValueError):
         self.waiting = waiting
         # Seconds the service asked to wait before it is asked again, when it said.
         self.retry_after = retry_after
+        self.usage = usage or {}
 
 
 class InputLimitError(ProviderError):
@@ -206,6 +208,11 @@ class _Stream:
                 }
             )
 
+        if isinstance(usage, dict) and isinstance(usage.get("completion_tokens_details"), dict):
+            count = usage["completion_tokens_details"].get("reasoning_tokens")
+            if isinstance(count, int) and not isinstance(count, bool):
+                self.usage["reasoning_tokens"] = count
+
     def add(self, text: Any) -> None:
         if isinstance(text, str):
             self.size += len(text)
@@ -263,6 +270,7 @@ Observer = Callable[[ModelConnection, "ProviderError | None"], None]
 class ModelProvider:
     def __init__(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.transport = transport
+        self._no_reasoning_effort: set[tuple[str, str, str]] = set()
         # Told the outcome of every call, so health is something observed and never assumed.
         self.observer: Observer | None = None
 
@@ -614,14 +622,34 @@ class ModelProvider:
                 "stream": True,
                 "stream_options": {"include_usage": True},
             }
-            result, stats = await self._exchange(
-                connection,
-                key,
-                "POST",
-                "/chat/completions",
-                timeout=assignment.timeout_s,
-                payload=payload,
-            )
+            capability = (connection.id, connection.endpoint_url, assignment.model)
+            if capability not in self._no_reasoning_effort:
+                payload["reasoning_effort"] = "low"
+            try:
+                result, stats = await self._exchange(
+                    connection,
+                    key,
+                    "POST",
+                    "/chat/completions",
+                    timeout=assignment.timeout_s,
+                    payload=payload,
+                )
+            except ProviderError as exc:
+                if "reasoning_effort" not in payload or str(exc) not in {
+                    "provider returned HTTP 400",
+                    "provider returned HTTP 422",
+                }:
+                    raise
+                del payload["reasoning_effort"]
+                result, stats = await self._exchange(
+                    connection,
+                    key,
+                    "POST",
+                    "/chat/completions",
+                    timeout=assignment.timeout_s,
+                    payload=payload,
+                )
+                self._no_reasoning_effort.add(capability)
             try:
                 choice = result["choices"][0]
                 stopped = choice["finish_reason"]
@@ -631,6 +659,17 @@ class ModelProvider:
                 raise ProviderError("provider returned an invalid completion") from exc
         if not isinstance(output, str):
             output = ""
+        raw = result.get("usage")
+        usage: dict[str, Any] = {
+            k: v
+            for k, v in (raw if isinstance(raw, dict) else {}).items()
+            if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)
+        }
+        if isinstance(raw, dict) and isinstance(raw.get("completion_tokens_details"), dict):
+            reasoning = raw["completion_tokens_details"].get("reasoning_tokens")
+            if isinstance(reasoning, int) and not isinstance(reasoning, bool):
+                usage["reasoning_tokens"] = reasoning
+        usage.update(stats.usage())
         if not finished:
             cut_short = stopped in {"length", "max_tokens"}
             raise ProviderError(
@@ -640,6 +679,7 @@ class ModelProvider:
                 else "The model stopped before it finished its answer.",
                 "provider-incomplete",
                 reply=output,
+                usage=usage,
             )
         if not output.strip():
             raise ProviderError(
@@ -660,14 +700,6 @@ class ModelProvider:
                 "provider-not-json",
                 reply=output,
             )
-        raw = result.get("usage")
-        # Only numeric usage fields are retained. Never reflect arbitrary remote metadata.
-        usage: dict[str, Any] = {
-            k: v
-            for k, v in (raw if isinstance(raw, dict) else {}).items()
-            if isinstance(v, int) and not isinstance(v, bool)
-        }
-        usage.update(stats.usage())
         reported = result.get("model")
         usage["model"] = assignment.model
         usage["provider_model_version"] = (

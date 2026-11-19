@@ -366,6 +366,17 @@ touched.</p>
                 ui.go("Change", "/admin/suggestions/summary"),
             ),
             ui.row(
+                "Maximum response tokens",
+                '<form class="act" method="post" action="/admin/suggestions/response-limit">'
+                + ui.hidden({})
+                + '<input type="number" name="max_output_tokens" '
+                + 'aria-label="Maximum response tokens" min="256" max="65536" required '
+                + f'value="{int(data.get("max_output_tokens", 2048))}"> '
+                + ui.submit("Save")
+                + "</form>"
+                + ' <span class="lat-hint">For suggestions and meeting summaries.</span>',
+            ),
+            ui.row(
                 "Longest wait for an answer",
                 ui.quick_select(
                     "/admin/suggestions/wait",
@@ -555,6 +566,21 @@ touched.</p>
                 else " Nothing was waiting."
             ),
         )
+        return ctx.go("/admin/suggestions")
+
+    @routes.post("/admin/suggestions/response-limit", include_in_schema=False)
+    async def suggestions_response_limit(request: Request) -> Response:
+        ctx = Ctx(request, wiring)
+        form = await ctx.form()
+        result = await saved(
+            ctx,
+            "suggestions-response-limit",
+            {"max_output_tokens": form.get("max_output_tokens", "")},
+            "/admin/suggestions",
+        )
+        if isinstance(result, Response):
+            return result
+        ctx.say("ok", "Saved. The next suggestions and summaries use the new response limit.")
         return ctx.go("/admin/suggestions")
 
     @routes.post("/admin/suggestions/wait", include_in_schema=False)

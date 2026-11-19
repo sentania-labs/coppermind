@@ -254,6 +254,7 @@ class Features:
             "fill_options": self.fill_options(),
             "descr": assignment.send_calendar_descriptions,
             "wait_s": assignment.timeout_s,
+            "max_output_tokens": assignment.max_output_tokens,
             "summary_custom": bool(assignment.summary_directions),
             "waiting": len(waiting),
             "older": older,
@@ -345,6 +346,16 @@ class Features:
             raise ValueError("choose one of the listed waits")
         await self._update_enrichment(timeout_s=seconds)
         return {"seconds": seconds}
+
+    async def suggestions_response_limit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            limit = int(payload.get("max_output_tokens", ""))
+        except (TypeError, ValueError):
+            raise ValueError("Enter a response limit between 256 and 65536.") from None
+        if not 256 <= limit <= 65536:
+            raise ValueError("Enter a response limit between 256 and 65536.")
+        await self._update_enrichment(max_output_tokens=limit)
+        return {"max_output_tokens": limit}
 
     # -- how the meeting summary is written -----------------------------------------------
 

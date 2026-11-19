@@ -1205,3 +1205,15 @@ def test_pressing_replace_key_twice_replaces_it_once(admin):
     client.post(path + "/replace", data=sent, follow_redirects=False)
     (again,) = [k for k in load_keys(control).keys if k.key_id == record.key_id]
     assert again.hash == hashed
+
+
+def test_response_limit_is_visible_and_saved(admin):
+    client, _, store = admin
+    store.views["suggestions"]["max_output_tokens"] = 16384
+    page = client.get("/admin/suggestions").text
+    assert 'name="max_output_tokens"' in page
+    assert 'value="16384"' in page
+    store.answers["suggestions-response-limit"] = {"max_output_tokens": 65536}
+    response = post(client, "/admin/suggestions/response-limit", {"max_output_tokens": "65536"})
+    assert store.asked("suggestions-response-limit") == [{"max_output_tokens": "65536"}]
+    assert "Saved." in follow(client, response)

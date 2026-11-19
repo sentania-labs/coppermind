@@ -130,6 +130,17 @@ async def setup_recording(store, standin, *, limit=200000, failure=None, recordi
             assert evidence["transcript"] == text  # entire 168k input, including the ending
             if failure == "context":
                 return httpx.Response(400, json={"error": {"message": "context length exceeded"}})
+            if failure == "incomplete":
+                return httpx.Response(
+                    200,
+                    json={
+                        "choices": [{"finish_reason": "length", "message": {"content": "{"}}],
+                        "usage": {
+                            "completion_tokens": 2048,
+                            "completion_tokens_details": {"reasoning_tokens": 2000},
+                        },
+                    },
+                )
             output = {"summary": 42} if failure == "shape" else PROPOSAL
             drift["on"] = failure == "drift"
         elif failure == "primary" and not rejected:
@@ -540,3 +551,14 @@ async def test_summary_silence_uses_long_wait_and_records_retry_backoff(store, s
     assert "Meeting summary failed" in job.error
     assert context.load_job(job.id).error == job.error
     assert (await store.get_note(note.id)).body == note.body
+
+
+async def test_incomplete_summary_keeps_usage_and_is_not_retried(store, standin):
+    context, _, job, requests = await setup_recording(store, standin, failure="incomplete")
+    assert job.state == "failed"
+    assert job.error_rule == "provider-incomplete"
+    assert job.usage["completion_tokens"] == 2048
+    assert job.usage["reasoning_tokens"] == 2000
+    assert job.attempts == job.attempt_limit == 1
+    await context.tick()
+    assert len(requests) == 2
