@@ -1263,7 +1263,7 @@ async def test_voice_pending_is_removed_for_a_deleted_note_with_a_stuck_review(s
     assert context.read("voice-pending/" + job.id, None) is None
 
 
-async def test_reviewed_voice_is_suggested_for_later_recording(store):
+async def test_reviewed_voice_names_later_recording_without_duplicate_suggestion(store):
     from coppermind.entities import EntityInput
 
     person = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
@@ -1298,8 +1298,20 @@ async def test_reviewed_voice_is_suggested_for_later_recording(store):
         second_job = context.recordings.load(second["id"])
         assert second_job.state == "succeeded"
         detail = await context.lifecycle_detail({"note_id": second_job.note_id})
-        match = next(iter(detail["manual_speaker_review"]["voice_matches"].values()))[0]
-        assert match["id"] == "person:" + person["id"] and match["strength"] == "strong"
+        source = await store.get_source(second_job.source_id)
+        artifact = await store.get_source_artifact(
+            second_job.source_id, source.current_revision, "transcript.json"
+        )
+        labels = {segment["speaker"] for segment in json.loads(artifact.content)["segments"]}
+        assert "Alex Morgan" in labels
+        manual = detail["manual_speaker_review"]
+        assert "Alex Morgan" not in manual["speakers"]
+        assert all(candidate["name"] != "Alex Morgan" for candidate in manual["candidates"])
+        assert all(
+            match["id"] != "person:" + person["id"]
+            for matches in manual["voice_matches"].values()
+            for match in matches
+        )
         assert "vector" not in json.dumps(detail)
 
 
