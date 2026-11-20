@@ -726,10 +726,15 @@ test('Write the summary again sits beside the summary and says what it will do',
   assert.ok(box.children.findIndex(c=>c.text==='Write the summary again')>box.children.findIndex(c=>c.tag==='label'));
 });
 
-test('a note that did not come from a recording has no Write the summary again',async()=>{
+test('a summary on a note without recording details still has Write the summary again',async()=>{
   const f=await fixture(undefined,{meeting_summary:SUMMARY,job_id:'job-1',state:'suggested'});
   assert.ok(f.view.contentEl.all().some(e=>e.text==='Meeting summary'));
   assert.ok(f.view.contentEl.all().some(e=>e.text==='Write the summary again'));
+});
+
+test('a note with no recording and no summary has no Write the summary again',async()=>{
+  const f=await fixture(undefined,{state:'suggested'});
+  assert.ok(!f.view.contentEl.all().some(e=>e.text==='Write the summary again'));
 });
 
 test('writing the summary again shows it running, keeps the summary, then offers the new one',async()=>{
