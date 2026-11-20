@@ -1,10 +1,19 @@
-"""Fixtures for the PostgreSQL backed tests.
+"""Fixtures and the shard split for the PostgreSQL backed tests.
 
 These run against a real server because the behaviour under test is the write
 protocol itself: what reaches the filesystem, what reaches the database, and
 in what order. A stand-in database would prove none of it.
 
     make db-up && make test-integration && make db-down
+
+Sharding, at the bottom of this file, splits the suite by file so CI can run it
+as a matrix. `tests/integration/` holds only `test_*.py` files plus this file,
+so numbering the sorted file list and keeping `index % SHARDS == SHARD - 1` is
+an exact partition: every file lands in exactly one shard.
+`ci/check-shard-coverage.sh` proves that over the shard runs, and fails when the
+shards together miss a test or repeat one. The shard comes from the environment
+rather than a pytest option because the CI matrix supplies it as a plain env
+var, one per job.
 """
 
 from __future__ import annotations
@@ -140,3 +149,16 @@ def unreachable_store(wiring: Wiring, control: ControlState) -> LocalStore:
     )
     wiring.notes_dir.mkdir(parents=True, exist_ok=True)
     return LocalStore(wiring.notes_dir, control, make_session_factory(engine), wiring.sources_dir)
+
+
+def pytest_collection_modifyitems(items: list) -> None:  # noqa: N802
+    """Keep only the tests this shard owns, numbered over the settled list.
+
+    A file's tests keep contiguous positions, so one file never straddles two
+    shards and every file lands in exactly one of them.
+    """
+    shards = int(os.environ.get("SHARDS", os.environ.get("PYTEST_SPLIT_NSHARDS", 1)))
+    shard = int(os.environ.get("SHARD", os.environ.get("PYTEST_SPLIT_NODEID", 1)))
+    if shards <= 1:
+        return
+    items[:] = [item for index, item in enumerate(items) if index % shards == shard - 1]

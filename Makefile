@@ -39,9 +39,16 @@ test-node:
 
 # PostgreSQL backed tests. `make db-up` starts a throwaway server on 5433 so
 # this never touches a running stack's database.
+#
+# One target, two shapes. `make test-integration` runs the whole suite, as a
+# developer does. The CI matrix passes SHARDS and SHARD, and the same target
+# then runs one shard: `ci/shard-list.sh` numbers the sorted file list and keeps
+# `index % SHARDS == SHARD - 1`, an exact partition so every test file lands in
+# exactly one shard. `ci/check-shard-coverage.sh` proves it over the shard runs.
 test-integration:
 	COPPERMIND_TEST_DATABASE_URL=$${COPPERMIND_TEST_DATABASE_URL:-postgresql://coppermind@127.0.0.1:5433/coppermind_test} \
-		uv run pytest -q tests/integration
+		SHARDS=$${SHARDS:-1} SHARD=$${SHARD:-1} \
+		uv run pytest -q $$(bash ci/shard-list.sh)
 
 db-up:
 	docker run -d --rm --name coppermind-test-db \

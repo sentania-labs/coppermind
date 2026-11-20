@@ -139,8 +139,28 @@ def test_latest_promotion_serializes_across_tags():
 def test_release_waits_for_every_image_and_the_running_stack():
     workflow = load(WORKFLOWS[0])
     publish = workflow["jobs"]["publish"]
-    assert set(publish["needs"]) == {"image", "smoke", "integration", "release-tag"}
+    assert set(publish["needs"]) == {
+        "image",
+        "smoke",
+        "integration",
+        "release-tag",
+        "release-mode",
+    }
     assert publish["runs-on"] == "ubuntu-latest"
+
+
+def test_the_integration_gate_aggregates_the_shards():
+    """The suite is a matrix, so branch protection needs one name to require.
+
+    `integration` is that name: it waits for every shard, and a shard that fails
+    or is missing must fail it rather than leave the gate green.
+    """
+    job = jobs(WORKFLOWS[0])["integration"]
+    assert job["needs"] == "integration-shard"
+    assert any(step.get("uses", "").startswith("actions/checkout") for step in job["steps"])
+    assert any("check-shard-coverage.sh" in step.get("run", "") for step in job["steps"]), (
+        "the aggregate job must prove the shards were a partition"
+    )
 
 
 def test_dependency_review_runs_the_local_audit_without_a_licensed_api():
