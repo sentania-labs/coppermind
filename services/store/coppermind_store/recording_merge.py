@@ -111,15 +111,23 @@ async def apply(context, receipt):
             receipt["step"] = "appending"
             receipt["append_base_hash"] = target.content_hash
             context.write(name, receipt)
-            body = (
-                append_summary(
+            addition = (
+                (
+                    target.body
+                    + "\n\n## Recording write-up\n\n"
+                    + receipt["markdown"]
+                    + "\n\n[["
+                    + receipt["projection_path"].removesuffix(".md")
+                    + "|Transcript]]\n"
+                )
+                if receipt.get("markdown")
+                else append_summary(
                     target.body,
                     MeetingSummary.model_validate(receipt["summary"]),
                     receipt["projection_path"],
                 )
-                + marker
-                + "\n"
             )
+            body = addition + marker + "\n"
             try:
                 target = await store.merge_note_update(
                     target_id, {}, body[len(target.body) :], target.content_hash

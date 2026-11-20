@@ -39,6 +39,7 @@ LEDE = (
     "this list."
 )
 OFF_TEXT = {
+    "writeup": "Transcripts are retained until write-ups are turned on and retried.",
     "sugg": "New notes get no suggestions until you turn them on again.",
     "trans": "Recordings are kept but not written up until you turn it on again.",
     "search": "Search goes back to exact words only.",

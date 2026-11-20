@@ -478,3 +478,19 @@ def sentence_list(parts: Sequence[str], joiner: str = "and") -> str:
     if len(parts) <= 1:
         return "".join(parts)
     return ", ".join(parts[:-1]) + f" {joiner} " + parts[-1]
+
+
+def voice_name_path(identity: str) -> str:
+    return url("/admin/people", tab="voices", name=identity) + "#" + segment("voice-" + identity)
+
+
+def unnamed_voices(voices: list[dict[str, str]]) -> str:
+    if not voices:
+        return ""
+    return card(
+        "".join(
+            item(e(voice["name"]), "", go("Name this voice", voice_name_path(voice["id"])))
+            for voice in voices
+        ),
+        "Voices not named yet",
+    )

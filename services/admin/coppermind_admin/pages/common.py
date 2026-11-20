@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from coppermind_admin import model, ui
 from coppermind_admin.ui import e, plural, segment
 
-# The three things that use an AI service, and what each needs from one.
+# The features that use an AI service, and what each needs from one.
 FEATS: dict[str, dict[str, str]] = {
     "sugg": {
         "name": "Suggestions",
@@ -22,6 +22,12 @@ FEATS: dict[str, dict[str, str]] = {
         "lower": "transcription",
         "to": "/admin/transcription",
         "need": "speech",
+    },
+    "writeup": {
+        "name": "Recording write-ups",
+        "lower": "recording write-ups",
+        "to": "/admin/transcription/writeup",
+        "need": "text",
     },
     "search": {
         "name": "Search by meaning",

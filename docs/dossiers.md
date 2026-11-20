@@ -151,9 +151,11 @@ The single switch in the Obsidian People view stops collecting new signatures; e
 data remains available for deletion. Recordings reviewed before this change have no
 signatures and cannot be recovered or backfilled.
 
-A close match against a person appears as `Voice` or `Maybe` in Review. The existing
-thresholds are 0.60 and 0.45 by default. A single strong match may start selected, but
-is applied only when the owner completes review. Ambiguous and conflicting matches
+New recording write-ups use a person's name on a unique strong match to an already
+named voice. Ambiguous matches keep stable Unknown voice N identities; model guesses
+never name voices. A close match against a person also appears as `Voice` or `Maybe` in Review. The existing
+thresholds are 0.60 and 0.45 by default. For legacy recordings, a single strong match may start selected but is applied only
+when the owner completes review. Ambiguous and conflicting matches
 remain for the owner to choose.
 
 In People, an unknown voice can be combined with another unknown voice or attached to
