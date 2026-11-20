@@ -502,7 +502,7 @@ test('a queued retry refreshes the count and removes the failed row and Dismiss'
   await view.refresh();await view.contentEl.all().find(e=>e.text==='Retry').onclick();
   const texts=view.contentEl.all().map(e=>e.text);
   assert.ok(texts.includes('0 meetings to review · 0 recordings failed'));
-  assert.ok(texts.includes('No recordings need attention.'));
+  assert.ok(texts.includes('You are all caught up. Nothing is waiting for you.'));
   assert.ok(!texts.includes('Call'));assert.ok(!texts.includes('Dismiss'));
 });
 
@@ -575,7 +575,7 @@ test('Needs you says plainly when nothing is waiting',async()=>{
   const f=await home();
   const text=homeText(f.view);
   assert.ok(text.includes('You are all caught up. Nothing is waiting for you.'));
-  assert.ok(text.includes('No meetings are waiting for review.'));assert.ok(text.includes('No recordings need attention.'));
+  assert.ok(!text.some(t=>t.startsWith('Ready to review')||t.startsWith('Recordings needing attention')||t.startsWith('No meetings')||t.startsWith('No recordings')));
   assert.ok(!text.some(t=>t.startsWith('Still processing')||t.startsWith('Recently imported')));
 });
 
@@ -803,4 +803,36 @@ test('a write that is slow to answer is waited for, not cut off',async()=>{
   const f=await fixture(undefined,{page:()=>new Promise(resolve=>setTimeout(()=>resolve({status:200,json:{done:true}}),60))});
   f.plugin.requestTimeoutMs=20;
   assert.deepEqual(await f.plugin.call('/v1/anything','POST',{}),{done:true});
+});
+
+test('a note whose summary has not been written offers Write a summary, not again',async()=>{
+  const f=await fixture(undefined,{recording_meeting:{candidates:[],calendar_hash:'c'},state:'awaiting_suggestions',job_id:null});
+  assert.ok(f.view.contentEl.all().some(e=>e.text==='Write a summary'));
+  assert.ok(!f.view.contentEl.all().some(e=>e.text==='Write the summary again'));
+});
+
+test('a refresh already in flight does not redraw over a Dismiss confirmation opened meanwhile',async()=>{
+  const first={waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'No speech.',can_retry:false,can_dismiss:true}],processing:[]},dropbox:{folder:'Dropbox',items:[]}};
+  const f=await home(first);
+  const call=f.plugin.call.bind(f.plugin);let release;
+  const gate=new Promise(resolve=>{release=resolve;});
+  f.plugin.call=async(path,...args)=>{await gate;return call(path,...args);};
+  const poll=f.view.refresh(true);
+  await f.view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
+  assert.ok(homeText(f.view).includes('Dismiss entry'));
+  // The answer that arrives is different: a new import appeared.
+  f.plugin.call=call;
+  first.dropbox={folder:'Dropbox',items:[{id:'n1',filename:'new.zip',state:'importing',parts:[],error:''}]};
+  release();await poll;
+  assert.ok(homeText(f.view).includes('Dismiss entry'));
+  assert.ok(!homeText(f.view).includes('new.zip'));
+});
+
+test('a dismissal that is under way keeps its progress through a timer refresh',async()=>{
+  const f=await home({waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'No speech.',can_retry:false,can_dismiss:true}],processing:[]},dismissFail:true});
+  await f.view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Dismiss entry').onclick();
+  assert.ok(homeText(f.view).includes('Could not dismiss. Check your connection, then try again.'));
+  await f.view.refresh(true);
+  assert.ok(homeText(f.view).includes('Could not dismiss. Check your connection, then try again.'));
 });

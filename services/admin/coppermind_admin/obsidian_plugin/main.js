@@ -292,7 +292,7 @@ ReviewView.prototype.summaryAgain=function(box,id,data,hasSummary){
   const writing=['queued','running'].includes(data.state);
   box.createEl('p',{text:hasSummary?'Not happy with it? Coppermind can write it again from the same transcript. The recording is not sent for transcription again, and the summary above stays until the new one arrives.':writing?'The summary is being written. Refresh this panel in a minute.':'There is no summary yet. Coppermind can write one from the same transcript.'});
   if(!hasSummary&&writing)return;
-  const button=box.createEl('button',{text:'Write the summary again'}), status=box.createEl('p',{cls:'coppermind-notice'});
+  const button=box.createEl('button',{text:hasSummary?'Write the summary again':'Write a summary'}), status=box.createEl('p',{cls:'coppermind-notice'});
   const generation=this.generation, wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   const watch=async()=>{
     // Look for the new summary every few seconds, for up to ten minutes, while this panel is showing this note.
@@ -348,6 +348,8 @@ class HomeView extends ItemView {
     try{
       const [waiting,drop]=await Promise.all([settle(this.plugin.call('/v1/recordings/waiting','GET',undefined,true)),settle(this.plugin.call('/v1/dropbox','GET',undefined,true))]);
       if(generation!==this.generation)return;
+      // A confirmation opened while these reads were in flight must not be redrawn away.
+      if(quiet&&this.busy)return;
       if(!waiting.ok&&!drop.ok){
         if(this.loaded){this.problem=NOT_ANSWERING+' This is what Coppermind last said.';this.showStale();return;}
         el.empty();el.createEl('h2',{text:'Needs you'});
@@ -386,12 +388,10 @@ class HomeView extends ItemView {
     if(this.data.dropError)el.createEl('p',{text:this.data.dropError,cls:'coppermind-notice'});
     if(waiting){
       if(!meetings.length&&!failed.length&&!busy&&!failedImports.length&&!this.data.dropError)el.createEl('p',{text:'You are all caught up. Nothing is waiting for you.'});
-      el.createEl('h3',{text:`Ready to review (${meetings.length})`});
-      if(!meetings.length)el.createEl('p',{text:'No meetings are waiting for review.'});
-      for(const meeting of meetings)this.meetingCard(meeting);
-      el.createEl('h3',{text:`Recordings needing attention (${failed.length})`});
-      if(!failed.length)el.createEl('p',{text:'No recordings need attention.'});
-      for(const recording of failed)this.failedCard(recording);
+      else{
+        if(meetings.length){el.createEl('h3',{text:`Ready to review (${meetings.length})`});for(const meeting of meetings)this.meetingCard(meeting);}
+        if(failed.length){el.createEl('h3',{text:`Recordings needing attention (${failed.length})`});for(const recording of failed)this.failedCard(recording);}
+      }
     }
     if(processing.length||activeImports.length){
       el.createEl('h3',{text:`Still processing (${busy})`});
