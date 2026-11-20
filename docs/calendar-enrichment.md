@@ -116,8 +116,10 @@ Suggestions, Transcription and search by meaning each choose only among services
 whose test showed they can do that job, so nobody types a model name or a reply
 format. Health is observed from every call: a service that stops answering is
 shown as not answering since the first call that got no answer. A compatible
-server must support Chat Completions, JSON-object response format, and bounded
-output. Redirects are refused, HTTPS verification is enabled, and remote error
+server must support Chat Completions and bounded output. Suggestions ask for the
+reply as a JSON schema where the service accepts it, then as any JSON object, then by
+the prompt alone; Coppermind remembers the plainest format each service and model
+needed. Redirects are refused, HTTPS verification is enabled, and remote error
 bodies are never shown.
 
 Supported connections:
@@ -166,6 +168,12 @@ The response limit (**Longest answer the model may write** on Admin's Suggestion
 for low reasoning effort where the provider accepts it. A reply cut off by that limit is not
 retried automatically, because the same limit would cut it off again; raise the limit and ask
 for fresh suggestions.
+A reply is read tolerantly: a code fence or prose around the JSON object is ignored, an
+optional part left out or empty counts as empty, and a lone string where a list belongs
+becomes a list of one. The job records each such repair. Anything else that cannot be used
+is refused as `answer-shape`. When the job has an attempt left, the first refusal earns one
+more call that sends the model its earlier answer and what was wrong with it, rather than
+the same request; that call uses an attempt.
 Pause stops new calls;
 an already-running call can finish. Disablement does not affect calendar intake
 or ordinary note work. Usage is shown only when the provider supplies numeric
@@ -240,8 +248,10 @@ job as `error_rule`, and the store logs each failure at warning level with that
 rule. Neither the stored message nor the log holds model output beyond a short,
 sanitized field name. The job itself keeps the first 4,000 characters of the
 model's reply when its answer was refused or failed a check, and Inspect shows
-it; the next attempt clears it. Admin's Jobs list also counts jobs that got an
-answer, failed or went stale, and shows the time of the last answer.
+it; the next attempt clears it. An `answer-shape` refusal also stores `problems`, each
+wrong part's path and reason in words that never repeat what the model wrote, and Admin's
+note history shows them with the model's answer behind a reveal. Admin's Jobs list
+also counts jobs that got an answer, failed or went stale, and shows the time of the last answer.
 
 ## Human review and recovery
 
