@@ -1,6 +1,6 @@
 """The supply chain rules for CI, enforced rather than remembered.
 
-Three rules live here, and each is asserted against the workflow parsed into
+Four rules live here, and each is asserted against the workflow parsed into
 a normalized model rather than against its text, so a spelling the parser
 accepts cannot slip past a string match:
 
@@ -9,6 +9,8 @@ accepts cannot slip past a string match:
 2. No job queues on the self hosted `lab` pool. That pool exists to reach the
    lab and nothing here needs to.
 3. Publication authority belongs only to tag-triggered release jobs.
+4. The release jobs and the promotion job gate on each need they wait for, so a
+   skipped ancestor cannot skip the publication.
 
 """
 
@@ -30,14 +32,21 @@ FORBIDDEN_PERMISSIONS = {
     "id-token": "could mint a signing identity",
 }
 
-# The one condition that may carry publication authority. Anything else, including
-# a disjunction that happens to name both halves, is true on pushes that are not
-# a version tag.
+# The one condition that may carry publication authority, and the clause every
+# release job must add so a skipped ancestor cannot skip it. Anything else,
+# including a disjunction that happens to name both halves, is true on pushes that
+# are not a version tag.
 TAG_GATE = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
+NEEDS_SUCCESS = "needs.<job>.result == 'success'"
 
 
 def load(workflow: Path) -> dict[str, Any]:
     return YAML(typ="safe").load(workflow.read_text(encoding="utf-8"))
+
+
+def _condition(job: dict[str, Any]) -> str:
+    """A job's `if`, normalised for comparing against a literal condition."""
+    return " ".join(str(job.get("if", "")).split())
 
 
 def jobs(workflow: Path) -> dict[str, dict[str, Any]]:
@@ -108,13 +117,14 @@ def test_publish_authority_is_confined_to_tag_only_jobs():
         document = load(workflow)
         for name, job in (document.get("jobs") or {}).items():
             for scope, why in FORBIDDEN_PERMISSIONS.items():
-                if (
-                    granted(document, job, scope) == "write"
-                    and str(job.get("if", "")).strip() != TAG_GATE
+                condition = _condition(job)
+                if granted(document, job, scope) == "write" and not condition.startswith(
+                    TAG_GATE + " && needs."
                 ):
                     problems.append(
                         f"{workflow.name}:{name} has {scope}: write and so {why} "
-                        f"unless its condition is exactly {TAG_GATE}"
+                        f"unless its condition starts with {TAG_GATE} and then "
+                        f"{NEEDS_SUCCESS} per need"
                     )
     assert not problems, "\n".join(problems)
 
@@ -148,6 +158,37 @@ def test_release_waits_for_every_image_and_the_running_stack():
         "release-mode",
     }
     assert publish["runs-on"] == "ubuntu-latest"
+
+
+def test_publish_and_promotion_are_not_skipped_by_skipped_ancestors():
+    """A skipped job somewhere upstream in the chain must not hide the release.
+
+    On a minimal tag, `checks`, `scan` and the integration shards are skipped by
+    design, and `integration` itself concludes `success` while its own shard
+    ancestor was skipped. GitHub only rolls a need's `skipped` up into a job whose
+    `if` uses `!failure()` or `!cancelled()`, so the gate that has to survive those
+    skips names each direct need's result explicitly: `needs.<job>.result` must be
+    `'success'` for every need of `publish`, and for the one need of
+    `promote-latest`.
+    """
+    all_jobs = jobs(WORKFLOWS[0])
+    problems: list[str] = []
+    for name in ("publish", "promote-latest"):
+        job = all_jobs[name]
+        needs = job.get("needs") or []
+        waited = {needs} if isinstance(needs, str) else set(needs)
+        condition = _condition(job)
+        for other in sorted(waited):
+            read = f"needs.{other}.result == 'success'"
+            if read not in condition:
+                problems.append(f"{name} does not require {read}, so a skipped ancestor skips it")
+    assert not problems, "\n".join(problems)
+
+
+def test_promotion_still_refuses_when_publish_did_not_succeed():
+    """`promote-latest` must not move `latest` over a publish that failed or skipped."""
+    condition = _condition(jobs(WORKFLOWS[0])["promote-latest"])
+    assert "needs.publish.result == 'success'" in condition
 
 
 def test_the_integration_gate_downloads_what_every_shard_uploads():

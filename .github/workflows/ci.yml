@@ -12,11 +12,18 @@
 # Two shapes of a run. On a pull request or a push to main, everything runs. On
 # a version tag, `release-mode` first asks whether main already passed this very
 # commit. A passing answer makes the tag minimal: `checks`, `scan` and the
-# integration shards are skipped, and the tag validates itself, builds and scans
-# the images with the version stamped in, runs the start-up check of the stack
-# (not the failure and sync storylines) and publishes. A missing, cancelled or
-# failed main run leaves the tag with the full shape, so untested code is never
-# published.
+# integration shards are skipped, `integration` still concludes success with
+# nothing to check, and the tag validates itself, builds and scans the images with
+# the version stamped in, runs the start-up check of the stack (not the failure and
+# sync storylines) and publishes. A missing, cancelled or failed main run leaves
+# the tag with the full shape, so untested code is never published.
+#
+# `publish` and `promote-latest` gate on the result of every need they wait for,
+# not on `!failure()`. GitHub only rolls a skipped ancestor up into those two
+# functions, and on the minimal tag `checks`, `scan` and the shards are skipped by
+# design, so a bare `!failure()` would leave the publication itself skipped with the
+# run otherwise green. Naming each `needs.<job>.result` keeps the gate exact: the
+# job runs when every need concluded, and stops when one failed or was cancelled.
 #
 # Every scanner and check is invoked through `make`, so a developer runs
 # exactly what CI runs.
@@ -382,8 +389,19 @@ jobs:
   # Only a tag push receives package, release and signing authority. The
   # release is created last, after every image is present, signed, anonymously
   # pullable and seen working together.
+  # Each direct need is checked by name, not only by `!failure()`. `integration`
+  # passes on the minimal tag while its own ancestor `integration-shard` was
+  # skipped, so `!failure()` alone would be true there too; the explicit
+  # `== 'success'` per need is what makes this job run exactly when every need it
+  # waits for concluded, and stop when any of them failed or was cancelled.
   publish:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: >-
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') &&
+      needs.image.result == 'success' &&
+      needs.smoke.result == 'success' &&
+      needs.integration.result == 'success' &&
+      needs.release-tag.result == 'success' &&
+      needs.release-mode.result == 'success'
     needs: [image, smoke, integration, release-tag, release-mode]
     runs-on: ubuntu-latest
     permissions:
@@ -462,7 +480,9 @@ jobs:
           if-no-files-found: error
 
   promote-latest:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: >-
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') &&
+      needs.publish.result == 'success'
     needs: publish
     runs-on: ubuntu-latest
     # One group for every tag, on purpose. The promotion script reads the
