@@ -44,7 +44,7 @@ PAGES = [
     (f"/admin/services/{SERVICE}/remove", "Say what takes over"),
     ("/admin/suggestions", "Suggestions are on"),
     ("/admin/suggestions/fill", "What suggestions fill in"),
-    ("/admin/suggestions/summary", "How the meeting summary is written"),
+    ("/admin/transcription/writeup", "How recordings are written up"),
     ("/admin/transcription", "Transcription is on"),
     ("/admin/apps", "Connected apps"),
     ("/admin/apps/new", "Connect an app"),

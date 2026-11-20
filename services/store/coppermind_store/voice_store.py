@@ -162,6 +162,21 @@ class VoiceStore:
         self._save(data)
         return identity
 
+    def record_named_match(self, note_id: str, label: str, person_id: str) -> None:
+        """Track an automatic appearance for correction, without learning new signatures."""
+        data = self._load()
+        rows = data.setdefault("assignments", [])
+        if not any(a["note_id"] == note_id and a["label"] == label for a in rows):
+            rows.append(
+                {
+                    "note_id": note_id,
+                    "label": label,
+                    "voice_id": "person:" + person_id,
+                    "origin_id": "person:" + person_id,
+                }
+            )
+            self._save(data)
+
     def bind_recording(self, provisional_id: str, note_id: str) -> None:
         data = self._load()
         for voice in data.get("unknowns", {}).values():

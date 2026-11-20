@@ -891,6 +891,8 @@ class AdminService:
             "suggestions-fill": features.suggestions_fill,
             "suggestions-tick": features.suggestions_tick,
             "suggestions-older": features.suggestions_older,
+            "writeup-settings": plain(features.writeup_settings),
+            "writeup-save": features.writeup_save,
             "summary-directions": plain(_wrap(features.summary_directions)),
             "summary-directions-save": features.summary_directions_save,
             "note-summary": notes.summary,

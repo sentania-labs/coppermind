@@ -105,15 +105,24 @@ def why(item: dict[str, Any], ctx: Ctx, transcription: str) -> str:
         if item["state"] == "done":
             if item["audio_removed"]:
                 # The audio goes once the note is reviewed, so its absence says it was.
-                return "Written up, reviewed and filed."
+                return (
+                    "Note ready. Reviewed and filed."
+                    if item.get("stage")
+                    else "Written up, reviewed and filed."
+                )
             told = item["speakers"]
             return (
-                "Written up"
+                item.get("stage", "Written up")
                 + (f" with {plural(told, 'speaker')} told apart" if told else "")
                 + ". Note placed in Review."
             )
         if item["state"] == "working":
-            return "Being written up. " + estimate(item["minutes"])
+            stage = item.get("stage", "Being written up")
+            detail = {
+                "Writing up": "The transcript is saved.",
+                "Saving note": "The finished write-up is saved.",
+            }.get(stage)
+            return stage + ". " + (detail or estimate(item["minutes"]))
         if item["state"] == "waiting":
             if transcription == "none":
                 return "Kept. It will be written up once transcription is on."
@@ -132,7 +141,11 @@ def why(item: dict[str, Any], ctx: Ctx, transcription: str) -> str:
                     else "Waiting for the transcription service."
                 )
             return "Waiting for its turn. Recordings are written up one at a time."
-        return ui.linked_answer_limit_error(item.get("error") or "It could not be written up.")
+        return (
+            e(item.get("stage", ""))
+            + ": "
+            + ui.linked_answer_limit_error(item.get("error") or "It could not be written up.")
+        )
     if item["kind"] == "calendar":
         if item["state"] == "done":
             return (
@@ -775,7 +788,7 @@ def router(wiring: Wiring) -> APIRouter:
             note = model.note_path(item["note_id"]) if item["note_id"] else ""
             top = ui.status(
                 "ok",
-                "Written up",
+                item.get("stage", "Written up"),
                 "The note was written from this recording. Open it to see where it is now.",
                 ui.go("See the note", note) if note else "",
             )
@@ -813,7 +826,7 @@ def router(wiring: Wiring) -> APIRouter:
             events.append(
                 (
                     ui.when(item["done_at"], ctx.zone),
-                    "Written up"
+                    item.get("stage", "Written up")
                     + (f" with {plural(speakers, 'speaker')} told apart" if speakers else "")
                     + ". Note placed in Review.",
                 )

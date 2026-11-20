@@ -6,13 +6,16 @@ import copy
 import re
 from typing import Any
 
-_LABEL = re.compile(r"(?:Part ([1-9][0-9]*): )?(?P<kind>Speaker|Unknown voice) ([1-9][0-9]*)")
+_LABEL = re.compile(
+    r"(?:Part ([1-9][0-9]*): )?(?P<kind>Speaker|Unknown voice) ([1-9][0-9]*)"
+    r"(?P<local> \(recording-local\))?"
+)
 
 
 def is_unrecognised(label: str) -> bool:
     """A label the service gave, which no recognised voice has replaced."""
     match = _LABEL.fullmatch(label)
-    return match is not None and match["kind"] == "Speaker"
+    return match is not None and (match["kind"] == "Speaker" or bool(match["local"]))
 
 
 def speaker_labels(transcript: dict[str, Any]) -> list[str]:

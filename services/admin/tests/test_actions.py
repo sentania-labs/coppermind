@@ -21,107 +21,45 @@ MEETINGS = [c["event_id"] for c in VIEWS["lifecycle"]["recording_meeting"]["cand
 EARLIER = {"summary": "The first summary.", "decisions": "", "action_items": ""}
 
 
-# -- how the meeting summary is written -----------------------------------------------------
+# -- recording write-up directions ----------------------------------------------------------
 
 
-def test_the_page_has_one_box_of_directions_for_each_section_and_the_locked_rules(admin):
+def test_old_summary_editor_redirects_to_document_editor(admin):
+    client, _, _ = admin
+    response = client.get("/admin/suggestions/summary", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/transcription/writeup"
+
+
+def test_document_editor_has_one_prompt_and_readonly_rules(admin):
     client, _, store = admin
-    page = client.get("/admin/suggestions/summary").text
-    view = store.views["summary-directions"]
-    for section in view["sections"]:
-        assert f"Directions for {section['name']}" in page
-        assert f'name="d_{section["key"]}"' in page
-        assert section["default"].replace("'", "&#x27;") in page
-        assert f'value="reset:{section["key"]}"' in page
-    for rule in view["locked"]:
-        assert rule in page
-    assert "Always the same, whatever you write" in page
-    assert "Takes effect with the next summary Coppermind writes." in page
-    assert page.count(">Save</button>") == 1
+    page = client.get("/admin/transcription/writeup").text
+    assert page.count("<textarea") == 1
+    assert 'name="writeup_prompt"' in page
+    assert "Locked rules (read-only)" in page
+    assert html.escape(store.views["writeup-settings"]["locked"]) in page
 
 
-def test_a_section_added_in_the_store_shows_up_without_a_change_to_the_page(admin):
+def test_writeup_editor_saves_exact_text_and_separate_limits(admin):
     client, _, store = admin
-    store.views["summary-directions"]["sections"].append(
-        {
-            "key": "risks",
-            "name": "Open risks",
-            "text": "One line each.",
-            "default": "One line each.",
-            "custom": False,
-        }
-    )
-    page = client.get("/admin/suggestions/summary").text
-    assert "Directions for Open risks" in page
-    assert 'name="d_risks"' in page
-    store.answers["summary-directions-save"] = {"custom": ["risks"], "emptied": []}
-    form = {"how": "save", "d_summary": "A", "d_decisions": "B", "d_action_items": "C"}
-    post(client, "/admin/suggestions/summary", form | {"d_risks": "Worst first."})
-    assert store.asked("summary-directions-save")[0]["directions"]["risks"] == "Worst first."
-
-
-def test_saving_sends_exactly_what_was_typed_for_each_section(admin):
-    client, _, store = admin
-    store.answers["summary-directions-save"] = {"custom": ["summary"], "emptied": []}
-    form = {"how": "save", "d_summary": "Two lines at most.", "d_decisions": "As they were."}
-    saved = post(client, "/admin/suggestions/summary", form | {"d_action_items": "Mine first."})
-    assert store.asked("summary-directions-save") == [
-        {
-            "directions": {
-                "summary": "Two lines at most.",
-                "decisions": "As they were.",
-                "action_items": "Mine first.",
-            }
-        }
-    ]
-    page = follow(client, saved)
-    assert "Saved. The next summary is written with your directions for Summary." in page
-    assert "Summaries already written were not changed." in page
-
-
-def test_an_empty_box_is_said_to_mean_the_usual_directions(admin):
-    client, _, store = admin
-    store.answers["summary-directions-save"] = {"custom": [], "emptied": ["Decisions"]}
-    form = {"how": "save", "d_summary": "x", "d_decisions": "", "d_action_items": "y"}
-    page = follow(client, post(client, "/admin/suggestions/summary", form))
-    assert "The box for Decisions was empty, so it uses its usual directions." in page
-
-
-def test_directions_that_are_too_long_come_back_as_typed_with_the_reason(admin):
-    client, _, store = admin
-    store.answers["summary-directions-save"] = {
-        "refused": {"field": "decisions", "message": "The directions for Decisions are too long."}
+    form = {
+        "writeup_prompt": "Keep it short.\nInclude commitments.",
+        "connection": "writer",
+        "model": "small",
+        "enabled": "true",
+        "max_output_tokens": "4096",
+        "summary_max_input_chars": "200000",
+        "timeout_s": "900",
     }
-    form = {"how": "save", "d_summary": "kept", "d_decisions": "my words", "d_action_items": "z"}
-    refused = post(client, "/admin/suggestions/summary", form)
-    assert refused.status_code == 422
-    assert "The directions for Decisions are too long." in refused.text
-    assert ">my words</textarea>" in refused.text
-    assert ">kept</textarea>" in refused.text
+    result = post(client, "/admin/transcription/writeup", form)
+    assert result.status_code == 303
+    assert store.asked("writeup-save") == [{**form, "enabled": True}]
 
 
-def test_reset_puts_one_default_back_in_its_box_and_saves_nothing(admin):
+def test_writeup_reset_restores_default_without_changing_other_settings(admin):
     client, _, store = admin
-    default = store.views["summary-directions"]["sections"][1]["default"]
-    form = {"how": "reset:decisions", "d_summary": "my summary words", "d_decisions": "mine"}
-    page = post(client, "/admin/suggestions/summary", form | {"d_action_items": "also mine"})
-    assert page.status_code == 200
-    assert store.asked("summary-directions-save") == []
-    assert "The usual directions for Decisions are back in the box." in page.text
-    assert "Nothing is saved until you press Save." in page.text
-    assert f">{default}</textarea>" in page.text
-    # What was typed in the other boxes is still there to be saved.
-    assert ">my summary words</textarea>" in page.text
-    assert ">also mine</textarea>" in page.text
-
-
-def test_the_suggestions_page_says_whether_the_directions_are_the_owners_own(admin):
-    client, _, store = admin
-    assert "The usual directions for every section." in client.get("/admin/suggestions").text
-    store.views["suggestions"]["summary_custom"] = True
-    assert "Your own directions for at least one section." in (
-        client.get("/admin/suggestions").text
-    )
+    post(client, "/admin/transcription/writeup", {"reset": "true", "model": "unsaved"})
+    assert store.asked("writeup-save") == [{"reset": True}]
 
 
 # -- writing a summary again ----------------------------------------------------------------

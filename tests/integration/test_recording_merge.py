@@ -24,7 +24,7 @@ from tests.integration.test_context_enrichment import configure
 from tests.integration.test_recordings import store_audio
 
 
-async def prepare(store):
+async def prepare(store, *, markdown=False):
     context = await configure(store)
     await context.setup_lifecycle({"revision": context.config().revision})
     config = context.config()
@@ -43,6 +43,7 @@ async def prepare(store):
     )
     recording = TranscriptionJob(
         id="a" * 64,
+        generation_mode="markdown-v1" if markdown else "legacy",
         artifact_id=await store_audio(store),
         filename="meeting.m4a",
         mime_type="audio/mp4",
@@ -57,8 +58,31 @@ async def prepare(store):
         frontmatter={"date": "2026-10-14T09:00:00", "calendar_event": event},
     )
     transcript = {"segments": [{"start": 0, "speaker": "Speaker 1", "text": "Hello Casey."}]}
+    if markdown:
+
+        async def writer(connection, key, limits, system, evidence):
+            return (
+                "# " + evidence["resolved_title"] + "\n\n## Top line\nA greeting.\n"
+                "<<<RECORDING_BOUNDARIES>>>\n[]\n<<<END_RECORDING_BOUNDARIES>>>"
+            ), {}
+
+        context.provider.write_text = writer
     await context.recordings.file_note(recording, transcript)
     generated = await store.get_note(recording.note_id)
+    if markdown:
+        return (
+            context,
+            recording,
+            generated,
+            target,
+            {
+                "note_id": generated.id,
+                "if_match": generated.content_hash,
+                "target_id": target.id,
+                "target_hash": target.content_hash,
+                "confirmation": "Merge recording",
+            },
+        )
     job = context.load_job(await context.queue_note(generated.id))
     summary = MeetingSummary(summary="We agreed to ship.", decisions="", action_items="")
     job.result = Suggestions(meeting_summary=summary)
@@ -555,3 +579,19 @@ async def test_a_merged_recordings_audio_is_not_held_back_by_the_note_it_was_mer
         )
     )
     assert await context.recordings.shared_audio(recording) is True
+
+
+async def test_finished_markdown_merges_without_summary_proposal(store):
+    context, recording, generated, target, payload = await prepare(store, markdown=True)
+    result = await context.lifecycle.merge_recording(payload)
+    assert result["state"] == "complete"
+    merged = await store.get_note(target.id)
+    assert merged.body.startswith(target.body)
+    assert merged.body.count("## Recording write-up") == 1
+    assert "A greeting." in merged.body
+    from coppermind_store import recording_merge
+
+    await recording_merge.apply(
+        context, context.read("recording-merges/" + recording.source_id, {})
+    )
+    assert (await store.get_note(target.id)).body == merged.body

@@ -368,16 +368,6 @@ touched.</p>
                 ui.go("Change", "/admin/suggestions/fill"),
             ),
             ui.row(
-                "How the meeting summary is written",
-                (
-                    "Your own directions for at least one section."
-                    if data.get("summary_custom")
-                    else "The usual directions for every section."
-                )
-                + " Used when a recording is written up.",
-                ui.go("Change", "/admin/suggestions/summary"),
-            ),
-            ui.row(
                 "Longest answer the model may write",
                 '<span id="answer-length"></span>'
                 + ui.quick_select(
@@ -689,114 +679,89 @@ touched.</p>
         )
         return ctx.go("/admin/suggestions")
 
-    # -- how the meeting summary is written ----------------------------------------------
+    # -- recording document directions ---------------------------------------------------
 
-    SUMMARY_TITLE = "How the meeting summary is written"
-    SUMMARY_LEDE = (
-        "When a recording is written up, Coppermind also writes a summary in fixed sections "
-        "for you to check. Each section has its own directions, and those are yours to change."
-    )
-
-    def summary_page(
-        data: dict[str, Any], typed: dict[str, str], errors: dict[str, str], note: str = ""
-    ) -> str:
-        """One box of directions for each section the store says a summary has."""
-        boxes = ""
-        for section in data["sections"]:
-            key = section["key"]
-            state = "Your own directions." if section["custom"] else "The usual directions."
-            boxes += (
-                ui.text_area(
-                    "d_" + key,
-                    f"Directions for {e(section['name'])}",
-                    typed.get(key, section["text"]),
-                    rows=5,
-                    maxlength=data["max"],
-                    hint=f"{state} Up to {data['max']:,} characters. An empty box means the "
-                    "usual directions.",
-                    error=errors.get(key, ""),
-                )
-                + f'<div class="actions" style="margin:-4px 0 14px"><button class="lat-btn" '
-                f'name="how" value="reset:{e(key)}" formnovalidate>Reset to default</button>'
-                "</div>"
-            )
-        form = f"""<form method="post" action="/admin/suggestions/summary" class="stack">
-{boxes}
-<p class="muted">Takes effect with the next summary Coppermind writes. Summaries already
-written are not changed. To have one written again with new directions, open a note that
-is waiting for review and press Write the summary again.</p>
-<div class="actions"><button class="lat-btn lat-btn--primary" name="how" value="save"
-data-busy="Saving…">Save</button>{ui.go("Cancel", "/admin/suggestions")}</div></form>"""
-        locked = "".join(f"<li>{e(rule)}</li>" for rule in data["locked"])
-        names = ui.sentence_list([e(section["name"]) for section in data["sections"]])
-        rules = f"""<h3>Always the same, whatever you write</h3>
-<p class="muted">The sections themselves ({names}) are fixed, and Coppermind puts these rules
-around your directions every time. They are what keeps a summary safe to file, so they are
-not yours to edit and cannot be switched off from here.</p><ul class="plain">{locked}</ul>"""
-        return f"""{ui.head(SUMMARY_TITLE, SUMMARY_LEDE, ("/admin/suggestions", "Suggestions"))}
-<div class="stack">{note}{ui.card(form)}{ui.card(rules)}</div>"""
+    WRITEUP_PATH = "/admin/transcription/writeup"
+    WRITEUP_TITLE = "How recordings are written up"
 
     @routes.get("/admin/suggestions/summary", include_in_schema=False)
-    async def summary(request: Request) -> Response:
+    @routes.post("/admin/suggestions/summary", include_in_schema=False)
+    async def summary_redirect(request: Request) -> Response:
+        return Ctx(request, wiring).go(WRITEUP_PATH)
+
+    @routes.get(WRITEUP_PATH, include_in_schema=False)
+    async def writeup(request: Request) -> Response:
         ctx = Ctx(request, wiring)
         try:
-            data = await ctx.act("summary-directions", {})
+            data = await ctx.act("writeup-settings", {})
         except StoreError:
-            return await ctx.unavailable(SUMMARY_TITLE, SUMMARY_LEDE, "suggestions")
-        return await ctx.page(SUMMARY_TITLE, summary_page(data, {}, {}), "suggestions")
+            return await ctx.unavailable(WRITEUP_TITLE, "", "transcription")
+        chosen = data["assignment"]
+        fields = ui.text_area(
+            "writeup_prompt", "Directions", data["prompt"], rows=28, maxlength=20000
+        )
+        fields += ui.select(
+            "connection",
+            "AI service",
+            [("", "Choose a service")]
+            + [(service["id"], service["name"]) for service in data["services"]],
+            chosen["connection"],
+        )
+        fields += ui.text_input("model", "Model", chosen["model"])
+        fields += ui.select(
+            "enabled",
+            "Write-ups",
+            [("true", "On"), ("false", "Off")],
+            "true" if chosen["enabled"] else "false",
+        )
+        for key, label in (
+            ("max_output_tokens", "Longest answer (tokens)"),
+            ("summary_max_input_chars", "Complete transcript limit (characters)"),
+            ("timeout_s", "Wait for model (seconds)"),
+        ):
+            fields += ui.text_input(key, label, str(chosen[key]))
+        form = f"""<form method="post" action="{WRITEUP_PATH}" class="stack">{fields}
+<p>Changes apply to new generations and failed write-up retries. Existing notes stay as written.</p>
+<div class="actions"><button class="lat-btn lat-btn--primary">Save</button>
+<button class="lat-btn" name="reset" value="true" formnovalidate>Reset to default</button>
+</div></form>"""
+        rules = "<h3>Locked rules (read-only)</h3><pre>" + e(data["locked"]) + "</pre>"
+        body = ui.head(
+            WRITEUP_TITLE,
+            "A recording produces a finished note before frontmatter review.",
+            ("/admin/transcription", "Transcription"),
+        )
+        return await ctx.page(
+            WRITEUP_TITLE, body + ctx.flash() + ui.card(form) + ui.card(rules), "transcription"
+        )
 
-    @routes.post("/admin/suggestions/summary", include_in_schema=False)
-    async def summary_save(request: Request) -> Response:
+    @routes.post(WRITEUP_PATH, include_in_schema=False)
+    async def writeup_save(request: Request) -> Response:
         ctx = Ctx(request, wiring)
         form = await ctx.form()
-        try:
-            data = await ctx.act("summary-directions", {})
-        except StoreError as exc:
-            return await ctx.refused(exc, "/admin/suggestions/summary")
-        typed = {
-            section["key"]: form["d_" + section["key"]]
-            for section in data["sections"]
-            if "d_" + section["key"] in form
-        }
-        how = form.get("how", "save")
-        if how.startswith("reset:"):
-            # Putting a default back is a draft like any other: nothing is saved until Save.
-            section = next((s for s in data["sections"] if s["key"] == how[6:]), None)
-            if section is None:
-                return ctx.go("/admin/suggestions/summary")
-            typed[section["key"]] = section["default"]
-            note = ui.banner(
-                "info",
-                f"The usual directions for {e(section['name'])} are back in the box. Nothing "
-                "is saved until you press Save.",
-                fresh=True,
-            )
-            return await ctx.page(SUMMARY_TITLE, summary_page(data, typed, {}, note), "suggestions")
-        try:
-            result = await ctx.act("summary-directions-save", {"directions": typed})
-        except StoreError as exc:
-            return await ctx.refused(exc, "/admin/suggestions/summary")
-        if "refused" in result:
-            # Too long: the page comes back with what was typed, so nothing has to be redone.
-            refusal = result["refused"]
-            page = summary_page(data, typed, {refusal["field"]: e(refusal["message"])})
-            return await ctx.page(SUMMARY_TITLE, page, "suggestions", status=422)
-        own = [s["name"] for s in data["sections"] if s["key"] in result["custom"]]
-        said = (
-            f"Saved. The next summary is written with your directions for "
-            f"{ui.sentence_list([e(name) for name in own])}."
-            if own
-            else "Saved. Every section uses its usual directions."
+        payload: dict[str, Any] = (
+            {"reset": True}
+            if form.get("reset")
+            else {
+                key: form.get(key, "")
+                for key in (
+                    "connection",
+                    "model",
+                    "writeup_prompt",
+                    "max_output_tokens",
+                    "summary_max_input_chars",
+                    "timeout_s",
+                )
+            }
         )
-        if result["emptied"]:
-            empty = ui.sentence_list([e(name) for name in result["emptied"]])
-            said += (
-                f" The box for {empty} was empty, so "
-                f"{'it uses its' if len(result['emptied']) == 1 else 'they use their'} usual "
-                "directions."
-            )
-        ctx.say("ok", said + " Summaries already written were not changed.")
-        return ctx.go("/admin/suggestions")
+        if not payload.get("reset"):
+            payload["enabled"] = form.get("enabled") == "true"
+        try:
+            await ctx.act("writeup-save", payload)
+        except StoreError as exc:
+            return await ctx.refused(exc, WRITEUP_PATH)
+        ctx.say("ok", "Saved. The next write-up uses these directions.")
+        return ctx.go(WRITEUP_PATH)
 
     # ====================================================================================
     # Transcription
@@ -974,7 +939,8 @@ minutes. Pick more only if your recordings run for several hours.</div></div>
             else ""
         )
         strip = setup_strip(await ctx.view(), "trans")
-        page = f"""{ui.head("Transcription", TRANS_LEDE)}<div class="stack">{strip}{ctx.flash()}
+        page = f"""{ui.head("Transcription", TRANS_LEDE)}
+{ui.go("How recordings are written up", WRITEUP_PATH)}<div class="stack">{strip}{ctx.flash()}
 {picked_note}{top}{ui.card(ui.stepper(labels, step) + body)}</div>"""
         return await ctx.page("Transcription", page, "transcription")
 
@@ -1111,7 +1077,8 @@ minutes. Pick more only if your recordings run for several hours.</div></div>
             if ctx.q("cancelled")
             else ""
         )
-        page = f"""{ui.head("Transcription", TRANS_LEDE)}<div class="stack">
+        page = f"""{ui.head("Transcription", TRANS_LEDE)}
+{ui.go("How recordings are written up", WRITEUP_PATH)}<div class="stack">
 {setup_strip(view, "trans")}{ctx.flash()}{cancelled}{top}
 {support_detail(service, ctx.zone) if state == "failing" and service else ""}
 {ui.card(rows)}</div>"""

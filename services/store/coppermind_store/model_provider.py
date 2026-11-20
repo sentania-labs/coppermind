@@ -586,6 +586,31 @@ class ModelProvider:
         system: str,
         evidence: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        output, usage = await self.write_text(
+            connection, key, assignment, system, evidence, json_output=True
+        )
+        try:
+            parsed = json.loads(output)
+        except ValueError as exc:
+            raise ProviderError(
+                "The model's answer was not valid JSON.", "provider-not-json", reply=output
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise ProviderError(
+                "The model's answer was not a JSON object.", "provider-not-json", reply=output
+            )
+        return parsed, usage
+
+    async def write_text(
+        self,
+        connection: ModelConnection,
+        key: str,
+        assignment: FeatureAssignment,
+        system: str,
+        evidence: dict[str, Any],
+        *,
+        json_output: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
         content = json.dumps(evidence, ensure_ascii=False)
         if len(content) > assignment.max_input_chars:
             raise InputLimitError(len(content), assignment.max_input_chars)
@@ -620,7 +645,7 @@ class ModelProvider:
                     {"role": "system", "content": system},
                     {"role": "user", "content": content},
                 ],
-                "response_format": {"type": "json_object"},
+                **({"response_format": {"type": "json_object"}} if json_output else {}),
                 "stream": True,
                 "stream_options": {"include_usage": True},
             }
@@ -693,24 +718,12 @@ class ModelProvider:
                 "raise Longest answer the model may write or use a model that thinks less.",
                 "provider-empty-reply",
             )
-        try:
-            parsed = json.loads(output)
-        except ValueError as exc:
-            raise ProviderError(
-                "The model's answer was not valid JSON.", "provider-not-json", reply=output
-            ) from exc
-        if not isinstance(parsed, dict):
-            raise ProviderError(
-                "The model's answer was JSON but not a JSON object.",
-                "provider-not-json",
-                reply=output,
-            )
         reported = result.get("model")
         usage["model"] = assignment.model
         usage["provider_model_version"] = (
             reported[:200] if isinstance(reported, str) else "not supplied"
         )
-        return parsed, usage
+        return output, usage
 
     @staticmethod
     def _http_error(status: int, *, upload: bool) -> ProviderError:

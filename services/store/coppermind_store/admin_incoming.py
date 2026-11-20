@@ -73,6 +73,7 @@ class AdminIncoming:
             # not failed: it is sent again by itself once the service answers.
             "state": "waiting" if held else RECORDING_STATES[job.state],
             "held": held,
+            "stage": job.stage,
             "error": job.error,
             "rule": job.error_rule,
             "retry_after": job.retry_after if job.attempts < job.attempt_limit else "",

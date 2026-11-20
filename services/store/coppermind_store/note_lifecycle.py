@@ -223,7 +223,12 @@ class NoteLifecycle:
                 old_title = previous_choice.get("title") or recording.title
                 prefix = "# " + old_title + "\n"
                 body = note.body
-                if title and not any(c in title for c in "\r\n\0") and body.startswith(prefix):
+                if (
+                    recording.generation_mode == "legacy"
+                    and title
+                    and not any(c in title for c in "\r\n\0")
+                    and body.startswith(prefix)
+                ):
                     body = "# " + title + "\n" + body[len(prefix) :]
                 if body != note.body:
                     import base64
@@ -327,23 +332,29 @@ class NoteLifecycle:
             if not candidate or candidate["content_hash"] != payload.get("target_hash"):
                 raise ValueError("The matching note changed. Refresh the review.")
             job = self.context.newest_job(note.id)
-            if (
-                not job
-                or job.id != payload.get("job_id")
-                or job.state != "suggested"
-                or not job.result
-                or not job.result.meeting_summary
-                or job.note_hash != note.content_hash
-            ):
-                raise ValueError("The recording summary is not ready to merge. Refresh the review.")
-            summary = MeetingSummary.model_validate(payload.get("meeting_summary"))
             manifest = await self.context.store.get_source(recording.source_id)
-            if (
-                job.source_versions.get(recording.source_id) != manifest.current_revision
-                or job.evidence_hash != await self.context.note_evidence_hash(note)
-            ):
-                raise ValueError("The recording or calendar changed. Refresh the review.")
-            recording_merge.append_summary("", summary, manifest.projection_path or "")
+            writeup = self.context.read("recording-writeups/" + recording.id, {})
+            summary = None
+            if recording.generation_mode == "markdown-v1":
+                if not writeup.get("body"):
+                    raise ValueError("The recording write-up is not ready to merge.")
+            else:
+                if (
+                    not job
+                    or job.id != payload.get("job_id")
+                    or job.state != "suggested"
+                    or not job.result
+                    or not job.result.meeting_summary
+                    or job.note_hash != note.content_hash
+                ):
+                    raise ValueError("The recording summary is not ready to merge. Refresh review.")
+                summary = MeetingSummary.model_validate(payload.get("meeting_summary"))
+                if (
+                    job.source_versions.get(recording.source_id) != manifest.current_revision
+                    or job.evidence_hash != await self.context.note_evidence_hash(note)
+                ):
+                    raise ValueError("The recording or calendar changed. Refresh the review.")
+                recording_merge.append_summary("", summary, manifest.projection_path or "")
             paths = await artifacts.known_paths(self.context.store, [recording.artifact_id])
             artifact = artifacts.read_manifest(self.context.store, recording.artifact_id)
             artifact_link = artifacts.link_for(
@@ -363,6 +374,8 @@ class NoteLifecycle:
                 for title in {recording.title, chosen_title}
                 if title
             }
+            if recording.generation_mode == "markdown-v1":
+                expected_bodies = {writeup.get("voice_body", writeup.get("filed_body", "")).strip()}
             if note.body.strip() not in expected_bodies:
                 raise ValueError("The recording note has edits. Move them before merging.")
             generated_path = (await self.context.store._locate(note.id))[1]
@@ -395,7 +408,10 @@ class NoteLifecycle:
                 "target_hash": target.content_hash,
                 "target_snapshot": base64.b64encode(target_bytes).decode(),
                 "manifest_snapshot": base64.b64encode(manifest_bytes).decode(),
-                "summary": summary.model_dump(),
+                "summary": summary.model_dump() if summary else None,
+                "markdown": writeup.get("voice_generated", writeup.get("body", ""))
+                if not summary
+                else "",
                 "projection_path": manifest.projection_path,
             }
             self.context.write(key, receipt)
@@ -623,7 +639,9 @@ class NoteLifecycle:
                             "error": receipt.get("error", ""),
                             "target_id": receipt.get("target_id"),
                         }
-                    elif job and job.result and job.result.meeting_summary and not stale:
+                    elif recording.generation_mode == "markdown-v1" or (
+                        job and job.result and job.result.meeting_summary and not stale
+                    ):
                         matches = await self.merge_candidates(note, recording)
                         if matches:
                             source = await self.context.store.get_source(recording.source_id)
@@ -631,6 +649,9 @@ class NoteLifecycle:
                                 "state": "offered",
                                 "candidates": matches,
                                 "transcript_path": source.projection_path,
+                                "markdown": self.context.read(
+                                    "recording-writeups/" + recording.id, {}
+                                ).get("body", ""),
                             }
             with timing.step("speaker_details"):
                 if manual:
@@ -683,6 +704,7 @@ class NoteLifecycle:
                     "speaker_attendees_notice": ""
                     if self.context.config().assignments["enrichment"].attendees_field
                     else speaker_names.ATTENDEES_UNSET_NOTICE,
+                    "recording_generation_mode": recording.generation_mode if recording else None,
                     "meeting_summary": job.result.meeting_summary.model_dump()
                     if job and job.result and job.result.meeting_summary
                     else None,
@@ -980,6 +1002,45 @@ class NoteLifecycle:
                 self.context.write(name, receipt)
                 current = await speaker_names.apply(self.context, receipt, current)
                 receipt["expected_hash"] = current.content_hash
+                # Speakers without signatures still have a recording-local label. Defer
+                # its generated-line rename until the frontmatter review receipt completes.
+                from coppermind_store.voice_store import VoiceStore
+
+                async with self.context.lock:
+                    for recording in self.context.recordings.jobs():
+                        if (
+                            recording.source_id != receipt["speakers"]["source_id"]
+                            or recording.generation_mode != "markdown-v1"
+                        ):
+                            continue
+                        saved = self.context.read("recording-writeups/" + recording.id, {})
+                        for old, new in receipt["speakers"]["mapping"].items():
+                            if not speaker_names.is_unrecognised(old):
+                                continue
+                            original = next(
+                                (
+                                    key
+                                    for key, value in saved.get("voice_map", {}).items()
+                                    if value == old
+                                ),
+                                old,
+                            )
+                            positions = [
+                                i
+                                for i, segment in enumerate(
+                                    saved.get("transcript", {}).get("segments", [])
+                                )
+                                if segment.get("speaker") == old
+                            ]
+                            VoiceStore(self.context).defer_relabel(
+                                {
+                                    "note_id": identity,
+                                    "source_id": recording.source_id,
+                                    "label": original,
+                                    "segments": positions,
+                                },
+                                new,
+                            )
                 receipt["speakers_applied"] = True
                 self.context.write(name, receipt)
             if receipt.get("speakers") and not receipt.get("voices_applied"):

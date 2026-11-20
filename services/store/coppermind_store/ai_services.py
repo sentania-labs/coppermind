@@ -267,6 +267,9 @@ class AiServices:
             used.append("sugg")
         if transcription and transcription.enabled and transcription.connection == connection_id:
             used.append("trans")
+        writeup = config.assignments.get("writeup")
+        if writeup and writeup.enabled and writeup.connection == connection_id:
+            used.append("writeup")
         if config.embeddings.enabled and config.embeddings.connection == connection_id:
             used.append("search")
         return used

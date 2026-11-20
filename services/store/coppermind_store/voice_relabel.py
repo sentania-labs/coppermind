@@ -146,6 +146,45 @@ async def relabel_recording(
             speaker["label"] = new
     if pending:
         context.write(pending_key, pending)
+    if recording.generation_mode == "markdown-v1":
+        if await unfinished_review(context, note.id):
+            VoiceStore(context).defer_relabel(assignment, new)
+            return
+        key = "recording-writeups/" + recording.id
+        saved = context.read(key, {})
+        pending_update = saved.get("voice_pending")
+        if pending_update and note.body == pending_update["body"]:
+            saved.update(pending_update["state"])
+            saved.pop("voice_pending", None)
+            context.write(key, saved)
+        body_labels = dict(saved.get("voice_labels", saved.get("voice_map", {})))
+        body_old = body_labels.get(assignment["label"], old)
+        baseline = saved.get("voice_body", saved.get("filed_body", ""))
+        generated = saved.get("voice_generated", saved.get("body", ""))
+        if baseline and generated:
+            body, baseline, generated = relabel_generated_lines(
+                note.body, baseline, generated, 0, body_old, new
+            )
+            body_labels[assignment["label"]] = new
+            if body != note.body:
+                saved["voice_pending"] = {
+                    "body": body,
+                    "state": {
+                        "voice_body": baseline,
+                        "voice_generated": generated,
+                        "voice_labels": body_labels,
+                    },
+                }
+                context.write(key, saved)
+                await context.store.replace_note(
+                    note.id,
+                    ReplaceNote(frontmatter=note.frontmatter, body=body),
+                    if_match=note.content_hash,
+                )
+            saved.update(voice_body=baseline, voice_generated=generated, voice_labels=body_labels)
+            saved.pop("voice_pending", None)
+            context.write(key, saved)
+        return
     receipt = context.read("review-completions/" + note.id, {})
     summary = receipt.get("summary") or {}
     if summary.get("generated") and receipt.get("summary_applied"):
