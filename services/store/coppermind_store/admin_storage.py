@@ -13,16 +13,18 @@ import hashlib
 import json
 import os
 import time
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
-from sqlalchemy.exc import SQLAlchemyError
 
 from coppermind.db.models import Artifact
 from coppermind.entities import EntityChange
+from coppermind.logging import get_logger
 from coppermind.purge import AbandonPurge, ConfirmPurge
+from coppermind.settings import RetentionSettings
 from coppermind.store_protocol import StoreError
 from coppermind_store import artifacts, purge
 
@@ -39,8 +41,7 @@ KINDS = {
     "copy": "Deleted file",
 }
 _USAGE: dict[str, tuple[float, int]] = {}
-_COUNT: dict[str, tuple[float, int]] = {}
-COUNT_TTL_S = 15
+log = get_logger("coppermind-store")
 
 
 def _tree_size(root: Path, *, skip_hidden: bool = False) -> int:
@@ -71,6 +72,8 @@ class AdminStorage:
     def __init__(self, store: LocalStore, notes: AdminNotes) -> None:
         self.store = store
         self.notes = notes
+        self._count_lock = asyncio.Lock()
+        self._cleanup_changed = asyncio.Event()
 
     def keep_days(self) -> int:
         return self.store.control.settings().retention.days
@@ -240,18 +243,57 @@ class AdminStorage:
             "error": result.error or "",
         }
 
-    async def cleanup_count(self) -> dict[str, int]:
-        """How many deleted things are past their keep time, counted as the list counts them."""
-        cached = _COUNT.get(str(self.store.notes_root))
-        if cached and time.monotonic() - cached[0] < COUNT_TTL_S:
-            return {"count": cached[1]}
-        try:
-            found, _ = await purge.candidates(self.store, datetime.now(UTC))
-        except (StoreError, SQLAlchemyError, OSError):
-            return {"count": cached[1] if cached else 0}
-        count = len(found) + len(self._old_removed())
-        _COUNT[str(self.store.notes_root)] = (time.monotonic(), count)
-        return {"count": count}
+    async def cleanup_count(self) -> dict[str, Any]:
+        """Read the persisted background result. Page requests never start a scan."""
+
+        def read() -> dict[str, Any]:
+            try:
+                body = self.store.control.store.read("cleanup_count").body
+                count = body["count"]
+                at = datetime.fromisoformat(body["computed_at"])
+                if type(count) is not int or count < 0 or at.utcoffset() is None:
+                    raise ValueError("invalid cleanup count")
+                return {"count": count, "computed_at": body["computed_at"]}
+            except (OSError, ValueError, KeyError, TypeError):
+                return {"count": None, "computed_at": None}
+
+        return await asyncio.to_thread(read)
+
+    async def refresh_cleanup_count(self) -> None:
+        """Publish a complete count, retaining the last result on any scan failure."""
+        async with self._count_lock:
+            try:
+                found, _ = await purge.candidates(self.store, datetime.now(UTC))
+                count = len(found) + len(await asyncio.to_thread(self._old_removed))
+
+                def save() -> None:
+                    state = self.store.control.store
+                    try:
+                        revision = state.read("cleanup_count").revision
+                    except FileNotFoundError:
+                        revision = None
+                    state.write(
+                        "cleanup_count",
+                        {"count": count, "computed_at": datetime.now(UTC).isoformat()},
+                        if_revision=revision,
+                    )
+
+                await asyncio.to_thread(save)
+            except Exception as exc:  # noqa: BLE001 - keep the previous background result
+                log.warning("admin cleanup count refresh failed", error=type(exc).__name__)
+
+    async def run_cleanup_count(self) -> None:
+        """Refresh at startup, periodically, and after explicit clean-up changes."""
+        while True:
+            self._cleanup_changed.clear()
+            await self.refresh_cleanup_count()
+            try:
+                interval = self.store.control.settings().retention.count_interval_s
+            except Exception as exc:  # noqa: BLE001 - readiness reports bad control files
+                log.warning("cleanup count settings unavailable", error_type=type(exc).__name__)
+                interval = RetentionSettings().count_interval_s
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._cleanup_changed.wait(), timeout=interval)
 
     async def cleanup_confirm(self, payload: dict[str, Any]) -> dict[str, Any]:
         before = await self.cleanup()
@@ -265,7 +307,7 @@ class AdminStorage:
             if item["kind"] == "copy":
                 self.notes._drop_removed(item["id"])
         _USAGE.clear()
-        _COUNT.clear()
+        self._cleanup_changed.set()
         usage = await self.usage()
         return {
             "changed": False,
@@ -280,21 +322,23 @@ class AdminStorage:
         if unfinished is None:
             return {"left": 0}
         await self.store.abandon_purge(AbandonPurge(token=unfinished["token"]))
+        self._cleanup_changed.set()
         return {"left": unfinished["left"]}
 
     async def bring_back(self, payload: dict[str, Any]) -> dict[str, Any]:
         kind, identity = str(payload["kind"]), str(payload["id"])
-        _COUNT.clear()
         if kind == "note":
             result = await self.notes.restore({"id": identity})
+            self._cleanup_changed.set()
             return {"title": result["title"], "kind": "note"}
         if kind == "copy":
             result = await self.notes.restore({"key": identity})
+            self._cleanup_changed.set()
             return {"title": result["title"], "kind": "note"}
         if kind == "artifact":
             title = await artifacts.restore_artifact(self.store, identity)
             _USAGE.clear()
-            _COUNT.clear()
+            self._cleanup_changed.set()
             return {"title": title, "kind": "file"}
         if kind == "entity":
             ledger = self.store.entities.load()
@@ -304,6 +348,7 @@ class AdminStorage:
             await self.store.entities.change(
                 identity, EntityChange(version=entity.version, action="restore")
             )
+            self._cleanup_changed.set()
             return {"title": entity.name, "kind": "person"}
         raise ValueError("That item cannot be brought back by itself.")
 
@@ -315,8 +360,19 @@ class AdminStorage:
         body = dict(state.body)
         body.setdefault("retention", {})["days"] = days
         self.store.control.store.write("settings", body, if_revision=state.revision)
-        _COUNT.clear()
+        self._cleanup_changed.set()
         return {"days": days, **await self.cleanup_count()}
+
+    async def set_count_interval(self, payload: dict[str, Any]) -> dict[str, int]:
+        interval = int(payload["seconds"])
+        if not 60 <= interval <= 86400:
+            raise ValueError("Choose between one minute and one day")
+        state = self.store.control.store.read("settings")
+        body = dict(state.body)
+        body.setdefault("retention", {})["count_interval_s"] = interval
+        self.store.control.store.write("settings", body, if_revision=state.revision)
+        self._cleanup_changed.set()
+        return {"seconds": interval}
 
     # -- files beside notes --------------------------------------------------------------
 
@@ -379,5 +435,5 @@ class AdminStorage:
         except StoreError:
             raise
         _USAGE.clear()
-        _COUNT.clear()
+        self._cleanup_changed.set()
         return {"name": record.filename or record.title}

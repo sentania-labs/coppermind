@@ -552,6 +552,12 @@ def _plan(
     )
     items: list[dict[str, Any]] = []
     kept_notes = 0
+    # Inventory once: a glob per deleted note repeatedly scans every receipt.
+    recovery_paths: dict[str, list[Path]] = {}
+    for path in sorted(note_history.directory(store).glob("*.json")):
+        identity, separator, _ = path.name.partition("-")
+        if separator:
+            recovery_paths.setdefault(identity, []).append(path)
     for note in notes:
         receipt = saved.get(note.id)
         if note.state != "deleted" or note.id in disk_ids:
@@ -577,7 +583,7 @@ def _plan(
             deleted_at=deleted_at,
             leftover=receipt is None,
         )
-        paths = sorted(note_history.directory(store).glob(f"{note.id}-*.json"))
+        paths = list(recovery_paths.get(note.id, []))
         observation = note_history.directory(store) / "observed" / f"{note.id}.json"
         if observation.exists():
             paths.append(observation)

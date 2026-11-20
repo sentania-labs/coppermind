@@ -166,6 +166,7 @@ in Admin. Nothing here needs to be set before the system runs.
 | indexer | `language` | `english` |
 | indexer | `reconcile_interval_s` | 600 |
 | retention | `days` | 30 (integer, 0 through 36500; 0 permits immediate manual purge). The one window for deleted notes and for removed artifacts, whether removed in Admin, through the API or by deleting the file in Obsidian |
+| retention | `count_interval_s` | 300 (integer, 60 through 86400). Seconds between background clean-up counts; see [Retention purge receipts](#retention-purge-receipts) |
 | events | `retention_days` | 7 |
 | events | `poll_fallback_s` | 5 |
 | limits | `calendar_max_events` | 50,000 retained events across calendars |
@@ -448,6 +449,16 @@ expire automatically. Originals and import history
 remain under `/data/state/calendars` after receipt expiry or dismissal.
 
 ## Retention purge receipts
+
+Admin page counts read `/data/state/cleanup_count.json`, which holds the last
+successful count and its `computed_at` timestamp. Before the first successful
+scan Storage says "Not yet counted". A store background task refreshes the
+count at startup, every `retention.count_interval_s` seconds (300 by default,
+configurable in Admin > Storage), and after a clean-up completes or is
+cancelled. Only one scan runs at a time; a failed scan keeps the previous
+value. Page requests never trigger a scan. The background count uses the
+same full purge planner as the clean-up list, including filesystem evidence;
+it is a saved observation, not authorization to remove anything.
 
 **Admin > Storage** sets the keep time, `retention.days`, with revision safety,
 and **Storage > Clean up** (`/admin/storage/cleanup`) lists what is past it and

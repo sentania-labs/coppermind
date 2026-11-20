@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -314,6 +315,7 @@ async def test_confirming_a_clean_up_deletes_only_what_was_listed(store, monkeyp
     result = await store.admin.act("cleanup-confirm", {"token": shown["token"]})
     assert result["changed"] is False and result["count"] == 1
     assert [item["key"] for item in store.admin.notes.removed()] == late
+    assert store.admin.storage._cleanup_changed.is_set()
 
 
 @pytest.mark.parametrize("action", ["note-check", "note-no-time", "note-keep-both", "note-replace"])
@@ -436,6 +438,7 @@ async def test_home_counts_a_removed_person_past_the_keep_time_like_the_clean_up
     store.entities.save(ledger)
     listed = await store.admin.act("cleanup", {})
     assert [item["kind"] for item in listed["items"]] == ["entity"]
+    await store.admin.storage.refresh_cleanup_count()
     assert (await store.admin.act("overview", {}))["storage"]["cleanup"] == len(listed["items"])
 
 
@@ -752,3 +755,60 @@ async def test_suggestions_response_limit_is_saved_and_validated(store):
     with pytest.raises(ValueError):
         await store.admin.act("suggestions-response-limit", {"max_output_tokens": "65537"})
     assert store.context.config().assignments["enrichment"].max_output_tokens == 65536
+
+
+async def test_concurrent_overviews_and_storage_do_not_wait_for_cleanup(store, wiring, monkeypatch):
+    import httpx
+    from coppermind_store import admin_storage
+    from coppermind_store.auth import InternalAuth
+    from coppermind_store.main import create_app
+
+    from coppermind.store_client import HttpStoreClient
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def held(*args):
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return [{"candidate": {}}], {}
+
+    monkeypatch.setattr(admin_storage.purge, "candidates", held)
+    app = create_app(wiring)
+    app.state.store = store
+    app.state.auth = InternalAuth("test-token")
+    client = HttpStoreClient("http://store", "test-token", transport=httpx.ASGITransport(app))
+    worker = None
+    try:
+        # Requests alone must never initiate the expensive scan.
+        cold = await client.admin_action("overview", {})
+        assert cold["storage"]["cleanup"] is None
+        assert calls == 0
+        worker = asyncio.create_task(store.admin.storage.run_cleanup_count())
+        await asyncio.wait_for(started.wait(), 1)
+        responses = await asyncio.wait_for(
+            asyncio.gather(*(client.admin_action("overview", {}) for _ in range(8))), 3
+        )
+        await asyncio.wait_for(started.wait(), 1)
+        assert calls == 1
+        assert [view["storage"]["cleanup"] for view in responses] == [None] * 8
+        summary = await asyncio.wait_for(client.admin_action("storage", {}), 3)
+        assert summary["cleanup"] is None
+        assert calls == 1
+        # The requests finished successfully while the count is still held open.
+        assert not release.is_set()
+        release.set()
+        async with asyncio.timeout(3):
+            while (await store.admin.storage.cleanup_count())["count"] is None:
+                await asyncio.sleep(0.01)
+        assert (await client.admin_action("overview", {}))["storage"]["cleanup"] == 1
+    finally:
+        release.set()
+        if worker:
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
+        await client.aclose()
