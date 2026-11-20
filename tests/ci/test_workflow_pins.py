@@ -159,7 +159,7 @@ def test_the_integration_gate_downloads_what_every_shard_uploads():
     """
     all_jobs = jobs(WORKFLOWS[0])
     shard, gate = all_jobs["integration-shard"], all_jobs["integration"]
-    assert gate["needs"] == "integration-shard"
+    assert "integration-shard" in gate["needs"]
 
     uploaded = {
         str(step["with"]["name"]).replace("${{ matrix.shard }}", str(number))
@@ -183,3 +183,36 @@ def test_dependency_review_runs_the_local_audit_without_a_licensed_api():
     assert any(step.get("run") == "make scan-deps" for step in steps)
     assert not any("dependency-review-action" in step.get("uses", "") for step in steps)
     assert not any(step.get("continue-on-error") for step in steps)
+
+
+def test_every_needs_context_a_job_reads_is_one_it_waits_for():
+    """A `needs.<job>` read outside the job's `needs` is silently empty.
+
+    The tag's mode decides what is skipped, so every job that reads
+    `needs.release-mode.outputs.mode` must list `release-mode` among its needs,
+    or the condition is always the empty-string answer and the gate never closes.
+    """
+    reference = re.compile(r"needs\.([A-Za-z0-9_-]+)\.")
+
+    def expressions(node: Any) -> list[str]:
+        if isinstance(node, str):
+            return [node]
+        if isinstance(node, dict):
+            return [text for value in node.values() for text in expressions(value)]
+        if isinstance(node, list):
+            return [text for value in node for text in expressions(value)]
+        return []
+
+    problems: list[str] = []
+    for name, job in jobs(WORKFLOWS[0]).items():
+        needs = job.get("needs") or []
+        waited = {needs} if isinstance(needs, str) else set(needs)
+        read = {
+            match
+            for text in expressions({k: v for k, v in job.items() if k != "needs"})
+            for match in reference.findall(text)
+        }
+        problems += [
+            f"{name} reads needs.{other} without waiting for it" for other in read - waited
+        ]
+    assert not problems, "\n".join(problems)

@@ -4,25 +4,27 @@ set -euo pipefail
 # Decide whether a tag build may skip the long test suites.
 #
 # The answers come from the GitHub API: the completed run of this workflow on main
-# for the tagged commit, and the conclusion of each of its jobs. Prints `mode` and `reason`
-# for the job log and the job summary, and, with a path as the first argument, as
-# step outputs.
+# for the tagged commit, and the conclusion of each of its jobs. Prints `mode` and
+# `reason` for the job log and the job summary, and, with a path as the first
+# argument, as step outputs.
 #
 # A minimal release is only sound when every gate a full run would have gone
 # through has already passed for this exact commit, so the probe requires each of
 # those jobs to report success. A matrix job is reported once per entry, as
 # `image (store)` or `integration-shard (1)`, so a name stands for itself and every
-# entry that follows it, and all of them must have succeeded. A lookup that yielded nothing, or a run that
-# is missing one of them, is not evidence of a passing run: the tag then runs the
-# full suite.
+# entry that follows it, and all of them must have succeeded. A lookup that yielded
+# nothing, or a run that is missing one of them, is not evidence of a passing run:
+# the tag then runs the full suite.
 #
 # Usage, in a workflow step where the GitHub token is set:
 #   bash ci/release-mode.sh                      # reads the answers from the log
 #   bash ci/release-mode.sh "$GITHUB_OUTPUT"     # and as step outputs
 #
 # A test may set RELEASE_JSON and RELEASE_JOBS to skip the network and fix the
-# answers itself; the workflow leaves both unset. Their shape is documented in
-# `ci/release-mode-data.sh`.
+# answers itself; the workflow leaves both unset. RELEASE_JSON is the runs document
+# for the commit, {"workflow_runs": [{"run_number", "head_sha", "head_branch",
+# "event", "status", "conclusion", "jobs_url"}]}, and RELEASE_JOBS is the job list
+# of the run it names, {"jobs": [{"name": "image (store)", "conclusion": ...}]}.
 : "${GITHUB_SHA:?build commit is required}"
 
 # The job names a full run must have gone green on, as one comma separated list.
