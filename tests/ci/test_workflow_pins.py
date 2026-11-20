@@ -32,12 +32,11 @@ FORBIDDEN_PERMISSIONS = {
     "id-token": "could mint a signing identity",
 }
 
-# The one condition that may carry publication authority, and the clause every
-# release job must add so a skipped ancestor cannot skip it. Anything else,
-# including a disjunction that happens to name both halves, is true on pushes that
-# are not a version tag.
+# The tag gate every write-permission job must start with, and the clause each one
+# must add per need so a skipped ancestor cannot skip it. Anything else, including
+# a disjunction that happens to name both halves, is true on pushes that are not
+# a version tag.
 TAG_GATE = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
-NEEDS_SUCCESS = "needs.<job>.result == 'success'"
 
 
 def load(workflow: Path) -> dict[str, Any]:
@@ -47,6 +46,11 @@ def load(workflow: Path) -> dict[str, Any]:
 def _condition(job: dict[str, Any]) -> str:
     """A job's `if`, normalised for comparing against a literal condition."""
     return " ".join(str(job.get("if", "")).split())
+
+
+def _has_status_check(condition: str) -> bool:
+    """Whether the condition names one of the four status check functions."""
+    return any(name in condition for name in ("success()", "always()", "cancelled()", "failure()"))
 
 
 def jobs(workflow: Path) -> dict[str, dict[str, Any]]:
@@ -119,12 +123,12 @@ def test_publish_authority_is_confined_to_tag_only_jobs():
             for scope, why in FORBIDDEN_PERMISSIONS.items():
                 condition = _condition(job)
                 if granted(document, job, scope) == "write" and not condition.startswith(
-                    TAG_GATE + " && needs."
+                    f"!cancelled() && {TAG_GATE} && needs."
                 ):
                     problems.append(
                         f"{workflow.name}:{name} has {scope}: write and so {why} "
-                        f"unless its condition starts with {TAG_GATE} and then "
-                        f"{NEEDS_SUCCESS} per need"
+                        f"unless its condition starts with !cancelled() && {TAG_GATE} "
+                        "and then needs.<job>.result == 'success' per need"
                     )
     assert not problems, "\n".join(problems)
 
@@ -164,12 +168,13 @@ def test_publish_and_promotion_are_not_skipped_by_skipped_ancestors():
     """A skipped job somewhere upstream in the chain must not hide the release.
 
     On a minimal tag, `checks`, `scan` and the integration shards are skipped by
-    design, and `integration` itself concludes `success` while its own shard
-    ancestor was skipped. GitHub only rolls a need's `skipped` up into a job whose
-    `if` uses `!failure()` or `!cancelled()`, so the gate that has to survive those
-    skips names each direct need's result explicitly: `needs.<job>.result` must be
-    `'success'` for every need of `publish`, and for the one need of
-    `promote-latest`.
+    design, and `integration` itself concludes `success` while its own shard ancestor
+    was skipped. GitHub applies an implicit `success()` to any `if` that names no
+    status check function, and that implicit check is false when an ancestor was
+    skipped — which is what left `publish` and `promote-latest` skipped on v0.9.2. So
+    each gate must both carry a status check function and name every need it waits
+    for: `needs.<job>.result` must be `'success'` for every need of `publish`, and
+    for the one need of `promote-latest`.
     """
     all_jobs = jobs(WORKFLOWS[0])
     problems: list[str] = []
@@ -178,10 +183,17 @@ def test_publish_and_promotion_are_not_skipped_by_skipped_ancestors():
         needs = job.get("needs") or []
         waited = {needs} if isinstance(needs, str) else set(needs)
         condition = _condition(job)
+        if not _has_status_check(condition):
+            problems.append(
+                f"{name} names no status check function, so the implicit success() "
+                "is false while an ancestor is skipped"
+            )
+        elif not condition.startswith("!cancelled()"):
+            problems.append(f"{name} should start with !cancelled(), got: {condition}")
         for other in sorted(waited):
             read = f"needs.{other}.result == 'success'"
             if read not in condition:
-                problems.append(f"{name} does not require {read}, so a skipped ancestor skips it")
+                problems.append(f"{name} does not require {read}, so a failed need passes it")
     assert not problems, "\n".join(problems)
 
 

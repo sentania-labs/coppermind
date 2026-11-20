@@ -18,12 +18,14 @@
 # sync storylines) and publishes. A missing, cancelled or failed main run leaves
 # the tag with the full shape, so untested code is never published.
 #
-# `publish` and `promote-latest` gate on the result of every need they wait for,
-# not on `!failure()`. GitHub only rolls a skipped ancestor up into those two
-# functions, and on the minimal tag `checks`, `scan` and the shards are skipped by
-# design, so a bare `!failure()` would leave the publication itself skipped with the
-# run otherwise green. Naming each `needs.<job>.result` keeps the gate exact: the
-# job runs when every need concluded, and stops when one failed or was cancelled.
+# `publish` and `promote-latest` carry a status check function, `!cancelled()`, and
+# then name the result of every need they wait for. Both halves are needed. Without
+# any status check function GitHub applies an implicit `success()`, and that implicit
+# check is what skipped `publish` on the minimal tag: `checks`, `scan` and the shards
+# are skipped there by design, so `success()` was false and the publication, and with
+# it the promotion, never ran. `!cancelled()` is true for those skipped ancestors,
+# and the explicit `needs.<job>.result == 'success'` clauses are what still stop the
+# job when a need it waits for failed or was cancelled.
 #
 # Every scanner and check is invoked through `make`, so a developer runs
 # exactly what CI runs.
@@ -389,13 +391,14 @@ jobs:
   # Only a tag push receives package, release and signing authority. The
   # release is created last, after every image is present, signed, anonymously
   # pullable and seen working together.
-  # Each direct need is checked by name, not only by `!failure()`. `integration`
-  # passes on the minimal tag while its own ancestor `integration-shard` was
-  # skipped, so `!failure()` alone would be true there too; the explicit
-  # `== 'success'` per need is what makes this job run exactly when every need it
-  # waits for concluded, and stop when any of them failed or was cancelled.
+  # Both gates are needed. `!cancelled()` supplies the status check function, so
+  # GitHub does not apply the implicit `success()` that skipped the ancestors
+  # (`checks`, `scan`, the shards) on a minimal tag. The named results then decide:
+  # `integration` itself concludes success there, so each need this job waits for is
+  # checked by name, and any of them failed or cancelled still stops the job.
   publish:
     if: >-
+      !cancelled() &&
       github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') &&
       needs.image.result == 'success' &&
       needs.smoke.result == 'success' &&
@@ -479,8 +482,12 @@ jobs:
           overwrite: true
           if-no-files-found: error
 
+  # Same shape as `publish`: `!cancelled()` as the status check function, then the
+  # need it waits for named. So it runs after a successful publish and not when
+  # publish failed or was skipped.
   promote-latest:
     if: >-
+      !cancelled() &&
       github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') &&
       needs.publish.result == 'success'
     needs: publish
