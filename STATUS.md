@@ -48,12 +48,13 @@ steps (sign in, pick or make a vault, name this server). A recording is only
 taken in while transcription is on; audio that was already stored, or that a note
 already links to, is never queued or deleted by it.
 Storage, Clean up lists what is past the keep time and deletes nothing until
-that list is confirmed. Suggestions has "How the meeting summary is written",
-directions per summary section around fixed rules, used from the next
-summary on; a note from a recording that is still waiting for review can have
-its summary written again from the same transcript. Proved by the rendered
-page and action tests under `services/admin/tests/`,
-`tests/integration/test_admin_service.py` and
+that list is confirmed. Transcription has "How recordings are written up", one
+document prompt around fixed rules, used from the next write-up on (the old
+Suggestions summary editor redirects there); a legacy recording note that is
+still waiting for review can have its summary written again from the same
+transcript. Proved by the rendered page and action tests under
+`services/admin/tests/`, `tests/integration/test_admin_service.py`,
+`tests/integration/test_recording_writeup.py` and
 `tests/integration/test_summary_directions.py`.
 
 ## Working

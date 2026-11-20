@@ -210,10 +210,10 @@ def test_relabel_preserves_edits_and_only_changes_assigned_turns():
 def test_relabel_leaves_recording_local_labels_with_the_same_number():
     from coppermind_store.voice_relabel import relabel_generated_lines
 
-    body = "- Unknown voice 2 will send the deck\n- Unknown voice 2 (recording-local) will book it\n"
-    result, _, _ = relabel_generated_lines(
-        body, body, body, 0, "Unknown voice 2", "Alex Example"
+    body = (
+        "- Unknown voice 2 will send the deck\n- Unknown voice 2 (recording-local) will book it\n"
     )
+    result, _, _ = relabel_generated_lines(body, body, body, 0, "Unknown voice 2", "Alex Example")
     assert result == (
         "- Alex Example will send the deck\n- Unknown voice 2 (recording-local) will book it\n"
     )
