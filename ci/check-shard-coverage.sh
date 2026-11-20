@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Proof that the parallel shards are a partition of the integration suite: the
 # tests across all shards are exactly the tests a single run collects, each one
 # appearing once.

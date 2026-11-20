@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # The files this shard runs, one path per line. Everything else this decision needs
 # is derived from these lines, so the file list is the only thing to print.
 #
