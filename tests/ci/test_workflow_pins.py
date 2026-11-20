@@ -171,7 +171,7 @@ def test_publish_and_promotion_are_not_skipped_by_skipped_ancestors():
     design, and `integration` itself concludes `success` while its own shard ancestor
     was skipped. GitHub applies an implicit `success()` to any `if` that names no
     status check function, and that implicit check is false when an ancestor was
-    skipped — which is what left `publish` and `promote-latest` skipped on v0.9.2. So
+    skipped, which is what left `publish` and `promote-latest` skipped on v0.9.2. So
     each gate must both carry a status check function and name every need it waits
     for: `needs.<job>.result` must be `'success'` for every need of `publish`, and
     for the one need of `promote-latest`.
