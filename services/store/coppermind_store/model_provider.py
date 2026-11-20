@@ -32,6 +32,15 @@ MAX_STREAM_BYTES = 16 * 1024 * 1024
 MAX_EMBEDDING_DIMENSIONS = 8192
 # How much of a model's reply is kept on a failed job so Inspect can show why it failed.
 REPLY_KEPT_CHARS = 4000
+OVER_LIMIT_MARKERS = (
+    "context length",
+    "context_length",
+    "maximum context",
+    "context window",
+    "too many tokens",
+    "token limit",
+    "too long",
+)
 # How long a connection to the transcription service may take to open. The wait limit is for
 # the service's answer, and can be hours.
 TRANSCRIBE_CONNECT_SECONDS = 60
@@ -111,6 +120,9 @@ class ProviderError(ValueError):
         # Seconds the service asked to wait before it is asked again, when it said.
         self.retry_after = retry_after
         self.usage = usage or {}
+        # True when the service's refusal said the text was too long. Only this fact is kept,
+        # never the service's wording.
+        self.over_limit = False
 
 
 class InputLimitError(ProviderError):
@@ -399,6 +411,14 @@ class ModelProvider:
                             response.status_code,
                             upload=body is not None or noun == "transcription service",
                         )
+                        if response.status_code in {400, 422} and not refusal.rule:
+                            said = bytearray()
+                            async for part in response.aiter_bytes():
+                                said.extend(part)
+                                if len(said) > 8192:
+                                    break
+                            text = bytes(said[:8192]).decode("utf-8", "ignore").lower()
+                            refusal.over_limit = any(m in text for m in OVER_LIMIT_MARKERS)
                         refusal.retry_after = retry_after_seconds(
                             response.headers.get("retry-after")
                         )
@@ -660,7 +680,10 @@ class ModelProvider:
                     )
                     break
                 except ProviderError as exc:
-                    if str(exc) not in {"provider returned HTTP 400", "provider returned HTTP 422"}:
+                    if exc.over_limit or str(exc) not in {
+                        "provider returned HTTP 400",
+                        "provider returned HTTP 422",
+                    }:
                         raise
                     # A refusal does not say which part it did not like. Take the parts away
                     # one at a time, and remember only the one whose removal made it work.

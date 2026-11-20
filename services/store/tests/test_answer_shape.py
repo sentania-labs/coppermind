@@ -172,6 +172,26 @@ async def test_a_service_that_rejects_a_schema_falls_back_and_is_remembered():
     ]
 
 
+@pytest.mark.parametrize(
+    ("said", "sends"),
+    [
+        ({"error": {"message": "This model's maximum context length is 8192 tokens"}}, 1),
+        ({"error": "bad request"}, 4),
+    ],
+)
+async def test_only_a_refusal_not_about_length_walks_the_format_fallbacks(said, sends):
+    seen = []
+
+    def serve(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(400, json=said)
+
+    adapter = ModelProvider(httpx.MockTransport(serve))
+    with pytest.raises(ProviderError):
+        await _ask(adapter, schema=answer_shape.SUGGESTIONS_SCHEMA)
+    assert len(seen) == sends
+
+
 async def test_a_service_that_takes_no_reply_format_gets_the_prompt_alone():
     seen = []
 

@@ -360,9 +360,9 @@ async def test_summary_failures_are_durable_problems_with_no_partial_note(
         assert "summary_max_input_chars" in job.error
     else:
         sent = sum("transcript" in request for request in requests)
-        # A refused request drops the thinking setting, then the reply format, in turn; a
-        # wrong shape is asked again once, told what was wrong.
-        assert sent == (4 if failure == "context" else 2)
+        # A refusal that says the text is too long is not retried; a wrong shape is asked
+        # again once, told what was wrong.
+        assert sent == (1 if failure == "context" else 2)
 
 
 async def test_raising_summary_limit_retries_the_whole_transcript(store, standin):

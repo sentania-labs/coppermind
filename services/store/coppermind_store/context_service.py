@@ -1827,8 +1827,6 @@ class ContextService:
                 job.state,
                 type(exc).__name__ if isinstance(exc, ValidationError) else str(exc),
             )
-            if isinstance(exc, answer_shape.AnswerShapeError):
-                log.debug("enrichment job %s refused answer: %.500s", job.id, exc.raw)
         except Exception:
             job.state = "failed"
             job.set_error(
