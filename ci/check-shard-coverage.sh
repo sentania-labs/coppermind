@@ -2,14 +2,17 @@
 # tests across all shards are exactly the tests a single run collects, each one
 # appearing once.
 #
-# Each shard job keeps two files in `$RUNNER_TEMP`, which the runner shares between
-# jobs of one run: `shard-<n>.list`, the file list it ran, and `shard-<n>.txt`, the
-# pytest output it printed. A job's own exit code cannot show coverage across jobs,
-# which is what this checks. Both are read by their own names, so a missing one is a
+# Each shard job uploads two files, which the aggregate job downloads into one
+# directory: `shard-<n>.list`, the file list it ran, and `shard-<n>.txt`, the pytest
+# output it printed. A job's own exit code cannot show coverage across jobs, which
+# is what this checks. Both are read by their own names, so a missing one is a
 # failure rather than a silent gap.
-: "${RUNNER_TEMP:?this check runs as a CI job with a runner temp directory}"
+#
+# Usage: bash ci/check-shard-coverage.sh <directory holding the shard files>
+directory="$(cd "${1:?the directory holding the shard files is required}" && pwd)"
 
-python3 - "$RUNNER_TEMP" <<'PY'
+cd "$(dirname "$0")/.." || exit 1
+python3 - "$directory" <<'PY'
 import os
 import re
 import subprocess
@@ -20,8 +23,8 @@ names = sorted(
     name for name in os.listdir(temp) if name.startswith("shard-") and name.endswith(".list")
 )
 if not names:
-    print(f"no shard lists in {temp}, nothing to aggregate")
-    raise SystemExit(0)
+    print(f"FAIL: no shard lists in {temp}", file=sys.stderr)
+    raise SystemExit(1)
 
 
 def collected(*paths: str) -> int:
@@ -34,9 +37,11 @@ def collected(*paths: str) -> int:
         text=True,
         check=True,
     ).stdout
-    return next(
-        (int(line.split()[0]) for line in result.splitlines() if "tests collected" in line), 0
-    )
+    for line in result.splitlines():
+        match = re.match(r"(\d+) tests? collected", line)
+        if match:
+            return int(match.group(1))
+    raise SystemExit(f"pytest reported no collected count for {paths}")
 
 
 def read(name: str) -> str:
@@ -49,6 +54,8 @@ def read(name: str) -> str:
 def files_of(name: str) -> list[str]:
     return [line.strip() for line in read(name).splitlines() if line.strip().startswith("tests/")]
 
+
+COUNTED = {"passed", "failed", "skipped", "xfailed", "xpassed", "error", "errors"}
 
 problems = []
 owned: dict[str, int] = {}
@@ -83,18 +90,26 @@ if total != single:
     problems.append(f"shards together ran {total} tests, a single run collects {single}")
 
 # A shard whose own output disagrees with its file list ran something else. The
-# printed total is the sum of its two counts, since a shard may skip a test.
+# printed total is every outcome counted together, since a shard may skip a test.
 for name in names:
     body = read(name[: -len(".list")] + ".txt")
     if not body:
         problems.append(f"{name}: no pytest output kept for this shard")
         continue
-    counts_found = dict(
-        ({"passed": 1, "failed": 1, "skipped": 1}.get(match.group(2)), int(match.group(1)))
-        for match in re.finditer(r"(\d+) (passed|failed|skipped)", body)
+    summary = [
+        line
+        for line in body.splitlines()
+        if re.match(r"^=* ?\d+ [a-z]+(, \d+ [a-z]+)* in [\d.]+s", line.strip())
+    ]
+    if not summary:
+        problems.append(f"{name}: its pytest output has no summary line")
+        continue
+    printed = sum(
+        int(count)
+        for count, outcome in re.findall(r"(\d+) ([a-z]+)", summary[-1].split(" in ")[0])
+        if outcome in COUNTED
     )
-    printed = sum(counts_found.values())
-    if printed and printed != counts[name]:
+    if printed != counts[name]:
         problems.append(f"{name}: printed {printed} tests, its files hold {counts[name]}")
 
 if problems:

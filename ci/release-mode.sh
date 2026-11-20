@@ -3,14 +3,16 @@ set -euo pipefail
 
 # Decide whether a tag build may skip the long test suites.
 #
-# The answers come from the GitHub API: the completed run of this workflow on the
-# tagged commit, and the conclusion of each of its jobs. Prints `mode` and `reason`
+# The answers come from the GitHub API: the completed run of this workflow on main
+# for the tagged commit, and the conclusion of each of its jobs. Prints `mode` and `reason`
 # for the job log and the job summary, and, with a path as the first argument, as
 # step outputs.
 #
 # A minimal release is only sound when every gate a full run would have gone
 # through has already passed for this exact commit, so the probe requires each of
-# those job names to report success. A lookup that yielded nothing, or a run that
+# those jobs to report success. A matrix job is reported once per entry, as
+# `image (store)` or `integration-shard (1)`, so a name stands for itself and every
+# entry that follows it, and all of them must have succeeded. A lookup that yielded nothing, or a run that
 # is missing one of them, is not evidence of a passing run: the tag then runs the
 # full suite.
 #
@@ -24,15 +26,14 @@ set -euo pipefail
 : "${GITHUB_SHA:?build commit is required}"
 
 # The job names a full run must have gone green on, as one comma separated list.
-FULL_JOBS="${FULL_JOBS:-checks,scan,release-tag,image,smoke,integration-shard}"
+FULL_JOBS="${FULL_JOBS:-checks,scan,release-tag,image,smoke,integration-shard,integration}"
 output_file="${1:-${GITHUB_STEP_SUMMARY:-}}"
 
 answer() { # answer <mode> <reason>
   echo "mode=$1"
   echo "reason=$2"
   [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf 'mode=%s\nreason=%s\n' "$1" "$2" >>"$GITHUB_STEP_SUMMARY"
-  [ -n "$output_file" ] && printf 'mode=%s\nreason=%s\n' "$1" "$2" >>"$output_file"
-  [ "$1" = "full" ] && return 0
+  [ -n "$output_file" ] && [ "$output_file" != "${GITHUB_STEP_SUMMARY:-}" ] && printf 'mode=%s\nreason=%s\n' "$1" "$2" >>"$output_file"
   return 0
 }
 
@@ -51,6 +52,7 @@ run = next(
         candidate
         for candidate in document.get("workflow_runs") or []
         if candidate.get("head_sha") == sha
+        and candidate.get("head_branch") == "main"
         and candidate.get("event") == "push"
         and candidate.get("status") == "completed"
     ),
@@ -68,22 +70,25 @@ PY
 }
 
 if [ -z "${RELEASE_JSON:-}" ]; then
-  RELEASE_JSON="$(curl -sS --get "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY:?GitHub repository is required}/actions/runs" \
+  api="${GITHUB_API_URL:-https://api.github.com}"
+  lookup_failed() { answer full "the GitHub API lookup of main's run failed, so it cannot be trusted"; exit 0; }
+  RELEASE_JSON="$(curl -fsS --get "$api/repos/${GITHUB_REPOSITORY:?GitHub repository is required}/actions/runs" \
     --header "Authorization: Bearer ${GITHUB_TOKEN:?a workflow token is required}" \
     --data-urlencode "per_page=20" \
     --data-urlencode "head_sha=$GITHUB_SHA" \
+    --data-urlencode "branch=main" \
     --data-urlencode "event=push" \
-    --data-urlencode "status=completed")" || RELEASE_JSON=""
+    --data-urlencode "status=completed")" || lookup_failed
   # The job list is a second document, so fetch it once the run is known.
-  if [ -n "$RELEASE_JSON" ]; then
-    jobs_url="$(printf '%s' "$RELEASE_JSON" | python3 -c 'import json,os,sys
+  jobs_url="$(printf '%s' "$RELEASE_JSON" | python3 -c 'import json,os,sys
 d=json.loads(sys.stdin.read() or "{}")
-run=next((c for c in d.get("workflow_runs") or [] if c.get("head_sha")==os.environ["GITHUB_SHA"] and c.get("event")=="push" and c.get("status")=="completed"),None)
+run=next((c for c in d.get("workflow_runs") or [] if c.get("head_sha")==os.environ["GITHUB_SHA"] and c.get("head_branch")=="main" and c.get("event")=="push" and c.get("status")=="completed"),None)
 print((run or {}).get("jobs_url") or "")')"
-    if [ -n "$jobs_url" ]; then
-      RELEASE_JOBS="$(curl -sS --header "Authorization: Bearer ${GITHUB_TOKEN}" "$jobs_url")" || RELEASE_JOBS=""
-      export RELEASE_JOBS
-    fi
+  if [ -n "$jobs_url" ]; then
+    RELEASE_JOBS="$(curl -fsS --get "$jobs_url" \
+      --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+      --data-urlencode "per_page=100")" || lookup_failed
+    export RELEASE_JOBS
   fi
   export RELEASE_JSON
 fi
@@ -109,20 +114,22 @@ if [ -z "$pairs" ]; then
   exit 0
 fi
 
-statuses=",$pairs,"
+IFS=, read -ra reported <<<"$pairs"
 missing=()
 for name in ${FULL_JOBS//,/ }; do
-  case "$statuses" in
-    *",$name="*)
-      got="${statuses#*",$name="}"
-      got="${got%%,*}"
+  found=0
+  for pair in "${reported[@]}"; do
+    job="${pair%=*}"
+    got="${pair##*=}"
+    if [ "$job" = "$name" ] || [[ "$job" == "$name ("* ]]; then
+      found=1
       [ "$got" = "success" ] || {
-        answer full "run #$number job $name concluded $got"
+        answer full "run #$number job $job concluded $got"
         exit 0
       }
-      ;;
-    *) missing+=("$name") ;;
-  esac
+    fi
+  done
+  [ "$found" = 1 ] || missing+=("$name")
 done
 
 if [ ${#missing[@]} -gt 0 ]; then

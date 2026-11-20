@@ -14,6 +14,7 @@ accepts cannot slip past a string match:
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from pathlib import Path
 from typing import Any
@@ -149,18 +150,30 @@ def test_release_waits_for_every_image_and_the_running_stack():
     assert publish["runs-on"] == "ubuntu-latest"
 
 
-def test_the_integration_gate_aggregates_the_shards():
-    """The suite is a matrix, so branch protection needs one name to require.
+def test_the_integration_gate_downloads_what_every_shard_uploads():
+    """The shards and the aggregate run on separate machines.
 
-    `integration` is that name: it waits for every shard, and a shard that fails
-    or is missing must fail it rather than leave the gate green.
+    `integration` waits for every shard, and the only way it can see a shard's
+    file list and pytest output is an artifact that shard uploaded, so each
+    shard's artifact name must match what the aggregate job downloads.
     """
-    job = jobs(WORKFLOWS[0])["integration"]
-    assert job["needs"] == "integration-shard"
-    assert any(step.get("uses", "").startswith("actions/checkout") for step in job["steps"])
-    assert any("check-shard-coverage.sh" in step.get("run", "") for step in job["steps"]), (
-        "the aggregate job must prove the shards were a partition"
+    all_jobs = jobs(WORKFLOWS[0])
+    shard, gate = all_jobs["integration-shard"], all_jobs["integration"]
+    assert gate["needs"] == "integration-shard"
+
+    uploaded = {
+        str(step["with"]["name"]).replace("${{ matrix.shard }}", str(number))
+        for step in shard["steps"]
+        if step.get("uses", "").startswith("actions/upload-artifact")
+        for number in shard["strategy"]["matrix"]["shard"]
+    }
+    pattern = next(
+        str(step["with"]["pattern"])
+        for step in gate["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact")
     )
+    assert len(uploaded) == len(shard["strategy"]["matrix"]["shard"])
+    assert all(fnmatch.fnmatchcase(name, pattern) for name in uploaded)
 
 
 def test_dependency_review_runs_the_local_audit_without_a_licensed_api():

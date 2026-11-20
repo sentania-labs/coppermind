@@ -149,16 +149,3 @@ def unreachable_store(wiring: Wiring, control: ControlState) -> LocalStore:
     )
     wiring.notes_dir.mkdir(parents=True, exist_ok=True)
     return LocalStore(wiring.notes_dir, control, make_session_factory(engine), wiring.sources_dir)
-
-
-def pytest_collection_modifyitems(items: list) -> None:  # noqa: N802
-    """Keep only the tests this shard owns, numbered over the settled list.
-
-    A file's tests keep contiguous positions, so one file never straddles two
-    shards and every file lands in exactly one of them.
-    """
-    shards = int(os.environ.get("SHARDS", os.environ.get("PYTEST_SPLIT_NSHARDS", 1)))
-    shard = int(os.environ.get("SHARD", os.environ.get("PYTEST_SPLIT_NODEID", 1)))
-    if shards <= 1:
-        return
-    items[:] = [item for index, item in enumerate(items) if index % shards == shard - 1]
