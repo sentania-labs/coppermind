@@ -714,7 +714,7 @@ function watchReview(f,answers){
   // The first review read is the panel itself; later ones are the watch.
   const call=f.plugin.call.bind(f.plugin);
   f.plugin.summaryPollMs=5;f.plugin.summaryWatchMs=2000;
-  f.plugin.call=(path,...args)=>path.endsWith('/review')&&answers.length&&(args[0]===undefined)?Promise.resolve(answers.shift()):call(path,...args);
+  f.plugin.call=(path,...args)=>path.endsWith('/review')&&answers.length&&(args[0]??'GET')==='GET'?Promise.resolve(answers.shift()):call(path,...args);
 }
 
 test('Write the summary again sits beside the summary and says what it will do',async()=>{
@@ -776,22 +776,31 @@ test('a server that stops answering while the summary is written is said plainly
   const f=await fixture(undefined,recorded);
   f.plugin.summaryPollMs=5;
   const call=f.plugin.call.bind(f.plugin);
-  f.plugin.call=(path,...args)=>path.endsWith('/review')&&args[0]===undefined?Promise.reject(Object.assign(Error('x'),{timeout:true})):call(path,...args);
+  f.plugin.call=(path,...args)=>path.endsWith('/review')&&(args[0]??'GET')==='GET'?Promise.reject(Object.assign(Error('x'),{timeout:true})):call(path,...args);
   const button=f.view.contentEl.all().find(e=>e.text==='Write the summary again');await button.onclick();
   assert.ok(homeText(f.view).some(t=>t.startsWith('Coppermind is not answering.')&&t.includes('Refresh this panel to check.')));
   assert.equal(button.disabled,false);
 });
 
-test('a summary that is already being written is not started twice',async()=>{
+test('a summary that is already being written is said so and not started twice',async()=>{
   const f=await fixture(undefined,{...recorded,summaryAgain:()=>({status:200,json:{title:'Planning',already:true}})});
-  watchReview(f,[{state:'failed',job_id:'job-2',suggestion_error:''}]);
-  await f.view.contentEl.all().find(e=>e.text==='Write the summary again').onclick();
+  let release;watchReview(f,[new Promise(resolve=>{release=resolve;})]);
+  const pending=f.view.contentEl.all().find(e=>e.text==='Write the summary again').onclick();
+  await new Promise(r=>setTimeout(r,20));
+  assert.ok(homeText(f.view).includes('Coppermind is already writing a new summary. The one above stays until it arrives.'));
+  assert.equal(f.requests.filter(r=>r.url.endsWith('/summary-again')).length,1);
+  release({state:'failed',job_id:'job-2',suggestion_error:''});await pending;
   assert.ok(homeText(f.view).some(t=>t.startsWith('The new summary could not be written.')));
 });
 
-
-test('a request the server never answers is cut off with a plain error',async()=>{
+test('a read the server never answers is cut off with a plain error',async()=>{
   const f=await fixture(undefined,{page:()=>new Promise(()=>{})});
   f.plugin.requestTimeoutMs=20;
-  await assert.rejects(f.plugin.call('/v1/anything'),e=>e.timeout===true&&/did not answer in time/.test(e.message));
+  await assert.rejects(f.plugin.call('/v1/anything','GET',undefined,true),e=>e.timeout===true&&/did not answer in time/.test(e.message));
+});
+
+test('a write that is slow to answer is waited for, not cut off',async()=>{
+  const f=await fixture(undefined,{page:()=>new Promise(resolve=>setTimeout(()=>resolve({status:200,json:{done:true}}),60))});
+  f.plugin.requestTimeoutMs=20;
+  assert.deepEqual(await f.plugin.call('/v1/anything','POST',{}),{done:true});
 });

@@ -300,7 +300,7 @@ ReviewView.prototype.summaryAgain=function(box,id,data,hasSummary){
     while(Date.now()<until){
       await wait(every);if(generation!==this.generation)return;
       let now;
-      try{now=await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/review');misses=0;}
+      try{now=await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/review','GET',undefined,true);misses=0;}
       catch(e){if(++misses>=3){status.setText(NOT_ANSWERING+' The new summary may still be on its way. Refresh this panel to check.');button.disabled=false;return;}continue;}
       if(generation!==this.generation)return;
       if(now.state==='failed'){status.setText('The new summary could not be written'+(now.suggestion_error?': '+now.suggestion_error:'.')+' The summary above is unchanged. You can try again.');button.disabled=false;return;}
@@ -318,7 +318,7 @@ ReviewView.prototype.summaryAgain=function(box,id,data,hasSummary){
       status.setText(result.already?'Coppermind is already writing a new summary. The one above stays until it arrives.':'Writing a new summary from the same transcript. This can take a minute. The one above stays until it arrives.');
       await watch();
     }catch(e){
-      status.setText(e.status===403?KEY_MISSING:e.timeout?NOT_ANSWERING:e.status===422||e.status===404?e.message:'Could not start a new summary. Check your connection, then try again.');
+      status.setText(e.status===403?KEY_MISSING:e.status===422||e.status===404?e.message:'Could not start a new summary. Check your connection, then try again.');
       button.disabled=false;
     }
   };
@@ -346,7 +346,7 @@ class HomeView extends ItemView {
     if(!this.loaded){el.empty();el.createEl('h2',{text:'Needs you'});el.createEl('p',{text:'Loading what needs you…'});}
     else if(!quiet&&this.stamp)this.stamp.setText('Refreshing…');
     try{
-      const [waiting,drop]=await Promise.all([settle(this.plugin.call('/v1/recordings/waiting')),settle(this.plugin.call('/v1/dropbox'))]);
+      const [waiting,drop]=await Promise.all([settle(this.plugin.call('/v1/recordings/waiting','GET',undefined,true)),settle(this.plugin.call('/v1/dropbox','GET',undefined,true))]);
       if(generation!==this.generation)return;
       if(!waiting.ok&&!drop.ok){
         if(this.loaded){this.problem=NOT_ANSWERING+' This is what Coppermind last said.';this.showStale();return;}
@@ -436,7 +436,7 @@ class HomeView extends ItemView {
       const button=card.createEl('button',{text:'Retry'}), feedback=card.createEl('p');
       button.onclick=async()=>{button.disabled=true;feedback.setText('Queuing retry…');
         try{await this.plugin.call('/v1/recordings/'+encodeURIComponent(recording.id)+'/retry','POST',{});await this.refresh();}
-        catch(e){feedback.setText(e.status===403?KEY_MISSING:e.timeout?NOT_ANSWERING:'Could not queue retry. Check your connection and transcription settings, then try again.');button.disabled=false;}
+        catch(e){feedback.setText(e.status===403?KEY_MISSING:'Could not queue retry. Check your connection and transcription settings, then try again.');button.disabled=false;}
       };
     }
     if(recording.can_dismiss)this.dismissControl(card,'This only removes the entry from this list and deletes nothing.','/v1/recordings/'+encodeURIComponent(recording.id)+'/dismiss');
@@ -649,17 +649,18 @@ module.exports=class CoppermindReview extends Plugin {
     if(file){try{const result=await this.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(file.basename));const person=result.items?.find(p=>p.path===file.path);if(person)await leaf.view.show(person);}catch{}}
   }
   async open(){this.noteFile=this.app.workspace.getActiveFile()||this.noteFile;let leaf=this.app.workspace.getLeavesOfType(VIEW)[0]||this.app.workspace.getRightLeaf(false);await leaf.setViewState({type:VIEW,active:true});await this.app.workspace.revealLeaf(leaf);await leaf.view.refresh();}
-  // A server that never answers must not leave a screen waiting for ever.
+  // Reads that a screen waits on give up on a silent server. Writes are never cut off, because the server may still be working on them.
   withTimeout(request){
     if(typeof setTimeout!=='function')return request;
     let timer;
     const late=new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(Error('Coppermind did not answer in time.'),{timeout:true})),this.requestTimeoutMs||REQUEST_TIMEOUT_MS);});
     return Promise.race([request,late]).finally(()=>clearTimeout(timer));
   }
-  async call(path,method='GET',body){
+  async call(path,method='GET',body,timed=false){
     const url=new URL(this.settings.url);if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw Error('Configure a valid Coppermind HTTP(S) address.');
     const key=this.app.secretStorage?.getSecret(this.settings.secret);if(!key)throw Error('This device is not paired with Coppermind yet. '+PAIR_HELP);
-    const result=await this.withTimeout(requestUrl({url:this.settings.url+path,method,headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,throw:false}));
+    const request=requestUrl({url:this.settings.url+path,method,headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,throw:false});
+    const result=timed?await this.withTimeout(request):await request;
     const namesSpeakers=Object.values(body?.manual_speakers||{}).some(Boolean)||(body?.selected||[]).some(i=>!!body?.speaker_choices?.[i]);
     if(result.status===403&&method==='POST'&&path.endsWith('/review')&&namesSpeakers)throw Error('This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, open Connected apps and either pair this device with a code, or open the key and tick Read notes, Add and change notes, Hand in recordings and files, and Read and correct people and companies.');
     const json=readJson(result);
