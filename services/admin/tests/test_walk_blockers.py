@@ -492,5 +492,5 @@ def test_a_shape_failure_says_which_part_was_wrong_and_hides_the_answer_until_as
     seen = shown(page)
     assert "summary.action_items should be text." in seen
     assert "PRIVATE-ANSWER" not in seen
-    assert ">Show the model&#x27;s answer</summary>" in page or "Show the model" in page
+    assert ">Show the model's answer</summary>" in page
     assert "PRIVATE-ANSWER" in page

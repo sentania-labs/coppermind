@@ -76,25 +76,18 @@ def read_json(text: str) -> tuple[dict[str, Any] | None, list[str]]:
             return (inner, repairs) if isinstance(inner, dict) else (None, [])
     decoder = json.JSONDecoder()
     start = body.find("{")
-    while start != -1:
-        try:
-            found, end = decoder.raw_decode(body, start)
-        except ValueError:
-            start = body.find("{", start + 1)
-            continue
-        if isinstance(found, dict):
-            # Only prose and a fence may surround it; a second object means the answer is
-            # ambiguous, so it is refused rather than guessed at.
-            rest = body[end:]
-            if not fenced and not _only_fence_or_prose(rest):
-                return None, []
-            return found, [*repairs, "ignored text around the answer"]
-        start = body.find("{", start + 1)
-    return None, []
-
-
-def _only_fence_or_prose(rest: str) -> bool:
-    return "{" not in rest
+    if start == -1:
+        return None, []
+    try:
+        found, end = decoder.raw_decode(body, start)
+    except ValueError:
+        return None, []
+    # Only prose may surround the object; a second object means the answer is ambiguous, so
+    # it is refused rather than guessed at. An object that starts later than the first brace
+    # would be a piece of a cut-off answer, not the answer.
+    if not isinstance(found, dict) or "{" in body[end:]:
+        return None, []
+    return found, [*repairs, "ignored text around the answer"]
 
 
 def _as_list(value: Any) -> tuple[Any, bool]:
@@ -138,7 +131,7 @@ def tidy_suggestions(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
 
 
 def tidy_summary(data: dict[str, Any], keys: list[str]) -> tuple[dict[str, Any], list[str]]:
-    """A part the model left out, or sent as null, is an empty part."""
+    """An optional part the model left out, or sent as null, is an empty part."""
     out = dict(data)
     repairs = []
     for key in keys:
@@ -233,5 +226,19 @@ def read_suggestions(answer: dict[str, Any]) -> tuple[Suggestions, list[str]]:
 
 
 def read_summary(answer: dict[str, Any]) -> tuple[MeetingSummary, list[str]]:
-    data, repairs = tidy_summary(dict(answer), [section.key for section in SECTIONS])
+    required = SECTIONS[0].key
+    data, repairs = tidy_summary(dict(answer), [section.key for section in SECTIONS[1:]])
+    given = data.get(required)
+    if given is None or (isinstance(given, str) and not given.strip()):
+        raise ValidationError.from_exception_data(
+            "MeetingSummary",
+            [
+                {
+                    "type": "missing" if given is None else "string_too_short",
+                    "loc": (required,),
+                    "input": "",
+                    "ctx": {"min_length": 1},
+                }
+            ],
+        )
     return MeetingSummary.from_answer(data), repairs

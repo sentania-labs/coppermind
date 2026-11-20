@@ -78,6 +78,27 @@ def test_a_missing_summary_part_is_empty_but_a_wrong_kind_is_not_repaired():
 
 
 @pytest.mark.parametrize(
+    ("answer", "reason"),
+    [
+        ({"decisions": "d", "action_items": "a"}, "is missing"),
+        ({"summary": None, "decisions": "d", "action_items": "a"}, "is missing"),
+        ({"summary": "  ", "decisions": "d", "action_items": "a"}, "is empty or too short"),
+    ],
+)
+def test_a_summary_with_no_summary_part_is_refused_and_named(answer, reason):
+    with pytest.raises(ValidationError) as caught:
+        answer_shape.read_summary(answer)
+    problems = answer_shape.problems_of(caught.value)
+    assert problems == [{"path": "summary", "reason": reason}]
+
+
+def test_a_cut_off_answer_is_not_mistaken_for_the_object_inside_it():
+    cut = '{"suggestions": [{"kind": "field", "reason": "x"}'
+    assert answer_shape.read_json(cut) == (None, [])
+    assert answer_shape.read_json('Sure: {"a": 1} Done.')[0] == {"a": 1}
+
+
+@pytest.mark.parametrize(
     ("data", "path", "reason"),
     [
         ({"suggestions": [{"kind": "filename"}]}, "suggestions.0.reason", "is missing"),
