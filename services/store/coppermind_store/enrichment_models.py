@@ -58,6 +58,14 @@ class EnrichmentJob(ContextModel):
     # The start of the model's reply (bounded) kept on a failed job, so Inspect can show
     # what the model said when its answer was refused. Empty when there was no reply.
     reply: str = Field(default="", max_length=4000)
+    # When the answer was refused for its shape: each part that was wrong (`path`) and why
+    # (`reason`), in words that never repeat what the model wrote.
+    problems: list[dict[str, str]] = Field(default_factory=list, max_length=20)
+    # The failure in whole sentences for the owner: no rule names, paths or error text.
+    plain: str = Field(default="", max_length=1000)
+    # What had to be tidied to read the answer (a code fence, a missing optional part), so a
+    # model that needs it can be told apart from one that does not.
+    repairs: list[str] = Field(default_factory=list, max_length=60)
     # After a timeout, no new attempt before this time (ISO-8601). Empty means no wait.
     retry_after: str = ""
     created_at: str
@@ -83,6 +91,10 @@ class EnrichmentJob(ContextModel):
         *,
         reply: str = "",
         retry_after: str = "",
+        problems: list[dict[str, str]] | None = None,
+        plain: str = "",
     ) -> None:
         self.error, self.error_rule, self.input_size, self.input_limit = message, rule, size, limit
+        self.problems = list(problems or [])
+        self.plain = plain[:1000]
         self.reply, self.retry_after = reply[:4000], retry_after

@@ -228,7 +228,10 @@ class Features:
                 if note["id"] in before:
                     without.append(note | {"why": "before"})
             elif job.state == "failed" and job.error_rule not in UNREACHABLE:
-                without.append(note | {"why": "failed"})
+                # "toolong": the AI service refused the text as more than the model takes.
+                without.append(
+                    note | {"why": "toolong" if job.error_rule == "model-too-long" else "failed"}
+                )
         return without
 
     async def suggestions(self) -> dict[str, Any]:

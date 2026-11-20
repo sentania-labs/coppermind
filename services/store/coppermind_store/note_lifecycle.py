@@ -674,6 +674,8 @@ class NoteLifecycle:
                     "state": job.state if job else "awaiting_suggestions",
                     "suggestions_enabled": self.context.config().assignments["enrichment"].enabled,
                     "suggestion_error": job.error if job and job.state == "failed" else "",
+                    # The same failure in whole sentences, for the banner on the review page.
+                    "suggestion_plain": job.plain if job and job.state == "failed" else "",
                     "stale": stale,
                     "speaker_notice": speaker_names.OMITTED_NOTICE
                     if job and (job.evidence.get("speaker_review") or {}).get("omitted")
