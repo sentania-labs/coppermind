@@ -355,11 +355,23 @@ async def evidence(
                 continue
             candidate["path"] = matches[0].path
             candidate["person_id"] = matches[0].id
-    listed = list(candidates.values())
+    named_speakers = {
+        str(segment.get("speaker", "")).strip().casefold()
+        for segment in transcript.get("segments", [])
+        if segment.get("speaker") and segment["speaker"] not in labels
+    }
+    entity_names = {entity.id: entity.name.casefold() for entity in people}
+    listed = [
+        candidate
+        for candidate in candidates.values()
+        if candidate["name"].casefold() not in named_speakers
+        and entity_names.get(candidate.get("person_id", ""), "") not in named_speakers
+    ]
     return {
         **base,
         "speakers": labels,
         "candidates": listed,
+        "named_speakers": sorted(named_speakers),
         "excerpts": sample(transcript, [c["name"] for c in listed], budget),
     }
 

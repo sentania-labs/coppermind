@@ -137,7 +137,7 @@ class AdminPeople:
                 {
                     "id": identity,
                     "name": item["name"],
-                    "label": first["label"] if first else item["name"],
+                    "label": item["name"],
                     "where": titles.get(first["note_id"], "") if first else "",
                     "note_id": first["note_id"] if first else "",
                     "heard": max((s["created_at"] for s in item["signatures"]), default=""),

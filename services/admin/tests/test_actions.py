@@ -60,6 +60,10 @@ def test_writeup_reset_restores_default_without_changing_other_settings(admin):
     client, _, store = admin
     post(client, "/admin/transcription/writeup", {"reset": "true", "model": "unsaved"})
     assert store.asked("writeup-save") == [{"reset": True}]
+    page = client.get("/admin/transcription/writeup").text
+    assert "Directions reset to default. Your service, model and limits are unchanged." in page
+    assert "Reset to default restores only the Directions text." in page
+    assert "Write-up settings saved" not in page
 
 
 # -- writing a summary again ----------------------------------------------------------------
@@ -238,9 +242,11 @@ def completed(store):
     return [payload for name, payload in store.context_calls if name == "complete-review"]
 
 
-def test_review_asks_for_an_answer_to_everything_it_was_unsure_about(admin):
+def test_review_requires_answers_for_meeting_and_confident_speaker_suggestion(admin):
     client, _, store = admin
     form = answers()
+    suggestion = store.views["lifecycle"]["suggestions"][1]
+    suggestion.update(value=suggestion["candidates"][0]["id"], confidence=0.9)
     del form["meeting"], form["s_1"]
     refused = post(client, REVIEW, form, page=REVIEW)
     assert refused.status_code == 422
@@ -1210,3 +1216,54 @@ def test_storage_shows_an_unknown_count_honestly_and_saves_its_interval(admin):
     saved = post(client, "/admin/storage/count-interval", {"seconds": "900"})
     assert store.asked("storage-count-interval") == [{"seconds": 900}]
     assert "The clean-up count updates in the background" in follow(client, saved)
+
+
+@pytest.mark.parametrize("value,confidence", [(None, 0), ("person:alex", 0.4)])
+def test_uncertain_voice_links_to_naming_and_does_not_block_review(admin, value, confidence):
+    client, _, store = admin
+    lifecycle = store.views["lifecycle"]
+    lifecycle["suggestions"] = [
+        {
+            "index": 0,
+            "kind": "speaker",
+            "field": "Unknown voice 3",
+            "value": value,
+            "confidence": confidence,
+            "reason": "No confident match.",
+            "quote": "",
+            "candidates": [{"id": "person:alex", "name": "Alex Example"}],
+        }
+    ]
+    lifecycle["unnamed_voices"] = [{"id": "unknown:3", "name": "Unknown voice 3"}]
+    page = client.get(REVIEW).text
+    assert "Yes, that was" not in page
+    assert "Name this voice" in page
+    assert 'href="/admin/people?tab=voices&amp;name=unknown%3A3#voice-unknown%3A3"' in page
+    form = answers()
+    del form["s_0"]
+    result = post(client, REVIEW, form, page=REVIEW)
+    assert result.status_code == 303
+    assert completed(store)[0]["selected"] == []
+
+
+def test_saved_unknown_voice_can_be_named_from_note_and_recording(admin):
+    client, _, store = admin
+    voice = {"id": "unknown:3", "name": "Unknown voice 3"}
+    store.views["note"]["unnamed_voices"] = [voice]
+    store.views["incoming-item"]["unnamed_voices"] = [voice]
+    for path in (f"/admin/notes/{NOTE}", "/admin/incoming/" + store.views["incoming-item"]["id"]):
+        page = client.get(path).text
+        assert "Unknown voice 3" in page
+        assert 'href="/admin/people?tab=voices&amp;name=unknown%3A3#voice-unknown%3A3"' in page
+
+
+def test_failed_writeup_reason_is_shown_once_with_an_editor_link(admin):
+    from coppermind.recording_writeup import failure_message
+
+    client, _, store = admin
+    item = store.views["incoming-item"]
+    item.update(state="failed", rule="writeup-invalid", error=failure_message("writeup-invalid"))
+    page = client.get("/admin/incoming/" + item["id"]).text
+    assert page.count("The writing service sent an answer") == 1
+    assert 'href="/admin/transcription/writeup"' in page
+    assert "boundary block" not in page

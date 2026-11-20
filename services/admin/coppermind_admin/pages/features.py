@@ -722,10 +722,15 @@ touched.</p>
             fields += ui.text_input(key, label, str(chosen[key]))
         form = f"""<form method="post" action="{WRITEUP_PATH}" class="stack">{fields}
 <p>Changes apply to new generations and failed write-up retries. Existing notes stay as written.</p>
+<p>Reset to default restores only the Directions text.
+Your service, model and limits stay as set.</p>
 <div class="actions"><button class="lat-btn lat-btn--primary">Save</button>
 <button class="lat-btn" name="reset" value="true" formnovalidate>Reset to default</button>
 </div></form>"""
-        rules = "<h3>Locked rules (read-only)</h3><pre>" + e(data["locked"]) + "</pre>"
+        rules = (
+            "<h3>Locked rules (read-only)</h3>"
+            '<p style="white-space:pre-wrap;overflow-wrap:anywhere">' + e(data["locked"]) + "</p>"
+        )
         body = ui.head(
             WRITEUP_TITLE,
             "A recording produces a finished note before frontmatter review.",
@@ -760,7 +765,12 @@ touched.</p>
             await ctx.act("writeup-save", payload)
         except StoreError as exc:
             return await ctx.refused(exc, WRITEUP_PATH)
-        ctx.say("ok", "Saved. The next write-up uses these directions.")
+        ctx.say(
+            "ok",
+            "Directions reset to default. Your service, model and limits are unchanged."
+            if payload.get("reset")
+            else "Saved. The next write-up uses these directions.",
+        )
         return ctx.go(WRITEUP_PATH)
 
     # ====================================================================================

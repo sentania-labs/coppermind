@@ -80,6 +80,17 @@ async def test_finished_body_without_suggestions_then_review(store):
         assert (await store.admin.notes.summary({"id": note.id})) == {"recording": False}
         await context.setup_lifecycle({"revision": context.config().revision})
         before = note.body
+        from coppermind_store import speaker_names
+
+        evidence = await speaker_names.evidence(context, note, [])
+        assert evidence["speakers"] == ["Unknown voice 1"]
+        assert not any(c["name"] == "Alex Example" for c in evidence["candidates"])
+        voices = VoiceStore(context).unknown_for_note(note.id)
+        assert len(voices) == 1 and voices[0]["name"] == "Unknown voice 1"
+        assert store.admin.incoming.recording(job)["unnamed_voices"] == voices
+        assert (await store.admin.notes.detail({"id": note.id}))["unnamed_voices"] == voices
+        people = await store.admin.people.listing()
+        assert people["unnamed"][0]["label"] == "Unknown voice 1"
         config = context.config()
         enrichment = config.assignments["enrichment"]
         enrichment.connection = config.assignments["writeup"].connection
@@ -109,6 +120,27 @@ async def test_finished_body_without_suggestions_then_review(store):
         await context.run_job(review)
         assert review.state == "suggested", review.error
         assert review.result.meeting_summary is None
+        # A cached suggestion made before a voice was named must not offer that same person
+        # as the remaining unknown speaker.
+        from coppermind_store.enrichment_models import Suggestion
+
+        candidate = speaker_names.person_candidate(store.entities.load().entities[person["id"]])
+        review.evidence["speaker_review"] = {**evidence, "candidates": [candidate]}
+        review.result.suggestions.append(
+            Suggestion(
+                kind="speaker",
+                field="Unknown voice 1",
+                value=candidate["id"],
+                confidence=0.95,
+                reason="A cached guess.",
+                quote="Hello.",
+            )
+        )
+        context.save_job(review)
+        detail = await context.lifecycle.detail({"note_id": note.id})
+        speaker = next(s for s in detail["suggestions"] if s["kind"] == "speaker")
+        assert speaker["value"] is None and speaker["candidates"] == []
+        assert detail["unnamed_voices"] == voices
         selected = [
             i
             for i, suggestion in enumerate(review.result.suggestions)
@@ -403,7 +435,7 @@ async def test_voice_named_during_generation_is_applied_after_durable_filing(sto
 
 
 async def test_writeup_editor_persists_and_resets_only_its_prompt(store):
-    from coppermind.recording_writeup import DEFAULT_PROMPT, LOCKED_RULES
+    from coppermind.recording_writeup import DEFAULT_PROMPT, DISPLAY_RULES
 
     async with Service() as service:
         context = await setup_transcription(store, service)
@@ -412,7 +444,7 @@ async def test_writeup_editor_persists_and_resets_only_its_prompt(store):
         await features.writeup_save({"writeup_prompt": "Write a concise account.", "enabled": True})
         settings = await features.writeup_settings()
         assert settings["prompt"] == "Write a concise account."
-        assert LOCKED_RULES in settings["locked"]
+        assert settings["locked"] == DISPLAY_RULES
         await features.writeup_save({"reset": True})
         assert (await features.writeup_settings())["prompt"] == DEFAULT_PROMPT
         assert context.config().assignments["enrichment"].model_dump() == before

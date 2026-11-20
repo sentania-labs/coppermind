@@ -148,8 +148,22 @@ class TranscriptionJob(ContextModel):
     def set_error(
         self, message: str = "", rule: str = "", *, reply: str = "", retry_after: str = ""
     ) -> None:
+        if rule.startswith("writeup-"):
+            from coppermind.recording_writeup import failure_message
+
+            message = failure_message(rule)
         self.error, self.error_rule = message, rule
         self.reply, self.retry_after = reply[:REPLY_KEPT], retry_after
+
+    @property
+    def display_error(self) -> str:
+        from coppermind.recording_writeup import failure_message
+
+        return (
+            failure_message(self.error_rule)
+            if self.error_rule.startswith("writeup-")
+            else self.error
+        )
 
     def status(self) -> RecordingStatus:
         return RecordingStatus(
@@ -160,7 +174,7 @@ class TranscriptionJob(ContextModel):
             artifact_id=self.artifact_id,
             attempts=self.attempts,
             attempt_limit=self.attempt_limit,
-            error=self.error,
+            error=self.display_error,
             error_rule=self.error_rule,
             retry_after=self.retry_after,
             created_at=self.created_at,
@@ -401,7 +415,9 @@ class Recordings:
                     {
                         "id": job.id,
                         "title": job.title or job.filename,
-                        "message": job.error if job.error_rule.startswith("writeup-") else message,
+                        "message": job.display_error
+                        if job.error_rule.startswith("writeup-")
+                        else message,
                         "stage": job.stage,
                         "field_problems": field_problems,
                         "field_problems_unavailable": job.error_rule == "note-rejected"

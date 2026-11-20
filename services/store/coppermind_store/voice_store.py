@@ -177,6 +177,17 @@ class VoiceStore:
             )
             self._save(data)
 
+    def unknown_for_note(self, note_id: str, source_id: str | None = None) -> list[dict[str, str]]:
+        return [
+            {"id": identity, "name": item["name"]}
+            for identity, item in self.unknown_summaries().items()
+            if any(
+                a["note_id"] == note_id
+                and (source_id is None or a.get("source_id") in (None, source_id))
+                for a in item["assignments"]
+            )
+        ]
+
     def bind_recording(self, provisional_id: str, note_id: str) -> None:
         data = self._load()
         for voice in data.get("unknowns", {}).values():

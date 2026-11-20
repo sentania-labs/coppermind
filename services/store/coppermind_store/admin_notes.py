@@ -415,6 +415,9 @@ class AdminNotes:
         if row is None:
             raise NotFound(note_id)
         result = self._summary(row)
+        from coppermind_store.voice_store import VoiceStore
+
+        result["unnamed_voices"] = VoiceStore(self.store.context).unknown_for_note(note_id)
         result["reviewed"] = row.reviewed
         result["history"] = await self._history(row)
         result["unsure"] = self._open_suggestions().get(note_id, 0)

@@ -645,24 +645,55 @@ class NoteLifecycle:
                         matches = await self.merge_candidates(note, recording)
                         if matches:
                             source = await self.context.store.get_source(recording.source_id)
+                            writeup = self.context.read("recording-writeups/" + recording.id, {})
                             merge = {
                                 "state": "offered",
                                 "candidates": matches,
                                 "transcript_path": source.projection_path,
-                                "markdown": self.context.read(
-                                    "recording-writeups/" + recording.id, {}
-                                ).get("body", ""),
+                                "markdown": writeup.get("voice_generated", writeup.get("body", "")),
                             }
             with timing.step("speaker_details"):
+                from coppermind_store.voice_store import VoiceStore
+
                 if manual:
-                    from coppermind_store.voice_store import VoiceStore
+                    named_speakers = set(manual.get("named_speakers", []))
+
+                    def already_named(candidate: dict[str, Any]) -> bool:
+                        entity = people.get(candidate.get("person_id", ""))
+                        return candidate["name"].casefold() in named_speakers or bool(
+                            entity and entity.name.casefold() in named_speakers
+                        )
+
+                    for suggestion in suggestions:
+                        if suggestion["kind"] != "speaker":
+                            continue
+                        suggestion["candidates"] = [
+                            person
+                            for person in suggestion.get("candidates", [])
+                            if not already_named(person)
+                        ]
+                        if not any(
+                            person["id"] == suggestion["value"]
+                            for person in suggestion["candidates"]
+                        ):
+                            suggestion.update(
+                                value=None,
+                                confidence=0,
+                                display_value="No person suggested",
+                                reason="There is no confident match for this voice.",
+                            )
 
                     people = self.context.store.entities.load().entities
                     manual = {
                         key: manual[key]
                         for key in ("source_id", "revision", "speakers", "candidates")
                     }
-                    manual["voice_matches"] = speaker_names.voice_suggestions(self.context, note.id)
+                    manual["voice_matches"] = {
+                        label: [person for person in matches if not already_named(person)]
+                        for label, matches in speaker_names.voice_suggestions(
+                            self.context, note.id
+                        ).items()
+                    }
                     recording = next(
                         r for r in self.context.recordings.jobs() if r.note_id == note.id
                     )
@@ -689,6 +720,7 @@ class NoteLifecycle:
             with timing.step("response"):
                 return {
                     "manual_speaker_review": manual,
+                    "unnamed_voices": VoiceStore(self.context).unknown_for_note(note.id),
                     "review_problem": problem,
                     "note": note.model_dump(mode="json"),
                     "job_id": job.id if job else None,

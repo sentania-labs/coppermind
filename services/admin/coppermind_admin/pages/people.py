@@ -188,7 +188,11 @@ name="new_name" aria-label="Name of the new person" placeholder="Their name"></s
                             + ui.go("Name this voice", ui.url(here, name=voice["id"]))
                             + ui.go("Remove", ui.url(here, ask="unnamed:" + voice["id"]))
                         )
-                    rows += ui.item(where, detail, actions)
+                    rows += (
+                        f'<div id="voice-{e(voice["id"])}">'
+                        + ui.item(where, detail, actions)
+                        + "</div>"
+                    )
                 unknown = (
                     '<div style="border-top:1px solid var(--line-soft);margin-top:6px;'
                     f'padding-top:10px"><div class="row-l">Voices not named yet ({len(unnamed)})'

@@ -792,6 +792,9 @@ def router(wiring: Wiring) -> APIRouter:
                 "The note was written from this recording. Open it to see where it is now.",
                 ui.go("See the note", note) if note else "",
             )
+        if item["state"] == "failed" and item.get("rule", "").startswith("writeup-"):
+            top += ui.go("How recordings are written up", "/admin/transcription/writeup")
+        top += ui.unnamed_voices(item.get("unnamed_voices", []))
         service = view["trans"]["service"] if view else None
         sent_to = ""
         if item["state"] == "failed" and service:
@@ -835,7 +838,7 @@ def router(wiring: Wiring) -> APIRouter:
             events.append(
                 (
                     "Most recent try",
-                    ui.linked_answer_limit_error(item["error"]) + " Coppermind stopped trying.",
+                    "Coppermind stopped trying. The reason and what to do next are shown above.",
                 )
             )
         if ctx.q("ask") == "delete":

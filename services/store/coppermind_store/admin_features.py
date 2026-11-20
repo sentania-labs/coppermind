@@ -358,7 +358,7 @@ class Features:
         return {"max_output_tokens": limit}
 
     async def writeup_settings(self) -> dict[str, Any]:
-        from coppermind.recording_writeup import BOUNDARY_RULES, DEFAULT_PROMPT, LOCKED_RULES
+        from coppermind.recording_writeup import DEFAULT_PROMPT, DISPLAY_RULES
         from coppermind_store.recording_writeup import assignment
 
         async with self.context.lock:
@@ -367,7 +367,7 @@ class Features:
             "assignment": chosen.model_dump(),
             "prompt": chosen.writeup_prompt or DEFAULT_PROMPT,
             "default": DEFAULT_PROMPT,
-            "locked": LOCKED_RULES + "\n\n" + BOUNDARY_RULES,
+            "locked": DISPLAY_RULES,
             "services": [{"id": c.id, "name": c.name} for c in self.context.config().connections],
         }
 

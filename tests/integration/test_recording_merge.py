@@ -583,12 +583,17 @@ async def test_a_merged_recordings_audio_is_not_held_back_by_the_note_it_was_mer
 
 async def test_finished_markdown_merges_without_summary_proposal(store):
     context, recording, generated, target, payload = await prepare(store, markdown=True)
+    saved = context.read("recording-writeups/" + recording.id, {})
+    saved["voice_generated"] = "## Top line\nAlex Example gave a greeting.\n"
+    context.write("recording-writeups/" + recording.id, saved)
+    preview = await context.lifecycle.detail({"note_id": generated.id})
+    assert preview["recording_merge"]["markdown"] == saved["voice_generated"]
     result = await context.lifecycle.merge_recording(payload)
     assert result["state"] == "complete"
     merged = await store.get_note(target.id)
     assert merged.body.startswith(target.body)
     assert merged.body.count("## Recording write-up") == 1
-    assert "A greeting." in merged.body
+    assert saved["voice_generated"].strip() in merged.body
     from coppermind_store import recording_merge
 
     await recording_merge.apply(

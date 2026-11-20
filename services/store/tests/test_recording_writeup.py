@@ -189,3 +189,10 @@ async def test_title_abstains_on_ambiguous_calendar(candidates, expected):
     title, evidence = await resolve_title(context, job, "A greeting.")
     assert title == expected
     assert evidence["matched"] == (len(candidates) == 1)
+
+
+def test_required_title_can_contain_an_em_dash_but_body_cannot():
+    title = "2026-11-20 Planning \u2014 follow-up"
+    assert validate("# " + title + "\nA complete note.", title, []) == "A complete note.\n"
+    with pytest.raises(ValueError):
+        validate("# " + title + "\nA note \u2014 unfinished.", title, [])
