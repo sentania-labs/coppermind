@@ -572,18 +572,25 @@ page and action tests under `services/admin/tests/`,
   `ci/failure.sh` proves the catch-up, the history and the exclusions against
   the tested images.
 - CI: lint, types, unit tests, compose validity and the no-em-dash rule;
-  PostgreSQL backed integration tests; dependency, secret and repository
-  scans; one image build per service as an OCI tarball with provenance and an
-  SBOM, scanned; and a compose smoke run of the whole storyline above, plus
-  the Git helper's failure storyline and the simulated Obsidian Sync
-  lifecycle, against those exact images. Every action is pinned to a commit
-  SHA, and a test enforces that.
+  PostgreSQL backed integration tests, split into four parallel shards with a
+  check that together they ran every test file exactly once; dependency, secret
+  and repository scans; one image build per service as an OCI tarball with
+  provenance and an SBOM, scanned; and a compose smoke run of the whole
+  storyline above, plus the Git helper's failure storyline and the simulated
+  Obsidian Sync lifecycle, against those exact images. Every action is pinned
+  to a commit SHA, and a test enforces that.
 - A version tag adds the publication gates on top of the same run: the tag has
-  to be annotated and reachable from `main`, and only then are the tested
-  archives pushed to `ghcr.io/sentania-labs/coppermind`, signed with cosign,
-  read back and smoke tested with no credentials at all, recorded as a GitHub
-  release listing their digests, and named by `latest`, which only ever moves
-  forward. Publication authority is held by tag-triggered jobs alone and
+  to be annotated and reachable from `main`. When `main` already has a
+  completed passing run on that exact commit (`ci/release-mode.sh` looks it
+  up), the tag skips the unit checks, scans and integration shards and runs
+  only the image build and scan, the start-up check of the stack
+  (`STARTUP=1 make smoke`) and publication; with no such run (cancelled, failed
+  or missing) it runs everything, so untested code is never published. Either
+  way, only then are the tested archives pushed to
+  `ghcr.io/sentania-labs/coppermind`, signed with cosign, read back and smoke
+  tested with no credentials at all, recorded as a GitHub release listing their
+  digests, and named by `latest`, which only ever moves forward. Publication
+  authority is held by tag-triggered jobs alone and
   `tests/ci/test_workflow_pins.py` enforces that. Proven live by v0.1.0 on
   2026-09-30: the tag run published all five images to
   `ghcr.io/sentania-labs/coppermind`, and they were created public because the

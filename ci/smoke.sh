@@ -26,6 +26,10 @@ COMPOSE_FILES="${COMPOSE_FILES:--f docker-compose.yml}"
 export COMPOSE_PROFILES="${COMPOSE_PROFILES:-smoke}"
 API="${API:-http://127.0.0.1:8080}"
 ADMIN="${ADMIN:-http://127.0.0.1:8082}"
+# STARTUP=1 keeps only the start-up proof: the stack comes up and every service
+# answers. The tag build that already has a passing full run on its commit uses
+# it, so the same harness answers both questions at two depths.
+STARTUP="${STARTUP:-0}"
 # How long the API may go on trusting the key records it last read, as README.md and
 # STATUS.md document it: a new key works, and a removed key stops, within this long.
 KEY_CACHE_SECONDS=2
@@ -134,7 +138,7 @@ wait_for_adopted_path() {
 
 step "bring the stack up"
 compose up -d --wait --remove-orphans
-ok "compose reported every service healthy"
+ok "compose reported every service healthy, the editor included"
 
 step "the API is up and ready"
 wait_for_status 200 "$API/healthz"
@@ -142,6 +146,17 @@ wait_for_status 200 "$API/readyz"
 curl -sS "$API/readyz"; echo
 wait_for_status 200 "$API/openapi.json"
 ok "/healthz, /readyz and OpenAPI answer 200 without a key"
+
+# The minimal tag build stops here, having seen the stack come up and answer; the
+# full storyline continues below.
+if [ "$STARTUP" = "1" ]; then
+    step "every published service answers"
+    wait_for_status 200 "$ADMIN/healthz"
+    compose ps
+    ok "the API, Admin, store, Git and Obsidian Sync containers are up and answering"
+    printf '\nstart-up check passed\n'
+    exit 0
+fi
 
 # Admin drives its own session cookie, so every call shares one jar. The cookie
 # is Secure only, which curl sends over http to the loopback address the
