@@ -49,6 +49,7 @@ ACTIONS = {
     "retry-recording": "retry_recording",
     "retry-failed-recording": "retry_failed_recording",
     "dismiss-recording": "dismiss_recording",
+    "note-summary-again": "note_summary_again",
     "recording-detail": "recording_detail",
     "retry-all-failed": "retry_all_failed",
     "attention": "attention",

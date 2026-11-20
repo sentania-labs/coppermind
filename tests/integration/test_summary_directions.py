@@ -306,6 +306,21 @@ async def test_a_reviewed_note_is_never_summarized_again(store, standin):
     assert sum("transcript" in request for request in requests) == 1
 
 
+async def test_the_public_call_writes_the_summary_again_and_refuses_in_the_same_words(
+    store, standin
+):
+    context, note, _, _ = await setup_recording(store, standin)
+    listen(standin)
+    asked = await context.note_summary_again({"id": note.id})
+    assert asked == {"title": "Planning", "already": False}
+    assert (await context.note_summary_again({"id": note.id}))["already"] is True
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": True}), if_match=note.content_hash
+    )
+    with pytest.raises(ValueError, match="already been reviewed"):
+        await context.note_summary_again({"id": note.id})
+
+
 async def test_a_stopped_service_is_said_and_nothing_is_started(store, standin):
     context, note, _, _ = await setup_recording(store, standin)
     config = context.config()

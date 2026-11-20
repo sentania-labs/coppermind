@@ -33,10 +33,10 @@ async function fixture(local, overrides={}){
   const requests=[];const notices=[];
   const file={basename:'Note',path:'Review/Note.md'};
   let factory;const factories={};const modals=[];
-  class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(command){(this.commands??={})[command.id]=command;}async saveData(data){(this.saved??=[]).push(JSON.parse(JSON.stringify(data)));}addRibbonIcon(){}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
+  class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(command){(this.commands??={})[command.id]=command;}async saveData(data){(this.saved??=[]).push(JSON.parse(JSON.stringify(data)));}addRibbonIcon(icon,title){(this.ribbons??=[]).push(title);}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw,getAbstractFileByPath:path=>({path})},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null,openLinkText:()=>{}}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return {status:200,json:overrides.waiting};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return overrides.waitingFail?{status:overrides.waitingFail===true?500:overrides.waitingFail,json:{message:'down'}}:overrides.waitingHang?new Promise(()=>{}):{status:200,json:overrides.waiting};if(req.url.endsWith('/v1/dropbox'))return overrides.dropboxFail?{status:overrides.dropboxFail===true?500:overrides.dropboxFail,json:{message:'down'}}:{status:200,json:overrides.dropbox??{folder:'Dropbox',items:[]}};if(req.url.includes('/v1/dropbox/')&&req.url.endsWith('/dismiss'))return overrides.dismissDropFail?{status:500,json:{}}:{status:200,json:{dismissed:'x'}};if(req.url.endsWith('/summary-again'))return overrides.summaryAgain?overrides.summaryAgain(req):{status:200,json:{title:'Planning',already:false}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL,setTimeout,clearTimeout,setInterval,clearInterval};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
@@ -532,33 +532,261 @@ test('rejected note with unavailable field details explains the next step',async
   const text=view.contentEl.all().map(e=>e.text||'').join(' ');
   assert.ok(text.includes('Details: the specific field was not recorded. Retry to check the note again.'));
 });
-test('imports view shows stored artifacts and failed files',async()=>{
+
+const homeText=view=>view.contentEl.all().map(e=>e.text||'');
+async function home(overrides={}){
+  overrides.waiting??={meetings:[],failed:[],processing:[]};
+  const f=await fixture(undefined,overrides);
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  return {...f,view};
+}
+const longName='Quarterly planning workshop recording with a very long descriptive name that would not fit in one line.m4a';
+
+test('Needs you is the front door, and the Imports panel, command and ribbon icon are gone',async()=>{
   const f=await fixture();
-  f.plugin.call=async path=>{
-    assert.equal(path,'/v1/dropbox');
-    return {folder:'Dropbox',items:[
-      {filename:'report.pdf',state:'succeeded',parts:[{artifact_id:'a',path:'Artifacts/report.pdf'}],error:''},
-      {filename:'broken.ics',state:'failed',parts:[],error:'The calendar file could not be read.'},
-    ]};
-  };
-  const view=f.factories['coppermind-imports']({app:f.app});await view.refresh();
-  const text=view.contentEl.all().map(e=>e.text||'').join(' ');
-  assert.match(text,/report.pdf/);assert.match(text,/Open artifact/);
-  assert.match(text,/broken.ics/);assert.match(text,/could not be read/);
+  assert.equal(f.factories['coppermind-imports'],undefined);
+  assert.equal(f.plugin.commands['show-imports'],undefined);
+  assert.equal(f.plugin.commands['meetings-to-review'].name,'Needs you');
+  assert.ok(f.plugin.ribbons.includes('Needs you'));
+  assert.ok(!f.plugin.ribbons.some(t=>/import/i.test(t)));
+  const view=f.factories['coppermind-waiting']({app:f.app});
+  assert.equal(view.getDisplayText(),'Needs you');
 });
 
-test('imports view explains an unavailable connection',async()=>{
-  const f=await fixture();f.plugin.call=async()=>{throw Error('offline');};
-  const view=f.factories['coppermind-imports']({app:f.app});await view.refresh();
-  assert.ok(view.contentEl.all().some(e=>e.text==='Imports are unavailable. Try again.'));
+test('Needs you shows ready, failed and still-processing work apart, each with its next step',async()=>{
+  const f=await home({waiting:{
+    meetings:[{title:'Planning',path:'Review/Planning.md',date:''}],
+    failed:[{id:'abc',title:'Bad call',message:'Try the recording again.',can_retry:true,can_dismiss:false}],
+    processing:[{id:'p1',title:'Standup',state:'running',message:'Being transcribed. This can take a while for a long recording.',since:'2026-11-09T15:30:00Z'}],
+  },dropbox:{folder:'Dropbox',items:[{id:'i1',filename:'a.zip',state:'importing',parts:[{import_id:'x'}],error:''}]}});
+  const text=homeText(f.view);
+  assert.ok(text.includes('1 meeting to review · 1 recording failed · 2 in progress'));
+  assert.ok(text.includes('Ready to review (1)'));assert.ok(text.includes('Recordings needing attention (1)'));
+  assert.ok(text.includes('Still processing (2)'));
+  assert.ok(text.includes('Being transcribed. This can take a while for a long recording.'));
+  assert.ok(text.includes('Importing now.'));
+  assert.ok(text.some(t=>t.startsWith('Last updated ')));
+  const order=['Ready to review (1)','Recordings needing attention (1)','Still processing (2)'].map(t=>text.indexOf(t));
+  assert.deepEqual(order,[...order].sort((a,b)=>a-b));
+  assert.ok(!text.includes('You are all caught up. Nothing is waiting for you.'));
+});
+
+test('Needs you says plainly when nothing is waiting',async()=>{
+  const f=await home();
+  const text=homeText(f.view);
+  assert.ok(text.includes('You are all caught up. Nothing is waiting for you.'));
+  assert.ok(text.includes('No meetings are waiting for review.'));assert.ok(text.includes('No recordings need attention.'));
+  assert.ok(!text.some(t=>t.startsWith('Still processing')||t.startsWith('Recently imported')));
+});
+
+test('Needs you says it is loading, and a request that never answers ends in a plain message',async()=>{
+  const f=await fixture(undefined,{waitingHang:true,dropbox:{items:[]}});
+  f.plugin.requestTimeoutMs=30;
+  const view=f.factories['coppermind-waiting']({app:f.app});
+  const pending=view.refresh();
+  assert.ok(homeText(view).includes('Loading what needs you…'));
+  await pending;
+  // The imports answered, so only the meetings part says it could not load.
+  const text=homeText(view);
+  assert.ok(!text.includes('Loading what needs you…'));
+  assert.ok(text.some(t=>t.startsWith('Could not load meetings and recordings.')));
+});
+
+test('Needs you says Coppermind is not answering when nothing loads, and recovers on Retry',async()=>{
+  const options={waitingFail:true,dropboxFail:true};
+  const f=await home(options);
+  assert.ok(homeText(f.view).includes('Coppermind is not answering. Check your connection and that this device is still paired, then try again.'));
+  assert.equal(homeText(f.view).some(t=>t==='Ready to review (0)'),false);
+  delete options.waitingFail;delete options.dropboxFail;
+  await f.view.contentEl.all().find(e=>e.text==='Retry').onclick();
+  assert.ok(homeText(f.view).includes('You are all caught up. Nothing is waiting for you.'));
+});
+
+test('Needs you with nothing answering ends in a message instead of waiting for ever',async()=>{
+  const f=await fixture(undefined,{waitingHang:true,dropbox:{items:[]}});
+  f.plugin.requestTimeoutMs=20;
+  const call=f.plugin.call.bind(f.plugin);
+  f.plugin.call=(path,...args)=>path==='/v1/dropbox'?Promise.reject(Object.assign(Error('x'),{timeout:true})):call(path,...args);
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  assert.ok(homeText(view).some(t=>t.startsWith('Coppermind is not answering.')));
   assert.ok(view.contentEl.all().some(e=>e.text==='Retry'));
 });
 
-test('imports view explains a key that cannot read artifacts',async()=>{
-  const f=await fixture();
-  f.plugin.call=async()=>({folder:'Dropbox',items:[{filename:'report.pdf',state:'succeeded',parts:[{artifact:'stored'}],error:''}]});
-  const view=f.factories['coppermind-imports']({app:f.app});await view.refresh();
-  const text=view.contentEl.all().map(e=>e.text||'').join(' ');
-  assert.match(text,/needs permission to read artifacts/);
-  assert.ok(!view.contentEl.all().some(e=>e.text==='Open artifact'));
+test('a later failure keeps what was shown and says when it was last updated',async()=>{
+  const options={waiting:{meetings:[{title:'Planning',path:'x.md',date:''}],failed:[],processing:[]}};
+  const f=await home(options);
+  options.waitingFail=true;options.dropboxFail=true;
+  await f.view.refresh();
+  const text=homeText(f.view);
+  assert.ok(text.includes('Ready to review (1)'));
+  assert.ok(text.some(t=>t.startsWith('Coppermind is not answering.')&&/Last updated/.test(t)));
+});
+
+test('a timer refresh redraws nothing while a dismissal is being confirmed',async()=>{
+  const f=await home({waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'No speech.',can_retry:false,can_dismiss:true}],processing:[]}});
+  await f.view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
+  const before=f.requests.length;
+  await f.view.refresh(true);
+  assert.equal(f.requests.length,before);
+  assert.ok(homeText(f.view).includes('Dismiss entry'));
+});
+
+test('a finished calendar import says how many events, wraps its long name, and offers no empty Open',async()=>{
+  const f=await home({dropbox:{folder:'Dropbox',items:[{id:'c1',filename:longName.replace('.m4a','.zip'),state:'succeeded',event_count:42,parts:[{import_id:'x'}],error:'',first_imported_at:'2026-11-09T15:30:00Z'}]}});
+  const text=homeText(f.view);
+  assert.ok(text.includes('Recently imported'));
+  const name=f.view.contentEl.all().find(e=>e.text===longName.replace('.m4a','.zip'));
+  assert.equal(name.cls,'coppermind-name');
+  assert.ok(text.includes('Calendar imported: 42 events.'));
+  assert.ok(!text.includes('Done'));assert.ok(!text.includes('Open'));
+  assert.ok(text.includes('Dismiss'));
+});
+
+test('a finished file offers Open only when it has reached this device',async()=>{
+  const items=[{id:'f1',filename:'report.pdf',state:'succeeded',parts:[{artifact_id:'a',path:'Artifacts/report.pdf'}],error:''},{id:'f2',filename:'late.pdf',state:'succeeded',parts:[{artifact_id:'b',path:'Artifacts/late.pdf'}],error:''},{id:'f3',filename:'hidden.pdf',state:'succeeded',parts:[{artifact:'stored'}],error:''}];
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[],processing:[]},dropbox:{items}});
+  let opened;f.app.vault.getAbstractFileByPath=path=>path==='Artifacts/report.pdf'?{path}:null;
+  f.app.workspace.getLeaf=()=>({openFile:async value=>{opened=value;}});
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  const opens=view.contentEl.all().filter(e=>e.text==='Open');assert.equal(opens.length,1);
+  await opens[0].onclick();assert.equal(opened.path,'Artifacts/report.pdf');
+  const text=homeText(view);
+  assert.ok(text.includes('It has not reached this device yet. Wait for sync, then refresh.'));
+  assert.ok(text.includes('This device needs permission to read files before it can open it.'));
+});
+
+test('a recording that came in through the folder says it was sent to be transcribed',async()=>{
+  const f=await home({dropbox:{items:[{id:'r1',filename:'standup.m4a',state:'succeeded',intake:'recording',parts:[{artifact_id:'a',path:'Artifacts/standup.m4a'}],error:''}]}});
+  assert.ok(homeText(f.view).some(t=>t.startsWith('Saved, and sent to be transcribed.')));
+});
+
+test('dismissing a finished import calls the dismiss route and removes the card',async()=>{
+  const options={dropbox:{items:[{id:'c1',filename:'cal.zip',state:'succeeded',event_count:3,parts:[{import_id:'x'}],error:''}]}};
+  const f=await home(options);
+  await f.view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
+  assert.ok(homeText(f.view).includes('This only removes the entry from this list. What was imported stays.'));
+  options.dropbox={items:[]};
+  await f.view.contentEl.all().find(e=>e.text==='Dismiss entry').onclick();
+  assert.ok(f.requests.some(r=>r.url.endsWith('/v1/dropbox/c1/dismiss')&&r.method==='POST'));
+  assert.ok(!homeText(f.view).includes('cal.zip'));
+});
+
+test('a failed dismissal of an import keeps the card and says so',async()=>{
+  const f=await home({dismissDropFail:true,dropbox:{items:[{id:'c1',filename:'cal.zip',state:'succeeded',parts:[],error:''}]}});
+  await f.view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Dismiss entry').onclick();
+  assert.ok(homeText(f.view).includes('Could not dismiss. Check your connection, then try again.'));
+  assert.ok(homeText(f.view).includes('cal.zip'));
+});
+
+test('failed and unsupported imports say what to do and can be dismissed',async()=>{
+  const f=await home({dropbox:{items:[
+    {id:'b1',filename:'broken.ics',state:'failed',parts:[],error:'The calendar file could not be read. Find the file in Dropbox/Failed, fix it and move it back to Dropbox to retry.'},
+    {id:'u1',filename:'notes.xyz',state:'unsupported',parts:[],error:'Add a marker so Coppermind knows what this file is.'},
+  ]}});
+  const text=homeText(f.view);
+  assert.ok(text.includes('Imports needing attention (2)'));
+  assert.ok(text.includes('This file could not be imported.'));assert.ok(text.includes('This kind of file cannot be imported.'));
+  assert.ok(text.some(t=>t.includes('move it back to Dropbox to retry')));
+  assert.ok(text.some(t=>t.includes('2 imports could not be stored')));
+  assert.equal(f.view.contentEl.all().filter(e=>e.text==='Dismiss').length,2);
+});
+
+test('only the five newest finished imports are listed, and the rest are counted',async()=>{
+  const items=Array.from({length:7},(_,i)=>({id:'i'+i,filename:'f'+i+'.zip',state:'succeeded',completed_at:1000+i,parts:[{import_id:'x'}],error:''}));
+  const f=await home({dropbox:{items}});
+  const names=homeText(f.view).filter(t=>/^f\d\.zip$/.test(t));
+  assert.deepEqual(names,['f6.zip','f5.zip','f4.zip','f3.zip','f2.zip']);
+  assert.ok(homeText(f.view).some(t=>t.startsWith('2 older imports are not shown.')));
+});
+
+test('imports still being copied or waiting are shown as processing, with no Dismiss',async()=>{
+  const f=await home({dropbox:{items:[{id:'',filename:'copying.zip',state:'stabilizing',parts:[],error:''},{id:'p',filename:'queued.zip',state:'pending',parts:[],error:''}]}});
+  const text=homeText(f.view);
+  assert.ok(text.includes('Still processing (2)'));
+  assert.ok(text.includes('Waiting for the file to finish syncing.'));assert.ok(text.includes('Waiting to be imported.'));
+  assert.ok(!text.includes('Dismiss'));
+});
+
+const SUMMARY={summary:'Launch plan.',decisions:'',action_items:''};
+const recorded={recording_meeting:{candidates:[],calendar_hash:'c'},meeting_summary:SUMMARY,job_id:'job-1',state:'suggested'};
+function watchReview(f,answers){
+  // The first review read is the panel itself; later ones are the watch.
+  const call=f.plugin.call.bind(f.plugin);
+  f.plugin.summaryPollMs=5;f.plugin.summaryWatchMs=2000;
+  f.plugin.call=(path,...args)=>path.endsWith('/review')&&answers.length&&(args[0]===undefined)?Promise.resolve(answers.shift()):call(path,...args);
+}
+
+test('Write the summary again sits beside the summary and says what it will do',async()=>{
+  const f=await fixture(undefined,recorded);
+  const text=homeText(f.view);
+  assert.ok(text.some(t=>t.includes('from the same transcript')&&t.includes('not sent for transcription again')&&t.includes('stays until the new one arrives')));
+  const box=f.view.contentEl.all().find(e=>e.children?.some(c=>c.text==='Meeting summary'));
+  assert.ok(box.children.some(c=>c.text==='Write the summary again'));
+  assert.ok(box.children.findIndex(c=>c.text==='Write the summary again')>box.children.findIndex(c=>c.tag==='label'));
+});
+
+test('a note that did not come from a recording has no Write the summary again',async()=>{
+  const f=await fixture(undefined,{meeting_summary:SUMMARY,job_id:'job-1',state:'suggested'});
+  assert.ok(f.view.contentEl.all().some(e=>e.text==='Meeting summary'));
+  assert.ok(f.view.contentEl.all().some(e=>e.text==='Write the summary again'));
+});
+
+test('writing the summary again shows it running, keeps the summary, then offers the new one',async()=>{
+  const f=await fixture(undefined,recorded);
+  watchReview(f,[{state:'running',job_id:'job-2'},{state:'suggested',job_id:'job-2',meeting_summary:{summary:'Second.',decisions:'',action_items:''}}]);
+  const button=f.view.contentEl.all().find(e=>e.text==='Write the summary again');
+  const textareas=()=>f.view.contentEl.all().filter(e=>e.tag==='textarea');
+  textareas()[0].value='My edit';
+  const pending=button.onclick();
+  await new Promise(r=>setTimeout(r,1));
+  assert.equal(button.disabled,true);
+  assert.ok(homeText(f.view).includes('Writing a new summary from the same transcript. This can take a minute. The one above stays until it arrives.'));
+  await pending;
+  const post=f.requests.find(r=>r.url.endsWith('/v1/notes/test-note/summary-again'));
+  assert.equal(post.method,'POST');
+  assert.ok(homeText(f.view).includes('A new summary is ready. Showing it replaces any edits you have made on this panel.'));
+  assert.equal(textareas()[0].value,'My edit');
+  const reads=f.requests.length;
+  await f.view.contentEl.all().find(e=>e.text==='Show the new summary').onclick();
+  assert.ok(f.requests.length>reads);
+});
+
+test('a refusal is shown in the words the server gave and the button works again',async()=>{
+  const f=await fixture(undefined,{...recorded,summaryAgain:()=>({status:422,json:{message:'This note has already been reviewed, so its summary is yours now and Coppermind does not write it again.'}})});
+  const button=f.view.contentEl.all().find(e=>e.text==='Write the summary again');await button.onclick();
+  assert.ok(homeText(f.view).includes('This note has already been reviewed, so its summary is yours now and Coppermind does not write it again.'));
+  assert.equal(button.disabled,false);
+});
+
+test('a summary that fails to write says so and says the old one is unchanged',async()=>{
+  const f=await fixture(undefined,recorded);
+  watchReview(f,[{state:'failed',job_id:'job-2',suggestion_error:'The AI service is not answering.'}]);
+  const button=f.view.contentEl.all().find(e=>e.text==='Write the summary again');await button.onclick();
+  assert.ok(homeText(f.view).includes('The new summary could not be written: The AI service is not answering. The summary above is unchanged. You can try again.'));
+  assert.equal(button.disabled,false);
+});
+
+test('a server that stops answering while the summary is written is said plainly',async()=>{
+  const f=await fixture(undefined,recorded);
+  f.plugin.summaryPollMs=5;
+  const call=f.plugin.call.bind(f.plugin);
+  f.plugin.call=(path,...args)=>path.endsWith('/review')&&args[0]===undefined?Promise.reject(Object.assign(Error('x'),{timeout:true})):call(path,...args);
+  const button=f.view.contentEl.all().find(e=>e.text==='Write the summary again');await button.onclick();
+  assert.ok(homeText(f.view).some(t=>t.startsWith('Coppermind is not answering.')&&t.includes('Refresh this panel to check.')));
+  assert.equal(button.disabled,false);
+});
+
+test('a summary that is already being written is not started twice',async()=>{
+  const f=await fixture(undefined,{...recorded,summaryAgain:()=>({status:200,json:{title:'Planning',already:true}})});
+  watchReview(f,[{state:'failed',job_id:'job-2',suggestion_error:''}]);
+  await f.view.contentEl.all().find(e=>e.text==='Write the summary again').onclick();
+  assert.ok(homeText(f.view).some(t=>t.startsWith('The new summary could not be written.')));
+});
+
+
+test('a request the server never answers is cut off with a plain error',async()=>{
+  const f=await fixture(undefined,{page:()=>new Promise(()=>{})});
+  f.plugin.requestTimeoutMs=20;
+  await assert.rejects(f.plugin.call('/v1/anything'),e=>e.timeout===true&&/did not answer in time/.test(e.message));
 });

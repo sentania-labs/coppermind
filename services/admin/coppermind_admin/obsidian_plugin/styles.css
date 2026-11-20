@@ -4,3 +4,5 @@
 .workspace-leaf-content[data-type="coppermind-waiting"] button { margin:6px 8px 6px 0;white-space:normal;height:auto;padding:8px 12px; }
 .coppermind-meeting-option { display:flex;align-items:flex-start;gap:8px;padding:8px 0;cursor:pointer; }
 .coppermind-meeting-option input { flex:none;margin-top:4px; }
+.coppermind-name { overflow-wrap:anywhere;margin:0 0 6px; }
+.coppermind-stamp { color:var(--text-muted);margin-left:8px; }
