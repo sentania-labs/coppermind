@@ -141,6 +141,8 @@ operations work in Obsidian or the agent API.
 
 Voice recognition keeps signatures, not audio clips, for diarized speakers. An unmatched
 speaker is given a persistent unknown voice label that can recur in later recordings.
+In a recording split into parts, the same unmatched voice in different parts shares one
+label; two speakers within one part are never merged.
 If the transcription service supplies no usable signature because there is too little
 speech, the speaker remains local to that recording and cannot be recognised later.
 No voice identity or signature is saved for that speaker; a name chosen in Review

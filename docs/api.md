@@ -366,7 +366,8 @@ Coppermind probes the audio and cuts recordings longer than `assignments.transcr
 into its original container when possible and otherwise encodes the part as FLAC.
 Each part is transcribed in order, and the results form one transcript and note with
 timestamps offset to the original recording. Speaker labels are distinct per part; voice
-recognition can subsequently identify known speakers. A part with no speech adds nothing and
+recognition can subsequently identify known speakers and link the same unknown voice across
+parts (see [dossiers](dossiers.md#voice-recognition)). A part with no speech adds nothing and
 the recording succeeds if any part has speech; if none does it fails as a silent recording
 does. Any other failed part names its number.
 If the audio cannot be probed, the service handles it as before unless its supplied
