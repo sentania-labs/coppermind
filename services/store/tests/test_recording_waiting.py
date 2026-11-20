@@ -336,3 +336,37 @@ async def test_waiting_skips_meetings_whose_audio_is_already_removed_after_revie
     result = await recordings.waiting()
     assert [m["title"] for m in result["meetings"]] == ["Open"]
     store.get_note.assert_awaited_once_with("open")
+
+
+@pytest.mark.asyncio
+async def test_waiting_lists_recordings_still_in_progress_with_their_latest_state(tmp_path):
+    recordings, _, _ = waiting_recordings(
+        tmp_path,
+        [
+            job(1, state="queued"),
+            job(2, state="running", started_at="2026-01-01T00:05:00Z"),
+            job(3, state="running", transcribed=True),
+            job(4, state="queued", attempts=1, error="raw secret"),
+            job(5, state="queued", error_rule="transcription-busy"),
+            job(6, state="succeeded", note_id=""),
+        ],
+    )
+    result = await recordings.waiting()
+    rows = {item["id"]: item for item in result["processing"]}
+    assert set(rows) == {f"{i:064x}" for i in range(1, 6)}
+    assert rows[f"{1:064x}"]["message"] == "Waiting for its turn to be transcribed."
+    assert rows[f"{2:064x}"]["since"] == "2026-01-01T00:05:00Z"
+    assert "Being transcribed" in rows[f"{2:064x}"]["message"]
+    assert rows[f"{3:064x}"]["message"] == "Transcribed. Writing it into a note."
+    assert "will try again by itself" in rows[f"{4:064x}"]["message"]
+    assert "busy" in rows[f"{5:064x}"]["message"]
+    assert "secret" not in str(result["processing"])
+    assert result["failed"] == [] and result["meetings"] == []
+
+
+@pytest.mark.asyncio
+async def test_waiting_says_in_progress_recordings_need_transcription_set_up(tmp_path):
+    recordings, _, _ = waiting_recordings(tmp_path, [job(1, state="queued")], enabled=False)
+    recordings.assignment = lambda: None
+    (row,) = (await recordings.waiting())["processing"]
+    assert "Transcription is off" in row["message"]

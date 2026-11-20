@@ -4,46 +4,11 @@ const SUMMARY_LABELS = {summary:['Summary','Summary'],decisions:['Decisions','De
 const summaryLabel = (key, long) => (SUMMARY_LABELS[key] || [])[long ? 0 : 1] || key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
 const VIEW = 'coppermind-review';
 const PEOPLE_VIEW = 'coppermind-people';
-const WAITING_VIEW = 'coppermind-waiting';
+const WAITING_VIEW = 'coppermind-waiting';  // The id stays so saved layouts keep their place; the screen is now Needs you.
 const COMPANION_PERMISSIONS = 'Read notes, Add and change notes, Hand in recordings and files, Search, and Read and correct people and companies';
-const IMPORTS_VIEW = 'coppermind-imports';
 async function hash(text) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return 'sha256:' + [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2,'0')).join('');
-}
-class ImportsView extends ItemView {
-  constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.generation=0;}
-  getViewType(){return IMPORTS_VIEW;}
-  getDisplayText(){return 'Imports';}
-  getIcon(){return 'inbox';}
-  async onOpen(){this.timer=setInterval(()=>this.refresh(),5000);await this.refresh();}
-  async onClose(){clearInterval(this.timer);this.generation++;}
-  async refresh(){
-    if(this.refreshing)return;this.refreshing=true;
-    const generation=++this.generation, el=this.contentEl;
-    if(!this.loaded){el.empty();el.createEl('h2',{text:'Imports'});el.createEl('p',{text:'Loading imports…'});}
-    try{
-      const data=await this.plugin.call('/v1/dropbox');if(generation!==this.generation)return;
-      const fingerprint=JSON.stringify(data);if(this.loaded&&fingerprint===this.fingerprint)return;this.fingerprint=fingerprint;
-      this.loaded=true;el.empty();el.createEl('h2',{text:'Imports'});
-      el.createEl('p',{text:'Put files in '+data.folder+'. Finished files leave the folder after they are safely stored.'});
-      if(!data.items.length)el.createEl('p',{text:'No imports yet. Put a file in '+data.folder+' to get started.'});
-      for(const item of data.items){
-        const card=el.createDiv({cls:'coppermind-card'});card.createEl('h3',{text:item.filename});
-        const labels={stabilizing:'Waiting for the file to finish syncing',pending:'Waiting to import',importing:'Processing',succeeded:'Done',already_imported:'Done',failed:'Could not import',unsupported:'Unsupported file'};
-        card.createEl('p',{text:labels[item.state]||'Processing'});
-        if(item.error)card.createEl('p',{text:item.error});
-        const part=(item.parts||[]).find(p=>p.artifact_id);
-        if(part?.path){const open=card.createEl('button',{text:'Open artifact'});open.onclick=async()=>{
-          const file=this.app.vault.getAbstractFileByPath(part.path);
-          if(!file){new Notice('The artifact has not synced to this device yet. Try again after sync.');return;}
-          await this.app.workspace.getLeaf(false).openFile(file);
-        };}
-        else if((item.parts||[]).some(p=>p.artifact))card.createEl('p',{text:'Stored as an artifact. This key needs permission to read artifacts to open it.'});
-      }
-    }catch(e){if(generation!==this.generation)return;this.loaded=false;el.empty();el.createEl('h2',{text:'Imports'});el.createEl('p',{text:'Imports are unavailable. Try again.'});const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
-    finally{this.refreshing=false;}
-  }
 }
 class ReviewView extends ItemView {
   constructor(leaf, plugin) { super(leaf); this.plugin=plugin; this.generation=0; }
@@ -228,7 +193,8 @@ class ReviewView extends ItemView {
           const drop=box.createEl('button',{text:'Drop '+label.toLowerCase()});drop.disabled=!ready;
           drop.onclick=()=>{summary[key]='';input.value='';updatePreview();};
         }
-      }
+        this.summaryAgain(box,id,data,true);
+      } else if(data.recording_meeting&&!data.suggestion_error)this.summaryAgain(el.createDiv({cls:'coppermind-card'}),id,data,false);
       const manual=data.manual_speaker_review;
       // Contact candidates can refer to the same People entry as a voice match.
       const personKey=(id,candidates)=>{
@@ -321,64 +287,198 @@ class ReviewView extends ItemView {
     }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
   }
 }
-class WaitingView extends ItemView {
+ReviewView.prototype.summaryAgain=function(box,id,data,hasSummary){
+  if(!hasSummary)box.createEl('h3',{text:'Meeting summary'});
+  const writing=['queued','running'].includes(data.state);
+  box.createEl('p',{text:hasSummary?'Not happy with it? Coppermind can write it again from the same transcript. The recording is not sent for transcription again, and the summary above stays until the new one arrives.':writing?'The summary is being written. Refresh this panel in a minute.':'There is no summary yet. Coppermind can write one from the same transcript.'});
+  if(!hasSummary&&writing)return;
+  const button=box.createEl('button',{text:hasSummary?'Write the summary again':'Write a summary'}), status=box.createEl('p',{cls:'coppermind-notice'});
+  const generation=this.generation, wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  const watch=async()=>{
+    // Look for the new summary every few seconds, for up to ten minutes, while this panel is showing this note.
+    const every=this.plugin.summaryPollMs||4000, until=Date.now()+(this.plugin.summaryWatchMs||600000);let misses=0;
+    while(Date.now()<until){
+      await wait(every);if(generation!==this.generation)return;
+      let now;
+      try{now=await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/review','GET',undefined,true);misses=0;}
+      catch(e){if(++misses>=3){status.setText(NOT_ANSWERING+' The new summary may still be on its way. Refresh this panel to check.');button.disabled=false;return;}continue;}
+      if(generation!==this.generation)return;
+      if(now.state==='failed'){status.setText('The new summary could not be written'+(now.suggestion_error?': '+now.suggestion_error:'.')+' The summary above is unchanged. You can try again.');button.disabled=false;return;}
+      if(now.state==='suggested'&&now.job_id!==data.job_id){
+        status.setText('A new summary is ready. Showing it replaces any edits you have made on this panel.');
+        const show=box.createEl('button',{text:'Show the new summary',cls:'mod-cta'});show.onclick=()=>this.refresh();return;
+      }
+    }
+    status.setText('The new summary is taking longer than expected. Refresh this panel in a few minutes to check.');button.disabled=false;
+  };
+  button.onclick=async()=>{
+    button.disabled=true;status.setText('Asking Coppermind to write the summary again…');
+    try{
+      const result=await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/summary-again','POST',{});
+      status.setText(result.already?'Coppermind is already writing a new summary. The one above stays until it arrives.':'Writing a new summary from the same transcript. This can take a minute. The one above stays until it arrives.');
+      await watch();
+    }catch(e){
+      status.setText(e.status===403?KEY_MISSING:e.status===422||e.status===404?e.message:'Could not start a new summary. Check your connection, then try again.');
+      button.disabled=false;
+    }
+  };
+};
+const KEY_MISSING='This key is missing something the companion needs. In Coppermind Admin, open Connected apps and either pair this device with a code, or make a key with: '+COMPANION_PERMISSIONS+', then select it in the companion settings.';
+const NOT_ANSWERING='Coppermind is not answering. Check your connection and that this device is still paired, then try again.';
+const HOME_POLL_MS=15000;
+const REQUEST_TIMEOUT_MS=30000;
+const IMPORT_ACTIVE=new Set(['stabilizing','pending','importing']);
+const IMPORT_FINISHED=new Set(['succeeded','already_imported']);
+const IMPORT_SHOWN=5;
+const settle=promise=>promise.then(value=>({ok:true,value}),error=>({ok:false,error}));
+const plural=(n,one,many)=>n+' '+(n===1?one:many||one+'s');
+class HomeView extends ItemView {
   constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.generation=0;}
   getViewType(){return WAITING_VIEW;}
-  getDisplayText(){return 'Meetings to review';}
+  getDisplayText(){return 'Needs you';}
   getIcon(){return 'list-checks';}
-  async onOpen(){await this.refresh();}
-  async refresh(){
-    const generation=++this.generation, el=this.contentEl;
-    el.empty();el.createEl('h2',{text:'Meetings to review'});
-    const status=el.createEl('p',{text:'Loading meetings and recordings…'});
+  async onOpen(){this.timer=setInterval(()=>this.refresh(true),HOME_POLL_MS);await this.refresh();}
+  async onClose(){clearInterval(this.timer);this.generation++;}
+  async refresh(quiet){
+    // A quiet refresh is the timer: it never interrupts an open confirmation and redraws only when something changed.
+    if(quiet&&(this.refreshing||this.busy))return;
+    const generation=++this.generation, el=this.contentEl;this.refreshing=true;
+    if(!this.loaded){el.empty();el.createEl('h2',{text:'Needs you'});el.createEl('p',{text:'Loading what needs you…'});}
+    else if(!quiet&&this.stamp)this.stamp.setText('Refreshing…');
     try{
-      const data=await this.plugin.call('/v1/recordings/waiting');
+      const [waiting,drop]=await Promise.all([settle(this.plugin.call('/v1/recordings/waiting','GET',undefined,true)),settle(this.plugin.call('/v1/dropbox','GET',undefined,true))]);
       if(generation!==this.generation)return;
-      status.setText(`${data.meetings.length} meeting${data.meetings.length===1?'':'s'} to review · ${data.failed.length} recording${data.failed.length===1?'':'s'} failed`);
-      const refresh=el.createEl('button',{text:'Refresh'});refresh.onclick=()=>this.refresh();
-      el.createEl('h3',{text:`Ready to review (${data.meetings.length})`});
-      if(!data.meetings.length)el.createEl('p',{text:'No meetings are waiting for review.'});
-      for(const meeting of data.meetings){
-        const card=el.createDiv({cls:'coppermind-card'});
-        const open=card.createEl('button',{text:meeting.title});
-        if(meeting.date){const date=new Date(meeting.date);if(!isNaN(date))card.createEl('p',{text:date.toLocaleDateString()});}
-        card.createEl('p',{text:'Open note and review'});
-        open.onclick=async()=>{
-          const file=this.app.vault.getAbstractFileByPath(meeting.path);
-          if(!file){let notice=card.querySelector('.coppermind-notice');if(!notice)notice=card.createEl('p',{cls:'coppermind-notice'});notice.setText('That note is not in this vault yet. Wait for sync, then refresh.');return;}
-          await this.app.workspace.getLeaf(false).openFile(file);this.plugin.noteFile=file;await this.plugin.open();
-        };
+      // A confirmation opened while these reads were in flight must not be redrawn away.
+      if(quiet&&this.busy)return;
+      if(!waiting.ok&&!drop.ok){
+        if(this.loaded){this.problem=NOT_ANSWERING+' This is what Coppermind last said.';this.showStale();return;}
+        el.empty();el.createEl('h2',{text:'Needs you'});
+        el.createEl('p',{text:waiting.error?.status===403?KEY_MISSING:NOT_ANSWERING,cls:'coppermind-notice'});
+        const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();return;
       }
-      el.createEl('h3',{text:`Recordings needing attention (${data.failed.length})`});
-      if(!data.failed.length)el.createEl('p',{text:'No recordings need attention.'});
-      for(const recording of data.failed){
-        const card=el.createDiv({cls:'coppermind-card'});card.createEl('h4',{text:recording.title});
-        card.createEl('p',{text:recording.message});
-        for(const problem of recording.field_problems||[])card.createEl('p',{text:'Details: the '+JSON.stringify(problem.field)+' field '+problem.reason+'.'});
-        if(recording.field_problems_unavailable)card.createEl('p',{text:'Details: the specific field was not recorded. Retry to check the note again.'});
-        if(recording.retry_after){const date=new Date(recording.retry_after);if(!isNaN(date))card.createEl('p',{text:'Next attempt after '+date.toLocaleString()+'.'});}
-        if(recording.can_retry){
-          const button=card.createEl('button',{text:'Retry'}), feedback=card.createEl('p');
-          button.onclick=async()=>{button.disabled=true;feedback.setText('Queuing retry…');
-            try{await this.plugin.call('/v1/recordings/'+encodeURIComponent(recording.id)+'/retry','POST',{});await this.refresh();}
-            catch(e){feedback.setText(e.status===403?'This key is missing something the companion needs. In Coppermind Admin, open Connected apps and either pair this device with a code, or make a key with: '+COMPANION_PERMISSIONS+', then select it in the companion settings.':'Could not queue retry. Check your connection and transcription settings, then try again.');button.disabled=false;}
-          };
-        }
-        if(recording.can_dismiss){
-        const dismiss=card.createEl('button',{text:'Dismiss'}), confirm=card.createDiv();
-        dismiss.onclick=()=>{
-          dismiss.disabled=true;confirm.empty();
-          confirm.createEl('p',{text:'This only removes the entry from this list and deletes nothing.'});
-          const yes=confirm.createEl('button',{text:'Dismiss entry'}), no=confirm.createEl('button',{text:'Cancel'}), note=confirm.createEl('p');
-          no.onclick=()=>{confirm.empty();dismiss.disabled=false;};
-          yes.onclick=async()=>{yes.disabled=true;no.disabled=true;note.setText('Dismissing…');
-            try{await this.plugin.call('/v1/recordings/'+encodeURIComponent(recording.id)+'/dismiss','POST',{});await this.refresh();}
-            catch(e){note.setText('Could not dismiss. Check your connection, then try again.');yes.disabled=false;no.disabled=false;}
-          };
-        };
-        }
+      this.problem='';
+      const next={waiting:waiting.ok?waiting.value:this.data?.waiting,drop:drop.ok?drop.value:this.data?.drop,waitingError:waiting.ok?'':this.sectionError('meetings and recordings',waiting.error),dropError:drop.ok?'':this.sectionError('imports',drop.error)};
+      const fingerprint=JSON.stringify(next);
+      this.updated=new Date();
+      if(quiet&&this.loaded&&fingerprint===this.fingerprint){this.showStale();return;}
+      this.fingerprint=fingerprint;this.data=next;this.loaded=true;this.render();
+    }finally{if(generation===this.generation)this.refreshing=false;}
+  }
+  sectionError(what,error){return error?.status===403?KEY_MISSING:'Could not load '+what+'. Press Refresh to try again.';}
+  showStale(){
+    if(!this.stamp)return;
+    this.stamp.setText((this.problem?this.problem+' ':'')+'Last updated '+this.updated.toLocaleTimeString([],{timeStyle:'short'})+'.');
+  }
+  render(){
+    const el=this.contentEl, {waiting,drop}=this.data;el.empty();this.busy=false;el.createEl('h2',{text:'Needs you'});
+    const meetings=waiting?.meetings||[], failed=waiting?.failed||[], processing=waiting?.processing||[];
+    const imports=drop?.items||[];
+    const failedImports=imports.filter(i=>['failed','unsupported'].includes(i.state));
+    const activeImports=imports.filter(i=>IMPORT_ACTIVE.has(i.state));
+    const finishedImports=imports.filter(i=>IMPORT_FINISHED.has(i.state)).sort((a,b)=>(Number(b.completed_at)||0)-(Number(a.completed_at)||0));
+    const parts=[];
+    if(waiting)parts.push(`${plural(meetings.length,'meeting')} to review`,`${plural(failed.length,'recording')} failed`);
+    const busy=processing.length+activeImports.length;
+    if(busy)parts.push(`${busy} in progress`);
+    if(failedImports.length)parts.push(`${plural(failedImports.length,'import')} could not be stored`);
+    el.createEl('p',{text:parts.join(' · ')||'Nothing to show yet.'});
+    const bar=el.createDiv();const refresh=bar.createEl('button',{text:'Refresh'});refresh.onclick=()=>this.refresh();
+    this.stamp=bar.createEl('span',{cls:'coppermind-stamp'});this.showStale();
+    if(this.data.waitingError)el.createEl('p',{text:this.data.waitingError,cls:'coppermind-notice'});
+    if(this.data.dropError)el.createEl('p',{text:this.data.dropError,cls:'coppermind-notice'});
+    if(waiting){
+      if(!meetings.length&&!failed.length&&!busy&&!failedImports.length&&!this.data.dropError)el.createEl('p',{text:'You are all caught up. Nothing is waiting for you.'});
+      else{
+        if(meetings.length){el.createEl('h3',{text:`Ready to review (${meetings.length})`});for(const meeting of meetings)this.meetingCard(meeting);}
+        if(failed.length){el.createEl('h3',{text:`Recordings needing attention (${failed.length})`});for(const recording of failed)this.failedCard(recording);}
       }
-    }catch(e){if(generation!==this.generation)return;status.setText('Could not load meetings and recordings. Check your connection and API credential, then try again.');status.addClass('coppermind-notice');const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
+    }
+    if(processing.length||activeImports.length){
+      el.createEl('h3',{text:`Still processing (${busy})`});
+      for(const item of processing){
+        const card=el.createDiv({cls:'coppermind-card'});card.createEl('h4',{text:item.title,cls:'coppermind-name'});
+        card.createEl('p',{text:item.message});
+        const since=item.since&&new Date(item.since);if(since&&!isNaN(since))card.createEl('p',{text:'Since '+since.toLocaleString([],{dateStyle:'medium',timeStyle:'short'})+'.'});
+      }
+      for(const item of activeImports){
+        const card=el.createDiv({cls:'coppermind-card'});card.createEl('h4',{text:item.filename,cls:'coppermind-name'});
+        card.createEl('p',{text:{stabilizing:'Waiting for the file to finish syncing.',pending:'Waiting to be imported.'}[item.state]||'Importing now.'});
+      }
+    }
+    if(failedImports.length){
+      el.createEl('h3',{text:`Imports needing attention (${failedImports.length})`});
+      for(const item of failedImports)this.importCard(item);
+    }
+    if(finishedImports.length){
+      el.createEl('h3',{text:'Recently imported'});
+      for(const item of finishedImports.slice(0,IMPORT_SHOWN))this.importCard(item);
+      if(finishedImports.length>IMPORT_SHOWN)el.createEl('p',{text:`${finishedImports.length-IMPORT_SHOWN} older imports are not shown. They disappear from Coppermind by themselves after a week.`});
+    }
+  }
+  meetingCard(meeting){
+    const card=this.contentEl.createDiv({cls:'coppermind-card'});
+    const open=card.createEl('button',{text:meeting.title});
+    if(meeting.date){const date=new Date(meeting.date);if(!isNaN(date))card.createEl('p',{text:date.toLocaleDateString()});}
+    card.createEl('p',{text:'Open note and review'});
+    open.onclick=async()=>{
+      const file=this.app.vault.getAbstractFileByPath(meeting.path);
+      if(!file){let notice=card.querySelector('.coppermind-notice');if(!notice)notice=card.createEl('p',{cls:'coppermind-notice'});notice.setText('That note is not in this vault yet. Wait for sync, then refresh.');return;}
+      await this.app.workspace.getLeaf(false).openFile(file);this.plugin.noteFile=file;await this.plugin.open();
+    };
+  }
+  failedCard(recording){
+    const card=this.contentEl.createDiv({cls:'coppermind-card'});card.createEl('h4',{text:recording.title,cls:'coppermind-name'});
+    card.createEl('p',{text:recording.message});
+    for(const problem of recording.field_problems||[])card.createEl('p',{text:'Details: the '+JSON.stringify(problem.field)+' field '+problem.reason+'.'});
+    if(recording.field_problems_unavailable)card.createEl('p',{text:'Details: the specific field was not recorded. Retry to check the note again.'});
+    if(recording.retry_after){const date=new Date(recording.retry_after);if(!isNaN(date))card.createEl('p',{text:'Next attempt after '+date.toLocaleString()+'.'});}
+    if(recording.can_retry){
+      const button=card.createEl('button',{text:'Retry'}), feedback=card.createEl('p');
+      button.onclick=async()=>{button.disabled=true;feedback.setText('Queuing retry…');
+        try{await this.plugin.call('/v1/recordings/'+encodeURIComponent(recording.id)+'/retry','POST',{});await this.refresh();}
+        catch(e){feedback.setText(e.status===403?KEY_MISSING:'Could not queue retry. Check your connection and transcription settings, then try again.');button.disabled=false;}
+      };
+    }
+    if(recording.can_dismiss)this.dismissControl(card,'This only removes the entry from this list and deletes nothing.','/v1/recordings/'+encodeURIComponent(recording.id)+'/dismiss');
+  }
+  // One pattern for every Dismiss: ask first, say what it does, and keep the entry when it fails.
+  dismissControl(card,warning,path){
+    const dismiss=card.createEl('button',{text:'Dismiss'}), confirm=card.createDiv();
+    dismiss.onclick=()=>{
+      dismiss.disabled=true;confirm.empty();this.busy=true;
+      confirm.createEl('p',{text:warning});
+      const yes=confirm.createEl('button',{text:'Dismiss entry'}), no=confirm.createEl('button',{text:'Cancel'}), note=confirm.createEl('p');
+      no.onclick=()=>{confirm.empty();dismiss.disabled=false;this.busy=false;};
+      yes.onclick=async()=>{yes.disabled=true;no.disabled=true;note.setText('Dismissing…');
+        try{await this.plugin.call(path,'POST',{});this.busy=false;await this.refresh();}
+        catch(e){note.setText(e.status===403?KEY_MISSING:'Could not dismiss. Check your connection, then try again.');yes.disabled=false;no.disabled=false;}
+      };
+    };
+  }
+  importCard(item){
+    const card=this.contentEl.createDiv({cls:'coppermind-card'});card.createEl('h4',{text:item.filename,cls:'coppermind-name'});
+    const failed=['failed','unsupported'].includes(item.state);
+    if(failed){
+      card.createEl('p',{text:item.state==='unsupported'?'This kind of file cannot be imported.':'This file could not be imported.'});
+      if(item.error)card.createEl('p',{text:item.error});
+    }else{
+      card.createEl('p',{text:(item.state==='already_imported'?'Already imported earlier. ':'')+this.importSummary(item)});
+      const part=(item.parts||[]).find(p=>p.artifact_id&&p.path);
+      const file=part&&this.app.vault.getAbstractFileByPath(part.path);
+      if(file){const open=card.createEl('button',{text:'Open'});open.onclick=async()=>{await this.app.workspace.getLeaf(false).openFile(file);};}
+      else if(part)card.createEl('p',{text:'It has not reached this device yet. Wait for sync, then refresh.'});
+      else if((item.parts||[]).some(p=>p.artifact))card.createEl('p',{text:'This device needs permission to read files before it can open it.'});
+    }
+    if(item.id)this.dismissControl(card,failed?'This only removes the entry from this list. Nothing is deleted.':'This only removes the entry from this list. What was imported stays.','/v1/dropbox/'+encodeURIComponent(item.id)+'/dismiss');
+  }
+  importSummary(item){
+    if((item.parts||[]).some(p=>p.import_id)){
+      const events=Number(item.event_count)||0;
+      return events?`Calendar imported: ${plural(events,'event')}.`:'Calendar imported.';
+    }
+    if(item.intake==='recording')return 'Saved, and sent to be transcribed. It will show up here when it is ready to review.';
+    if((item.parts||[]).some(p=>p.artifact_id||p.artifact))return 'Saved as a file in your vault.';
+    return 'Imported.';
   }
 }
 class MergeModal extends Modal {
@@ -501,18 +601,17 @@ class Settings extends PluginSettingTab {
 module.exports=class CoppermindReview extends Plugin {
   async onload(){
     this.settings={url:'',secret:'',...await this.loadData()};
-    this.registerView(WAITING_VIEW,leaf=>new WaitingView(leaf,this));
+    this.registerView(WAITING_VIEW,leaf=>new HomeView(leaf,this));
     this.registerView(PEOPLE_VIEW,leaf=>new PeopleView(leaf,this));
-    this.registerView(IMPORTS_VIEW,leaf=>new ImportsView(leaf,this));
     this.registerView(VIEW,leaf=>new ReviewView(leaf,this));
     this.addSettingTab(new Settings(this.app,this));
-    this.addCommand({id:'meetings-to-review',name:'Meetings to review',callback:()=>this.openWaiting()});
-    this.addRibbonIcon('list-checks','Meetings to review',()=>this.openWaiting());
-    this.addCommand({id:'show-imports',name:'Show imports',callback:()=>this.openImports()});
+    // The Imports panel is gone: let go of any copy a saved layout still holds.
+    this.app.workspace.detachLeavesOfType?.('coppermind-imports');
+    this.addCommand({id:'meetings-to-review',name:'Needs you',callback:()=>this.openWaiting()});
+    this.addRibbonIcon('list-checks','Needs you',()=>this.openWaiting());
     this.addCommand({id:'manage-people',name:'Manage people and voice recognition',callback:()=>this.openPeople()});
     this.addCommand({id:'review-current-note',name:'Review current note',callback:()=>this.open()});
     this.addRibbonIcon('clipboard-check','Review with Coppermind',()=>this.open());
-    this.addRibbonIcon('inbox','Coppermind imports',()=>this.openImports());
     this.registerEvent(this.app.workspace.on('file-open',file=>{if(file)this.noteFile=file;}));
     this.addCommand({id:'pair-device',name:'Pair this device with Coppermind',callback:()=>new PairModal(this.app,this).open()});
     // A device that has the add-on but no key yet is asked for the pairing code once it is ready.
@@ -543,7 +642,6 @@ module.exports=class CoppermindReview extends Plugin {
     let leaf=this.app.workspace.getLeavesOfType(WAITING_VIEW)[0]||this.app.workspace.getRightLeaf(false);
     await leaf.setViewState({type:WAITING_VIEW,active:true});await this.app.workspace.revealLeaf(leaf);await leaf.view.refresh();
   }
-  async openImports(){let leaf=this.app.workspace.getLeavesOfType(IMPORTS_VIEW)[0]||this.app.workspace.getRightLeaf(false);await leaf.setViewState({type:IMPORTS_VIEW,active:true});await this.app.workspace.revealLeaf(leaf);}
   async openPeople(){
     const file=this.app.workspace.getActiveFile();
     let leaf=this.app.workspace.getLeavesOfType(PEOPLE_VIEW)[0]||this.app.workspace.getRightLeaf(false);
@@ -551,10 +649,18 @@ module.exports=class CoppermindReview extends Plugin {
     if(file){try{const result=await this.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(file.basename));const person=result.items?.find(p=>p.path===file.path);if(person)await leaf.view.show(person);}catch{}}
   }
   async open(){this.noteFile=this.app.workspace.getActiveFile()||this.noteFile;let leaf=this.app.workspace.getLeavesOfType(VIEW)[0]||this.app.workspace.getRightLeaf(false);await leaf.setViewState({type:VIEW,active:true});await this.app.workspace.revealLeaf(leaf);await leaf.view.refresh();}
-  async call(path,method='GET',body){
+  // Reads that a screen waits on give up on a silent server. Writes are never cut off, because the server may still be working on them.
+  withTimeout(request){
+    if(typeof setTimeout!=='function')return request;
+    let timer;
+    const late=new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(Error('Coppermind did not answer in time.'),{timeout:true})),this.requestTimeoutMs||REQUEST_TIMEOUT_MS);});
+    return Promise.race([request,late]).finally(()=>clearTimeout(timer));
+  }
+  async call(path,method='GET',body,timed=false){
     const url=new URL(this.settings.url);if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw Error('Configure a valid Coppermind HTTP(S) address.');
     const key=this.app.secretStorage?.getSecret(this.settings.secret);if(!key)throw Error('This device is not paired with Coppermind yet. '+PAIR_HELP);
-    const result=await requestUrl({url:this.settings.url+path,method,headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,throw:false});
+    const request=requestUrl({url:this.settings.url+path,method,headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,throw:false});
+    const result=timed?await this.withTimeout(request):await request;
     const namesSpeakers=Object.values(body?.manual_speakers||{}).some(Boolean)||(body?.selected||[]).some(i=>!!body?.speaker_choices?.[i]);
     if(result.status===403&&method==='POST'&&path.endsWith('/review')&&namesSpeakers)throw Error('This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, open Connected apps and either pair this device with a code, or open the key and tick Read notes, Add and change notes, Hand in recordings and files, and Read and correct people and companies.');
     const json=readJson(result);
