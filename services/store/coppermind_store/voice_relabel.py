@@ -33,7 +33,7 @@ def relabel_generated_lines(
     lines = body.splitlines(keepends=True)
     saved = baseline.splitlines(keepends=True)
     original = generated.splitlines(keepends=True)
-    pattern = re.compile(r"(?<!\w)" + re.escape(old) + r"(?!\w)")
+    pattern = re.compile(r"(?<!\w)" + re.escape(old) + r"(?!\w)(?! \(recording-local\))")
     for block in SequenceMatcher(a=saved, b=lines, autojunk=False).get_matching_blocks():
         for offset in range(block.size):
             saved_index, current_index = block.a + offset, block.b + offset
