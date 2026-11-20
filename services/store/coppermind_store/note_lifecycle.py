@@ -672,7 +672,7 @@ class NoteLifecycle:
                             for person in suggestion.get("candidates", [])
                             if not already_named(person)
                         ]
-                        if not any(
+                        if suggestion["value"] and not any(
                             person["id"] == suggestion["value"]
                             for person in suggestion["candidates"]
                         ):
