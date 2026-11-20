@@ -1770,18 +1770,19 @@ class ContextService:
                 )
             elif isinstance(exc, answer_shape.AnswerShapeError):
                 job.set_error(
-                    f"{exc} {RETRY}",
+                    f"{exc}. {RETRY}",
                     exc.rule,
                     reply=exc.raw,
                     problems=exc.problems,
+                    plain=exc.plain,
                 )
             elif isinstance(exc, JobRejected):
                 job.set_error(str(exc), exc.rule, reply=job.reply)
             elif isinstance(exc, ProviderError):
                 if exc.rule == "provider-incomplete":
                     job.usage = exc.usage
-                    if exc.cut_short:
-                        job.attempt_limit = job.attempts
+                if exc.cut_short:
+                    job.attempt_limit = job.attempts
                 wait = (
                     ""
                     if not exc.waiting or job.attempts >= job.attempt_limit
@@ -1790,7 +1791,13 @@ class ContextService:
                         + timedelta(seconds=min(TIMEOUT_BACKOFF_S * 2 ** (job.attempts - 1), 1800))
                     ).isoformat()
                 )
-                job.set_error(str(exc), exc.rule, reply=exc.reply, retry_after=wait)
+                job.set_error(
+                    str(exc),
+                    exc.rule,
+                    reply=exc.reply,
+                    retry_after=wait,
+                    plain=str(exc) if exc.rule == "model-too-long" else "",
+                )
             elif stale:
                 job.set_error(str(exc))
             elif isinstance(exc, ValidationError):

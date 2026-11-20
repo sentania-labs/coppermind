@@ -153,6 +153,8 @@ async def generate(
         )
     except ProviderError as exc:
         job.summary_limits = context.summary_limits()
+        if exc.rule == "model-too-long":
+            raise
         raise ProviderError(
             f"Meeting summary failed: {exc}. Check the model connection and its context "
             "window (including room for thinking and the response), then retry or choose "

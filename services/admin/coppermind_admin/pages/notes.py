@@ -287,17 +287,25 @@ def history_line(entry: dict[str, Any], here: str) -> str:
             + ui.a("its review page", f"{here}/review")
             + " and press Write the summary again."
         )
-    if entry.get("problems"):
-        shown = "".join(
-            f'<div class="quote">{e(p["path"] or "The answer")} {e(p["reason"])}.</div>'
-            for p in entry["problems"][:12]
+    if entry.get("plain"):
+        line += f"<div>{e(entry['plain'])}</div>"
+    if entry.get("answer"):
+        line += ui.reveal(
+            "Show the model's answer",
+            f'<div class="tech" style="white-space:pre-wrap;overflow-wrap:anywhere">'
+            f"{e(entry['answer'])}</div>",
         )
-        line += f"<div>The model's answer was refused. What was wrong in it:{shown}</div>"
-        if entry.get("answer"):
-            line += ui.reveal(
-                "Show the model's answer",
-                f'<div class="tech" style="white-space:pre-wrap">{e(entry["answer"])}</div>',
+    if entry.get("get_suggestions"):
+        line += (
+            "<div>To try again, press Get suggestions. Only the blanks are filled.</div>"
+            + ui.btn(
+                "Get suggestions",
+                "/admin/suggestions/older",
+                "",
+                {"note": entry["note_id"], "back": here},
+                busy="Asking…",
             )
+        )
     if entry.get("details"):
         line += ui.tech(entry["details"])
     return line
@@ -369,6 +377,8 @@ def router(wiring: Wiring) -> APIRouter:
                 detail += " No suggestions yet: it arrived before suggestions were turned on."
             elif missing == "failed":
                 detail += " No suggestions: the model's answer could not be used."
+            elif missing == "toolong":
+                detail += " No suggestions: it was too long for this model."
             elif missing == "soon" and sugg_on:
                 detail += " Suggestions are being written."
             actions = (
@@ -378,7 +388,7 @@ def router(wiring: Wiring) -> APIRouter:
                 if note["unsure"]
                 else ui.go("Review here", link + "/review")
             )
-            if missing in {"before", "failed"} and sugg_on:
+            if missing in {"before", "failed", "toolong"} and sugg_on:
                 actions += ui.btn(
                     "Get suggestions",
                     "/admin/suggestions/older",
@@ -1313,11 +1323,6 @@ name="csrf" value="{{csrf}}">Save</button>
             )
         )
         problem = ui.banner("warn", e(data["review_problem"])) if data.get("review_problem") else ""
-        suggestion_error = (
-            ui.banner("warn", ui.linked_answer_limit_error(data["suggestion_error"]))
-            if data.get("suggestion_error")
-            else ""
-        )
         summary_part, summary_notice, refresh = summary_card(
             await note_summary(ctx, identity), values, here
         )
@@ -1327,6 +1332,32 @@ name="csrf" value="{{csrf}}">Save</button>
             if summary_part
             else ""
         )
+        if data.get("suggestion_plain"):
+            # Whole sentences, then the one action this page really has.
+            if again_form:
+                step = " To try again, press Write the summary again at the bottom of this page."
+                action = ""
+            elif data.get("suggestions_enabled"):
+                step = " To try again, press Get suggestions."
+                action = ui.btn(
+                    "Get suggestions",
+                    "/admin/suggestions/older",
+                    "",
+                    {"note": identity, "back": here + "/review"},
+                    busy="Asking…",
+                )
+            else:
+                step, action = "", ""
+            suggestion_error = ui.banner(
+                "warn",
+                e(data["suggestion_plain"] + step) + (f"<div>{action}</div>" if action else ""),
+            )
+        elif data.get("suggestion_error"):
+            suggestion_error = ui.banner(
+                "warn", ui.linked_answer_limit_error(data["suggestion_error"])
+            )
+        else:
+            suggestion_error = ""
         lede = (
             "The same check you would do in Obsidian, for when Obsidian is not to hand. "
             "Nothing is filed until you press the button at the bottom."

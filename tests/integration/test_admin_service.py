@@ -831,5 +831,10 @@ async def test_a_shape_failure_reaches_the_note_history_with_the_part_and_the_an
     await context.run_job(context.load_job(job_id))
     history = (await store.admin.act("note", {"id": note.id}))["history"]
     (line,) = [entry for entry in history if "could not be written" in entry["text"]]
-    assert line["problems"] == [{"path": "suggestions.0.reason", "reason": "should be text"}]
+    assert line["problems"][0]["path"] == "suggestions.0.reason"
+    assert line["plain"] == (
+        "The model's answer could not be used. In the first suggestion, the reason should be text."
+    )
     assert line["answer"] == reply
+    # A plain note that failed on its newest attempt can ask again from its own page.
+    assert line["get_suggestions"] is True and line["note_id"] == note.id

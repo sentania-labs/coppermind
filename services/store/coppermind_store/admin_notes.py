@@ -509,11 +509,23 @@ class AdminNotes:
                 # page, so it stays behind Details for support.
                 line = (job.created_at, "Suggestions could not be written for this note.")
                 events.append(line)
+                assignment = self.store.context.config().assignments["enrichment"]
+                newest = self._latest_job(row.id)
                 extras[line] = {
                     "details": job.error,
+                    "plain": job.plain,
                     "problems": job.problems,
                     "answer": job.reply if job.problems else "",
                     "summary_again": recording is not None and not row.reviewed,
+                    # A plain note has no summary to write again; it can ask for suggestions
+                    # again, when this is its newest attempt and suggestions are on.
+                    "get_suggestions": recording is None
+                    and not row.reviewed
+                    and newest is not None
+                    and newest.id == job.id
+                    and assignment.enabled
+                    and not assignment.paused,
+                    "note_id": row.id,
                 }
         review = self.store.control.store.state_dir / "reviews" / f"{row.id}.json"
         if row.reviewed and review.exists():

@@ -390,6 +390,9 @@ def shown(page: str) -> str:
     return " ".join("".join(reader.text).split())
 
 
+NOTE_ID = "01M78CGWH2FKAQM3WVDSXNCXXJ"
+
+
 def failed_line(store, **extra) -> str:
     note = store.views["note"]
     note["history"].append(
@@ -480,17 +483,93 @@ def test_a_changed_address_is_doubted_before_a_sleeping_computer(admin):
     assert "switched off or asleep" in page
 
 
-def test_a_shape_failure_says_which_part_was_wrong_and_hides_the_answer_until_asked(admin):
+PLAIN = "The model's answer could not be used. The Action items section must be text."
+
+
+def test_a_shape_failure_is_plain_words_with_the_path_and_answer_kept_out_of_the_way(admin):
     client, _, store = admin
     identity = failed_line(
         store,
-        problems=[{"path": "summary.action_items", "reason": "should be text"}],
+        details="The model's answer was not in the expected format (answer-shape): "
+        "meeting_summary.action_items must be text. Retry the job.",
+        plain=PLAIN,
+        problems=[
+            {
+                "path": "meeting_summary.action_items",
+                "reason": "must be text",
+                "text": "The Action items section must be text.",
+            }
+        ],
         answer='{"summary": "x", "action_items": ["PRIVATE-ANSWER"]}',
         summary_again=False,
+        get_suggestions=False,
     )
     page = client.get(f"/admin/notes/{identity}").text
     seen = shown(page)
-    assert "summary.action_items should be text." in seen
+    assert PLAIN in seen
+    assert "meeting_summary" not in seen and "answer-shape" not in seen
     assert "PRIVATE-ANSWER" not in seen
-    assert ">Show the model's answer</summary>" in page
-    assert "PRIVATE-ANSWER" in page
+    assert "Show the model" in page and "PRIVATE-ANSWER" in page
+    # The exact path is still there for support, behind its own link.
+    assert "meeting_summary.action_items" in page
+
+
+def test_a_failed_plain_note_says_what_to_do_and_offers_get_suggestions(admin):
+    client, _, store = admin
+    identity = failed_line(
+        store, plain=PLAIN, summary_again=False, get_suggestions=True, note_id=NOTE_ID
+    )
+    page = client.get(f"/admin/notes/{identity}").text
+    assert "To try again, press Get suggestions." in shown(page)
+    form = next(
+        f
+        for f in forms(page)
+        if f["action"] == "/admin/suggestions/older" and f["fields"].get("note") == NOTE_ID
+    )
+    assert form["fields"]["back"] == f"/admin/notes/{identity}"
+    assert form["buttons"] == ["Get suggestions"]
+
+
+def test_a_note_that_cannot_ask_again_shows_no_button(admin):
+    client, _, store = admin
+    identity = failed_line(store, plain=PLAIN, summary_again=False, get_suggestions=False)
+    page = client.get(f"/admin/notes/{identity}").text
+    assert "Get suggestions" not in shown(page)
+
+
+def test_the_review_page_says_it_in_plain_words_and_names_a_button_that_exists(admin):
+    client, _, store = admin
+    lifecycle = store.views["lifecycle"]
+    lifecycle["suggestion_error"] = (
+        "The model's answer was not in the expected format (answer-shape): x. Retry the job."
+    )
+    lifecycle["suggestion_plain"] = PLAIN
+    lifecycle["suggestions_enabled"] = True
+    page = client.get(f"/admin/notes/{lifecycle['note']['id']}/review").text
+    seen = shown(page)
+    assert PLAIN in seen
+    assert "answer-shape" not in seen and "Retry the job" not in seen
+    # Whichever way to try again is named, it is on this page.
+    if "press Write the summary again" in seen:
+        assert 'id="summary-again-form"' in page
+    else:
+        assert "press Get suggestions" in seen
+        assert "/admin/suggestions/older" in page
+
+
+def test_a_waiting_note_the_model_refused_as_too_long_says_so(admin):
+    client, _, store = admin
+    store.views["notes-waiting"]["items"][1]["no_suggestions"] = "toolong"
+    page = client.get("/admin/notes?tab=waiting").text
+    seen = shown(page)
+    assert "No suggestions: it was too long for this model." in seen
+    assert "Get suggestions" in seen
+
+
+def test_the_suggestions_page_names_a_too_long_refusal_truthfully(admin):
+    client, _, store = admin
+    for note in store.views["suggestions"]["older"]:
+        note["why"] = "toolong"
+    seen = shown(client.get("/admin/suggestions").text)
+    assert "the text was too long for the model" in seen
+    assert "the model's answer could not be used" not in seen

@@ -125,6 +125,17 @@ class ProviderError(ValueError):
         self.over_limit = False
 
 
+def _too_long() -> ProviderError:
+    """The AI service refused the request because it held more text than the model takes."""
+    return ProviderError(
+        "The AI service refused this as too long for the model, so nothing was written. Use "
+        "a model that takes more text, or shorten the note.",
+        "model-too-long",
+        # The same text would be refused again, so the job is not tried again.
+        cut_short=True,
+    )
+
+
 class InputLimitError(ProviderError):
     """The note and transcript text is larger than the configured limit."""
 
@@ -634,9 +645,19 @@ class ModelProvider:
                 "messages": turns,
                 "stream": True,
             }
-            result, stats = await self._exchange(
-                connection, key, "POST", "/messages", timeout=assignment.timeout_s, payload=payload
-            )
+            try:
+                result, stats = await self._exchange(
+                    connection,
+                    key,
+                    "POST",
+                    "/messages",
+                    timeout=assignment.timeout_s,
+                    payload=payload,
+                )
+            except ProviderError as exc:
+                if exc.over_limit:
+                    raise _too_long() from exc
+                raise
             stopped = result.get("stop_reason")
             finished = stopped == "end_turn"
             output = "".join(
@@ -680,7 +701,9 @@ class ModelProvider:
                     )
                     break
                 except ProviderError as exc:
-                    if exc.over_limit or str(exc) not in {
+                    if exc.over_limit:
+                        raise _too_long() from exc
+                    if str(exc) not in {
                         "provider returned HTTP 400",
                         "provider returned HTTP 422",
                     }:

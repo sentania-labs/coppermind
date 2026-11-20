@@ -1828,7 +1828,18 @@ async def test_a_wrong_answer_names_the_part_and_keeps_the_answer(store, caplog)
         await context.run_job(context.load_job(job_id))
     final = context.load_job(job_id)
     assert final.state == "failed" and final.error_rule == "answer-shape"
-    assert final.problems == [{"path": "suggestions.0.reason", "reason": "should be text"}]
+    assert final.problems == [
+        {
+            "path": "suggestions.0.reason",
+            "reason": "should be text",
+            "text": "In the first suggestion, the reason should be text.",
+        }
+    ]
+    assert final.plain == (
+        "The model's answer could not be used. In the first suggestion, the reason should be text."
+    )
+    assert final.error.endswith("Retry the job; if it keeps failing, try a different model.")
+    assert "text. Retry" in final.error
     assert "suggestions.0.reason should be text" in final.error
     assert final.reply == WRONG_KIND_REPLY
     logged = " ".join(r.getMessage() for r in caplog.records if job_id in r.getMessage())
@@ -1864,7 +1875,8 @@ async def test_a_shape_failure_is_retried_once_with_what_was_wrong(store):
     assert calls[0][6] is None
     earlier, told = calls[1][6]
     assert earlier == WRONG_KIND_REPLY
-    assert "suggestions.0.reason should be text" in told
+    assert "In the first suggestion, the reason should be text." in told
+    assert "suggestions.0.reason" in told
     # The second ask counts against the job's attempts.
     assert final.attempts == 2 and final.error_rule == "" and final.problems == []
 
@@ -1920,3 +1932,47 @@ async def test_an_answer_that_is_not_json_is_asked_for_again_once(store):
     await context.run_job(context.load_job(job_id))
     assert context.load_job(job_id).state == "suggested" and len(calls) == 2
     assert calls[1][6][0] == "I cannot do that"
+
+
+async def test_a_model_made_key_never_reaches_a_log_or_a_stored_path(store, caplog):
+    context, job_id, _ = await _queued(store)
+    secret = "PRIVATE-TRANSCRIPT-TEXT\nforged line"
+    reply = json.dumps({"suggestions": [], secret: "x"})
+
+    async def answer(*args):
+        return _stand_in(reply)
+
+    context.provider.suggest = answer
+    with caplog.at_level("DEBUG"):
+        await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.error_rule == "answer-shape"
+    kept = json.dumps([final.problems, final.error, final.plain])
+    assert "PRIVATE" not in kept and "forged" not in kept
+    assert final.problems[0]["path"] == "(unexpected key)"
+    assert all("PRIVATE" not in r.getMessage() for r in caplog.records)
+    # The raw answer is kept on the job record, and only there.
+    assert "PRIVATE-TRANSCRIPT-TEXT" in final.reply
+
+
+async def test_a_refusal_for_length_is_named_truthfully_and_not_tried_again(store):
+    from coppermind_store.model_provider import ModelProvider
+
+    context, job_id, _ = await _queued(store)
+    seen = []
+
+    def serve(request):
+        seen.append(request)
+        return httpx.Response(
+            400, json={"error": {"message": "This model's maximum context length is 8192 tokens"}}
+        )
+
+    context.provider = ModelProvider(httpx.MockTransport(serve))
+    await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.state == "failed" and final.error_rule == "model-too-long"
+    assert len(seen) == 1
+    assert final.plain.startswith("The AI service refused this as too long for the model")
+    assert "HTTP" not in final.plain and "HTTP" not in final.error
+    assert final.attempt_limit == final.attempts
+    assert "could not be used" not in final.plain

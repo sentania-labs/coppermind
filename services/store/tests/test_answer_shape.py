@@ -88,8 +88,10 @@ def test_a_missing_summary_part_is_empty_but_a_wrong_kind_is_not_repaired():
 def test_a_summary_with_no_summary_part_is_refused_and_named(answer, reason):
     with pytest.raises(ValidationError) as caught:
         answer_shape.read_summary(answer)
-    problems = answer_shape.problems_of(caught.value)
-    assert problems == [{"path": "summary", "reason": reason}]
+    problems = answer_shape.problems_of(caught.value, "summary")
+    # One section, named once: never "summary summary" or "summary.summary".
+    assert [(p["path"], p["reason"]) for p in problems] == [("meeting_summary.summary", reason)]
+    assert problems[0]["text"] == f"The Summary section {reason}."
 
 
 def test_a_cut_off_answer_is_not_mistaken_for_the_object_inside_it():
@@ -104,7 +106,7 @@ def test_a_cut_off_answer_is_not_mistaken_for_the_object_inside_it():
         ({"suggestions": [{"kind": "filename"}]}, "suggestions.0.reason", "is missing"),
         ({"suggestions": [{"kind": "bogus", "reason": "r"}]}, "suggestions.0.kind", "allowed"),
         ({"suggestions": "none"}, "suggestions", "should be a list"),
-        ({"extra": 1}, "extra", "not a part"),
+        ({"extra": 1}, answer_shape.UNEXPECTED, "not a part"),
         (
             {"suggestions": [{"kind": "event", "event_ids": [3], "reason": "r"}]},
             "suggestions.0.event_ids.0",
@@ -229,3 +231,68 @@ async def test_an_answer_that_is_not_json_keeps_the_text():
     with pytest.raises(ProviderError) as caught:
         await _ask(adapter)
     assert caught.value.rule == "provider-not-json" and caught.value.reply == "sorry, no"
+
+
+def _plain(data, stage=""):
+    reader = answer_shape.read_summary if stage else answer_shape.read_suggestions
+    with pytest.raises(ValidationError) as caught:
+        reader(data)
+    return answer_shape.problems_of(caught.value, stage)
+
+
+@pytest.mark.parametrize(
+    ("data", "sentence"),
+    [
+        (
+            {"suggestions": [{"kind": "filename", "reason": ["x"]}]},
+            "In the first suggestion, the reason should be text.",
+        ),
+        (
+            {"suggestions": [{"kind": "filename", "reason": "r"}, {"kind": "field"}]},
+            "In the second suggestion, the reason is missing.",
+        ),
+        (
+            {"suggestions": [{"kind": "event", "event_ids": [3], "reason": "r"}]},
+            "In the first suggestion, the list of meetings should be text.",
+        ),
+        ({"suggestions": "x"}, "The list of suggestions should be a list."),
+    ],
+)
+def test_each_problem_is_a_plain_sentence_with_no_path_or_index(data, sentence):
+    (problem,) = _plain(data)
+    assert problem["text"] == sentence
+    assert "." not in problem["text"].rstrip(".") and "suggestions." not in problem["text"]
+
+
+@pytest.mark.parametrize(
+    ("data", "sentence"),
+    [
+        ({"summary": "s", "decisions": ["a"], "action_items": ""}, "The Decisions section "),
+        ({"summary": 42, "decisions": "", "action_items": ""}, "The Summary section "),
+        ({"decisions": "d", "action_items": "a"}, "The Summary section is missing."),
+    ],
+)
+def test_a_summary_problem_names_the_section_once(data, sentence):
+    (problem,) = _plain(data, "summary")
+    assert problem["text"].startswith(sentence)
+    assert problem["text"].lower().count("summary") <= 1 or "Summary section" in problem["text"]
+    assert "summary summary" not in problem["text"].lower()
+
+
+def test_an_unexpected_key_is_never_kept_in_a_path_or_a_sentence():
+    secret = "PRIVATE-TRANSCRIPT-TEXT\nforged log line"
+    top = _plain({secret: "x"})
+    inner = _plain({"suggestions": [{"kind": "filename", "reason": "r", secret: 1}]})
+    summary = _plain({"summary": "s", "decisions": "", "action_items": "", secret: "x"}, "summary")
+    for problem in (*top, *inner, *summary):
+        kept = json.dumps(problem)
+        assert "PRIVATE" not in kept and "forged" not in kept and "\\n" not in kept
+        assert "\n" not in problem["path"]
+    assert top[0]["path"] == answer_shape.UNEXPECTED
+    assert inner[0]["path"] == f"suggestions.0.{answer_shape.UNEXPECTED}"
+    assert (
+        inner[0]["text"] == "In the first suggestion, there is a part that Coppermind does not use."
+    )
+    error = answer_shape.AnswerShapeError(top, secret, [])
+    assert "PRIVATE" not in str(error) and "PRIVATE" not in error.plain
+    assert "PRIVATE" not in answer_shape.feedback(top)

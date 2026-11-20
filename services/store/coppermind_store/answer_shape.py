@@ -16,7 +16,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from coppermind.meeting_summary import SECTIONS, MeetingSummary
-from coppermind_store.enrichment_models import Suggestions
+from coppermind_store.enrichment_models import Suggestion, Suggestions
 
 # How much of a refused answer is kept with the job. Never logged in full at info level.
 RAW_KEPT_CHARS = 4000
@@ -45,6 +45,10 @@ class AnswerShapeError(ValueError):
         self.problems = problems
         self.raw = raw[:RAW_KEPT_CHARS]
         self.repairs = repairs
+        # What the owner reads: whole sentences, no field paths and no rule names.
+        self.plain = "The model's answer could not be used. " + " ".join(
+            p.get("text", "") for p in problems[:4]
+        )
         super().__init__(
             "The model's answer was not in the expected format (answer-shape): " + say(problems)
         )
@@ -163,18 +167,94 @@ REASONS = {
 }
 
 
-def problems_of(exc: ValidationError, prefix: str = "") -> list[dict[str, str]]:
-    """Each place pydantic refused and why, in words that never repeat the model's input."""
+# The only names that may appear in a stored or logged path: the parts of the answer that
+# Coppermind asks for. Any other key is the model's own text and is never kept.
+KNOWN_PARTS = {*Suggestions.model_fields, *Suggestion.model_fields, "meeting_summary"} | {
+    section.key for section in SECTIONS
+}
+UNEXPECTED = "(unexpected key)"
+SECTION_NAMES = {section.key: section.name for section in SECTIONS}
+PART_NAMES = {
+    "kind": "kind",
+    "confidence": "confidence",
+    "entity_ids": "list of people or companies",
+    "field": "field name",
+    "value": "value",
+    "event_ids": "list of meetings",
+    "contact_ids": "list of contacts",
+    "quote": "quote",
+    "reason": "reason",
+}
+ORDINALS = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth"]
+ORDINALS += ["ninth", "tenth"]
+
+
+def _ordinal(index: int) -> str:
+    return ORDINALS[index] if index < len(ORDINALS) else f"number {index + 1}"
+
+
+def _safe(part: Any) -> str:
+    """A path part as it may be kept: a known name or a number, else a fixed placeholder."""
+    if isinstance(part, int) and not isinstance(part, bool):
+        return str(part)
+    return part if isinstance(part, str) and part in KNOWN_PARTS else UNEXPECTED
+
+
+def _sentence(loc: tuple[Any, ...], kind: str, reason: str, summary: bool) -> str:
+    """One whole sentence for the owner, from where the problem is and what it is."""
+    if kind == "extra_forbidden":
+        if not summary and len(loc) >= 2 and loc[0] == "suggestions" and isinstance(loc[1], int):
+            return (
+                f"In the {_ordinal(loc[1])} suggestion, there is a part that Coppermind "
+                "does not use."
+            )
+        return "The answer has a part that Coppermind does not use."
+    if summary:
+        key = loc[0] if loc else ""
+        if key in SECTION_NAMES:
+            return f"The {SECTION_NAMES[key]} section {reason}."
+        return "The summary was not in the expected form."
+    if loc and loc[0] == "unresolved":
+        return f"The list of open questions {reason}."
+    if loc and loc[0] == "suggestions":
+        if len(loc) == 1:
+            return f"The list of suggestions {reason}."
+        if isinstance(loc[1], int):
+            who = f"{_ordinal(loc[1])} suggestion"
+            part = loc[2] if len(loc) > 2 else None
+            if isinstance(part, str) and part in PART_NAMES:
+                return f"In the {who}, the {PART_NAMES[part]} {reason}."
+            return f"The {who} {reason}."
+    return f"The answer {reason}."
+
+
+def problems_of(exc: ValidationError, stage: str = "") -> list[dict[str, str]]:
+    """Each place pydantic refused and why, in words that never repeat the model's input.
+
+    `path` is for support and keeps only known part names and numbers. `text` is the plain
+    sentence shown to the owner. `stage` is "summary" for the meeting summary request.
+    """
+    summary = stage == "summary"
     found: list[dict[str, str]] = []
     for error in exc.errors():
-        path = ".".join([prefix, *(str(p) for p in error["loc"])]).strip(".")
+        loc = tuple(error["loc"])
         kind = error["type"]
         if kind == "value_error":
             # Raised by Coppermind's own checks, never by model text.
-            reason = str(error.get("msg", "")).removeprefix("Value error, ")[:200]
+            reason = " ".join(str(error.get("msg", "")).removeprefix("Value error, ").split())
+            reason = reason[:200]
+            first = reason.split(" ", 1)[0]
+            if summary and not loc and first in SECTION_NAMES:
+                # "summary must be text" is about the one section it names.
+                loc, reason = (first,), reason[len(first) :].strip()
         else:
             reason = REASONS.get(kind, "is not in the expected form")
-        problem = {"path": path[:120], "reason": reason}
+        path = ".".join([*(["meeting_summary"] if summary else []), *(_safe(p) for p in loc)])
+        problem = {
+            "path": path[:120].replace("\n", " "),
+            "reason": reason,
+            "text": _sentence(loc, kind, reason, summary),
+        }
         if problem not in found:
             found.append(problem)
         if len(found) >= MAX_PROBLEMS:
@@ -187,13 +267,17 @@ def not_json(raw: str) -> list[dict[str, str]]:
         {
             "path": "",
             "reason": "was not a single JSON object (it may be cut off, or hold more than one)",
+            "text": "The answer was not a single JSON object, so it could not be read.",
         }
     ]
 
 
 def feedback(problems: list[dict[str, str]]) -> str:
     """What the model is told when its answer is refused and it is asked once more."""
-    lines = "\n".join(f"- {p['path'] or 'the answer'} {p['reason']}" for p in problems)
+    lines = "\n".join(
+        f"- {p.get('text', '')} (at {p['path'] or 'the answer'})".replace(" (at the answer)", "")
+        for p in problems
+    )
     return (
         "Your previous answer could not be used for these reasons:\n"
         f"{lines}\n"

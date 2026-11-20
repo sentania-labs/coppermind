@@ -332,7 +332,7 @@ async def test_full_transcript_summary_waits_for_owner_and_replays_once(
     "failure,rule",
     [
         ("limit", "summary-input-limit"),
-        ("context", "summary-provider-error"),
+        ("context", "model-too-long"),
         ("shape", "answer-shape"),
     ],
 )
@@ -614,6 +614,7 @@ async def test_a_summary_inside_a_fence_with_a_sentence_before_it_is_used(store,
 async def test_a_refused_summary_names_the_part_and_keeps_the_answer(store, standin):
     context, note, job, requests = await setup_recording(store, standin, failure="shape")
     assert job.error_rule == "answer-shape"
-    assert job.problems and job.problems[0]["path"].startswith("summary")
-    assert "must be text" in job.problems[0]["reason"]
+    assert job.problems[0]["path"] == "meeting_summary.summary"
+    assert job.problems[0]["reason"] == "must be text"
+    assert job.plain == ("The model's answer could not be used. The Summary section must be text.")
     assert job.reply == '{"summary": 42}'
