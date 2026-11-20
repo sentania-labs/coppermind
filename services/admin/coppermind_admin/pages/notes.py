@@ -287,6 +287,17 @@ def history_line(entry: dict[str, Any], here: str) -> str:
             + ui.a("its review page", f"{here}/review")
             + " and press Write the summary again."
         )
+    if entry.get("problems"):
+        shown = "".join(
+            f'<div class="quote">{e(p["path"] or "The answer")} {e(p["reason"])}.</div>'
+            for p in entry["problems"][:12]
+        )
+        line += f"<div>The model's answer was refused. What was wrong in it:{shown}</div>"
+        if entry.get("answer"):
+            line += ui.reveal(
+                "Show the model's answer",
+                f'<div class="tech" style="white-space:pre-wrap">{e(entry["answer"])}</div>',
+            )
     if entry.get("details"):
         line += ui.tech(entry["details"])
     return line

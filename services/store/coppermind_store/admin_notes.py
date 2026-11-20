@@ -511,6 +511,9 @@ class AdminNotes:
                 events.append(line)
                 extras[line] = {
                     "details": job.error,
+                    "problems": job.problems,
+                    "answer": job.reply if job.problems else "",
+                    "tidied": job.repairs,
                     "summary_again": recording is not None and not row.reviewed,
                 }
         review = self.store.control.store.state_dir / "reviews" / f"{row.id}.json"

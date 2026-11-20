@@ -122,7 +122,8 @@ async def setup_recording(store, standin, *, limit=200000, failure=None, recordi
 
     def model(request):
         payload = json.loads(request.content)
-        evidence = json.loads(payload["messages"][-1]["content"])
+        # The evidence is the first user message; a corrected ask adds turns after it.
+        evidence = json.loads(payload["messages"][1]["content"])
         requests.append(evidence)
         assert payload["model"] == "test-model"
         output: dict[str, Any]
@@ -149,6 +150,15 @@ async def setup_recording(store, standin, *, limit=200000, failure=None, recordi
                     },
                 )
             output = {"summary": 42} if failure == "shape" else PROPOSAL
+            if failure == "shape-once" and not rejected:
+                rejected.append(True)
+                output = {"summary": 42}
+            if failure == "fenced":
+                fenced = "Here is the summary:\n```json\n" + json.dumps(output) + "\n```"
+                return httpx.Response(
+                    200,
+                    json={"choices": [{"finish_reason": "stop", "message": {"content": fenced}}]},
+                )
             drift["on"] = failure == "drift"
         elif failure == "primary" and not rejected:
             rejected.append(True)
@@ -350,7 +360,9 @@ async def test_summary_failures_are_durable_problems_with_no_partial_note(
         assert "summary_max_input_chars" in job.error
     else:
         sent = sum("transcript" in request for request in requests)
-        assert sent == (2 if failure == "context" else 1)
+        # A refused request drops the thinking setting, then the reply format, in turn; a
+        # wrong shape is asked again once, told what was wrong.
+        assert sent == (4 if failure == "context" else 2)
 
 
 async def test_raising_summary_limit_retries_the_whole_transcript(store, standin):
@@ -581,3 +593,27 @@ async def test_a_reply_stopped_for_another_reason_is_retried_up_to_the_attempts(
     await context.tick()
     assert context.load_job(job.id).attempts == 2
     assert sum("transcript" in request for request in requests) >= 2
+
+
+async def test_a_wrongly_shaped_summary_is_asked_for_again_with_what_was_wrong(store, standin):
+    context, note, job, requests = await setup_recording(store, standin, failure="shape-once")
+    assert job.state == "suggested", job.error
+    assert job.result.meeting_summary.model_dump() == PROPOSAL
+    assert sum("transcript" in request for request in requests) == 2
+    assert job.attempts == 2
+
+
+async def test_a_summary_inside_a_fence_with_a_sentence_before_it_is_used(store, standin):
+    context, note, job, requests = await setup_recording(store, standin, failure="fenced")
+    assert job.state == "suggested", job.error
+    assert job.result.meeting_summary.model_dump() == PROPOSAL
+    assert sum("transcript" in request for request in requests) == 1
+    assert any("around the answer" in r for r in job.repairs)
+
+
+async def test_a_refused_summary_names_the_part_and_keeps_the_answer(store, standin):
+    context, note, job, requests = await setup_recording(store, standin, failure="shape")
+    assert job.error_rule == "answer-shape"
+    assert job.problems and job.problems[0]["path"].startswith("summary")
+    assert "must be text" in job.problems[0]["reason"]
+    assert job.reply == '{"summary": 42}'

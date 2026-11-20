@@ -693,7 +693,7 @@ async def test_a_failed_suggestion_is_in_the_note_history_in_plain_words(store):
     job_id = await context.queue_note(note.id)
     build = next(case[1] for case in RULE_CASES if case[0] == "quote-not-found")
 
-    async def answer(connection, key, assignment, system, evidence):
+    async def answer(connection, key, assignment, system, evidence, *options):
         return _answer(build(evidence)), {}
 
     context.provider.suggest = answer
@@ -812,3 +812,24 @@ async def test_concurrent_overviews_and_storage_do_not_wait_for_cleanup(store, w
             with suppress(asyncio.CancelledError):
                 await worker
         await client.aclose()
+
+
+async def test_a_shape_failure_reaches_the_note_history_with_the_part_and_the_answer(store):
+    from coppermind_store.answer_shape import ModelAnswer
+
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+    reply = '{"suggestions": [{"kind": "filename", "reason": ["why"]}]}'
+
+    async def answer(connection, key, assignment, system, evidence, *options):
+        return ModelAnswer(json.loads(reply), reply), {}
+
+    context.provider.suggest = answer
+    await context.run_job(context.load_job(job_id))
+    history = (await store.admin.act("note", {"id": note.id}))["history"]
+    (line,) = [entry for entry in history if "could not be written" in entry["text"]]
+    assert line["problems"] == [{"path": "suggestions.0.reason", "reason": "should be text"}]
+    assert line["answer"] == reply

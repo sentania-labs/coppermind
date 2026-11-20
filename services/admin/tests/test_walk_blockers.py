@@ -478,3 +478,19 @@ def test_a_changed_address_is_doubted_before_a_sleeping_computer(admin):
     service.update(address_before="")
     page = shown(client.get(f"/admin/services/{service['id']}").text)
     assert "switched off or asleep" in page
+
+
+def test_a_shape_failure_says_which_part_was_wrong_and_hides_the_answer_until_asked(admin):
+    client, _, store = admin
+    identity = failed_line(
+        store,
+        problems=[{"path": "summary.action_items", "reason": "should be text"}],
+        answer='{"summary": "x", "action_items": ["PRIVATE-ANSWER"]}',
+        summary_again=False,
+    )
+    page = client.get(f"/admin/notes/{identity}").text
+    seen = shown(page)
+    assert "summary.action_items should be text." in seen
+    assert "PRIVATE-ANSWER" not in seen
+    assert ">Show the model&#x27;s answer</summary>" in page or "Show the model" in page
+    assert "PRIVATE-ANSWER" in page

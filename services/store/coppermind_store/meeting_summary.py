@@ -9,6 +9,7 @@ from typing import Any
 from coppermind import meeting_summary as shared
 from coppermind.meeting_summary import MeetingSummary
 from coppermind.store_protocol import ReplaceNote
+from coppermind_store import answer_shape
 
 RECORDS = "meeting-summaries/"
 
@@ -140,12 +141,15 @@ async def generate(
     from coppermind_store.model_provider import ProviderError
 
     try:
-        output, usage = await context.provider.suggest(
+        summary, output, usage = await context.ask(
+            job,
             connection,
-            context.key(connection.id),
             limits,
             prompt(assignment.summary_directions),
             evidence,
+            answer_shape.read_summary,
+            answer_shape.SUMMARY_SCHEMA,
+            "summary",
         )
     except ProviderError as exc:
         job.summary_limits = context.summary_limits()
@@ -160,8 +164,6 @@ async def generate(
             usage=exc.usage,
             cut_short=exc.cut_short,
         ) from exc
-    job.reply = json.dumps(output, ensure_ascii=False)[:4000]
-    summary = MeetingSummary.from_answer(output)
     if not summary.text(shared.SECTIONS[0].key).strip():
         raise ValueError("the meeting summary was empty")
     recording = next(

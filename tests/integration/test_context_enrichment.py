@@ -994,7 +994,7 @@ async def test_validation_failure_states_the_rule_and_logs_without_model_output(
     )
     job_id = await context.queue_note(note.id)
 
-    async def answer(connection, key, assignment, system, evidence):
+    async def answer(connection, key, assignment, system, evidence, *options):
         return _answer(build(evidence) | {"reason": "SECRET-MODEL-TEXT"}), {}
 
     context.provider.suggest = answer
@@ -1291,7 +1291,7 @@ async def test_the_test_call_is_realistic_and_records_speed(store):
     context = await configure(store)
     seen: dict[str, Any] = {}
 
-    async def fake(connection, key, assignment, system, evidence):
+    async def fake(connection, key, assignment, system, evidence, *options):
         seen["size"] = len(json.dumps(evidence))
         seen["assignment"] = assignment
         return {"ok": True, "summary": "x"}, {
@@ -1756,3 +1756,167 @@ async def test_attention_caps_open_failures_and_says_when_it_stopped_checking(st
     assert len(jobs["items"]) == 50
     assert jobs["total"] == 50
     assert jobs["unchecked"] == 10
+
+
+# --- A shape failure explains itself, tolerates what is safe, and asks once more -----------
+
+from coppermind_store.answer_shape import ModelAnswer  # noqa: E402
+
+_ONE = '{"kind": "filename", "value": "Plan", "reason": "r", "quote": "Casey"}'
+FENCED_REPLY = '```json\n{"suggestions": [' + _ONE + "]}\n```"
+PROSE_REPLY = 'Here you go:\n{"suggestions": [' + _ONE + "]}"
+STRING_REPLY = '{"suggestions": [' + _ONE + '], "unresolved": "Which customer?"}'
+WRONG_KIND_REPLY = '{"suggestions": [{"kind": "filename", "value": "Plan", "reason": ["why"]}]}'
+
+
+def _stand_in(reply):
+    """What the provider hands back for a recorded reply text."""
+    from coppermind_store import answer_shape
+
+    data, repairs = answer_shape.read_json(reply)
+    return ModelAnswer(data, reply, repairs), {}
+
+
+async def _queued(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
+    )
+    return context, await context.queue_note(note.id), note
+
+
+@pytest.mark.parametrize("reply", [FENCED_REPLY, PROSE_REPLY, STRING_REPLY])
+async def test_a_tidy_answer_is_accepted_and_the_repair_is_recorded(store, reply):
+    context, job_id, _ = await _queued(store)
+    calls = []
+
+    async def answer(*args):
+        calls.append(args)
+        return _stand_in(reply)
+
+    context.provider.suggest = answer
+    await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.state == "suggested" and len(calls) == 1
+    assert final.repairs
+    assert final.result.suggestions[0].kind == "filename"
+    # The schema is offered with the first ask.
+    assert calls[0][5]["properties"]["suggestions"]
+
+
+async def test_a_missing_optional_part_is_empty_and_never_invented(store):
+    context, job_id, _ = await _queued(store)
+
+    async def answer(*args):
+        return _stand_in('{"suggestions": [' + _ONE + "]}")
+
+    context.provider.suggest = answer
+    await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.state == "suggested" and final.result.unresolved == []
+    assert final.result.suggestions[0].entity_ids == []
+
+
+async def test_a_wrong_answer_names_the_part_and_keeps_the_answer(store, caplog):
+    context, job_id, note = await _queued(store)
+
+    async def answer(*args):
+        return _stand_in(WRONG_KIND_REPLY)
+
+    context.provider.suggest = answer
+    with caplog.at_level("WARNING"):
+        await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.state == "failed" and final.error_rule == "answer-shape"
+    assert final.problems == [{"path": "suggestions.0.reason", "reason": "should be text"}]
+    assert "suggestions.0.reason should be text" in final.error
+    assert final.reply == WRONG_KIND_REPLY
+    logged = " ".join(r.getMessage() for r in caplog.records if job_id in r.getMessage())
+    assert "suggestions.0.reason should be text" in logged and "why" not in logged
+    detail = await context.job_detail({"id": job_id})
+    assert detail["problems"] == final.problems and detail["reply"] == WRONG_KIND_REPLY
+
+
+async def test_a_kept_answer_is_cut_to_a_few_thousand_characters(store):
+    context, job_id, _ = await _queued(store)
+    long = '{"suggestions": [{"kind": "filename", "reason": 5, "value": "' + "x" * 9000 + '"}]}'
+
+    async def answer(*args):
+        return _stand_in(long)
+
+    context.provider.suggest = answer
+    await context.run_job(context.load_job(job_id))
+    assert len(context.load_job(job_id).reply) == 4000
+
+
+async def test_a_shape_failure_is_retried_once_with_what_was_wrong(store):
+    context, job_id, _ = await _queued(store)
+    calls = []
+
+    async def answer(*args):
+        calls.append(args)
+        return _stand_in(WRONG_KIND_REPLY if len(calls) == 1 else FENCED_REPLY)
+
+    context.provider.suggest = answer
+    await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.state == "suggested" and len(calls) == 2
+    assert calls[0][6] is None
+    earlier, told = calls[1][6]
+    assert earlier == WRONG_KIND_REPLY
+    assert "suggestions.0.reason should be text" in told
+    # The second ask counts against the job's attempts.
+    assert final.attempts == 2 and final.error_rule == "" and final.problems == []
+
+
+async def test_a_second_wrong_answer_fails_after_exactly_two_asks(store):
+    context, job_id, _ = await _queued(store)
+    calls = []
+
+    async def answer(*args):
+        calls.append(args)
+        return _stand_in(WRONG_KIND_REPLY)
+
+    context.provider.suggest = answer
+    await context.run_job(context.load_job(job_id))
+    final = context.load_job(job_id)
+    assert final.state == "failed" and len(calls) == 2
+    assert final.error_rule == "answer-shape" and final.attempts == 2
+
+
+async def test_no_second_ask_when_the_job_has_no_attempt_left(store):
+    context = await configure(store)
+    config = context.config()
+    config.assignments["enrichment"].attempts = 1
+    context.save_config(config)
+    note = await store.create_note(
+        CreateNote(title="One", body="Casey", frontmatter={"date": "2026-10-14"})
+    )
+    job_id = await context.queue_note(note.id)
+    calls = []
+
+    async def answer(*args):
+        calls.append(args)
+        return _stand_in(WRONG_KIND_REPLY)
+
+    context.provider.suggest = answer
+    await context.run_job(context.load_job(job_id))
+    assert len(calls) == 1 and context.load_job(job_id).error_rule == "answer-shape"
+
+
+async def test_an_answer_that_is_not_json_is_asked_for_again_once(store):
+    from coppermind_store.model_provider import ProviderError
+
+    context, job_id, _ = await _queued(store)
+    calls = []
+
+    async def answer(*args):
+        calls.append(args)
+        if len(calls) == 1:
+            raise ProviderError("not json", "provider-not-json", reply="I cannot do that")
+        return _stand_in(FENCED_REPLY)
+
+    context.provider.suggest = answer
+    await context.run_job(context.load_job(job_id))
+    assert context.load_job(job_id).state == "suggested" and len(calls) == 2
+    assert calls[1][6][0] == "I cannot do that"
