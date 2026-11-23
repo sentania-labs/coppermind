@@ -209,3 +209,91 @@ def test_dismiss_needs_sources_write_and_reaches_the_store(tmp_path):
         )
     assert denied.status_code == 403 and allowed.status_code == 200
     assert calls == [("dismiss-recording", {"id": "abc"})]
+
+
+def test_listing_recordings_needs_sources_read_and_passes_only_the_filters_given(tmp_path):
+    page = {"items": [status("succeeded")], "next_cursor": None}
+    app, fake, calls = serve(tmp_path, page)
+    created = datetime(2026, 9, 8, tzinfo=UTC)
+    reader, reader_key = create_key("reader", ["sources:read"], created_at=created)
+    writer, writer_key = create_key("writer", ["notes:write"], created_at=created)
+
+    async def keys():
+        return ApiKeySet(keys=[reader, writer])
+
+    fake.get_api_keys = keys
+    with TestClient(app) as client:
+        app.state.store = fake
+        app.state.api_key_auth._store = fake
+        denied = client.get("/v1/recordings", headers={"Authorization": f"Bearer {writer_key}"})
+        everything = client.get("/v1/recordings", headers={"Authorization": f"Bearer {reader_key}"})
+        found = client.get(
+            "/v1/recordings?provider=n8n&external_source_id=plaud/rec-1&state=failed&limit=5",
+            headers={"Authorization": f"Bearer {reader_key}"},
+        )
+        too_many = client.get(
+            "/v1/recordings?limit=500", headers={"Authorization": f"Bearer {reader_key}"}
+        )
+    assert denied.status_code == 403 and too_many.status_code == 422
+    assert everything.status_code == 200 and everything.json()["items"][0]["state"] == "succeeded"
+    assert found.status_code == 200
+    assert calls == [
+        ("recording-list", {"limit": 50}),
+        (
+            "recording-list",
+            {"state": "failed", "provider": "n8n", "external_source_id": "plaud/rec-1", "limit": 5},
+        ),
+    ]
+
+
+def test_the_status_carries_where_the_summary_stands(tmp_path):
+    failed = status(
+        "failed",
+        summary_state="failed",
+        summary_error="The writing service could not finish this note.",
+        summary_error_rule="writeup-provider-incomplete",
+        summary_attempts=2,
+        summary_finished_at="2026-11-09T16:00:00+00:00",
+    )
+    app, fake, calls = serve(tmp_path, failed)
+    reader, reader_key = create_key(
+        "reader", ["sources:read"], created_at=datetime(2026, 9, 8, tzinfo=UTC)
+    )
+
+    async def keys():
+        return ApiKeySet(keys=[reader])
+
+    fake.get_api_keys = keys
+    with TestClient(app) as client:
+        app.state.store = fake
+        app.state.api_key_auth._store = fake
+        response = client.get(
+            "/v1/recordings/" + "a" * 64, headers={"Authorization": f"Bearer {reader_key}"}
+        )
+    body = response.json()
+    assert response.status_code == 200 and body["summary_state"] == "failed"
+    assert body["summary_error_rule"] == "writeup-provider-incomplete"
+    assert body["summary_attempts"] == 2 and body["summary_finished_at"]
+    assert status()["id"] == body["id"] and "summary_state" not in status()
+
+
+def test_a_job_outcome_needs_notes_read_and_asks_for_the_id_given(tmp_path):
+    outcome = {"id": "b" * 64, "state": "superseded", "replaced_by": "c" * 64}
+    app, fake, calls = serve(tmp_path, outcome)
+    created = datetime(2026, 9, 8, tzinfo=UTC)
+    reader, reader_key = create_key("reader", ["notes:read"], created_at=created)
+    other, other_key = create_key("other", ["sources:read"], created_at=created)
+
+    async def keys():
+        return ApiKeySet(keys=[reader, other])
+
+    fake.get_api_keys = keys
+    with TestClient(app) as client:
+        app.state.store = fake
+        app.state.api_key_auth._store = fake
+        denied = client.get(
+            "/v1/jobs/" + "b" * 64, headers={"Authorization": f"Bearer {other_key}"}
+        )
+        seen = client.get("/v1/jobs/" + "b" * 64, headers={"Authorization": f"Bearer {reader_key}"})
+    assert denied.status_code == 403 and seen.json() == outcome
+    assert calls == [("job-outcome", {"id": "b" * 64})]

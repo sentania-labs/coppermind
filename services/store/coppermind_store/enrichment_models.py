@@ -71,12 +71,28 @@ class EnrichmentJob(ContextModel):
     created_at: str
     # When the model last gave an answer this job accepted. Empty until it has.
     succeeded_at: str = ""
+    # How the job ended, set once when it does: it produced suggestions (`succeeded`), ran out
+    # of attempts (`failed`), was replaced by a newer request or by a change to the note
+    # (`superseded`), or was not needed because the note was already reviewed (`skipped`).
+    # Empty while it is still queued or running.
+    outcome: Literal["", "succeeded", "failed", "superseded", "skipped"] = ""
+    finished_at: str = ""
     result: Suggestions | None = None
     evidence: dict[str, Any] = Field(default_factory=dict)
     usage: dict[str, Any] = Field(default_factory=dict)
     decisions: list[dict[str, Any]] = Field(default_factory=list)
     pending_approval: dict[str, Any] | None = None
     notice: str = ""
+
+    def settled(self) -> str:
+        """The outcome this job's state amounts to now; empty if it can still change."""
+        if self.state in {"suggested", "applying", "applied", "rejected"}:
+            return "succeeded"
+        if self.state == "stale":
+            return "skipped" if self.error_rule == "skipped" else "superseded"
+        if self.state == "failed" and self.attempt_limit and self.attempts >= self.attempt_limit:
+            return "failed"
+        return ""
 
     @property
     def decided(self) -> set[int]:

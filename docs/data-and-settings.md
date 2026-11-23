@@ -219,7 +219,8 @@ to that recording's speakers) and `voice-settings.json` (the two match threshold
 (`writeup_prompt`, up to 20,000 characters) on the independent `writeup` assignment in
 `/data/state/context/config.json`. Save and Reset to default apply to subsequent
 generations, not existing notes. The same page chooses the writer service, model,
-enabled state, full-input character limit, silence wait and response token budget.
+enabled state, input character limit ("Most the model reads at once"; longer transcripts are
+written up in parts), silence wait and response token budget.
 The initial assignment copies the configured legacy summary model and limits.
 Locked evidence rules and the structured boundary response contract are shown read-only.
 

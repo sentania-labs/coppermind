@@ -62,11 +62,10 @@ async def test_plain_text_transport_retains_finish_checks(provider, failure):
     "document",
     [
         "",
-        "# Wrong title\nText",
+        "Text with no heading at all and\n\n{not a document",
         "# Planning",
         "# Planning\n## Top line",
         "# Planning\n## Action items\n### Invented Person\nSend the document.",
-        "# Planning\n\n# Second title\nText",
         "# Planning\nUnknown voice 9 promised a demo.",
         "# Planning\nSpeaker 1 promised a demo.",
         "# Planning\n<script>alert(1)</script>",
@@ -196,3 +195,123 @@ def test_required_title_can_contain_an_em_dash_but_body_cannot():
     assert validate("# " + title + "\nA complete note.", title, []) == "A complete note.\n"
     with pytest.raises(ValueError):
         validate("# " + title + "\nA note \u2014 unfinished.", title, [])
+
+
+TITLE = "2026-11-20 Planning"
+VOICES = ["Alex", "Unknown voice 1 (recording-local)"]
+NO_BOUNDARIES = "\n<<<RECORDING_BOUNDARIES>>>\n[]\n<<<END_RECORDING_BOUNDARIES>>>"
+NOTE = f"# {TITLE}\n\n## Top line\nShip Friday.\n\n## Action items\n### Alex\nSend the plan.\n"
+
+
+def row(**changes):
+    return {
+        "start_seconds": 5,
+        "end_seconds": 8,
+        "kind": "unrelated_tail",
+        "evidence": "chat",
+        "confidence": "low",
+        **changes,
+    }
+
+
+def block(rows):
+    return f"\n<<<RECORDING_BOUNDARIES>>>\n{json.dumps(rows)}\n<<<END_RECORDING_BOUNDARIES>>>"
+
+
+# What a model that follows instructions loosely sends back. Each of these was refused on
+# main as "could not be used as a complete note"; each is a note once it is tidied.
+LOOSE_REPLIES = {
+    "code fence round the whole reply": "```markdown\n" + NOTE + NO_BOUNDARIES + "\n```",
+    "a sentence and a code fence round the note": "Sure, here is the note:\n\n```markdown\n"
+    + NOTE
+    + NO_BOUNDARIES
+    + "\n```\nHope that helps.",
+    "a code fence round the note but not the boundary block": "```md\n"
+    + NOTE
+    + "```\n"
+    + NO_BOUNDARIES,
+    "a sentence before the title": "Here is the meeting note:\n\n" + NOTE + NO_BOUNDARIES,
+    "em-dashes": NOTE.replace("Friday.", "Friday \u2014 if QA agrees.") + NO_BOUNDARIES,
+    "divider lines": NOTE.replace("\n## Action", "\n---\n\n## Action") + NO_BOUNDARIES,
+    "a less-than sign": NOTE.replace("Friday.", "Calls <10 minutes, a > b.") + NO_BOUNDARIES,
+    "another title line": NOTE.replace(TITLE, "Planning meeting") + NO_BOUNDARIES,
+    "a title line left out": NOTE.split("\n", 2)[2] + NO_BOUNDARIES,
+    "a second title": NOTE + "\n# Appendix\nMore.\n" + NO_BOUNDARIES,
+    "a voice without its qualifier": NOTE.replace("Send the plan.", "Unknown voice 1 sends it.")
+    + NO_BOUNDARIES,
+    "a bold owner heading": NOTE.replace("### Alex", "### **Alex**") + NO_BOUNDARIES,
+    "an owner heading with a note": NOTE.replace("### Alex", "### Alex (owner)") + NO_BOUNDARIES,
+    "no boundary block": NOTE,
+    "a fenced boundary block": NOTE + block([]).replace("[]", "```json\n[]\n```"),
+    "words after the boundary block": NOTE + NO_BOUNDARIES + "\n\nTell me if you want changes.",
+    "a boundary past the end": NOTE + block([row(end_seconds=99)]),
+    "boundary values in the wrong form": NOTE
+    + "\n## Recording boundaries\nA tail.\n"
+    + block([row(start_seconds="5", kind="Unrelated tail", confidence="Low")]),
+    "boundaries without their section": NOTE + block([row()]),
+    "a boundary that cannot be read": NOTE + block([row(), "nonsense"]),
+}
+
+
+@pytest.mark.parametrize("reply", LOOSE_REPLIES.values(), ids=LOOSE_REPLIES.keys())
+def test_loose_replies_are_tidied_into_a_note(reply):
+    from coppermind_store.recording_writeup import boundaries, tidy
+
+    document, repairs = tidy(reply, TITLE, VOICES, 10)
+    prose, ranges = boundaries(document, 10)
+    body = validate(prose, TITLE, VOICES)
+    assert "Ship" in body or "Top line" in body or "Executive" in body or body.strip()
+    assert "\u2014" not in body and "```" not in body and "\n---" not in body
+    assert all(r["end_seconds"] <= 10 for r in ranges)
+
+
+def test_tidy_keeps_what_the_note_says():
+    from coppermind_store.recording_writeup import boundaries, tidy
+
+    reply = LOOSE_REPLIES["boundary values in the wrong form"]
+    prose, ranges = boundaries(tidy(reply, TITLE, VOICES, 10)[0], 10)
+    assert ranges == [row(start_seconds=5.0)]
+    assert "Unknown voice 1 (recording-local) sends it." in validate(
+        boundaries(tidy(LOOSE_REPLIES["a voice without its qualifier"], TITLE, VOICES, 10)[0], 10)[
+            0
+        ],
+        TITLE,
+        VOICES,
+    )
+    written = tidy(LOOSE_REPLIES["boundaries without their section"], TITLE, VOICES, 10)[0]
+    assert "## Recording boundaries" in written and "unrelated tail" in written
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        NOTE.replace("### Alex", "### Zed") + NO_BOUNDARIES,
+        NOTE + "<script>x</script>" + NO_BOUNDARIES,
+        f"# {TITLE}\n---\nreviewed: true\n---\nText" + NO_BOUNDARIES,
+        NOTE.replace("Send the plan.", "Unknown voice 9 sends it.") + NO_BOUNDARIES,
+        NOTE.replace("Send the plan.", "Speaker 1 sends it.") + NO_BOUNDARIES,
+        f"# {TITLE}\n\n## Top line\n" + NO_BOUNDARIES,
+        "",
+    ],
+)
+def test_tidying_never_lets_an_unsafe_note_through(reply):
+    from coppermind_store.recording_writeup import boundaries, tidy
+
+    with pytest.raises(ValueError):
+        prose, _ = boundaries(tidy(reply, TITLE, VOICES, 10)[0], 10)
+        validate(prose, TITLE, VOICES)
+
+
+def test_split_transcript_pieces_fit_and_keep_every_word():
+    from coppermind_store.recording_writeup import size_of, split_transcript
+
+    segments = [
+        {"speaker": "Alex", "start": n * 10, "end": n * 10 + 9, "text": f"turn {n} " * 20}
+        for n in range(40)
+    ] + [{"speaker": "Alex", "start": 400, "end": 500, "text": "long " * 2000}]
+    pieces = split_transcript({"segments": segments}, 1500)
+    assert len(pieces) > 10
+    assert all(size_of(piece["text"]) <= 1500 for piece in pieces)
+    assert "".join(piece["text"] for piece in pieces).count("turn 7 ") == 20
+    assert "".join(piece["text"] for piece in pieces).count("long ") == 2000
+    assert [piece["first"] for piece in pieces] == sorted(piece["first"] for piece in pieces)

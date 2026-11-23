@@ -221,9 +221,25 @@ Intake does not split a recording into multiple notes or act on these boundaries
 Recordings and imports and `GET /v1/recordings/waiting` expose Transcribing, Writing up,
 Saving note and Note ready stages. A failed write-up retains audio and transcript with
 no note. Retry resumes the last durable stage; a saving retry uses the exact saved
-Markdown. Oversized, empty, invalid and cut-short outputs fail visibly rather than filing
-partial text. Long transcripts are not summarized in parts. Raise the limit only for a
-model with enough room for the full transcript, prompt, thinking and answer, then Retry.
+Markdown. Empty, invalid and cut-short outputs fail visibly rather than filing partial text.
+
+A transcript whose request would be over the input character limit ("Most the model reads
+at once" in Admin) is written up in parts. Consecutive pieces that each fit are summarized
+in their own requests, the part notes are condensed together if they do not yet fit (up to
+three rounds), and one final request writes the note from them. Finished parts are kept
+under `recording-writeup-parts/<recording id>.json` until the note is written, so a Retry
+does not write them again. Only when the part notes cannot be made to fit does the job
+fail, with `writeup-input-limit`. Set the limit to what the model can take in one request.
+
+A model that follows the format loosely is not failed for it. Before the note is checked,
+a code fence or a sentence round it, a different or missing title line, em-dashes, divider
+lines, a speaker label written without its `(recording-local)` qualifier, an action item
+owner written as `**Name**` or `Name (owner)`, and a missing, fenced, trailing-text or
+partly invalid boundary block are mended, and each mend is logged. Nothing is invented: a
+speaker who was not supplied, HTML, YAML, a code block or an empty note are still refused.
+A note that is refused is asked for once more, with what was wrong; if the second answer
+fails too, `error` on the recording says what was wrong in plain words, without repeating
+the model's text, and the start of the answer is kept on the job for support.
 
 Jobs accepted before this change keep `generation_mode: legacy`. Their three-section
 summary proposals still run through enrichment and complete through the existing review

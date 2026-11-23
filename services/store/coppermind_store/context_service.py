@@ -92,6 +92,10 @@ class JobRejected(ValueError):
         self.rule = rule
 
 
+class JobSkipped(ValueError):
+    """A job found that its work was not needed. The message is safe to show the owner."""
+
+
 def _label(value: str) -> str:
     # Field names come from the model; show only short plain names.
     return value if re.fullmatch(r"[\w .-]{1,60}", value) else "(unreadable name)"
@@ -250,7 +254,45 @@ class ContextService:
         ]
 
     def save_job(self, job: EnrichmentJob) -> None:
+        """Save a job. The first time it reaches an end, say how, in the record and the log."""
+        outcome = job.settled()
+        if not outcome and job.state in {"queued", "running"}:
+            job.outcome, job.finished_at = "", ""
+        elif outcome and not job.outcome:
+            job.outcome, job.finished_at = outcome, now()
+            log.info(
+                "enrichment job %s for note %s outcome=%s rule=%s attempts=%s",
+                job.id,
+                job.path,
+                outcome,
+                job.error_rule or "-",
+                job.attempts,
+            )
         self.write(f"jobs/{job.id}", job.model_dump(mode="json"))
+
+    async def job_outcome(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """What became of one job id: still waiting, running, or how it ended and why."""
+        identity = str(payload.get("id", ""))
+        if len(identity) != 64 or any(c not in "0123456789abcdef" for c in identity):
+            raise ValueError("invalid job identity")
+        if not self.read(f"jobs/{identity}", {}):
+            raise ValueError("no such job")
+        job = self.load_job(identity)
+        newest = self.newest_job_id(job.note_id)
+        return {
+            "id": job.id,
+            "note_id": job.note_id,
+            "kind": "dossier" if job.purpose == "dossier" else "suggestions",
+            "state": job.outcome or ("running" if job.state == "running" else "pending"),
+            "attempts": job.attempts,
+            "attempt_limit": job.attempt_limit,
+            "created_at": job.created_at,
+            "finished_at": job.finished_at,
+            "error": job.plain or job.error if job.outcome != "succeeded" else "",
+            "error_rule": job.error_rule if job.outcome != "succeeded" else "",
+            "retry_after": job.retry_after,
+            "replaced_by": newest if job.outcome == "superseded" and newest != job.id else "",
+        }
 
     def connection(self, identity: str) -> ModelConnection:
         connection = next((item for item in self.config().connections if item.id == identity), None)
@@ -1007,6 +1049,9 @@ class ContextService:
     async def recording_status(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.recordings.status(payload)
 
+    async def recording_list(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.recordings.listing_page(payload)
+
     async def recording_waiting(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Current reviewable recording notes and failed recording intakes."""
         return await self.recordings.waiting()
@@ -1196,6 +1241,8 @@ class ContextService:
     async def evidence(self, job: EnrichmentJob) -> dict[str, Any]:
         note = await self.store.get_note(job.note_id)
         schema = self.store.control.schema()
+        if note.frontmatter.get(schema.role("reviewed_key")) is True:
+            raise JobSkipped("stale: the note was already marked reviewed, so nothing was asked")
         if (
             note.content_hash != job.note_hash
             or note.path != job.path
@@ -1788,6 +1835,8 @@ class ContextService:
                     problems=exc.problems,
                     plain=exc.plain,
                 )
+            elif isinstance(exc, JobSkipped):
+                job.set_error(str(exc), "skipped")
             elif isinstance(exc, JobRejected):
                 job.set_error(str(exc), exc.rule, reply=job.reply)
             elif isinstance(exc, ProviderError):
@@ -1811,7 +1860,7 @@ class ContextService:
                     plain=str(exc) if exc.rule == "model-too-long" else "",
                 )
             elif stale:
-                job.set_error(str(exc))
+                job.set_error(str(exc), "superseded")
             elif isinstance(exc, ValidationError):
                 places = sorted(
                     {_label(".".join(str(p) for p in e["loc"][:3])) for e in exc.errors()}
@@ -2564,6 +2613,32 @@ class ContextService:
         latest_by_note: dict[str, EnrichmentJob] = {}
         for candidate in sorted(current_jobs.values(), key=lambda item: item.created_at):
             latest_by_note[candidate.note_id] = candidate
+        for known in current_jobs.values():
+            # Only the newest job for a note runs. An older one that never did says so, now,
+            # rather than waiting behind other notes' jobs with no outcome.
+            if (
+                latest_by_note[known.note_id].id != known.id
+                and known.state in {"queued", "running", "failed"}
+                and not known.settled()
+                and not known.outcome
+            ):
+                older = self.load_job(known.id)
+                if older.state == "failed":
+                    # Its failure stands as recorded; it will simply never be tried again.
+                    older.outcome, older.finished_at = "superseded", now()
+                    log.info(
+                        "enrichment job %s for note %s outcome=superseded rule=%s attempts=%s",
+                        older.id,
+                        older.path,
+                        older.error_rule or "-",
+                        older.attempts,
+                    )
+                else:
+                    older.state = "stale"
+                    older.set_error(
+                        "A newer request for this note replaced this one.", "superseded"
+                    )
+                self.save_job(older)
         for known in sorted(current_jobs.values(), key=lambda item: item.id):
             if latest_by_note[known.note_id].id != known.id and known.state != "applying":
                 continue

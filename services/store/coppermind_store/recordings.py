@@ -57,6 +57,7 @@ from coppermind_store.notes import _build_frontmatter
 
 if TYPE_CHECKING:
     from coppermind_store.context_service import ContextService
+    from coppermind_store.enrichment_models import EnrichmentJob
 
 log = logging.getLogger(__name__)
 
@@ -106,6 +107,8 @@ class TranscriptionJob(ContextModel):
     attempt_limit: int = Field(default=2, ge=1, le=3)
     error: str = ""
     error_rule: str = ""
+    # What was wrong with a refused write-up, in words that never repeat the model's.
+    error_detail: str = ""
     field_problems: list[dict[str, str]] = Field(default_factory=list)
     reply: str = Field(default="", max_length=REPLY_KEPT)
     retry_after: str = ""
@@ -125,6 +128,8 @@ class TranscriptionJob(ContextModel):
     created_at: str
     started_at: str = ""
     succeeded_at: str = ""
+    # When the latest attempt failed. Cleared when the intake is tried again or succeeds.
+    failed_at: str = ""
     usage: dict[str, Any] = Field(default_factory=dict)
     note_id: str = ""
     note_path: str = ""
@@ -146,13 +151,19 @@ class TranscriptionJob(ContextModel):
         )
 
     def set_error(
-        self, message: str = "", rule: str = "", *, reply: str = "", retry_after: str = ""
+        self,
+        message: str = "",
+        rule: str = "",
+        *,
+        reply: str = "",
+        retry_after: str = "",
+        detail: str = "",
     ) -> None:
         if rule.startswith("writeup-"):
             from coppermind.recording_writeup import failure_message
 
-            message = failure_message(rule)
-        self.error, self.error_rule = message, rule
+            message = failure_message(rule, detail)
+        self.error, self.error_rule, self.error_detail = message, rule, detail
         self.reply, self.retry_after = reply[:REPLY_KEPT], retry_after
 
     @property
@@ -160,7 +171,7 @@ class TranscriptionJob(ContextModel):
         from coppermind.recording_writeup import failure_message
 
         return (
-            failure_message(self.error_rule)
+            failure_message(self.error_rule, self.error_detail)
             if self.error_rule.startswith("writeup-")
             else self.error
         )
@@ -182,6 +193,9 @@ class TranscriptionJob(ContextModel):
             note_id=self.note_id,
             note_path=self.note_path,
             source_id=self.source_id,
+            provider=self.provider,
+            external_source_id=self.external_source_id,
+            title=self.title,
         )
 
 
@@ -373,6 +387,11 @@ class Recordings:
         meetings, failed, processing = [], [], []
         seen = set()
         jobs = await asyncio.to_thread(self.jobs)
+        latest = (
+            self.latest_enrichment()
+            if any(job.generation_mode != "markdown-v1" and job.note_id for job in jobs)
+            else {}
+        )
         for job in sorted(jobs, key=lambda item: item.created_at, reverse=True):
             if job.state in {"queued", "running"}:
                 processing.append(self.progress_line(job, ready=ready, paused=paused))
@@ -435,7 +454,7 @@ class Recordings:
             "processing": processing,
             "recordings": [
                 {
-                    **job.status().model_dump(mode="json"),
+                    **self.report(job, latest),
                     "title": job.title,
                     "can_retry": job.state == "failed" and ready,
                 }
@@ -571,20 +590,107 @@ class Recordings:
                 created_at=_now(),
             )
             self.save(job)
-        return job.status().model_dump(mode="json")
+        return self.report(job)
 
-    @staticmethod
-    def replay(existing: TranscriptionJob, request: RecordingRequest) -> dict[str, Any]:
+    def replay(self, existing: TranscriptionJob, request: RecordingRequest) -> dict[str, Any]:
         if existing.artifact_id != request.artifact_id:
             raise ValueError(
                 "external_source_id: this provider and id already belong to a different "
                 "recording. Use a new external_source_id for new material."
             )
-        return existing.status().model_dump(mode="json")
+        return self.report(existing)
+
+    def summary_of(self, job: TranscriptionJob, latest: dict[str, EnrichmentJob]) -> dict[str, Any]:
+        """Where the summary stands, apart from the transcript. A recording written up in one
+        step has its summary in the note it files; an older one has it written afterwards by a
+        suggestions job, the newest of which `latest` holds for the note."""
+        state, error, rule, attempts, finished = "pending", "", "", 0, ""
+        if job.generation_mode == "markdown-v1":
+            written = bool(self.context.read("recording-writeups/" + job.id, {}).get("body"))
+            if job.state == "succeeded" or written:
+                state, finished, attempts = "succeeded", job.succeeded_at, job.attempts
+            elif job.error_rule.startswith("writeup-") and job.state == "failed":
+                state, rule, attempts = "failed", job.error_rule, job.attempts
+                error, finished = job.display_error, job.failed_at
+            elif job.state == "running" and job.stage in {"Writing up", "Saving note"}:
+                state, attempts = "running", job.attempts
+        elif job.state == "succeeded" and job.note_id:
+            enrichment = latest.get(job.note_id)
+            if enrichment is None:
+                enabled = self.context.config().assignments["enrichment"].enabled
+                state = "pending" if enabled else "skipped"
+            else:
+                attempts, finished = enrichment.attempts, enrichment.finished_at
+                if enrichment.outcome == "succeeded":
+                    written = enrichment.result and enrichment.result.meeting_summary
+                    state = "succeeded" if written else "skipped"
+                elif enrichment.outcome == "failed":
+                    state, rule = "failed", enrichment.error_rule
+                    error = enrichment.plain or enrichment.error
+                elif enrichment.outcome == "skipped":
+                    state = "skipped"
+                elif enrichment.state == "running":
+                    state = "running"
+        return {
+            "summary_state": state,
+            "summary_error": error,
+            "summary_error_rule": rule,
+            "summary_attempts": attempts,
+            "summary_finished_at": finished,
+        }
+
+    def latest_enrichment(self) -> dict[str, EnrichmentJob]:
+        newest: dict[str, EnrichmentJob] = {}
+        for item in sorted(self.context.jobs(), key=lambda item: item.created_at):
+            if item.purpose != "dossier":
+                newest[item.note_id] = item
+        return newest
+
+    def report(
+        self, job: TranscriptionJob, latest: dict[str, EnrichmentJob] | None = None
+    ) -> dict[str, Any]:
+        """One recording's status with where its summary stands."""
+        if latest is None and job.generation_mode != "markdown-v1" and job.note_id:
+            latest = self.latest_enrichment()
+        return {**job.status().model_dump(mode="json"), **self.summary_of(job, latest or {})}
+
+    async def listing_page(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Recordings, newest first, optionally only those in one `state`, from one `provider`
+        or with one `external_source_id`, a page at a time."""
+        unknown = set(payload) - {"state", "provider", "external_source_id", "limit", "cursor"}
+        if unknown:
+            raise ValueError("unknown filter: " + ", ".join(sorted(unknown)))
+        state = payload.get("state")
+        if state not in {None, "queued", "running", "succeeded", "failed"}:
+            raise ValueError("state: use queued, running, succeeded or failed")
+        limit = payload.get("limit", 50)
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("limit: use a number from 1 to 200")
+        jobs = [
+            job
+            for job in await asyncio.to_thread(self.jobs)
+            if (state is None or job.state == state)
+            and (payload.get("provider") in {None, job.provider})
+            and (payload.get("external_source_id") in {None, job.external_source_id})
+        ]
+        jobs.sort(key=lambda job: (job.created_at, job.id), reverse=True)
+        cursor = payload.get("cursor")
+        if cursor:
+            if not isinstance(cursor, str) or "|" not in cursor:
+                raise ValueError("cursor: not one this service gave")
+            after = tuple(cursor.split("|", 1))
+            jobs = [job for job in jobs if (job.created_at, job.id) < after]
+        page = jobs[:limit]
+        latest = self.latest_enrichment() if any(job.note_id for job in page) else {}
+        more = len(jobs) > limit
+        return {
+            "items": [self.report(job, latest) for job in page],
+            "next_cursor": f"{page[-1].created_at}|{page[-1].id}" if more else None,
+        }
 
     async def status(self, payload: dict[str, Any]) -> dict[str, Any]:
         job = self.load(str(payload.get("id", "")))
-        result = job.status().model_dump(mode="json")
+        result = self.report(job)
         parent = self.parent_note_id(job)
         if parent != job.note_id:
             result["note_id"] = parent
@@ -603,7 +709,7 @@ class Recordings:
             if job.state != "failed":
                 raise ValueError("only a failed recording can be retried")
             self.ready()
-            job.state, job.attempts, job.busy_since = "queued", 0, ""
+            job.state, job.attempts, job.busy_since, job.failed_at = "queued", 0, "", ""
             job.remote_job_id, job.remote_job_started, job.remote_job_resubmits = "", 0, 0
             job.set_error()
             job.dismissed = False
@@ -974,7 +1080,13 @@ class Recordings:
                     else ""
                 )
                 job.state = "failed"
-                job.set_error(str(exc), exc.rule, reply=exc.reply, retry_after=wait)
+                job.set_error(
+                    str(exc),
+                    exc.rule,
+                    reply=exc.reply,
+                    retry_after=wait,
+                    detail=getattr(exc, "detail", ""),
+                )
         except ArtifactMissing:
             job.state = "failed"
             job.set_error(
@@ -1026,9 +1138,13 @@ class Recordings:
         if not busy:
             job.busy_since = ""
         if job.state == "failed":
+            job.failed_at = _now()
             log.warning(
                 "recording job %s failed: rule=%s attempts=%s", job.id, job.error_rule, job.attempts
             )
+        elif job.state == "succeeded":
+            job.failed_at = ""
+            log.info("recording job %s outcome=succeeded attempts=%s", job.id, job.attempts)
         self.save(job)
 
     def transcript_path(self, job: TranscriptionJob) -> str:
