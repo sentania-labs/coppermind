@@ -609,7 +609,11 @@ class Recordings:
             written = bool(self.context.read("recording-writeups/" + job.id, {}).get("body"))
             if job.state == "succeeded" or written:
                 state, finished, attempts = "succeeded", job.succeeded_at, job.attempts
-            elif job.error_rule.startswith("writeup-") and job.state == "failed":
+            elif (
+                job.error_rule.startswith("writeup-")
+                and job.state == "failed"
+                and (job.attempts >= job.attempt_limit or repeats_only(job.error_rule))
+            ):
                 state, rule, attempts = "failed", job.error_rule, job.attempts
                 error, finished = job.display_error, job.failed_at
             elif job.state == "running" and job.stage in {"Writing up", "Saving note"}:

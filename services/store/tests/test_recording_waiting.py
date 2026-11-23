@@ -463,3 +463,26 @@ def test_a_summary_job_that_ended_before_outcomes_were_recorded_still_reports_ho
     found = enrichment(**changes)
     assert found.outcome == ""
     assert recordings.summary_of(mine, {"n1": found})["summary_state"] == state
+
+
+@pytest.mark.parametrize(
+    "rule,attempts,state",
+    [
+        ("writeup-transient", 1, "pending"),
+        ("writeup-transient", 2, "failed"),
+        ("writeup-answer-shape", 1, "failed"),
+    ],
+)
+def test_a_write_up_the_app_will_still_retry_is_not_reported_as_failed(rule, attempts, state):
+    recordings = Recordings(SimpleNamespace(read=lambda *_: {}, config=bare_config))
+    mine = job(
+        1,
+        generation_mode="markdown-v1",
+        state="failed",
+        error_rule=rule,
+        error="The writing service did not answer.",
+        attempts=attempts,
+        attempt_limit=2,
+        retry_after="2026-11-23T10:00:00+00:00" if state == "pending" else "",
+    )
+    assert recordings.summary_of(mine, {})["summary_state"] == state
