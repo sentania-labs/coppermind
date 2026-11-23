@@ -199,6 +199,10 @@ attendee proposals without a supporting quote in the note or transcript.
 New recording intake writes a complete Markdown document before calling ordinary ingest.
 It resolves stable speaker labels, uses a confidently matched calendar title (otherwise
 the supplied title and local date), and saves the accepted document before filing it.
+Without a match, a leading date the supplied title already carries (`YYYY-MM-DD`, `MM-DD`,
+`MM/DD`, `M-D`) and a bare `Meeting:` prefix are dropped, so the date is not doubled, and
+the note ends with one line giving the reason no event was chosen (no capture time, lookup
+failed, nothing overlapped the start, or several did and none stood out).
 The note arrives in Review with `reviewed: false`. Suggestions can be off; frontmatter
 review runs separately and never accepts or appends the generated body.
 
