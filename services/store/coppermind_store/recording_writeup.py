@@ -501,7 +501,12 @@ async def condense(
                 groups.append([])
             groups[-1].append(note)
         if len(groups) == len(notes):
-            raise WriteupError("writeup-input-limit")
+            # No two notes fit together. Condense each one on its own, and fail only if
+            # they still cannot fit after the rounds are used.
+            notes = [
+                {**note, "notes": await written({**base, "part_notes": [note]})} for note in notes
+            ]
+            continue
         notes = [
             {
                 "part": index,

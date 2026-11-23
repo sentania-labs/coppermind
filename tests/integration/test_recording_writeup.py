@@ -610,3 +610,27 @@ async def test_writeup_editor_persists_and_resets_only_its_prompt(store):
         await features.writeup_save({"reset": True})
         assert (await features.writeup_settings())["prompt"] == DEFAULT_PROMPT
         assert context.config().assignments["enrichment"].model_dump() == before
+
+
+async def test_part_notes_that_fit_alone_but_not_together_are_condensed_first(store):
+    async with Service() as service:
+        context, job = await transcribed(store, service, turns(30, 40), limit=3000)
+        calls = []
+
+        async def write_text(connection, key, limits, system, evidence, **kwargs):
+            calls.append(evidence)
+            if "transcript" in evidence:
+                return "- " + "detail " * 200, {}  # about 1,400 characters: two do not fit
+            if "part_notes" in evidence and "resolved_title" not in evidence:
+                return "- short", {}  # a part note condensed
+            return (
+                "# " + evidence["resolved_title"] + "\n\n## Top line\nDone.\n" + BOUNDARY_BLOCK
+            ), {}
+
+        context.provider.write_text = write_text
+        await context.recordings.tick()
+        job = context.recordings.load(job.id)
+        assert job.state == "succeeded", job.error
+        condensed = [c for c in calls if "part_notes" in c and "resolved_title" not in c]
+        assert condensed and all(len(c["part_notes"]) == 1 for c in condensed[:1])
+        assert any("resolved_title" in c and "part_notes" in c for c in calls)

@@ -689,18 +689,24 @@ class Recordings:
         latest = self.latest_enrichment() if any(job.note_id for job in page) else {}
         more = len(jobs) > limit
         return {
-            "items": [self.report(job, latest) for job in page],
+            "items": [await self.resolved(job, latest) for job in page],
             "next_cursor": f"{page[-1].created_at}|{page[-1].id}" if more else None,
         }
 
-    async def status(self, payload: dict[str, Any]) -> dict[str, Any]:
-        job = self.load(str(payload.get("id", "")))
-        result = self.report(job)
+    async def resolved(
+        self, job: TranscriptionJob, latest: dict[str, EnrichmentJob] | None = None
+    ) -> dict[str, Any]:
+        """The status, with the note a merged recording now lives in rather than the retired
+        generated one."""
+        result = self.report(job, latest)
         parent = self.parent_note_id(job)
         if parent != job.note_id:
             result["note_id"] = parent
             result["note_path"] = (await self.note_info(parent))["note_path"]
         return result
+
+    async def status(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.resolved(self.load(str(payload.get("id", ""))))
 
     async def retry(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Queue a failed intake again with fresh attempts; a saved transcript is reused."""

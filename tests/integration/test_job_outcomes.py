@@ -155,3 +155,33 @@ async def test_recordings_can_be_found_again_and_say_how_their_summary_stands(st
             assert polled["state"] == "succeeded" and polled["summary_state"] == "succeeded"
             assert polled["summary_finished_at"] and polled["summary_attempts"] == 1
             assert polled["note_id"] and polled["title"] == "Standup"
+
+
+async def test_a_merged_recording_lists_the_note_it_now_lives_in(store):
+    from services.store.tests.test_transcription_call import Service
+    from tests.integration.test_recording_writeup import BOUNDARY_BLOCK
+    from tests.integration.test_recordings import request, setup_transcription, store_audio
+
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+
+        async def write_text(connection, key, limits, system, evidence, **kwargs):
+            return (
+                "# " + evidence["resolved_title"] + "\n\n## Top line\nDone.\n" + BOUNDARY_BLOCK
+            ), {}
+
+        context.provider.write_text = write_text
+        accepted = await context.accept_recording(request(await store_audio(store)))
+        await context.recordings.tick()
+        job = context.recordings.load(accepted["id"])
+        target = await a_note(store, "Existing meeting")
+        context.write(
+            "recording-merges/" + job.source_id, {"state": "complete", "target_id": target.id}
+        )
+        single = await context.recording_status({"id": job.id})
+        assert single["note_id"] == target.id != job.note_id
+        async with await api_for(store) as api:
+            listed = (await api.get("/v1/recordings")).json()["items"][0]
+            polled = (await api.get("/v1/recordings/" + job.id)).json()
+        assert listed["note_id"] == polled["note_id"] == target.id
+        assert listed["note_path"] == polled["note_path"] == single["note_path"] != ""
