@@ -1054,12 +1054,14 @@ class Recordings:
         """Use a linked event, or an unambiguous same-day title, as an upper bound."""
         from types import SimpleNamespace
 
+        from coppermind_store.recording_writeup import local_instant
+
         fields = dict(job.frontmatter)
         date_key = self.context.store.control.schema().role("date_key")
-        if not parse_note_time(fields.get(date_key)).valid and job.captured_at:
+        zone = ZoneInfo(self.context.store.control.settings().general.timezone)
+        captured = local_instant(job.captured_at, zone)
+        if not parse_note_time(fields.get(date_key)).valid and captured:
             # The note date is local time without an offset; the offset form finds nothing.
-            zone = ZoneInfo(self.context.store.control.settings().general.timezone)
-            captured = datetime.fromisoformat(job.captured_at).astimezone(zone)
             fields[date_key] = captured.replace(tzinfo=None, microsecond=0).isoformat()
         events = await self.context.calendar_candidates(SimpleNamespace(frontmatter=fields))
         event_field = self.context.config().assignments["enrichment"].event_field

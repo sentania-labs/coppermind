@@ -29,7 +29,14 @@ def timed(uid, title, day, begin, finish, extra=""):
 
 
 CALENDAR = [
-    timed("customer", "Customer sync", "20261119", "0800", "0900"),
+    timed(
+        "customer",
+        "Customer sync",
+        "20261119",
+        "0800",
+        "0900",
+        "ATTENDEE;CN=Casey;PARTSTAT=ACCEPTED:mailto:casey@example.com",
+    ),
     vevent(
         "weekly",
         "Weekly customer meeting",
@@ -43,7 +50,14 @@ CALENDAR = [
     .replace(f"DTSTART;{CHICAGO}:20261119T200000", "DTSTART:20261120T020000Z")
     .replace(f"DTEND;{CHICAGO}:20261119T210000", "DTEND:20261120T030000Z"),
     # Two stand-ins for a busy calendar: overlapping holds the transcript cannot tell apart.
-    timed("hold-a", "Hold A", "20261124", "0900", "1000"),
+    timed(
+        "hold-a",
+        "Hold A",
+        "20261124",
+        "0900",
+        "1000",
+        "ATTENDEE;CN=Casey;PARTSTAT=ACCEPTED:mailto:casey@example.com",
+    ),
     timed("hold-b", "Hold B", "20261124", "0900", "1000"),
 ]
 # Years of unrelated history, like a real export.
@@ -183,3 +197,40 @@ async def test_unmatched_title_is_not_doubled(context):
     assert resolved == (
         "2026-11-19 Customer Growth, AI Governance, and Infrastructure Right-Sizing"
     )
+
+
+async def test_no_capture_time_is_not_replaced_by_the_upload_time(context):
+    unrelated = job("", frontmatter={})
+    unrelated.created_at = "2026-11-19T08:30:00-06:00"  # uploaded while "Customer sync" runs
+    context.calendar_candidates = lambda note, d=False: ContextService.calendar_candidates(
+        context, note, d
+    )
+    resolved, evidence = await resolve_title(context, unrelated, "A greeting.")
+    assert not evidence["matched"]
+    assert "no capture time" in evidence["reason"]
+    assert resolved == "2026-11-19 Recorder title"
+
+
+async def test_speaker_hint_reads_a_naive_capture_time_in_the_lab_zone(context, monkeypatch):
+    import time
+
+    from coppermind_store.recordings import Recordings
+
+    asked = []
+
+    async def candidates(note, descriptions=False):
+        asked.append(note.frontmatter["date"])
+        return await ContextService.calendar_candidates(context, note, descriptions)
+
+    context.calendar_candidates = candidates
+    monkeypatch.setenv("TZ", "UTC")
+    time.tzset()
+    try:
+        hint = await Recordings.calendar_speaker_hint(
+            SimpleNamespace(context=context), job("2026-11-24T02:00:00", title="Hold A")
+        )
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+    assert asked == ["2026-11-24T02:00:00"]
+    assert hint == 1

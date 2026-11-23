@@ -112,8 +112,19 @@ def clean_title(title: str, day: date) -> str:
     return title.strip() or "Recording"
 
 
-def unresolved_reason(found: int, error: Exception | None) -> str:
+def local_instant(value: Any, zone: ZoneInfo) -> datetime | None:
+    """A timestamp in the lab's zone; one without an offset is already lab-local."""
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=zone) if parsed.tzinfo is None else parsed.astimezone(zone)
+
+
+def unresolved_reason(captured: bool, found: int, error: Exception | None) -> str:
     """Plain words for why no calendar event was chosen."""
+    if not captured:
+        return "the recording has no capture time to look up"
     if error is not None:
         return f"the calendar lookup failed ({type(error).__name__}); review can try again"
     if found == 0:
@@ -125,12 +136,11 @@ async def resolve_title(context: Any, job: Any, transcript: str) -> tuple[str, d
     zone = ZoneInfo(context.store.control.settings().general.timezone)
     fields = dict(job.frontmatter)
     date_key = context.store.control.schema().role("date_key")
-    supplied = job.captured_at or fields.get(date_key) or job.created_at
-    try:
-        stamp = datetime.fromisoformat(str(supplied))
-    except ValueError:
-        stamp = datetime.fromisoformat(job.created_at)
-    stamp = stamp.replace(tzinfo=zone) if stamp.tzinfo is None else stamp.astimezone(zone)
+    captured = local_instant(job.captured_at, zone)
+    stamp = (
+        captured or local_instant(fields.get(date_key), zone) or local_instant(job.created_at, zone)
+    )
+    assert stamp is not None
     # Notes keep their date as local time without an offset; an offset-qualified value is
     # not a usable note date, so every calendar lookup would find nothing.
     if not parse_note_time(fields.get(date_key)).valid:
@@ -139,7 +149,7 @@ async def resolve_title(context: Any, job: Any, transcript: str) -> tuple[str, d
     found, error = 0, None
     try:
         events = await context.calendar_candidates(SimpleNamespace(frontmatter=fields))
-        events = meeting_match.overlapping(events, stamp.isoformat())
+        events = meeting_match.overlapping(events, captured.isoformat()) if captured else []
         found = len(events)
         linked_field = context.config().assignments["enrichment"].event_field
         linked = fields.get(linked_field) if linked_field else None
@@ -159,7 +169,7 @@ async def resolve_title(context: Any, job: Any, transcript: str) -> tuple[str, d
             "recording_calendar_lookup_failed", recording=job.id, error=type(exc).__name__
         )
     if not evidence["matched"]:
-        reason = unresolved_reason(found, error)
+        reason = unresolved_reason(captured is not None, found, error)
         evidence["reason"] = reason
         get_logger("coppermind-store").info(
             "recording_calendar_unresolved", recording=job.id, reason=reason
