@@ -11,6 +11,7 @@ import logging
 import re
 import time
 from collections import Counter
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
@@ -46,7 +47,7 @@ from coppermind.store_protocol import (
     StoreUnavailable,
     VersionConflict,
 )
-from coppermind_store import meeting_match, meeting_summary, speaker_names
+from coppermind_store import answer_shape, meeting_match, meeting_summary, speaker_names
 from coppermind_store.calendar_archive import CalendarArchive
 from coppermind_store.calendar_import import CALENDAR_ID
 from coppermind_store.calendar_worker import occurrences
@@ -1525,6 +1526,61 @@ class ContextService:
                         "Check the field's type under Fields and tags, then retry.",
                     )
 
+    async def ask(
+        self,
+        job: EnrichmentJob,
+        connection: Any,
+        assignment: Any,
+        system: str,
+        evidence: dict[str, Any],
+        read: Callable[[dict[str, Any]], tuple[Any, list[str]]],
+        schema: dict[str, Any] | None,
+        stage: str = "",
+    ) -> tuple[Any, Any, dict[str, Any]]:
+        """Ask the model, and read its answer. An answer of the wrong shape earns one more
+        try, told what was wrong, if the job has an attempt left; then it is refused with
+        the parts that were wrong named. Never more than two asks."""
+        correction = None
+        total: dict[str, Any] = {}
+        for turn in (1, 2):
+            raw, repairs, problems = "", [], []
+            try:
+                output, usage = await self.provider.suggest(
+                    connection,
+                    self.key(connection.id),
+                    assignment,
+                    system,
+                    evidence,
+                    schema,
+                    correction,
+                )
+                for name, value in usage.items():
+                    if type(value) in (int, float) and type(total.get(name)) in (int, float):
+                        total[name] += value
+                    elif name not in total:
+                        total[name] = value
+                raw = getattr(output, "raw", "") or json.dumps(output, ensure_ascii=False)
+                job.reply = raw[:4000]
+                repairs = list(getattr(output, "repairs", []))
+                try:
+                    value, tidied = read(output)
+                    job.repairs = [*job.repairs, *repairs, *tidied][:60]
+                    return value, output, total
+                except ValidationError as exc:
+                    problems = answer_shape.problems_of(exc, stage)
+            except ProviderError as exc:
+                if exc.rule != "provider-not-json":
+                    raise
+                raw = exc.reply
+                job.reply = raw[:4000]
+                problems = answer_shape.not_json(raw)
+            if turn == 2 or job.attempts >= (job.attempt_limit or 1):
+                raise answer_shape.AnswerShapeError(problems, raw, repairs)
+            job.attempts += 1
+            self.save_job(job)
+            correction = (raw, answer_shape.feedback(problems))
+        raise AssertionError("unreachable")  # pragma: no cover
+
     async def run_job(self, job: EnrichmentJob) -> None:
         if self.config().lifecycle_enabled:
             await self.lifecycle.check_calendars()
@@ -1544,6 +1600,7 @@ class ContextService:
             job.state = "running"
             job.attempts += 1
             job.reply, job.retry_after, job.summary_limits = "", "", ""
+            job.problems, job.repairs = [], []
             self.save_job(job)
             if job.purpose == "dossier":
                 await extract(self, job)
@@ -1570,15 +1627,15 @@ class ContextService:
                 if any(r.note_id == job.note_id and r.source_id for r in self.recordings.jobs())
                 else None
             )
-            output, usage = await self.provider.suggest(
+            result, _, usage = await self.ask(
+                job,
                 connection,
-                self.key(connection.id),
                 assignment,
                 PROMPT,
                 evidence,
+                answer_shape.read_suggestions,
+                answer_shape.SUGGESTIONS_SCHEMA,
             )
-            job.reply = json.dumps(output, ensure_ascii=False)[:4000]
-            result = Suggestions.model_validate(output)
             if len(evidence["events"]) > 1 and any(
                 r.note_id == job.note_id and r.source_id for r in self.recordings.jobs()
             ):
@@ -1723,13 +1780,21 @@ class ContextService:
                     exc.size,
                     exc.limit,
                 )
+            elif isinstance(exc, answer_shape.AnswerShapeError):
+                job.set_error(
+                    f"{exc}. {RETRY}",
+                    exc.rule,
+                    reply=exc.raw,
+                    problems=exc.problems,
+                    plain=exc.plain,
+                )
             elif isinstance(exc, JobRejected):
                 job.set_error(str(exc), exc.rule, reply=job.reply)
             elif isinstance(exc, ProviderError):
                 if exc.rule == "provider-incomplete":
                     job.usage = exc.usage
-                    if exc.cut_short:
-                        job.attempt_limit = job.attempts
+                if exc.cut_short:
+                    job.attempt_limit = job.attempts
                 wait = (
                     ""
                     if not exc.waiting or job.attempts >= job.attempt_limit
@@ -1738,7 +1803,13 @@ class ContextService:
                         + timedelta(seconds=min(TIMEOUT_BACKOFF_S * 2 ** (job.attempts - 1), 1800))
                     ).isoformat()
                 )
-                job.set_error(str(exc), exc.rule, reply=exc.reply, retry_after=wait)
+                job.set_error(
+                    str(exc),
+                    exc.rule,
+                    reply=exc.reply,
+                    retry_after=wait,
+                    plain=str(exc) if exc.rule == "model-too-long" else "",
+                )
             elif stale:
                 job.set_error(str(exc))
             elif isinstance(exc, ValidationError):

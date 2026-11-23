@@ -19,6 +19,7 @@ from coppermind.context_config import (
     FeatureAssignment,
     ModelConnection,
 )
+from coppermind_store.answer_shape import ModelAnswer, read_json
 
 # The longest the app waits for one model call, however steadily the reply arrives. The
 # per-job wait limit is a silence limit; this stops a trickle from holding the single
@@ -31,6 +32,15 @@ MAX_STREAM_BYTES = 16 * 1024 * 1024
 MAX_EMBEDDING_DIMENSIONS = 8192
 # How much of a model's reply is kept on a failed job so Inspect can show why it failed.
 REPLY_KEPT_CHARS = 4000
+OVER_LIMIT_MARKERS = (
+    "context length",
+    "context_length",
+    "maximum context",
+    "context window",
+    "too many tokens",
+    "token limit",
+    "too long",
+)
 # How long a connection to the transcription service may take to open. The wait limit is for
 # the service's answer, and can be hours.
 TRANSCRIBE_CONNECT_SECONDS = 60
@@ -110,6 +120,20 @@ class ProviderError(ValueError):
         # Seconds the service asked to wait before it is asked again, when it said.
         self.retry_after = retry_after
         self.usage = usage or {}
+        # True when the service's refusal said the text was too long. Only this fact is kept,
+        # never the service's wording.
+        self.over_limit = False
+
+
+def _too_long() -> ProviderError:
+    """The AI service refused the request because it held more text than the model takes."""
+    return ProviderError(
+        "The AI service refused this as too long for the model, so nothing was written. Use "
+        "a model that takes more text, or shorten the note.",
+        "model-too-long",
+        # The same text would be refused again, so the job is not tried again.
+        cut_short=True,
+    )
 
 
 class InputLimitError(ProviderError):
@@ -273,6 +297,9 @@ class ModelProvider:
     def __init__(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.transport = transport
         self._no_reasoning_effort: set[tuple[str, str, str]] = set()
+        # Per service and model, the least a service will take as its reply format: 0 asks for
+        # a JSON schema, 1 for any JSON object, 2 for nothing but the prompt.
+        self._format_floor: dict[tuple[str, str, str], int] = {}
         # Told the outcome of every call, so health is something observed and never assumed.
         self.observer: Observer | None = None
 
@@ -395,6 +422,14 @@ class ModelProvider:
                             response.status_code,
                             upload=body is not None or noun == "transcription service",
                         )
+                        if response.status_code in {400, 422} and not refusal.rule:
+                            said = bytearray()
+                            async for part in response.aiter_bytes():
+                                said.extend(part)
+                                if len(said) > 8192:
+                                    break
+                            text = bytes(said[:8192]).decode("utf-8", "ignore").lower()
+                            refusal.over_limit = any(m in text for m in OVER_LIMIT_MARKERS)
                         refusal.retry_after = retry_after_seconds(
                             response.headers.get("retry-after")
                         )
@@ -585,21 +620,28 @@ class ModelProvider:
         assignment: FeatureAssignment,
         system: str,
         evidence: dict[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        schema: dict[str, Any] | None = None,
+        correction: tuple[str, str] | None = None,
+    ) -> tuple[ModelAnswer, dict[str, Any]]:
+        """Ask once for a JSON answer. `schema` is the JSON schema of the answer, sent when
+        the service takes one. `correction` is the earlier answer and what was wrong with
+        it, for the one second try after an answer that could not be used."""
         output, usage = await self.write_text(
-            connection, key, assignment, system, evidence, json_output=True
+            connection,
+            key,
+            assignment,
+            system,
+            evidence,
+            json_output=True,
+            schema=schema,
+            correction=correction,
         )
-        try:
-            parsed = json.loads(output)
-        except ValueError as exc:
-            raise ProviderError(
-                "The model's answer was not valid JSON.", "provider-not-json", reply=output
-            ) from exc
-        if not isinstance(parsed, dict):
+        parsed, repairs = read_json(output)
+        if parsed is None:
             raise ProviderError(
                 "The model's answer was not a JSON object.", "provider-not-json", reply=output
             )
-        return parsed, usage
+        return ModelAnswer(parsed, output, repairs), usage
 
     async def write_text(
         self,
@@ -610,10 +652,18 @@ class ModelProvider:
         evidence: dict[str, Any],
         *,
         json_output: bool = False,
+        schema: dict[str, Any] | None = None,
+        correction: tuple[str, str] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         content = json.dumps(evidence, ensure_ascii=False)
         if len(content) > assignment.max_input_chars:
             raise InputLimitError(len(content), assignment.max_input_chars)
+        turns: list[dict[str, str]] = [{"role": "user", "content": content}]
+        if correction:
+            turns += [
+                {"role": "assistant", "content": correction[0][:REPLY_KEPT_CHARS] or "{}"},
+                {"role": "user", "content": correction[1]},
+            ]
         # The reply is streamed so that a slow but steady model is not cut off: the wait
         # limit counts silence, not total time.
         if connection.provider == "anthropic":
@@ -621,12 +671,22 @@ class ModelProvider:
                 "model": assignment.model,
                 "max_tokens": assignment.max_output_tokens,
                 "system": system,
-                "messages": [{"role": "user", "content": content}],
+                "messages": turns,
                 "stream": True,
             }
-            result, stats = await self._exchange(
-                connection, key, "POST", "/messages", timeout=assignment.timeout_s, payload=payload
-            )
+            try:
+                result, stats = await self._exchange(
+                    connection,
+                    key,
+                    "POST",
+                    "/messages",
+                    timeout=assignment.timeout_s,
+                    payload=payload,
+                )
+            except ProviderError as exc:
+                if exc.over_limit:
+                    raise _too_long() from exc
+                raise
             stopped = result.get("stop_reason")
             finished = stopped == "end_turn"
             output = "".join(
@@ -638,45 +698,59 @@ class ModelProvider:
             limit_name = (
                 "max_completion_tokens" if connection.provider == "openai" else "max_tokens"
             )
-            payload = {
-                "model": assignment.model,
-                limit_name: assignment.max_output_tokens,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": content},
-                ],
-                **({"response_format": {"type": "json_object"}} if json_output else {}),
-                "stream": True,
-                "stream_options": {"include_usage": True},
-            }
             capability = (connection.id, connection.endpoint_url, assignment.model)
-            if capability not in self._no_reasoning_effort:
-                payload["reasoning_effort"] = "low"
-            try:
-                result, stats = await self._exchange(
-                    connection,
-                    key,
-                    "POST",
-                    "/chat/completions",
-                    timeout=assignment.timeout_s,
-                    payload=payload,
-                )
-            except ProviderError as exc:
-                if "reasoning_effort" not in payload or str(exc) not in {
-                    "provider returned HTTP 400",
-                    "provider returned HTTP 422",
-                }:
-                    raise
-                del payload["reasoning_effort"]
-                result, stats = await self._exchange(
-                    connection,
-                    key,
-                    "POST",
-                    "/chat/completions",
-                    timeout=assignment.timeout_s,
-                    payload=payload,
-                )
+            level = max(self._format_floor.get(capability, 0), 0 if schema else 1)
+            if not json_output:
+                level = 2
+            reasoning = capability not in self._no_reasoning_effort
+            dropped = ""
+            while True:
+                payload = {
+                    "model": assignment.model,
+                    limit_name: assignment.max_output_tokens,
+                    "messages": [{"role": "system", "content": system}, *turns],
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                }
+                if level == 0 and schema:
+                    payload["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": {"name": "answer", "schema": schema},
+                    }
+                elif level <= 1:
+                    payload["response_format"] = {"type": "json_object"}
+                if reasoning:
+                    payload["reasoning_effort"] = "low"
+                try:
+                    result, stats = await self._exchange(
+                        connection,
+                        key,
+                        "POST",
+                        "/chat/completions",
+                        timeout=assignment.timeout_s,
+                        payload=payload,
+                    )
+                    break
+                except ProviderError as exc:
+                    if exc.over_limit:
+                        raise _too_long() from exc
+                    if str(exc) not in {
+                        "provider returned HTTP 400",
+                        "provider returned HTTP 422",
+                    }:
+                        raise
+                    # A refusal does not say which part it did not like. Take the parts away
+                    # one at a time, and remember only the one whose removal made it work.
+                    if reasoning:
+                        reasoning, dropped = False, "reasoning"
+                    elif json_output and level < 2:
+                        level, dropped = level + 1, "format"
+                    else:
+                        raise
+            if dropped == "reasoning":
                 self._no_reasoning_effort.add(capability)
+            elif dropped == "format":
+                self._format_floor[capability] = level
             try:
                 choice = result["choices"][0]
                 stopped = choice["finish_reason"]

@@ -396,18 +396,20 @@ touched.</p>
         if older:
             count = len(older)
             failed = sum(1 for note in older if note.get("why") == "failed")
-            if not failed:
-                reason = (
-                    f", because {'it' if count == 1 else 'they'} arrived before "
-                    "suggestions were turned on."
-                )
-            elif failed == count:
-                reason = ", because the model's answer could not be used."
+            long = sum(1 for note in older if note.get("why") == "toolong")
+            early = count - failed - long
+            causes = []
+            if early:
+                causes.append("arrived before suggestions were turned on")
+            if failed:
+                causes.append("the model's answer could not be used")
+            if long:
+                causes.append("the text was too long for the model")
+            if len(causes) == 1:
+                subject = f"{'it' if count == 1 else 'they'} " if early else ""
+                reason = f", because {subject}{causes[0]}."
             else:
-                reason = (
-                    ": some arrived before suggestions were turned on, and for others the "
-                    "model's answer could not be used."
-                )
+                reason = f": for some, {causes[0]}; for others, {' and '.join(causes[1:])}."
             text = (
                 f"{count:,} of the notes waiting for review "
                 f"{'has' if count == 1 else 'have'} no suggestions"
