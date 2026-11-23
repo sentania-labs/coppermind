@@ -1010,6 +1010,18 @@ class ContextService:
         """Current reviewable recording notes and failed recording intakes."""
         return await self.recordings.waiting()
 
+    async def note_summary_again(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Write a recording note's summary again: the action Admin offers, for the public API.
+
+        A refusal Admin shows as a message becomes a plain 422 here with the same words.
+        """
+        from coppermind_store.ai_services import Refused
+
+        try:
+            return await self.store.admin.notes.summary_again(payload)
+        except Refused as refusal:
+            raise ValueError(refusal.message) from refusal
+
     async def save_transcription(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.recordings.save_assignment(payload)
 

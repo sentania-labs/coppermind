@@ -370,11 +370,13 @@ class Recordings:
         paused = bool(assignment and assignment.paused)
         ready = bool(assignment and enabled and assignment.connection)
         reviewed_key = self.context.store.control.schema().role("reviewed_key")
-        meetings, failed = [], []
+        meetings, failed, processing = [], [], []
         seen = set()
         jobs = await asyncio.to_thread(self.jobs)
         for job in sorted(jobs, key=lambda item: item.created_at, reverse=True):
-            if (
+            if job.state in {"queued", "running"}:
+                processing.append(self.progress_line(job, ready=ready, paused=paused))
+            elif (
                 job.state == "succeeded"
                 and job.note_id
                 and not job.audio_removed
@@ -430,6 +432,7 @@ class Recordings:
         return {
             "meetings": meetings,
             "failed": failed,
+            "processing": processing,
             "recordings": [
                 {
                     **job.status().model_dump(mode="json"),
@@ -439,6 +442,30 @@ class Recordings:
                 for job in jobs
                 if not job.dismissed
             ],
+        }
+
+    def progress_line(self, job: TranscriptionJob, *, ready: bool, paused: bool) -> dict[str, Any]:
+        """One recording still on its way to a note, with its latest known state in plain words."""
+        if not ready:
+            message = NOT_SET_UP
+        elif paused:
+            message = "Transcription is paused. This recording continues when it resumes."
+        elif job.error_rule == BUSY_RULE:
+            message = BUSY_MESSAGE
+        elif job.state == "running" and job.transcribed:
+            message = "Transcribed. Writing it into a note."
+        elif job.state == "running":
+            message = "Being transcribed. This can take a while for a long recording."
+        elif job.attempts:
+            message = "The last try did not work. Coppermind will try again by itself."
+        else:
+            message = "Waiting for its turn to be transcribed."
+        return {
+            "id": job.id,
+            "title": job.title or job.filename,
+            "state": job.state,
+            "message": message,
+            "since": job.started_at or job.created_at,
         }
 
     async def save_assignment(self, payload: dict[str, Any]) -> dict[str, Any]:

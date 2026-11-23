@@ -37,13 +37,24 @@ to change recognition or delete signatures. Combining or separating voices also 
 Obsidian SecretStorage; the plugin saves only its name, never its value, in plugin settings. Configure it separately on devices
 that do not share local secret storage.
 
-Run **Coppermind Review: Meetings to review** (or use the list icon in the ribbon) to see
-how many meetings are waiting for review and which recordings failed. Each waiting meeting
-opens its note for review. Each failed recording says why in plain words, and offers
-Retry when a retry can help and Dismiss when the app is not going to retry it by itself;
-Dismiss only takes the entry off the list and deletes nothing. The view needs `notes:read` and
+Run **Coppermind Review: Needs you** (or use the list icon in the ribbon). It is the companion's
+home screen. It lists the meetings waiting for review, each opening its note for review; the
+recordings that failed, each saying why in plain words and offering Retry when a retry can
+help and Dismiss when the app is not going to retry it by itself (Dismiss only takes the
+entry off the list and deletes nothing); and what is still processing, with its latest known
+state: recordings being transcribed and files still being imported. Files put in the
+Dropbox folder also appear here. A file that could not be imported says what to do, and a
+recently finished import says what was imported (a calendar export says how many events)
+and offers Open only when there is a note or file to open. Dismiss removes an import's
+entry from the list; what was imported stays. The screen says when it was last updated and,
+when Coppermind does not answer, shows what it last said. It needs `notes:read` and
 `sources:read`; Retry also needs `sources:write`, `notes:write` and `artifacts:read`, and
 Dismiss needs `sources:write`. The calls are in [the API reference](api.md#recordings-audio-on-its-own).
+
+In the review panel, a note written from a recording has **Write the summary again** beside
+its summary. It writes a new summary from the same transcript without sending the recording
+for transcription again, and the summary on the screen stays until the new one arrives. It
+needs the same permissions as the other review actions.
 
 Open a note and run **Coppermind Review: Review current note**. The panel checks
 that the exact local bytes match the server before permitting completion. Wait

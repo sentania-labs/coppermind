@@ -143,6 +143,15 @@ async def refresh(
     )
 
 
+@router.post("/notes/{note_id}/summary-again")
+async def summary_again(
+    note_id: str,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:write", "notes:read", "sources:read")),
+) -> Response:
+    return await call(client, "note-summary-again", {"id": note_id})
+
+
 @router.get("/dropbox")
 async def dropbox_list(
     client: HttpStoreClient = Depends(store),

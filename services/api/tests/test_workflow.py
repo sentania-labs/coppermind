@@ -361,3 +361,43 @@ def test_recording_merge_requires_source_write(scopes, expected):
         )
     assert result.status_code == expected
     assert len(fake.calls) == (expected == 200)
+
+
+@pytest.mark.parametrize(
+    "scopes,expected",
+    [
+        (["notes:read", "sources:read"], 403),
+        (["notes:write", "sources:read"], 403),
+        (["notes:write", "notes:read"], 403),
+        (["notes:read", "notes:write", "sources:read"], 200),
+    ],
+)
+def test_writing_the_summary_again_is_scoped_like_the_other_review_writes(scopes, expected):
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    with TestClient(app) as client:
+        result = client.post("/v1/notes/note/summary-again")
+    assert result.status_code == expected
+    assert fake.calls == ([("note-summary-again", {"id": "note"})] if expected == 200 else [])
+
+
+def test_a_refused_summary_comes_back_as_the_plain_message():
+    from coppermind.store_protocol import ValidationFailed
+
+    class Refusing(Store):
+        async def context_action(self, action, payload):
+            raise ValidationFailed(["This note has already been reviewed."])
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: Refusing()
+    app.dependency_overrides[authenticated_key] = lambda: Principal(
+        "test", frozenset({"notes:read", "notes:write", "sources:read"})
+    )
+    with TestClient(app) as client:
+        result = client.post("/v1/notes/note/summary-again")
+    assert result.status_code == 422
+    assert "already been reviewed" in result.text
