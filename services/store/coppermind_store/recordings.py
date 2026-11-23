@@ -119,8 +119,6 @@ class TranscriptionJob(ContextModel):
     generation_mode: Literal["legacy", "markdown-v1"] = "legacy"
     stage: str = "Transcribing"
     boundaries: list[RecordingBoundary] = Field(default_factory=list)
-    # Why no calendar event was chosen for the note, in plain words; empty when one was.
-    calendar_unresolved: str = ""
     # No longer used; kept so intake files saved by an earlier version still load.
     transcription_generation: int = 0
     remote_job_id: str = ""
@@ -1327,7 +1325,6 @@ class Recordings:
             writeup = await generate(self.context, job, transcript, voice_map)
             title, body, transcript = writeup["title"], writeup["body"], writeup["transcript"]
             job.boundaries = [RecordingBoundary.model_validate(b) for b in writeup["boundaries"]]
-            job.calendar_unresolved = writeup["calendar"].get("reason", "")
             job.stage = "Saving note"
             self.save(job)
         captured = datetime.fromisoformat(job.captured_at) if job.captured_at else None
