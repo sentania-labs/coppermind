@@ -836,3 +836,12 @@ test('a dismissal that is under way keeps its progress through a timer refresh',
   await f.view.refresh(true);
   assert.ok(homeText(f.view).includes('Could not dismiss. Check your connection, then try again.'));
 });
+
+test('finished recording has no summary editor or pending warning during frontmatter review',async()=>{
+  const f=await fixture(undefined,{state:'running',recording_generation_mode:'markdown-v1',
+    manual_speaker_review:{source_id:'source',revision:1,speakers:[],candidates:[]}});
+  assert.ok(!f.view.contentEl.all().some(e=>e.text===pendingSummaryNotice));
+  assert.equal(f.view.contentEl.all().filter(e=>e.tag==='textarea').length,0);
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed without changes').onclick();
+  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).meeting_summary,null);
+});

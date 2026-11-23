@@ -36,6 +36,16 @@ class FakeStore:
 
     def __init__(self) -> None:
         self.views = copy.deepcopy(VIEWS)
+        from coppermind.context_config import FeatureAssignment
+        from coppermind.recording_writeup import DEFAULT_PROMPT, DISPLAY_RULES
+
+        self.views["writeup-settings"] = {
+            "assignment": FeatureAssignment(enabled=True).model_dump(),
+            "prompt": DEFAULT_PROMPT,
+            "default": DEFAULT_PROMPT,
+            "locked": DISPLAY_RULES,
+            "services": [],
+        }
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.context_calls: list[tuple[str, dict[str, Any]]] = []
         self.patches: list[tuple[str, Any]] = []

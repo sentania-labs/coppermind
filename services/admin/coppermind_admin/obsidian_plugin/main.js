@@ -104,7 +104,7 @@ class ReviewView extends ItemView {
           const open=el.createEl('button',{text:'Open '+result.target_title});open.onclick=()=>this.app.workspace.openLinkText(result.target_path,'',false);
         }catch(e){new Notice(e.message);}};
       }
-      if(merge?.state==='offered'&&summary){
+      if(merge?.state==='offered'&&(summary||data.recording_generation_mode==='markdown-v1')){
         const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'You already have a note for this meeting'});
         let destination=merge.candidates[0];
         if(merge.candidates.length>1)new Setting(box).setName('Your note').addDropdown(d=>{
@@ -113,9 +113,9 @@ class ReviewView extends ItemView {
         });
         const open=box.createEl('a',{text:'Open your note',href:'#'});open.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(destination.path,'',false);};
         box.createEl('p',{text:'Your words stay as they are. The recording summary will be added below them with a transcript link. This separate recording note will be retired.'});
-        const review=box.createEl('button',{text:'Review merge'});review.disabled=!ready;
+        const review=box.createEl('button',{text:'Review merge'});review.disabled=data.recording_generation_mode==='markdown-v1'?!synced:!ready;
         let merging=false;
-        review.onclick=()=>new MergeModal(this.app,destination,summary,merge.transcript_path,async()=>{
+        review.onclick=()=>new MergeModal(this.app,destination,summary||merge.markdown,merge.transcript_path,async()=>{
           if(merging)return;
           merging=true;
           for(const control of el.querySelectorAll('button, input, select, textarea'))control.disabled=true;
@@ -277,7 +277,7 @@ class ReviewView extends ItemView {
           new Notice('Review recorded. Changes and filing will sync back to Obsidian.');await this.refresh();
         }catch(e){new Notice(e.message);}
       };
-      if((manual||summary)&&['queued','running'].includes(data.state))el.createEl('p',{text:'The summary is still being written. Marking reviewed now files the note without it.',cls:'coppermind-notice'});
+      if(data.recording_generation_mode!=='markdown-v1'&&(manual||summary)&&['queued','running'].includes(data.state))el.createEl('p',{text:'The summary is still being written. Marking reviewed now files the note without it.',cls:'coppermind-notice'});
       const apply=el.createEl('button',{text:'Apply kept suggestions & mark reviewed',cls:'mod-cta'});apply.disabled=!synced;apply.onclick=()=>finish(true);
       const without=el.createEl('button',{text:'Mark reviewed without changes'});without.disabled=!synced;without.onclick=()=>finish(false);
       const refresh=el.createEl('button',{text:'Request fresh suggestions'});refresh.disabled=!synced;refresh.onclick=async()=>{
@@ -486,7 +486,8 @@ class MergeModal extends Modal {
   onOpen(){
     const el=this.contentEl;el.empty();el.createEl('h2',{text:'Add this recording to '+this.destination.title+'?'});
     el.createEl('p',{text:'Your existing text stays word for word. The recording summary and a transcript link will be added below it.'});
-    for(const key of Object.keys(this.summary))if(this.summary[key]?.trim()){el.createEl('h3',{text:summaryLabel(key,false)});el.createEl('p',{text:this.summary[key]});}
+    if(typeof this.summary==='string')el.createEl('pre',{text:this.summary});
+    else for(const key of Object.keys(this.summary||{}))if(this.summary[key]?.trim()){el.createEl('h3',{text:summaryLabel(key,false)});el.createEl('p',{text:this.summary[key]});}
     if(this.transcriptPath){const link=el.createEl('a',{text:'View transcript',href:'#'});link.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(this.transcriptPath,'',false);};}
     el.createEl('p',{text:'The recording will belong to your existing note and this separate recording note will be retired.'});
     const confirm=el.createEl('button',{text:'Confirm merge',cls:'mod-cta'});confirm.onclick=async()=>{this.close();await this.confirm();};

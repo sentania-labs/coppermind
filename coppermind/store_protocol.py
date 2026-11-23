@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from coppermind.api_keys import ApiKeySet
 from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
+from coppermind.recording_writeup import RecordingBoundary
 from coppermind.schema import FrontmatterSchema
 
 # `"sha256:<hex of the file bytes>"`. A move does not change it; a change to
@@ -829,6 +830,8 @@ class RecordingStatus(BaseModel):
 
     id: str
     state: RecordingState
+    stage: str = "Transcribing"
+    boundaries: list[RecordingBoundary] = Field(default_factory=list)
     artifact_id: str
     attempts: int = Field(ge=0)
     attempt_limit: int = Field(ge=1)

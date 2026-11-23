@@ -48,12 +48,13 @@ steps (sign in, pick or make a vault, name this server). A recording is only
 taken in while transcription is on; audio that was already stored, or that a note
 already links to, is never queued or deleted by it.
 Storage, Clean up lists what is past the keep time and deletes nothing until
-that list is confirmed. Suggestions has "How the meeting summary is written",
-directions per summary section around fixed rules, used from the next
-summary on; a note from a recording that is still waiting for review can have
-its summary written again from the same transcript. Proved by the rendered
-page and action tests under `services/admin/tests/`,
-`tests/integration/test_admin_service.py` and
+that list is confirmed. Transcription has "How recordings are written up", one
+document prompt around fixed rules, used from the next write-up on (the old
+Suggestions summary editor redirects there); a legacy recording note that is
+still waiting for review can have its summary written again from the same
+transcript. Proved by the rendered page and action tests under
+`services/admin/tests/`, `tests/integration/test_admin_service.py`,
+`tests/integration/test_recording_writeup.py` and
 `tests/integration/test_summary_directions.py`.
 
 ## Working
@@ -572,18 +573,25 @@ page and action tests under `services/admin/tests/`,
   `ci/failure.sh` proves the catch-up, the history and the exclusions against
   the tested images.
 - CI: lint, types, unit tests, compose validity and the no-em-dash rule;
-  PostgreSQL backed integration tests; dependency, secret and repository
-  scans; one image build per service as an OCI tarball with provenance and an
-  SBOM, scanned; and a compose smoke run of the whole storyline above, plus
-  the Git helper's failure storyline and the simulated Obsidian Sync
-  lifecycle, against those exact images. Every action is pinned to a commit
-  SHA, and a test enforces that.
+  PostgreSQL backed integration tests, split into four parallel shards with a
+  check that together they ran every test file exactly once; dependency, secret
+  and repository scans; one image build per service as an OCI tarball with
+  provenance and an SBOM, scanned; and a compose smoke run of the whole
+  storyline above, plus the Git helper's failure storyline and the simulated
+  Obsidian Sync lifecycle, against those exact images. Every action is pinned
+  to a commit SHA, and a test enforces that.
 - A version tag adds the publication gates on top of the same run: the tag has
-  to be annotated and reachable from `main`, and only then are the tested
-  archives pushed to `ghcr.io/sentania-labs/coppermind`, signed with cosign,
-  read back and smoke tested with no credentials at all, recorded as a GitHub
-  release listing their digests, and named by `latest`, which only ever moves
-  forward. Publication authority is held by tag-triggered jobs alone and
+  to be annotated and reachable from `main`. When `main` already has a
+  completed passing run on that exact commit (`ci/release-mode.sh` looks it
+  up), the tag skips the unit checks, scans and integration shards and runs
+  only the image build and scan, the start-up check of the stack
+  (`STARTUP=1 make smoke`) and publication; with no such run (cancelled, failed
+  or missing) it runs everything, so untested code is never published. Either
+  way, only then are the tested archives pushed to
+  `ghcr.io/sentania-labs/coppermind`, signed with cosign, read back and smoke
+  tested with no credentials at all, recorded as a GitHub release listing their
+  digests, and named by `latest`, which only ever moves forward. Publication
+  authority is held by tag-triggered jobs alone and
   `tests/ci/test_workflow_pins.py` enforces that. Proven live by v0.1.0 on
   2026-09-30: the tag run published all five images to
   `ghcr.io/sentania-labs/coppermind`, and they were created public because the

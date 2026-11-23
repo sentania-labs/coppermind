@@ -6,13 +6,16 @@ import copy
 import re
 from typing import Any
 
-_LABEL = re.compile(r"(?:Part ([1-9][0-9]*): )?(?P<kind>Speaker|Unknown voice) ([1-9][0-9]*)")
+_LABEL = re.compile(
+    r"(?:Part ([1-9][0-9]*): )?(?P<kind>Speaker|Unknown voice) ([1-9][0-9]*)"
+    r"(?P<local> \(recording-local\))?"
+)
 
 
 def is_unrecognised(label: str) -> bool:
     """A label the service gave, which no recognised voice has replaced."""
     match = _LABEL.fullmatch(label)
-    return match is not None and match["kind"] == "Speaker"
+    return match is not None and (match["kind"] == "Speaker" or bool(match["local"]))
 
 
 def speaker_labels(transcript: dict[str, Any]) -> list[str]:
@@ -352,11 +355,23 @@ async def evidence(
                 continue
             candidate["path"] = matches[0].path
             candidate["person_id"] = matches[0].id
-    listed = list(candidates.values())
+    named_speakers = {
+        str(segment.get("speaker", "")).strip().casefold()
+        for segment in transcript.get("segments", [])
+        if segment.get("speaker") and segment["speaker"] not in labels
+    }
+    entity_names = {entity.id: entity.name.casefold() for entity in people}
+    listed = [
+        candidate
+        for candidate in candidates.values()
+        if candidate["name"].casefold() not in named_speakers
+        and entity_names.get(candidate.get("person_id", ""), "") not in named_speakers
+    ]
     return {
         **base,
         "speakers": labels,
         "candidates": listed,
+        "named_speakers": sorted(named_speakers),
         "excerpts": sample(transcript, [c["name"] for c in listed], budget),
     }
 

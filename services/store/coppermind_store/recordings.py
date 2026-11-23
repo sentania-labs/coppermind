@@ -37,6 +37,7 @@ from pydantic import Field, ValidationError
 
 from coppermind.context_config import ContextModel, FeatureAssignment
 from coppermind.db.models import Note
+from coppermind.recording_writeup import RecordingBoundary
 from coppermind.store_protocol import (
     ArtifactMissing,
     CreateNote,
@@ -113,6 +114,9 @@ class TranscriptionJob(ContextModel):
     # True once the service's transcript is saved. A retry then files it without sending
     # the recording again.
     transcribed: bool = False
+    generation_mode: Literal["legacy", "markdown-v1"] = "legacy"
+    stage: str = "Transcribing"
+    boundaries: list[RecordingBoundary] = Field(default_factory=list)
     # No longer used; kept so intake files saved by an earlier version still load.
     transcription_generation: int = 0
     remote_job_id: str = ""
@@ -144,17 +148,33 @@ class TranscriptionJob(ContextModel):
     def set_error(
         self, message: str = "", rule: str = "", *, reply: str = "", retry_after: str = ""
     ) -> None:
+        if rule.startswith("writeup-"):
+            from coppermind.recording_writeup import failure_message
+
+            message = failure_message(rule)
         self.error, self.error_rule = message, rule
         self.reply, self.retry_after = reply[:REPLY_KEPT], retry_after
+
+    @property
+    def display_error(self) -> str:
+        from coppermind.recording_writeup import failure_message
+
+        return (
+            failure_message(self.error_rule)
+            if self.error_rule.startswith("writeup-")
+            else self.error
+        )
 
     def status(self) -> RecordingStatus:
         return RecordingStatus(
             id=self.id,
             state=self.state,
+            stage=self.stage,
+            boundaries=self.boundaries,
             artifact_id=self.artifact_id,
             attempts=self.attempts,
             attempt_limit=self.attempt_limit,
-            error=self.error,
+            error=self.display_error,
             error_rule=self.error_rule,
             retry_after=self.retry_after,
             created_at=self.created_at,
@@ -397,7 +417,10 @@ class Recordings:
                     {
                         "id": job.id,
                         "title": job.title or job.filename,
-                        "message": message,
+                        "message": job.display_error
+                        if job.error_rule.startswith("writeup-")
+                        else message,
+                        "stage": job.stage,
                         "field_problems": field_problems,
                         "field_problems_unavailable": job.error_rule == "note-rejected"
                         and not field_problems,
@@ -406,7 +429,20 @@ class Recordings:
                         "can_dismiss": not retrying,
                     }
                 )
-        return {"meetings": meetings, "failed": failed, "processing": processing}
+        return {
+            "meetings": meetings,
+            "failed": failed,
+            "processing": processing,
+            "recordings": [
+                {
+                    **job.status().model_dump(mode="json"),
+                    "title": job.title,
+                    "can_retry": job.state == "failed" and ready,
+                }
+                for job in jobs
+                if not job.dismissed
+            ],
+        }
 
     def progress_line(self, job: TranscriptionJob, *, ready: bool, paused: bool) -> dict[str, Any]:
         """One recording still on its way to a note, with its latest known state in plain words."""
@@ -518,6 +554,7 @@ class Recordings:
                 raise ValueError("artifact_id: the recording changed; submit the request again.")
             job = TranscriptionJob(
                 id=identity,
+                generation_mode="markdown-v1",
                 artifact_id=request.artifact_id,
                 artifact_revision=int(revision["revision"]),
                 filename=str(revision["filename"]),
@@ -917,6 +954,7 @@ class Recordings:
             )
             await self.file_note(job, transcript)
             job.state, job.succeeded_at = "succeeded", _now()
+            job.stage = "Note ready"
             job.set_error()
         except asyncio.CancelledError:
             self.interrupt(job)
@@ -1212,8 +1250,44 @@ class Recordings:
                     for speaker in pending
                     if isinstance(speaker, dict) and isinstance(speaker.get("label"), str)
                 }
+                people = self.context.store.entities.load().entities
+                settings = self.context.read("voice-settings", {"strong": 0.60, "maybe": 0.45})
+                named: dict[str, str] = {}
+                named_ids: dict[str, str] = {}
+                if job.generation_mode == "markdown-v1":
+                    for label, speaker in by_label.items():
+                        strong = [
+                            m
+                            for m in voice.match(speaker.get("embeddings", []), **settings)
+                            if m["strength"] == "strong"
+                        ]
+                        if len(strong) == 1:
+                            person = people.get(strong[0]["person_id"])
+                            if (
+                                person
+                                and person.kind == "person"
+                                and not person.retired_at
+                                and not person.redirect
+                            ):
+                                named[label] = person.name
+                                named_ids[label] = person.id
+                    # Separate diarized voices in one part must not acquire the same name.
+                    from coppermind_store.voice_store import _part
+
+                    named = {
+                        label: name
+                        for label, name in named.items()
+                        if sum(
+                            n == name and _part(other) == _part(label) for other, n in named.items()
+                        )
+                        == 1
+                    }
                 for label in speaker_labels(transcript):
                     speaker = by_label.get(label, {})
+                    if label in named:
+                        voice_map[label] = named[label]
+                        voice.record_named_match("recording:" + job.id, label, named_ids[label])
+                        continue
                     identity = voice.capture_unknown(
                         "recording:" + job.id,
                         label,
@@ -1223,15 +1297,38 @@ class Recordings:
                     )
                     if identity:
                         voice_map[label] = voice.unknown_summaries()[identity]["name"]
+                    elif job.generation_mode == "markdown-v1":
+                        voice_map[label] = f"Unknown voice {len(voice_map) + 1} (recording-local)"
+                self.context.write("voice-mappings/" + job.id, voice_map)
+            if job.generation_mode == "markdown-v1" and not voice_map:
+                voice_map = {
+                    label: f"Unknown voice {i} (recording-local)"
+                    for i, label in enumerate(speaker_labels(transcript), 1)
+                }
                 self.context.write("voice-mappings/" + job.id, voice_map)
             if voice_map:
                 voice.set_segments("recording:" + job.id, transcript)
                 transcript = rename_speakers(transcript, voice_map)
+        title, body = job.title, SUMMARY_PENDING
+        if job.generation_mode == "markdown-v1":
+            from coppermind_store.recording_writeup import generate
+
+            job.stage = "Writing up"
+            self.save(job)
+            writeup = await generate(self.context, job, transcript, voice_map)
+            title, body, transcript = writeup["title"], writeup["body"], writeup["transcript"]
+            job.boundaries = [RecordingBoundary.model_validate(b) for b in writeup["boundaries"]]
+            job.stage = "Saving note"
+            self.save(job)
         captured = datetime.fromisoformat(job.captured_at) if job.captured_at else None
         request = IngestRequest(
             source=IngestSource(
                 provider=job.provider,
-                external_source_id=job.external_source_id,
+                external_source_id=(
+                    f"recording:{job.id}:{job.artifact_revision}"
+                    if job.generation_mode == "markdown-v1"
+                    else job.external_source_id
+                ),
                 source_type="transcript",
                 origin=job.origin,
                 captured_at=captured,
@@ -1239,6 +1336,11 @@ class Recordings:
                     **job.metadata,
                     "recording_artifact_id": job.artifact_id,
                     "transcription_model": transcript.get("model", ""),
+                    **(
+                        {"generation_mode": job.generation_mode}
+                        if job.generation_mode == "markdown-v1"
+                        else {}
+                    ),
                 },
                 artifacts=[
                     IngestArtifact(
@@ -1253,17 +1355,20 @@ class Recordings:
                     ),
                 ],
             ),
-            note=IngestNote(
-                title=job.title, body=SUMMARY_PENDING, frontmatter=dict(job.frontmatter)
-            ),
+            note=IngestNote(title=title, body=body, frontmatter=dict(job.frontmatter)),
         )
-        result = await self.context.store.ingest(request)
-        merge = self.context.read("recording-merges/" + result.source.id, {})
-        if merge.get("state") != "complete":
-            job.note_id, job.note_path = result.note.id, result.note.path
-        job.source_id = result.source.id
+        # Once filing is durable, replay must not restore an older transcript over
+        # a later explicit speaker correction.
+        if job.generation_mode != "markdown-v1" or not (job.note_id and job.source_id):
+            result = await self.context.store.ingest(request)
+            merge = self.context.read("recording-merges/" + result.source.id, {})
+            if merge.get("state") != "complete":
+                job.note_id, job.note_path = result.note.id, result.note.path
+            job.source_id = result.source.id
+        else:
+            merge = self.context.read("recording-merges/" + job.source_id, {})
         async with self.context.lock:
-            VoiceStore(self.context).bind_recording("recording:" + job.id, result.note.id)
+            VoiceStore(self.context).bind_recording("recording:" + job.id, job.note_id)
             pending = self.context.read("voice-pending/" + job.id, [])
             for speaker in pending:
                 if isinstance(speaker, dict):
@@ -1277,7 +1382,40 @@ class Recordings:
             await artifacts.known_paths(self.context.store, [job.artifact_id])
         except ValidationFailed as exc:
             raise ArtifactMissing(job.artifact_id) from exc
-        await artifacts.cite(self.context.store, result.note.id, [job.artifact_id])
+        await artifacts.cite(self.context.store, job.note_id, [job.artifact_id])
+        if job.generation_mode == "markdown-v1":
+            key = "recording-writeups/" + job.id
+            saved = self.context.read(key, {})
+            if "filed_body" not in saved:
+                saved["filed_body"] = (await self.context.store.get_note(job.note_id)).body
+                self.context.write(key, saved)
+            # A provisional voice can be named after generation but before filing.
+            # File the saved receipt first, then apply that explicit correction through
+            # the same conservative relabel path used for an already filed note.
+            from coppermind_store.voice_relabel import relabel_recording
+
+            async with self.context.lock:
+                current = self.context.read("voice-mappings/" + job.id, {})
+                for label, old in saved.get("voice_map", {}).items():
+                    new = current.get(label, old)
+                    if new == old:
+                        continue
+                    positions = [
+                        i
+                        for i, segment in enumerate(saved["transcript"]["segments"])
+                        if segment.get("speaker") == old
+                    ]
+                    await relabel_recording(
+                        self.context,
+                        {
+                            "note_id": job.note_id,
+                            "source_id": job.source_id,
+                            "label": label,
+                            "segments": positions,
+                        },
+                        old,
+                        new,
+                    )
 
 
 # A refusal that the same request would only repeat is not tried again by itself. The
@@ -1306,7 +1444,11 @@ NO_SPEECH_RULES = frozenset({"transcription-no_speech", "transcript-empty"})
 
 
 def repeats_only(rule: str) -> bool:
-    return rule in NO_AUTOMATIC_RETRY or rule.startswith("transcription-http-")
+    return (
+        rule in NO_AUTOMATIC_RETRY
+        or rule.startswith("transcription-http-")
+        or (rule.startswith("writeup-") and rule != "writeup-transient")
+    )
 
 
 SET_UP_FIRST = "Set up and turn on transcription before retrying."

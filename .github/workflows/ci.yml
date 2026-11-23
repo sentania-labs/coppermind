@@ -4,9 +4,28 @@
 # So every job runs on a GitHub-hosted runner and nothing uses `runs-on: lab`.
 # Deploying Coppermind is lab-deployment's job, on the far side of publication.
 #
-# Gates, in order: checks and release-tag validation -> integration and scan ->
-# image (build once per service as an OCI tarball, scan it) -> smoke -> publish
-# the tested archives -> anonymous pull and smoke -> release -> promote latest.
+# Gates, in order: checks and release-tag validation -> integration shards and
+# scan -> image (build once per service as an OCI tarball, scan it) -> smoke ->
+# publish the tested archives -> anonymous pull and smoke -> release -> promote
+# latest.
+#
+# Two shapes of a run. On a pull request or a push to main, everything runs. On
+# a version tag, `release-mode` first asks whether main already passed this very
+# commit. A passing answer makes the tag minimal: `checks`, `scan` and the
+# integration shards are skipped, `integration` still concludes success with
+# nothing to check, and the tag validates itself, builds and scans the images with
+# the version stamped in, runs the start-up check of the stack (not the failure and
+# sync storylines) and publishes. A missing, cancelled or failed main run leaves
+# the tag with the full shape, so untested code is never published.
+#
+# `publish` and `promote-latest` carry a status check function, `!cancelled()`, and
+# then name the result of every need they wait for. Both halves are needed. Without
+# any status check function GitHub applies an implicit `success()`, and that implicit
+# check is what skipped `publish` on the minimal tag: `checks`, `scan` and the shards
+# are skipped there by design, so `success()` was false and the publication, and with
+# it the promotion, never ran. `!cancelled()` is true for those skipped ancestors,
+# and the explicit `needs.<job>.result == 'success'` clauses are what still stop the
+# job when a need it waits for failed or was cancelled.
 #
 # Every scanner and check is invoked through `make`, so a developer runs
 # exactly what CI runs.
@@ -17,7 +36,14 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  # The tag logic, exercised without publishing: this dispatch does the same
+  # main-run lookup and prints the decision, and stops there.
+  workflow_dispatch:
 
+# One note on cancellation: `cancel-in-progress` is true for pull requests only,
+# so a newer push to a PR cancels the older PR run while a main run is left to
+# finish. That is why the tag's lookup accepts any completed successful push run
+# on the exact commit, and falls back to the full suite when it is not there.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -34,6 +60,8 @@ env:
 
 jobs:
   checks:
+    if: ${{ !cancelled() && !failure() && github.event_name != 'workflow_dispatch' && needs.release-mode.outputs.mode != 'minimal' }}
+    needs: release-mode
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,8 +77,9 @@ jobs:
       - run: make setup
       - run: make check
 
-  # Tags are releases. Refuse malformed, lightweight and off-main tags before
-  # an image can reach the publication job. Non-tag runs pass this gate.
+  # Tags are releases. Refuse malformed, lightweight and off-main tags before an
+  # image can reach the publication job. Non-tag runs pass this gate. This is the
+  # one gate the minimal tag build keeps.
   release-tag:
     runs-on: ubuntu-latest
     steps:
@@ -65,12 +94,55 @@ jobs:
           git fetch --no-tags origin main:refs/remotes/origin/main
           bash ci/check-release-tag.sh
 
+  # Decide the tag's shape, and print the decision and its reason in both the job
+  # log and the job summary. `actions: read` is all the lookup needs.
+  release-mode:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      mode: ${{ steps.decide.outputs.mode }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Decide whether this tag may skip the long suites
+        id: decide
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash ci/release-mode.sh "$GITHUB_OUTPUT"
+
+  # A dispatch is a dry run of that decision, so it stops here with nothing to
+  # publish.
+  dispatch-report:
+    if: github.event_name == 'workflow_dispatch'
+    needs: release-mode
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report the decision
+        env:
+          MODE: ${{ needs.release-mode.outputs.mode }}
+          REASON: ${{ needs.release-mode.outputs.reason }}
+        run: |
+          echo "dispatch dry run: mode=$MODE"
+          echo "reason: $REASON"
+          echo "the full pipeline runs on the pull request and on the push to main"
+
   # The store's real behaviour needs a real database: the write protocol, the
   # order of the filesystem write and the commit, and what happens when the
   # database is not there.
-  integration:
-    needs: checks
+  #
+  # One job per shard, so this suite is bounded by its heaviest shard rather than
+  # by the sum. Each shard starts its own PostgreSQL service, and `integration`
+  # below is the single name branch protection can require.
+  integration-shard:
+    if: ${{ !cancelled() && !failure() && github.event_name != 'workflow_dispatch' && needs.release-mode.outputs.mode != 'minimal' }}
+    needs: [checks, release-mode]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     services:
       postgres:
         image: pgvector/pgvector:0.8.7-pg16-trixie@sha256:9cf8b511f0e9a2c209b61430fc139f1ab9c75edbb31fb1751db6617b246a897a
@@ -92,13 +164,73 @@ jobs:
       - name: Install ffmpeg
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       - run: make setup
-      - run: make test-integration
+      - name: Run one shard, and keep its lists for the aggregate job
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/shard"
+          SHARDS=4 SHARD=${{ matrix.shard }} bash ci/shard-list.sh \
+            >"$RUNNER_TEMP/shard/shard-${{ matrix.shard }}.list"
+          make test-integration SHARDS=4 SHARD=${{ matrix.shard }} \
+            | tee "$RUNNER_TEMP/shard/shard-${{ matrix.shard }}.txt"
+          test -s "$RUNNER_TEMP/shard/shard-${{ matrix.shard }}.txt"
+          test -s "$RUNNER_TEMP/shard/shard-${{ matrix.shard }}.list"
+      # Jobs run on separate machines, so the aggregate job can only see what is
+      # uploaded here.
+      - name: Hand the shard's lists to the aggregate job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: integration-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/shard/
+          retention-days: 3
+          overwrite: true
+          if-no-files-found: error
+
+  # The name branch protection requires: it fails when any shard failed, and it
+  # proves the shards together were a partition of the suite, missing no test and
+  # repeating none. It always evaluates, so a failed or missing shard turns it red
+  # instead of skipping it. The one time the shards are legitimately absent is a
+  # minimal tag, where this job passes without doing anything.
+  integration:
+    if: ${{ !cancelled() && github.event_name != 'workflow_dispatch' }}
+    needs: [integration-shard, release-mode]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every shard to have passed
+        if: ${{ needs.integration-shard.result != 'success' && needs.release-mode.outputs.mode != 'minimal' }}
+        env:
+          RESULT: ${{ needs.integration-shard.result }}
+        run: |
+          echo "the integration shards concluded: $RESULT"
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ needs.integration-shard.result == 'success' }}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        if: ${{ needs.integration-shard.result == 'success' }}
+        with:
+          python-version: "3.12"
+      - run: make setup
+        if: ${{ needs.integration-shard.result == 'success' }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ needs.integration-shard.result == 'success' }}
+        with:
+          pattern: integration-shard-*
+          path: ${{ runner.temp }}/shards
+          merge-multiple: true
+      - name: Prove the shards covered the suite exactly once
+        if: ${{ needs.integration-shard.result == 'success' }}
+        run: |
+          set -euo pipefail
+          for shard in 1 2 3 4; do
+            test -s "$RUNNER_TEMP/shards/shard-$shard.list" || { echo "shard $shard left no file list"; exit 1; }
+          done
+          bash ci/check-shard-coverage.sh "$RUNNER_TEMP/shards"
 
   # Dependency vulnerabilities (pip-audit), committed secrets (gitleaks over
   # full history) and repository misconfiguration (trivy fs over the
   # Dockerfiles, the compose files and this workflow).
   scan:
-    needs: checks
+    if: ${{ !cancelled() && !failure() && github.event_name != 'workflow_dispatch' && needs.release-mode.outputs.mode != 'minimal' }}
+    needs: [checks, release-mode]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,7 +264,8 @@ jobs:
   # The tarball is the artifact the smoke job runs, so what is smoke tested is
   # byte for byte what the publish job pushes on a version tag.
   image:
-    needs: [checks, scan, release-tag]
+    if: ${{ !cancelled() && !failure() && github.event_name != 'workflow_dispatch' }}
+    needs: [checks, scan, release-tag, release-mode]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -208,12 +341,12 @@ jobs:
           compression-level: 0 # layers are already compressed
           if-no-files-found: error
 
-  # Seen working, not merely green: the stack comes up from the tested images
-  # with no manual setup, a note created through the API is read back off the
-  # volume as a file, readiness fails honestly with PostgreSQL stopped, and
-  # everything recovers when it returns.
+  # On the same stack the full storyline runs: the note, ETag, artifact and Admin
+  # read-backs, the PostgreSQL outage and its recovery. STARTUP=1, for the minimal
+  # tag build, keeps the harness and stops after the start-up proof.
   smoke:
-    needs: image
+    if: ${{ !cancelled() && !failure() && github.event_name != 'workflow_dispatch' }}
+    needs: [image, release-mode]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -237,14 +370,17 @@ jobs:
       - name: Smoke the compose stack
         env:
           COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
+          STARTUP: ${{ needs.release-mode.outputs.mode == 'minimal' && '1' || '0' }}
         run: make smoke
       # On the same stack: the Git helper catches up on edits made while it
       # was stopped, keeps its history, and keeps excluded folders out of it.
       - name: Failure storylines
+        if: ${{ needs.release-mode.outputs.mode != 'minimal' }}
         env:
           COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
         run: make failure
       - name: Obsidian Sync lifecycle
+        if: ${{ needs.release-mode.outputs.mode != 'minimal' }}
         env:
           COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci.yml
         run: make sync-smoke
@@ -255,9 +391,21 @@ jobs:
   # Only a tag push receives package, release and signing authority. The
   # release is created last, after every image is present, signed, anonymously
   # pullable and seen working together.
+  # Both gates are needed. `!cancelled()` supplies the status check function, so
+  # GitHub does not apply the implicit `success()` that skipped the ancestors
+  # (`checks`, `scan`, the shards) on a minimal tag. The named results then decide:
+  # `integration` itself concludes success there, so each need this job waits for is
+  # checked by name, and any of them failed or cancelled still stops the job.
   publish:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    needs: [image, smoke, integration, release-tag]
+    if: >-
+      !cancelled() &&
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') &&
+      needs.image.result == 'success' &&
+      needs.smoke.result == 'success' &&
+      needs.integration.result == 'success' &&
+      needs.release-tag.result == 'success' &&
+      needs.release-mode.result == 'success'
+    needs: [image, smoke, integration, release-tag, release-mode]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -305,8 +453,7 @@ jobs:
           DIGESTS: ${{ runner.temp }}/digests.txt
         run: bash ci/verify-published.sh
       # Composed once and written by whichever path runs, so a re-run after a
-      # later step failed lands the same release rather than dead-ending on a
-      # tag that already has one.
+      # later step failed lands the same release rather than failing twice.
       - name: Record the release after publication proof
         env:
           GH_TOKEN: ${{ github.token }}
@@ -335,8 +482,14 @@ jobs:
           overwrite: true
           if-no-files-found: error
 
+  # Same shape as `publish`: `!cancelled()` as the status check function, then the
+  # need it waits for named. So it runs after a successful publish and not when
+  # publish failed or was skipped.
   promote-latest:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: >-
+      !cancelled() &&
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') &&
+      needs.publish.result == 'success'
     needs: publish
     runs-on: ubuntu-latest
     # One group for every tag, on purpose. The promotion script reads the

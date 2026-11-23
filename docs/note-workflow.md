@@ -12,9 +12,8 @@ New valid unreviewed notes receive one initial enrichment pass when enrichment
 is enabled. The existing backlog is opt-in. Ordinary edits do not run the model
 again. Related calendar
 changes can generate a calendar-only pass, without repeating filename or general
-property proposals. An unrelated calendar change does not regenerate suggestions. A recording's meeting
-summary is read from the transcript once per transcript revision: automatic refreshes
-carry it forward, and only **Write the summary again** (see [calendar-enrichment](calendar-enrichment.md)) or a changed transcript reads it again.
+property proposals. An unrelated calendar change does not regenerate suggestions. A new recording's finished Markdown body is written before ingest and remains intact during
+frontmatter review. Legacy recordings keep their cached summary proposals.
 
 A waiting note's review page in Admin (Notes, Waiting for review) shows the note and proposals together. Select changes
 and complete review once, or leave everything unchecked to retain only your edits.
@@ -165,6 +164,17 @@ invitation. Unchanged re-exports do not reopen the decision.
 
 ## Recording summaries
 
+New recordings produce their finished Markdown note before ordinary ingest. Suggestions
+may be off. Review handles frontmatter separately and never asks to accept the body.
+A failed write-up retains the recording and transcript without creating a note; Retry on
+Recordings and imports resumes from the last saved stage. Configure the document prompt
+and model under **Transcription > How recordings are written up**. Existing notes are not
+rewritten by a settings change. Unique strong known-voice matches use the person's name;
+other usable signatures keep stable Unknown voice N identities.
+
+The proposal behavior below applies only to legacy recording jobs accepted before the
+Markdown intake flow. Those jobs and review receipts finish under their original contract.
+
 After transcription, the existing enrichment job reads the whole transcript and
 proposes a summary, decisions and action items with owners. Enrichment must be
 enabled with a tested model connection. The companion displays the three sections
@@ -231,7 +241,7 @@ Do not restore old note files over newer reviewed content.
 - `POST /v1/notes/{id}/review`: explicit completion with `if_match`, selected
   proposal indexes and optional filename-risk acknowledgement. Also requires
   `notes:write`. Confirming a speaker also requires `sources:write` and `entities:read`.
-  For recording summaries, GET includes `meeting_summary` with string fields
+  For legacy recording summaries, GET includes `meeting_summary` with string fields
   `summary`, `decisions` and `action_items`. POST includes that object, with the
   owner's edits and the matching `job_id`, to keep it; empty strings drop sections.
   Omit it or send `null` to discard it. Each field is limited to 12,000 characters.
