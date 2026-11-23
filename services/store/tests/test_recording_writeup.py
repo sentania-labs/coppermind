@@ -181,6 +181,7 @@ async def test_title_abstains_on_ambiguous_calendar(candidates, expected):
         ),
     )
     job = SimpleNamespace(
+        id="job",
         captured_at="2026-11-20T08:00:00-06:00",
         created_at="2026-11-21T00:00:00Z",
         frontmatter={},

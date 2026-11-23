@@ -31,6 +31,7 @@ import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
 from pydantic import Field, ValidationError
@@ -38,6 +39,7 @@ from pydantic import Field, ValidationError
 from coppermind.context_config import ContextModel, FeatureAssignment
 from coppermind.db.models import Note
 from coppermind.recording_writeup import RecordingBoundary
+from coppermind.schema import parse_note_time
 from coppermind.store_protocol import (
     ArtifactMissing,
     CreateNote,
@@ -1050,10 +1052,15 @@ class Recordings:
         """Use a linked event, or an unambiguous same-day title, as an upper bound."""
         from types import SimpleNamespace
 
+        from coppermind_store.recording_writeup import local_instant
+
         fields = dict(job.frontmatter)
         date_key = self.context.store.control.schema().role("date_key")
-        if not fields.get(date_key) and job.captured_at:
-            fields[date_key] = job.captured_at
+        zone = ZoneInfo(self.context.store.control.settings().general.timezone)
+        captured = local_instant(job.captured_at, zone)
+        if not parse_note_time(fields.get(date_key)).valid and captured:
+            # The note date is local time without an offset; the offset form finds nothing.
+            fields[date_key] = captured.replace(tzinfo=None, microsecond=0).isoformat()
         events = await self.context.calendar_candidates(SimpleNamespace(frontmatter=fields))
         event_field = self.context.config().assignments["enrichment"].event_field
         linked = fields.get(event_field) if event_field else None
