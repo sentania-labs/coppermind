@@ -315,3 +315,23 @@ def test_split_transcript_pieces_fit_and_keep_every_word():
     assert "".join(piece["text"] for piece in pieces).count("turn 7 ") == 20
     assert "".join(piece["text"] for piece in pieces).count("long ") == 2000
     assert [piece["first"] for piece in pieces] == sorted(piece["first"] for piece in pieces)
+
+
+@pytest.mark.parametrize("line", ["***Decision***: ship it", "--- note", "___init___ is private"])
+def test_tidy_leaves_a_line_that_only_starts_like_a_divider(line):
+    from coppermind_store.recording_writeup import tidy
+
+    reply = NOTE.replace("Ship Friday.", line) + NO_BOUNDARIES
+    document, _ = tidy(reply, TITLE, VOICES, 10)
+    assert line in document
+
+
+def test_a_boundary_record_missing_a_time_is_dropped_and_the_note_is_kept():
+    from coppermind_store.recording_writeup import boundaries, tidy
+
+    incomplete = {"kind": "unrelated_tail", "evidence": "x", "confidence": "low", "end_seconds": 5}
+    reply = NOTE + block([incomplete, row()])
+    document, _ = tidy(reply, TITLE, VOICES, 10)
+    prose, ranges = boundaries(document, 10)
+    assert "Ship Friday." in validate(prose, TITLE, VOICES)
+    assert ranges == [row()]

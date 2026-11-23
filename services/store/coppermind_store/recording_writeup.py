@@ -150,7 +150,7 @@ def _boundary_rows(encoded: str | None, duration: float, repairs: list[str]) -> 
         try:
             fixed = _boundary_row(row, duration)
             RecordingBoundary.model_validate(fixed)
-        except (ValueError, TypeError, AttributeError):
+        except (ValueError, TypeError, AttributeError, KeyError):
             continue
         if fixed != row:
             repairs.append("mended a boundary record")
@@ -225,7 +225,7 @@ def tidy(document: str, title: str, labels: list[str], duration: float) -> tuple
         return document, repairs
     body = "\n".join(rest)
     if not YAML_OPENER.search(body):
-        cleaned = re.sub(r"^[ \t]*(?:---+|\*\*\*+|___+)[ \t]*\n?", "", body, flags=re.M)
+        cleaned = re.sub(r"^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*(?:\n|\Z)", "", body, flags=re.M)
         if cleaned != body:
             body = cleaned
             repairs.append("removed divider lines")
