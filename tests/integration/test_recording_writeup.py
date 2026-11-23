@@ -320,29 +320,191 @@ async def test_boundary_metadata_survives_replay_and_is_exposed_in_status(store)
             Path(proof, "boundaries.json").write_text(json.dumps(status, indent=2))
 
 
-async def test_over_limit_transcript_never_creates_a_note(store):
-    async with Service() as service:
-        context = await setup_transcription(store, service)
-        accepted = await context.accept_recording(request(await store_audio(store)))
-        job = context.recordings.load(accepted["id"])
-        context.write(
-            context.recordings.transcript_path(job),
-            {
-                "segments": [
-                    {"speaker": "Speaker 1", "start": 0, "end": 100, "text": "word " * 1000}
-                ]
-            },
-        )
-        job.transcribed = True
-        context.recordings.save(job)
+BOUNDARY_BLOCK = "\n<<<RECORDING_BOUNDARIES>>>\n[]\n<<<END_RECORDING_BOUNDARIES>>>\n"
+
+
+async def transcribed(store, service, segments, *, limit=None):
+    """A recording whose transcript is saved, so only the write-up and filing remain."""
+    context = await setup_transcription(store, service)
+    accepted = await context.accept_recording(request(await store_audio(store)))
+    job = context.recordings.load(accepted["id"])
+    context.write(context.recordings.transcript_path(job), {"segments": segments})
+    job.transcribed = True
+    context.recordings.save(job)
+    if limit:
         config = context.config()
-        config.assignments["writeup"].summary_max_input_chars = 2000
+        config.assignments["writeup"].summary_max_input_chars = limit
         context.save_config(config)
+    return context, job
+
+
+def turns(count, words=40):
+    return [
+        {"speaker": "Speaker 1", "start": n * 10, "end": n * 10 + 9, "text": f"turn{n} " * words}
+        for n in range(count)
+    ]
+
+
+async def test_long_transcript_is_written_up_in_parts_and_combined(store):
+    async with Service() as service:
+        # About 90,000 characters against a limit of 6,000.
+        context, job = await transcribed(store, service, turns(300, 40), limit=6000)
+        calls = []
+
+        async def write_text(connection, key, limits, system, evidence, **kwargs):
+            calls.append((system, evidence))
+            assert len(json.dumps(evidence, ensure_ascii=False)) <= 6000
+            if "part_notes" in evidence:
+                assert "transcript" not in evidence
+                return (
+                    "# "
+                    + evidence["resolved_title"]
+                    + "\n\n## Top line\nWhole recording, "
+                    + str(len(evidence["part_notes"]))
+                    + " parts combined.\n"
+                    + BOUNDARY_BLOCK
+                ), {"total_tokens": 7}
+            return f"- Covered {evidence['covers']}.", {"total_tokens": 3}
+
+        context.provider.write_text = write_text
+        await context.recordings.tick()
+        job = context.recordings.load(job.id)
+        assert job.state == "succeeded", job.error
+        parts = [c for c in calls if "part_notes" not in c[1]]
+        final = [c for c in calls if "part_notes" in c[1]]
+        assert len(final) == 1 and len(parts) >= 15
+        assert len(final[0][1]["part_notes"]) == len(parts)
+        # Every word of the transcript was sent in exactly one part.
+        sent = "".join(c[1]["transcript"] for c in parts)
+        assert all(f"turn{n} " in sent for n in range(300))
+        assert sent.count("turn299 ") == 40
+        note = await store.get_note(job.note_id)
+        assert "parts combined" in note.body
+        saved = context.read("recording-writeups/" + job.id, {})
+        assert saved["parts"] == len(parts)
+        assert saved["usage"]["total_tokens"] == 3 * len(parts) + 7
+        assert not context.read("recording-writeup-parts/" + job.id, {})
+
+
+async def test_a_retry_after_failure_does_not_write_the_finished_parts_again(store):
+    async with Service() as service:
+        context, job = await transcribed(store, service, turns(60, 40), limit=6000)
+        calls = []
+        broken = {"final": True}
+
+        async def write_text(connection, key, limits, system, evidence, **kwargs):
+            calls.append(evidence)
+            if "part_notes" in evidence:
+                if broken["final"]:
+                    raise ProviderError("synthetic", "provider-dropped")
+                return "# " + evidence["resolved_title"] + "\n\n## Top line\nDone.\n" + (
+                    BOUNDARY_BLOCK
+                ), {}
+            return f"- {evidence['covers']}", {}
+
+        context.provider.write_text = write_text
+        await context.recordings.tick()
+        assert context.recordings.load(job.id).state == "failed"
+        first = len(calls)
+        broken["final"] = False
+        await context.recordings.retry({"id": job.id})
+        await context.recordings.tick()
+        assert context.recordings.load(job.id).state == "succeeded"
+        assert len(calls) == first + 1
+
+
+async def test_notes_that_cannot_be_made_to_fit_fail_with_the_limit_and_no_note(store):
+    async with Service() as service:
+        context, job = await transcribed(store, service, turns(30, 40), limit=3000)
+
+        async def write_text(connection, key, limits, system, evidence, **kwargs):
+            return "- " + "long " * 500, {}
+
+        context.provider.write_text = write_text
         await context.recordings.tick()
         job = context.recordings.load(job.id)
         assert job.state == "failed" and job.error_rule == "writeup-input-limit"
+        assert "in parts" in job.error and not job.note_id and await count_notes(store) == 0
+
+
+async def test_a_loose_reply_still_files_the_note(store):
+    async with Service() as service:
+        context, job = await transcribed(store, service, turns(3))
+
+        async def write_text(connection, key, limits, system, evidence, **kwargs):
+            title = evidence["resolved_title"]
+            return (
+                "Sure, here is the note:\n\n```markdown\n# "
+                + title
+                + "\n\n## Top line\nShip it \u2014 if QA agrees.\n\n---\n\n## Executive summary\n"
+                "Calls <10 minutes.\n```"
+            ), {}
+
+        context.provider.write_text = write_text
+        await context.recordings.tick()
+        job = context.recordings.load(job.id)
+        assert job.state == "succeeded", job.error
+        note = await store.get_note(job.note_id)
+        assert "\u2014" not in note.body and "```" not in note.body and "<10 minutes" in note.body
+        saved = context.read("recording-writeups/" + job.id, {})
+        assert "replaced em-dashes" in saved["repairs"]
+        status = await context.recording_status({"id": job.id})
+        assert status["summary_state"] == "succeeded"
+
+
+async def test_a_refused_note_is_asked_for_again_with_what_was_wrong(store):
+    async with Service() as service:
+        context, job = await transcribed(store, service, turns(3))
+        asked = []
+
+        async def write_text(connection, key, limits, system, evidence, **kwargs):
+            asked.append(kwargs.get("correction"))
+            if not kwargs.get("correction"):
+                return (
+                    "# "
+                    + evidence["resolved_title"]
+                    + "\n\n## Action items\n### Zed\nDo it.\n"
+                    + BOUNDARY_BLOCK
+                ), {}
+            return (
+                "# " + evidence["resolved_title"] + "\n\n## Top line\nDone.\n" + BOUNDARY_BLOCK
+            ), {}
+
+        context.provider.write_text = write_text
+        await context.recordings.tick()
+        job = context.recordings.load(job.id)
+        assert job.state == "succeeded", job.error
+        assert asked[0] is None and len(asked) == 2
+        second = asked[1]
+        assert second is not None
+        assert "speaker that was not supplied" in second[1] and "Zed" not in second[1]
+
+
+async def test_a_note_refused_twice_says_what_was_wrong_without_repeating_the_model(store):
+    async with Service() as service:
+        context, job = await transcribed(store, service, turns(3))
+
+        async def write_text(connection, key, limits, system, evidence, **kwargs):
+            return (
+                "# "
+                + evidence["resolved_title"]
+                + "\n\n## Action items\n### Zed\nDo it.\n"
+                + BOUNDARY_BLOCK
+            ), {}
+
+        context.provider.write_text = write_text
+        await context.recordings.tick()
+        job = context.recordings.load(job.id)
+        assert job.state == "failed" and job.error_rule == "writeup-invalid"
+        assert "could not be used as a complete note" in job.display_error
+        assert "speaker that was not supplied" in job.display_error
+        assert "Zed" not in job.display_error and "Zed" in job.reply
         assert not job.note_id and await count_notes(store) == 0
-        assert not service.requests
+        status = await context.recording_status({"id": job.id})
+        assert status["summary_state"] == "failed"
+        assert status["summary_error_rule"] == "writeup-invalid"
+        assert status["summary_attempts"] == 1 and status["summary_finished_at"]
+        assert status["state"] == "failed"
 
 
 async def test_naming_during_review_finishes_then_relabels_generated_lines(store):
@@ -448,3 +610,27 @@ async def test_writeup_editor_persists_and_resets_only_its_prompt(store):
         await features.writeup_save({"reset": True})
         assert (await features.writeup_settings())["prompt"] == DEFAULT_PROMPT
         assert context.config().assignments["enrichment"].model_dump() == before
+
+
+async def test_part_notes_that_fit_alone_but_not_together_are_condensed_first(store):
+    async with Service() as service:
+        context, job = await transcribed(store, service, turns(30, 40), limit=3000)
+        calls = []
+
+        async def write_text(connection, key, limits, system, evidence, **kwargs):
+            calls.append(evidence)
+            if "transcript" in evidence:
+                return "- " + "detail " * 200, {}  # about 1,400 characters: two do not fit
+            if "part_notes" in evidence and "resolved_title" not in evidence:
+                return "- short", {}  # a part note condensed
+            return (
+                "# " + evidence["resolved_title"] + "\n\n## Top line\nDone.\n" + BOUNDARY_BLOCK
+            ), {}
+
+        context.provider.write_text = write_text
+        await context.recordings.tick()
+        job = context.recordings.load(job.id)
+        assert job.state == "succeeded", job.error
+        condensed = [c for c in calls if "part_notes" in c and "resolved_title" not in c]
+        assert condensed and all(len(c["part_notes"]) == 1 for c in condensed[:1])
+        assert any("resolved_title" in c and "part_notes" in c for c in calls)

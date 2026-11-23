@@ -843,6 +843,25 @@ class RecordingStatus(BaseModel):
     note_id: str = ""
     note_path: str = ""
     source_id: str = ""
+    # Whether the summary was written, apart from the transcript above. `pending` has not
+    # started, `running` is being written, `succeeded` is in the note, `failed` has used its
+    # attempts (see `summary_error`), `skipped` was not needed. Polling this one record is
+    # enough to know both whether the transcript and whether the summary finished.
+    summary_state: Literal["pending", "running", "succeeded", "failed", "skipped"] = "pending"
+    summary_error: str = ""
+    summary_error_rule: str = ""
+    summary_attempts: int = Field(default=0, ge=0)
+    summary_finished_at: str = ""
+    provider: str = ""
+    external_source_id: str = ""
+    title: str = ""
+
+
+class RecordingPage(BaseModel):
+    """Recording intakes, newest first. Send `next_cursor` back to read the next page."""
+
+    items: list[RecordingStatus]
+    next_cursor: str | None = None
 
 
 class ArtifactQuery(BaseModel):

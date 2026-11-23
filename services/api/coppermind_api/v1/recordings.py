@@ -9,11 +9,11 @@ transcription service set up in Admin; without one it refuses with a plain messa
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
 from coppermind.store_client import HttpStoreClient
-from coppermind.store_protocol import RecordingRequest, RecordingStatus, StoreError
+from coppermind.store_protocol import RecordingPage, RecordingRequest, RecordingStatus, StoreError
 from coppermind_api.auth import Principal
 from coppermind_api.deps import require_scopes, store
 from coppermind_api.errors import failure
@@ -38,6 +38,34 @@ async def accept_recording(
         return failure(error)
     settled = result["state"] in {"succeeded", "failed"}
     return JSONResponse(status_code=200 if settled else 202, content=result)
+
+
+@router.get("", response_model=RecordingPage)
+async def list_recordings(
+    state: str | None = Query(default=None, description="queued, running, succeeded or failed"),
+    provider: str | None = Query(default=None, min_length=1),
+    external_source_id: str | None = Query(default=None, min_length=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    cursor: str | None = Query(default=None, min_length=1),
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("sources:read")),
+) -> JSONResponse:
+    """Find a recording again: newest first, filtered by state, provider or the id the
+    submitter gave it. Each item is the same record `GET /v1/recordings/{id}` returns."""
+    filters = {
+        "state": state,
+        "provider": provider,
+        "external_source_id": external_source_id,
+        "cursor": cursor,
+    }
+    try:
+        result = await client.context_action(
+            "recording-list",
+            {**{k: v for k, v in filters.items() if v is not None}, "limit": limit},
+        )
+    except StoreError as error:
+        return failure(error)
+    return JSONResponse(content=result)
 
 
 @router.get("/waiting")

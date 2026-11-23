@@ -97,8 +97,9 @@ else if (args[0] === 'sync') { console.log(${JSON.stringify(secrets.join(' '))})
       supervisor.kill("SIGTERM");
       await exited;
     }
-    // A test leaves nothing behind in the temp folder.
-    await rm(data, { recursive: true, force: true });
+    // A test leaves nothing behind in the temp folder. A client the supervisor
+    // just stopped can still be writing its last file, so removal retries.
+    await rm(data, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   const statusFile = path.join(stateDir, "status.json");
   const readStatus = async () => JSON.parse(await readFile(statusFile, "utf8"));

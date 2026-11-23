@@ -143,6 +143,17 @@ async def refresh(
     )
 
 
+@router.get("/jobs/{job_id}")
+async def job_outcome(
+    job_id: str,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:read")),
+) -> Response:
+    """What became of a job id returned by a request for suggestions: `pending`, `running`, or
+    how it ended (`succeeded`, `failed`, `superseded`, `skipped`) and why."""
+    return await call(client, "job-outcome", {"id": job_id})
+
+
 @router.post("/notes/{note_id}/summary-again")
 async def summary_again(
     note_id: str,

@@ -334,9 +334,20 @@ It takes two steps, so the recording never has to be held whole in a request:
 | `POST /v1/recordings/{id}/dismiss` | `sources:write` | Take a failed recording off the waiting list. Nothing is deleted; a later retry puts it back if it fails again | 200; 422 if it is not failed or the app will still retry it by itself; 401, 403 |
 | `POST /v1/notes/{id}/summary-again` | `notes:write`, `notes:read` and `sources:read`, like the other review writes | Write the summary again for a note that came from a recording and is still waiting for review. The same action as Write the summary again in Admin: it summarizes the transcript already written with the current directions, does not send the recording to transcription again, and keeps the earlier proposal until the note is reviewed. No body. The answer returns at once while the summary is written in the background; poll `GET /v1/notes/{id}/review` for it | 200, `{title, already}`; `already` is true when a summary is already being written and nothing new was started | 404 for an unknown note; 422 with one plain message when the note is already reviewed, was not written from a recording, or the suggestions service is off, paused or not answering; 401, 403 |
 | `GET /v1/recordings/{id}` | `sources:read` | The status of one intake, for polling with bounded backoff | 200, the status | 422 for an unknown id |
+| `GET /v1/recordings` | `sources:read` | Find a recording again, newest first. Optional `state` (`queued`, `running`, `succeeded`, `failed`), `provider`, `external_source_id`, `limit` (1 to 200, default 50) and `cursor` | 200, `{items, next_cursor}`; each item is the status above; send `next_cursor` back as `cursor` for the next page, `null` on the last | 422 for an unknown `state` or a cursor this service did not give |
+| `GET /v1/jobs/{id}` | `notes:read` | What became of a job id returned by `POST /v1/notes/{id}/suggestions`: `{id, note_id, kind, state, attempts, attempt_limit, created_at, finished_at, error, error_rule, retry_after, replaced_by}`. `state` is `pending`, `running`, or how it ended: `succeeded` (suggestions were written), `failed` (it used its attempts; `error` says why), `superseded` (a newer request or a change to the note replaced it; `replaced_by` names the newer job) or `skipped` (not needed, for example the note was already reviewed). Every job reaches one of these, and the store logs each as `outcome=` | 200 | 422 for an unknown id |
 
 The status is `{id, state, artifact_id, attempts, attempt_limit, error, error_rule,
-retry_after, created_at, succeeded_at, note_id, note_path, source_id}`. `state` is
+retry_after, created_at, succeeded_at, note_id, note_path, source_id, provider,
+external_source_id, title, summary_state, summary_error, summary_error_rule,
+summary_attempts, summary_finished_at}`. `summary_state` says whether the summary was
+written, apart from the transcript: `pending`, `running`, `succeeded`, `failed` (it used
+its attempts; `summary_error` says why in plain words and `summary_error_rule` is a
+stable name) or `skipped` (not needed). A new recording is written up before its note is
+filed, so a failed write-up shows as `state` `failed` and `summary_state` `failed` together;
+an older recording, whose summary was written afterwards, reports the state of that job.
+Polling one id is enough to know both the transcript and the summary finished, or which
+one failed and why. `state` is
 `queued`, `running`, `succeeded` (the note exists and `note_id`, `note_path` and
 `source_id` are set) or `failed` (`error` says why in plain words and `error_rule` is a
 stable name). A `running` intake can carry a short `error` with `error_rule`
@@ -424,6 +435,13 @@ no placeholder note. `stage` on recording status and waiting-list records says
 Transcribing, Writing up, Saving note or Note ready; `error` gives the reason. Retry keeps
 the transcript and any already accepted write-up. The waiting endpoint includes a
 `recordings` list with stage and retry status, alongside `meetings`, `failed` and `processing`.
+
+A recording whose text is more than the write-up service reads at once (Admin: How
+recordings are written up, "Most the model reads at once") is written up in parts: each
+consecutive part is summarized in its own request, and the notes are combined into the one
+note. Parts already written are kept, so a retry does not write them again. A note that
+the service answers in a form that cannot be used is asked for once more with what was
+wrong; only a note that fails twice is refused, and `error` then says what was wrong.
 
 Recording status also exposes `boundaries`: an array with `start_seconds`, `end_seconds`,
 `kind` (`unrelated_tail` or `possible_second_meeting`), `evidence`, and `confidence`

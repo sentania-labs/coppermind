@@ -718,11 +718,13 @@ touched.</p>
         )
         for key, label in (
             ("max_output_tokens", "Longest answer (tokens)"),
-            ("summary_max_input_chars", "Complete transcript limit (characters)"),
+            ("summary_max_input_chars", "Most the model reads at once (characters)"),
             ("timeout_s", "Wait for model (seconds)"),
         ):
             fields += ui.text_input(key, label, str(chosen[key]))
         form = f"""<form method="post" action="{WRITEUP_PATH}" class="stack">{fields}
+<p>A recording with more text than the model reads at once is written up in parts and
+combined into one note. Set this to what the model you chose can take in one request.</p>
 <p>Changes apply to new generations and failed write-up retries. Existing notes stay as written.</p>
 <p>Reset to default restores only the Directions text.
 Your service, model and limits stay as set.</p>

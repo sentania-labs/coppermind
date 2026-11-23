@@ -7,6 +7,10 @@ import pytest
 from coppermind_store.recordings import Recordings, TranscriptionJob
 
 
+def bare_config():
+    return SimpleNamespace(assignments={"enrichment": SimpleNamespace(enabled=False)})
+
+
 def job(i, **changes):
     values = dict(
         id=f"{i:064x}",
@@ -33,7 +37,9 @@ async def test_waiting_lists_all_current_notes_and_safe_failure_guidance():
         get_note=AsyncMock(side_effect=lambda identity: notes[identity]),
         control=SimpleNamespace(schema=lambda: SimpleNamespace(role=lambda _: "reviewed")),
     )
-    recordings = Recordings(SimpleNamespace(store=store))
+    recordings = Recordings(
+        SimpleNamespace(store=store, jobs=list, read=lambda *_: {}, config=bare_config)
+    )
     recordings.assignment = lambda: SimpleNamespace(
         enabled=True, paused=False, connection="c", model="m"
     )
@@ -66,7 +72,9 @@ async def test_waiting_survives_one_unreadable_note_and_offers_no_retry_for_miss
         get_note=AsyncMock(side_effect=get_note),
         control=SimpleNamespace(schema=lambda: SimpleNamespace(role=lambda _: "reviewed")),
     )
-    recordings = Recordings(SimpleNamespace(store=store))
+    recordings = Recordings(
+        SimpleNamespace(store=store, jobs=list, read=lambda *_: {}, config=bare_config)
+    )
     recordings.assignment = lambda: SimpleNamespace(
         enabled=True, paused=False, connection="c", model="m"
     )
@@ -327,7 +335,9 @@ async def test_waiting_skips_meetings_whose_audio_is_already_removed_after_revie
         get_note=AsyncMock(side_effect=lambda identity: notes[identity]),
         control=SimpleNamespace(schema=lambda: SimpleNamespace(role=lambda _: "reviewed")),
     )
-    recordings = Recordings(SimpleNamespace(store=store))
+    recordings = Recordings(
+        SimpleNamespace(store=store, jobs=list, read=lambda *_: {}, config=bare_config)
+    )
     recordings.assignment = lambda: None
     recordings.jobs = lambda: [
         job(1, state="succeeded", note_id="open"),
@@ -370,3 +380,109 @@ async def test_waiting_says_in_progress_recordings_need_transcription_set_up(tmp
     recordings.assignment = lambda: None
     (row,) = (await recordings.waiting())["processing"]
     assert "Transcription is off" in row["message"]
+
+
+def enrichment(**changes):
+    from coppermind_store.enrichment_models import EnrichmentJob
+
+    values = dict(
+        id="e" * 64,
+        note_id="n1",
+        note_hash="h",
+        evidence_hash="h",
+        config_hash="h",
+        schema_hash="h",
+        path="Review/N.md",
+        created_at="2026-11-19T10:00:00+00:00",
+    )
+    return EnrichmentJob(**{**values, **changes})
+
+
+@pytest.mark.parametrize(
+    "changes,state,rule",
+    [
+        ({"state": "queued"}, "pending", ""),
+        ({"state": "running"}, "running", ""),
+        ({"state": "failed", "attempts": 1, "attempt_limit": 2}, "pending", ""),
+        (
+            {
+                "state": "failed",
+                "attempts": 2,
+                "attempt_limit": 2,
+                "error_rule": "answer-shape",
+                "error": "The answer could not be used.",
+            },
+            "failed",
+            "answer-shape",
+        ),
+        ({"state": "stale", "error_rule": "skipped"}, "skipped", ""),
+        ({"state": "suggested"}, "skipped", ""),
+    ],
+)
+def test_an_older_recording_reports_the_state_of_its_summary_job(changes, state, rule):
+    recordings = Recordings(SimpleNamespace(read=lambda *_: {}, config=bare_config))
+    mine = job(1, state="succeeded", note_id="n1", succeeded_at="2026-11-19T10:00:00+00:00")
+    found = enrichment(**changes)
+    found.outcome, found.finished_at = found.settled(), "when" if found.settled() else ""
+    report = recordings.summary_of(mine, {"n1": found})
+    assert report["summary_state"] == state and report["summary_error_rule"] == rule
+    assert (report["summary_error"] != "") == (state == "failed")
+
+
+def test_an_older_recording_with_no_summary_job_is_pending_or_skipped():
+    mine = job(1, state="succeeded", note_id="n1")
+    on = Recordings(
+        SimpleNamespace(
+            read=lambda *_: {},
+            config=lambda: SimpleNamespace(
+                assignments={"enrichment": SimpleNamespace(enabled=True)}
+            ),
+        )
+    )
+    off = Recordings(SimpleNamespace(read=lambda *_: {}, config=bare_config))
+    assert on.summary_of(mine, {})["summary_state"] == "pending"
+    assert off.summary_of(mine, {})["summary_state"] == "skipped"
+
+
+@pytest.mark.parametrize(
+    "changes,state",
+    [
+        (
+            {"state": "failed", "attempts": 2, "attempt_limit": 2, "error_rule": "answer-shape"},
+            "failed",
+        ),
+        ({"state": "stale", "error_rule": "skipped"}, "skipped"),
+        ({"state": "queued"}, "pending"),
+    ],
+)
+def test_a_summary_job_that_ended_before_outcomes_were_recorded_still_reports_how_it_ended(
+    changes, state
+):
+    recordings = Recordings(SimpleNamespace(read=lambda *_: {}, config=bare_config))
+    mine = job(1, state="succeeded", note_id="n1")
+    found = enrichment(**changes)
+    assert found.outcome == ""
+    assert recordings.summary_of(mine, {"n1": found})["summary_state"] == state
+
+
+@pytest.mark.parametrize(
+    "rule,attempts,state",
+    [
+        ("writeup-transient", 1, "pending"),
+        ("writeup-transient", 2, "failed"),
+        ("writeup-answer-shape", 1, "failed"),
+    ],
+)
+def test_a_write_up_the_app_will_still_retry_is_not_reported_as_failed(rule, attempts, state):
+    recordings = Recordings(SimpleNamespace(read=lambda *_: {}, config=bare_config))
+    mine = job(
+        1,
+        generation_mode="markdown-v1",
+        state="failed",
+        error_rule=rule,
+        error="The writing service did not answer.",
+        attempts=attempts,
+        attempt_limit=2,
+        retry_after="2026-11-23T10:00:00+00:00" if state == "pending" else "",
+    )
+    assert recordings.summary_of(mine, {})["summary_state"] == state
