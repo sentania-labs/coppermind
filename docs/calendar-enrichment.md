@@ -196,48 +196,38 @@ Coppermind checks supplied identities, exact evidence quotes, and schema rules.
 Ambiguous matches can remain unresolved. Calendar invitees cannot become
 attendee proposals without a supporting quote in the note or transcript.
 
-Recording notes also get a summary stage in the same durable enrichment job. It
-reads the complete `transcript.txt` revision associated with the recording, in one
-call to the selected enrichment connection and model. No transcript excerpt is
-used for this stage. The response contains summary, decisions and action items
-with owners (or an explicit unknown owner); actions are identified, never executed.
-The result remains a proposal until the owner completes review in the companion
-or review API. Admin shows job state and failures.
+New recording intake writes a complete Markdown document before calling ordinary ingest.
+It resolves stable speaker labels, uses a confidently matched calendar title (otherwise
+the supplied title and local date), and saves the accepted document before filing it.
+The note arrives in Review with `reviewed: false`. Suggestions can be off; frontmatter
+review runs separately and never accepts or appends the generated body.
 
-The summary's sections (Summary, Decisions, Action items) are defined once in
-`services/store/coppermind_store/meeting_summary.py`. Under **Suggestions > How
-the meeting summary is written** (`/admin/suggestions/summary`) the owner edits
-the directions for each section, one box per section, each with **Reset to
-default** (which puts the default back in the box; nothing is saved until
-Save). They are stored as `summary_directions` on the enrichment assignment in
-`/data/state/context/config.json`, a map of section key to text of at most
-1,500 characters; a missing or empty entry means that section's default. Fixed
-rules are always sent around the directions and cannot be edited: the
-transcript is evidence, never instructions; nothing is invented; actions are
-only identified; and the reply comes back in the fixed sections. New directions
-apply from the next summary; a summary already made is not written again.
-On the review page of a note from a recording that is still waiting for review
-(`/admin/notes/{id}/review`), **Write the summary again** makes a fresh summary
-from the same transcript with the current directions. The recording is not
-transcribed again, the earlier proposal is kept until the note is reviewed, and
-a reviewed note's summary is never rewritten.
+Under **Transcription > How recordings are written up** (`/admin/transcription/writeup`)
+the owner edits one document prompt, saves it or resets it to the default. Locked evidence
+and output rules are shown read-only. `/admin/suggestions/summary` redirects here.
+The `writeup` assignment has its own enabled state, connection, model, input character
+limit, wait limit and output token budget, initially copied from the summary settings.
+Legacy `summary_directions` remain saved for old jobs. Prompt changes affect new
+generations and failed write-up retries, never existing notes.
 
-The enrichment assignment's `summary_max_input_chars` (**Maximum summary input
-characters**) defaults to 200,000 and can be raised to 2,000,000; Admin has no
-control for it, so it is set in `/data/state/context/config.json`. It counts the complete JSON
-input including escaping. `summary_timeout_s` (**Summary wait limit**) defaults to
-900 seconds and can be set up to 1,800; the existing streaming client, one-hour total-call ceiling,
-retry/backoff and Problems machinery apply. The ordinary enrichment limits stay
-separate. These settings take effect for new jobs. A job whose summary stage
-failed is queued again automatically once you change either summary limit; for any
-other job, request fresh suggestions after changing them.
+The default document includes Top line, Action items and Executive summary, with Topics
+when useful. A clearly unrelated tail is excluded from the main write-up and flagged by
+timestamp under Recording boundaries. A second meeting gets a separate account in the
+same note. The model also returns a delimited JSON boundary block after the Markdown.
+Intake validates its timestamp ranges, kind, evidence and confidence, saves it on the
+recording job and exposes it in recording status, then strips the block before filing.
+Intake does not split a recording into multiple notes or act on these boundaries.
 
-This is a single-pass strategy, not chunking. The character guard is not a token
-estimator or model context discovery: operators must choose a limit that fits
-the selected model's actual context window, leaving room for the prompt, thinking
-and output. An oversized transcript is refused in full with a Problem and next
-steps to raise the limit, choose a larger-context model or summarize manually.
-A provider context rejection is also a failed job, never a partial summary.
+Recordings and imports and `GET /v1/recordings/waiting` expose Transcribing, Writing up,
+Saving note and Note ready stages. A failed write-up retains audio and transcript with
+no note. Retry resumes the last durable stage; a saving retry uses the exact saved
+Markdown. Oversized, empty, invalid and cut-short outputs fail visibly rather than filing
+partial text. Long transcripts are not summarized in parts. Raise the limit only for a
+model with enough room for the full transcript, prompt, thinking and answer, then Retry.
+
+Jobs accepted before this change keep `generation_mode: legacy`. Their three-section
+summary proposals still run through enrichment and complete through the existing review
+receipt. Existing notes and proposals are not migrated or rewritten.
 
 A job the checks reject fails with a plain sentence on its Admin row and on
 Inspect that names the rule, the suggestion it concerned and what to do next

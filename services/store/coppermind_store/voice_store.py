@@ -7,13 +7,24 @@ vault artifact and its vectors must never be included in API representations.
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 from coppermind_store.voice_matching import cosine, matches
 
+_PART_LABEL = re.compile(r"(?:Part ([1-9][0-9]*): )?(?:Speaker|Unknown voice) [1-9][0-9]*")
+
 
 def _same_recording(entry: dict[str, Any], source_id: str | None) -> bool:
     return not source_id or not entry.get("source_id") or entry["source_id"] == source_id
+
+
+def _part(label: str) -> int | None:
+    """Return the part a split recording's label came from, or None when unsplit."""
+    match = _PART_LABEL.fullmatch(label) if isinstance(label, str) else None
+    if match is None or match.group(1) is None:
+        return None
+    return int(match.group(1))
 
 
 def _attributed(data: dict[str, Any]) -> dict[str, Any]:
@@ -96,7 +107,10 @@ class VoiceStore:
             dict(sig, person_id=identity)
             for identity, voice in unknowns.items()
             for sig in voice.get("signatures", [])
-            if not any(s.get("note_id") == note_id for s in voice.get("signatures", []))
+            if not any(
+                s.get("note_id") == note_id and _part(str(s.get("label"))) == _part(label)
+                for s in voice.get("signatures", [])
+            )
         ]
         settings = self.context.read("voice-settings", {"strong": 0.60, "maybe": 0.45})
         results = matches(embeddings, saved, strong=settings["strong"], maybe=settings["maybe"])
@@ -147,6 +161,32 @@ class VoiceStore:
         )
         self._save(data)
         return identity
+
+    def record_named_match(self, note_id: str, label: str, person_id: str) -> None:
+        """Track an automatic appearance for correction, without learning new signatures."""
+        data = self._load()
+        rows = data.setdefault("assignments", [])
+        if not any(a["note_id"] == note_id and a["label"] == label for a in rows):
+            rows.append(
+                {
+                    "note_id": note_id,
+                    "label": label,
+                    "voice_id": "person:" + person_id,
+                    "origin_id": "person:" + person_id,
+                }
+            )
+            self._save(data)
+
+    def unknown_for_note(self, note_id: str, source_id: str | None = None) -> list[dict[str, str]]:
+        return [
+            {"id": identity, "name": item["name"]}
+            for identity, item in self.unknown_summaries().items()
+            if any(
+                a["note_id"] == note_id
+                and (source_id is None or a.get("source_id") in (None, source_id))
+                for a in item["assignments"]
+            )
+        ]
 
     def bind_recording(self, provisional_id: str, note_id: str) -> None:
         data = self._load()

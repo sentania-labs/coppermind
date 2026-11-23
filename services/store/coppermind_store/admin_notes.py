@@ -415,6 +415,9 @@ class AdminNotes:
         if row is None:
             raise NotFound(note_id)
         result = self._summary(row)
+        from coppermind_store.voice_store import VoiceStore
+
+        result["unnamed_voices"] = VoiceStore(self.store.context).unknown_for_note(note_id)
         result["reviewed"] = row.reviewed
         result["history"] = await self._history(row)
         result["unsure"] = self._open_suggestions().get(note_id, 0)
@@ -516,7 +519,9 @@ class AdminNotes:
                     "plain": job.plain,
                     "problems": job.problems,
                     "answer": job.reply if job.problems else "",
-                    "summary_again": recording is not None and not row.reviewed,
+                    "summary_again": recording is not None
+                    and recording.generation_mode == "legacy"
+                    and not row.reviewed,
                     # A plain note has no summary to write again; it can ask for suggestions
                     # again, when this is its newest attempt and suggestions are on.
                     "get_suggestions": recording is None
@@ -791,7 +796,10 @@ class AdminNotes:
         """The summary proposed for a note written from a recording, and the one before it."""
         note_id = _note_id(payload)
         context = self.store.context
-        if self._recording_of(note_id) is None:
+        if (
+            self._recording_of(note_id) is None
+            or self._recording_of(note_id).generation_mode == "markdown-v1"
+        ):
             return {"recording": False}
         job = self._latest_job(note_id)
         proposed = (
@@ -850,7 +858,10 @@ class AdminNotes:
                 "This note has already been reviewed, so its summary is yours now and "
                 "Coppermind does not write it again.",
             )
-        if self._recording_of(note_id) is None:
+        if (
+            self._recording_of(note_id) is None
+            or self._recording_of(note_id).generation_mode == "markdown-v1"
+        ):
             raise Refused(
                 "note", "This note was not written from a recording, so it has no summary."
             )

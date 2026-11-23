@@ -1028,7 +1028,8 @@ name="csrf" value="{{csrf}}">Save</button>
                     busy="Bringing back…",
                 ),
             )
-        body = f'{head}<div class="stack">{ctx.flash()}{top}{history}</div>'
+        voices = ui.unnamed_voices(data.get("unnamed_voices", []))
+        body = f'{head}<div class="stack">{ctx.flash()}{top}{voices}{history}</div>'
         return await ctx.page(data["title"], body, "notes")
 
     async def fix(ctx: Ctx, identity: str, action: str, payload: dict[str, Any]) -> Any:
@@ -1175,6 +1176,13 @@ name="csrf" value="{{csrf}}">Save</button>
         except StoreError:
             return {"recording": False}
 
+    def confident_speaker(suggestion: dict[str, Any]) -> bool:
+        return bool(
+            suggestion.get("value")
+            and suggestion.get("confidence", 0) >= 0.8
+            and any(c["id"] == suggestion["value"] for c in suggestion.get("candidates", []))
+        )
+
     def open_questions(data: dict[str, Any]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
         """What Coppermind was not sure about: which meeting, and each open suggestion."""
         meeting = data.get("recording_meeting")
@@ -1249,7 +1257,20 @@ name="csrf" value="{{csrf}}">Save</button>
         for suggestion in suggestions:
             name = f"s_{suggestion['index']}"
             answer = values.get(name, "")
-            if suggestion["kind"] == "speaker":
+            if suggestion["kind"] == "speaker" and not confident_speaker(suggestion):
+                voice = next(
+                    (v for v in data.get("unnamed_voices", []) if v["name"] == suggestion["field"]),
+                    None,
+                )
+                question = f"Who is {e(suggestion['field'])}? There is no confident match."
+                options = (
+                    ui.a(
+                        "Name this voice",
+                        ui.voice_name_path(voice["id"]) if voice else "/admin/people?tab=voices",
+                    )
+                    + '<p class="hint">You can finish this review and name the voice later.</p>'
+                )
+            elif suggestion["kind"] == "speaker":
                 people = "".join(
                     ui.choice(name, c["id"], f"Yes, that was {e(c['name'])}", "", answer == c["id"])
                     for c in suggestion.get("candidates", [])
@@ -1420,6 +1441,8 @@ name="csrf" value="{{csrf}}">Save</button>
         if meeting and not form.get("meeting"):
             errors["meeting"] = "Choose one, so Coppermind is not guessing."
         for suggestion in suggestions:
+            if suggestion["kind"] == "speaker" and not confident_speaker(suggestion):
+                continue
             if not form.get(f"s_{suggestion['index']}"):
                 errors[f"s_{suggestion['index']}"] = "Choose one, so Coppermind is not guessing."
         if not form.get("date"):
@@ -1474,6 +1497,8 @@ name="csrf" value="{{csrf}}">Save</button>
         selected: list[int] = []
         speakers: dict[str, str] = {}
         for suggestion in suggestions:
+            if suggestion["kind"] == "speaker" and not confident_speaker(suggestion):
+                continue
             answer = form.get(f"s_{suggestion['index']}", "no")
             if answer == "no":
                 continue

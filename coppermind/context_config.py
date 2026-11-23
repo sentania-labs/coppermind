@@ -109,6 +109,7 @@ class FeatureAssignment(ContextModel):
     # key. A section that is absent or empty uses its default. The sections themselves and
     # the rules that keep a summary safe to file are fixed in code, not in this text.
     summary_directions: dict[str, str] = Field(default_factory=dict)
+    writeup_prompt: str = Field(default="", max_length=20000)
 
     @field_validator("summary_directions")
     @classmethod
@@ -200,8 +201,9 @@ class ContextConfig(ContextModel):
         if "enrichment" not in self.assignments or not set(self.assignments) <= {
             "enrichment",
             "transcription",
+            "writeup",
         }:
-            raise ValueError("only enrichment and transcription are implemented")
+            raise ValueError("only enrichment, transcription, and writeup are implemented")
         return self
 
 

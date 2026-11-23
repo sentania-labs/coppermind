@@ -153,7 +153,14 @@ async def test_owner_choice_validates_current_candidates_and_preserves_existing_
         store = Store()
         lock = asyncio.Lock()
         recordings = SimpleNamespace(
-            jobs=lambda: [SimpleNamespace(note_id="note", source_id="src", title="Recording")]
+            jobs=lambda: [
+                SimpleNamespace(
+                    note_id="note",
+                    source_id="src",
+                    title="Recording",
+                    generation_mode="legacy",
+                )
+            ]
         )
         state: dict[str, Any] = {}
 

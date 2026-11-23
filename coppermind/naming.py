@@ -93,6 +93,7 @@ def note_stem(title: str, *, note_date: date | None = None, dated: bool = False)
     stem = sanitize_stem(title)
     if dated and note_date is not None:
         prefix = f"{note_date.isoformat()} "
+        stem = stem.removeprefix(prefix)
         stem = (
             _fit(
                 stem,

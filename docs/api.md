@@ -366,7 +366,8 @@ Coppermind probes the audio and cuts recordings longer than `assignments.transcr
 into its original container when possible and otherwise encodes the part as FLAC.
 Each part is transcribed in order, and the results form one transcript and note with
 timestamps offset to the original recording. Speaker labels are distinct per part; voice
-recognition can subsequently identify known speakers. A part with no speech adds nothing and
+recognition can subsequently identify known speakers and link the same unknown voice across
+parts (see [dossiers](dossiers.md#voice-recognition)). A part with no speech adds nothing and
 the recording succeeds if any part has speech; if none does it fails as a silent recording
 does. Any other failed part names its number.
 If the audio cannot be probed, the service handles it as before unless its supplied
@@ -408,15 +409,30 @@ sends bytes while it works, each one restarts that clock. The app stops after fo
 for any one recording, and a recording that runs into that ceiling is not tried again by
 itself.
 
-On success the note's source holds `transcript.txt`, one line per segment with the
-speaker label (`[00:03:12] Speaker 2: text`), and
-`transcript.json` with the segments and their timings. With enrichment enabled, the
-configured model reads the complete transcript in a separate summary stage of the
-existing enrichment job. Summary, decisions and action items remain durable proposals
-until the owner completes review. The companion and review API let the owner edit or
-drop sections before the kept text is appended; existing prose is preserved. See
-[Recording summaries](note-workflow.md#recording-summaries) for the API payload and
-[enrichment limits](calendar-enrichment.md) for the full-input ceiling and long wait.
+On success the note contains a finished Markdown write-up, and its source holds
+`transcript.txt` and `transcript.json` with stable speaker labels and timings.
+A unique strong match to an already named voice uses that person's name; other voices
+keep their stable Unknown voice N label. Voices without signatures are marked
+recording-local. No model guess names a voice.
+
+Write-up generation runs before ingest, independently of Suggestions. Its saved receipt
+makes saving retries and crash replay idempotent. New recording source identities are
+namespaced by the recording job and artifact revision, so an uploaded recording cannot
+overwrite a Plaud write-up using the same caller-supplied id. A failed generation creates
+no placeholder note. `stage` on recording status and waiting-list records says
+Transcribing, Writing up, Saving note or Note ready; `error` gives the reason. Retry keeps
+the transcript and any already accepted write-up. The waiting endpoint includes a
+`recordings` list with stage and retry status, alongside the existing `meetings` and `failed`.
+
+Recording status also exposes `boundaries`: an array with `start_seconds`, `end_seconds`,
+`kind` (`unrelated_tail` or `possible_second_meeting`), `evidence`, and `confidence`
+(`low`, `medium`, `high`). These ranges come from a validated, delimited model-response
+block, retained on the durable recording job and stripped from the note body. They are
+reported evidence, not a command to split or trim audio; uncertain boundaries stay uncertain.
+
+Frontmatter review never appends summary prose for new recordings. Legacy jobs retain
+their original summary proposal flow. See [Recording summaries](note-workflow.md#recording-summaries)
+and [write-up limits](calendar-enrichment.md).
 Once the transcript is nonempty and the note is reviewed
 and filed, Coppermind removes the recording audio and replaces its link with a receipt
 containing its hash, size and duration. Supply `metadata.archive_url` to include the
@@ -471,13 +487,13 @@ and each problem is fixed on the page that owns it, such as Recordings and impor
 | Sign in, sign out | `GET/POST /admin/signin`, `POST /admin/signout` | Password-backed session |
 | Home (`/admin`) | `overview`, `notice-dismiss` | What needs you, each with a link to its remedy, then recent activity, including notes and files moved by hand in Obsidian and returned to their folder, with a Dismiss that only hides the notice |
 | Setup guide (`/admin/setup`, `/admin/setup/companion`) | `overview`, `setup-skip`, `setup-finished`, `companion-install`, `pairing-start` | Six steps: the password, Obsidian Sync, the Obsidian companion (placed in the notes filesystem and paired with a code; Obsidian Sync carries it to the owner's devices only while "Your own Obsidian settings" is ticked under What syncs, and the step says so when it is not; it also says when the companion in the vault is out of date and offers to update it), then suggestions, transcription and calendar, which can be skipped. The guide leaves the menu once finished |
-| Notes (`/admin/notes`, `/admin/notes/{id}`, `/admin/notes/{id}/review`, `/admin/notes/leave-alone`) | `notes-waiting`, `notes-deleted`, `notes-alone`, `notes-find`, `note`, `note-check`, `note-no-time`, `note-gone`, `note-keep-both`, `note-replace`, `note-copy`, `note-restore`, `note-delete-for-good`, `note-summary`, `note-summary-again` | Tabs Need you, Waiting for review, Left alone on purpose and Deleted, and a find box. A note's own page says what is wrong and offers the remedy; the review page is the fallback for reviewing without the companion. On a note from a recording that is still waiting for review, Write the summary again makes a fresh summary from the same transcript with the current directions; the earlier proposal is kept until the note is reviewed, and the recording is not transcribed again. Leave alone edits the folders and patterns adoption skips |
+| Notes (`/admin/notes`, `/admin/notes/{id}`, `/admin/notes/{id}/review`, `/admin/notes/leave-alone`) | `notes-waiting`, `notes-deleted`, `notes-alone`, `notes-find`, `note`, `note-check`, `note-no-time`, `note-gone`, `note-keep-both`, `note-replace`, `note-copy`, `note-restore`, `note-delete-for-good`, `note-summary`, `note-summary-again` | Tabs Need you, Waiting for review, Left alone on purpose and Deleted, and a find box. A note's own page says what is wrong and offers the remedy; the review page is the fallback for reviewing without the companion. On a legacy recording note that is still waiting for review, Write the summary again makes a fresh summary from the same transcript with the current directions; the earlier proposal is kept until the note is reviewed, and the recording is not transcribed again. Leave alone edits the folders and patterns adoption skips |
 | Recordings and imports (`/admin/incoming`) | `incoming`, `incoming-item`, `incoming-retry`, `incoming-remove`, `incoming-accept`, `incoming-write-up`, `recording-delete`, `folders`, `folders-save` | Recordings, calendar files and documents handed in, and files that could not be taken in, each with its state; retry, remove, or delete a recording's audio. A recording added while transcription is off is kept as a file and not written up; it is never queued to run later |
 | Calendar (`/admin/calendar`) | `calendar`, `calendar-meeting`, `calendar-choose`, `calendar-max` (plus `POST /internal/v1/admin/calendar-file?filename=`, the calendar file as the raw request body) | Calendar files, meetings and import history |
 | People and voices (`/admin/people`) | `people`, `person`, `person-remove`, `fact-correct`, `fact-add`, `fact-remove`, `voice-*` | Dossiers and voice recognition (see [dossiers](dossiers.md)) |
 | Obsidian Sync (`/admin/sync`, `/admin/sync/what`) | the sync helper's `/status`, `/login`, `/vault`, `/forget-login`, `/connect`, `/signin`, `/configure`, `/pause`, `/resume`, `/disconnect` | Connect step by step: sign in to Obsidian (email, password, sign-in code if asked), pick a vault from the account's list (a locked vault asks for its password) or make a new one, name this server, connect. Sign in again with only the password when Obsidian signs the server out; pause, resume, disconnect; what is synced |
 | AI services (`/admin/services`) | `services`, `service`, `service-add`, `service-test`, `service-save`, `service-remove` | A server or account entered once. Coppermind tests what it can do (text, embeddings, recordings) with a made-up meeting and a made-up 10-second recording, and the features choose only among services whose test showed they can do the job |
-| Suggestions (`/admin/suggestions`, `/fill`, `/summary`) | `suggestions`, `suggestions-save`, `suggestions-pause`, `suggestions-wait`, `suggestions-fill`, `suggestions-tick`, `suggestions-older`, `suggestions-response-limit`, `summary-directions`, `summary-directions-save` | Turn suggestions on with a tested service, which fields to fill, older notes, and the maximum response tokens for suggestions and meeting summaries (`POST /admin/suggestions/response-limit`, 256 to 65536, for models that think before they answer). How the meeting summary is written: one box of directions per summary section (Summary, Decisions, Action items), each with Reset to default, around fixed rules that cannot be edited; used from the next summary on, and a summary already made is not written again |
+| Suggestions (`/admin/suggestions`, `/fill`, `/summary`) | `suggestions`, `suggestions-save`, `suggestions-pause`, `suggestions-wait`, `suggestions-fill`, `suggestions-tick`, `suggestions-older`, `suggestions-response-limit`, `summary-directions`, `summary-directions-save` | Turn suggestions on with a tested service, which fields to fill, older notes, and the maximum response tokens for suggestions and meeting summaries (`POST /admin/suggestions/response-limit`, 256 to 65536, for models that think before they answer). The old summary editor redirects to `/admin/transcription/writeup`, one Markdown prompt with Save, Reset to default, read-only locked rules and independent model/limit settings (`writeup-settings`, `writeup-save`) |
 | Transcription (`/admin/transcription`) | `transcription`, `transcription-save`, `transcription-pause`, `transcription-wait`, `transcription-tries`, `transcription-retry-failed` | Turn transcription on with a service whose test showed it can write up recordings; the model and reply format are the ones the test found |
 | Connected apps (`/admin/apps`, `/new`, `/pair`, `/{id}`) | `apps`, `pairing-start`, `pairing-state` | Add a key by saying what is being connected (an AI assistant or agent, an automation, or something else with its permissions ticked); the key is shown once with this server's address. Pair the Obsidian companion with a six-digit code (see `POST /v1/pair`). Change what an app may do, replace its key, or remove it |
 | Storage (`/admin/storage`, `/cleanup`, `/deleted`, `/files`) | `storage`, `storage-keep`, `storage-count-interval`, `cleanup`, `cleanup-confirm`, `cleanup-cancel`, `cleanup-bring-back`, `files`, `file-remove`, `notes-deleted` | Space used, the keep time (`retention.days`), Clean up (see [Retention purge](#retention-purge-implemented)), deleted things with a way to bring them back, and stored files |

@@ -84,7 +84,7 @@ async def prepare(
     recording = next(
         (r for r in context.recordings.jobs() if r.note_id == job.note_id and r.source_id), None
     )
-    if recording is None:
+    if recording is None or recording.generation_mode == "markdown-v1":
         return None
     revision = job.source_versions.get(recording.source_id)
     if revision is None:

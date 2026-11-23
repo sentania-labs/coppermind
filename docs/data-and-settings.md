@@ -213,16 +213,21 @@ review completes), `voice-mappings/<recording id>.json` (the unknown-voice names
 to that recording's speakers) and `voice-settings.json` (the two match thresholds). Rules in
 [dossiers](dossiers.md#voice-recognition).
 
-### Meeting summary directions
+### Recording write-up directions
 
-The directions for each section of a recording's meeting summary are saved as
-`summary_directions` on the enrichment assignment in
-`/data/state/context/config.json`: a map of section key (`summary`,
-`decisions`, `action_items`) to text of at most 1,500 characters. A missing or
-empty entry means that section's default. They are edited under **Admin >
-Suggestions > How the meeting summary is written**, apply from the next
-summary, and never rewrite one already made. Rules in
-[calendar and enrichment](calendar-enrichment.md).
+**Admin > Transcription > How recordings are written up** edits one Markdown prompt
+(`writeup_prompt`, up to 20,000 characters) on the independent `writeup` assignment in
+`/data/state/context/config.json`. Save and Reset to default apply to subsequent
+generations, not existing notes. The same page chooses the writer service, model,
+enabled state, full-input character limit, silence wait and response token budget.
+The initial assignment copies the configured legacy summary model and limits.
+Locked evidence rules and the structured boundary response contract are shown read-only.
+
+`recording-writeups/<recording id>.json` retains the exact accepted response, Markdown,
+transcript hash, speaker map, prompt and model details, calendar evidence and boundary
+ranges before ingest. Recording jobs expose their current stage and structured boundaries.
+Older `summary_directions` remain saved for legacy jobs; the old summary editor redirects
+to the document editor. Rules in [calendar and enrichment](calendar-enrichment.md).
 
 ### Calendar import budgets
 

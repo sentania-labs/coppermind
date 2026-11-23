@@ -623,9 +623,38 @@ class ModelProvider:
         schema: dict[str, Any] | None = None,
         correction: tuple[str, str] | None = None,
     ) -> tuple[ModelAnswer, dict[str, Any]]:
-        """Ask once. `schema` is the JSON schema of the answer, sent when the service takes
-        one. `correction` is the earlier answer and what was wrong with it, for the one
-        second try after an answer that could not be used."""
+        """Ask once for a JSON answer. `schema` is the JSON schema of the answer, sent when
+        the service takes one. `correction` is the earlier answer and what was wrong with
+        it, for the one second try after an answer that could not be used."""
+        output, usage = await self.write_text(
+            connection,
+            key,
+            assignment,
+            system,
+            evidence,
+            json_output=True,
+            schema=schema,
+            correction=correction,
+        )
+        parsed, repairs = read_json(output)
+        if parsed is None:
+            raise ProviderError(
+                "The model's answer was not a JSON object.", "provider-not-json", reply=output
+            )
+        return ModelAnswer(parsed, output, repairs), usage
+
+    async def write_text(
+        self,
+        connection: ModelConnection,
+        key: str,
+        assignment: FeatureAssignment,
+        system: str,
+        evidence: dict[str, Any],
+        *,
+        json_output: bool = False,
+        schema: dict[str, Any] | None = None,
+        correction: tuple[str, str] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
         content = json.dumps(evidence, ensure_ascii=False)
         if len(content) > assignment.max_input_chars:
             raise InputLimitError(len(content), assignment.max_input_chars)
@@ -671,6 +700,8 @@ class ModelProvider:
             )
             capability = (connection.id, connection.endpoint_url, assignment.model)
             level = max(self._format_floor.get(capability, 0), 0 if schema else 1)
+            if not json_output:
+                level = 2
             reasoning = capability not in self._no_reasoning_effort
             dropped = ""
             while True:
@@ -712,7 +743,7 @@ class ModelProvider:
                     # one at a time, and remember only the one whose removal made it work.
                     if reasoning:
                         reasoning, dropped = False, "reasoning"
-                    elif level < 2:
+                    elif json_output and level < 2:
                         level, dropped = level + 1, "format"
                     else:
                         raise
@@ -761,17 +792,12 @@ class ModelProvider:
                 "raise Longest answer the model may write or use a model that thinks less.",
                 "provider-empty-reply",
             )
-        parsed, repairs = read_json(output)
-        if parsed is None:
-            raise ProviderError(
-                "The model's answer was not a JSON object.", "provider-not-json", reply=output
-            )
         reported = result.get("model")
         usage["model"] = assignment.model
         usage["provider_model_version"] = (
             reported[:200] if isinstance(reported, str) else "not supplied"
         )
-        return ModelAnswer(parsed, output, repairs), usage
+        return output, usage
 
     @staticmethod
     def _http_error(status: int, *, upload: bool) -> ProviderError:

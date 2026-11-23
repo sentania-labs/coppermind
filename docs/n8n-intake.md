@@ -231,15 +231,14 @@ the service is sent its bytes.
    means a draft note is waiting in `Review/`, not that anyone
    has reviewed it.
 
-The note's source is the transcript (`transcript.txt` with the speaker labels as the
-service gave them, `Speaker 1` and so on, prefixed `Part 2:` and so on when a long recording was split, and `transcript.json` with timings), and the
+The note is a finished Markdown write-up, written before ingest and not waiting on any
+approval. Its source is the transcript (`transcript.txt` with stable speaker labels, a
+person's name on a unique strong voice match, and `transcript.json` with timings), and the
 recording is a stored artifact the note cites until the note is reviewed and filed, when
-the audio is removed (see [Recordings](api.md#recordings-audio-on-its-own)). The
-summary is proposed from the complete transcript by the configured model when enrichment
-is enabled.
-The owner edits or drops its summary, decisions and actions in the companion or
-review API before completing review. See [Recording summaries](note-workflow.md#recording-summaries)
-for approval and [limits](calendar-enrichment.md) for long transcripts.
+the audio is removed (see [Recordings](api.md#recordings-audio-on-its-own)). Review then
+handles frontmatter suggestions separately and never accepts or appends the body. See
+[Recording summaries](note-workflow.md#recording-summaries) and
+[write-up limits](calendar-enrichment.md) for long transcripts.
 A failure appears with its reason on Admin's Recordings and imports page (and under Problems), the
 recording stays stored, and a person can press Try again there. See
 [Recordings](api.md#recordings-audio-on-its-own) for every field and failure.

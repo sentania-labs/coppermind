@@ -99,6 +99,25 @@ async def setup_transcription(store, service, *, enabled=True, wait_s=30, **extr
         **extra,
     )
     await context.save_transcription({"revision": 1, "assignment": assignment.model_dump()})
+    # Synthetic writer: these tests exercise intake and retention, never a live model.
+    config = context.config()
+    config.assignments["writeup"] = FeatureAssignment(
+        connection=saved["saved"],
+        model="synthetic-writer",
+        enabled=True,
+    )
+    context.save_config(config)
+
+    async def write_text(connection, key, limits, system, evidence):
+        return (
+            "# " + evidence["resolved_title"] + "\n\n## Top line\nA brief greeting.\n\n"
+            "## Action items\nNo explicit commitments.\n\n"
+            "## Executive summary\nThe speakers greeted each other.\n"
+            + "\n<<<RECORDING_BOUNDARIES>>>\n[]\n<<<END_RECORDING_BOUNDARIES>>>\n"
+        ), {}
+
+    context.provider.write_text = write_text
+
     return context
 
 
@@ -137,11 +156,17 @@ async def test_a_recording_alone_becomes_a_transcribed_note_in_review(store):
     source = await store.get_source(sources[0].id)
     assert {a.name for a in source.revisions[-1].artifacts} == {"transcript.txt", "transcript.json"}
     text = (await store.get_source_artifact(sources[0].id, 1, "transcript.txt")).content
-    assert text == "[00:00:00] Speaker 1: Hello there.\n[00:00:03] Speaker 2: Hi.\n"
+    assert (
+        text == "[00:00:00] Unknown voice 1 (recording-local): Hello there.\n"
+        "[00:00:03] Unknown voice 2 (recording-local): Hi.\n"
+    )
     segments = json.loads(
         (await store.get_source_artifact(sources[0].id, 1, "transcript.json")).content
     )["segments"]
-    assert [s["speaker"] for s in segments] == ["Speaker 1", "Speaker 2"]
+    assert [s["speaker"] for s in segments] == [
+        "Unknown voice 1 (recording-local)",
+        "Unknown voice 2 (recording-local)",
+    ]
 
     # Review has not happened, so the audio is still stored.
     kept = await store.get_artifact_bytes(audio)
@@ -169,12 +194,7 @@ async def test_long_recording_becomes_one_note_with_continuous_transcript(store)
     )
     assert [segment["start"] for segment in transcript["segments"]] == [0, 3.4, 4, 7.4, 8, 11.4]
     assert [segment["speaker"] for segment in transcript["segments"]] == [
-        "Part 1: Speaker 1",
-        "Part 1: Speaker 2",
-        "Part 2: Speaker 1",
-        "Part 2: Speaker 2",
-        "Part 3: Speaker 1",
-        "Part 3: Speaker 2",
+        f"Unknown voice {i} (recording-local)" for i in range(1, 7)
     ]
 
 
@@ -207,7 +227,7 @@ async def test_reviewed_recording_is_removed_with_a_receipt_and_transcript(store
     assert detail["note_path"] == listed["note_path"] == note.path
     assert note.frontmatter["type"] == "reference"
     year, month = note.path.split("/")[1:3]
-    assert note.path == f"reference/{year}/{month}/Standup.md"
+    assert note.path == f"reference/{year}/{month}/2026-11-09 Standup.md"
     assert re.fullmatch(r"\d{4}", year) and re.fullmatch(rf"{year}-\d{{2}}", month)
     assert "Audio was removed after review" in note.body
     assert hashlib.sha256(AUDIO).hexdigest() in note.body
@@ -1074,7 +1094,9 @@ async def test_the_recording_page_reads_the_transcript_and_a_retry_needs_transcr
         await context.recordings.tick()
         detail = await context.recording_detail({"id": job["id"]})
         assert detail["state"] == "succeeded" and detail["note_path"].startswith("Review/")
-        assert detail["transcript"].startswith("[00:00:00] Speaker 1: Hello there.")
+        assert detail["transcript"].startswith(
+            "[00:00:00] Unknown voice 1 (recording-local): Hello there."
+        )
         assert "frontmatter" not in detail and detail["can_retry"] is False
 
         # A failed intake only offers a retry while transcription is switched on.
@@ -1241,7 +1263,7 @@ async def test_voice_pending_is_removed_for_a_deleted_note_with_a_stuck_review(s
     assert context.read("voice-pending/" + job.id, None) is None
 
 
-async def test_reviewed_voice_is_suggested_for_later_recording(store):
+async def test_reviewed_voice_names_later_recording_without_duplicate_suggestion(store):
     from coppermind.entities import EntityInput
 
     person = await store.entities.create(EntityInput(kind="person", name="Alex Morgan"))
@@ -1276,8 +1298,20 @@ async def test_reviewed_voice_is_suggested_for_later_recording(store):
         second_job = context.recordings.load(second["id"])
         assert second_job.state == "succeeded"
         detail = await context.lifecycle_detail({"note_id": second_job.note_id})
-        match = next(iter(detail["manual_speaker_review"]["voice_matches"].values()))[0]
-        assert match["id"] == "person:" + person["id"] and match["strength"] == "strong"
+        source = await store.get_source(second_job.source_id)
+        artifact = await store.get_source_artifact(
+            second_job.source_id, source.current_revision, "transcript.json"
+        )
+        labels = {segment["speaker"] for segment in json.loads(artifact.content)["segments"]}
+        assert "Alex Morgan" in labels
+        manual = detail["manual_speaker_review"]
+        assert "Alex Morgan" not in manual["speakers"]
+        assert all(candidate["name"] != "Alex Morgan" for candidate in manual["candidates"])
+        assert all(
+            match["id"] != "person:" + person["id"]
+            for matches in manual["voice_matches"].values()
+            for match in matches
+        )
         assert "vector" not in json.dumps(detail)
 
 
@@ -1389,6 +1423,10 @@ async def test_companion_voice_flow_through_public_api(store):
                 accepted = await context.accept_recording(
                     request(audio, external_source_id=external)
                 )
+                # This test exercises existing legacy review receipts through an upgrade.
+                legacy = context.recordings.load(accepted["id"]).model_dump(mode="json")
+                legacy.pop("generation_mode")
+                context.write("recordings/" + accepted["id"], legacy)
                 for _ in range(4):
                     job = context.recordings.load(accepted["id"])
                     if job.state == "succeeded":

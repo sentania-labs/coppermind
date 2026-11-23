@@ -117,6 +117,45 @@ def test_unknown_voice_is_stable_across_recordings_and_private():
     assert "vector" not in repr(store.unknown_summaries())
 
 
+def test_one_voice_across_parts_of_a_split_recording_gets_one_placeholder():
+    store = VoiceStore(Context())
+    signature = {"model": "m", "version": "1", "vector": [1, 0]}
+    first = store.capture_unknown("recording:job", "Part 1: Speaker 1", "today", 10, [signature])
+    second = store.capture_unknown("recording:job", "Part 2: Speaker 1", "today", 10, [signature])
+    assert first == second == "unknown:1"
+    assert len(store.unknown_summaries()[first]["signatures"]) == 2
+
+
+def test_two_voices_in_the_same_part_stay_two_placeholders():
+    store = VoiceStore(Context())
+    one = {"model": "m", "version": "1", "vector": [1, 0]}
+    other = {"model": "m", "version": "1", "vector": [0, 1]}
+    first = store.capture_unknown("recording:job", "Part 1: Speaker 1", "today", 10, [one])
+    second = store.capture_unknown("recording:job", "Part 1: Speaker 2", "today", 10, [other])
+    assert (first, second) == ("unknown:1", "unknown:2")
+    # The same two voices keep those two identities in the next part.
+    assert store.capture_unknown("recording:job", "Part 2: Speaker 1", "today", 10, [one]) == first
+    assert (
+        store.capture_unknown("recording:job", "Part 2: Speaker 2", "today", 10, [other]) == second
+    )
+
+
+def test_an_ambiguous_part_match_stays_a_separate_placeholder():
+    store = VoiceStore(Context())
+    one = {"model": "m", "version": "1", "vector": [1, 0]}
+    other = {"model": "m", "version": "1", "vector": [0, 1]}
+    assert store.capture_unknown("recording:job", "Part 1: Speaker 1", "today", 10, [one]) == (
+        "unknown:1"
+    )
+    assert store.capture_unknown("recording:job", "Part 1: Speaker 2", "today", 10, [other]) == (
+        "unknown:2"
+    )
+    both = [{"model": "m", "version": "1", "vector": [1, 1]}]
+    assert store.capture_unknown("recording:job", "Part 2: Speaker 3", "today", 10, both) == (
+        "unknown:3"
+    )
+
+
 def test_unknown_capture_respects_global_switch():
     context = Context()
     context.write("voice-signatures", {"people": {}, "recognition_enabled": False})
@@ -166,6 +205,18 @@ def test_relabel_preserves_edits_and_only_changes_assigned_turns():
     body, _, generated = relabel_generated_lines(body, body, generated, 0, "Morgan", "Alex")
     assert body == "Alex: generated\nMorgan: owner edit\nMorgan: duplicated\nMorgan: duplicated\n"
     assert generated.startswith("Alex: generated\n")
+
+
+def test_relabel_leaves_recording_local_labels_with_the_same_number():
+    from coppermind_store.voice_relabel import relabel_generated_lines
+
+    body = (
+        "- Unknown voice 2 will send the deck\n- Unknown voice 2 (recording-local) will book it\n"
+    )
+    result, _, _ = relabel_generated_lines(body, body, body, 0, "Unknown voice 2", "Alex Example")
+    assert result == (
+        "- Alex Example will send the deck\n- Unknown voice 2 (recording-local) will book it\n"
+    )
 
 
 def test_relabel_skips_turns_already_renamed_elsewhere():

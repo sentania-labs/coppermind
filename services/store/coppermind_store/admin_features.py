@@ -360,6 +360,48 @@ class Features:
         await self._update_enrichment(max_output_tokens=limit)
         return {"max_output_tokens": limit}
 
+    async def writeup_settings(self) -> dict[str, Any]:
+        from coppermind.recording_writeup import DEFAULT_PROMPT, DISPLAY_RULES
+        from coppermind_store.recording_writeup import assignment
+
+        async with self.context.lock:
+            chosen = assignment(self.context)
+        return {
+            "assignment": chosen.model_dump(),
+            "prompt": chosen.writeup_prompt or DEFAULT_PROMPT,
+            "default": DEFAULT_PROMPT,
+            "locked": DISPLAY_RULES,
+            "services": [{"id": c.id, "name": c.name} for c in self.context.config().connections],
+        }
+
+    async def writeup_save(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from coppermind_store.recording_writeup import assignment
+
+        async with self.context.lock:
+            old = assignment(self.context)
+            fields = {
+                key: payload[key]
+                for key in (
+                    "connection",
+                    "model",
+                    "enabled",
+                    "max_output_tokens",
+                    "summary_max_input_chars",
+                    "timeout_s",
+                    "writeup_prompt",
+                )
+                if key in payload
+            }
+            if payload.get("reset"):
+                fields["writeup_prompt"] = ""
+            updated = FeatureAssignment.model_validate({**old.model_dump(), **fields})
+            if updated.connection:
+                self.context.connection(updated.connection)
+            config = self.context.config()
+            config.assignments["writeup"] = updated
+            self.context.save_config(config)
+        return {"saved": True}
+
     # -- how the meeting summary is written -----------------------------------------------
 
     def summary_directions(self) -> dict[str, Any]:
@@ -649,13 +691,16 @@ class Features:
             raise Refused("rm_" + feature, "Choose one before removing.")
         if not service["answering"]:
             raise Refused("rm_" + feature, f"{service['name']} is not answering right now.")
-        capable = {"sugg": "text", "trans": "speech"}.get(feature, "embed")
+        capable = {"sugg": "text", "writeup": "text", "trans": "speech"}.get(feature, "embed")
         if not service[capable]["ok"]:
             raise Refused("rm_" + feature, f"{service['name']} cannot do this.")
 
     async def take_over(self, feature: str, target: str) -> str:
         """Point one feature at another service, or turn it off. Returns what was done."""
         if target == "off":
+            if feature == "writeup":
+                await self.writeup_save({"enabled": False, "connection": ""})
+                return "Recording write-ups are off. Retained transcripts can be retried later."
             if feature == "sugg":
                 await self.suggestions_off()
                 return "Suggestions are off."
@@ -667,6 +712,9 @@ class Features:
         service = self._service(target)
         if service is None:
             raise Refused("rm_" + feature, "Choose one before removing.")
+        if feature == "writeup":
+            await self.writeup_save({"connection": target, "model": service["text"]["best"]})
+            return f"Recording write-ups now use {service['name']}."
         if feature == "sugg":
             await self.suggestions_save({"connection": target, "model": service["text"]["best"]})
             return f"Suggestions now use {service['name']} ({service['text']['best']})."
