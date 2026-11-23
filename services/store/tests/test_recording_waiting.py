@@ -442,3 +442,24 @@ def test_an_older_recording_with_no_summary_job_is_pending_or_skipped():
     off = Recordings(SimpleNamespace(read=lambda *_: {}, config=bare_config))
     assert on.summary_of(mine, {})["summary_state"] == "pending"
     assert off.summary_of(mine, {})["summary_state"] == "skipped"
+
+
+@pytest.mark.parametrize(
+    "changes,state",
+    [
+        (
+            {"state": "failed", "attempts": 2, "attempt_limit": 2, "error_rule": "answer-shape"},
+            "failed",
+        ),
+        ({"state": "stale", "error_rule": "skipped"}, "skipped"),
+        ({"state": "queued"}, "pending"),
+    ],
+)
+def test_a_summary_job_that_ended_before_outcomes_were_recorded_still_reports_how_it_ended(
+    changes, state
+):
+    recordings = Recordings(SimpleNamespace(read=lambda *_: {}, config=bare_config))
+    mine = job(1, state="succeeded", note_id="n1")
+    found = enrichment(**changes)
+    assert found.outcome == ""
+    assert recordings.summary_of(mine, {"n1": found})["summary_state"] == state

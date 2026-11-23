@@ -279,19 +279,20 @@ class ContextService:
             raise ValueError("no such job")
         job = self.load_job(identity)
         newest = self.newest_job_id(job.note_id)
+        ended = job.ended
         return {
             "id": job.id,
             "note_id": job.note_id,
             "kind": "dossier" if job.purpose == "dossier" else "suggestions",
-            "state": job.outcome or ("running" if job.state == "running" else "pending"),
+            "state": ended or ("running" if job.state == "running" else "pending"),
             "attempts": job.attempts,
             "attempt_limit": job.attempt_limit,
             "created_at": job.created_at,
             "finished_at": job.finished_at,
-            "error": job.plain or job.error if job.outcome != "succeeded" else "",
-            "error_rule": job.error_rule if job.outcome != "succeeded" else "",
+            "error": job.plain or job.error if ended != "succeeded" else "",
+            "error_rule": job.error_rule if ended != "succeeded" else "",
             "retry_after": job.retry_after,
-            "replaced_by": newest if job.outcome == "superseded" and newest != job.id else "",
+            "replaced_by": newest if ended == "superseded" and newest != job.id else "",
         }
 
     def connection(self, identity: str) -> ModelConnection:

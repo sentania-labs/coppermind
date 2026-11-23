@@ -95,6 +95,11 @@ class EnrichmentJob(ContextModel):
         return ""
 
     @property
+    def ended(self) -> str:
+        """How this job ended, whether or not the outcome was recorded when it did."""
+        return self.outcome or self.settled()
+
+    @property
     def decided(self) -> set[int]:
         return {d["index"] for d in self.decisions if "index" in d}
 

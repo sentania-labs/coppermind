@@ -621,13 +621,14 @@ class Recordings:
                 state = "pending" if enabled else "skipped"
             else:
                 attempts, finished = enrichment.attempts, enrichment.finished_at
-                if enrichment.outcome == "succeeded":
+                ended = enrichment.ended
+                if ended == "succeeded":
                     written = enrichment.result and enrichment.result.meeting_summary
                     state = "succeeded" if written else "skipped"
-                elif enrichment.outcome == "failed":
+                elif ended == "failed":
                     state, rule = "failed", enrichment.error_rule
                     error = enrichment.plain or enrichment.error
-                elif enrichment.outcome == "skipped":
+                elif ended == "skipped":
                     state = "skipped"
                 elif enrichment.state == "running":
                     state = "running"
