@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime
+from datetime import date, datetime
 from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from coppermind.context_config import FeatureAssignment
+from coppermind.logging import get_logger
 from coppermind.recording_writeup import (
     BOUNDARY_END,
     BOUNDARY_RULES,
@@ -20,6 +21,7 @@ from coppermind.recording_writeup import (
     RecordingBoundary,
     failure_message,
 )
+from coppermind.schema import parse_note_time
 from coppermind_store import meeting_match
 from coppermind_store.model_provider import ProviderError
 
@@ -86,6 +88,39 @@ def boundaries(document: str, duration: float) -> tuple[str, list[dict[str, Any]
     return prose, [row.model_dump() for row in parsed]
 
 
+# A date the recorder put at the front of its own title, in any of the forms it uses.
+_LEADING_DATE = re.compile(
+    r"^(?:(?P<year>\d{4})[-/.])?(?P<month>\d{1,2})[-/.](?P<day>\d{1,2})(?!\d)[\s:_\-]*"
+)
+# A bare recorder prefix says nothing once the date is there ("Operations Meeting:" does).
+_GENERIC_PREFIX = re.compile(r"^Meeting\s*:\s*", re.I)
+
+
+def clean_title(title: str, day: date) -> str:
+    """The recorder's title without a leading date that is the recording's own date."""
+    title = " ".join(title.split()).lstrip("# ")
+    found = _LEADING_DATE.match(title)
+    if found and (
+        int(found["month"]) == day.month
+        and int(found["day"]) == day.day
+        and (found["year"] is None or int(found["year"]) == day.year)
+    ):
+        title = title[found.end() :]
+    generic = _GENERIC_PREFIX.match(title)
+    if generic and title[generic.end() :].strip():
+        title = title[generic.end() :]
+    return title.strip() or "Recording"
+
+
+def unresolved_reason(found: int, error: Exception | None) -> str:
+    """Plain words for why no calendar event was chosen."""
+    if error is not None:
+        return f"the calendar lookup failed ({type(error).__name__}); review can try again"
+    if found == 0:
+        return "no calendar event overlaps the recording's start"
+    return f"{found} calendar events overlap the recording's start and none stood out"
+
+
 async def resolve_title(context: Any, job: Any, transcript: str) -> tuple[str, dict[str, Any]]:
     zone = ZoneInfo(context.store.control.settings().general.timezone)
     fields = dict(job.frontmatter)
@@ -96,11 +131,16 @@ async def resolve_title(context: Any, job: Any, transcript: str) -> tuple[str, d
     except ValueError:
         stamp = datetime.fromisoformat(job.created_at)
     stamp = stamp.replace(tzinfo=zone) if stamp.tzinfo is None else stamp.astimezone(zone)
-    fields.setdefault(date_key, stamp.isoformat())
+    # Notes keep their date as local time without an offset; an offset-qualified value is
+    # not a usable note date, so every calendar lookup would find nothing.
+    if not parse_note_time(fields.get(date_key)).valid:
+        fields[date_key] = stamp.replace(tzinfo=None, microsecond=0).isoformat()
     evidence: dict[str, Any] = {"matched": False}
+    found, error = 0, None
     try:
         events = await context.calendar_candidates(SimpleNamespace(frontmatter=fields))
-        events = meeting_match.overlapping(events, job.captured_at)
+        events = meeting_match.overlapping(events, stamp.isoformat())
+        found = len(events)
         linked_field = context.config().assignments["enrichment"].event_field
         linked = fields.get(linked_field) if linked_field else None
         chosen = [event for event in events if event["event_id"] == linked] if linked else []
@@ -112,12 +152,23 @@ async def resolve_title(context: Any, job: Any, transcript: str) -> tuple[str, d
                 chosen = [event for event in events if event["event_id"] == suggested]
         if len(chosen) == 1:
             evidence = {"matched": True, "event": chosen[0]}
-    except Exception:
+    except Exception as exc:
         # Calendar failure cannot stop audio intake. Review may resolve the event later.
-        evidence = {"matched": False}
-    title = evidence["event"]["title"] if evidence["matched"] else job.title
-    title = re.sub(r"^\d{4}-\d{2}-\d{2}\s+", "", title.strip())
-    title = " ".join(title.split()).lstrip("# ") or "Recording"
+        error = exc
+        get_logger("coppermind-store").warning(
+            "recording_calendar_lookup_failed", recording=job.id, error=type(exc).__name__
+        )
+    if not evidence["matched"]:
+        reason = unresolved_reason(found, error)
+        evidence["reason"] = reason
+        get_logger("coppermind-store").info(
+            "recording_calendar_unresolved", recording=job.id, reason=reason
+        )
+    if evidence["matched"]:
+        title = re.sub(r"^\d{4}-\d{2}-\d{2}\s+", "", evidence["event"]["title"].strip())
+        title = " ".join(title.split()).lstrip("# ") or "Recording"
+    else:
+        title = clean_title(job.title, stamp.date())
     return f"{stamp.date().isoformat()} {title}", evidence
 
 
@@ -188,7 +239,10 @@ async def generate(
     except ValueError as exc:
         raise ProviderError(failure_message("writeup-invalid"), "writeup-invalid") from exc
     if not calendar["matched"]:
-        body += "\n_Calendar matching was unresolved; the recording title was used._\n"
+        body += (
+            f"\n_Calendar matching was unresolved: {calendar['reason']}; "
+            "the recording title was used._\n"
+        )
     saved = {
         "version": 1,
         "title": title,
