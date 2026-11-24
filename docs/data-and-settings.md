@@ -165,7 +165,7 @@ in Admin. Nothing here needs to be set before the system runs.
 | indexer | `enabled` | true |
 | indexer | `language` | `english` |
 | indexer | `reconcile_interval_s` | 600 |
-| retention | `days` | 30 (integer, 0 through 36500; 0 permits immediate manual purge). The one window for deleted notes and for removed artifacts, whether removed in Admin, through the API or by deleting the file in Obsidian |
+| retention | `days` | 30 (integer, 0 through 36500; 0 sweeps on the next reservation). The window for a staged upload receipt, which is the only record still using it. Deleted notes, removed artifacts, orphaned sources and their stored files go at once, with no keep time |
 | retention | `count_interval_s` | 300 (integer, 60 through 86400). Seconds between background clean-up counts; see [Retention purge receipts](#retention-purge-receipts) |
 | events | `retention_days` | 7 |
 | events | `poll_fallback_s` | 5 |
@@ -401,21 +401,14 @@ through any route).
 
 ## Deleted-note recovery receipts
 
-`/data/state/note-recovery/<note-id>-<removal-commit>.json` is immutable,
-versioned recovery evidence with `schema_version`, `note_id`, `path`,
-`content_hash`, `removal_commit`, Git `blob`, base64 `content`, and
-`recorded_at`. The content hash is verified before recovery. Receipts are
-mode 0600 and contain private note contents, so they belong in the protected
-backup set, never operational logs or exported diagnostics. Restore
-confirmations live under its `restores/` subdirectory. Later observations of
-returned identities live under `observed/`, so a rebuild cannot confuse an
-old deletion with a later return. None of these files is synced.
+`/data/state/note-recovery/<note-id>-<removal-commit>.json` was the recovery copy each
+deleted note kept for its keep time, together with its `restores/` and `observed/`
+subdirectories. Those files no longer exist: a deletion answers once and leaves no
+recovery copy, and migration `0016` removes whatever the earlier release left behind.
+The vault's Git history under `/data/notes/.git` is the safety net, and it is left
+alone on purpose. `deleted` is the state a scan gives a note whose removal Git has
+recorded; a returning identity is picked up again by the next scan.
 
-Rebuild seeds identities from receipts before scanning files. Observed file
-contents always win when an identity returns. `deleted` is reversible absence
-with Git recovery evidence, not an instruction to erase files or sources.
-Only a confirmed [retention purge](#retention-purge-receipts) removes a
-receipt and its observation copies.
 Historical source approvals remain in their existing review/filing receipts.
 
 A complete backup must preserve `/data/notes` including `.git`, `/data/sources`,
@@ -466,13 +459,13 @@ value. Page requests never trigger a scan. The background count uses the
 same full purge planner as the clean-up list, including filesystem evidence;
 it is a saved observation, not authorization to remove anything.
 
-**Admin > Storage** sets the keep time, `retention.days`, with revision safety,
-and **Storage > Clean up** (`/admin/storage/cleanup`) lists what is past it and
-deletes nothing until that list is confirmed. A list that changed after it was
-shown is shown again rather than acted on. No timer erases data. The retention window begins
-at the later of the deleted row's last update and its recovery receipt's
-recorded time. The boundary is inclusive. Missing notes and notes still in
-Trash are not deleted-note candidates.
+**Admin > Storage** shows that count and offers the clean-up list at
+**Storage > Clean up** (`/admin/storage/cleanup`), which lists what is past the
+keep time and deletes nothing until that list is confirmed. A list that changed
+after it was shown is shown again rather than acted on. No timer erases data.
+Notes, removed artifacts and orphaned sources that already have no keep time
+(`retention.days` is 0) are listed on the next count. Missing notes and notes
+still in Trash are not deleted-note candidates.
 
 An orphaned source is eligible independently of that window when its manifest
 identifies an opening note that is deleted, or a completed purge receipt proves

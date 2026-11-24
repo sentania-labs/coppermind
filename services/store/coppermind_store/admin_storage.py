@@ -2,7 +2,8 @@
 
 Space used is added up from what is really on disk, so it changes when something
 is deleted. The clean-up list is the retention purge's own dry run; nothing is
-removed until the owner confirms that exact list.
+removed until the owner confirms that exact list. A removal answers once: a note
+or file that is gone leaves no recovery copy and no second step.
 """
 
 from __future__ import annotations
@@ -32,7 +33,9 @@ if TYPE_CHECKING:
     from coppermind_store.admin_notes import AdminNotes
     from coppermind_store.notes import LocalStore
 
-KEEP_DAYS = (7, 30, 90, 365)
+# `retention.days`: the staged upload receipt window. 0 sweeps a receipt on the next
+# reservation; every other value is one of these choices.
+KEEP_DAYS = (0, 7, 30, 90, 365)
 KINDS = {
     "note": "Deleted note",
     "artifact": "Removed file",
@@ -77,6 +80,10 @@ class AdminStorage:
 
     def keep_days(self) -> int:
         return self.store.control.settings().retention.days
+
+    def _cutoff(self) -> datetime:
+        """The oldest time an item can have its own record and still be listed."""
+        return datetime.now(UTC) - timedelta(days=self.keep_days())
 
     # -- space ---------------------------------------------------------------------------
 
@@ -133,17 +140,13 @@ class AdminStorage:
         return total
 
     def _old_removed(self) -> list[dict[str, Any]]:
-        """Files Admin itself took away that are past the keep time."""
-        cutoff = datetime.now(UTC) - timedelta(days=self.keep_days())
-        return [
-            item
-            for item in self.notes.removed()
-            if datetime.fromisoformat(item["removed_at"]) <= cutoff
-        ]
+        """Files Admin itself took away. Each copy is ready for the list at once: a
+        removal answers once, so the only thing left to do is drop the copy."""
+        return list(self.notes.removed())
 
     def _still_kept(self) -> list[dict[str, Any]]:
-        """Removed files and people not yet past the keep time: still here to bring back."""
-        cutoff = datetime.now(UTC) - timedelta(days=self.keep_days())
+        """Removed files and people whose record is still here to bring back."""
+        cutoff = self._cutoff()
         kept = []
         for manifest_file in self.store.artifacts_root.glob("*/manifest.json"):
             try:

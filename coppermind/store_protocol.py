@@ -1427,6 +1427,9 @@ class HistoryStatus(BaseModel):
 
 
 class NoteRecovery(BaseModel):
+    """One recovery copy, as the pre-143 state files held it. Read-only now: item 2 of
+    issue 143 replaces this with versions taken from Git history."""
+
     evidence_pending: bool = False
     note_id: str
     path: str

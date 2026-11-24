@@ -48,7 +48,7 @@ ALONE_LEDE = (
 
 
 def keep_words(days: int) -> str:
-    return "1 year" if days == 365 else plural(days, "day")
+    return "no time at all" if days == 0 else ("1 year" if days == 365 else plural(days, "day"))
 
 
 def alone_why(reason: str) -> str:
@@ -76,6 +76,8 @@ def until_text(deleted_at: str, days: int, ctx: Ctx) -> str:
         return ""
     from datetime import UTC, timedelta
 
+    if days <= 0:
+        return "It is also listed under Clean up."
     limit = gone + timedelta(days=days)
     if limit <= datetime.now(UTC):
         return "Past its keep time, so it is also listed under Clean up."
