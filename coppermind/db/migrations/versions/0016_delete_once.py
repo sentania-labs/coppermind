@@ -50,26 +50,29 @@ def _remove_tree(root: Path) -> None:
         root.rmdir()
 
 
-def _on_disk(notes_dir: Path) -> tuple[set[str], dict[str, list[Path]]]:
+def _on_disk(notes_dir: Path) -> tuple[set[str], dict[str, list[Path]], bool]:
     """Every identity a note file in the vault mentions, and the pages made for sources.
 
     Wider than the notes' own identities and citations on purpose: anything a note names
     stays. A page Coppermind wrote for a source names that source and does not count; it is
-    listed by source instead, so it can go with the source.
+    listed by source instead, so it can go with the source. The last value is False when the
+    folder is missing or a file could not be read, so the scan is not a complete picture.
     """
     from coppermind import frontmatter as fm
 
     found: set[str] = set()
     pages: dict[str, list[Path]] = {}
-    if not notes_dir.is_dir():
-        return found, pages
+    complete = notes_dir.is_dir()
+    if not complete:
+        return found, pages, False
     for path in notes_dir.rglob("*.md"):
         relative = path.relative_to(notes_dir)
         if any(part in {".git", ".obsidian"} for part in relative.parts):
             continue
         try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            complete = False
             continue
         with suppress(fm.FrontmatterError, ValueError):
             fields, _ = fm.parse(text)
@@ -78,7 +81,7 @@ def _on_disk(notes_dir: Path) -> tuple[set[str], dict[str, list[Path]]]:
                     pages.setdefault(fields["source_id"], []).append(path)
                 continue
         found.update(_IDENTITY.findall(text))
-    return found, pages
+    return found, pages, complete
 
 
 def _orphaned_sources(
@@ -140,8 +143,9 @@ def upgrade() -> None:
 
     # A note whose file a scan can still see is not deleted, whatever its row says: it goes
     # back to an ordinary note and the next scan reads it.
-    mounted = wiring.notes_dir.is_dir()
-    on_disk, pages = _on_disk(wiring.notes_dir)
+    # With the volume missing, or a vault file unreadable, nothing on disk can be proved
+    # unreferenced, so only the rows are dropped and every source and archive stays.
+    on_disk, pages, mounted = _on_disk(wiring.notes_dir)
     present: list[str] = []
     deleted: set[str] = set()
     for (note_id,) in bind.execute(sa.text("SELECT id FROM notes WHERE state = 'deleted'")):
@@ -155,7 +159,6 @@ def upgrade() -> None:
             {"id": note_id},
         )
     if deleted:
-        # Without the notes volume nothing on disk can be checked, so only rows are dropped.
         orphans = _orphaned_sources(bind, deleted, on_disk, wiring.sources_dir) if mounted else []
         for source_id, bundle, outside in orphans:
             for path in (*pages.get(source_id, []), *outside):
@@ -176,7 +179,7 @@ def upgrade() -> None:
             )
             with suppress(OSError):
                 (wiring.state_dir / "filing" / f"{note_id}.json").unlink(missing_ok=True)
-        if mounted:
+        if wiring.notes_dir.is_dir():
             # What the people and companies pages and the voice store learned from these notes
             # is scrubbed by the store when it next starts, which holds the code that knows how.
             pending = wiring.state_dir / "removed-notes-pending.json"

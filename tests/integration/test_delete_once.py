@@ -445,3 +445,19 @@ async def test_a_removal_that_stops_part_way_keeps_the_manifest_for_the_retry(
     monkeypatch.setattr(removal, "_unlink", original)
     assert (await reconcile_once(store))["deleted"] == 1
     assert not bundle.exists()
+
+
+async def test_a_source_cited_while_its_note_is_being_removed_is_kept(
+    store: LocalStore, monkeypatch
+):
+    from coppermind_store import removal
+
+    ingested = await orphan(store)
+
+    async def cited(*args):
+        return True
+
+    monkeypatch.setattr(removal, "_cited_now", cited)
+    assert (await reconcile_once(store))["deleted"] == 1
+    assert (store.sources_root / ingested.source.id / "manifest.json").exists()
+    assert await rows(store, Source, Source.id == ingested.source.id)

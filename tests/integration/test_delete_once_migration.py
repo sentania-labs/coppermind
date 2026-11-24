@@ -229,3 +229,31 @@ async def test_a_deleted_note_whose_file_is_still_in_the_vault_becomes_an_ordina
     async with session_factory() as session:
         row = await session.get(Note, back)
     assert row is not None and row.state == "ok"
+
+
+async def test_an_unreadable_vault_file_keeps_every_source(
+    migrated_database: str,
+    session_factory: async_sessionmaker[AsyncSession],
+    wiring: Wiring,
+):
+    gone, only_gone = new_id(), new_id()
+    async with session_factory() as session, session.begin():
+        session.add(_note(gone, "deleted", only_gone))
+        session.add(_source(only_gone, "one"))
+        await session.flush()
+        session.add(NoteSource(note_id=gone, source_id=only_gone, created_at=datetime.now(tz=UTC)))
+    bundle, claim = _bundle(wiring, only_gone, "one", gone)
+    hidden = wiring.notes_dir / "Hidden.md"
+    hidden.parent.mkdir(parents=True, exist_ok=True)
+    hidden.write_text(f"Cites {only_gone}\n")
+    hidden.chmod(0)
+    try:
+        _alembic(migrated_database, wiring, "downgrade", "0015")
+        _alembic(migrated_database, wiring, "upgrade", "0016")
+    finally:
+        hidden.chmod(0o644)
+
+    async with session_factory() as session:
+        assert not (await session.scalars(sa.select(Note.id))).all()
+        assert set((await session.scalars(sa.select(Source.id))).all()) == {only_gone}
+    assert bundle.exists() and claim.exists()

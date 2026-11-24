@@ -168,7 +168,15 @@ def _orphans(
                 if fields.get("managed") is not True or fields.get("source_id") != source.id:
                     raise ValueError("source projection identity mismatch")
                 pages_here.append(path)
-        found.append({"id": source.id, "files": files, "folders": folders, "pages": pages_here})
+        found.append(
+            {
+                "id": source.id,
+                "claim": claim.name,
+                "files": files,
+                "folders": folders,
+                "pages": pages_here,
+            }
+        )
     return found
 
 
@@ -259,10 +267,20 @@ async def _remove_batch(store: LocalStore, wanted: set[str]) -> set[str]:
         )
     gone_people = await asyncio.to_thread(store.entities.orphaned_by, wanted)
 
-    # Files and saved records first, so a failure leaves the rows to try again from.
+    # Files and saved records first, so a failure leaves the rows to try again from. Each
+    # source goes under the lock ingest, merge and filing take to cite one, and is looked at
+    # once more there: a note that cited it since the check above keeps it.
+    removed_sources = 0
     for orphan in orphans:
-        await asyncio.to_thread(_unlink, [*orphan["pages"], *orphan["files"]])
-        await asyncio.to_thread(_remove_folders, orphan["folders"])
+        async with store._source_lock_for(orphan["claim"]):
+            if await _cited_now(store, orphan["id"], wanted):
+                continue
+            await asyncio.to_thread(_unlink, [*orphan["pages"], *orphan["files"]])
+            await asyncio.to_thread(_remove_folders, orphan["folders"])
+            async with transaction(store.session_factory) as session:
+                await indexer.drop_source(session, orphan["id"], datetime.now(UTC))
+                await session.execute(sa.delete(Source).where(Source.id == orphan["id"]))
+            removed_sources += 1
     for person in gone_people:
         await asyncio.to_thread(_unlink, [resolve(store.notes_root, person.path)])
     journals = store.control.store.state_dir / "filing"
@@ -279,9 +297,6 @@ async def _remove_batch(store: LocalStore, wanted: set[str]) -> set[str]:
         for note_id in wanted:
             await indexer.drop_note(session, note_id, now)
         await session.execute(sa.delete(Note).where(Note.id.in_(wanted)))
-        for orphan in orphans:
-            await indexer.drop_source(session, orphan["id"], now)
-            await session.execute(sa.delete(Source).where(Source.id == orphan["id"]))
         if person_ids:
             await session.execute(sa.delete(EntityRecord).where(EntityRecord.id.in_(person_ids)))
             await session.execute(
@@ -290,8 +305,24 @@ async def _remove_batch(store: LocalStore, wanted: set[str]) -> set[str]:
                 )
             )
     if held:
-        log.info("notes removed", count=len(held), sources=len(orphans))
+        log.info("notes removed", count=len(held), sources=removed_sources)
     return held
+
+
+async def _cited_now(store: LocalStore, source_id: str, removed: set[str]) -> bool:
+    """Whether a note that is staying cites this source, read fresh from the mirror."""
+    async with store.session_factory() as session:
+        linked = await session.scalar(
+            sa.select(sa.func.count())
+            .select_from(NoteSource)
+            .where(NoteSource.source_id == source_id, NoteSource.note_id.not_in(removed))
+        )
+        listed = await session.scalar(
+            sa.select(sa.func.count())
+            .select_from(Note)
+            .where(Note.id.not_in(removed), Note.source_ids.contains([source_id]))
+        )
+    return bool(linked or listed)
 
 
 async def finish_upgrade_removals(store: LocalStore) -> int:
