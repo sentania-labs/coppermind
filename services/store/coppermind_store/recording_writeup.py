@@ -682,7 +682,7 @@ async def generate(
         "known_tags": sorted(set(vocab["tags"].values()))[:300],
     }
     if limits.writeup_glossary.strip():
-        evidence["glossary"] = limits.writeup_glossary.strip()[:4000]
+        evidence["glossary"] = limits.writeup_glossary.strip()
     system = (
         effective_prompt(limits.writeup_prompt).replace("{resolved_title}", title)
         + "\n\n"

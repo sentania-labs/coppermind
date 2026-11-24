@@ -118,6 +118,7 @@ def tidy_suggestions(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
                 fixed.append(item)
                 continue
             item = dict(item)
+            item.pop("origin", None)
             for key in ("confidence", "entity_ids", "field", "event_ids", "contact_ids", "quote"):
                 if key in item and item[key] is None:
                     del item[key]
@@ -291,6 +292,7 @@ def _schema() -> dict[str, Any]:
     """The answer the suggestions prompt asks for. The summary is a separate request."""
     schema = Suggestions.model_json_schema()
     schema["properties"].pop("meeting_summary", None)
+    schema["$defs"]["Suggestion"]["properties"].pop("origin", None)
     schema.pop("title", None)
     return schema
 

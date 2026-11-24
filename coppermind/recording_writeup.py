@@ -139,7 +139,8 @@ short meetings or dropping consequential material merely to hit a target.""",
 def effective_prompt(saved: str) -> str:
     """The directions in force: the owner's own, or the current default when they have none
     or have only ever saved a default the product shipped earlier."""
-    text = (saved or "").strip()
+    saved = (saved or "").replace("\r\n", "\n")
+    text = saved.strip()
     if not text or text in {p.strip() for p in PREVIOUS_DEFAULT_PROMPTS}:
         return DEFAULT_PROMPT
     return saved

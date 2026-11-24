@@ -64,6 +64,14 @@ def test_a_missing_optional_key_is_empty_and_a_lone_string_becomes_a_list():
     assert any(r.startswith("unresolved") for r in repairs)
 
 
+def test_a_model_cannot_claim_its_suggestion_came_from_the_write_up():
+    data = {"suggestions": [{"kind": "filename", "reason": "r", "origin": "writeup"}]}
+    result, _ = answer_shape.read_suggestions(data)
+    assert result.suggestions[0].origin == ""
+    item = answer_shape.SUGGESTIONS_SCHEMA["$defs"]["Suggestion"]["properties"]
+    assert "origin" not in item
+
+
 def test_null_for_an_optional_part_is_left_out():
     data = {"suggestions": [{"kind": "filename", "reason": "r", "quote": None, "event_ids": None}]}
     result, repairs = answer_shape.read_suggestions(data)

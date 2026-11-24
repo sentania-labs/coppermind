@@ -397,11 +397,10 @@ class Features:
             }
             if payload.get("reset"):
                 fields["writeup_prompt"] = ""
-            elif "writeup_prompt" in fields and (
-                effective_prompt(fields["writeup_prompt"]) == DEFAULT_PROMPT
-            ):
+            elif "writeup_prompt" in fields:
                 # Saving the page with the default untouched keeps following the default.
-                fields["writeup_prompt"] = ""
+                prompt = effective_prompt(fields["writeup_prompt"])
+                fields["writeup_prompt"] = "" if prompt == DEFAULT_PROMPT else prompt
             updated = FeatureAssignment.model_validate({**old.model_dump(), **fields})
             if updated.connection:
                 self.context.connection(updated.connection)

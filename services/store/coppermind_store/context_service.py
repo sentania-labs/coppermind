@@ -1511,14 +1511,17 @@ class ContextService:
             # People heard and recognised by their voice were there. Names only mentioned,
             # and invitations, are not evidence of attendance.
             heard = {name for name in saved.get("voice_map", {}).values()}
-            people = [
-                person
-                for person in self.store.entities.load().entities.values()
-                if person.kind == "person"
-                and not person.retired_at
-                and not person.redirect
-                and person.name in heard
-            ]
+            named: dict[str, list[Any]] = {}
+            for person in self.store.entities.load().entities.values():
+                if (
+                    person.kind == "person"
+                    and not person.retired_at
+                    and not person.redirect
+                    and person.name in heard
+                ):
+                    named.setdefault(person.name, []).append(person)
+            # A name two people share does not say which of them was heard.
+            people = [group[0] for group in named.values() if len(group) == 1]
             if people:
                 found.append(
                     Suggestion(

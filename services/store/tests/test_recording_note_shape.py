@@ -212,3 +212,11 @@ def test_the_default_changes_only_for_owners_who_never_edited_it():
     assert effective_prompt(PREVIOUS_DEFAULT_PROMPTS[0] + "\n") == DEFAULT_PROMPT
     assert effective_prompt("Write a concise account.") == "Write a concise account."
     assert chr(0x2014) not in DEFAULT_PROMPT
+
+
+def test_a_default_saved_from_a_browser_with_crlf_line_endings_still_follows_the_default():
+    for shipped in (DEFAULT_PROMPT, PREVIOUS_DEFAULT_PROMPTS[0]):
+        assert effective_prompt(shipped.replace("\n", "\r\n")) == DEFAULT_PROMPT
+    assert effective_prompt("Keep it short.\r\nAdd commitments.") == (
+        "Keep it short.\nAdd commitments."
+    )
