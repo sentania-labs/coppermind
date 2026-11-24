@@ -401,3 +401,63 @@ async def test_a_failed_recording_the_owner_deleted_or_dismissed_sends_nothing(
     received = webhook(fixture, monkeypatch, [])
     await fixture.alerts.send_events()
     assert received == []
+
+
+@pytest.mark.asyncio
+async def test_more_failures_than_the_history_bound_are_each_sent_once(tmp_path, monkeypatch):
+    jobs = [failed(i) for i in range(1, owner_alerts.EVENTS_KEPT + 6)]
+    fixture = Fixture(tmp_path, jobs)
+    received = webhook(fixture, monkeypatch, [])
+    await fixture.alerts.send_events()
+    assert len(received) == len(jobs)
+    for _ in range(2):
+        await fixture.alerts.send_events()
+    assert len(received) == len(jobs)
+    assert len({item["recording"]["id"] for item in received}) == len(jobs)
+
+
+@pytest.mark.asyncio
+async def test_markers_of_events_that_are_gone_are_still_cut_to_the_bound(tmp_path, monkeypatch):
+    fixture = Fixture(tmp_path, [failed(1)])
+    received = webhook(fixture, monkeypatch, [])
+    fixture.saved["attention-events"] = {
+        f"old:{i}": {
+            "event": "recording.failed",
+            "title": "x",
+            "state": "sent",
+            "at": stamp(days=2, minutes=i),
+        }
+        for i in range(owner_alerts.EVENTS_KEPT + 20)
+    }
+    await fixture.alerts.send_events()
+    assert len(received) == 1
+    assert len(fixture.saved["attention-events"]) == owner_alerts.EVENTS_KEPT + 1
+
+
+@pytest.mark.asyncio
+async def test_changing_the_review_folder_moves_the_problems_note_with_it(tmp_path):
+    fixture = Fixture(tmp_path, [failed(1)])
+    await fixture.alerts.keep_problems_note()
+    old = tmp_path / "Review" / "Needs attention.md"
+    assert old.exists()
+    fixture.context.store.control.settings().notes.review_folder = "Inbox"
+    await fixture.alerts.keep_problems_note()
+    assert not old.exists()
+    assert (tmp_path / "Inbox" / "Needs attention.md").exists()
+    # The old folder holds a note of the owner's own with that name: it is never touched.
+    fixture.context.store.control.settings().notes.review_folder = "Review"
+    old.write_text("mine\n")
+    await fixture.alerts.keep_problems_note()
+    assert not (tmp_path / "Inbox" / "Needs attention.md").exists()
+    assert old.read_text() == "mine\n"
+
+
+@pytest.mark.asyncio
+async def test_a_folder_change_while_nothing_is_wrong_leaves_nothing_behind(tmp_path):
+    jobs = [failed(1)]
+    fixture = Fixture(tmp_path, jobs)
+    await fixture.alerts.keep_problems_note()
+    jobs[0].dismissed = True
+    fixture.context.store.control.settings().notes.review_folder = "Inbox"
+    await fixture.alerts.keep_problems_note()
+    assert not list(tmp_path.rglob("Needs attention.md"))

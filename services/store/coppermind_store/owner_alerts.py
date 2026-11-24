@@ -46,6 +46,7 @@ GENERATED_KEY = "coppermind-generated"
 GENERATED_VALUE = "needs-attention"
 CONFIG = "attention-webhook"
 EVENTS = "attention-events"
+NOTE_AT = "attention-note"
 STUCK_HOURS = 6
 TICK_SECONDS = 60
 TRIES = 5
@@ -276,10 +277,28 @@ class OwnerAlerts:
     def zone(self) -> ZoneInfo:
         return ZoneInfo(self.context.store.control.settings().general.timezone)
 
-    def note_path(self):
+    def note_relative(self) -> str:
         settings = self.context.store.control.settings()
         folder = sanitize_folder(settings.notes.review_folder)
-        return resolve(self.context.store.notes_root, f"{folder}/{PROBLEMS_NOTE}")
+        return f"{folder}/{PROBLEMS_NOTE}"
+
+    def note_path(self):
+        return resolve(self.context.store.notes_root, self.note_relative())
+
+    def _retire_old_note(self, current: str) -> None:
+        """Remove the note we wrote where the review folder used to be, once it has moved."""
+        before = self.context.read(NOTE_AT, {}).get("path", "")
+        if not before or before == current:
+            return
+        try:
+            old = resolve(self.context.store.notes_root, before)
+            if old.exists() and self._ours(old.read_bytes()):
+                old.unlink()
+        except (OSError, ValueError):
+            log.warning("the problems note at its old folder could not be removed")
+            return
+        self._written = ""
+        self.context.write(NOTE_AT, {})
 
     def _ours(self, data: bytes) -> bool:
         try:
@@ -292,6 +311,8 @@ class OwnerAlerts:
         """Write the problems note for what needs attention now, or remove it when nothing does."""
         snapshot = snapshot or await self.snapshot()
         sections = self.items(snapshot)
+        relative = self.note_relative()
+        self._retire_old_note(relative)
         path = self.note_path()
         try:
             existing = path.read_bytes() if path.exists() else None
@@ -304,6 +325,7 @@ class OwnerAlerts:
             self._written = ""
             if existing is not None:
                 path.unlink(missing_ok=True)
+            self.context.write(NOTE_AT, {})
             return
         body = self.render(sections, "")
         digest = hashlib.sha256(body.encode()).hexdigest()
@@ -316,6 +338,7 @@ class OwnerAlerts:
         except OSError as exc:
             raise NotesFilesystemUnavailable(str(exc)) from exc
         self._written = digest
+        self.context.write(NOTE_AT, {"path": relative})
 
     # -- the webhook ---------------------------------------------------------------------
 
@@ -443,8 +466,19 @@ class OwnerAlerts:
                         "webhook %s not delivered (%s), try %d", payload["event"], problem, tries
                     )
         if changed:
-            kept = sorted(events.items(), key=lambda pair: pair[1].get("at", ""), reverse=True)
-            self.context.write(EVENTS, dict(kept[:EVENTS_KEPT]))
+            # A marker for an event that `due_events` can still return is the only thing that
+            # stops it being sent again, so it is never pruned; only markers for events that
+            # are gone (the recording was retried, the summary written) are cut to a bound.
+            live = {key for key, _ in due}
+            gone = sorted(
+                ((k, v) for k, v in events.items() if k not in live),
+                key=lambda pair: pair[1].get("at", ""),
+                reverse=True,
+            )
+            self.context.write(
+                EVENTS,
+                {**{k: v for k, v in events.items() if k in live}, **dict(gone[:EVENTS_KEPT])},
+            )
 
     # -- the worker ----------------------------------------------------------------------
 
