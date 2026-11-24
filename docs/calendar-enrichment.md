@@ -261,7 +261,9 @@ enrichment runs, whatever fields enrichment is set to fill for other notes. A bl
 cannot be read costs the note nothing: the note is filed, the problem is logged and kept
 as `suggestion_error` with the saved write-up.
 Offering facts to the account's dossier is not part of this: dossiers take evidenced claims
-directly and have no suggested state. The model also returns a delimited JSON boundary block after the Markdown.
+directly and have no suggested state.
+
+The model also returns a delimited JSON boundary block after the Markdown.
 Intake validates its timestamp ranges, kind, evidence and confidence, saves it on the
 recording job and exposes it in recording status, then strips the block before filing.
 Intake does not split a recording into multiple notes or act on these boundaries.
