@@ -1450,6 +1450,11 @@ class ContextService:
         # Each is checked as if the ones before it were accepted: a note whose context is
         # external needs its account.
         frontmatter = dict(evidence["note"]["frontmatter"])
+        for earlier in existing:
+            # What enrichment itself proposes counts too: its account is what makes
+            # `external` valid.
+            if earlier.kind == "field" and earlier.field and earlier.value is not None:
+                frontmatter = {**frontmatter, earlier.field: earlier.value}
         for item in self.writeup_suggestions(note, existing):
             current = {**evidence, "note": {**evidence["note"], "frontmatter": frontmatter}}
             try:
@@ -1460,6 +1465,27 @@ class ContextService:
             kept.append(item)
             frontmatter = {**frontmatter, item.field: item.value}
         return kept
+
+    def guard_new_accounts(self, note_id: str, suggestions: list[Suggestion]) -> None:
+        """A company that does not exist is only ever offered as a new account. An account
+        the enrichment answer proposes for a recording note gets the same treatment as the
+        write-up's: below the confidence at which a field fills itself, and said so."""
+        from coppermind.recording_writeup import NEW_ACCOUNT_CAP
+        from coppermind_store.recording_writeup import vocabulary
+
+        key = self.store.control.schema().roles.get("account_key")
+        if not key or not self.written_up(note_id):
+            return
+        known = vocabulary(self)["accounts"]
+        for item in suggestions:
+            if item.kind != "field" or item.field != key:
+                continue
+            names = item.value if isinstance(item.value, list) else [item.value]
+            if all(isinstance(n, str) and n.casefold() in known for n in names):
+                continue
+            item.confidence = min(item.confidence, NEW_ACCOUNT_CAP)
+            if not item.reason.startswith("New account?"):
+                item.reason = ("New account? " + item.reason)[:2000]
 
     def writeup_suggestions(self, note: Any, existing: list[Suggestion]) -> list[Suggestion]:
         """The field suggestions made while the recording was written up, for the fields the
@@ -1808,6 +1834,7 @@ class ContextService:
                 answer_shape.read_suggestions,
                 answer_shape.SUGGESTIONS_SCHEMA,
             )
+            self.guard_new_accounts(job.note_id, result.suggestions)
             result.suggestions = (
                 result.suggestions
                 + self.checked_writeup_suggestions(

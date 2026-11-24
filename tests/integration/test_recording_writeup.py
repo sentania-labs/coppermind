@@ -782,6 +782,65 @@ async def test_a_company_that_does_not_exist_is_offered_as_a_new_account_and_not
         assert any(s.field == "account" for s in review.result.suggestions)
 
 
+async def test_an_enrichment_account_keeps_the_context_suggestion_and_is_guarded(store):
+    block = suggestion_block(
+        [
+            {"field": "account", "value": "Halcyon", "confidence": "high", "reason": "named"},
+            {"field": "context", "value": "external", "confidence": "high", "reason": "customer"},
+        ]
+    )
+    async with Service(reply=CUSTOMER) as service:
+        context, job, _ = await customer_recording(store, service, note_answer("\n" + block))
+
+        async def suggest(*args):
+            return {
+                "suggestions": [
+                    {
+                        "kind": "field",
+                        "field": "account",
+                        "value": ["Halcyon Systems"],
+                        "confidence": 0.95,
+                        "quote": "Halcyon runs Orbit 7.2",
+                        "reason": "named",
+                    }
+                ],
+                "unresolved": [],
+            }, {}
+
+        context.provider.suggest = suggest
+        review = context.load_job(await context.queue_note(job.note_id))
+        await context.run_job(review)
+        fields = {s.field: s for s in review.result.suggestions if s.kind == "field"}
+        assert fields["context"].value == "external"
+
+
+async def test_an_enrichment_account_that_does_not_exist_is_offered_as_new_not_filled(store):
+    async with Service(reply=CUSTOMER) as service:
+        context, job, _ = await customer_recording(store, service, note_answer("\n"))
+
+        async def invent(*args):
+            return {
+                "suggestions": [
+                    {
+                        "kind": "field",
+                        "field": "account",
+                        "value": ["Brand New Corp"],
+                        "confidence": 0.99,
+                        "quote": "Halcyon runs Orbit 7.2",
+                        "reason": "named",
+                    }
+                ],
+                "unresolved": [],
+            }, {}
+
+        context.provider.suggest = invent
+        review = context.load_job(await context.queue_note(job.note_id))
+        await context.run_job(review)
+        account = next(s for s in review.result.suggestions if s.field == "account")
+        assert account.confidence < 0.8 and account.reason.startswith("New account?")
+        assert "account" not in (await store.get_note(job.note_id)).frontmatter
+
+
 async def test_a_suggestion_block_that_cannot_be_read_never_costs_the_note(store):
     async with Service(reply=CUSTOMER) as service:
         context, job, _ = await customer_recording(
