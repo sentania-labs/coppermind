@@ -19,7 +19,6 @@ never replays history.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
@@ -450,8 +449,12 @@ class OwnerAlerts:
     # -- the worker ----------------------------------------------------------------------
 
     async def tick(self) -> None:
-        with contextlib.suppress(NotesFilesystemUnavailable):
+        try:
             await self.keep_problems_note()
+        except NotesFilesystemUnavailable:
+            pass
+        except Exception:
+            log.exception("keeping the problems note failed")
         await self.send_events()
 
     async def run(self) -> None:
