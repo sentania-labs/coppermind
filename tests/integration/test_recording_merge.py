@@ -100,16 +100,14 @@ async def prepare(store, *, markdown=False):
     return context, recording, generated, target, payload
 
 
-async def test_merge_keeps_voice_data_through_worker_and_purges_real_deletion(store):
+async def test_merge_keeps_voice_data_through_worker_and_removes_it_with_a_real_deletion(store):
     import httpx
-    import sqlalchemy as sa
     from coppermind_store.auth import InternalAuth
     from coppermind_store.entity_api import router as entity_router
+    from coppermind_store.removal import remove_notes
     from coppermind_store.voice_store import VoiceStore
     from fastapi import FastAPI
 
-    from coppermind.db.models import Note
-    from coppermind.db.session import transaction
     from coppermind.entities import EntityInput
     from coppermind.store_client import HttpStoreClient
     from tests.integration.test_store_write_protocol import authorized_api
@@ -149,8 +147,7 @@ async def test_merge_keeps_voice_data_through_worker_and_purges_real_deletion(st
         assert people[person["id"]]["assignments"][0]["note_id"] == target.id
         assert unknowns[unknown]["assignments"][0]["note_id"] == target.id
 
-    async with transaction(store.session_factory) as session:
-        await session.execute(sa.update(Note).where(Note.id == target.id).values(state="deleted"))
+    await remove_notes(store, [target.id])
     await context.recordings.tick()
     assert context.read("voice-pending/" + recording.id, None) is None
     assert voice.summary(person["id"])["signatures"] == []
@@ -333,8 +330,10 @@ async def test_merge_replays_each_interruption_and_preserves_intervening_edit(
     await reconcile_once(store)
     from coppermind.store_protocol import NoteQuery
 
-    page = await store.list_notes(NoteQuery(state="deleted"))
-    assert generated.id in {item.id for item in page.items}
+    # The recording note is gone with its records, not left behind as a deleted note.
+    page = await store.list_notes(NoteQuery())
+    assert generated.id not in {item.id for item in page.items}
+    assert target.id in {item.id for item in page.items}
     manifest = await store.get_source(recording.source_id)
     assert manifest.current_revision == 1
     revision = manifest.revisions[0]

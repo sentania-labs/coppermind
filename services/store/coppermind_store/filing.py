@@ -76,9 +76,9 @@ def remember_note(store, plan: dict, note) -> None:
     _save(store.control.store.state_dir / "filing" / f"{note.id}.json", plan)
 
 
-def vanished_receipt(store, row):
+def vanished_removal(store, row):
     """A committed removal of a journaled origin proves a vanished move's removal."""
-    from coppermind_store.note_history import Receipt
+    from coppermind_store.note_history import Removal
 
     path = store.control.store.state_dir / "filing" / f"{row.id}.json"
     if not path.exists():
@@ -98,14 +98,12 @@ def vanished_receipt(store, row):
         for copy in copies:
             evidence = store.note_history.evidence(row.id, copy["path"], copy["hash"])
             if evidence is not None:
-                return Receipt(
+                return Removal(
                     note_id=row.id,
                     path=row.path,
                     content_hash=row.content_hash,
                     removal_commit=evidence.removal_commit,
                     blob=evidence.blob,
-                    content=current["content"],
-                    recorded_at=evidence.recorded_at,
                 ), None
         return None, reason + "; awaiting Git evidence of removal"
     except (OSError, ValueError, KeyError, TypeError):

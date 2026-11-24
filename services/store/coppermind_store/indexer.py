@@ -178,7 +178,7 @@ async def drop_note(session: AsyncSession, note_id: str, now: datetime) -> None:
 
 
 async def drop_source(session: AsyncSession, source_id: str, now: datetime) -> None:
-    """Remove a purged source through the indexer's removal path."""
+    """Remove a removed source through the indexer's removal path."""
     result = await session.execute(
         sa.delete(SearchDocument)
         .where(SearchDocument.kind == "source", SearchDocument.ref_id == source_id)

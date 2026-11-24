@@ -9,9 +9,7 @@ it: a stuck note is reported with both files untouched until then.
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
-import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -51,7 +49,7 @@ STUCK_KINDS = {
     "unreadable_note": "unreadable",
 }
 CONFIDENT = 0.8
-# A note deleted on a device is first seen as missing, and is confirmed as deleted once the
+# A note deleted on a device is first seen as missing, and its records are removed once the
 # history of the notes has recorded the removal: a few minutes at most. Until this long has
 # passed a vanished note is not called a problem.
 MISSING_GRACE = timedelta(minutes=15)
@@ -105,53 +103,13 @@ class AdminNotes:
     def __init__(self, store: LocalStore) -> None:
         self.store = store
 
-    # -- files Admin itself took away, kept so they can be brought back at once -------------
+    # -- files Admin itself takes away -------------------------------------------------------
 
-    @property
-    def removed_dir(self) -> Path:
-        return self.store.control.store.state_dir / "admin-removed"
-
-    def removed(self) -> list[dict[str, Any]]:
-        found = []
-        for path in sorted(self.removed_dir.glob("*.json")):
-            try:
-                found.append(json.loads(path.read_bytes()))
-            except (OSError, ValueError):
-                continue
-        return found
-
-    def _keep_removed(self, *, note_id: str, title: str, path: str, data: bytes, kind: str) -> str:
-        key = hashlib.sha256(f"{path}\0{_now()}".encode()).hexdigest()[:32]
-        atomic_write_bytes(
-            self.removed_dir / f"{key}.json",
-            json.dumps(
-                {
-                    "key": key,
-                    "note_id": note_id,
-                    "title": title,
-                    "path": path,
-                    "kind": kind,
-                    "content": base64.b64encode(data).decode(),
-                    "content_hash": content_hash(data),
-                    "removed_at": _now(),
-                }
-            ).encode(),
-            mode=0o600,
-        )
-        return key
-
-    def _drop_removed(self, key: str) -> None:
-        if len(key) == 32 and all(c in "0123456789abcdef" for c in key):
-            (self.removed_dir / f"{key}.json").unlink(missing_ok=True)
-
-    async def _take_away(self, relative: str, *, note_id: str, title: str, kind: str) -> str:
-        """Remove one file from the notes filesystem, keeping its bytes for recovery."""
+    async def _take_away(self, relative: str) -> None:
+        """Remove one file from the notes filesystem. Nothing is kept: Git history is the copy."""
         path = resolve(self.store.notes_root, relative)
-        data = await asyncio.to_thread(path.read_bytes)
-        key = self._keep_removed(note_id=note_id, title=title, path=relative, data=data, kind=kind)
         await asyncio.to_thread(path.unlink)
         await asyncio.to_thread(sync_directory, path.parent)
-        return key
 
     # -- lists ---------------------------------------------------------------------------
 
@@ -293,45 +251,6 @@ class AdminNotes:
             for row in rows
         ]
 
-    async def deleted(self) -> list[dict[str, Any]]:
-        """Deleted notes that can still be brought back, the same list wherever it is shown."""
-        rows = await self._rows(Note.state == "deleted")
-        from coppermind_store import note_history
-
-        receipts = await asyncio.to_thread(note_history.receipts, self.store)
-        out = [
-            {
-                "id": row.id,
-                "key": "",
-                "title": row.title or Path(row.path).stem,
-                "path": row.path,
-                "deleted_at": max(row.updated_at, receipts[row.id].recorded_at).isoformat()
-                if row.id in receipts
-                else row.updated_at.isoformat(),
-                "size": row.size_bytes,
-            }
-            for row in rows
-            if row.state_reason != "Merged into another note"
-        ]
-        known = {row.id for row in rows}
-        for item in self.removed():
-            # Once history has recorded the removal, the note is listed from there.
-            if item["kind"] == "note" and item["note_id"] in known:
-                self._drop_removed(item["key"])
-                continue
-            out.append(
-                {
-                    "id": item["note_id"] if item["kind"] == "note" else "",
-                    "key": item["key"],
-                    "title": item["title"],
-                    "path": item["path"],
-                    "deleted_at": item["removed_at"],
-                    "size": len(base64.b64decode(item["content"])),
-                }
-            )
-        out.sort(key=lambda item: item["deleted_at"], reverse=True)
-        return out
-
     async def left_alone(self) -> list[dict[str, str]]:
         exclusions = self.store.control.read_reconciler_exclusions()
         return [
@@ -343,7 +262,7 @@ class AdminNotes:
         ]
 
     async def find(self, query: str) -> list[dict[str, Any]]:
-        """Every note whose name contains the words typed, filed and deleted ones included."""
+        """Every note whose name contains the words typed."""
         text = query.strip()
         if not text:
             return []
@@ -356,9 +275,7 @@ class AdminNotes:
 
     def _summary(self, row: Note) -> dict[str, Any]:
         state = (
-            "deleted"
-            if row.state == "deleted"
-            else "missing"
+            "missing"
             if row.state == "missing"
             else "filed"
             if row.reviewed and row.filed
@@ -373,7 +290,6 @@ class AdminNotes:
             "state": state,
             "arrived": row.first_seen_at.isoformat(),
             "changed": (row.mtime or row.updated_at).isoformat(),
-            "deleted_at": row.updated_at.isoformat() if row.state == "deleted" else "",
         }
 
     async def counts(self) -> dict[str, int]:
@@ -551,8 +467,6 @@ class AdminNotes:
                     events.append((stamp, "Could not be filed."))
                 elif plan.get("complete"):
                     events.append((stamp, f"Filed in {plan.get('folder', 'its folder')}."))
-        if row.state == "deleted":
-            events.append((row.updated_at.isoformat(), "Deleted."))
         events.sort(key=lambda item: item[0])
         return [{"at": at, "text": text, **extras.get((at, text), {})} for at, text in events]
 
@@ -628,7 +542,7 @@ class AdminNotes:
         return await self._file_now(note_id)
 
     async def replace(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Move the file that has the name to Deleted, then file this note in its place."""
+        """Delete the file that has the name, then file this note in its place."""
         note_id = _note_id(payload)
         detail = await self.detail({"id": note_id})
         if not detail.get("name_taken"):
@@ -644,12 +558,7 @@ class AdminNotes:
             )
         taken = detail["taken"]["path"]
         other = await self._rows(Note.path == taken, Note.state == "ok", limit=1)
-        await self._take_away(
-            taken,
-            note_id=other[0].id if other else "",
-            title=detail["taken"]["name"],
-            kind="note" if other else "copy",
-        )
+        await self._take_away(taken)
         if other:
             await self._mark_missing(other[0].id)
         result = await self._file_now(note_id)
@@ -687,7 +596,7 @@ class AdminNotes:
             )
             await asyncio.to_thread(atomic_write_bytes, copy_file, text.encode("utf-8"))
         elif choice == "original":
-            await self._take_away(copy["path"], note_id="", title=copy["name"], kind="copy")
+            await self._take_away(copy["path"])
         elif choice == "copy":
             data = await asyncio.to_thread(copy_file.read_bytes)
             review = sanitize_folder(self.store.control.settings().notes.review_folder)
@@ -698,12 +607,7 @@ class AdminNotes:
             # both the original and the copy exactly where they are.
             if target not in {copy_file, original_file} and target.exists():
                 raise PathCollision(f"{review}/{original['name']}.md")
-            await self._take_away(
-                original["path"],
-                note_id="",
-                title=original["name"] + " (the original)",
-                kind="copy",
-            )
+            await self._take_away(original["path"])
             await asyncio.to_thread(create_or_replace, copy_file, target, text.encode("utf-8"))
         else:
             raise ValidationFailed(["Choose what to do with the copy."])
@@ -717,60 +621,13 @@ class AdminNotes:
             await reconcile_once(self.store, full=True, quiet_period_s=0)
 
     async def restore(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Bring back a deleted note, from history or from the copy Admin kept."""
-        key = str(payload.get("key") or "")
-        if key:
-            item = next((i for i in self.removed() if i["key"] == key), None)
-            if item is None:
-                raise ValidationFailed(["That deleted file is no longer kept."])
-            target = resolve(self.store.notes_root, item["path"])
-            data = base64.b64decode(item["content"])
-            try:
-                await asyncio.to_thread(create_exclusive_bytes, target, data)
-            except FileExistsError:
-                stem = unique_stem(target.stem, [entry.stem for entry in target.parent.iterdir()])
-                target = target.with_name(stem + target.suffix)
-                await asyncio.to_thread(create_exclusive_bytes, target, data)
-            self._drop_removed(key)
-            await self._rescan()
-            return {
-                "title": item["title"],
-                "path": target.relative_to(self.store.notes_root).as_posix(),
-            }
+        """Bring back a missing note from the last filing copy Coppermind saved of it."""
         note_id = _note_id(payload)
         preview = await self.store.preview_note_restore(note_id)
         result = await self.store.restore_note(
             note_id, RestoreNote(token=preview.token, confirmation=f"Restore {note_id}")
         )
         return {"title": Path(result.path).stem, "path": result.path}
-
-    async def delete_for_good(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Delete one deleted note for good now, without waiting for its keep time."""
-        key = str(payload.get("key") or "")
-        if key:
-            item = next((i for i in self.removed() if i["key"] == key), None)
-            if item is None:
-                raise ValidationFailed(["That deleted file is no longer kept."])
-            self._drop_removed(key)
-            return {"title": item["title"]}
-        from coppermind.purge import ConfirmPurge
-        from coppermind_store import purge
-
-        note_id = _note_id(payload)
-        async with self.store.session_factory() as session:
-            row = await session.get(Note, note_id)
-        if row is None or row.state != "deleted":
-            raise ValidationFailed(["Only a deleted note can be deleted for good."])
-        title = row.title or Path(row.path).stem
-        preview = await purge.preview(self.store, only=note_id)
-        if not any(c.kind == "note" and c.id == note_id for c in preview.candidates):
-            raise ValidationFailed(
-                [f'"{title}" cannot be deleted for good yet. Try again in a minute.']
-            )
-        await purge.confirm(
-            self.store, ConfirmPurge(token=preview.token, confirmation="Purge listed items")
-        )
-        return {"title": title}
 
     # -- the meeting summary of a note written from a recording ------------------------------
 
@@ -913,7 +770,7 @@ class AdminNotes:
             raise ValidationFailed(["That note is not missing any more."])
         async with self.store.context.lock:
             known = {item.id for item in await self._rows(Note.state == "missing")}
-            # Notes that came back or were deleted for good drop off the list by themselves.
+            # Notes that came back or were removed drop off the list by themselves.
             kept = [item for item in self.store.context.read(GONE, []) if item in known]
             if note_id not in kept:
                 kept.append(note_id)
@@ -921,14 +778,14 @@ class AdminNotes:
         return {"title": row.title or Path(row.path).stem}
 
     async def remove_file(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Delete a note: its file leaves the notes filesystem and waits under Deleted."""
+        """Delete a note: its file leaves the notes filesystem, and its records follow."""
         note_id = _note_id(payload)
         async with self.store.session_factory() as session:
             row = await session.get(Note, note_id)
         if row is None or row.state != "ok":
             raise NotFound(note_id)
         title = row.title or Path(row.path).stem
-        await self._take_away(row.path, note_id=note_id, title=title, kind="note")
+        await self._take_away(row.path)
         await self._mark_missing(note_id)
         return {"title": title}
 

@@ -299,10 +299,9 @@ async def remove_artifact(
 ) -> Response:
     """Remove an artifact the way the Admin page does, for an agent acting for the owner.
 
-    The browsable copy, the record, the mirror row and the search entry go at
-    once; the archived bytes stay under the artifact identity, marked removed
-    through the API, until the retention purge removes them after its window.
-    Notes that cite it keep their citation.
+    The browsable copy, the record, the mirror row, the search entry and the
+    archived bytes all go at once; nothing is kept back. Notes that cite it keep
+    their citation.
     """
     try:
         await client.remove_artifact(artifact_id, "api")

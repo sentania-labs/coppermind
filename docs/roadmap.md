@@ -14,11 +14,12 @@ scheduled.
 
 ## Current recovery batch (working branch)
 
-Reversible Git-backed note deletion, automatic identity recovery, Admin/API
-restore previews, exclusive restore, durable recovery copies, and Git health
-visibility are being delivered together. Delete-to-trash and a general history
-browser are not included. Removing expired recovery copies and orphaned sources
-is the separate operator [retention purge](data-and-settings.md#retention-purge-receipts).
+Git-backed note deletion, automatic identity recovery, Admin/API restore
+previews of missing notes, exclusive restore, and Git health visibility are being
+delivered together. A deletion Git records removes the note's records and orphaned
+sources at once (see [deleting a note](data-and-settings.md#deleting-a-note));
+deleted notes are recovered from the vault's Git history by hand for now.
+Delete-to-trash and a general history browser are not included.
 The Admin sidebar tagline is removed in the same batch.
 
 Next acceptance remains a deployed phone delete/return/restore round trip,

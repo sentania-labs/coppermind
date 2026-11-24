@@ -34,6 +34,7 @@ API_SCOPES = (
     "search:read",
     "admin:read",
     "admin:write",
+    # Retired: nothing is behind it now. Kept so a stored key that carries it still loads.
     "admin:purge",
 )
 DEFAULT_SCOPES = tuple(

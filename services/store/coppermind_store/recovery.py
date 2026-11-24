@@ -31,14 +31,11 @@ async def recover_sources(store: LocalStore) -> dict[str, int]:
 
     schema = store.control.schema()
     settings = store.control.settings()
-    from coppermind_store.purge import note_damaged, note_repaired, pending_ids
+    from coppermind_store.damaged_sources import note_damaged, note_repaired
 
-    purging = pending_ids(store, "source")
     manifests = {}
     # Verify all originals before writing any mirror rows. A damaged backup is an error.
     for path in sorted(store.sources_root.glob("*/manifest.json")):
-        if path.parent.name in purging:
-            continue
         if not is_valid_id(path.parent.name) or path.is_symlink() or path.parent.is_symlink():
             raise ValueError("invalid source archive path")
         manifest: dict = {}

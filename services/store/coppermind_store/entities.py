@@ -175,7 +175,7 @@ def rewrite_dossier_links(text: str, old: str, new: str) -> str:
 
 
 def safe_path(root: Path, relative: str) -> Path:
-    from coppermind_store.purge import resolve
+    from coppermind_store.removal import resolve
 
     return resolve(root, relative)
 
@@ -945,8 +945,6 @@ class EntityService:
     async def follow(self, note: NoteDocument, before_hash: str) -> None:
         """A store-owned filing rewrite carries unchanged quoted claims to its new bytes."""
         async with self.store.maintenance.shared(), self.lock:
-            if self.purge_pending():
-                return
             ledger = self.load()
             changed = False
             updated_entities: set[str] = set()
@@ -989,11 +987,6 @@ class EntityService:
                 ):
                     job.note_hash, job.path = note.content_hash, note.path
                     self.store.context.save_job(job)
-
-    def purge_pending(self) -> bool:
-        from coppermind_store.purge import records
-
-        return any(r["state"] in {"applying", "failed"} for r in records(self.store))
 
     def move_checkpoint(self, step: str) -> None:
         """Test seam for interruption between durable migration steps."""
@@ -1270,8 +1263,6 @@ class EntityService:
                 self.save(ledger)
 
     async def refresh_locked(self, ledger: EntityLedger) -> None:
-        if self.purge_pending():
-            raise ValidationFailed(["Finish or abandon the interrupted retention purge first"])
         before = ledger.model_dump_json()
         for entity in ledger.entities.values():
             if entity.kind == "person" and entity.automatic and entity.name in entity.emails:
@@ -1406,8 +1397,6 @@ class EntityService:
 
     async def refresh(self) -> None:
         async with self.store.maintenance.shared(), self.store._filing_lock, self.lock:
-            if self.purge_pending():
-                return
             ledger = self.load()
             await self.refresh_locked(ledger)
             revision = ledger.revision
@@ -1521,8 +1510,6 @@ class EntityService:
 
     async def list(self, query: EntityQuery) -> dict[str, Any]:
         async with self.store.maintenance.shared(), self.lock:
-            if self.purge_pending():
-                raise ValidationFailed(["Finish or abandon the interrupted retention purge first"])
             ledger = self.load()
             signature = digest(query.model_dump(exclude={"cursor", "limit"}))[:16]
             after = ""
@@ -1559,8 +1546,6 @@ class EntityService:
 
     async def get(self, identity: str) -> dict[str, Any]:
         async with self.store.maintenance.shared(), self.lock:
-            if self.purge_pending():
-                raise ValidationFailed(["Finish or abandon the interrupted retention purge first"])
             ledger = self.load()
             if identity not in ledger.entities:
                 raise NotFound(identity)
@@ -1570,8 +1555,6 @@ class EntityService:
 
     async def create(self, request: EntityInput) -> dict[str, Any]:
         async with self.store.maintenance.shared(), self.lock:
-            if self.purge_pending():
-                raise ValidationFailed(["Finish or abandon the interrupted retention purge first"])
             ledger = self.load()
             entity = self.make(ledger, request)
             self.receipt(ledger, entity, "created")
@@ -1768,14 +1751,13 @@ class EntityService:
         await self.mirror(ledger)
         return public(target)
 
-    def purge_items(self, cutoff: datetime, note_ids: set[str]) -> builtins.list[dict[str, Any]]:
-        """Include retired subjects and unsupported automatic subjects in retention preview."""
-        from coppermind.purge import PurgeCandidate
-        from coppermind_store.purge import _file
+    def orphaned_by(self, note_ids: set[str]) -> builtins.list[Entity]:
+        """Automatic subjects whose only support is in these notes, so they go with them.
 
-        items = []
+        A person or company the owner wrote on, or kept by a correction, stays.
+        """
+        found = []
         for entity in self.load().entities.values():
-            retired = entity.retired_at is not None and entity.retired_at <= cutoff
             orphan = (
                 entity.automatic
                 and not entity.personal
@@ -1786,10 +1768,10 @@ class EntityService:
                     for f in entity.facts
                 )
             )
-            if not retired and not orphan:
+            if not orphan:
                 continue
             path = safe_path(self.store.notes_root, entity.path)
-            if orphan and not retired and path.exists():
+            if path.exists():
                 text = path.read_text()
                 if len(list(MARKER.finditer(text))) != 1:
                     continue
@@ -1800,28 +1782,18 @@ class EntityService:
                     continue
                 if wrote or block not in {entity.generated, entity.pending}:
                     continue  # A fresh device edit is personal work, even before reconciliation.
-            files = [_file(self.store, "notes", path)] if path.exists() else []
-            candidate = PurgeCandidate(
-                kind="entity",
-                id=entity.id,
-                title=entity.name,
-                path=entity.path,
-                origins=["Dossiers"],
-                providers=["Local notes"],
-                deleted_at=entity.retired_at,
-            )
-            items.append(
-                {
-                    "candidate": candidate.model_dump(mode="json"),
-                    "row": digest(entity.model_dump(mode="json")),
-                    "files": files,
-                    "directories": [],
-                }
-            )
-        return items
+            found.append(entity)
+        return found
 
-    def purge(self, note_ids: set[str], entity_ids: set[str], token: str) -> None:
-        """Idempotent scrubbing while the caller holds the exclusive maintenance gate."""
+    def purge(
+        self, note_ids: set[str], entity_ids: set[str], token: str, *, suppress: bool = True
+    ) -> None:
+        """Idempotent scrubbing. The caller holds the context and ledger locks.
+
+        `suppress` keeps a removed identity from being made again out of old metadata. A
+        subject that only went because its last supporting note was deleted is not that:
+        a later note naming the same person must be able to bring them back.
+        """
         ledger = self.load()
         if any(r.get("purge") == token for r in ledger.receipts):
             return
@@ -1837,7 +1809,7 @@ class EntityService:
             snapshot.unlink()
         for identity in entity_ids:
             entity = ledger.entities.pop(identity, None)
-            if entity:
+            if entity and suppress:
                 ledger.suppressed.extend(digest(address) for address in entity.emails)
                 ledger.suppressed.extend(
                     digest([entity.kind, entity.name, f.evidence.note_id])
@@ -1863,8 +1835,7 @@ class EntityService:
             and r.get("note_id") not in note_ids
         ]
         ledger.suppressed = sorted(set(ledger.suppressed))
-        # Remove the legacy mirrors and per-note context records too. Originals
-        # remain until retention confirmation, not merely a filesystem absence.
+        # Remove the legacy mirrors and per-note context records too.
         for name in ("finalized", "associations", "calendar-followups"):
             records = self.store.context.read(name, {})
             for identity in note_ids:

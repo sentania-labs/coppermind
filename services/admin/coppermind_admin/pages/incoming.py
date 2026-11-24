@@ -23,7 +23,6 @@ from coppermind_admin.pages.common import (
     service_path,
     where_text,
 )
-from coppermind_admin.pages.notes import keep_words
 from coppermind_admin.pages.settings import folder_dialog
 from coppermind_admin.shell import Ctx, explain, not_saved
 from coppermind_admin.ui import e, plural, segment
@@ -557,11 +556,10 @@ def router(wiring: Wiring) -> APIRouter:
         )
 
     def remove_dialog(ctx: Ctx, item: dict[str, Any], back: str, folder: str) -> str:
-        days = keep_words(ctx.settings().retention.days)
         title = e(item["title"])
         if item["id"].startswith("a:"):
             text = (
-                f"It leaves Obsidian and search now. It can be brought back for {days}. A note "
+                "It leaves Obsidian and search now. Removing is final in Coppermind. A note "
                 "that uses it will show it as removed."
             )
         else:
@@ -925,14 +923,13 @@ def router(wiring: Wiring) -> APIRouter:
         target = ctx.back("/admin/incoming")
         if target.startswith("/admin/incoming/"):
             target = "/admin/incoming"
-        days = keep_words(ctx.settings().retention.days)
         try:
             result = await ctx.act("incoming-remove", {"id": identity})
         except StoreError as exc:
             return await ctx.refused(exc, target)
         ctx.say(
             "ok",
-            f'Removed "{e(result["title"])}". It can be brought back for {days}.'
+            f'Removed "{e(result["title"])}".'
             if result["kind"] == "document"
             else f'Removed "{e(result["title"])}". Nothing had been added from it, so nothing '
             "else changed.",

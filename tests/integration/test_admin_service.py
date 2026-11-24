@@ -1,8 +1,6 @@
 """The service Admin reads and acts through, against a real store."""
 
 import asyncio
-import json
-from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -184,7 +182,6 @@ def test_what_is_recalled_on_home_for_each_change():
         'You reviewed "Budget". Filed in work/2026/2026-11.'
     )
     assert said("note-check", {"filed": False, "settling": True}) == ""
-    assert said("note-restore", {"title": "Trip"}) == 'You brought back the deleted note "Trip".'
     assert said("suggestions-save", {"refused": {"message": "no"}}) == ""
 
 
@@ -282,40 +279,6 @@ async def test_the_same_server_entered_twice_at_once_is_kept_once(store, monkeyp
     )
     assert sorted("refused" in result for result in (first, second)) == [False, True]
     assert [s["name"] for s in store.context.services.listing()].count("Twice") == 1
-
-
-def _removed_copy(store, title, age_days):
-    notes = store.admin.notes
-    key = notes._keep_removed(
-        note_id="", title=title, path=f"{title}.md", data=b"words", kind="note"
-    )
-    path = notes.removed_dir / f"{key}.json"
-    record = json.loads(path.read_bytes())
-    record["removed_at"] = (datetime.now(UTC) - timedelta(days=age_days)).isoformat()
-    path.write_text(json.dumps(record))
-    return key
-
-
-async def test_confirming_a_clean_up_deletes_only_what_was_listed(store, monkeypatch):
-    await configure(store)
-    store.sources_root.mkdir(parents=True, exist_ok=True)
-    old = store.admin.storage.keep_days() + 5
-    listed = _removed_copy(store, "Listed", old)
-    shown = await store.admin.act("cleanup", {})
-    assert [item["id"] for item in shown["items"]] == [listed]
-
-    real = store.confirm_purge
-    late = []
-
-    async def slow(request):
-        late.append(_removed_copy(store, "Aged meanwhile", old))
-        return await real(request)
-
-    monkeypatch.setattr(store, "confirm_purge", slow)
-    result = await store.admin.act("cleanup-confirm", {"token": shown["token"]})
-    assert result["changed"] is False and result["count"] == 1
-    assert [item["key"] for item in store.admin.notes.removed()] == late
-    assert store.admin.storage._cleanup_changed.is_set()
 
 
 @pytest.mark.parametrize("action", ["note-check", "note-no-time", "note-keep-both", "note-replace"])
@@ -421,25 +384,29 @@ async def test_a_calendar_file_over_the_most_allowed_is_refused_and_nothing_is_a
     assert store.context.archive.receipts() == []
 
 
-async def test_home_counts_a_removed_person_past_the_keep_time_like_the_clean_up_list(store):
-    from coppermind.entities import EntityChange
-
-    store.sources_root.mkdir(parents=True, exist_ok=True)
-    person = await store.entities.create(EntityInput(kind="person", name="Casey Jones"))
-    await store.entities.change(
-        person["id"], EntityChange(version=person["version"], action="retire")
-    )
-    state = store.control.store.read("settings")
-    body = dict(state.body)
-    body.setdefault("retention", {})["days"] = 7
-    store.control.store.write("settings", body, if_revision=state.revision)
-    ledger = store.entities.load()
-    ledger.entities[person["id"]].retired_at = datetime.now(UTC) - timedelta(days=30)
-    store.entities.save(ledger)
-    listed = await store.admin.act("cleanup", {})
-    assert [item["kind"] for item in listed["items"]] == ["entity"]
-    await store.admin.storage.refresh_cleanup_count()
-    assert (await store.admin.act("overview", {}))["storage"]["cleanup"] == len(listed["items"])
+async def test_home_and_storage_carry_no_clean_up_or_keep_time(store):
+    await configure(store)
+    view = await store.admin.act("overview", {})
+    assert set(view["storage"]) == {"damaged"}
+    storage = await store.admin.act("storage", {})
+    assert set(storage) == {"usage", "files"}
+    assert [part["name"] for part in storage["usage"]["parts"]] == [
+        "Recordings",
+        "Files beside notes",
+        "Notes",
+    ]
+    for gone in (
+        "cleanup",
+        "cleanup-confirm",
+        "cleanup-cancel",
+        "cleanup-bring-back",
+        "storage-keep",
+        "storage-count-interval",
+        "notes-deleted",
+        "note-delete-for-good",
+    ):
+        with pytest.raises(KeyError):
+            await store.admin.act(gone, {})
 
 
 async def test_taking_over_for_a_removed_service_keeps_pauses_and_fixes_an_old_wait(
@@ -517,18 +484,13 @@ async def test_a_file_still_being_taken_in_cannot_be_removed_as_if_it_had_failed
     assert store.context.dropbox.records()["items"][item["id"]]["state"] == "pending"
 
 
-async def test_bringing_back_a_replaced_file_goes_beside_the_file_that_took_its_name(store):
-    store.notes_root.mkdir(parents=True, exist_ok=True)
-    taken = store.notes_root / "Budget.md"
-    taken.write_text("The replacement.\n")
-    key = store.admin.notes._keep_removed(
-        note_id="", title="Budget", path="Budget.md", data=b"The older file.\n", kind="note"
-    )
-    result = await store.admin.act("note-restore", {"key": key})
-    assert result["path"] == "Budget (2).md"
-    assert "The replacement." in taken.read_text()
-    assert "The older file." in (store.notes_root / "Budget (2).md").read_text()
-    assert store.admin.notes.removed() == []
+async def test_deleting_a_note_in_admin_keeps_no_copy_of_its_file(store):
+    note = await store.create_note(CreateNote(title="Trip", body="Words.\n"))
+    result = await store.admin.notes.remove_file({"id": note.id})
+    assert result["title"] == "Trip"
+    assert not (store.notes_root / note.path).exists()
+    assert not (store.control.store.state_dir / "admin-removed").exists()
+    assert not hasattr(store.admin.notes, "removed")
 
 
 async def test_changing_the_service_of_a_paused_feature_leaves_it_paused(store, monkeypatch):
@@ -755,86 +717,3 @@ async def test_suggestions_response_limit_is_saved_and_validated(store):
     with pytest.raises(ValueError):
         await store.admin.act("suggestions-response-limit", {"max_output_tokens": "65537"})
     assert store.context.config().assignments["enrichment"].max_output_tokens == 65536
-
-
-async def test_concurrent_overviews_and_storage_do_not_wait_for_cleanup(store, wiring, monkeypatch):
-    import httpx
-    from coppermind_store import admin_storage
-    from coppermind_store.auth import InternalAuth
-    from coppermind_store.main import create_app
-
-    from coppermind.store_client import HttpStoreClient
-
-    started = asyncio.Event()
-    release = asyncio.Event()
-    calls = 0
-
-    async def held(*args):
-        nonlocal calls
-        calls += 1
-        started.set()
-        await release.wait()
-        return [{"candidate": {}}], {}
-
-    monkeypatch.setattr(admin_storage.purge, "candidates", held)
-    app = create_app(wiring)
-    app.state.store = store
-    app.state.auth = InternalAuth("test-token")
-    client = HttpStoreClient("http://store", "test-token", transport=httpx.ASGITransport(app))
-    worker = None
-    try:
-        # Requests alone must never initiate the expensive scan.
-        cold = await client.admin_action("overview", {})
-        assert cold["storage"]["cleanup"] is None
-        assert calls == 0
-        worker = asyncio.create_task(store.admin.storage.run_cleanup_count())
-        await asyncio.wait_for(started.wait(), 1)
-        responses = await asyncio.wait_for(
-            asyncio.gather(*(client.admin_action("overview", {}) for _ in range(8))), 3
-        )
-        await asyncio.wait_for(started.wait(), 1)
-        assert calls == 1
-        assert [view["storage"]["cleanup"] for view in responses] == [None] * 8
-        summary = await asyncio.wait_for(client.admin_action("storage", {}), 3)
-        assert summary["cleanup"] is None
-        assert calls == 1
-        # The requests finished successfully while the count is still held open.
-        assert not release.is_set()
-        release.set()
-        async with asyncio.timeout(3):
-            while (await store.admin.storage.cleanup_count())["count"] is None:
-                await asyncio.sleep(0.01)
-        assert (await client.admin_action("overview", {}))["storage"]["cleanup"] == 1
-    finally:
-        release.set()
-        if worker:
-            worker.cancel()
-            with suppress(asyncio.CancelledError):
-                await worker
-        await client.aclose()
-
-
-async def test_a_shape_failure_reaches_the_note_history_with_the_part_and_the_answer(store):
-    from coppermind_store.answer_shape import ModelAnswer
-
-    context = await configure(store)
-    note = await store.create_note(
-        CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
-    )
-    job_id = await context.queue_note(note.id)
-    reply = '{"suggestions": [{"kind": "filename", "reason": ["why"]}]}'
-
-    async def answer(connection, key, assignment, system, evidence, *options):
-        return ModelAnswer(json.loads(reply), reply), {}
-
-    context.provider.suggest = answer
-    await context.run_job(context.load_job(job_id))
-    history = (await store.admin.act("note", {"id": note.id}))["history"]
-    (line,) = [entry for entry in history if "could not be written" in entry["text"]]
-    assert line["problems"][0]["path"] == "suggestions.0.reason"
-    assert line["plain"] == (
-        "The model's answer could not be used. In the first suggestion, the reason should be text."
-    )
-    assert line["answer"] == reply
-    # A plain note that failed on its newest attempt can ask again from its own page.
-    assert line["get_suggestions"] is True and line["note_id"] == note.id
