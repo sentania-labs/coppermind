@@ -1911,7 +1911,7 @@ class ContextService:
                             current_evidence,
                         )
                         job.reply = json.dumps(reply, ensure_ascii=False)[:4000]
-                        proposed = Suggestions.model_validate(reply)
+                        proposed, _ = answer_shape.read_suggestions(reply)
                         proposed.suggestions = self.usable_speakers(
                             [s for s in proposed.suggestions if s.kind == "speaker"],
                             current_evidence.get("speaker_review") or {},
