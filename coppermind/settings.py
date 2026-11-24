@@ -376,10 +376,9 @@ class RetentionSettings(BaseModel):
         le=36500,
         strict=True,
         description=(
-            "Days a staged upload receipt survives after it last moved; zero sweeps it on the "
-            "next reservation. Deleted notes, removed artifacts, orphaned sources and their "
-            "stored files go at once, with no keep time; the vault's Git history is the safety "
-            "net and is left alone."
+            "Days to keep deleted-note recovery copies and the stored files of removed "
+            "artifacts before a manual purge. Zero allows immediate purge. Git history is "
+            "retained."
         ),
     )
 

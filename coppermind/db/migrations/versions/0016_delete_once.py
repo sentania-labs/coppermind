@@ -1,10 +1,10 @@
-"""Delete means gone: every recovery copy and deleted-item record is dropped in this pass.
+"""Drop the deleted-note records the earlier release left behind, in one upgrade pass.
 
-Before this revision a deleted note left three kinds of record behind: its mirror row
-(`state` `deleted` or `missing`), a recovery receipt under `state/note-recovery`, and the
-bytes Admin itself took away under `state/admin-removed`. Item 1 of issue 143 makes a
-deletion answer once, so all three go in this one upgrade. The vault's Git history is the
-safety net from here on and is never written by a migration.
+A deleted note left three kinds of record behind: its mirror row (`state` `deleted` or
+`missing`) with its `note_sources`, a recovery receipt under `state/note-recovery`, and the
+bytes Admin itself took away under `state/admin-removed`. This pass removes them, along
+with the derived `cleanup_count` and `purge-problems` state files. The vault's Git history
+is never written by a migration.
 
 Revision ID: 0016
 Revises: 0015
