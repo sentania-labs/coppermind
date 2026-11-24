@@ -343,6 +343,8 @@ def test_status_returns_every_counter(api):
             "artifacts_returned": 0,
             "active_problems": None,
             "purge_problems": 0,
+            "recordings_failed": None,
+            "notes_without_summary": None,
         }
     }
 

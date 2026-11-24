@@ -184,6 +184,9 @@ class ContextService:
         self.lifecycle = NoteLifecycle(self)
         self.dropbox = Dropbox(self)
         self.recordings = Recordings(self)
+        from coppermind_store.owner_alerts import OwnerAlerts
+
+        self.alerts = OwnerAlerts(self)
         self.provider = ModelProvider()
         from coppermind_store.ai_services import AiServices
 
@@ -1068,6 +1071,10 @@ class ContextService:
             return await self.store.admin.notes.summary_again(payload)
         except Refused as refusal:
             raise ValueError(refusal.message) from refusal
+
+    async def write_up_missing_summaries(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Write up every recording note that has no summary, in one step."""
+        return await self.alerts.write_up_missing(payload)
 
     async def save_transcription(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.recordings.save_assignment(payload)
@@ -2685,6 +2692,7 @@ class ContextService:
         # Recordings run on a loop of their own: one can take many minutes on a CPU service,
         # and calendar imports and enrichment should not wait behind it.
         recordings = asyncio.create_task(self.recordings.run(), name="coppermind-recordings")
+        alerts = asyncio.create_task(self.alerts.run(), name="coppermind-alerts")
         try:
             while True:
                 try:
@@ -2696,6 +2704,8 @@ class ContextService:
                     self.worker_error = "Context worker failed; inspect configuration and retry"
                 await asyncio.sleep(10)
         finally:
-            recordings.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await recordings
+            for task in (alerts, recordings):
+                task.cancel()
+            for task in (alerts, recordings):
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task

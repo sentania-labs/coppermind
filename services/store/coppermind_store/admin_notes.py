@@ -838,6 +838,12 @@ class AdminNotes:
             return False
         return job.state == "suggested" and bool(job.result and job.result.meeting_summary)
 
+    def summary_service_state(self) -> str:
+        """Whether the AI service that writes summaries is on and answering."""
+        assignment = self.store.context.config().assignments["enrichment"]
+        service = self.store.admin.features._service(assignment.connection)  # noqa: SLF001
+        return feature_state(assignment, service)
+
     async def summary_again(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Write a fresh summary from the same transcript, with the instructions as they are now.
 
@@ -865,9 +871,7 @@ class AdminNotes:
             raise Refused(
                 "note", "This note was not written from a recording, so it has no summary."
             )
-        assignment = context.config().assignments["enrichment"]
-        service = self.store.admin.features._service(assignment.connection)  # noqa: SLF001
-        state = feature_state(assignment, service)
+        state = self.summary_service_state()
         if state != "on":
             raise Refused(
                 "service",

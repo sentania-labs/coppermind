@@ -1030,6 +1030,8 @@ def _frontmatter_exclusion(data: bytes) -> str | None:
 
     if MARKER.search(text):
         return "dossier marker"
+    if frontmatter.get("coppermind-generated"):
+        return "frontmatter: coppermind-generated"
     for marker in ("excalidraw-plugin", "kanban-plugin"):
         if marker in frontmatter:
             return f"frontmatter: {marker}"

@@ -1217,6 +1217,10 @@ class StatusCounters(BaseModel):
     artifacts_returned: int = 0
     active_problems: int | None = None
     purge_problems: int = 0
+    # Recordings that failed and are still listed as needing attention, and notes written from
+    # a recording whose summary could not be written. None when those records cannot be read.
+    recordings_failed: int | None = None
+    notes_without_summary: int | None = None
 
 
 class ReconcilerNotice(BaseModel):
