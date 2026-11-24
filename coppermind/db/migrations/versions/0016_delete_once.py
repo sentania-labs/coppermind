@@ -30,12 +30,6 @@ def _state_dir() -> Path:
     return Wiring().state_dir
 
 
-def _unlinked(path: Path) -> int:
-    with suppress(OSError):
-        path.unlink(missing_ok=True)
-    return 1
-
-
 def upgrade() -> None:
     # One pass, no keep time: the old rows are the recovery copies themselves.
     op.execute(
@@ -49,18 +43,17 @@ def upgrade() -> None:
     state = StateStore(_state_dir())
     # The count and receipts are derived from the rows just dropped, so they go with them.
     for name in ("cleanup_count", "purge-problems"):
-        with suppress(OSError):
-            state.state_dir.joinpath(name + ".json").unlink(missing_ok=True)
+        state.state_dir.joinpath(name + ".json").unlink(missing_ok=True)
     # Receipts and Admin's own removed copies were the old second safety net.
     for folder in ("note-recovery", "admin-removed"):
         root = state.state_dir / folder
-        with suppress(OSError):
-            for path in sorted(root.rglob("*"), reverse=True):
-                if path.is_file() or path.is_symlink():
-                    _unlinked(path)
-            for path in sorted(root.rglob("*"), reverse=True):
-                with suppress(OSError):
-                    path.rmdir()
+        paths = sorted(root.rglob("*"), reverse=True)
+        for path in paths:
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+        for path in paths:
+            with suppress(OSError):
+                path.rmdir()
 
 
 def downgrade() -> None:

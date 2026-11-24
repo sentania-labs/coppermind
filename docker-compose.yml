@@ -109,6 +109,7 @@ services:
     command: ["alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
     environment: *wiring
     volumes:
+      - data:/data
       - postgres-password:/run/coppermind/postgres:ro
     depends_on:
       postgres:
