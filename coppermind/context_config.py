@@ -110,6 +110,8 @@ class FeatureAssignment(ContextModel):
     # the rules that keep a summary safe to file are fixed in code, not in this text.
     summary_directions: dict[str, str] = Field(default_factory=dict)
     writeup_prompt: str = Field(default="", max_length=20000)
+    # Terms the write-up corrects transcription errors against, one `heard = correct` per line.
+    writeup_glossary: str = Field(default="", max_length=8000)
 
     @field_validator("summary_directions")
     @classmethod

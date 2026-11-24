@@ -1369,6 +1369,36 @@ class Recordings:
         self.save(job)
         return transcript
 
+    async def with_references(
+        self, job: TranscriptionJob, writeup: dict[str, Any], body: str
+    ) -> str:
+        """The write-up followed by its references, one block at the very bottom. The link to
+        the transcript is placed when the note is filed, once its place is known."""
+        from coppermind.recording_writeup import SOURCE_LINK_TOKEN, references_block
+
+        audio = None
+        try:
+            paths = await artifacts.known_paths(self.context.store, [job.artifact_id])
+            manifest = await asyncio.to_thread(
+                artifacts.read_manifest, self.context.store, job.artifact_id
+            )
+            audio = artifacts.link_for(
+                paths.get(job.artifact_id), str(manifest["title"]), manifest.get("url")
+            )
+        except (ValidationFailed, KeyError, OSError):
+            # Filing reports a missing recording itself, as it always has.
+            pass
+        return (
+            body.rstrip("\n")
+            + "\n\n"
+            + references_block(
+                transcript=SOURCE_LINK_TOKEN,
+                audio=audio,
+                calendar=writeup.get("calendar_status")
+                or "not matched, the recording title was used",
+            )
+        )
+
     async def file_note(self, job: TranscriptionJob, transcript: dict[str, Any]) -> None:
         """File the transcript as a source and a note in Review, and cite the recording."""
         from coppermind_store.speaker_names import rename_speakers, speaker_labels
@@ -1451,6 +1481,7 @@ class Recordings:
             self.save(job)
             writeup = await generate(self.context, job, transcript, voice_map)
             title, body, transcript = writeup["title"], writeup["body"], writeup["transcript"]
+            body = await self.with_references(job, writeup, body)
             job.boundaries = [RecordingBoundary.model_validate(b) for b in writeup["boundaries"]]
             job.stage = "Saving note"
             self.save(job)

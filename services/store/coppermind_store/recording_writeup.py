@@ -18,11 +18,17 @@ from coppermind.recording_writeup import (
     BOUNDARY_RULES,
     BOUNDARY_START,
     COMBINE_RULES,
-    DEFAULT_PROMPT,
     LOCKED_RULES,
     PART_RULES,
+    SUGGESTION_END,
+    SUGGESTION_RULES,
+    SUGGESTION_START,
     RecordingBoundary,
+    calendar_status,
+    compose_body,
+    effective_prompt,
     failure_message,
+    read_field_suggestions,
 )
 from coppermind.schema import parse_note_time
 from coppermind_store import meeting_match
@@ -397,6 +403,61 @@ async def resolve_title(context: Any, job: Any, transcript: str) -> tuple[str, d
     return f"{stamp.date().isoformat()} {title}", evidence
 
 
+def split_suggestions(document: str) -> tuple[str, str | None]:
+    """The answer without its field suggestion block, and the text of that block (None when
+    the model wrote none). The block is metadata, never part of the note, wherever the model
+    put it."""
+    if SUGGESTION_START not in document:
+        return document, None
+    before, _, rest = document.partition(SUGGESTION_START)
+    if SUGGESTION_END in rest:
+        block, _, after = rest.partition(SUGGESTION_END)
+    else:
+        # A block that was never closed runs to the boundary block, or to the end.
+        block, marker, after = rest.partition(BOUNDARY_START)
+        after = marker + after
+    return before.rstrip() + "\n\n" + after.lstrip(), block
+
+
+def meeting_kind(context: Any, fields: dict[str, Any]) -> str:
+    """What the owner's own fields already say about the recording; `unknown` leaves it to
+    the model, which marks its choice as inferred."""
+    roles = context.store.control.schema().roles
+    account = fields.get(roles.get("account_key", "account"))
+    kind = fields.get(roles.get("context_key", "context"))
+    if account or kind == "external":
+        return "customer"
+    if kind == "personal" or fields.get(roles.get("type_key", "type")) == "personal":
+        return "personal"
+    return "unknown"
+
+
+def vocabulary(context: Any) -> dict[str, Any]:
+    """What a suggestion may name: companies that already exist (by name or alias), tags the
+    owner has listed (by name or alias), and the allowed context and type values."""
+    schema = context.store.control.schema()
+    accounts: dict[str, str] = {}
+    for entity in context.store.entities.load().entities.values():
+        if entity.kind != "company" or entity.retired_at or entity.redirect:
+            continue
+        for name in (entity.name, *entity.aliases):
+            accounts.setdefault(name.casefold(), entity.name)
+    tags = {tag.casefold(): tag for tag in schema.tags}
+    tags.update({alias.casefold(): tag for alias, tag in schema.tag_aliases.items()})
+
+    def allowed(key: str) -> list[str]:
+        name = schema.roles.get(key)
+        definition = next((k for k in schema.keys if k.name == name), None)
+        return list(definition.vocabulary) if definition and definition.vocabulary else []
+
+    return {
+        "accounts": accounts,
+        "tags": tags,
+        "contexts": allowed("context_key"),
+        "types": allowed("type_key"),
+    }
+
+
 class WriteupError(ProviderError):
     """A write-up failed. `detail` is a sentence that says what was wrong, in words that never
     repeat what the model wrote."""
@@ -608,18 +669,26 @@ async def generate(
         ]
         + [float(transcript.get("duration") or 0)]
     )
+    vocab = vocabulary(context)
     evidence = {
         "resolved_title": title,
+        "recording_date": title[:10],
+        "meeting_kind": meeting_kind(context, dict(job.frontmatter)),
         "allowed_speaker_labels": labels,
         "transcript": text,
         "calendar": calendar,
         "duration_seconds": duration,
+        "known_accounts": sorted(set(vocab["accounts"].values()))[:300],
+        "known_tags": sorted(set(vocab["tags"].values()))[:300],
     }
-    directions = limits.writeup_prompt or DEFAULT_PROMPT
+    if limits.writeup_glossary.strip():
+        evidence["glossary"] = limits.writeup_glossary.strip()[:4000]
     system = (
-        directions.replace("{resolved_title}", title)
+        effective_prompt(limits.writeup_prompt).replace("{resolved_title}", title)
         + "\n\n"
         + LOCKED_RULES
+        + "\n\n"
+        + SUGGESTION_RULES
         + "\n\n"
         + BOUNDARY_RULES
     )
@@ -650,7 +719,8 @@ async def generate(
             ) from exc
         add_usage(usage, used)
         try:
-            tidied, repairs = tidy(document, title, labels, duration)
+            answer, suggestion_text = split_suggestions(document)
+            tidied, repairs = tidy(answer, title, labels, duration)
             markdown, ranges = boundaries(tidied, duration)
             body = validate(markdown, title, labels)
             break
@@ -673,17 +743,34 @@ async def generate(
             "; ".join(repairs) or "none",
             " (after one retry)" if correction else "",
         )
-    if not calendar["matched"]:
-        body += (
-            f"\n_Calendar matching was unresolved: {calendar['reason']}; "
-            "the recording title was used._\n"
-        )
+    body = compose_body(body, labels, _boundary_summary(ranges) if ranges else None)
+    # A suggestion that cannot be read costs the note nothing; it is reported on its own.
+    suggestions: list[dict[str, Any]] = []
+    suggestion_error = ""
+    if suggestion_text is None:
+        suggestion_error = "The write-up did not include field suggestions."
+    else:
+        try:
+            suggestions = read_field_suggestions(
+                suggestion_text,
+                accounts=vocab["accounts"],
+                tags=vocab["tags"],
+                contexts=vocab["contexts"],
+                types=vocab["types"],
+            )
+        except ValueError as exc:
+            suggestion_error = str(exc).rstrip(".") + "."
+    if suggestion_error:
+        log.warning("recording write-up %s suggestions: %s", job.id, suggestion_error)
     saved = {
         "version": 1,
         "title": title,
         "document": document,
         "boundaries": ranges,
         "body": body,
+        "calendar_status": calendar_status(calendar),
+        "suggestions": suggestions,
+        "suggestion_error": suggestion_error,
         "transcript": transcript,
         "transcript_hash": hashlib.sha256(text.encode()).hexdigest(),
         "voice_map": voice_map,

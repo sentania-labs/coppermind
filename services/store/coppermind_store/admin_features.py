@@ -361,20 +361,22 @@ class Features:
         return {"max_output_tokens": limit}
 
     async def writeup_settings(self) -> dict[str, Any]:
-        from coppermind.recording_writeup import DEFAULT_PROMPT, DISPLAY_RULES
+        from coppermind.recording_writeup import DEFAULT_PROMPT, DISPLAY_RULES, effective_prompt
         from coppermind_store.recording_writeup import assignment
 
         async with self.context.lock:
             chosen = assignment(self.context)
         return {
             "assignment": chosen.model_dump(),
-            "prompt": chosen.writeup_prompt or DEFAULT_PROMPT,
+            "prompt": effective_prompt(chosen.writeup_prompt),
             "default": DEFAULT_PROMPT,
+            "glossary": chosen.writeup_glossary,
             "locked": DISPLAY_RULES,
             "services": [{"id": c.id, "name": c.name} for c in self.context.config().connections],
         }
 
     async def writeup_save(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from coppermind.recording_writeup import DEFAULT_PROMPT, effective_prompt
         from coppermind_store.recording_writeup import assignment
 
         async with self.context.lock:
@@ -389,10 +391,16 @@ class Features:
                     "summary_max_input_chars",
                     "timeout_s",
                     "writeup_prompt",
+                    "writeup_glossary",
                 )
                 if key in payload
             }
             if payload.get("reset"):
+                fields["writeup_prompt"] = ""
+            elif "writeup_prompt" in fields and (
+                effective_prompt(fields["writeup_prompt"]) == DEFAULT_PROMPT
+            ):
+                # Saving the page with the default untouched keeps following the default.
                 fields["writeup_prompt"] = ""
             updated = FeatureAssignment.model_validate({**old.model_dump(), **fields})
             if updated.connection:

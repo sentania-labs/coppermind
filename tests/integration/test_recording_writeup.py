@@ -72,8 +72,17 @@ async def test_finished_body_without_suggestions_then_review(store):
         assert job.state == "succeeded", job.error
         assert job.stage == "Note ready"
         note = await store.get_note(job.note_id)
-        assert note.body.count("# 2026-11-09 Standup\n") == 1
+        # Speakers first, then the top line; no title heading; one references block last.
+        assert "# 2026-11-09 Standup" not in note.body
+        assert note.body.startswith(
+            "## Speakers\n\n- Alex Example\n- Unknown voice 1\n\n## Top line"
+        )
         assert "Alex Example and Unknown voice 1" in note.body
+        references = note.body.partition("## References")[2]
+        assert note.body.count("## References") == 1 and "## Artifacts" not in note.body
+        assert "- Source transcript: [[" in references and "- Recording: [[" in references
+        assert "- Calendar: not matched" in references
+        assert "## Recording boundaries" not in note.body
         assert note.frontmatter["reviewed"] is False and note.path.startswith("Review/")
         assert note.path.count("2026-11-09") == 1
         assert not context.read("meeting-summaries/" + note.id, {})
@@ -147,6 +156,13 @@ async def test_finished_body_without_suggestions_then_review(store):
             if suggestion.field == "type"
         ]
         assert selected
+        # Heard and recognised by voice, so the write-up suggested them as an attendee, and
+        # the confident suggestion filled the blank field the way any other does.
+        assert any(
+            s.field == "attendees" and s.origin == "writeup" for s in review.result.suggestions
+        )
+        note = await store.get_note(note.id)
+        assert note.frontmatter["attendees"] == ["[[People/Alex Example]]"]
         await context.complete_review(
             {
                 "note_id": note.id,
@@ -634,3 +650,211 @@ async def test_part_notes_that_fit_alone_but_not_together_are_condensed_first(st
         condensed = [c for c in calls if "part_notes" in c and "resolved_title" not in c]
         assert condensed and all(len(c["part_notes"]) == 1 for c in condensed[:1])
         assert any("resolved_title" in c and "part_notes" in c for c in calls)
+
+
+CUSTOMER = {
+    **REPLY,
+    "duration": 40.0,
+    "segments": [
+        {
+            "id": "s1",
+            "start": 0.0,
+            "end": 9.0,
+            "text": "Halcyon runs Orbit 7.2 and wants to reach 8.0 before March.",
+            "speaker": "Speaker 1",
+        },
+        {
+            "id": "s2",
+            "start": 10.0,
+            "end": 20.0,
+            "text": "Halcyon's cost here is trivial next to our data centers.",
+            "speaker": "Speaker 2",
+        },
+    ],
+}
+
+
+def suggestion_block(items):
+    return (
+        "<<<FIELD_SUGGESTIONS>>>\n"
+        + json.dumps({"suggestions": items})
+        + "\n<<<END_FIELD_SUGGESTIONS>>>\n"
+    )
+
+
+async def customer_recording(store, service, answer):
+    context = await setup_transcription(store, service)
+    await store.entities.create(
+        EntityInput(kind="company", name="Halcyon Systems", aliases=["Halcyon"])
+    )
+    config = context.config()
+    config.assignments["writeup"].writeup_glossary = "orbit seven = Orbit 7"
+    config.assignments["enrichment"].connection = config.assignments["writeup"].connection
+    config.assignments["enrichment"].model = "synthetic-suggestions"
+    config.assignments["enrichment"].enabled = True
+    context.save_config(config)
+    context.write(
+        "discovery", {config.assignments["enrichment"].connection: ["synthetic-suggestions"]}
+    )
+    seen: dict = {}
+
+    async def write_text(connection, key, limits, system, evidence):
+        seen.update(system=system, evidence=evidence)
+        return answer(evidence), {}
+
+    context.provider.write_text = write_text
+    audio = await store_audio(store, name="call.wav", data=b"RIFF....WAVEfmt ", mime="audio/wav")
+    accepted = await context.accept_recording(request(audio))
+    await context.recordings.tick()
+    return context, context.recordings.load(accepted["id"]), seen
+
+
+def note_answer(extra=""):
+    def build(evidence):
+        return (
+            "# " + evidence["resolved_title"] + "\n\n## Top line\nHalcyon plans Orbit 8.0.\n\n"
+            "## What we learned about their environment\nOrbit 7.2 today [00:00:00].\n"
+            + extra
+            + "\n<<<RECORDING_BOUNDARIES>>>\n[]\n<<<END_RECORDING_BOUNDARIES>>>\n"
+        )
+
+    return build
+
+
+async def test_customer_call_arrives_with_suggested_fields_in_the_review_flow(store):
+    block = suggestion_block(
+        [
+            {"field": "account", "value": "halcyon", "confidence": "high", "reason": "named twice"},
+            {"field": "tags", "value": ["orbit", "not-a-tag"], "confidence": "high", "reason": "x"},
+            {"field": "type", "value": "personal", "confidence": "low", "reason": "unsure"},
+        ]
+    )
+    async with Service(reply=CUSTOMER) as service:
+        context, job, seen = await customer_recording(store, service, note_answer("\n" + block))
+        assert job.state == "succeeded", job.error
+        evidence = seen["evidence"]
+        assert evidence["known_accounts"] == ["Halcyon Systems"]
+        assert evidence["recording_date"] == "2026-11-09"
+        assert evidence["meeting_kind"] == "unknown"
+        assert evidence["glossary"] == "orbit seven = Orbit 7"
+        assert "Recording boundaries" in seen["system"]
+        assert "<<<FIELD_SUGGESTIONS>>>" not in (await store.get_note(job.note_id)).body
+        saved = context.read("recording-writeups/" + job.id, {})
+        assert saved["suggestion_error"] == ""
+        assert {(s["field"], s["confidence"]) for s in saved["suggestions"]} == {
+            ("account", 0.9),
+            ("context", 0.9),
+        }
+
+        async def suggest(*args):
+            return {"suggestions": [], "unresolved": []}, {}
+
+        context.provider.suggest = suggest
+        review = context.load_job(await context.queue_note(job.note_id))
+        await context.run_job(review)
+        assert review.state in {"suggested", "applying", "applied"}, review.error
+        by_field = {s.field: s for s in review.result.suggestions if s.kind == "field"}
+        assert by_field["account"].value == ["Halcyon Systems"]
+        assert by_field["context"].value == "external"
+        assert by_field["account"].reason == "named twice" and by_field["account"].confidence == 0.9
+        note = await store.get_note(job.note_id)
+        assert note.frontmatter["account"] == ["Halcyon Systems"]
+
+
+async def test_a_company_that_does_not_exist_is_offered_as_a_new_account_and_not_written(store):
+    block = suggestion_block(
+        [{"field": "account", "value": "Brand New Corp", "confidence": "high", "reason": "named"}]
+    )
+    async with Service(reply=CUSTOMER) as service:
+        context, job, _ = await customer_recording(store, service, note_answer("\n" + block))
+        saved = context.read("recording-writeups/" + job.id, {})
+        account = next(s for s in saved["suggestions"] if s["field"] == "account")
+        assert account["new"] and account["confidence"] < 0.8
+        assert account["reason"].startswith("New account?")
+
+        async def suggest(*args):
+            return {"suggestions": [], "unresolved": []}, {}
+
+        context.provider.suggest = suggest
+        review = context.load_job(await context.queue_note(job.note_id))
+        await context.run_job(review)
+        assert "account" not in (await store.get_note(job.note_id)).frontmatter
+        assert any(s.field == "account" for s in review.result.suggestions)
+
+
+async def test_a_suggestion_block_that_cannot_be_read_never_costs_the_note(store):
+    async with Service(reply=CUSTOMER) as service:
+        context, job, _ = await customer_recording(
+            store,
+            service,
+            note_answer(
+                "\n<<<FIELD_SUGGESTIONS>>>\nnot json at all\n<<<END_FIELD_SUGGESTIONS>>>\n"
+            ),
+        )
+        assert job.state == "succeeded", job.error
+        note = await store.get_note(job.note_id)
+        assert "Halcyon plans Orbit 8.0." in note.body and "not json" not in note.body
+        saved = context.read("recording-writeups/" + job.id, {})
+        assert saved["suggestions"] == [] and saved["suggestion_error"]
+
+
+async def test_a_clean_recording_has_no_boundaries_section(store):
+    async with Service(reply=CUSTOMER) as service:
+        _, job, _ = await customer_recording(
+            store,
+            service,
+            lambda evidence: (
+                "# " + evidence["resolved_title"] + "\n\n## Top line\nDone.\n\n"
+                "## Recording boundaries\nNothing was found.\n\n## Notes\nBody.\n"
+                "\n<<<RECORDING_BOUNDARIES>>>\n[]\n<<<END_RECORDING_BOUNDARIES>>>\n"
+            ),
+        )
+        assert "Recording boundaries" not in (await store.get_note(job.note_id)).body
+
+
+async def test_a_trimmed_recording_shows_its_boundaries_near_the_top(store):
+    async with Service(reply=CUSTOMER) as service:
+        _, job, _ = await customer_recording(
+            store,
+            service,
+            lambda evidence: (
+                "# " + evidence["resolved_title"] + "\n\n## Top line\nDone.\n\n## Notes\nBody.\n"
+                '\n<<<RECORDING_BOUNDARIES>>>\n[{"start_seconds": 30, "end_seconds": 40, '
+                '"kind": "unrelated_tail", "evidence": "Chat after the meeting.", '
+                '"confidence": "high"}]\n<<<END_RECORDING_BOUNDARIES>>>\n'
+            ),
+        )
+        body = (await store.get_note(job.note_id)).body
+        assert (
+            body.index("## Top line")
+            < body.index("## Recording boundaries")
+            < body.index("## Notes")
+        )
+        assert body.count("## Recording boundaries") == 1
+
+
+async def test_a_default_prompt_follows_upgrades_and_an_edited_one_is_kept(store):
+    from coppermind.recording_writeup import (
+        DEFAULT_PROMPT,
+        PREVIOUS_DEFAULT_PROMPTS,
+        effective_prompt,
+    )
+
+    async with Service() as service:
+        context = await setup_transcription(store, service)
+        features = store.admin.features
+        # Saved by an older build that stored the default it showed.
+        config = context.config()
+        config.assignments["writeup"].writeup_prompt = PREVIOUS_DEFAULT_PROMPTS[0]
+        context.save_config(config)
+        assert (await features.writeup_settings())["prompt"] == DEFAULT_PROMPT
+        config.assignments["writeup"].writeup_prompt = PREVIOUS_DEFAULT_PROMPTS[0] + "\nMine."
+        context.save_config(config)
+        assert effective_prompt(context.config().assignments["writeup"].writeup_prompt).endswith(
+            "Mine."
+        )
+        # Saving the page with the default untouched keeps following the default.
+        await features.writeup_save({"writeup_prompt": DEFAULT_PROMPT})
+        assert context.config().assignments["writeup"].writeup_prompt == ""
+        await features.writeup_save({"writeup_glossary": "a = B"})
+        assert (await features.writeup_settings())["glossary"] == "a = B"

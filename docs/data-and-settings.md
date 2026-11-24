@@ -216,9 +216,11 @@ to that recording's speakers) and `voice-settings.json` (the two match threshold
 ### Recording write-up directions
 
 **Admin > Transcription > How recordings are written up** edits one Markdown prompt
-(`writeup_prompt`, up to 20,000 characters) on the independent `writeup` assignment in
-`/data/state/context/config.json`. Save and Reset to default apply to subsequent
-generations, not existing notes. The same page chooses the writer service, model,
+(`writeup_prompt`, up to 20,000 characters) and a glossary of terms to correct
+(`writeup_glossary`, up to 8,000 characters, one `heard = correct` per line) on the
+independent `writeup` assignment in `/data/state/context/config.json`. Save and Reset to default apply to subsequent
+generations, not existing notes. An empty prompt, or one that is exactly a default an earlier
+release shipped, follows the current default; edited directions are kept. The same page chooses the writer service, model,
 enabled state, input character limit ("Most the model reads at once"; longer transcripts are
 written up in parts), silence wait and response token budget.
 The initial assignment copies the configured legacy summary model and limits.

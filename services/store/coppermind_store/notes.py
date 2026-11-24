@@ -54,6 +54,7 @@ from coppermind.ids import is_valid_id, new_id
 from coppermind.logging import get_logger
 from coppermind.naming import note_stem, sanitize_folder, unique_stem
 from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
+from coppermind.recording_writeup import has_references_block
 from coppermind.schema import (
     FrontmatterSchema,
     account_list,
@@ -258,7 +259,10 @@ def _renamed_bytes(current: bytes, title: str) -> tuple[bytes, str]:
             lines[index] = f"# {title}{ending}"
             break
     else:
-        lines.insert(0, f"# {title}\n\n")
+        # A recording note has no heading on purpose: its file name carries the title, so a
+        # rename leaves nothing in the body to go stale.
+        if not has_references_block(body):
+            lines.insert(0, f"# {title}\n\n")
     new_body = "".join(lines)
     return (prefix + new_body).encode("utf-8"), new_body
 
