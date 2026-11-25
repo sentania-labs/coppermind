@@ -1201,9 +1201,6 @@ def _review_prefix(store: LocalStore) -> str:
     return f"{folder}/" if folder else ""
 
 
-PURGE_PROBLEM_KINDS = frozenset({"purge", "purge_unfinished", "purge_receipt", "damaged_source"})
-
-
 async def list_reconciler_notices(store: LocalStore) -> list[ReconcilerNotice]:
     """Notices still true: one about a gone note, a gone artifact or a gone folder is dropped."""
     from coppermind.db.models import Artifact
@@ -1392,7 +1389,6 @@ async def get_status(store: LocalStore) -> StatusResponse:
             folders_kept=sum(n.kind == "folder" for n in notices),
             filing_failures=sum(p.kind == "filing" for p in problems),
             calendar_import_failures=sum(p.kind == "calendar_import" for p in problems),
-            purge_problems=sum(p.kind in PURGE_PROBLEM_KINDS for p in problems),
             active_problems=sum(p.kind not in {"excluded", "returned_note"} for p in problems),
         )
     )
@@ -1465,95 +1461,23 @@ def _damaged_reason(entry: dict[str, str]) -> str:
             f"{name} could not be verified during rebuild. "
             "Check the source files and retry rebuilding."
         )
-    return f"{name} has files but no readable manifest. It is not offered for retention purge."
+    return f"{name} has files but no readable manifest."
 
 
-async def purge_problems(store: LocalStore) -> list[ProblemInfo]:
-    """What retention purge leaves for the owner, for Problems and the Home Needs attention list.
+async def damaged_source_problems(store: LocalStore) -> list[ProblemInfo]:
+    """The preserved source copies the last scan or rebuild could not read."""
+    from coppermind_store.damaged_sources import recorded
 
-    This reads the problems the last maintenance scan recorded and the few receipts
-    that can still be unfinished. It never walks a source bundle or a finished receipt.
-    """
-    from coppermind_store.purge import live_ids, recorded, records, unreadable
-
-    try:
-        found, unfinished, unreadable_now = await asyncio.to_thread(
-            lambda: (recorded(store), records(store), unreadable(store, ("",)))
-        )
-    except OSError:
-        return [
-            ProblemInfo(
-                kind="purge",
-                reference="receipts",
-                reason="The record of clean-ups could not be read. Check storage health.",
-            )
-        ]
-    problems = [
+    found = await asyncio.to_thread(recorded, store)
+    return [
         ProblemInfo(
             kind="damaged_source",
             reference=entry["source_id"],
             reason=_damaged_reason(entry),
             source_id=entry["source_id"],
         )
-        for entry in found["damaged"]
+        for entry in found
     ]
-    problems.extend(
-        ProblemInfo(
-            kind="purge_receipt",
-            reference=token,
-            reason=(
-                "A retention purge receipt is unreadable and is being ignored. Abandon it "
-                "to move the file into quarantine."
-            ),
-        )
-        for token in sorted({*found["unreadable"], *unreadable_now})
-    )
-    for receipt in unfinished:
-        if receipt["state"] in {"applying", "failed"}:
-            problems.append(
-                ProblemInfo(
-                    kind="purge_unfinished",
-                    reference=receipt["token"],
-                    reason=(
-                        "A clean-up is unfinished. Open Storage, Clean up in Admin "
-                        "to finish it or cancel it."
-                    ),
-                )
-            )
-        elif receipt["state"] == "preview" and receipt.get("error"):
-            problems.append(
-                ProblemInfo(
-                    kind="purge",
-                    reference=receipt["token"],
-                    reason=(
-                        "A clean-up failed before anything was removed. "
-                        "Open Storage, Clean up in Admin to try again."
-                    ),
-                )
-            )
-    for entry in found["abandoned"]:
-        try:
-            live = await live_ids(store, entry["remaining_ids"])
-        except (SQLAlchemyError, OSError) as exc:
-            raise MetadataUnavailable(str(exc)) from exc
-        remaining = [r for r in entry["remaining_ids"] if r not in live]
-        if not remaining:
-            continue
-        titles = [entry["titles"][r] for r in remaining[:5] if r in entry["titles"]]
-        more = f" and {len(remaining) - len(titles)} more" if len(remaining) > len(titles) else ""
-        problems.append(
-            ProblemInfo(
-                kind="purge",
-                reference=entry["token"],
-                reason=(
-                    f"A clean-up was cancelled part way. {entry['removed']} listed items "
-                    f"were removed. {len(remaining)} were not and still need "
-                    f"attention: {', '.join(titles)}{more}. "
-                    "Open Storage, Clean up in Admin to finish removing them."
-                ),
-            )
-        )
-    return problems
 
 
 async def get_problems(store: LocalStore) -> list[ProblemInfo]:
@@ -1632,7 +1556,7 @@ async def get_problems(store: LocalStore) -> list[ProblemInfo]:
     for item in filing_items:
         item.reference = paths.get(item.note_id, item.reference)
     problems.extend(filing_items)
-    problems.extend(await purge_problems(store))
+    problems.extend(await damaged_source_problems(store))
     problems.extend(
         ProblemInfo(
             kind=row.state,

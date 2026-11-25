@@ -17,7 +17,7 @@ from coppermind.store_protocol import (
     SearchQuery,
     VersionConflict,
 )
-from tests.integration.test_purge import confirmation, retention
+from tests.integration.test_delete_once import commit, git
 
 
 async def person(store, name="Casey", address="casey@example.test"):
@@ -1023,28 +1023,6 @@ async def test_returning_evidence_does_not_reverse_owner_decisions(store, withdr
         assert "role: Architect" in page.read_text()
 
 
-async def test_retired_subject_purges_without_rewriting_git_or_regeneration(store):
-    retention(store, 0)
-    p = await person(store)
-    note = await reviewed_note(store)
-    p = await claim(store, p, note)
-    path = store.notes_root / p["path"]
-    path.unlink()
-    await store.entities.refresh()
-    retired = await store.entities.get(p["id"])
-    assert retired["retired_at"]
-    assert not (await store.entities.list(EntityQuery())).get("items")
-    preview = await store.preview_purge()
-    assert [c.kind for c in preview.candidates] == ["entity"]
-    assert preview.counts.entities == 1
-    assert (await store.confirm_purge(confirmation(preview))).state == "complete"
-    assert p["id"] not in store.entities.load().entities
-    await store.entities.refresh()
-    assert not path.exists()
-    assert not (await store.entities.list(EntityQuery()))["items"]
-    assert (await store.get_note(note.id)).body == note.body
-
-
 async def test_projection_race_occupied_path_and_reserved_folders(store, monkeypatch):
     p = await person(store)
     path = store.notes_root / p["path"]
@@ -1097,10 +1075,9 @@ async def test_query_paging_relationship_search_and_identity_preview(store):
     assert any(h.kind == "entity" and h.id == merged["id"] for h in hits.items)
 
 
-async def test_note_purge_scrubs_quotes_and_orphan_dossier(store):
-    from tests.integration.test_note_recovery import commit, git
+async def test_note_removal_scrubs_quotes_and_orphan_dossier(store):
+    from tests.integration.test_delete_once import commit, git
 
-    retention(store, 0)
     note = await reviewed_note(store)
     await store.entities.refresh()
     p = (await store.entities.list(EntityQuery()))["items"][0]
@@ -1112,12 +1089,8 @@ async def test_note_purge_scrubs_quotes_and_orphan_dossier(store):
     git(store.notes_root, "init", "-q")
     commit(store.notes_root)
     (store.notes_root / note.path).unlink()
-    commit(store.notes_root)
-    await reconcile_once(store)
-    preview = await store.preview_purge()
-    assert {c.kind for c in preview.candidates} == {"note", "entity"}
-    before = git(store.notes_root, "rev-parse", "HEAD")
-    assert (await store.confirm_purge(confirmation(preview))).state == "complete"
+    before = commit(store.notes_root)
+    assert (await reconcile_once(store))["deleted"] == 1
     assert "Casey is an engineer" not in (store.entities.root / "catalog.json").read_text()
     assert not (store.notes_root / p["path"]).exists()
     assert git(store.notes_root, "rev-parse", "HEAD") == before
@@ -1201,35 +1174,34 @@ async def test_claim_evidence_is_current_and_reserved_folder_writes_refused(stor
             await store.move_note(note.id, MoveNote(target_folder=folder), note.content_hash)
 
 
-async def test_purge_interruption_never_recreates_a_removed_page(store, monkeypatch):
-    from coppermind.store_protocol import NotesFilesystemUnavailable, ValidationFailed
-
-    retention(store, 0)
-    p = await person(store)
-    p = await store.entities.change(p["id"], EntityChange(version=p["version"], action="retire"))
-    preview = await store.preview_purge()
+async def test_removal_interruption_never_recreates_a_removed_page(store, monkeypatch):
+    note = await reviewed_note(store)
+    await store.entities.refresh()
+    p = (await store.entities.list(EntityQuery()))["items"][0]
+    p = await store.entities.change(
+        p["id"], EntityChange(version=p["version"], action="rename", name="Casey Renamed")
+    )
+    p = await claim(store, p, note)
+    git(store.notes_root, "init", "-q")
+    commit(store.notes_root)
+    (store.notes_root / note.path).unlink()
+    commit(store.notes_root)
     original = store.entities.purge
 
-    def interrupted(*args):
+    def interrupted(*args, **kwargs):
         raise OSError("simulated crash after page removal")
 
     monkeypatch.setattr(store.entities, "purge", interrupted)
-    with pytest.raises(NotesFilesystemUnavailable):
-        await store.confirm_purge(confirmation(preview))
+    assert (await reconcile_once(store))["deleted"] == 0
     assert not (store.notes_root / p["path"]).exists()
     await store.entities.refresh()
     assert not (store.notes_root / p["path"]).exists()
-    with pytest.raises(ValidationFailed, match="interrupted retention purge"):
-        await store.entities.get(p["id"])
     monkeypatch.setattr(store.entities, "purge", original)
-    assert (await store.confirm_purge(confirmation(preview))).state == "complete"
+    assert (await reconcile_once(store))["deleted"] == 1
     assert p["id"] not in store.entities.load().entities
 
 
-async def test_orphan_purge_preserves_personal_writing_arriving_before_preview(store):
-    from tests.integration.test_note_recovery import commit, git
-
-    retention(store, 0)
+async def test_removal_preserves_personal_writing_arriving_before_it(store):
     note = await reviewed_note(store)
     await store.entities.refresh()
     p = (await store.entities.list(EntityQuery()))["items"][0]
@@ -1237,13 +1209,10 @@ async def test_orphan_purge_preserves_personal_writing_arriving_before_preview(s
     commit(store.notes_root)
     (store.notes_root / note.path).unlink()
     commit(store.notes_root)
-    await reconcile_once(store)
     path = store.notes_root / p["path"]
     marker = dossier_marker(p["id"])
     path.write_text(path.read_text().replace(marker, "Personal reminder.\n\n" + marker))
-    preview = await store.preview_purge()
-    assert [c.kind for c in preview.candidates] == ["note"]
-    await store.confirm_purge(confirmation(preview))
+    assert (await reconcile_once(store))["deleted"] == 1
     assert "Personal reminder" in path.read_text()
     assert "Personal reminder" in (await store.entities.get(p["id"]))["personal_text"]
 
@@ -1455,10 +1424,7 @@ async def test_merging_a_person_away_deletes_their_voice_signatures(store):
     assert source["id"] not in voice.summaries()
 
 
-async def test_deleting_one_note_for_good_also_clears_the_person_only_it_supported(store):
-    from tests.integration.test_note_recovery import commit, git
-
-    retention(store, 30)
+async def test_removing_a_note_also_clears_the_person_only_it_supported(store):
     note = await reviewed_note(store)
     await store.entities.refresh()
     p = (await store.entities.list(EntityQuery()))["items"][0]
@@ -1468,6 +1434,5 @@ async def test_deleting_one_note_for_good_also_clears_the_person_only_it_support
     (store.notes_root / note.path).unlink()
     commit(store.notes_root)
     await reconcile_once(store)
-    await store.admin.act("note-delete-for-good", {"id": note.id})
     assert [item["id"] for item in (await store.entities.list(EntityQuery()))["items"]] == []
     assert not (store.notes_root / p["path"]).exists()

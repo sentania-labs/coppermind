@@ -141,17 +141,19 @@ through the normal build process, not around it.
 
 Use a dedicated acceptance vault. First let a synthetic note reach a Git
 snapshot, then delete it in Obsidian. Observe `missing` until Git commits the
-removal, then `deleted`, with the note listed in Admin's Notes, Deleted tab.
-Verify the note is absent from search and active review counts. Restore from
-the preview, confirm the original ID and bytes, and open it on the phone after
-sync. Its search eligibility must still obey review and monthly filing.
+removal, then confirm the note is gone from Admin, search and active review
+counts, with its orphaned sources removed. Recover it from the vault's Git
+history by hand, confirm the original ID and bytes, and open it on the phone
+after sync. Its search eligibility must still obey review and monthly filing.
+Separately, restore a `missing` note from its saved filing copy through the
+preview.
 
 Repeat with a move and a delayed same-ID return: neither creates a new note.
 Try an occupied restore path: the existing file must remain unchanged. Stop
 the Git helper and confirm the Admin warning and pending missing records.
 Rebuild PostgreSQL from the same files and confirm recovery survives, including
 source references and previously recorded approvals. Preserve `.git` and
-`state/note-recovery` in the later full backup/isolated restore drill.
+`state/` in the later full backup/isolated restore drill.
 
 Local integration tests cover the filesystem, Git and PostgreSQL transitions;
 they do not substitute for the phone round trip or an off-device restore.

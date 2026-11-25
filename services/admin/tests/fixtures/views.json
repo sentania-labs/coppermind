@@ -148,17 +148,6 @@
   "start": "2026-11-12T13:00:00+00:00",
   "title": "Northwind rollout review"
  },
- "cleanup": {
-  "bytes": 0,
-  "error": "",
-  "interrupted": null,
-  "items": [],
-  "keep_days": 7,
-  "kept": [],
-  "purge_token": "example-run",
-  "state": "preview",
-  "token": "the-list-as-shown"
- },
  "files": {
   "items": [
    {
@@ -653,7 +642,6 @@
  "note": {
   "arrived": "2026-11-12T17:22:39.778563+00:00",
   "changed": "2026-11-12T17:22:40.102594+00:00",
-  "deleted_at": "",
   "history": [
    {
     "at": "2026-11-12T17:22:39.778563+00:00",
@@ -740,9 +728,6 @@
     "why": "sync test note"
    }
   ]
- },
- "notes-deleted": {
-  "items": []
  },
  "notes-waiting": {
   "items": [
@@ -991,9 +976,7 @@
    "skipped": {}
   },
   "storage": {
-   "cleanup": 0,
-   "damaged": [],
-   "interrupted": null
+   "damaged": []
   },
   "sugg": {
    "model": "llama-3.1-8b",
@@ -1485,11 +1468,7 @@
   "suggested_name": "My AI server"
  },
  "storage": {
-  "cleanup": 0,
-  "deleted": 0,
   "files": 4,
-  "interrupted": null,
-  "keep_days": 7,
   "usage": {
    "parts": [
     {
@@ -1501,15 +1480,11 @@
      "name": "Files beside notes"
     },
     {
-     "bytes": 2472,
-     "name": "Deleted, kept for recovery"
-    },
-    {
      "bytes": 50866,
      "name": "Notes"
     }
    ],
-   "total": 97313
+   "total": 94841
   }
  },
  "suggestions": {
@@ -1705,7 +1680,6 @@
    "notes_folder": "Notes",
    "notes_returned": 0,
    "notes_to_refile": 0,
-   "purge_problems": 0,
    "rejected_ingests": 0,
    "sources": 4,
    "unparseable_files": 0

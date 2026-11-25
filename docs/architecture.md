@@ -185,8 +185,9 @@ has a prepared place in the design for when it is actually needed:
   notes would rewrite every one of them and push that all at once to every
   device. Import becomes a deliberate, later Admin action.
 - **General note history browsing.** Arbitrary historical revisions still
-  require Git access. Deleted-note preview and restore are a narrower
-  capability, described in STATUS.md, with recovery evidence outside Git.
+  require Git access, and so does recovering a deleted note, by hand for now.
+  Restoring a missing note from its saved filing copy is a narrower
+  capability, described in STATUS.md.
 - **Rewriting links when a note is renamed.** Filing (a move) never breaks a
   link; renaming a note's title can, and that gap is documented rather than
   silently fixed.
@@ -233,12 +234,10 @@ approved. Check [STATUS.md](../STATUS.md) before assuming any specific
 behavior is live; this document describes the destination, not today's
 position on the way there.
 
-## Operator retention cleanup
+## Deleting a note
 
-The store owns manual retention purge, including durable preview and completion
-receipts under control state. Admin and an explicitly scoped public API request
-that work through the store contract. It removes expired deleted-note mirrors
-and recovery copies, and source bundles that have lost their opening note and
-all live citations. It preserves Git history. See the precise eligibility,
-confirmation and interrupted-operation rules in
-[data and settings](data-and-settings.md#retention-purge-receipts).
+When Git records a note's removal, the store removes its own records in the same
+reconciliation pass, including the source bundles that have lost their opening
+note and all live citations. Nothing waits for a keep time or a manual clean-up.
+Git history is never written and is the safety net. See
+[data and settings](data-and-settings.md#deleting-a-note).

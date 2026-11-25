@@ -920,7 +920,6 @@ class Recordings:
                 row = await session.get(Note, note_id)
             if (
                 row is not None
-                and row.state != "deleted"
                 and self.context.read("review-completions/" + note_id, {}).get("state")
                 == "applying"
             ):
@@ -928,16 +927,9 @@ class Recordings:
             if row is None:
                 if not await self._purged(note_id):
                     return False
-            elif row.state == "deleted":
-                (self.context.root / "voice-pending" / (job.id + ".json")).unlink(missing_ok=True)
-                from coppermind_store.voice_store import VoiceStore
-
-                VoiceStore(self.context).purge(set(), {note_id})
-                if not (row.filed and row.reviewed):
-                    return False
             elif not (row.filed and row.reviewed):
                 return False
-            deleted = row is None or row.state == "deleted"
+            deleted = row is None
             if await self.shared_audio(job):
                 return self._keep_audio(job, AUDIO_KEPT_SHARED)
             transcript = await asyncio.to_thread(self.saved_transcript, job)
@@ -1068,7 +1060,7 @@ class Recordings:
         return False
 
     async def _purged(self, note_id: str) -> bool:
-        """A missing database row means purged only when no note file carries the identity."""
+        """A missing database row means removed only when no note file carries the identity."""
         index = self.context.store._identity_index
         if not index.fresh():
             await index.refresh()

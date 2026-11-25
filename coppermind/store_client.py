@@ -19,7 +19,6 @@ from pydantic import TypeAdapter
 
 from coppermind.api_keys import ApiKeySet
 from coppermind.logging import get_logger
-from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
 from coppermind.store_protocol import (
     ArtifactBytes,
     ArtifactId,
@@ -60,7 +59,6 @@ from coppermind.store_protocol import (
     PreconditionRequired,
     ProblemInfo,
     ProjectionNotPlaced,
-    PurgeConflict,
     RebuildMetadataResult,
     RebuildSearchIndexResult,
     ReceiptMissing,
@@ -129,7 +127,6 @@ def _unavailable(exc: httpx.HTTPError) -> StoreUnavailable:
     return StoreUnavailable(str(exc))
 
 
-PURGE_TIMEOUT_S = 600.0
 MODEL_TEST_TIMEOUT_S = 900.0
 # One service test tries each model in turn and sends a sample recording.
 SERVICE_TEST_TIMEOUT_S = 900.0
@@ -140,8 +137,6 @@ SLOW_ADMIN_ACTIONS = frozenset(
         "service-save",
         "service-remove",
         "search-on",
-        "cleanup",
-        "cleanup-confirm",
         "note-restore",
         "note-copy",
         "folders-save",
@@ -339,30 +334,6 @@ class HttpStoreClient:
     async def get_note_sources(self, note_id: NoteId) -> list[NoteSourceInfo]:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/notes/{_segment(note_id)}/sources")
         return _NOTE_SOURCES.validate_python(response.json())
-
-    async def preview_purge(self) -> PurgeResult:
-        response = await self._send(
-            "POST", f"{INTERNAL_PREFIX}/purge/preview", timeout=PURGE_TIMEOUT_S
-        )
-        return PurgeResult.model_validate(response.json())
-
-    async def confirm_purge(self, request: ConfirmPurge) -> PurgeResult:
-        response = await self._send(
-            "POST",
-            f"{INTERNAL_PREFIX}/purge/confirm",
-            json=request.model_dump(mode="json"),
-            timeout=PURGE_TIMEOUT_S,
-        )
-        return PurgeResult.model_validate(response.json())
-
-    async def abandon_purge(self, request: AbandonPurge) -> PurgeResult:
-        response = await self._send(
-            "POST",
-            f"{INTERNAL_PREFIX}/purge/abandon",
-            json=request.model_dump(mode="json"),
-            timeout=PURGE_TIMEOUT_S,
-        )
-        return PurgeResult.model_validate(response.json())
 
     async def get_problems(self) -> list[ProblemInfo]:
         response = await self._send("GET", f"{INTERNAL_PREFIX}/problems")
@@ -590,8 +561,6 @@ def _as_typed_error(response: httpx.Response) -> Exception:
         return NotFound(payload.get("note_id", message))
     if code == "field_index_not_ready":
         return FieldIndexNotReady(payload.get("job_id", ""))
-    if code == "purge_conflict":
-        return PurgeConflict()
     if code == "filter_cursor_conflict":
         return FilterCursorConflict()
     if code == "path_collision":

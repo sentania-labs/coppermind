@@ -9,7 +9,7 @@ vertical path proved end to end, then widened.
 ## Dossier slice (November 7, 2026)
 
 People and company identities, evidenced facts, interests, relationships,
-versioned agent corrections, identity previews, Obsidian pages and retention
+versioned agent corrections, identity previews, Obsidian pages and deletion
 integration are implemented. See [dossiers](docs/dossiers.md). The API, page
 correction and search were exercised with isolated live services and PostgreSQL;
 Admin was inspected at desktop and mobile widths. The second slice adds automatic
@@ -27,14 +27,14 @@ password there signs the owner in and opens a six-step setup guide at
 a forgotten password is replaced through a new setup link printed when the
 stack starts once with `COPPERMIND_ADMIN_NEW_SETUP_LINK=1`. The menu is Home,
 Setup guide, Notes (Need you, Waiting for review, Left alone on purpose,
-Deleted, and a find box), Recordings and imports, Calendar, People and voices,
+and a find box), Recordings and imports, Calendar, People and voices,
 Obsidian Sync, AI services, Suggestions, Transcription, Connected apps,
 Storage and Settings. Where the old pages went: Problems and Note recovery
 are the Notes tabs and Home's list of what needs you; API Keys is Connected
 apps; Model connections and Transcription setup are AI services and
 Transcription; Fields and tags is Settings, Properties and Tags; Search index
-is Settings, Search; Artifacts is Storage, Files; Retention purge is Storage,
-Clean up. Every page is server rendered behind the session cookie and a CSRF
+is Settings, Search; Artifacts is Storage, Files; Retention purge is gone, because a deletion
+now answers once. Every page is server rendered behind the session cookie and a CSRF
 form token, and reads and acts through one internal store route,
 `POST /internal/v1/admin/{action}`.
 
@@ -47,8 +47,7 @@ through `POST /v1/pair` instead of a pasted key. Obsidian Sync connects in
 steps (sign in, pick or make a vault, name this server). A recording is only
 taken in while transcription is on; audio that was already stored, or that a note
 already links to, is never queued or deleted by it.
-Storage, Clean up lists what is past the keep time and deletes nothing until
-that list is confirmed. Transcription has "How recordings are written up", one
+Transcription has "How recordings are written up", one
 document prompt around fixed rules, used from the next write-up on (the old
 Suggestions summary editor redirects there); a legacy recording note that is
 still waiting for review can have its summary written again from the same
@@ -78,9 +77,8 @@ transcript. Proved by the rendered page and action tests under
   artifact. Re-upload with `artifact_id` is a new revision whose bytes replace
   the browsable copy at its stable path while earlier revisions stay in the
   archive. Deleting the file in Obsidian removes the artifact once the Git
-  helper commits the deletion: the next reconciler pass retires the record and
-  search entry and the archive becomes eligible for the retention purge as
-  `deleted in Obsidian`; a copy merely absent (not synced yet, or at a rebuild)
+  helper commits the deletion: the next reconciler pass removes the record,
+  search entry and archive (`deleted in Obsidian`); a copy merely absent (not synced yet, or at a rebuild)
   is reported `missing` and the archive stays. Moving or renaming the file in
   Obsidian returns it to its filed place and leaves a notice (what moved, from
   where, where it went back, why, and that nothing needs doing) on Admin's
@@ -91,9 +89,8 @@ transcript. Proved by the rendered page and action tests under
   Storage, Files page (`/admin/storage/files`) lists stored files and removes
   one. A file over the 10 MiB limit is refused with the limit and what to do
   now, the same for multipart and JSON; the staged upload path (`POST
-  /v1/staged`, then a streamed `PUT`, then finalize) takes files up to 1 GiB. Removed archives are purged through
-  the retention purge's dry run and confirm flow, each candidate showing its
-  reason. `rebuild_metadata` recreates every record, row and search entry from
+  /v1/staged`, then a streamed `PUT`, then finalize) takes files up to 1 GiB. A removed artifact's archive goes with
+  it at once. `rebuild_metadata` recreates every record, row and search entry from
   `/data` alone. `_Attachments/` is retired:
   filing lands source material under `Artifacts/` as artifacts the note
   cites, and legacy attachment files are moved there by the reconciler with
@@ -161,7 +158,7 @@ transcript. Proved by the rendered page and action tests under
   manual setup and no hand populated setting. The one-shot `bootstrap`
   container creates `/data`, generates the internal bearer token and the
   PostgreSQL password as files on volumes (never environment values), creates
-  a working default API key (every scope except `admin:purge` and the opt-in
+  a working default API key (every scope except the opt-in
   entity scopes) in a separate restricted volume, and writes `settings.yaml`, `schema.yaml` and the key's
   Argon2 hash at revision 1. Running it again keeps every existing secret, key and setting. Revoke
   that default and it stays revoked. The revocation takes effect for
@@ -795,62 +792,50 @@ in the tree, so do not read the absence as a decision to leave it out.
 A complete reconciliation scan first follows IDs across paths. An absent note
 stays `missing` until Git contains a committed removal with the same identity,
 path, and exact last-observed contents, and that ID is absent from the current
-Git tree. It then becomes `deleted`. There is no extra grace period. An absent
-or disabled Git repository cannot establish a new deletion. Already retained
-deletion evidence survives a Git outage. Either absent state leaves active
-search, review counts, filing, and path ownership; the listing API can filter
-both explicitly. A returning identity recovers automatically at its observed
-path, subject to the existing publication rules.
+Git tree. An absent or disabled Git repository cannot establish a deletion. A
+missing note leaves active search, review counts, filing, and path ownership;
+the listing API can filter it explicitly. A returning identity recovers
+automatically at its observed path, subject to the existing publication rules.
 
-Admin's Notes, Deleted tab lists deleted notes (Storage, Deleted lists them
-too). Deleted notes have an
-escaped content preview and an explicit restore confirmation. Restore creates
-the original path exclusively, preserves the ID and bytes, and refuses an
-occupied destination or a returned identity. It warns that the restored file
-will sync to devices. The misleading sidebar tagline has been removed. A
-missing note whose filing journal holds a verified matching copy can also be
-restored from Admin without a committed removal; see [the API
-reference](docs/api.md) for the contract.
+Once Git records the removal, the store removes what it kept about the note in
+the same pass: its mirror row, search entry, saved filing journal, what dossiers
+and voices learned from it, and the recording sources only it opened, unless a
+live note still cites them. A merged-away recording note is removed the same way.
+There is no recovery copy, keep time, Deleted tab or clean-up step; Git history
+is never written and is the only safety net, so a deleted note is recovered from
+it by hand for now. Admin's own destructive file actions delete the file and keep
+nothing. A removed artifact loses its archive at once. See
+[data and settings](docs/data-and-settings.md#deleting-a-note), which also
+describes the one-time upgrade pass (migration 0016) that removes what the
+earlier release kept for deleted notes and artifacts and the `retention` settings.
 
+A missing note whose filing journal holds a verified matching copy can be
+restored from Admin ("Bring back the last version") or the API.
 `GET /v1/notes/{id}/recovery` requires `notes:read` and returns the saved text,
-path, removal commit, and preview token. `POST /v1/notes/{id}/restore` requires
+path and preview token. `POST /v1/notes/{id}/restore` requires
 `notes:read` and `notes:write`, with that token and the exact confirmation
-`Restore <note ID>`. A stale preview is refused. Confirmation is retained
-before creating the file. After an interrupted request, reconcile and inspect
-the note before retrying; an already returned note is never overwritten.
+`Restore <note ID>`. A stale preview is refused. Restore creates the original
+path exclusively, preserves the ID and bytes, and refuses an occupied
+destination or a returned identity. Confirmation is recorded under
+`/data/state/note-restores/` before creating the file. After an interrupted
+request, reconcile and inspect the note before retrying; an already returned
+note is never overwritten.
 
-Immutable, mode-0600 receipts under `/data/state/note-recovery/` retain the
-Git blob identity, removal commit, exact recovery bytes, path, and note ID.
-They are loaded before filesystem reconciliation after mirror loss, so a
-returning file retains its old identity and source associations. They remain
-outside the notes repository and sync tree. Ordinary Git garbage collection
-cannot remove this independent recovery copy. Deletion removes no source
-bundle; only a confirmed operator retention purge removes recovery copies and
-orphaned sources, see [data and settings](docs/data-and-settings.md#retention-purge-receipts).
-
-Git history alone cannot prove intent. Here `deleted` means absent with a
-recoverable committed removal. If the last observed edit never reached Git,
-the note stays missing rather than pretending that an older version is exact.
 A note that vanished while filing was moving it keeps `missing` with a
 `state_reason` naming the last known hash, and Problems lists it.
+If the last observed edit never reached Git, the note stays missing rather
+than pretending that an older version is exact.
 Git lookups use bounded object batches and cache only requested absent
 identities per HEAD and schema identity key, not one history process per note.
-Automatic recovery refuses Markdown blobs above 32 MiB rather than exhaust
-the store; these remain available for manual recovery from Git. Traversal errors fail the scan instead of
-silently turning inaccessible subtrees into deletions.
+Traversal errors fail the scan instead of silently turning inaccessible
+subtrees into deletions.
 
-Local verification covers actual Git, PostgreSQL, reconstruction, return,
-preview/restore, collisions, and Admin authentication/CSRF. A containerized
-Chrome walkthrough confirmed the preview, original-byte restore, and return
-to eligible search; a 390-pixel viewport had no horizontal overflow. Production phone
-acceptance and the isolated full backup restore drill remain deployment gates;
-this branch does not claim they have happened.
+Production phone acceptance and the isolated full backup restore drill remain
+deployment gates; this branch does not claim they have happened.
 
-
-Rollback requires a version that understands `deleted` and the recovery
-receipts. Older versions can misreport archived rows and do not expose restore.
-Preserve control state and Git history before rollout; do not downgrade the
-running store against this mirror as a recovery shortcut.
+Rollback past migration 0016 does not bring back what it removed. Preserve
+control state and Git history before rollout; do not downgrade the running
+store against this mirror as a recovery shortcut.
 
 ## Calendar and enrichment working branch
 

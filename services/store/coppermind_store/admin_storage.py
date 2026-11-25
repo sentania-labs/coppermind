@@ -1,47 +1,28 @@
-"""Storage as Admin shows it: what is kept, the clean-up list, and files beside notes.
+"""Storage as Admin shows it: what is kept, and files beside notes.
 
 Space used is added up from what is really on disk, so it changes when something
-is deleted. The clean-up list is the retention purge's own dry run; nothing is
-removed until the owner confirms that exact list.
+is deleted. A deleted note, file or recording leaves nothing behind to list or clean up.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
-import json
 import os
 import time
-from contextlib import suppress
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
 from coppermind.db.models import Artifact
-from coppermind.entities import EntityChange
-from coppermind.logging import get_logger
-from coppermind.purge import AbandonPurge, ConfirmPurge
-from coppermind.settings import RetentionSettings
 from coppermind.store_protocol import StoreError
-from coppermind_store import artifacts, purge
+from coppermind_store import artifacts
 
 if TYPE_CHECKING:
     from coppermind_store.admin_notes import AdminNotes
     from coppermind_store.notes import LocalStore
 
-KEEP_DAYS = (7, 30, 90, 365)
-KINDS = {
-    "note": "Deleted note",
-    "artifact": "Removed file",
-    "source": "Recording of a deleted note",
-    "entity": "Removed person or company",
-    "copy": "Deleted file",
-}
 _USAGE: dict[str, tuple[float, int]] = {}
-log = get_logger("coppermind-store")
 
 
 def _tree_size(root: Path, *, skip_hidden: bool = False) -> int:
@@ -72,307 +53,21 @@ class AdminStorage:
     def __init__(self, store: LocalStore, notes: AdminNotes) -> None:
         self.store = store
         self.notes = notes
-        self._count_lock = asyncio.Lock()
-        self._cleanup_changed = asyncio.Event()
-
-    def keep_days(self) -> int:
-        return self.store.control.settings().retention.days
 
     # -- space ---------------------------------------------------------------------------
-
-    def _removed_archives(self) -> int:
-        total = 0
-        for manifest_file in self.store.artifacts_root.glob("*/manifest.json"):
-            try:
-                if json.loads(manifest_file.read_bytes()).get("removed_at"):
-                    total += _tree_size(manifest_file.parent)
-            except (OSError, ValueError):
-                continue
-        return total
 
     async def usage(self) -> dict[str, Any]:
         async with self.store.session_factory() as session:
             rows = (await session.execute(sa.select(Artifact.mime_type, Artifact.size_bytes))).all()
         recordings = sum(size for mime, size in rows if (mime or "").startswith("audio/"))
         files = sum(size for mime, size in rows if not (mime or "").startswith("audio/"))
-        state = self.store.control.store.state_dir
-
-        def measure() -> tuple[int, int]:
-            kept = (
-                self._removed_archives()
-                + _tree_size(state / "note-recovery")
-                + _tree_size(state / "admin-removed")
-            )
-            return kept, _cached_size(self.store.notes_root, skip_hidden=True)
-
-        kept, notes = await asyncio.to_thread(measure)
+        notes = await asyncio.to_thread(_cached_size, self.store.notes_root, skip_hidden=True)
         parts = [
             {"name": "Recordings", "bytes": recordings},
             {"name": "Files beside notes", "bytes": files},
-            {"name": "Deleted, kept for recovery", "bytes": kept},
             {"name": "Notes", "bytes": max(0, notes - files)},
         ]
         return {"parts": parts, "total": sum(part["bytes"] for part in parts)}
-
-    # -- clean up ------------------------------------------------------------------------
-
-    def _unfinished(self) -> dict[str, Any] | None:
-        for record in purge.records(self.store):
-            if record["state"] in {"applying", "failed"}:
-                return record
-        return None
-
-    def _item_size(self, item: dict[str, Any]) -> int:
-        total = 0
-        for entry in item.get("files", []):
-            try:
-                root = purge._root(self.store, entry["area"])
-                total += (root / entry["path"]).stat().st_size
-            except (OSError, ValueError, KeyError):
-                continue
-        return total
-
-    def _old_removed(self) -> list[dict[str, Any]]:
-        """Files Admin itself took away that are past the keep time."""
-        cutoff = datetime.now(UTC) - timedelta(days=self.keep_days())
-        return [
-            item
-            for item in self.notes.removed()
-            if datetime.fromisoformat(item["removed_at"]) <= cutoff
-        ]
-
-    def _still_kept(self) -> list[dict[str, Any]]:
-        """Removed files and people not yet past the keep time: still here to bring back."""
-        cutoff = datetime.now(UTC) - timedelta(days=self.keep_days())
-        kept = []
-        for manifest_file in self.store.artifacts_root.glob("*/manifest.json"):
-            try:
-                manifest = json.loads(manifest_file.read_bytes())
-                removed = manifest.get("removed_at")
-                if (
-                    not removed
-                    or manifest.get("removed_reason") not in artifacts.OWNER_REMOVAL_REASONS
-                    or datetime.fromisoformat(removed) <= cutoff
-                ):
-                    continue
-            except (OSError, ValueError):
-                continue
-            kept.append(
-                {
-                    "id": manifest_file.parent.name,
-                    "kind": "artifact",
-                    "what": KINDS["artifact"],
-                    "title": str(manifest.get("filename") or manifest.get("title") or ""),
-                    "deleted_at": removed,
-                }
-            )
-        for entity in self.store.entities.load().entities.values():
-            if entity.retired_at is None or entity.redirect or entity.retired_at <= cutoff:
-                continue
-            kept.append(
-                {
-                    "id": entity.id,
-                    "kind": "entity",
-                    "what": KINDS["entity"],
-                    "title": entity.name,
-                    "deleted_at": entity.retired_at.isoformat(),
-                }
-            )
-        kept.sort(key=lambda item: item["deleted_at"], reverse=True)
-        return kept
-
-    async def interrupted(self) -> dict[str, Any] | None:
-        record = await asyncio.to_thread(self._unfinished)
-        if record is None:
-            return None
-        done = len(record.get("completed", []))
-        return {
-            "token": record["token"],
-            "done": done,
-            "total": len(record["items"]),
-            "left": len(record["items"]) - done,
-        }
-
-    async def cleanup(self) -> dict[str, Any]:
-        """The list a clean-up would delete for good, with what each item is and holds."""
-        result = await purge.operation(self.store)
-        record = await asyncio.to_thread(purge.read, self.store, result.token)
-        done = set(record.get("completed", []))
-        items = []
-        for item in record["items"]:
-            candidate = item["candidate"]
-            if candidate["id"] in done:
-                continue
-            items.append(
-                {
-                    "id": candidate["id"],
-                    "kind": candidate["kind"],
-                    "what": KINDS[candidate["kind"]],
-                    "title": candidate["title"],
-                    "deleted_at": candidate.get("deleted_at") or "",
-                    "bytes": await asyncio.to_thread(self._item_size, item),
-                    "can_restore": candidate["kind"] in {"note", "artifact", "entity"},
-                }
-            )
-        for removed in self._old_removed():
-            items.append(
-                {
-                    "id": removed["key"],
-                    "kind": "copy",
-                    "what": KINDS["note" if removed["kind"] == "note" else "copy"],
-                    "title": removed["title"],
-                    "deleted_at": removed["removed_at"],
-                    "bytes": len(base64.b64decode(removed["content"])),
-                    "can_restore": True,
-                }
-            )
-        items.sort(key=lambda item: item["deleted_at"])
-        return {
-            "kept": await asyncio.to_thread(self._still_kept),
-            # What the list holds, as one value: the confirmation is held to the list its
-            # owner was looking at, however many times the list has been drawn since.
-            "token": hashlib.sha256(
-                json.dumps(sorted(f"{item['kind']}:{item['id']}" for item in items)).encode()
-            ).hexdigest(),
-            "purge_token": result.token,
-            "state": result.state,
-            "items": items,
-            "bytes": sum(item["bytes"] for item in items),
-            "keep_days": self.keep_days(),
-            "interrupted": await self.interrupted(),
-            "error": result.error or "",
-        }
-
-    async def cleanup_count(self) -> dict[str, Any]:
-        """Read the persisted background result. Page requests never start a scan."""
-
-        def read() -> dict[str, Any]:
-            try:
-                body = self.store.control.store.read("cleanup_count").body
-                count = body["count"]
-                at = datetime.fromisoformat(body["computed_at"])
-                if type(count) is not int or count < 0 or at.utcoffset() is None:
-                    raise ValueError("invalid cleanup count")
-                return {"count": count, "computed_at": body["computed_at"]}
-            except (OSError, ValueError, KeyError, TypeError):
-                return {"count": None, "computed_at": None}
-
-        return await asyncio.to_thread(read)
-
-    async def refresh_cleanup_count(self) -> None:
-        """Publish a complete count, retaining the last result on any scan failure."""
-        async with self._count_lock:
-            try:
-                found, _ = await purge.candidates(self.store, datetime.now(UTC))
-                count = len(found) + len(await asyncio.to_thread(self._old_removed))
-
-                def save() -> None:
-                    state = self.store.control.store
-                    try:
-                        revision = state.read("cleanup_count").revision
-                    except FileNotFoundError:
-                        revision = None
-                    state.write(
-                        "cleanup_count",
-                        {"count": count, "computed_at": datetime.now(UTC).isoformat()},
-                        if_revision=revision,
-                    )
-
-                await asyncio.to_thread(save)
-            except Exception as exc:  # noqa: BLE001 - keep the previous background result
-                log.warning("admin cleanup count refresh failed", error=type(exc).__name__)
-
-    async def run_cleanup_count(self) -> None:
-        """Refresh at startup, periodically, and after explicit clean-up changes."""
-        while True:
-            self._cleanup_changed.clear()
-            await self.refresh_cleanup_count()
-            try:
-                interval = self.store.control.settings().retention.count_interval_s
-            except Exception as exc:  # noqa: BLE001 - readiness reports bad control files
-                log.warning("cleanup count settings unavailable", error_type=type(exc).__name__)
-                interval = RetentionSettings().count_interval_s
-            with suppress(TimeoutError):
-                await asyncio.wait_for(self._cleanup_changed.wait(), timeout=interval)
-
-    async def cleanup_confirm(self, payload: dict[str, Any]) -> dict[str, Any]:
-        before = await self.cleanup()
-        if before["token"] != payload.get("token"):
-            # The list changed after it was shown, so it is shown again, not acted on.
-            return {"changed": True}
-        await self.store.confirm_purge(
-            ConfirmPurge(token=before["purge_token"], confirmation="Purge listed items")
-        )
-        for item in before["items"]:
-            if item["kind"] == "copy":
-                self.notes._drop_removed(item["id"])
-        _USAGE.clear()
-        self._cleanup_changed.set()
-        usage = await self.usage()
-        return {
-            "changed": False,
-            "count": len(before["items"]),
-            "bytes": before["bytes"],
-            "used": usage["total"],
-            "was_interrupted": before["interrupted"] is not None,
-        }
-
-    async def cleanup_cancel(self, payload: dict[str, Any]) -> dict[str, Any]:
-        unfinished = await self.interrupted()
-        if unfinished is None:
-            return {"left": 0}
-        await self.store.abandon_purge(AbandonPurge(token=unfinished["token"]))
-        self._cleanup_changed.set()
-        return {"left": unfinished["left"]}
-
-    async def bring_back(self, payload: dict[str, Any]) -> dict[str, Any]:
-        kind, identity = str(payload["kind"]), str(payload["id"])
-        if kind == "note":
-            result = await self.notes.restore({"id": identity})
-            self._cleanup_changed.set()
-            return {"title": result["title"], "kind": "note"}
-        if kind == "copy":
-            result = await self.notes.restore({"key": identity})
-            self._cleanup_changed.set()
-            return {"title": result["title"], "kind": "note"}
-        if kind == "artifact":
-            title = await artifacts.restore_artifact(self.store, identity)
-            _USAGE.clear()
-            self._cleanup_changed.set()
-            return {"title": title, "kind": "file"}
-        if kind == "entity":
-            ledger = self.store.entities.load()
-            entity = ledger.entities.get(identity)
-            if entity is None:
-                raise ValueError("That person or company is no longer kept.")
-            await self.store.entities.change(
-                identity, EntityChange(version=entity.version, action="restore")
-            )
-            self._cleanup_changed.set()
-            return {"title": entity.name, "kind": "person"}
-        raise ValueError("That item cannot be brought back by itself.")
-
-    async def set_keep(self, payload: dict[str, Any]) -> dict[str, Any]:
-        days = int(payload["days"])
-        if days not in KEEP_DAYS:
-            raise ValueError("choose one of the listed times")
-        state = self.store.control.store.read("settings")
-        body = dict(state.body)
-        body.setdefault("retention", {})["days"] = days
-        self.store.control.store.write("settings", body, if_revision=state.revision)
-        self._cleanup_changed.set()
-        return {"days": days, **await self.cleanup_count()}
-
-    async def set_count_interval(self, payload: dict[str, Any]) -> dict[str, int]:
-        interval = int(payload["seconds"])
-        if not 60 <= interval <= 86400:
-            raise ValueError("Choose between one minute and one day")
-        state = self.store.control.store.read("settings")
-        body = dict(state.body)
-        body.setdefault("retention", {})["count_interval_s"] = interval
-        self.store.control.store.write("settings", body, if_revision=state.revision)
-        self._cleanup_changed.set()
-        return {"seconds": interval}
 
     # -- files beside notes --------------------------------------------------------------
 
@@ -435,5 +130,4 @@ class AdminStorage:
         except StoreError:
             raise
         _USAGE.clear()
-        self._cleanup_changed.set()
         return {"name": record.filename or record.title}

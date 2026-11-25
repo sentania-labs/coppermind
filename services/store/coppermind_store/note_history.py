@@ -1,13 +1,12 @@
-"""Read Git evidence in batches; retain recovery copies outside the metadata mirror.
+"""Read Git evidence in batches, and restore a missing note from its saved filing copy.
 
 Git is only read here. No checkout, hooks, filters, remote access or ref writes
-are involved. Immutable recovery receipts survive both mirror reconstruction
-and Git housekeeping. A receipt is evidence, never authority to remove a file.
+are involved. A removal Git records is the signal that a note is gone: the note's own
+records are removed with it and nothing is kept back in their place.
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import json
@@ -15,22 +14,14 @@ import os
 import re
 import subprocess
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import sqlalchemy as sa
-from pydantic import BaseModel
-
 from coppermind import frontmatter as fm
-from coppermind.atomicio import (
-    atomic_write_bytes,
-    create_exclusive_bytes,
-    stage_bytes,
-    sync_directory,
-)
+from coppermind.atomicio import create_exclusive_bytes, stage_bytes, sync_directory
 from coppermind.db.models import Note
-from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id
 from coppermind.store_protocol import (
     HistoryStatus,
@@ -52,24 +43,15 @@ class HistoryUnavailable(Exception):
     """No trustworthy Git evidence is available on this pass."""
 
 
-class Receipt(BaseModel):
-    schema_version: int = 1
+@dataclass(frozen=True)
+class Removal:
+    """A removal Git records: which note, where it was, and the commit that removed it."""
+
     note_id: str
     path: str
     content_hash: str
     removal_commit: str
     blob: str
-    content: str
-    recorded_at: datetime
-
-    def data(self) -> bytes:
-        data = base64.b64decode(self.content, validate=True)
-        if content_hash(data) != self.content_hash:
-            raise ValueError("recovery copy hash mismatch")
-        return data
-
-    def token(self) -> str:
-        return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
 
 
 # Keep each subprocess output bounded, including unrelated archived files.
@@ -304,7 +286,7 @@ class GitHistory:
         except (UnicodeError, fm.FrontmatterError):
             return None
 
-    def evidence(self, note_id: str, path: str, digest: str) -> Receipt | None:
+    def evidence(self, note_id: str, path: str, digest: str) -> Removal | None:
         candidates = self.removed.get(note_id, [])
         # Never fall back to an older deletion generation with matching bytes.
         latest = candidates[0][0] if candidates else None
@@ -312,49 +294,14 @@ class GitHistory:
             if commit != latest:
                 break
             if old_path == path and content_hash(data) == digest:
-                return Receipt(
+                return Removal(
                     note_id=note_id,
                     path=path,
                     content_hash=digest,
                     removal_commit=commit,
                     blob=blob,
-                    content=base64.b64encode(data).decode(),
-                    recorded_at=datetime.now(UTC),
                 )
         return None
-
-
-def directory(store: LocalStore) -> Path:
-    return store.control.store.state_dir / "note-recovery"
-
-
-def save(store: LocalStore, receipt: Receipt) -> None:
-    path = directory(store) / f"{receipt.note_id}-{receipt.removal_commit}.json"
-    try:
-        publish_receipt(path, receipt.model_dump_json().encode())
-    except FileExistsError:
-        previous = Receipt.model_validate_json(path.read_bytes())
-        if previous.data() != receipt.data() or previous.path != receipt.path:
-            raise NotesFilesystemUnavailable(
-                "recovery receipt conflicts with existing evidence"
-            ) from None
-
-
-def receipts(store: LocalStore) -> dict[str, Receipt]:
-    found: dict[str, Receipt] = {}
-    try:
-        for path in sorted(directory(store).glob("*.json")):
-            receipt = Receipt.model_validate_json(path.read_bytes())
-            if not is_valid_id(receipt.note_id):
-                raise ValueError("invalid recovery identity")
-            resolve(store.notes_root, receipt.path)
-            receipt.data()
-            old = found.get(receipt.note_id)
-            if old is None or receipt.recorded_at > old.recorded_at:
-                found[receipt.note_id] = receipt
-    except (OSError, ValueError) as exc:
-        raise NotesFilesystemUnavailable("note recovery evidence is unreadable") from exc
-    return found
 
 
 def publish_receipt(path: Path, data: bytes) -> None:
@@ -367,144 +314,49 @@ def publish_receipt(path: Path, data: bytes) -> None:
         staged.unlink(missing_ok=True)
 
 
-def remember_return(store: LocalStore, note: Note, values: dict) -> None:
-    """Remember later observations so an old deletion cannot win after DB loss."""
-    if not any(directory(store).glob(f"{note.id}-*.json")):
-        return
-    fields = ("path", "content_hash", "frontmatter", "size_bytes", "title")
-    value = {field: values.get(field, getattr(note, field)) for field in fields}
-    value["recorded_at"] = datetime.now(UTC).isoformat()
-    atomic_write_bytes(
-        directory(store) / "observed" / f"{note.id}.json", json.dumps(value).encode(), mode=0o600
-    )
-
-
-async def recover_rows(store: LocalStore) -> None:
-    """Seed absent identities before scanning, including when their files return."""
-    from coppermind_store.notes import _jsonable, _mirror_columns, _title_of
-    from coppermind_store.purge import pending_ids
-
-    pending = pending_ids(store, "note")
-    saved = {
-        k: v for k, v in (await asyncio.to_thread(receipts, store)).items() if k not in pending
-    }
-    if not saved:
-        return
-    schema = store.control.schema()
-    async with transaction(store.session_factory) as session:
-        known = set((await session.scalars(sa.select(Note.id))).all())
-        unknown = set(saved) - known
-        if unknown:
-            await asyncio.to_thread(
-                store.note_history.refresh,
-                schema.role("id_key"),
-                store.control.settings().git.enabled,
-                unknown,
-            )
-        for note_id in unknown:
-            receipt = saved[note_id]
-            observation = directory(store) / "observed" / f"{note_id}.json"
-            later = json.loads(observation.read_bytes()) if observation.exists() else None
-            # The latest removal in Git may have happened while the store was
-            # offline. Do not resurrect an older receipt in preference to it.
-            candidates = store.note_history.removed.get(note_id, [])
-            state = "deleted"
-            if candidates and candidates[0][0] != receipt.removal_commit:
-                commit, blob, path, data = candidates[0]
-                receipt = Receipt(
-                    note_id=note_id,
-                    path=path,
-                    content_hash=content_hash(data),
-                    removal_commit=commit,
-                    blob=blob,
-                    content=base64.b64encode(data).decode(),
-                    recorded_at=datetime.now(UTC),
-                )
-                state = "missing"
-                later = None
-            data = receipt.data()
-            frontmatter, body = fm.parse(data.decode())
-            path, digest, size = receipt.path, receipt.content_hash, len(data)
-            title = _title_of(body, Path(path))
-            if later and datetime.fromisoformat(later["recorded_at"]) > receipt.recorded_at:
-                path, digest, size = later["path"], later["content_hash"], later["size_bytes"]
-                frontmatter, title = later["frontmatter"], later["title"]
-                state = "missing"
-            session.add(
-                Note(
-                    id=note_id,
-                    path=path,
-                    title=title,
-                    content_hash=digest,
-                    size_bytes=size,
-                    frontmatter=_jsonable(frontmatter),
-                    **_mirror_columns(frontmatter, schema),
-                    state=state,
-                    state_reason="recovered identity; awaiting scan",
-                    first_seen_at=receipt.recorded_at,
-                    updated_at=receipt.recorded_at,
-                )
-            )
-
-
 async def preview(store: LocalStore, note_id: str) -> NoteRecovery:
+    """A missing note's saved filing copy, bound to this identity, path and hash."""
     async with store.session_factory() as session:
         note = await session.get(Note, note_id)
         if note is None:
             raise NotFound(note_id)
-        if note.state not in {"deleted", "missing"}:
-            raise ValidationFailed(["Only a missing or deleted note can be restored"])
-    if note.state == "missing":
-        # A verified filing copy can restore a file without asserting a Git removal.
-        # Bind confirmation to this identity, path and hash, and create exclusively.
-        try:
-            journal = store.control.store.state_dir / "filing" / f"{note_id}.json"
-            plan = json.loads(journal.read_bytes())
-            copy = next(
-                c for c in reversed(plan.get("copies", [])) if c["hash"] == note.content_hash
-            )
-            data = base64.b64decode(copy["content"], validate=True)
-            if (
-                content_hash(data) != note.content_hash
-                or store.note_history.identity(data, store.control.schema().role("id_key"))
-                != note_id
-            ):
-                raise ValueError("filing copy does not match note")
-            resolve(store.notes_root, note.path)
-        except (OSError, ValueError, KeyError, TypeError, StopIteration) as exc:
-            raise ValidationFailed(
-                [
-                    f"No verified saved filing copy is available for {note.path}. "
-                    "Restore this note from a device "
-                    "or backup to its previous path with the same note ID. If Git history has a "
-                    "matching version, check Git settings and folder access, "
-                    "then allow another scan."
-                ]
-            ) from exc
-        token = hashlib.sha256(
-            f"filing-restore:{note_id}:{note.path}:{note.content_hash}".encode()
-        ).hexdigest()
-        return NoteRecovery(
-            note_id=note_id,
-            path=note.path,
-            content=data.decode(),
-            content_hash=note.content_hash,
-            removal_commit="",
-            token=token,
-            recorded_at=note.updated_at,
-            evidence_pending=True,
-        )
-    receipt = (await asyncio.to_thread(receipts, store)).get(note_id)
-    if receipt is None or receipt.content_hash != note.content_hash or receipt.path != note.path:
-        raise NotesFilesystemUnavailable("matching recovery evidence unavailable")
+        if note.state != "missing":
+            raise ValidationFailed(["Only a missing note can be restored"])
+    # A verified filing copy can restore a file without asserting a Git removal.
+    # Bind confirmation to this identity, path and hash, and create exclusively.
+    try:
+        journal = store.control.store.state_dir / "filing" / f"{note_id}.json"
+        plan = json.loads(journal.read_bytes())
+        copy = next(c for c in reversed(plan.get("copies", [])) if c["hash"] == note.content_hash)
+        data = base64.b64decode(copy["content"], validate=True)
+        if (
+            content_hash(data) != note.content_hash
+            or store.note_history.identity(data, store.control.schema().role("id_key")) != note_id
+        ):
+            raise ValueError("filing copy does not match note")
+        resolve(store.notes_root, note.path)
+    except (OSError, ValueError, KeyError, TypeError, StopIteration) as exc:
+        raise ValidationFailed(
+            [
+                f"No verified saved filing copy is available for {note.path}. "
+                "Restore this note from a device "
+                "or backup to its previous path with the same note ID. If Git history has a "
+                "matching version, check Git settings and folder access, "
+                "then allow another scan."
+            ]
+        ) from exc
+    token = hashlib.sha256(
+        f"filing-restore:{note_id}:{note.path}:{note.content_hash}".encode()
+    ).hexdigest()
     return NoteRecovery(
         note_id=note_id,
-        path=receipt.path,
-        content=receipt.data().decode(),
-        content_hash=receipt.content_hash,
-        removal_commit=receipt.removal_commit,
-        token=receipt.token(),
-        recorded_at=receipt.recorded_at,
+        path=note.path,
+        content=data.decode(),
+        content_hash=note.content_hash,
+        removal_commit="",
+        token=token,
+        recorded_at=note.updated_at,
+        evidence_pending=True,
     )
 
 
@@ -528,7 +380,9 @@ async def restore(store: LocalStore, note_id: str, request: RestoreNote) -> Note
                 raise ValidationFailed([f"Confirmation must be: {expected}"])
             target = resolve(store.notes_root, result.path)
             # Preserve exact authorization before a file becomes visible.
-            audit = directory(store) / "restores" / f"{note_id}-{request.token}.json"
+            audit = (
+                store.control.store.state_dir / "note-restores" / f"{note_id}-{request.token}.json"
+            )
             authorization = request.model_dump_json().encode()
             try:
                 publish_receipt(audit, authorization)

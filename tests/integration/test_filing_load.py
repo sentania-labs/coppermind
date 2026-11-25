@@ -17,11 +17,10 @@ from coppermind.store_protocol import (
     MoveNote,
     NoteQuery,
     NotesFilesystemUnavailable,
-    NoteState,
     NotFound,
     PatchFrontmatter,
 )
-from tests.integration.test_note_recovery import commit, git
+from tests.integration.test_delete_once import commit, git
 from tests.integration.test_search_index import ingest_request
 from tests.integration.test_store_write_protocol import authorized_api
 
@@ -273,7 +272,9 @@ async def test_failure_count_drains_and_error_is_visible_by_id(store, monkeypatc
 
 
 @pytest.mark.parametrize("committed", [True, False])
-async def test_removal_in_filing_has_receipt_or_explained_missing(store, monkeypatch, committed):
+async def test_removal_in_filing_is_gone_when_committed_or_explained_missing(
+    store, monkeypatch, committed
+):
     git(store.notes_root, "init", "-q")
     result = await store.ingest(ingest_request())
     note = await store.get_note(result.note.id)
@@ -293,19 +294,18 @@ async def test_removal_in_filing_has_receipt_or_explained_missing(store, monkeyp
     monkeypatch.setattr(store, "move_note", remove_after_move)
     await filing.file_reviewed(store)
     await reconcile_once(store)
-    state: NoteState = "deleted" if committed else "missing"
-    row = (await store.list_notes(NoteQuery(state=state))).items[0]
-    assert row.id == note.id
     if committed:
-        recovery = await store.preview_note_restore(note.id)
-        assert recovery.content_hash == row.content_hash
-        assert note.id in recovery.content
+        # Git recorded the removal, so the note and its records are gone.
+        assert not (await store.list_notes(NoteQuery())).items
+        assert not (store.control.store.state_dir / "filing" / f"{note.id}.json").exists()
     else:
+        row = (await store.list_notes(NoteQuery(state="missing"))).items[0]
+        assert row.id == note.id
         assert "vanished between filing paths" in row.state_reason
         assert row.content_hash in row.state_reason
         assert any(p.kind == "missing" and p.note_id == row.id for p in await store.get_problems())
         assert (await reconcile_once(store))["missing"] == 0
-        assert (await store.list_notes(NoteQuery(state=state))).items[0].state_reason == (
+        assert (await store.list_notes(NoteQuery(state="missing"))).items[0].state_reason == (
             row.state_reason
         )
     assert (await store.get_status()).counters.filing_failures == 0
@@ -681,7 +681,7 @@ async def test_missing_filing_copy_can_be_restored_without_claiming_git_removal(
         note.id, RestoreNote(token=recovery.token, confirmation=f"Restore {note.id}")
     )
     assert (await store.get_note(note.id)).content_hash == recovery.content_hash
-    assert not (await store.list_notes(NoteQuery(state="deleted"))).items
+    assert not (await store.list_notes(NoteQuery(state="missing"))).items
 
 
 async def test_status_separates_failed_and_stalled_filing_from_drainable_work(store):

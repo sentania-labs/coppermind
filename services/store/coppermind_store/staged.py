@@ -19,7 +19,7 @@ steps that each fit in one request:
 
 The receipt is the only durable record of a reservation, under
 `<data>/state/staged/<id>.json`, beside the other state files. Every reservation
-is swept once `retention.days` has passed since it was reserved (an upload that
+is swept once `RECEIPT_DAYS` have passed since it was reserved (an upload that
 never completed) or last moved (a `stored` or `failed` receipt), together with
 its staged copy and any temporary file a crash left behind. The sweep runs on the
 next reservation.
@@ -65,6 +65,8 @@ if TYPE_CHECKING:
 log = get_logger("coppermind-store")
 
 RECEIPT_SCHEMA = 1
+# Days a staged upload receipt survives after it was reserved or last moved.
+RECEIPT_DAYS = 30
 # How much of a stream is hashed and written at a time. One number keeps the
 # memory ceiling of a staged upload independent of the file's size.
 CHUNK_BYTES = 1 << 20
@@ -233,20 +235,18 @@ def _expired(document: dict[str, Any], after: int, now: datetime) -> bool:
 
 
 def _survey(store: LocalStore, now: datetime) -> list[dict[str, Any]]:
-    """Every receipt that survives the retention window, after dropping those past it.
+    """Every receipt that survives the receipt window, after dropping those past it.
 
     A receipt past the window goes with its staged copy, whatever its state, and
-    so does any temporary file a crashed upload left behind. With retention off
-    nothing is dropped.
+    so does any temporary file a crashed upload left behind.
     """
-    window = store.control.settings().retention.days
-    after = window * 24 * 3600 if window > 0 else None
+    after = RECEIPT_DAYS * 24 * 3600
     kept: list[dict[str, Any]] = []
     for path in _receipts(store):
         document = _load(path)
         if document is None:
             continue
-        if after is not None and _expired(document, after, now):
+        if _expired(document, after, now):
             receipt_id = str(document.get("id", path.stem))
             try:
                 _bytes_path(store, receipt_id).unlink(missing_ok=True)
@@ -256,8 +256,7 @@ def _survey(store: LocalStore, now: datetime) -> list[dict[str, Any]]:
             log.info("staged upload receipt expired", receipt_id=receipt_id)
             continue
         kept.append(document)
-    if after is not None:
-        _drop_orphans(store, after, now)
+    _drop_orphans(store, after, now)
     return kept
 
 

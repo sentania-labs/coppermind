@@ -1460,8 +1460,8 @@ is sent to this service a little at a time, in the background.</p>
             history = support["history"]
             if history["available"]:
                 record = (
-                    "Working. Coppermind keeps a record of every change to your notes, which is "
-                    "what lets a deleted note be brought back."
+                    "Working. Coppermind keeps a record of every change to your notes, which "
+                    "holds the earlier versions of every note, deleted ones included."
                     + (
                         f" Last recorded {ui.ago(history['last_commit_at'], ctx.zone)}."
                         if history.get("last_commit_at")
@@ -1470,8 +1470,8 @@ is sent to this service a little at a time, in the background.</p>
                 )
             else:
                 record = (
-                    "Not working right now, so a note deleted from now on may not be "
-                    "recoverable. " + e(history["reason"])
+                    "Not working right now, so a note deleted from now on may leave no "
+                    "earlier version behind. " + e(history["reason"])
                 )
             import json
 

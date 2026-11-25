@@ -610,9 +610,8 @@ async def test_multiple_blank_fields_fill_from_one_model_answer(store):
     assert current.body == note.body and current.path == note.path
 
 
-async def test_purge_removes_supporting_quotes_from_other_notes_enrichment_snapshots(store):
-    from tests.integration.test_note_recovery import commit, git
-    from tests.integration.test_purge import confirmation, retention
+async def test_removal_drops_supporting_quotes_from_other_notes_enrichment_snapshots(store):
+    from tests.integration.test_delete_once import commit, git
 
     context, source, _, person, _ = await contribute(store)
     note = await store.create_note(
@@ -641,11 +640,7 @@ async def test_purge_removes_supporting_quotes_from_other_notes_enrichment_snaps
     commit(store.notes_root)
     (store.notes_root / source.path).unlink()
     commit(store.notes_root)
-    await reconcile_once(store)
-    retention(store, 0)
-    preview = await store.preview_purge()
-    assert source.id in {c.id for c in preview.candidates}
-    await store.confirm_purge(confirmation(preview))
+    assert (await reconcile_once(store))["deleted"] == 1
     saved = context.load_job(job.id)
     assert saved.state == "stale" and saved.result is None
     assert not saved.evidence.get("dossiers")

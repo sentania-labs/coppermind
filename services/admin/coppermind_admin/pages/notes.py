@@ -7,7 +7,6 @@ unless the button for it was pressed.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -32,7 +31,6 @@ LABELS = {
     "notfiled": ("bad", "Needs you"),
     "waiting": ("accent", "Waiting for review"),
     "reviewed": ("accent", "Reviewed, being filed"),
-    "deleted": ("", "Deleted"),
     "missing": ("bad", "Missing"),
     "filed": ("ok", "Filed"),
 }
@@ -42,13 +40,11 @@ PATTERNS = (
     ("canvases", "Canvases", "*.canvas"),
     ("boards", "Boards", "*.kanban.md"),
 )
+# What Admin says wherever it deletes a file: Coppermind keeps no copy of its own.
+FINAL = "Deleting is final in Coppermind; your vault's Git history holds earlier versions."
 ALONE_LEDE = (
     "Coppermind never treats these as notes: it does not file them, change them or add suggestions."
 )
-
-
-def keep_words(days: int) -> str:
-    return "1 year" if days == 365 else plural(days, "day")
 
 
 def alone_why(reason: str) -> str:
@@ -67,51 +63,6 @@ def alone_why(reason: str) -> str:
     if reason.startswith("pattern: "):
         return f'Its name matches "{e(reason[9:])}", which you chose to leave alone.'
     return e(reason)
-
-
-def until_text(deleted_at: str, days: int, ctx: Ctx) -> str:
-    try:
-        gone = datetime.fromisoformat(deleted_at)
-    except ValueError:
-        return ""
-    from datetime import UTC, timedelta
-
-    limit = gone + timedelta(days=days)
-    if limit <= datetime.now(UTC):
-        return "Past its keep time, so it is also listed under Clean up."
-    until = ui.date_only(limit, ctx.zone)
-    return f"Can be brought back until {until}, and after that until you clean up."
-
-
-def deleted_row(note: dict[str, Any], days: int, ctx: Ctx, back: str, prefix: str = "") -> str:
-    """A deleted note looks and behaves the same on every page that lists it."""
-    fields = {"id": note["id"], "key": note["key"], "back": back}
-    return ui.item(
-        prefix + e(note["title"]),
-        f"Deleted {ui.date_only(note['deleted_at'], ctx.zone)}. "
-        + until_text(note["deleted_at"], days, ctx),
-        ui.btn("Bring back", "/admin/notes/restore", "", fields, busy="Bringing back…")
-        + ui.go(
-            "Delete for good",
-            ui.url(back, gone=note["id"] or note["key"]),
-        ),
-    )
-
-
-def gone_dialog(notes: list[dict[str, Any]], asked: str, back: str) -> str:
-    target = next((n for n in notes if asked and asked in {n["id"], n["key"]}), None)
-    if target is None:
-        return ""
-    return ui.dialog(
-        f'Delete "{e(target["title"])}" for good?',
-        "It cannot be brought back afterwards.",
-        "/admin/notes/delete-for-good",
-        "Delete for good",
-        back,
-        danger=True,
-        fields={"id": target["id"], "key": target["key"], "back": back},
-        busy="Deleting…",
-    )
 
 
 def summary_text(summary: dict[str, Any]) -> str:
@@ -323,10 +274,8 @@ def router(wiring: Wiring) -> APIRouter:
         if view is None:
             return await ctx.unavailable("Notes", LEDE, "notes")
         query = ctx.q("q").strip()
-        days = ctx.settings().retention.days
         try:
             waiting = await ctx.act("notes-waiting", {})
-            deleted = (await ctx.act("notes-deleted", {}))["items"]
             alone = (await ctx.act("notes-alone", {}))["items"]
             found = (await ctx.act("notes-find", {"q": query}))["items"] if query else []
         except StoreError:
@@ -334,7 +283,7 @@ def router(wiring: Wiring) -> APIRouter:
         waiting = waiting["items"]
         stuck, unsure = view["notes"]["stuck"], view["notes"]["unsure"]
         need = len(stuck) + len(unsure)
-        if not (waiting or deleted or alone or stuck) and not query:
+        if not (waiting or alone or stuck) and not query:
             connect = (
                 ui.go("Connect Obsidian Sync", "/admin/sync", "primary")
                 if model.sync_state(view["sync"]) == "none"
@@ -351,7 +300,7 @@ def router(wiring: Wiring) -> APIRouter:
             return await ctx.page("Notes", body, "notes")
         default = "notfiled" if need else "waiting"
         tab = ctx.q("tab") or default
-        if tab not in {"notfiled", "waiting", "alone", "deleted"}:
+        if tab not in {"notfiled", "waiting", "alone"}:
             tab = default
         here = ui.url("/admin/notes", tab=tab)
         sugg_on = view["sugg"]["state"] == "on"
@@ -462,12 +411,6 @@ def router(wiring: Wiring) -> APIRouter:
                 link = model.note_path(note["id"])
                 if note["state"] == "waiting" and note["id"] in by_id:
                     lines += waiting_row(by_id[note["id"]], badge)
-                elif note["state"] == "deleted":
-                    lines += ui.item(
-                        badge + ui.a(e(note["title"]), link),
-                        f"Deleted {ui.date_only(note['deleted_at'], ctx.zone)}.",
-                        ui.go("Open", link),
-                    )
                 else:
                     where = folder_words(note["path"].rsplit("/", 1)[0])
                     name = e(note["path"].rsplit("/", 1)[-1].removesuffix(".md"))
@@ -484,7 +427,7 @@ def router(wiring: Wiring) -> APIRouter:
                     or ui.empty(
                         "No note with that name",
                         "Check the spelling. The search covers every note Coppermind knows, "
-                        "including filed and deleted ones.",
+                        "including filed ones.",
                     )
                 )
             )
@@ -497,8 +440,6 @@ def router(wiring: Wiring) -> APIRouter:
                 "tick Reviewed. Coppermind then files it.",
                 "alone": "Coppermind leaves these files untouched on purpose. That is not a "
                 "problem. " + ui.a("Change which files are left alone", "/admin/notes/leave-alone"),
-                "deleted": f"Deleted notes can be brought back for {keep_words(days)}, and "
-                "after that until you clean up.",
             }[tab]
             if tab == "notfiled":
                 lines = "".join(stuck_row(n) for n in stuck) + "".join(
@@ -517,16 +458,13 @@ def router(wiring: Wiring) -> APIRouter:
                         "the box above to find an older one by name.</p>"
                     )
                 none = ui.empty("Nothing is waiting for review", "")
-            elif tab == "alone":
+            else:
                 lines = "".join(
                     ui.item(e(item["title"]), alone_why(item["why"])) for item in alone[:100]
                 )
                 if len(alone) > 100:
                     lines += f'<p class="lat-hint">Showing 100 of {len(alone)}.</p>'
                 none = ui.empty("Nothing is left alone", "")
-            else:
-                lines = "".join(deleted_row(n, days, ctx, here) for n in deleted)
-                none = ui.empty("No deleted notes", "Nothing is waiting to be brought back.")
             inner = f'<p class="muted">{intro}</p>' + (lines or none)
             tabs = ui.seg(
                 "/admin/notes",
@@ -534,7 +472,6 @@ def router(wiring: Wiring) -> APIRouter:
                     ("notfiled", f"Need you ({need})"),
                     ("waiting", f"Waiting for review ({len(waiting)})"),
                     ("alone", f"Left alone on purpose ({len(alone)})"),
-                    ("deleted", f"Deleted ({len(deleted)})"),
                 ],
                 tab,
             )
@@ -550,42 +487,21 @@ def router(wiring: Wiring) -> APIRouter:
             )
         }</form>
 {tabs}{ui.card(inner)}</div>"""
-        return await ctx.page(
-            "Notes", body, "notes", dialog=gone_dialog(deleted, ctx.q("gone"), here)
-        )
+        return await ctx.page("Notes", body, "notes")
 
     @routes.post("/admin/notes/restore", include_in_schema=False)
     async def restore(request: Request) -> Response:
+        """Bring back a missing note from the last version Coppermind saved of it."""
         ctx = Ctx(request, wiring)
         form = await ctx.form()
-        target = ctx.back("/admin/notes?tab=deleted")
+        target = ctx.back("/admin/notes")
         try:
-            result = await ctx.act(
-                "note-restore", {"id": form.get("id", ""), "key": form.get("key", "")}
-            )
+            result = await ctx.act("note-restore", {"id": form.get("id", "")})
         except StoreError as exc:
             ctx.say("bad", explain(exc, "That note could not be brought back just now."))
             return ctx.go(target)
         where = folder_words(str(result["path"]).rsplit("/", 1)[0]) or "your vault"
-        ctx.say(
-            "ok",
-            f'Brought back "{e(result["title"])}". It is in {where} in Obsidian again, and is '
-            "off the Deleted list.",
-        )
-        return ctx.go(target)
-
-    @routes.post("/admin/notes/delete-for-good", include_in_schema=False)
-    async def delete_for_good(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        form = await ctx.form()
-        target = ctx.back("/admin/notes?tab=deleted")
-        try:
-            result = await ctx.act(
-                "note-delete-for-good", {"id": form.get("id", ""), "key": form.get("key", "")}
-            )
-        except StoreError as exc:
-            return await ctx.refused(exc, target)
-        ctx.say("ok", f'Deleted "{e(result["title"])}" for good.')
+        ctx.say("ok", f'Brought back "{e(result["title"])}". It is in {where} in Obsidian again.')
         return ctx.go(target)
 
     # -- files left alone ----------------------------------------------------------------
@@ -725,7 +641,6 @@ name="csrf" value="{{csrf}}">Save</button>
             data = await ctx.act("note", {"id": identity})
         except StoreError:
             return ctx.go("/admin/notes")
-        days = keep_words(ctx.settings().retention.days)
         here = model.note_path(identity)
         back = ("/admin", "Home") if ctx.q("from") == "home" else ("/admin/notes", "Notes")
         head = ui.head(e(data["title"]), "A note, and what has happened to it.", back)
@@ -774,14 +689,13 @@ name="csrf" value="{{csrf}}">Save</button>
                 )
                 + ui.item(
                     "Keep only the original",
-                    f"The copy moves to Deleted, where it can be brought back for {days}.",
+                    "The copy is deleted.",
                     ui.go("Delete the copy", ui.url(here, ask="original")),
                 )
                 + ui.item(
                     "Keep only the copy",
-                    f"The original moves to Deleted, where it can be brought back for {days}. "
-                    "The copy takes its name and waits in Review, because you have not "
-                    "reviewed it yet.",
+                    "The original is deleted. The copy takes its name and waits in Review, "
+                    "because you have not reviewed it yet.",
                     ui.go("Delete the original", ui.url(here, ask="copy")),
                 )
             )
@@ -790,12 +704,11 @@ name="csrf" value="{{csrf}}">Save</button>
                 dialog = ui.dialog(
                     "Delete the copy?" if asked == "original" else "Delete the original?",
                     (
-                        f'"{e(copy["name"])}" moves to Deleted.'
+                        f'"{e(copy["name"])}" is deleted.'
                         if asked == "original"
-                        else f'"{e(original["name"])}" moves to Deleted, and the copy takes '
-                        "its name."
+                        else f'"{e(original["name"])}" is deleted, and the copy takes its name.'
                     )
-                    + f" It can be brought back for {days}.",
+                    + f" {FINAL}",
                     f"{here}/copy",
                     "Delete the copy" if asked == "original" else "Delete the original",
                     here,
@@ -835,8 +748,8 @@ name="csrf" value="{{csrf}}">Save</button>
                 dialog = ui.dialog(
                     "Replace the older file?",
                     f'"{e(taken["name"])}" (edited {ui.date_only(taken["edited"], ctx.zone)}, '
-                    f"{plural(taken['words'], 'word')}) moves to Deleted and can be brought "
-                    f"back for {days}. This note is filed in its place.",
+                    f"{plural(taken['words'], 'word')}) is deleted and this note is filed in its "
+                    f"place. {FINAL}",
                     f"{here}/replace",
                     "Replace it",
                     here,
@@ -869,8 +782,7 @@ name="csrf" value="{{csrf}}">Save</button>
 {
                     ui.item(
                         "Replace the older file",
-                        "The file already in the folder moves to Deleted, where it can be brought "
-                        f"back for {days}. This note takes its place.",
+                        "The file already in the folder is deleted. This note takes its place.",
                         ui.go("Replace it", ui.url(here, ask="replace")),
                     )
                 }
@@ -938,9 +850,8 @@ name="csrf" value="{{csrf}}">Save</button>
                 "",
                 "No longer in your vault",
                 "Its file left your vault a few minutes ago. If you deleted it on a phone or "
-                "computer, Coppermind confirms that within a few minutes and lists it under "
-                "Deleted, where it can be brought back. If it was moved, it shows up again by "
-                "itself.",
+                "computer, Coppermind confirms that within a few minutes and stops listing it. "
+                "If it was moved, it shows up again by itself.",
             )
         elif stuck == "missing":
             gone = ui.btn("It is gone on purpose", f"{here}/gone", "", busy="Saving…")
@@ -993,7 +904,7 @@ name="csrf" value="{{csrf}}">Save</button>
                 "You marked it reviewed. Coppermind files it within a minute.",
                 ui.btn("Check again now", f"{here}/check", busy="Checking…"),
             )
-        elif data["state"] == "waiting":
+        else:
             unsure = data["unsure"]
             top = ui.status(
                 "off",
@@ -1011,21 +922,6 @@ name="csrf" value="{{csrf}}">Save</button>
                     "Check them here" if unsure else "Review it here instead",
                     f"{here}/review",
                     "primary" if unsure else "",
-                ),
-            )
-        else:
-            keep = ctx.settings().retention.days
-            top = ui.status(
-                "off",
-                "Deleted",
-                f"Deleted {ui.date_only(data['deleted_at'], ctx.zone)}. "
-                + until_text(data["deleted_at"], keep, ctx),
-                ui.btn(
-                    "Bring back",
-                    "/admin/notes/restore",
-                    "primary",
-                    {"id": identity, "key": "", "back": here},
-                    busy="Bringing back…",
                 ),
             )
         voices = ui.unnamed_voices(data.get("unnamed_voices", []))
@@ -1077,7 +973,6 @@ name="csrf" value="{{csrf}}">Save</button>
         ctx = Ctx(request, wiring)
         await ctx.form()
         here = model.note_path(identity)
-        days = keep_words(ctx.settings().retention.days)
         try:
             title = (await ctx.act("note", {"id": identity}))["title"]
         except StoreError:
@@ -1089,13 +984,7 @@ name="csrf" value="{{csrf}}">Save</button>
             ctx.say("warn", e(result["refused"]["message"]))
             return ctx.go(here)
         if result is not None:
-            ctx.say(
-                *filed_message(
-                    result,
-                    title,
-                    f"The older file is under Notes, Deleted, and can be brought back for {days}.",
-                )
-            )
+            ctx.say(*filed_message(result, title, "The older file was deleted."))
         return ctx.go(here)
 
     @routes.post("/admin/notes/{identity}/check", include_in_schema=False)
@@ -1142,7 +1031,6 @@ name="csrf" value="{{csrf}}">Save</button>
     async def copy(identity: str, request: Request) -> Response:
         ctx = Ctx(request, wiring)
         form = await ctx.form()
-        days = keep_words(ctx.settings().retention.days)
         result = await fix(ctx, identity, "note-copy", {"choice": form.get("choice", "")})
         if result is not None:
             original, duplicate = e(result["original"]), e(result["copy"])
@@ -1152,15 +1040,11 @@ name="csrf" value="{{csrf}}">Save</button>
                     "separate note, waiting in Review for you to check."
                 )
             elif result["choice"] == "original":
-                said = (
-                    f'Done. "{original}" stays exactly as it was. The copy is under Notes, '
-                    f"Deleted, and can be brought back for {days}."
-                )
+                said = f'Done. "{original}" stays exactly as it was. The copy was deleted.'
             else:
                 said = (
                     f'Done. The copy is now "{original}". It has not been reviewed, so it is '
-                    "waiting in Review and has not been filed. The original is under Notes, "
-                    f"Deleted, and can be brought back for {days}."
+                    "waiting in Review and has not been filed. The original was deleted."
                 )
             ctx.say("ok", said)
         return ctx.go(model.note_path(identity))

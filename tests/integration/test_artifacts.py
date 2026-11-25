@@ -125,11 +125,11 @@ async def test_search_can_leave_artifact_hits_out(store):
     assert await hits(store, "quokka", kind="artifact", include_artifacts=False) == []
 
 
-async def test_deleting_the_file_in_obsidian_retires_the_artifact_once_git_records_it(
+async def test_deleting_the_file_in_obsidian_removes_the_artifact_once_git_records_it(
     store, tmp_path
 ):
     """The owner's delete in Obsidian is the deletion the Git helper commits, nothing less."""
-    from tests.integration.test_note_recovery import commit, git
+    from tests.integration.test_delete_once import commit, git
 
     data = pptx_bytes(tmp_path, "Enablement deck", "Platypus enablement")
     created = await store.create_artifact(upload("enablement.pptx", data))
@@ -153,20 +153,17 @@ async def test_deleting_the_file_in_obsidian_retires_the_artifact_once_git_recor
     )
     assert await hits(store, "platypus")
 
-    # Committed: the artifact is gone on the next pass, the archive marked for purge.
-    removal = commit(store.notes_root)
+    # Committed: the artifact is gone on the next pass, archive and all.
+    commit(store.notes_root)
     swept = await artifacts.sweep(store)
     assert swept["artifacts_removed"] == 1
     assert not record_path(store, created.id).exists()
     assert await hits(store, "platypus") == []
     with pytest.raises(ArtifactMissing):
         await store.get_artifact(created.id)
-    manifest = json.loads((store.artifacts_root / created.id / "manifest.json").read_text())
-    assert manifest["removed_reason"] == artifacts.DELETED_IN_OBSIDIAN
-    assert manifest["removal_commit"] == removal
-    # Nothing else changed: the other artifact, and the archived bytes, are still there.
+    assert not (store.artifacts_root / created.id).exists()
+    # Nothing else changed: the other artifact is still there.
     assert await hits(store, "wombat")
-    assert (store.artifacts_root / created.id / "r0001" / "enablement.pptx").read_bytes() == data
     assert (await store.get_status()).counters.artifacts == 1
 
 
@@ -174,7 +171,7 @@ async def test_deleting_the_file_in_obsidian_retires_the_artifact_once_git_recor
 async def test_moving_or_renaming_the_file_in_obsidian_is_not_a_delete(
     store, tmp_path, destination
 ):
-    from tests.integration.test_note_recovery import commit, git
+    from tests.integration.test_delete_once import commit, git
 
     data = pptx_bytes(tmp_path, "Enablement deck", "Platypus enablement")
     created = await store.create_artifact(upload("deck.pptx", data))
@@ -216,7 +213,7 @@ async def test_moving_or_renaming_the_file_in_obsidian_is_not_a_delete(
 
 
 async def test_a_notice_about_an_artifact_that_is_gone_is_dropped(store, tmp_path):
-    from tests.integration.test_note_recovery import commit, git
+    from tests.integration.test_delete_once import commit, git
 
     data = pptx_bytes(tmp_path, "Enablement deck", "Platypus enablement")
     created = await store.create_artifact(upload("deck.pptx", data))
@@ -235,7 +232,7 @@ async def test_a_notice_about_an_artifact_that_is_gone_is_dropped(store, tmp_pat
 
 
 async def test_a_moved_copy_is_never_taken_from_another_artifact(store, tmp_path):
-    from tests.integration.test_note_recovery import commit, git
+    from tests.integration.test_delete_once import commit, git
 
     data = pptx_bytes(tmp_path, "Twin", "Identical bytes")
     first = await store.create_artifact(upload("deck.pptx", data))
@@ -254,7 +251,7 @@ async def test_a_moved_copy_is_never_taken_from_another_artifact(store, tmp_path
 
 
 async def test_a_name_with_glob_characters_is_matched_literally_against_history(store):
-    from tests.integration.test_note_recovery import commit, git
+    from tests.integration.test_delete_once import commit, git
 
     created = await store.create_artifact(upload("Q1 [final]*?.txt", b"glob quokka\n"))
     pattern = (store.notes_root / created.path).name
@@ -279,7 +276,7 @@ async def test_a_name_with_glob_characters_is_matched_literally_against_history(
 async def test_an_unfinished_search_for_a_moved_copy_never_retires_the_artifact(store, monkeypatch):
     from pathlib import Path
 
-    from tests.integration.test_note_recovery import commit, git
+    from tests.integration.test_delete_once import commit, git
 
     data = b"unreadable quokka\n"
     created = await store.create_artifact(upload("deck.txt", data))
@@ -311,7 +308,7 @@ async def test_an_older_deletion_at_the_same_name_does_not_retire_a_newer_artifa
     import os
     import subprocess
 
-    from tests.integration.test_note_recovery import git
+    from tests.integration.test_delete_once import git
 
     git(store.notes_root, "init", "-q")
     folder = store.notes_root / month_folder(store)
@@ -709,14 +706,14 @@ async def test_a_device_edit_to_the_browsable_copy_is_reported_never_rewritten(s
         )
 
 
-async def test_remove_takes_the_projection_and_keeps_the_archive(store, tmp_path):
+async def test_remove_takes_the_projection_and_the_archive(store, tmp_path):
     data = pptx_bytes(tmp_path, "Deck", "Removable bilby")
     created = await store.create_artifact(upload("deck.pptx", data))
     await store.remove_artifact(created.id)
     assert not (store.notes_root / created.path).exists()
     assert not record_path(store, created.id).exists()
     assert await hits(store, "bilby") == []
-    assert (store.artifacts_root / created.id / "r0001" / "deck.pptx").read_bytes() == data
+    assert not (store.artifacts_root / created.id).exists()
     with pytest.raises(ArtifactMissing):
         await store.remove_artifact(created.id)
     with pytest.raises(ArtifactMissing):
@@ -835,7 +832,7 @@ async def test_a_note_cannot_be_created_or_moved_into_the_artifacts_folder(store
 
 
 async def test_a_dropbox_original_never_undoes_the_delete_of_its_browsable_copy(store, tmp_path):
-    from tests.integration.test_note_recovery import commit, git
+    from tests.integration.test_delete_once import commit, git
 
     data = pptx_bytes(tmp_path, "Dropped deck", "Platypus dropbox")
     created = await store.create_artifact(upload("deck.pptx", data, origin="dropbox"))
@@ -845,7 +842,7 @@ async def test_a_dropbox_original_never_undoes_the_delete_of_its_browsable_copy(
     git(store.notes_root, "init", "-q")
     commit(store.notes_root)
     (store.notes_root / created.path).unlink()
-    removal = commit(store.notes_root)
+    commit(store.notes_root)
 
     swept = await artifacts.sweep(store)
 
@@ -853,15 +850,13 @@ async def test_a_dropbox_original_never_undoes_the_delete_of_its_browsable_copy(
     assert dropped.read_bytes() == data
     assert not (store.notes_root / created.path).exists()
     assert await store.list_reconciler_notices() == []
-    manifest = json.loads((store.artifacts_root / created.id / "manifest.json").read_text())
-    assert manifest["removed_reason"] == artifacts.DELETED_IN_OBSIDIAN
-    assert manifest["removal_commit"] == removal
+    assert not (store.artifacts_root / created.id).exists()
 
 
 async def test_an_identical_file_that_predates_the_artifact_is_never_taken_as_its_move(
     store, tmp_path
 ):
-    from tests.integration.test_note_recovery import commit, git
+    from tests.integration.test_delete_once import commit, git
 
     data = pptx_bytes(tmp_path, "Twin", "Platypus predates")
     keeper = store.notes_root / "Reference" / "my own copy.pptx"

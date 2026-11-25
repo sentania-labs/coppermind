@@ -150,7 +150,7 @@ ul.plain{margin:6px 0 0;padding-left:20px}ul.plain li{margin:4px 0}
 .bar i{display:block}
 .legend{display:flex;gap:4px 16px;flex-wrap:wrap;font-size:12px;color:var(--ink-muted)}
 .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
-.use-a{background:var(--accent)} .use-b{background:var(--ok)} .use-c{background:var(--warn)}
+.use-a{background:var(--accent)} .use-b{background:var(--ok)}
 .use-d{background:var(--ink-subtle)}
 .keybox{font-family:var(--font-mono);font-size:12px;background:var(--surface-sunken);
   padding:10px 12px;border-radius:var(--radius-lg);overflow-wrap:anywhere}

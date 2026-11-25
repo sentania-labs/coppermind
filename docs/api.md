@@ -17,15 +17,15 @@ The story behind these decisions is [architecture.md](architecture.md).
   needs a scope: `sources:read`, `sources:write`, `notes:read`,
   `notes:write`, `notes:move`, `notes:delete`, `artifacts:read`,
   `artifacts:write`, `journal:read`, `journal:write`, `search:read`,
-  `admin:read`, `admin:write`, `admin:purge`, `entities:read`,
+  `admin:read`, `admin:write`, `entities:read`,
   `entities:write`. A key missing the right scope gets 403, not a filtered
   response. The bootstrap default key and a key created with no `--scope` hold
-  every scope except `admin:purge`, `entities:read` and `entities:write`,
-  which are granted only when named. Keys minted before the artifact scopes
+  every scope except `entities:read` and `entities:write`,
+  which are granted only when named. The retired `admin:purge` scope grants
+  nothing; a stored key that carries it still loads. Keys minted before the artifact scopes
   existed do not gain them; mint a key that holds them.
 - Admin's own pages use a signed session cookie and a CSRF form token; Admin
-  has no `/v1` routes of its own. The public API's `/v1/admin/purge/*` routes
-  take a key holding `admin:purge`.
+  has no `/v1` routes of its own.
 - Every non-2xx response is the same shape: `{"error": "<code>", "message":
   "<human text>", ...extra fields the specific error needs}`.
 - Listing endpoints page with an opaque cursor: `?cursor=<opaque>&limit=<1 to
@@ -126,8 +126,7 @@ Filtered cursors bind the normalized clause order, all other filters, and the
 schema revision. Changing these returns 409 `filter_cursor_conflict`: restart
 from the first page. Page size may change. Listing retains immutable-ID ordering
 through renames; pages reflect live data rather than a frozen export. Existing
-listing state rules remain unchanged, including explicitly queried missing or
-deleted notes. Search retains its reviewed/filed gate; a custom filter matches
+listing state rules remain unchanged, including explicitly queried missing notes. Search retains its reviewed/filed gate; a custom filter matches
 notes only, never generated source pages.
 
 The internal Admin calls are `POST /internal/v1/field-index/status?offset=0`
@@ -183,11 +182,14 @@ rather than failing.
 Problems includes missing notes with their `state_reason` and durable path
 notices naming the observed and indexed paths.
 While filing is in flight, its journal holds hash-checked note copies; they are
-dropped once filing settles, and a retention purge removes a purged note's
-journal. When a note vanishes between paths, marking it deleted requires Git
-evidence of removal of a journaled origin; otherwise the missing reason names
-the last known hash and why evidence is unavailable. Recovery can preview and
-explicitly restore a missing note from its verified matching filing copy without
+dropped once filing settles, and a deleted note's journal goes with it. When a
+note vanishes between paths, treating it as deleted requires Git evidence of
+removal of a journaled origin; otherwise it stays missing and the reason names
+the last known hash and why evidence is unavailable. A note Git records as
+removed is removed from the store at once, with nothing kept to restore from;
+it is recovered from the vault's Git history by hand for now. For a missing
+note, `GET /v1/notes/{id}/recovery` (`notes:read`) previews and
+`POST /v1/notes/{id}/restore` (`notes:read` and `notes:write`) explicitly restores it from its verified matching filing copy without
 claiming a committed removal (`evidence_pending: true`, empty `removal_commit`).
 Confirmation is bound to the note ID, destination and content hash, and restore
 never overwrites a file. When no matching copy exists, Admin explains how to
@@ -237,7 +239,7 @@ artifact, and deleting a note leaves the artifact uncited.
 | `GET /v1/artifacts` | `artifacts:read` | List artifacts newest received first, filtered by `tag`, `origin`, citing `note_id`, and `from`, `to` on the received date; paged by `cursor` and `limit` | 200, page of summaries, each with `kind: artifact`, `title`, `origin`, `received_at`, `filename`, `mime_type`, `sha256`, `size_bytes`, `url`, `tags`, `path`, `revision`, `citing_note_ids`, `citing_notes` (each `{id, title, path}`, so a person or an agent can name the note), `text_status`, `state` | 422; 503 `metadata_unavailable` |
 | `GET /v1/artifacts/{id}` | `artifacts:read` | The metadata record: everything the summary carries plus every revision and the full extracted `text`. This is the only way to read the record; it is never a page in the notes filesystem | 200 | 404 |
 | `GET /v1/artifacts/{id}/bytes` | `artifacts:read` | The archived bytes of the current revision, or of `?revision=n`, with the recorded media type when it is a plain token, `Content-Disposition: attachment`, `Content-Length` and `X-Coppermind-SHA256`. The archive file is verified against its recorded digest and size, then streamed a megabyte at a time through the store and the API, so a 1 GiB recording is never held in memory | 200 | 404; 422 for a link, which has no bytes |
-| `DELETE /v1/artifacts/{id}` | `artifacts:write` | Remove an artifact the way the Admin page does, for an agent acting for the owner: the browsable copy, the record, the mirror row and the search entry go at once; the archived bytes stay under the artifact identity, marked `removed through the API`, until the retention purge removes them after its window. Citing notes keep their citation | 204 | 404 for an unknown or already removed artifact; 403 without the scope |
+| `DELETE /v1/artifacts/{id}` | `artifacts:write` | Remove an artifact the way the Admin page does, for an agent acting for the owner: the browsable copy, the record, the mirror row and the search entry go at once; and so does the archive folder (`removed through the API`). Citing notes keep their citation | 204 | 404 for an unknown or already removed artifact; 403 without the scope |
 | `PUT`, `PATCH` on `/v1/artifacts/**` | | Always refused: the archive is immutable; a changed file is a new revision through `POST` with `artifact_id` | | 405 `method_not_allowed` |
 
 ### Staged uploads
@@ -255,7 +257,7 @@ citations and replay behaviour match. The staged copy lives under `/data/state/s
 state, outside the browsable notes filesystem, and goes once the artifact is
 stored; the receipt stays as the durable answer. Bytes that disagree with the
 declaration fail that receipt rather than becoming a second revision. A receipt is
-swept, with its staged copy, once `retention.days` has passed since it was reserved
+swept, with its staged copy, once 30 days have passed since it was reserved
 (an upload never finalized) or last changed (`stored` or `failed`); the same sweep
 removes temporary files a crash left behind. It runs on the next reservation.
 
@@ -269,9 +271,8 @@ removes temporary files a crash left behind. It runs on the next reservation.
 Obsidian and the API an agent uses are the everyday interfaces; Admin is for
 oversight and repair. Deleting an artifact's file in Obsidian removes the
 artifact: once the Git helper commits that deletion, the next reconciler pass
-retires the record and the search entry, marks the archive `deleted in
-Obsidian`, and the retention purge removes the bytes after its window, the same
-as a removal from Admin or the API. A copy that is merely absent, because a
+removes the record, the search entry and the archive (`deleted in
+Obsidian`), the same as a removal from Admin or the API. A copy that is merely absent, because a
 device has not synced yet or at a rebuild from disk, is reported `missing`
 under Problems and nothing is lost: the archive stays until the copy comes back
 or the deletion is committed. Moving or renaming the file in Obsidian is not a
@@ -494,8 +495,7 @@ and filed, Coppermind removes the recording audio and replaces its link with a r
 containing its hash, size and duration. Supply `metadata.archive_url` to include the
 location of an external archive in the receipt. Cleanup failures appear in Problems
 and are retried. Audio is kept if transcription fails or review and filing are incomplete.
-Removal does not wait for the retention purge, even if the recording artifact was already
-removed by hand. This is the one case where archived bytes go before the purge window. A
+The manifest stays as the receipt; this is the one removal that keeps part of the archive. A
 transcript is saved before the note is filed, so a note that is refused (for example a
 schema problem in `frontmatter`) is retried without sending the recording again. The
 note's `frontmatter` and `title` are fixed when the recording is accepted, and posting
@@ -510,7 +510,7 @@ again under a new `external_source_id`, which transcribes it again.
 | `GET /v1/search` | `notes:read`; artifact hits only with `artifacts:read` (without it they are left out and the search still succeeds) | Full-text search over reviewed, successfully filed note bodies and titles, their approved generated source pages under the sources folder, and the extracted text of every stored artifact (indexed when stored, with no review gate, because nothing about an artifact is a person's unreviewed draft). `q` (1 to 500 characters) is read the way a search box is: words, `"quoted phrases"`, `or`, and `-word` to exclude. English stemming applies, so `runs` also finds `running`, and an excluded word is excluded in every form: `budget -runs` finds no note that says `running`. Takes every listing filter (`folder, reviewed, type, context, account, from, to, tag, state`) with listing's meaning (`account` matches any entry of a note's list, `from` and `to` take the day from `date`; a frontmatter filter matches notes only, while `tag` matches notes and artifacts), plus `kind` (`note`, `source` or `artifact`) and `citing_note` (only artifacts that note cites), and pages the same way, by `cursor` and `limit`. `mode` is `hybrid` (the default) or `keyword`: with search by meaning turned on under Admin's Settings, Search and its AI service answering, `hybrid` also finds passages by meaning (so "the call about the licensing change" finds a transcript that never says "licensing") and fuses the two rankings, and `keyword` never calls the model. With no embeddings model, or one that is not answering, either mode answers from full-text search alone and the search still succeeds; it never waits long on the model. A cursor belongs to the ranking that produced its page, so if the ranking changes between pages (the model stopped answering, or started again) the next page answers 422 and the client searches again from the first page; a cursor from before meaning search existed pages as `keyword`. A hybrid answer covers the best 500 keyword matches and the 100 nearest passages by meaning, so use `mode=keyword` to page through every keyword match | 200, page of `{id, kind, title, path, folder, excerpt, rank, state, match}`, best match first. `match` is `keyword`, `meaning` or `both`, how the hit was found. A hit found only by meaning has an excerpt taken from its closest passage, with no `**` markers. `kind` is `note`, `source` for a generated source page (whose `id` is the source identifier), or `artifact` (whose `id` is the artifact identifier and whose `excerpt` comes from the extracted text, so an agent can use the hit without fetching the file). `excerpt` is a short passage with every matched word between `**` markers. `rank` orders one answer and means nothing across answers | 422 `validation_error` for an empty `q`, a bad filter, a cursor from a different `q`, or a cursor whose ranking has changed since its page; 503 `metadata_unavailable`, never an empty page |
 | `GET /v1/notices` | `notes:read`; a notice about an artifact only with `artifacts:read` (without it, those are left out) | Current notices, newest first: what Coppermind moved back after a move or rename by hand in the vault. Each is `{note_id, title, from_path, path, reason, at, kind}`: `kind` is `note`, `folder` or `artifact`, `note_id` is the note's or the artifact's identifier, `from_path` is where the file was found and `path` where it went back. An artifact's reason says it is filed by the month it arrived, a move or rename in Obsidian is not kept, and nothing needs doing. The same list Admin's Home shows. A notice about a note or artifact that no longer exists is dropped | 200, list | 503 `metadata_unavailable` |
 | `POST /v1/notices/{note_id}/dismiss` | `notes:write`; an artifact's notice also needs `artifacts:write` | Hide a notice. Nothing moves: the file stays where Coppermind put it. Dismissing a notice that is already gone succeeds | 204 | 403 `forbidden`; 503 |
-| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, artifacts, artifacts_returned, rejected_ingests, name_collisions, unparseable_files, excluded_count, notes_folder, notes_to_refile, notes_returned, folders_kept, filing_failures, filing_queue_depth, filing_ready_depth, filing_estimated_drain_s, filing_last_progress_at, filing_stalled, calendar_import_failures, known_unreadable, purge_problems, active_problems, recordings_failed, notes_without_summary}`, computed from the metadata mirror, recorded rejections and import receipts; `active_problems` counts every Problems row except intentional exclusions and returned-note notices, including calendar, Dropbox, retention purge and artifact problems; `purge_problems` counts the retention purge ones; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false`; `notes_folder` is the fallback reviewed-notes root, `notes_to_refile` counts reviewed notes still awaiting the move into their `{type}/{yyyy}/{yyyy-mm}/` layout, and `notes_returned` and `folders_kept` count the current `returned_note` and `folder_kept` notices; `recordings_failed` counts failed recordings still listed as needing attention (the `failed` list of `GET /v1/recordings/waiting`, so one the owner dismissed is not counted) and `notes_without_summary` counts the `missing_summaries` of the same route, so monitoring can alert while either is above zero; both are `null` when the recording records cannot be read, and `excluded_count` includes the problems note while it exists | 200 | 503 `metadata_unavailable` or `store_unavailable` |
+| `GET /v1/status` | any key | Version, capabilities, note and job counters, and per-helper `{last_success_at, age_s, ok}`. The counters are `{notes_awaiting_review, notes_by_state, sources, artifacts, artifacts_returned, rejected_ingests, name_collisions, unparseable_files, excluded_count, notes_folder, notes_to_refile, notes_returned, folders_kept, filing_failures, filing_queue_depth, filing_ready_depth, filing_estimated_drain_s, filing_last_progress_at, filing_stalled, calendar_import_failures, known_unreadable, active_problems, recordings_failed, notes_without_summary}`, computed from the metadata mirror, recorded rejections and import receipts; `active_problems` counts every Problems row except intentional exclusions and returned-note notices, including calendar, Dropbox, damaged source copies and artifact problems; `notes_awaiting_review` counts notes directly in the configured `notes.review_folder` with `reviewed: false`; `notes_folder` is the fallback reviewed-notes root, `notes_to_refile` counts reviewed notes still awaiting the move into their `{type}/{yyyy}/{yyyy-mm}/` layout, and `notes_returned` and `folders_kept` count the current `returned_note` and `folder_kept` notices; `recordings_failed` counts failed recordings still listed as needing attention (the `failed` list of `GET /v1/recordings/waiting`, so one the owner dismissed is not counted) and `notes_without_summary` counts the `missing_summaries` of the same route, so monitoring can alert while either is above zero; both are `null` when the recording records cannot be read, and `excluded_count` includes the problems note while it exists | 200 | 503 `metadata_unavailable` or `store_unavailable` |
 | `GET /healthz`, `GET /readyz`, `GET /metrics`, `GET /openapi.json` | none | Process liveness, real readiness (checks PostgreSQL and the notes filesystem), Prometheus metrics, the generated API contract | 200 | 503 on `/readyz` when a real dependency is down |
 
 ## Companion pairing
@@ -543,7 +543,7 @@ and each problem is fixed on the page that owns it, such as Recordings and impor
 | Sign in, sign out | `GET/POST /admin/signin`, `POST /admin/signout` | Password-backed session |
 | Home (`/admin`) | `overview`, `notice-dismiss` | What needs you, each with a link to its remedy, then recent activity, including notes and files moved by hand in Obsidian and returned to their folder, with a Dismiss that only hides the notice |
 | Setup guide (`/admin/setup`, `/admin/setup/companion`) | `overview`, `setup-skip`, `setup-finished`, `companion-install`, `pairing-start` | Six steps: the password, Obsidian Sync, the Obsidian companion (placed in the notes filesystem and paired with a code; Obsidian Sync carries it to the owner's devices only while "Your own Obsidian settings" is ticked under What syncs, and the step says so when it is not; it also says when the companion in the vault is out of date and offers to update it), then suggestions, transcription and calendar, which can be skipped. The guide leaves the menu once finished |
-| Notes (`/admin/notes`, `/admin/notes/{id}`, `/admin/notes/{id}/review`, `/admin/notes/leave-alone`) | `notes-waiting`, `notes-deleted`, `notes-alone`, `notes-find`, `note`, `note-check`, `note-no-time`, `note-gone`, `note-keep-both`, `note-replace`, `note-copy`, `note-restore`, `note-delete-for-good`, `note-summary`, `note-summary-again` | Tabs Need you, Waiting for review, Left alone on purpose and Deleted, and a find box. A note's own page says what is wrong and offers the remedy; the review page is the fallback for reviewing without the companion. On a legacy recording note that is still waiting for review, Write the summary again makes a fresh summary from the same transcript with the current directions; the earlier proposal is kept until the note is reviewed, and the recording is not transcribed again. Leave alone edits the folders and patterns adoption skips |
+| Notes (`/admin/notes`, `/admin/notes/{id}`, `/admin/notes/{id}/review`, `/admin/notes/leave-alone`) | `notes-waiting`, `notes-alone`, `notes-find`, `note`, `note-check`, `note-no-time`, `note-gone`, `note-keep-both`, `note-replace`, `note-copy`, `note-restore`, `note-summary`, `note-summary-again` | Tabs Need you, Waiting for review and Left alone on purpose, and a find box. A note's own page says what is wrong and offers the remedy; the review page is the fallback for reviewing without the companion. On a legacy recording note that is still waiting for review, Write the summary again makes a fresh summary from the same transcript with the current directions; the earlier proposal is kept until the note is reviewed, and the recording is not transcribed again. Leave alone edits the folders and patterns adoption skips |
 | Recordings and imports (`/admin/incoming`) | `incoming`, `incoming-item`, `incoming-retry`, `incoming-remove`, `incoming-accept`, `incoming-write-up`, `recording-delete`, `folders`, `folders-save`, `alerts`, `alerts-save` | Recordings, calendar files and documents handed in, and files that could not be taken in, each with its state; retry, remove, or delete a recording's audio; and where to send word that a recording or summary failed for good or a recording is stuck (the address, optional and off by default, and how many hours count as stuck). A recording added while transcription is off is kept as a file and not written up; it is never queued to run later |
 | Calendar (`/admin/calendar`) | `calendar`, `calendar-meeting`, `calendar-choose`, `calendar-max` (plus `POST /internal/v1/admin/calendar-file?filename=`, the calendar file as the raw request body) | Calendar files, meetings and import history |
 | People and voices (`/admin/people`) | `people`, `person`, `person-remove`, `fact-correct`, `fact-add`, `fact-remove`, `voice-*` | Dossiers and voice recognition (see [dossiers](dossiers.md)) |
@@ -552,7 +552,7 @@ and each problem is fixed on the page that owns it, such as Recordings and impor
 | Suggestions (`/admin/suggestions`, `/fill`, `/summary`) | `suggestions`, `suggestions-save`, `suggestions-pause`, `suggestions-wait`, `suggestions-fill`, `suggestions-tick`, `suggestions-older`, `suggestions-response-limit`, `summary-directions`, `summary-directions-save` | Turn suggestions on with a tested service, which fields to fill, older notes, and the maximum response tokens for suggestions and meeting summaries (`POST /admin/suggestions/response-limit`, 256 to 65536, for models that think before they answer). The old summary editor redirects to `/admin/transcription/writeup`, one Markdown prompt with Save, Reset to default, read-only locked rules and independent model/limit settings (`writeup-settings`, `writeup-save`) |
 | Transcription (`/admin/transcription`) | `transcription`, `transcription-save`, `transcription-pause`, `transcription-wait`, `transcription-tries`, `transcription-retry-failed` | Turn transcription on with a service whose test showed it can write up recordings; the model and reply format are the ones the test found |
 | Connected apps (`/admin/apps`, `/new`, `/pair`, `/{id}`) | `apps`, `pairing-start`, `pairing-state` | Add a key by saying what is being connected (an AI assistant or agent, an automation, or something else with its permissions ticked); the key is shown once with this server's address. Pair the Obsidian companion with a six-digit code (see `POST /v1/pair`). Change what an app may do, replace its key, or remove it |
-| Storage (`/admin/storage`, `/cleanup`, `/deleted`, `/files`) | `storage`, `storage-keep`, `storage-count-interval`, `cleanup`, `cleanup-confirm`, `cleanup-cancel`, `cleanup-bring-back`, `files`, `file-remove`, `notes-deleted` | Space used, the keep time (`retention.days`), Clean up (see [Retention purge](#retention-purge-implemented)), deleted things with a way to bring them back, and stored files |
+| Storage (`/admin/storage`, `/files`) | `storage`, `files`, `file-remove` | Space used and the files beside notes |
 | Settings (`/admin/settings`, `/timezone`, `/signin`, `/folders`, `/properties`, `/tags`, `/search`, `/advanced`) | `folders`, `folders-save`, `search`, `search-on`, `search-off`, `search-try`, `search-rebuild`, `support` | Time zone; password and how long a sign-in lasts; folders; note properties and tags (the frontmatter schema); search, with search by meaning and Rebuild search; advanced timing and details for support |
 
 ## The internal contract behind the public one
@@ -573,8 +573,8 @@ The calls it exposes, grouped by what they touch:
   list the sources a note cites.
 - **Artifacts:** store one (file or link, declared kind), get its record, open
   its bytes for a revision, list with filters, read the inline upload limit,
-  remove its projection (`DELETE /internal/v1/artifacts/{id}?removal=admin|api`;
-  the archived bytes stay, marked with the reason).
+  remove it (`DELETE /internal/v1/artifacts/{id}?removal=admin|api`;
+  the archive goes too).
 - **Notices:** list what the reconciler moved back after a move or rename by
   hand (`GET /internal/v1/reconciler_notices`) and dismiss one
   (`POST /internal/v1/reconciler_notices/{id}/dismiss`).
@@ -589,8 +589,6 @@ The calls it exposes, grouped by what they touch:
   /internal/v1/search/index`), and starting a rebuild of the index from the
   notes filesystem (`POST /internal/v1/jobs/rebuild_search_index`, 202 with
   `started: false` when one is already running).
-- **Retention purge:** preview, confirm and abandon a manual purge
-  (`POST /internal/v1/purge/preview`, `/confirm`, `/abandon`).
 - **Jobs and status:** start a job by kind, check a job's progress, read
   overall store status, list the problems Admin shows.
 
@@ -681,46 +679,3 @@ appears under Admin's Recordings and imports, while a same-revision disagreement
 event on a successful receipt that keeps the stored copy. Without authentication these routes return 401;
 without the named scope they return 403.
 
-## Retention purge (implemented)
-
-The public API service accepts API keys explicitly holding `admin:purge`:
-
-| Method and path | Request | Response |
-|---|---|---|
-| `POST /v1/admin/purge/preview` | Empty body | Saved dry run: `token`, `state`, `created_at`, `retention_days`, `candidates`, `counts`, `kept`, `completed`, `remaining`, `error` |
-| `POST /v1/admin/purge/confirm` | `{"token":"<preview token>","confirmation":"Purge listed items"}` | Same candidate list and counts, `state: complete` on success |
-| `POST /v1/admin/purge/abandon` | `{"token":"<token of an unfinished or unreadable receipt>"}` | The receipt with `state: abandoned`; `completed` counts listed items now gone and `remaining` lists the ids that are not |
-
-Candidates include `kind` (note, source or artifact), `id`, `title`, `path`, `origins`,
-`providers`, `deleted_at` for notes and for artifacts (when they were removed), and `reason` for artifacts (`removed in Admin`, `removed through the API` or `deleted in Obsidian`). Counts
-contain `notes`, `sources`, `artifacts`, `by_origin`, and `by_provider`; each origin and
-provider carries its own `notes`, `sources` and `artifacts` counts, so a deleted note is never
-mistaken for a removed source. `kept` reports what the dry run left alone:
-`notes_within_retention`, `sources_in_use` and `artifacts_within_retention`. This dedicated scope is never added to an
-existing key; `admin:write`, `notes:delete`, and source scopes do not authorize
-purge. A changed candidate set, setting, mirror row or file yields 409
-`purge_conflict`; malformed or absent confirmation yields 422. Storage or
-metadata failures yield 503 and retain the receipt for inspection and retry.
-An unfinished purge is returned by preview with `state: applying` or `failed`;
-confirming its same token retries its saved list, after checking live references
-and surviving file hashes again. A completed token returns its prior result.
-Abandon stops an unfinished (`applying` or `failed`) list without retrying it
-and releases its ids so reconciliation and a fresh preview proceed. It reports
-what was and was not removed, and the items still present appear in Problems.
-It also moves an unreadable receipt file into quarantine. Confirming an
-abandoned token is refused with 422; run a new preview. Preview, confirm and abandon
-can run long on a large vault, so the store client allows them 10 minutes.
-
-Internal equivalents are `POST /internal/v1/purge/preview`, `/confirm` and `/abandon`,
-protected by the internal token. Admin's Storage, Clean up page
-(`/admin/storage/cleanup`) reaches the same store operations through its
-internal action route (`cleanup`, `cleanup-confirm`, `cleanup-cancel`): it lists
-what is past the keep time and deletes nothing until that list is confirmed;
-if the list changed since it was shown, it is shown again rather than acted
-on. Storage's keep time saves `retention.days`, which takes effect on the next
-list. The two services keep their existing authentication boundaries.
-
-Purge is a separate removal operation. PUT, PATCH and DELETE on
-`/v1/sources/**` still always return 405. No live-reference override exists.
-The precise retention and failure recovery rules are in
-[data and settings](data-and-settings.md#retention-purge-receipts).

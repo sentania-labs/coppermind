@@ -25,7 +25,6 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from coppermind.api_keys import ApiKeySet
-from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
 from coppermind.recording_writeup import RecordingBoundary
 from coppermind.schema import FrontmatterSchema
 
@@ -65,13 +64,6 @@ class FieldIndexNotReady(StoreError):
     def __init__(self, job_id: str) -> None:
         super().__init__("declared-field index is not ready; inspect or retry its rebuild in Admin")
         self.job_id = job_id
-
-
-class PurgeConflict(StoreError):
-    def __init__(self) -> None:
-        super().__init__(
-            "The purge list or its files changed. Run a new preview before confirming."
-        )
 
 
 class FilterCursorConflict(StoreError):
@@ -976,7 +968,7 @@ class NoteDocument(BaseModel):
     filing_attempts: int = 0
 
 
-NoteState = Literal["ok", "unparsed", "missing", "deleted"]
+NoteState = Literal["ok", "unparsed", "missing"]
 """What the latest filesystem scan observed for a known identity."""
 
 
@@ -1026,8 +1018,8 @@ class NoteSummary(BaseModel):
     `updated_at`, leaving only the schema fields stale, while a file it could
     not open at all refreshes `path` alone and leaves `content_hash` naming the
     last bytes anyone read. `missing` means the scan did not find the file, and
-    every field is the last known one. `deleted` adds verified Git removal
-    evidence and a retained recovery copy; a returning identity recovers automatically.
+    every field is the last known one. A note Git records as removed has no state: its
+    record is removed with it.
     """
 
     id: NoteId
@@ -1216,7 +1208,6 @@ class StatusCounters(BaseModel):
     artifacts: int = 0
     artifacts_returned: int = 0
     active_problems: int | None = None
-    purge_problems: int = 0
     # Recordings that failed and are still listed as needing attention, and notes written from
     # a recording whose summary could not be written. None when those records cannot be read.
     recordings_failed: int | None = None
@@ -1299,11 +1290,6 @@ class Store(Protocol):
     async def get_note_sources(self, note_id: NoteId) -> list[NoteSourceInfo]: ...
 
     async def get_status(self) -> StatusResponse: ...
-    async def preview_purge(self) -> PurgeResult: ...
-
-    async def confirm_purge(self, request: ConfirmPurge) -> PurgeResult: ...
-
-    async def abandon_purge(self, request: AbandonPurge) -> PurgeResult: ...
 
     async def get_problems(self) -> list[ProblemInfo]: ...
 
@@ -1431,6 +1417,12 @@ class HistoryStatus(BaseModel):
 
 
 class NoteRecovery(BaseModel):
+    """A missing note's last saved filing copy, offered back at its old path.
+
+    The copy comes from the note's saved filing information. A removal Git has recorded
+    leaves nothing to offer: the note's records are removed with it.
+    """
+
     evidence_pending: bool = False
     note_id: str
     path: str
