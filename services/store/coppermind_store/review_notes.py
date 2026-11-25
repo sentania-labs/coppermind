@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
@@ -33,8 +33,6 @@ log = logging.getLogger("coppermind.store.review_notes")
 
 STATE = "note-resummarize/"
 PROPOSED = "recording-writeup-proposed/"
-# A rewrite that has not finished after this long was lost when the store restarted.
-LOST_AFTER = timedelta(minutes=20)
 LISTED = 200
 DIFF_LINES = 400
 EARLIER_KEPT = 5
@@ -43,14 +41,6 @@ SAME_BODY = "The note already says what the new write-up says."
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def _moment(value: str) -> datetime | None:
-    try:
-        parsed = datetime.fromisoformat(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _step(state: str, reason: str = "", when: str = "", **more: Any) -> dict[str, Any]:
@@ -64,7 +54,10 @@ class Unwritable(Exception):
 class ReviewNotes:
     def __init__(self, context: ContextService) -> None:
         self.context = context
-        self.tasks: set[asyncio.Task[None]] = set()
+        # A "running" record only means something while its task is alive in this process.
+        self.live: dict[str, asyncio.Task[None]] = {}
+        # Rewrites go one at a time, as recordings do, so a long backlog cannot flood the service.
+        self.turn = asyncio.Semaphore(1)
 
     # -- the list ------------------------------------------------------------------------
 
@@ -157,8 +150,7 @@ class ReviewNotes:
             return _step("missing")
         record = self.context.read(STATE + note_id, {})
         if record.get("state") == "running":
-            started = _moment(record.get("started_at", ""))
-            if started and datetime.now(UTC) - started < LOST_AFTER:
+            if note_id in self.live:
                 return _step("working", when=record["started_at"])
             return _step(
                 "failed",
@@ -235,12 +227,7 @@ class ReviewNotes:
         if payload.get("replace") is True:
             return await self.replace(row, job, str(payload.get("if_match", "")))
         record = self.context.read(STATE + note_id, {})
-        started = _moment(record.get("started_at", ""))
-        if (
-            record.get("state") == "running"
-            and started
-            and datetime.now(UTC) - started < LOST_AFTER
-        ):
+        if record.get("state") == "running" and note_id in self.live:
             return {"started": True, "already": True}
         if not self.writeup_ready():
             raise ValueError(
@@ -249,14 +236,15 @@ class ReviewNotes:
             )
         self.context.write(STATE + note_id, {"state": "running", "started_at": _now()})
         task = asyncio.create_task(self.rewrite(note_id, job.id), name="coppermind-resummarize")
-        self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
+        self.live[note_id] = task
+        task.add_done_callback(lambda _: self.live.pop(note_id, None))
         return {"started": True, "already": False}
 
     async def rewrite(self, note_id: str, recording_id: str) -> None:
         started = self.context.read(STATE + note_id, {}).get("started_at", _now())
         try:
-            outcome = await self.write_again(note_id, recording_id)
+            async with self.turn:
+                outcome = await self.write_again(note_id, recording_id)
             self.context.write(STATE + note_id, {**outcome, "started_at": started})
         except asyncio.CancelledError:
             raise

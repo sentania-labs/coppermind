@@ -161,10 +161,11 @@ def test_where_a_write_up_stands(tmp_path):
         "when": job.succeeded_at,
     }
     memory.data[STATE + NOTE] = {"state": "running", "started_at": review_notes._now()}
-    assert reviewer.writeup_step(NOTE, job, None)["state"] == "working"
-    memory.data[STATE + NOTE] = {"state": "running", "started_at": "2020-01-01T00:00:00+00:00"}
     lost = reviewer.writeup_step(NOTE, job, None)
     assert lost["state"] == "failed" and "interrupted" in lost["reason"]
+    reviewer.live[NOTE] = SimpleNamespace()
+    assert reviewer.writeup_step(NOTE, job, None)["state"] == "working"
+    reviewer.live.clear()
     memory.data.pop("recording-writeups/" + JOB)
     memory.data.pop(STATE + NOTE)
     assert reviewer.writeup_step(NOTE, job, None)["state"] == "missing"
@@ -211,3 +212,22 @@ async def test_a_note_that_did_not_come_from_a_recording_is_refused(tmp_path):
     memory.store.session_factory = Session
     with pytest.raises(ValueError, match="did not come from a recording"):
         await reviewer.resummarize({"id": NOTE})
+
+
+@pytest.mark.asyncio
+async def test_rewrites_run_one_at_a_time(tmp_path, monkeypatch):
+    reviewer, memory, job, note, replaced = build(tmp_path)
+    running = 0
+    peak = 0
+
+    async def slow(context, trial, transcript, voice_map):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.01)
+        running -= 1
+        return {"body": "# New\n\nBody", "boundaries": [], "transcript": transcript}
+
+    monkeypatch.setattr("coppermind_store.recording_writeup.generate", slow)
+    await asyncio.gather(*(reviewer.rewrite(NOTE, JOB) for _ in range(4)))
+    assert peak == 1
