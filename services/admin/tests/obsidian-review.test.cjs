@@ -11,7 +11,8 @@ class El {
   setText(text){this.text=text;}
   addClass(){}
   querySelector(){return null;}
-  createEl(tag,options){const el=new El(tag,options);this.children.push(el);return el;}
+  createEl(tag,options){const el=new El(tag,options);el.parent=this;this.children.push(el);return el;}
+  remove(){if(this.parent)this.parent.children=this.parent.children.filter(c=>c!==this);}
   createDiv(options){return this.createEl('div',options);}
   createSpan(options){return this.createEl('span',options);}
   all(){return [this,...this.children.flatMap(x=>x.all())];}
@@ -436,9 +437,27 @@ test('People shows saved people and confirms how many recordings a voice combine
   const select=view.contentEl.all().find(e=>e.tag==='select');select.value='unknown:18';
   view.contentEl.all().find(e=>e.text==='Choose and combine').onclick();
   assert.equal(f.requests.filter(r=>r.method==='POST').length,0);
-  const modal=f.modals.at(-1);assert.ok(modal.contentEl.all().some(e=>e.text?.includes('relabel 2 recordings')));
+  const modal=f.modals.at(-1);assert.ok(modal.contentEl.all().some(e=>e.text?.includes('Unknown voice 12 will become Unknown voice 18 in 2 recordings')));
   await modal.contentEl.all().find(e=>e.text==='Combine voices').onclick();
   assert.equal(f.requests.filter(r=>r.method==='POST').length,1);
+});
+
+test('People find-a-person shows results once, tells what will happen, and confirms it',async()=>{
+  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[{note_id:'n1',label:'Speaker 1'},{note_id:'n2',label:'Speaker 1'}]}};
+  const f=await fixture(undefined,{unknownVoices,peopleResults:{items:[{id:'p1',name:'Scott Bowe',emails:['scott@a.test']},{id:'p2',name:'Scott Bowe',emails:['scott@b.test']},{id:'p1',name:'Scott Bowe',emails:['scott@a.test']}],next_cursor:null}});
+  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
+  const all=()=>view.contentEl.all();const lookup=all().find(e=>e.text==='Find a person'&&e.tag==='button');
+  all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name')).value='Scott';
+  await lookup.onclick();await lookup.onclick();await lookup.onclick();
+  const options=all().filter(e=>e.tag==='option').map(e=>e.text);
+  assert.deepEqual(options.filter(t=>t.startsWith('Scott')),['Scott Bowe (scott@a.test)','Scott Bowe (scott@b.test)']);
+  assert.ok(all().some(e=>e.text==='Found 2 people. Choose one from the list above.'));
+  const select=all().find(e=>e.tag==='select');select.value='person:p1';select.onchange();
+  assert.ok(all().some(e=>e.text==='Unknown voice 7 will become Scott Bowe (scott@a.test) in 2 recordings.'));
+  all().find(e=>e.text==='Choose and combine').onclick();
+  const modal=f.modals.at(-1);assert.ok(modal.contentEl.all().some(e=>e.text?.includes('Unknown voice 7 will become Scott Bowe (scott@a.test) in 2 recordings')));
+  await modal.contentEl.all().find(e=>e.text==='Combine voices').onclick();
+  assert.ok(all().some(e=>e.text?.startsWith('Done: Unknown voice 7 is now Scott Bowe')));
 });
 
 test('strong voice suggestion explains confirmation and earlier appearances',async()=>{
