@@ -16,14 +16,17 @@ The story behind these decisions is [architecture.md](architecture.md).
 - Every route except `POST /v1/pair` (see [Companion pairing](#companion-pairing))
   needs a scope: `sources:read`, `sources:write`, `notes:read`,
   `notes:write`, `notes:move`, `notes:delete`, `artifacts:read`,
-  `artifacts:write`, `artifacts:delete`, `journal:read`, `journal:write`, `search:read`,
-  `admin:read`, `admin:write`, `entities:read`,
+  `artifacts:write`, `artifacts:delete`, `journal:read`, `journal:write`,
+  `search:read`, `admin:read`, `admin:write`, `entities:read`,
   `entities:write`. A key missing the right scope gets 403, not a filtered
   response. The bootstrap default key and a key created with no `--scope` hold
   every scope except `entities:read` and `entities:write`,
   which are granted only when named. The retired `admin:purge` scope grants
   nothing; a stored key that carries it still loads. Keys minted before the artifact scopes
-  existed do not gain them; mint a key that holds them.
+  existed do not gain them; mint a key that holds them. `artifacts:delete`
+  is separate from `artifacts:write`: a key that hands in files cannot remove
+  them, and a key minted before it existed must be given it to call `DELETE
+  /v1/artifacts/{id}`.
 - Admin's own pages use a signed session cookie and a CSRF form token; Admin
   has no `/v1` routes of its own.
 - Every non-2xx response is the same shape: `{"error": "<code>", "message":
