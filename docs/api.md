@@ -16,7 +16,7 @@ The story behind these decisions is [architecture.md](architecture.md).
 - Every route except `POST /v1/pair` (see [Companion pairing](#companion-pairing))
   needs a scope: `sources:read`, `sources:write`, `notes:read`,
   `notes:write`, `notes:move`, `notes:delete`, `artifacts:read`,
-  `artifacts:write`, `journal:read`, `journal:write`, `search:read`,
+  `artifacts:write`, `artifacts:delete`, `journal:read`, `journal:write`, `search:read`,
   `admin:read`, `admin:write`, `entities:read`,
   `entities:write`. A key missing the right scope gets 403, not a filtered
   response. The bootstrap default key and a key created with no `--scope` hold
@@ -239,7 +239,7 @@ artifact, and deleting a note leaves the artifact uncited.
 | `GET /v1/artifacts` | `artifacts:read` | List artifacts newest received first, filtered by `tag`, `origin`, citing `note_id`, and `from`, `to` on the received date; paged by `cursor` and `limit` | 200, page of summaries, each with `kind: artifact`, `title`, `origin`, `received_at`, `filename`, `mime_type`, `sha256`, `size_bytes`, `url`, `tags`, `path`, `revision`, `citing_note_ids`, `citing_notes` (each `{id, title, path}`, so a person or an agent can name the note), `text_status`, `state` | 422; 503 `metadata_unavailable` |
 | `GET /v1/artifacts/{id}` | `artifacts:read` | The metadata record: everything the summary carries plus every revision and the full extracted `text`. This is the only way to read the record; it is never a page in the notes filesystem | 200 | 404 |
 | `GET /v1/artifacts/{id}/bytes` | `artifacts:read` | The archived bytes of the current revision, or of `?revision=n`, with the recorded media type when it is a plain token, `Content-Disposition: attachment`, `Content-Length` and `X-Coppermind-SHA256`. The archive file is verified against its recorded digest and size, then streamed a megabyte at a time through the store and the API, so a 1 GiB recording is never held in memory | 200 | 404; 422 for a link, which has no bytes |
-| `DELETE /v1/artifacts/{id}` | `artifacts:write` | Remove an artifact the way the Admin page does, for an agent acting for the owner: the browsable copy, the record, the mirror row and the search entry go at once; and so does the archive folder (`removed through the API`). Citing notes keep their citation | 204 | 404 for an unknown or already removed artifact; 403 without the scope |
+| `DELETE /v1/artifacts/{id}` | `artifacts:delete` | Remove an artifact the way the Admin page does, for an agent acting for the owner: the browsable copy, the record, the mirror row and the search entry go at once; and so does the archive folder (`removed through the API`). Citing notes keep their citation | 204 | 404 for an unknown or already removed artifact; 403 without the scope |
 | `PUT`, `PATCH` on `/v1/artifacts/**` | | Always refused: the archive is immutable; a changed file is a new revision through `POST` with `artifact_id` | | 405 `method_not_allowed` |
 
 ### Staged uploads

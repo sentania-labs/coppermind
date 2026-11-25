@@ -85,7 +85,7 @@ transcript. Proved by the rendered page and action tests under
   Home and at `GET /v1/notices` for the companion
   plugin or an agent, dismissable without moving anything. One edited on a
   device is reported as a problem and never rewritten. `DELETE
-  /v1/artifacts/{id}` (`artifacts:write`) removes one for an agent; Admin's
+  /v1/artifacts/{id}` (`artifacts:delete`) removes one for an agent; Admin's
   Storage, Files page (`/admin/storage/files`) lists stored files and removes
   one. A file over the 10 MiB limit is refused with the limit and what to do
   now, the same for multipart and JSON; the staged upload path (`POST

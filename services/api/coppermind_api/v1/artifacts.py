@@ -295,7 +295,7 @@ async def get_artifact(
 async def remove_artifact(
     artifact_id: str,
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("artifacts:write")),
+    _: Principal = Depends(require_scopes("artifacts:delete")),
 ) -> Response:
     """Remove an artifact the way the Admin page does, for an agent acting for the owner.
 
