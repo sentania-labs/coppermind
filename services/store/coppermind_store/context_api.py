@@ -52,6 +52,8 @@ ACTIONS = {
     "retry-failed-recording": "retry_failed_recording",
     "dismiss-recording": "dismiss_recording",
     "note-summary-again": "note_summary_again",
+    "review-notes": "review_note_list",
+    "note-resummarize": "note_resummarize",
     "write-up-missing-summaries": "write_up_missing_summaries",
     "recording-detail": "recording_detail",
     "retry-all-failed": "retry_all_failed",

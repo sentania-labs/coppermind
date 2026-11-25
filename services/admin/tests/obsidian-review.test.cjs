@@ -37,7 +37,7 @@ async function fixture(local, overrides={}){
   class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(command){(this.commands??={})[command.id]=command;}async saveData(data){(this.saved??=[]).push(JSON.parse(JSON.stringify(data)));}addRibbonIcon(icon,title){(this.ribbons??=[]).push(title);}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw,getAbstractFileByPath:path=>({path})},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null,openLinkText:()=>{}}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return overrides.waitingFail?{status:overrides.waitingFail===true?500:overrides.waitingFail,json:{message:'down'}}:overrides.waitingHang?new Promise(()=>{}):{status:200,json:overrides.waiting};if(req.url.endsWith('/v1/dropbox'))return overrides.dropboxFail?{status:overrides.dropboxFail===true?500:overrides.dropboxFail,json:{message:'down'}}:{status:200,json:overrides.dropbox??{folder:'Dropbox',items:[]}};if(req.url.includes('/v1/dropbox/')&&req.url.endsWith('/dismiss'))return overrides.dismissDropFail?{status:500,json:{}}:{status:200,json:{dismissed:'x'}};if(req.url.endsWith('/v1/recordings/summaries-again'))return overrides.summariesAgain?overrides.summariesAgain(req):{status:200,json:{queued:2,already:0,skipped:0}};if(req.url.endsWith('/summary-again'))return overrides.summaryAgain?overrides.summaryAgain(req):{status:200,json:{title:'Planning',already:false}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:typeof overrides.peopleResults==='function'?await overrides.peopleResults(req):overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL,setTimeout,clearTimeout,setInterval,clearInterval};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return overrides.waitingFail?{status:overrides.waitingFail===true?500:overrides.waitingFail,json:{message:'down'}}:overrides.waitingHang?new Promise(()=>{}):{status:200,json:overrides.waiting};if(req.url.endsWith('/v1/dropbox'))return overrides.dropboxFail?{status:overrides.dropboxFail===true?500:overrides.dropboxFail,json:{message:'down'}}:{status:200,json:overrides.dropbox??{folder:'Dropbox',items:[]}};if(req.url.includes('/v1/dropbox/')&&req.url.endsWith('/dismiss'))return overrides.dismissDropFail?{status:500,json:{}}:{status:200,json:{dismissed:'x'}};if(req.url.endsWith('/v1/recordings/summaries-again'))return overrides.summariesAgain?overrides.summariesAgain(req):{status:200,json:{queued:2,already:0,skipped:0}};if(req.url.endsWith('/v1/review/notes'))return overrides.reviewNotesFail?{status:overrides.reviewNotesFail===true?500:overrides.reviewNotesFail,json:{message:'down'}}:{status:200,json:typeof overrides.reviewNotes==='function'?overrides.reviewNotes():overrides.reviewNotes};if(req.url.endsWith('/resummarize')&&req.method==='POST')return overrides.resummarize?overrides.resummarize(req):{status:200,json:{started:true,already:false}};if(req.url.endsWith('/suggestions')&&req.method==='POST')return overrides.suggestionsRequest?overrides.suggestionsRequest(req):{status:200,json:{jobs:['j']}};if(req.url.endsWith('/summary-again'))return overrides.summaryAgain?overrides.summaryAgain(req):{status:200,json:{title:'Planning',already:false}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:typeof overrides.peopleResults==='function'?await overrides.peopleResults(req):overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL,setTimeout,clearTimeout,setInterval,clearInterval};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
@@ -743,88 +743,9 @@ test('imports still being copied or waiting are shown as processing, with no Dis
 });
 
 const SUMMARY={summary:'Launch plan.',decisions:'',action_items:''};
-const recorded={recording_meeting:{candidates:[],calendar_hash:'c'},meeting_summary:SUMMARY,job_id:'job-1',state:'suggested'};
-function watchReview(f,answers){
-  // The first review read is the panel itself; later ones are the watch.
-  const call=f.plugin.call.bind(f.plugin);
-  f.plugin.summaryPollMs=5;f.plugin.summaryWatchMs=2000;
-  f.plugin.call=(path,...args)=>path.endsWith('/review')&&answers.length&&(args[0]??'GET')==='GET'?Promise.resolve(answers.shift()):call(path,...args);
-}
-
-test('Write the summary again sits beside the summary and says what it will do',async()=>{
-  const f=await fixture(undefined,recorded);
-  const text=homeText(f.view);
-  assert.ok(text.some(t=>t.includes('from the same transcript')&&t.includes('not sent for transcription again')&&t.includes('stays until the new one arrives')));
-  const box=f.view.contentEl.all().find(e=>e.children?.some(c=>c.text==='Meeting summary'));
-  assert.ok(box.children.some(c=>c.text==='Write the summary again'));
-  assert.ok(box.children.findIndex(c=>c.text==='Write the summary again')>box.children.findIndex(c=>c.tag==='label'));
-});
-
-test('a summary on a note without recording details still has Write the summary again',async()=>{
-  const f=await fixture(undefined,{meeting_summary:SUMMARY,job_id:'job-1',state:'suggested'});
-  assert.ok(f.view.contentEl.all().some(e=>e.text==='Meeting summary'));
-  assert.ok(f.view.contentEl.all().some(e=>e.text==='Write the summary again'));
-});
-
 test('a note with no recording and no summary has no Write the summary again',async()=>{
   const f=await fixture(undefined,{state:'suggested'});
   assert.ok(!f.view.contentEl.all().some(e=>e.text==='Write the summary again'));
-});
-
-test('writing the summary again shows it running, keeps the summary, then offers the new one',async()=>{
-  const f=await fixture(undefined,recorded);
-  watchReview(f,[{state:'running',job_id:'job-2'},{state:'suggested',job_id:'job-2',meeting_summary:{summary:'Second.',decisions:'',action_items:''}}]);
-  const button=f.view.contentEl.all().find(e=>e.text==='Write the summary again');
-  const textareas=()=>f.view.contentEl.all().filter(e=>e.tag==='textarea');
-  textareas()[0].value='My edit';
-  const pending=button.onclick();
-  await new Promise(r=>setTimeout(r,1));
-  assert.equal(button.disabled,true);
-  assert.ok(homeText(f.view).includes('Writing a new summary from the same transcript. This can take a minute. The one above stays until it arrives.'));
-  await pending;
-  const post=f.requests.find(r=>r.url.endsWith('/v1/notes/test-note/summary-again'));
-  assert.equal(post.method,'POST');
-  assert.ok(homeText(f.view).includes('A new summary is ready. Showing it replaces any edits you have made on this panel.'));
-  assert.equal(textareas()[0].value,'My edit');
-  const reads=f.requests.length;
-  await f.view.contentEl.all().find(e=>e.text==='Show the new summary').onclick();
-  assert.ok(f.requests.length>reads);
-});
-
-test('a refusal is shown in the words the server gave and the button works again',async()=>{
-  const f=await fixture(undefined,{...recorded,summaryAgain:()=>({status:422,json:{message:'This note has already been reviewed, so its summary is yours now and Coppermind does not write it again.'}})});
-  const button=f.view.contentEl.all().find(e=>e.text==='Write the summary again');await button.onclick();
-  assert.ok(homeText(f.view).includes('This note has already been reviewed, so its summary is yours now and Coppermind does not write it again.'));
-  assert.equal(button.disabled,false);
-});
-
-test('a summary that fails to write says so and says the old one is unchanged',async()=>{
-  const f=await fixture(undefined,recorded);
-  watchReview(f,[{state:'failed',job_id:'job-2',suggestion_error:'The AI service is not answering.'}]);
-  const button=f.view.contentEl.all().find(e=>e.text==='Write the summary again');await button.onclick();
-  assert.ok(homeText(f.view).includes('The new summary could not be written: The AI service is not answering. The summary above is unchanged. You can try again.'));
-  assert.equal(button.disabled,false);
-});
-
-test('a server that stops answering while the summary is written is said plainly',async()=>{
-  const f=await fixture(undefined,recorded);
-  f.plugin.summaryPollMs=5;
-  const call=f.plugin.call.bind(f.plugin);
-  f.plugin.call=(path,...args)=>path.endsWith('/review')&&(args[0]??'GET')==='GET'?Promise.reject(Object.assign(Error('x'),{timeout:true})):call(path,...args);
-  const button=f.view.contentEl.all().find(e=>e.text==='Write the summary again');await button.onclick();
-  assert.ok(homeText(f.view).some(t=>t.startsWith('Coppermind is not answering.')&&t.includes('Refresh this panel to check.')));
-  assert.equal(button.disabled,false);
-});
-
-test('a summary that is already being written is said so and not started twice',async()=>{
-  const f=await fixture(undefined,{...recorded,summaryAgain:()=>({status:200,json:{title:'Planning',already:true}})});
-  let release;watchReview(f,[new Promise(resolve=>{release=resolve;})]);
-  const pending=f.view.contentEl.all().find(e=>e.text==='Write the summary again').onclick();
-  await new Promise(r=>setTimeout(r,20));
-  assert.ok(homeText(f.view).includes('Coppermind is already writing a new summary. The one above stays until it arrives.'));
-  assert.equal(f.requests.filter(r=>r.url.endsWith('/summary-again')).length,1);
-  release({state:'failed',job_id:'job-2',suggestion_error:''});await pending;
-  assert.ok(homeText(f.view).some(t=>t.startsWith('The new summary could not be written.')));
 });
 
 test('a read the server never answers is cut off with a plain error',async()=>{
@@ -837,12 +758,6 @@ test('a write that is slow to answer is waited for, not cut off',async()=>{
   const f=await fixture(undefined,{page:()=>new Promise(resolve=>setTimeout(()=>resolve({status:200,json:{done:true}}),60))});
   f.plugin.requestTimeoutMs=20;
   assert.deepEqual(await f.plugin.call('/v1/anything','POST',{}),{done:true});
-});
-
-test('a note whose summary has not been written offers Write a summary, not again',async()=>{
-  const f=await fixture(undefined,{recording_meeting:{candidates:[],calendar_hash:'c'},state:'awaiting_suggestions',job_id:null});
-  assert.ok(f.view.contentEl.all().some(e=>e.text==='Write a summary'));
-  assert.ok(!f.view.contentEl.all().some(e=>e.text==='Write the summary again'));
 });
 
 test('a refresh already in flight does not redraw over a Dismiss confirmation opened meanwhile',async()=>{
@@ -880,37 +795,165 @@ test('finished recording has no summary editor or pending warning during frontma
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).meeting_summary,null);
 });
 
-test('notes without a summary are counted, listed with Retry, and written up in one step',async()=>{
-  const missing=[{id:'n1',title:'Planning',path:'Review/Planning.md',date:'',message:'The AI service did not answer. Retry writes it again from the same transcript.',can_retry:true},{id:'n2',title:'Budget',path:'Review/Budget.md',date:'',message:'The AI service did not answer. Retry writes it again from the same transcript.',can_retry:true}];
-  const options={waiting:{meetings:[],failed:[],processing:[],missing_summaries:missing}};
-  options.summariesAgain=()=>{options.waiting={meetings:[],failed:[],processing:[],missing_summaries:[]};return {status:200,json:{queued:2,already:0,skipped:0}};};
-  const f=await fixture(undefined,options), view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  let texts=view.contentEl.all().map(e=>e.text);
-  assert.ok(texts.includes('0 meetings to review · 0 recordings failed · 2 notes without a summary'));
-  assert.ok(texts.includes('Notes without a summary (2)'));
-  assert.ok(texts.includes('Planning')&&texts.includes('Budget'));
-  assert.equal(view.contentEl.all().filter(e=>e.text==='Retry').length,2);
-  assert.ok(!texts.includes('You are all caught up. Nothing is waiting for you.'));
-  await view.contentEl.all().find(e=>e.text==='Write up every note without a summary').onclick();
-  assert.ok(f.requests.some(r=>r.url.endsWith('/v1/recordings/summaries-again')&&r.method==='POST'));
-  texts=view.contentEl.all().map(e=>e.text);
-  assert.ok(texts.some(t=>t?.startsWith('Writing 2 summaries.')));
-  assert.ok(!texts.includes('Notes without a summary (2)'));
-  assert.ok(texts.includes('You are all caught up. Nothing is waiting for you.'));
-});
-
-test('one note without a summary has Retry and no bulk button, and a refused retry says why',async()=>{
-  const options={waiting:{meetings:[],failed:[],processing:[],missing_summaries:[{id:'n1',title:'Planning',path:'Review/Planning.md',date:'',message:'It failed.',can_retry:true}]},summaryAgain:()=>({status:422,json:{message:'Suggestions are paused.'}})};
-  const f=await fixture(undefined,options), view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  assert.ok(!view.contentEl.all().some(e=>e.text==='Write up every note without a summary'));
-  const retry=view.contentEl.all().find(e=>e.text==='Retry');await retry.onclick();
-  assert.ok(f.requests.some(r=>r.url.endsWith('/v1/notes/n1/summary-again')&&r.method==='POST'));
-  assert.ok(view.contentEl.all().some(e=>e.text==='Suggestions are paused.'));assert.equal(retry.disabled,false);
-});
-
 test('a note without a summary that cannot be retried offers no Retry',async()=>{
   const f=await fixture(undefined,{waiting:{meetings:[],failed:[],processing:[],missing_summaries:[{id:'n1',title:'Planning',path:'Review/Planning.md',date:'',message:'Turn suggestions on first.',can_retry:false}]}});
   const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
   assert.ok(view.contentEl.all().some(e=>e.text?.includes('Turn suggestions on first.')));
   assert.ok(!view.contentEl.all().some(e=>e.text==='Retry'));
+});
+
+// Notes in Review: the one place a recording's note is written up again or its suggestions are run again.
+const step=(state,reason='',when='')=>({state,reason,when});
+const reviewNote=(id,title,over={})=>({id,title,path:'Review/'+title+'.md',date:'2026-11-02T10:00:00+00:00',from_recording:true,can_resummarize:true,can_enrich:true,writeup:step('written','','2026-11-02T11:00:00+00:00'),suggestions:step('missing'),...over});
+async function notesScreen(notes,over={}){
+  const state={notes,suggestions_on:true,writeup_on:true};
+  const f=await fixture(undefined,{reviewNotes:()=>state,...over});
+  const view=f.factories['coppermind-notes-in-review']({app:f.app});await view.refresh();
+  f.plugin.notesBusyPollMs=5;f.plugin.notesPollMs=5;
+  return {...f,view,state};
+}
+const textsOf=view=>view.contentEl.all().map(e=>e.text).filter(Boolean);
+const posts=f=>f.requests.filter(r=>r.method==='POST').map(r=>r.url.replace('https://coppermind.example',''));
+
+test('Notes in Review has its own command and lists every note with where it stands in plain words',async()=>{
+  const f=await notesScreen([
+    reviewNote('n1','Planning',{suggestions:step('failed','The AI service did not answer.','2026-11-02T12:00:00+00:00')}),
+    reviewNote('n2','Budget',{writeup:step('missing')}),
+    reviewNote('n3','Notes from a friend',{from_recording:false,can_resummarize:false,writeup:step('none'),suggestions:step('working','','2026-11-02T12:00:00+00:00')}),
+  ]);
+  assert.equal(f.plugin.commands['notes-in-review'].name,'Notes in Review');
+  const texts=textsOf(f.view);
+  assert.ok(texts.includes('3 notes in Review · 1 without a write-up · 1 in progress.'));
+  for(const title of ['Planning','Budget','Notes from a friend'])assert.ok(texts.includes(title));
+  assert.ok(texts.some(t=>t.startsWith('Write-up: written, finished ')));
+  assert.ok(texts.includes('Write-up: missing.'));
+  assert.ok(texts.some(t=>t.startsWith('Suggestions: failed at ')&&t.endsWith('. The AI service did not answer.')));
+  assert.ok(texts.includes('Write-up: this note is not from a recording.'));
+  const buttons=f.view.contentEl.all().filter(e=>e.tag==='button').map(b=>b.text);
+  assert.equal(buttons.filter(t=>t==='Resummarize').length,2);
+  assert.equal(buttons.filter(t=>t==='Enrich').length,2);
+  assert.ok(buttons.includes('Enriching…'));
+  assert.ok(!buttons.includes('Retry'));
+});
+
+test('Resummarize starts at once, shows it is running, and the row says when it finished',async()=>{
+  const f=await notesScreen([reviewNote('n1','Planning',{writeup:step('missing')})],{resummarize:()=>{f.state.notes[0].writeup=step('working','',new Date().toISOString());return {status:200,json:{started:true,already:false}};}});
+  const button=f.view.contentEl.all().find(e=>e.text==='Resummarize');await button.onclick();
+  assert.deepEqual(posts(f),['/v1/notes/n1/resummarize']);
+  assert.equal(JSON.parse(f.requests.find(r=>r.url.endsWith('/resummarize')).body).replace,undefined);
+  let texts=textsOf(f.view);
+  assert.ok(texts.some(t=>t.startsWith('Write-up: being written now, started ')));
+  const busy=f.view.contentEl.all().find(e=>e.text==='Resummarizing…');assert.equal(busy.disabled,true);
+  f.state.notes[0].writeup=step('written','','2026-11-25T15:14:00+00:00');
+  await f.view.refresh(true);
+  texts=textsOf(f.view);
+  assert.ok(texts.some(t=>t.startsWith('Write-up: written, finished ')));
+  assert.ok(texts.includes('The write-up has finished.'));
+  assert.equal(f.view.contentEl.all().find(e=>e.text==='Resummarize').disabled,false);
+});
+
+test('a write-up that fails says why on its row and the note is unchanged',async()=>{
+  const f=await notesScreen([reviewNote('n1','Planning')],{resummarize:()=>{f.state.notes[0].writeup=step('failed','The writing service stopped before finishing the note. The note is unchanged.','2026-11-25T15:14:00+00:00');return {status:200,json:{started:true}};}});
+  await f.view.contentEl.all().find(e=>e.text==='Resummarize').onclick();
+  assert.ok(textsOf(f.view).some(t=>t.startsWith('Write-up: failed at ')&&t.includes('The writing service stopped before finishing the note. The note is unchanged.')));
+});
+
+test('a refused Resummarize shows the server words on the row and the button works again',async()=>{
+  const f=await notesScreen([reviewNote('n1','Planning')],{resummarize:()=>({status:422,json:{message:'Recordings are not set up to be written up.'}})});
+  const button=f.view.contentEl.all().find(e=>e.text==='Resummarize');await button.onclick();
+  assert.ok(textsOf(f.view).includes('Recordings are not set up to be written up.'));
+  assert.equal(button.disabled,false);assert.equal(button.text,'Resummarize');
+});
+
+test('Enrich runs the suggestion step on that note and shows it working, then finished',async()=>{
+  const f=await notesScreen([reviewNote('n1','Planning')],{suggestionsRequest:()=>{f.state.notes[0].suggestions=step('working','',new Date().toISOString());return {status:200,json:{jobs:['j']}};}});
+  await f.view.contentEl.all().find(e=>e.text==='Enrich').onclick();
+  assert.deepEqual(posts(f),['/v1/notes/n1/suggestions']);
+  assert.ok(textsOf(f.view).some(t=>t.startsWith('Suggestions: being written now')));
+  assert.equal(f.view.contentEl.all().find(e=>e.text==='Enriching…').disabled,true);
+  f.state.notes[0].suggestions=step('written','','2026-11-25T15:20:00+00:00');await f.view.refresh(true);
+  assert.ok(textsOf(f.view).includes('The suggestions have finished.'));
+});
+
+test('Enrich is not offered when suggestions are off, and a refused one says why',async()=>{
+  const off=await notesScreen([reviewNote('n1','Planning',{can_enrich:false,suggestions:step('off')})]);
+  assert.ok(!off.view.contentEl.all().some(e=>e.text==='Enrich'));
+  assert.ok(textsOf(off.view).some(t=>t.startsWith('Suggestions: suggestions are off.')));
+  const f=await notesScreen([reviewNote('n1','Planning')],{suggestionsRequest:()=>({status:422,json:{message:'Suggestions are paused.'}})});
+  await f.view.contentEl.all().find(e=>e.text==='Enrich').onclick();
+  assert.ok(textsOf(f.view).includes('Suggestions are paused.'));
+});
+
+test('Resummarize all missing writes up only the notes without a write-up',async()=>{
+  const f=await notesScreen([reviewNote('n1','Planning',{writeup:step('missing')}),reviewNote('n2','Budget'),reviewNote('n3','Review',{writeup:step('failed','It failed.')}),reviewNote('n4','Other',{from_recording:false,can_resummarize:false,writeup:step('none')})]);
+  const all=f.view.contentEl.all().find(e=>e.text==='Resummarize all missing (2)');
+  assert.ok(all);
+  await all.onclick();
+  assert.deepEqual(posts(f),['/v1/notes/n1/resummarize','/v1/notes/n3/resummarize']);
+  assert.ok(textsOf(f.view).some(t=>t.startsWith('Started 2 notes.')));
+});
+
+test('with nothing missing there is no bulk button, and an empty Review says so',async()=>{
+  const f=await notesScreen([reviewNote('n1','Planning')]);
+  assert.ok(!f.view.contentEl.all().some(e=>e.text?.startsWith('Resummarize all missing')));
+  const empty=await notesScreen([]);
+  assert.ok(textsOf(empty.view).includes('No notes are waiting in Review. Notes from new recordings appear here.'));
+});
+
+test('clicking a title opens the note, and a note not yet in the vault says so',async()=>{
+  const f=await notesScreen([reviewNote('n1','Planning')]);
+  const opened=[];f.app.workspace.getLeaf=()=>({openFile:async file=>opened.push(file.path)});
+  await f.view.contentEl.all().find(e=>e.text==='Planning'&&e.tag==='button').onclick();
+  assert.deepEqual(opened,['Review/Planning.md']);
+  f.app.vault.getAbstractFileByPath=()=>null;
+  await f.view.contentEl.all().find(e=>e.text==='Planning'&&e.tag==='button').onclick();
+  assert.ok(textsOf(f.view).includes('That note is not in this vault yet. Wait for sync, then refresh.'));
+});
+
+test('a rewrite held back because the note was edited is compared, and replaces only on request',async()=>{
+  const kept={when:'2026-11-25T15:14:00+00:00',if_match:'sha256:1',difference:['--- your note','+++ new write-up','-My own line','+Better body']};
+  const f=await notesScreen([reviewNote('n1','Planning',{kept})]);
+  assert.ok(textsOf(f.view).includes('You edited this note, so it was not changed. A new write-up is ready to compare.'));
+  await f.view.contentEl.all().find(e=>e.text==='Compare with my note').onclick();
+  const modal=f.modals[0];
+  assert.ok(modal.contentEl.all().some(e=>e.text==='+Better body'&&e.cls==='coppermind-added'));
+  assert.ok(modal.contentEl.all().some(e=>e.text==='-My own line'&&e.cls==='coppermind-removed'));
+  modal.contentEl.all().find(e=>e.text==='Keep my note').onclick();
+  assert.deepEqual(posts(f),[]);
+  await f.view.contentEl.all().find(e=>e.text==='Compare with my note').onclick();
+  await f.modals[1].contentEl.all().find(e=>e.text==='Replace my note with the new write-up').onclick();
+  const request=f.requests.find(r=>r.url.endsWith('/resummarize'));
+  assert.deepEqual(JSON.parse(request.body),{replace:true,if_match:'sha256:1'});
+  assert.ok(f.view.flash.startsWith('Replaced your note "Planning"'));
+});
+
+test('a server that stops answering, or a key without permission, is said plainly',async()=>{
+  const down=await fixture(undefined,{reviewNotesFail:true});
+  const view=down.factories['coppermind-notes-in-review']({app:down.app});await view.refresh();
+  assert.ok(textsOf(view).includes('Coppermind is not answering. Check your connection and that this device is still paired, then try again.'));
+  const denied=await fixture(undefined,{reviewNotesFail:403});
+  const second=denied.factories['coppermind-notes-in-review']({app:denied.app});await second.refresh();
+  assert.ok(textsOf(second).some(t=>t.startsWith('This key is missing something the companion needs.')));
+});
+
+test('Needs you has no per-note Retry or bulk write-up, and points to Notes in Review',async()=>{
+  const missing=[{id:'n1',title:'Planning',path:'Review/Planning.md',date:'',message:'The AI service did not answer. Open Notes in Review and press Resummarize to write it again from the same transcript.',can_retry:true},{id:'n2',title:'Budget',path:'Review/Budget.md',date:'',message:'It failed.',can_retry:true}];
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[],processing:[],missing_summaries:missing}});
+  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
+  const texts=textsOf(view);
+  assert.ok(texts.includes('Notes without a summary (2)'));
+  assert.ok(!texts.includes('Retry')&&!texts.includes('Write up every note without a summary'));
+  assert.ok(texts.some(t=>t.includes('Notes in Review')&&t.includes('Resummarize and Enrich')));
+  let opened=0;f.plugin.openNotesInReview=async()=>{opened++;};
+  await view.contentEl.all().find(e=>e.text==='Open Notes in Review').onclick();
+  assert.equal(opened,1);
+  assert.equal(f.requests.filter(r=>r.method==='POST').length,0);
+});
+
+test('the review panel no longer writes a summary again and points to Notes in Review',async()=>{
+  const f=await fixture(undefined,{recording_meeting:{candidates:[],calendar_hash:'c'},meeting_summary:{summary:'Launch plan.',decisions:'',action_items:''},job_id:'job-1',state:'suggested'});
+  const texts=textsOf(f.view);
+  assert.ok(!texts.includes('Write the summary again')&&!texts.includes('Write a summary'));
+  assert.ok(texts.includes('To write this note up again or run its suggestions again, use Notes in Review.'));
+  assert.ok(texts.includes('Open Notes in Review'));
 });

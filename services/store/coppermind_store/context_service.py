@@ -185,8 +185,10 @@ class ContextService:
         self.dropbox = Dropbox(self)
         self.recordings = Recordings(self)
         from coppermind_store.owner_alerts import OwnerAlerts
+        from coppermind_store.review_notes import ReviewNotes
 
         self.alerts = OwnerAlerts(self)
+        self.review_notes = ReviewNotes(self)
         self.provider = ModelProvider()
         from coppermind_store.ai_services import AiServices
 
@@ -1071,6 +1073,14 @@ class ContextService:
             return await self.store.admin.notes.summary_again(payload)
         except Refused as refusal:
             raise ValueError(refusal.message) from refusal
+
+    async def review_note_list(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Every note in the Review folder and where its write-up and suggestions stand."""
+        return await self.review_notes.listing(payload)
+
+    async def note_resummarize(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Write a recording's note up again from its saved transcript."""
+        return await self.review_notes.resummarize(payload)
 
     async def write_up_missing_summaries(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Write up every recording note that has no summary, in one step."""

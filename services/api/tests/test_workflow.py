@@ -422,3 +422,55 @@ def test_writing_up_every_note_without_a_summary_is_scoped_like_writing_one_agai
         result = client.post("/v1/recordings/summaries-again")
     assert result.status_code == expected
     assert fake.calls == ([("write-up-missing-summaries", {})] if expected == 200 else [])
+
+
+@pytest.mark.parametrize(
+    "scopes,expected",
+    [
+        (["notes:read"], 403),
+        (["sources:read"], 403),
+        (["notes:read", "sources:read"], 200),
+    ],
+)
+def test_the_list_of_notes_in_review_needs_only_reads(scopes, expected):
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    with TestClient(app) as client:
+        result = client.get("/v1/review/notes")
+    assert result.status_code == expected
+    assert fake.calls == ([("review-notes", {})] if expected == 200 else [])
+
+
+@pytest.mark.parametrize(
+    "scopes,expected",
+    [
+        (["notes:read", "sources:read"], 403),
+        (["notes:write", "notes:read"], 403),
+        (["notes:read", "notes:write", "sources:read"], 200),
+    ],
+)
+def test_resummarize_is_scoped_like_the_other_review_writes(scopes, expected):
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    with TestClient(app) as client:
+        plain = client.post("/v1/notes/note/resummarize")
+        held = client.post(
+            "/v1/notes/note/resummarize", json={"replace": True, "if_match": "sha256:x"}
+        )
+        extra = client.post("/v1/notes/note/resummarize", json={"body": "no"})
+    assert plain.status_code == held.status_code == expected
+    assert extra.status_code == (422 if expected == 200 else 403)
+    assert fake.calls == (
+        [
+            ("note-resummarize", {"id": "note", "replace": False, "if_match": ""}),
+            ("note-resummarize", {"id": "note", "replace": True, "if_match": "sha256:x"}),
+        ]
+        if expected == 200
+        else []
+    )

@@ -177,7 +177,7 @@ async def test_notes_without_a_summary_are_listed_once_and_only_while_the_owner_
     jobs[3].state = "succeeded"  # summary written
     found = await fixture.recordings.missing_summaries()
     assert {item["id"] for item in found} == {"n1", "n2"}
-    assert all(item["can_retry"] and "Retry" in item["message"] for item in found)
+    assert all(item["can_retry"] and "press Resummarize" in item["message"] for item in found)
     assert found[0]["path"].startswith("Review/")
     waiting = await fixture.recordings.waiting()
     assert {i["id"] for i in waiting["missing_summaries"]} == {"n1", "n2"}

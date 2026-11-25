@@ -514,7 +514,8 @@ class Recordings:
                     "date": job.captured_at,
                     "message": why
                     + (
-                        " Retry writes it again from the same transcript."
+                        " Open Notes in Review and press Resummarize to write it again from the "
+                        "same transcript."
                         if ready
                         else " Turn suggestions on and make sure the AI service answers, then "
                         "retry."
