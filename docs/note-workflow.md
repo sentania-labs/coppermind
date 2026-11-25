@@ -60,8 +60,9 @@ finished), missing, failed (with the reason) or being written now. A note that c
 recording has **Resummarize**, which writes it up again from the transcript already saved,
 with the current directions, without sending the recording for transcription again, and
 leaves the note's fields and its review status alone. While the note's body is still exactly
-what Coppermind wrote, the new write-up replaces it and the earlier version is kept. If you
-edited the body, nothing is overwritten: the row says so and **Compare with my note** shows
+what Coppermind wrote, the new write-up replaces it and Coppermind keeps the earlier text.
+Getting it back from the companion is not available yet; it arrives with restore from Git
+history. If you edited the body, nothing is overwritten: the row says so and **Compare with my note** shows
 your lines against the new write-up, and the note changes only if you choose **Replace my
 note with the new write-up**. Every note has **Enrich**, which runs the suggestions step
 again (attendees, account, tags, type and the like). **Resummarize all missing** at the top

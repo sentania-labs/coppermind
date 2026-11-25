@@ -649,7 +649,7 @@ class KeptRewriteModal extends Modal {
     const keep=el.createEl('button',{text:'Keep my note'});
     replace.onclick=async()=>{
       replace.disabled=true;keep.disabled=true;status.setText('Replacing…');
-      try{await this.plugin.call('/v1/notes/'+encodeURIComponent(this.note.id)+'/resummarize','POST',{replace:true,if_match:kept.if_match});this.replaced=true;this.close();await this.done('Replaced your note "'+this.note.title+'" with the new write-up. Your version is kept in case you want it back.');}
+      try{await this.plugin.call('/v1/notes/'+encodeURIComponent(this.note.id)+'/resummarize','POST',{replace:true,if_match:kept.if_match});this.replaced=true;this.close();await this.done('Replaced your note "'+this.note.title+'" with the new write-up. Coppermind keeps the earlier text. Getting it back from the companion is not available yet and arrives with restore from Git history.');}
       catch(e){status.setText(e.status===403?KEY_MISSING:e.status===422||e.status===404?e.message:'Could not replace the note. Check your connection, then try again.');replace.disabled=false;keep.disabled=false;}
     };
     keep.onclick=()=>this.close();

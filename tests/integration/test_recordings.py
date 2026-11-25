@@ -2216,8 +2216,8 @@ async def test_audio_that_became_a_recording_is_listed_once_as_the_recording(sto
 
 
 async def settle_rewrites(context):
-    while context.review_notes.tasks:
-        await asyncio.gather(*list(context.review_notes.tasks))
+    while context.review_notes.live:
+        await asyncio.gather(*list(context.review_notes.live.values()))
 
 
 async def test_notes_in_review_writes_a_recording_up_again_without_losing_hand_edits(store):
