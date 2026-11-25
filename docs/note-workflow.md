@@ -223,11 +223,16 @@ in the note.
 
 - A name that matches no one in People **creates that person**; the entry says "New person
   added to People".
-- A name that matches more than one person (a first name shared by two people, say) names
+- A name that matches more than one person (two people with the same alias, say) names
   nobody. The entry keeps what was typed and says which people matched; type the full name
   and save the note.
-- A name matches exactly, by alias, by the page of a completed `[[link]]`, or for a single
-  word by first name. Nothing is guessed beyond that.
+- A name matches exactly, by alias, or by the page of a completed `[[link]]`. Nothing is
+  guessed beyond that. A single word that is only the first name of someone in People
+  ("Tom" when People holds Tom Reed) names nobody and creates nobody: the entry keeps what
+  was typed and says it could be that person; write the full name or the link to confirm.
+- A voice numbered within one recording ("Unknown voice 2 (recording-local)") that the note
+  shows for more than one recording names nobody, because it cannot be told which recording
+  was meant. The entry says so; name it in People.
 - A voice with too little speech to keep a signature is named in this recording only, and
   the entry says so.
 - An action item is given to a named person only when that speaker is identified. Otherwise

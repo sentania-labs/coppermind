@@ -7,7 +7,9 @@ the voice have the label replaced where the text was not hand-edited, and later 
 recognise the voice. Nothing else is needed, and nothing is asked a second time.
 
 A name that matches nobody in People makes a new person. A name that matches more than one
-person names nobody: the note says why, and what was typed stays where it was typed.
+person, or that is only a first name some person has, names nobody: the note says why, and
+what was typed stays where it was typed. A recording-local voice that the note shows in more
+than one recording names nobody either, because it cannot be told which recording was meant.
 """
 
 from __future__ import annotations
@@ -25,8 +27,8 @@ NEW_NOTE = " New person added to People."
 
 
 def candidates(people: list[Any], name: str, page: str = "") -> list[Any]:
-    """The people this typed name could mean: the page a completed link points at, else an
-    exact name or alias, else, for a single word, anyone with that first name."""
+    """The people this typed name is: the page a completed link points at, else an exact name
+    or alias."""
     if page:
         wanted = page.casefold()
         linked = [
@@ -42,11 +44,15 @@ def candidates(people: list[Any], name: str, page: str = "") -> list[Any]:
             return linked
     key = name.casefold()
     exact = [p for p in people if key in {p.name.casefold(), *(a.casefold() for a in p.aliases)}]
-    if exact:
-        return exact
-    if " " not in key:
-        return [p for p in people if p.name.casefold().split()[:1] == [key]]
-    return []
+    return exact
+
+
+def could_be(people: list[Any], name: str) -> list[Any]:
+    """People a lone typed word is the first name of. It is a hint, never a match."""
+    key = name.casefold()
+    if " " in key:
+        return []
+    return [p for p in people if p.name.casefold().split()[:1] == [key]]
 
 
 def _active_people(context: Any) -> list[Any]:
@@ -63,6 +69,20 @@ def _ambiguous(name: str, found: list[Any]) -> str:
         f"more than one person in People matches {name} ({names}). Type the full name "
         "of the right one and save the note."
     )
+
+
+def _first_name(name: str, found: list[Any]) -> str:
+    names = ", ".join(sorted({p.name for p in found})[:4])
+    return (
+        f"{name} could be {names}, but a first name alone is not enough to say so. Write the "
+        "full name or the link to that person to confirm."
+    )
+
+
+LOCAL_TWICE = (
+    "this voice is numbered within one recording and the note shows it for more than one "
+    "recording, so it cannot be told which was meant. Name it in People."
+)
 
 
 def _once(found: Any) -> list[Any]:
@@ -83,6 +103,7 @@ async def name_voices(context: Any, note: Any) -> Any:
     ticked = _once(
         e for e in sections.entries(note.body) if e.me and not sections.clean_name(e.typed)
     )
+    repeated = sections.repeated_local(note.body)
     if not typed and not ticked:
         return note
     problems: list[tuple[str, str, str]] = []
@@ -92,11 +113,20 @@ async def name_voices(context: Any, note: Any) -> Any:
             (entry.label, entry.typed, 'Type your name after "Name this voice:" as well.')
         )
     for entry in typed:
+        if entry.label in repeated:
+            problems.append((entry.label, sections.clean_name(entry.typed), LOCAL_TWICE))
+            continue
         name, page = sections.read_name(entry.typed)
-        found = candidates(_active_people(context), name, page)
+        people = _active_people(context)
+        found = candidates(people, name, page)
         if len(found) > 1:
             problems.append(
                 (entry.label, sections.clean_name(entry.typed), _ambiguous(name, found))
+            )
+            continue
+        if not found and (maybe := could_be(people, name)):
+            problems.append(
+                (entry.label, sections.clean_name(entry.typed), _first_name(name, maybe))
             )
             continue
         created = False

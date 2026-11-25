@@ -159,7 +159,7 @@ async def lifecycle(store, service):
     return context
 
 
-async def test_a_name_that_fits_two_people_names_nobody_and_says_why(store):
+async def test_a_first_name_alone_names_nobody_and_creates_nobody(store):
     async with Service(reply=reply(TOM)) as service:
         context = await lifecycle(store, service)
         reed = await store.entities.create(EntityInput(kind="person", name="Tom Reed"))
@@ -167,11 +167,10 @@ async def test_a_name_that_fits_two_people_names_nobody_and_says_why(store):
         job, note = await record(store, context, "plaud/rec-1", AUDIO)
         await type_into(store, note, {"Unknown voice 2": {"name": "Tom"}})
         filed = await mark_reviewed(store, context, note.id)
-        assert "Could not name this voice yet: more than one person in People matches Tom" in (
-            filed.body
-        )
-        assert "Tom Reed, Tom Lee" in filed.body or "Tom Lee, Tom Reed" in filed.body
+        assert "Could not name this voice yet: Tom could be Tom Lee, Tom Reed" in filed.body
+        assert "Write the full name or the link to that person to confirm." in filed.body
         assert "  - Name this voice: Tom" in filed.body
+        assert "Named by you" not in filed.body
         assert "Unknown voice 2" in VoiceStore(context).unknown_for_note(note.id)[0]["name"] or (
             len(VoiceStore(context).unknown_for_note(note.id)) == 2
         )
@@ -188,6 +187,20 @@ async def test_a_name_that_fits_two_people_names_nobody_and_says_why(store):
         assert "Could not name" not in final.body
         assert "|Tom Reed]], 59 s. Named by you." in final.body or "Tom Reed, 59 s" in final.body
         assert VoiceStore(context).summary(reed["id"])["signatures"]
+
+
+async def test_a_first_name_with_one_match_in_people_is_not_taken_for_that_person(store):
+    async with Service(reply=reply(TOM)) as service:
+        context = await lifecycle(store, service)
+        reed = await store.entities.create(EntityInput(kind="person", name="Tom Reed"))
+        _, note = await record(store, context, "plaud/rec-1", AUDIO)
+        await type_into(store, note, {"Unknown voice 2": {"name": "Tom"}})
+        filed = await mark_reviewed(store, context, note.id)
+        assert "Could not name this voice yet: Tom could be Tom Reed" in filed.body
+        assert "  - Name this voice: Tom" in filed.body
+        assert "Named by you" not in filed.body
+        assert {e.name for e in store.entities.load().entities.values()} == {"Tom Reed"}
+        assert not VoiceStore(context).summary(reed["id"])["signatures"]
 
 
 async def test_the_same_voice_in_another_unedited_note_is_renamed_and_loses_its_questions(store):

@@ -30,6 +30,8 @@ TARGET_TOKEN = "<<coppermind-source-transcript-target>>"
 # An identity the service gave a voice that nobody has named. A name is never written here.
 UNKNOWN = re.compile(r"Unknown voice \d+(?: \(recording-local\))?")
 
+LOCAL = re.compile(r"\(recording-local\)$")
+
 _HEADING = re.compile(r"^##[ \t]+(?!#)(.*?)[ \t#]*$")
 _TOP = re.compile(r"^[-*][ \t]+(?P<text>.*)$")
 _SUB = re.compile(r"^[ \t]+[-*][ \t]+(?P<text>.*)$")
@@ -190,12 +192,25 @@ def entries(body: str) -> list[Entry]:
     return found
 
 
+def repeated_local(body: str) -> set[str]:
+    """Recording-local labels the note shows more than once. They are numbered within one
+    recording, so the same label in two places is two different voices."""
+    seen: dict[str, int] = {}
+    for entry in entries(body):
+        if LOCAL.search(entry.label):
+            seen[entry.label] = seen.get(entry.label, 0) + 1
+    return {label for label, count in seen.items() if count > 1}
+
+
 def _find(body: str, label: str, typed: str) -> list[Entry]:
     """The entries for this voice, in order: by what was typed in them, which survives a
-    relabel of the first line, else by label."""
+    relabel of the first line, else by label. A label repeated across recordings names no
+    voice."""
     every = entries(body)
     by_typed = [e for e in every if typed and clean_name(e.typed) == typed]
-    return by_typed or [e for e in every if e.label == label]
+    if by_typed:
+        return by_typed
+    return [] if label in repeated_local(body) else [e for e in every if e.label == label]
 
 
 def typed_names(body: str) -> dict[str, str]:

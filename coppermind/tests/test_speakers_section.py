@@ -161,3 +161,17 @@ def test_a_recording_merged_into_a_note_with_its_own_speakers_section_is_still_r
     assert lines.index("- Scott Bowe (you), 1 min. Named by you.") > lines.index(
         "## Recording write-up"
     )
+
+
+def test_the_same_recording_local_label_in_two_recordings_is_never_one_voice():
+    local = "Unknown voice 1 (recording-local)"
+    first = f"## Speakers\n\n- {local}, 5 min. Not identified yet.\n  - Name this voice: \n\n"
+    second = f"## Recording write-up\n\n## Speakers\n\n- {local}, 2 min. Not identified yet.\n"
+    body = first + second + "  - Name this voice: Tom Reed\n"
+    assert sections.repeated_local(body) == {local}
+    assert sections.repeated_local(first) == set()
+    assert sections.name_voice(body, local, "", "Ann", "", owner=False) == body
+    noted = sections.note_problem(body, local, "Tom Reed", "unclear.")
+    assert noted.count("Could not name this voice yet: unclear.") == 1
+    assert noted.index("unclear.") > noted.index("2 min")
+    assert sections.name_voice(first, local, "", "Ann", "", owner=False).count("- Ann, 5 min") == 1

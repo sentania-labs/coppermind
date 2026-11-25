@@ -1,7 +1,7 @@
 """What the Speakers section says about a voice is read from the transcript, never guessed."""
 
 from coppermind_store import speaker_facts as facts
-from coppermind_store.voice_naming import candidates
+from coppermind_store.voice_naming import candidates, could_be
 
 
 def segment(start, end, speaker, text):
@@ -119,14 +119,18 @@ class Person:
         self.name, self.aliases, self.path = name, list(aliases), path
 
 
-def test_a_typed_name_matches_a_person_exactly_by_link_or_by_a_first_name_that_is_theirs_alone():
+def test_a_typed_name_matches_a_person_exactly_by_link_or_and_a_first_name_alone_matches_no_one():
     reed, lee = Person("Tom Reed", path="People/Tom Reed.md"), Person("Tom Lee")
     ann = Person("Ann Cole", aliases=["Annie"])
     people = [reed, lee, ann]
     assert candidates(people, "tom reed") == [reed]
     assert candidates(people, "Annie") == [ann]
-    assert candidates(people, "Ann") == [ann]
-    assert candidates(people, "Tom") == [reed, lee]
+    assert candidates(people, "Ann") == []
+    assert candidates(people, "Tom") == []
+    assert could_be(people, "Ann") == [ann]
+    assert could_be(people, "Tom") == [reed, lee]
+    assert could_be(people, "Tom Reed") == []
+    assert could_be(people, "Quinn") == []
     assert candidates(people, "Tom", "People/Tom Reed") == [reed]
     assert candidates(people, "Zed Quinn") == []
     assert candidates(people, "Quinn") == []
