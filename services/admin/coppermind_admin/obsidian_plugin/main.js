@@ -582,11 +582,27 @@ class PeopleView extends ItemView {
       }
       if(person.unknown){
         el.createEl('p',{text:'Combine this voice with another unknown voice or attach it to a person. Earlier recordings will be relabelled; your own writing in reviewed notes stays intact.'});
-        const target=el.createEl('select');target.createEl('option',{text:'Choose a voice or person',value:''});
-        for(const [id,item] of Object.entries(unknowns))if(id!==person.id)target.createEl('option',{text:item.name,value:id});
-        const query=el.createEl('input',{attr:{type:'search',placeholder:'Find a person'}});const lookup=el.createEl('button',{text:'Find a person'});
-        lookup.onclick=async()=>{try{const page=await this.plugin.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(query.value.trim()));for(const p of page.items)target.createEl('option',{text:p.name,value:'person:'+p.id});if(!page.items.length)new Notice('No people found.');}catch(e){new Notice(e.message);}};
-        const combine=el.createEl('button',{text:'Choose and combine',cls:'mod-cta'});combine.onclick=()=>{if(!target.value){new Notice('Choose a voice or person first.');return;}const chosen=target.value;const count=new Set((voice.assignments||[]).map(a=>a.note_id)).size;new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call(path+'/combine','POST',{target:chosen});await this.show();}catch(e){new Notice(e.message);}},{title:'Combine these voices?',text:'This will relabel '+count+' recording'+(count===1?'':'s')+'. Transcripts and unchanged generated labels will change; your own writing in reviewed notes stays intact.',action:'Combine voices'}).open();};
+        const target=el.createEl('select');target.createEl('option',{text:'Choose a voice or person',value:''});const labels={};let personOptions=[];
+        for(const [id,item] of Object.entries(unknowns))if(id!==person.id){target.createEl('option',{text:item.name,value:id});labels[id]=item.name;}
+        const query=el.createEl('input',{attr:{type:'search',placeholder:'Type a name to find a person'}});const lookup=el.createEl('button',{text:'Find a person'});
+        const found=el.createEl('p');const summary=el.createEl('p',{cls:'coppermind-notice'});
+        const count=new Set((voice.assignments||[]).map(a=>a.note_id)).size;const recordings=count+' recording'+(count===1?'':'s');
+        const describe=()=>{const label=labels[target.value]||'';
+          summary.setText(target.value&&label?person.name+' will become '+label+' in '+recordings+'.':'Choose who '+person.name+' should be combined with.');};
+        target.onchange=describe;describe();
+        const personLabel=(p,all)=>{const email=p.emails?.[0]||'';const clash=all.filter(x=>x.name===p.name).length>1;return p.name+(email?' ('+email+')':clash?' (no email, ID '+String(p.id).slice(0,8)+')':'');};
+        let lookupId=0;
+        lookup.onclick=async()=>{const mine=++lookupId;try{
+          const text=query.value.trim();if(!text){found.setText('Type a name first, then choose Find a person.');return;}
+          const page=await this.plugin.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(text));if(mine!==lookupId)return;const items=page.items||[];
+          for(const o of personOptions)o.remove();personOptions=[];for(const k of Object.keys(labels))if(k.startsWith('person:'))delete labels[k];
+          const seen=new Set();const unique=items.filter(p=>seen.has(p.id)?false:(seen.add(p.id),true));
+          for(const p of unique){const text2=personLabel(p,unique);personOptions.push(target.createEl('option',{text:text2,value:'person:'+p.id}));labels['person:'+p.id]=text2;}
+          if(!unique.length){found.setText('No one named '+text+' found.');target.value='';}
+          else{found.setText(unique.length===1?'Found 1 person. Check the summary below, then combine.':'Found '+unique.length+' people. Choose one from the list above.');if(unique.length===1)target.value='person:'+unique[0].id;}
+          describe();
+        }catch(e){if(mine===lookupId)new Notice(e.message);}};
+        const combine=el.createEl('button',{text:'Choose and combine',cls:'mod-cta'});combine.onclick=()=>{if(!target.value){found.setText('Choose a voice or person first.');return;}const chosen=target.value;const label=labels[chosen]||'the chosen voice';new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call(path+'/combine','POST',{target:chosen});await this.show();el.createEl('p',{text:'Done: '+person.name+' is now '+label+' in '+recordings+'.',cls:'coppermind-notice'});new Notice(person.name+' is now '+label+'.');}catch(e){new Notice(e.message);}},{title:'Combine these voices?',text:person.name+' will become '+label+' in '+recordings+'. Transcripts and unchanged generated labels will change; your own writing in reviewed notes stays intact.',action:'Combine voices'}).open();};
       }
       if(person.unknown||voice.signatures.length){const del=el.createEl('button',{text:'Delete voice data',cls:'mod-warning'});del.onclick=()=>new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call(path,'DELETE');await this.show(person.unknown?undefined:person);}catch(e){new Notice(e.message);}},{title:'Delete voice data?',text:'Delete '+voice.signatures.length+' saved voice signature'+(voice.signatures.length===1?'':'s')+' for '+person.name+'? Future recordings cannot be recognised from these signatures. This cannot be undone.',action:'Delete voice data'}).open();}
     }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});}

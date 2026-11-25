@@ -159,7 +159,9 @@ when the owner completes review. Ambiguous and conflicting matches
 remain for the owner to choose.
 
 In People, an unknown voice can be combined with another unknown voice or attached to
-a person. Its appearances are relabelled in recording transcripts; unchanged generated
+a person. Find a person lists each match once and the People view shows who will become
+whom before anything changes; combining asks for confirmation. The voice's appearances are
+relabelled in recording transcripts; unchanged generated
 summary lines can also be updated. Owner-edited lines are left alone. When a voice left
 unnamed at review is later attached to a person, that person is also added to the
 attendees of the already reviewed note, if Model connections has an attendees property;
