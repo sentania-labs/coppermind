@@ -23,7 +23,7 @@ exercises stay on that separate installation; changes to the real lab still
 go through the normal deployment process, never a manual fix on the spot.
 
 Carry one synthetic item through the whole path: **UAT Lantern**, body
-"cobalt lantern 731", type `note`, context `personal`; for ingest, provider
+"cobalt lantern 731", type `personal`, no context; for ingest, provider
 and external ID `uat` / `lantern-731`. Keep its note and source identifiers.
 Use a second item as the unreviewed control, to prove the system does not
 touch things it should leave alone.
@@ -72,7 +72,7 @@ here, since these depend on specific pieces of work by name.
 | Case / needs | What the captain does | What he should see | What counts as failure, including a false success |
 |---|---|---|---|
 | L1. Mark it reviewed | On the phone, set the note's `reviewed` property to true and add a review sentence. Reopen it and read its ID through Coppermind. | `reviewed: true` and the sentence both survive; source linkage and other properties stay intact. | The interface shows reviewed while the saved file still says false; an unrelated property or comment disappears during what should be a one-field change. |
-| L2. Have it filed | Leave the control note unreviewed. Review UAT Lantern with its valid personal context. Then try a separate item whose filing information is incomplete or ambiguous. | The reviewed personal note moves from Review to its filed folder, including on the phone, keeping its ID, prose, and source link. The unreviewed control stays put. The ambiguous item stays visible in Review, marked unresolved with an explanation. | The note disappears instead of moving; a duplicate appears; the wrong customer is inferred; the unreviewed control files itself; an unresolved item vanishes or produces repeated notices. |
+| L2. Have it filed | Leave the control note unreviewed. Review UAT Lantern as the personal note it is. Then try a separate item whose filing information is incomplete or ambiguous. | The reviewed personal note moves from Review to its filed folder, including on the phone, keeping its ID, prose, and source link. The unreviewed control stays put. The ambiguous item stays visible in Review, marked unresolved with an explanation. | The note disappears instead of moving; a duplicate appears; the wrong customer is inferred; the unreviewed control files itself; an unresolved item vanishes or produces repeated notices. |
 | L3. Find it later | Search for "cobalt lantern 731", open the result, and apply reviewed-only and unreviewed filters using the control note. Change the body to a new unique phrase and search again after catch-up. | The correct current note, path, snippet, and review state; the filters correctly distinguish the two items; the updated body becomes findable. | Claiming search passed because Obsidian's own in-app search found it; a stale result or a dead link; only titles are actually searched; generated source pages crowding out the real note. |
 | L4. Keep working as files | Create a note on the phone, pause editing, and inspect its assigned ID. Move or rename it on the phone, then read that same ID. | The new note gets an ID after the quiet period; a move or rename keeps its identity and stays retrievable. | A new file that never becomes addressable; the same ID resolving to a different note; a move that permanently breaks lookup. |
 

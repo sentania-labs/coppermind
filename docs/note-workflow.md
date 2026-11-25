@@ -82,7 +82,8 @@ approving an enrichment date, removes the legacy `time` and `timezone`. An
 enrichment `account` suggestion is added to the note's list and never replaces it.
 
 `account` is a list of customer names. A plain string is read as a one-item list.
-`account` is required when `context: external` and needs at least one entry; an
+A work note needs `context`; other types do not, and the review form stops asking for
+context and account once the type is not work. `account` is required when `context: external` and needs at least one entry; an
 empty list fails review the same way a missing account does. A reference note
 that applies to several customers lists them all, and a note found by any one of
 them.

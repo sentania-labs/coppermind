@@ -309,6 +309,46 @@ def test_what_was_accepted_is_taken_before_the_note_is_changed(admin):
     assert "is filed within a minute" in page
 
 
+def test_review_asks_for_context_and_account_only_on_a_work_note(admin):
+    client, _, store = admin
+    page = client.get(REVIEW).text
+    assert 'data-if="type=work" hidden' in page
+    store.views["lifecycle"]["note"]["frontmatter"]["type"] = "work"
+    shown = client.get(REVIEW).text
+    assert 'data-if="type=work" hidden' not in shown
+    assert 'data-if="type=work"' in shown
+
+
+def test_a_recording_moved_off_work_drops_the_default_context(admin):
+    client, _, store = admin
+    store.views["lifecycle"]["note"]["frontmatter"]["type"] = "work"
+    # The page sends no context or account for a note that is not work.
+    form = answers(type="personal")
+    del form["context"], form["account"]
+    follow(client, post(client, REVIEW, form, page=REVIEW))
+    (_, patch) = store.patches[0]
+    assert patch.set["type"] == "personal"
+    assert "context" not in patch.set and "account" not in patch.set
+    assert "context" in patch.unset
+
+
+def test_a_saved_schema_that_still_requires_context_keeps_it_when_moving_off_work(admin):
+    client, wiring, store = admin
+    state = StateStore(wiring.state_dir)
+    record = state.read("schema")
+    body = dict(record.body)
+    for key in body["keys"]:
+        if key["name"] == "context":
+            key.update(required=True, required_when=None, required_when_values=[])
+    state.write("schema", body, if_revision=record.revision)
+    store.views["lifecycle"]["note"]["frontmatter"]["type"] = "work"
+    form = answers(type="personal")
+    del form["context"], form["account"]
+    follow(client, post(client, REVIEW, form, page=REVIEW))
+    (_, patch) = store.patches[0]
+    assert "context" not in patch.unset
+
+
 # -- notes ------------------------------------------------------------------------------------
 
 

@@ -837,7 +837,11 @@ async def test_unsetting_a_required_field_is_refused_and_changes_nothing(
             created.content_hash,
         )
 
-    assert raised.value.errors == [f"{key}: required, so it cannot be removed"]
+    expected = {
+        "type": "type: required, so it cannot be removed",
+        "context": "context: required when type is one of work",
+    }
+    assert raised.value.errors == [expected[key]]
     assert path.read_bytes() == before
 
 

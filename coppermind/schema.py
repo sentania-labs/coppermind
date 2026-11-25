@@ -691,6 +691,7 @@ def shipped_key_upgrades() -> dict[str, tuple[list[KeyDefinition], KeyDefinition
     """
     shipped = {definition.name: definition for definition in default_schema().keys}
     return {
+        "context": ([OLD_CONTEXT_KEY], shipped["context"]),
         "account": (
             [
                 KeyDefinition(
@@ -761,6 +762,39 @@ def shipped_key_upgrades() -> dict[str, tuple[list[KeyDefinition], KeyDefinition
     }
 
 
+OLD_CONTEXT_KEY = KeyDefinition(
+    name="context",
+    kind="enum",
+    required=True,
+    default="internal",
+    vocabulary=["internal", "external", "personal"],
+    description="Where the note files.",
+)
+
+
+def context_key_definition() -> KeyDefinition:
+    """Context is a work note's own field: internal, or external for a customer. It does not
+    decide where a note files (type and date do), and no other type needs it."""
+    return KeyDefinition(
+        name="context",
+        kind="enum",
+        required=False,
+        default="internal",
+        vocabulary=["internal", "external", "personal"],
+        vocabulary_meanings={
+            "internal": "A work note about your own organisation.",
+            "external": "A work note about a customer. It needs an account.",
+            "personal": "Kept so older notes still read. A personal note is type personal.",
+        },
+        required_when="type",
+        required_when_values=["work"],
+        description=(
+            "Whether a work note is internal or about a customer. Required only when type "
+            "is work. It does not decide where a note files."
+        ),
+    )
+
+
 def default_schema() -> FrontmatterSchema:
     """The schema a fresh install runs with. Admin can change every part of it."""
     return FrontmatterSchema(
@@ -799,14 +833,7 @@ def default_schema() -> FrontmatterSchema:
                     "the listed values are suggestions and any other text is accepted."
                 ),
             ),
-            KeyDefinition(
-                name="context",
-                kind="enum",
-                required=True,
-                default="internal",
-                vocabulary=["internal", "external", "personal"],
-                description="Where the note files.",
-            ),
+            context_key_definition(),
             KeyDefinition(
                 name="account",
                 kind="list",
