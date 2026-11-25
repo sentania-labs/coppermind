@@ -24,15 +24,12 @@ async def apply(context, receipt):
     import json
     from datetime import UTC, datetime
 
-    import sqlalchemy as sa
-
     from coppermind import frontmatter as fm
     from coppermind.atomicio import atomic_write_text, sync_directory
-    from coppermind.db.models import Note, NoteSource
+    from coppermind.db.models import NoteSource
     from coppermind.db.session import transaction
     from coppermind.ids import is_valid_id
     from coppermind.store_protocol import VersionConflict
-    from coppermind_store import indexer
     from coppermind_store.fs import content_hash, resolve
     from coppermind_store.sources import _external_id_claim_path
     from coppermind_store.voice_store import VoiceStore
@@ -182,17 +179,11 @@ async def apply(context, receipt):
                 raise ValueError("The recording note is unavailable. It was not retired.")
             else:
                 VoiceStore(context).reparent_recording(generated_id, target_id, source_id)
-            async with transaction(store.session_factory) as session:
-                await session.execute(
-                    sa.update(Note)
-                    .where(Note.id == generated_id)
-                    .values(
-                        state="deleted",
-                        state_reason="Merged into another note",
-                        updated_at=datetime.now(UTC),
-                    )
-                )
-                await indexer.drop_note(session, generated_id, datetime.now(UTC))
         receipt["state"], receipt["step"], receipt["error"] = "complete", "complete", ""
         context.write(name, receipt)
+        # The recording note is gone: its records go with it at once. The receipt is complete
+        # first, so the recording's own data already follows the note it was merged into.
+        from coppermind_store.removal import remove_notes
+
+        await remove_notes(store, [generated_id])
         return receipt

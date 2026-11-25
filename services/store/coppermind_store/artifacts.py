@@ -101,8 +101,8 @@ REEXTRACT_PER_PASS = 10
 # Legacy attachments one pass moves into the artifacts folder.
 MIGRATE_PER_PASS = 50
 # Why an archive is marked removed. The owner's own removals, from Admin, from
-# an agent through the API, or by deleting the file in Obsidian, make the
-# archive eligible for the retention purge; nothing else does.
+# an agent through the API, or by deleting the file in Obsidian, remove the archive
+# with them; a recording's audio removed after review keeps its manifest as the receipt.
 REMOVED_IN_ADMIN = "removed in Admin"
 REMOVED_THROUGH_API = "removed through the API"
 REMOVED_AFTER_REVIEW = "recording removed after review"
@@ -1287,9 +1287,8 @@ async def artifact_problems(store: LocalStore) -> list[ProblemInfo]:
                     reason=(
                         "The browsable copy is absent from the notes filesystem and Git has not "
                         "recorded its deletion yet. The archive is kept. Once the Git helper "
-                        "commits the deletion the artifact is retired as deleted in Obsidian and "
-                        "becomes eligible for the retention purge; a copy that comes back clears "
-                        "this."
+                        "commits the deletion the artifact is removed as deleted in Obsidian; "
+                        "a copy that comes back clears this."
                     ),
                     artifact_id=row.id,
                 )
@@ -1329,73 +1328,16 @@ async def artifact_problems(store: LocalStore) -> list[ProblemInfo]:
 async def remove_artifact(
     store: LocalStore, artifact_id: str, *, reason: str = REMOVED_IN_ADMIN
 ) -> None:
-    """Take the projection away: the browsable copy, the record, the row and the index.
+    """Remove an artifact: the browsable copy, the record, the row, the index and the archive.
 
-    The archived bytes stay under their identity, marked removed in the
-    manifest with the reason, until the retention purge removes them. A
-    browsable copy a device changed is left where it is, because it is no
-    longer the bytes this store put there.
+    Nothing is kept back. A browsable copy a device changed is left where it is,
+    because it is no longer the bytes this store put there.
     """
     async with store.maintenance.shared(), store._artifact_lock:
         manifest = await asyncio.to_thread(read_manifest, store, artifact_id)
         if manifest.get("removed_at"):
             raise ArtifactMissing(artifact_id)
         await _retire(store, manifest, reason=reason)
-
-
-async def restore_artifact(store: LocalStore, artifact_id: str) -> str:
-    """Bring back an artifact its owner removed, while the archive still holds it.
-
-    The removal mark comes off the manifest, the browsable copy returns to the name it
-    had (or to a free name beside whatever took it), and the record, row and search
-    entry are rebuilt from the archived bytes. Returns the artifact's title.
-    """
-    async with store.maintenance.shared(), store._artifact_lock:
-        manifest = await asyncio.to_thread(read_manifest, store, artifact_id)
-        if not manifest.get("removed_at"):
-            return str(manifest.get("title") or "")
-        if manifest.get("removed_reason") not in OWNER_REMOVAL_REASONS:
-            raise ArtifactMissing(artifact_id)
-        current = _current_revision(manifest)
-        if current.get("filename"):
-            archived = _revision_file(store, artifact_id, current)
-            if not archived.exists():
-                raise ArtifactMissing(artifact_id)
-            await asyncio.to_thread(
-                _verify_file, archived, str(current["sha256"]), int(current["size_bytes"])
-            )
-            settings = store.control.settings()
-            folder = browse_folder(_time(manifest["received_at"], "received_at"), settings)
-            recorded = manifest.get("path")
-            try:
-                target = (
-                    resolve(store.notes_root, str(recorded))
-                    if recorded
-                    else resolve(store.notes_root, folder) / str(current["filename"])
-                )
-            except ValueError as exc:
-                raise ArtifactsFilesystemUnavailable(str(exc)) from exc
-            if target.exists() and _file_sha256(target) != current.get("sha256"):
-                target = target.parent / unique_filename(target.name, _entries(target.parent))
-            if not target.exists():
-                try:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    await asyncio.to_thread(create_exclusive_bytes, target, archived)
-                except OSError as exc:
-                    raise NotesFilesystemUnavailable(str(exc)) from exc
-            manifest["path"] = target.relative_to(store.notes_root).as_posix()
-        for key in ("removed_at", "removed_reason", "removal_commit"):
-            manifest.pop(key, None)
-        now = datetime.now(tz=UTC)
-        try:
-            _write_manifest(store, manifest, new=False)
-            record = await asyncio.to_thread(_extract_record, store, manifest)
-            write_record(store, record)
-        except OSError as exc:
-            raise ArtifactsFilesystemUnavailable(str(exc)) from exc
-        async with transaction(store.session_factory) as session:
-            await mirror_record(session, record, now)
-        return str(manifest.get("title") or manifest.get("filename") or "")
 
 
 async def remove_recording_audio(store: LocalStore, artifact_id: str, revision: int) -> None:
@@ -1480,6 +1422,50 @@ async def _retire(
     for job in store.context.recordings.jobs():
         if job.artifact_id == artifact_id:
             (store.context.root / "voice-pending" / (job.id + ".json")).unlink(missing_ok=True)
+    if reason in OWNER_REMOVAL_REASONS:
+        await asyncio.to_thread(_remove_archive, store, artifact_id)
+
+
+def _remove_archive(store: LocalStore, artifact_id: str) -> None:
+    """Delete an archive folder and what is in it. Only files this store wrote are there."""
+    archive = resolve(store.artifacts_root, artifact_id)
+    if not archive.is_dir():
+        return
+    for folder, _, names in os.walk(archive, topdown=False):
+        for name in names:
+            Path(folder, name).unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            Path(folder).rmdir()
+    sync_directory(archive.parent)
+
+
+async def sweep_removed_archives(store: LocalStore) -> int:
+    """Finish a removal an interrupted pass, or an earlier release, left half done.
+
+    An archive the owner's removal marked, whose row is gone, has nothing left to keep.
+    """
+    live: set[str] = set()
+    async with store.session_factory() as session:
+        live.update((await session.scalars(sa.select(Artifact.id))).all())
+    removed = 0
+    for manifest_file in sorted(store.artifacts_root.glob("*/manifest.json")):
+        artifact_id = manifest_file.parent.name
+        if not is_valid_id(artifact_id) or artifact_id in live:
+            continue
+        try:
+            manifest = json.loads(manifest_file.read_bytes())
+        except (OSError, ValueError):
+            continue
+        if (
+            isinstance(manifest, dict)
+            and manifest.get("artifact_id") == artifact_id
+            and manifest.get("removed_at")
+            and manifest.get("removed_reason") in OWNER_REMOVAL_REASONS
+        ):
+            await asyncio.to_thread(_remove_archive, store, artifact_id)
+            record_path(store, artifact_id).unlink(missing_ok=True)
+            removed += 1
+    return removed
 
 
 async def sweep(store: LocalStore, *, full: bool = False) -> dict[str, int]:
@@ -1487,9 +1473,8 @@ async def sweep(store: LocalStore, *, full: bool = False) -> dict[str, int]:
 
     A browsable copy observed gone is read as the owner deleting the artifact
     in Obsidian only once Git records that deletion: the artifact is then
-    retired, record and search entry with it, and its archive becomes eligible
-    for the retention purge. A copy that is merely absent, because a device
-    has not synced yet or the deletion is not committed, is reported `missing`
+    removed, record, search entry and archive with it. A copy that is merely absent,
+    because a device has not synced yet or the deletion is not committed, is reported `missing`
     and nothing else changes, so the original is never lost to a late sync.
     A copy whose size or mtime moved is hashed: one that no longer matches the
     archive is reported `modified`, never rewritten. A record carrying an
@@ -1536,6 +1521,8 @@ async def sweep(store: LocalStore, *, full: bool = False) -> dict[str, int]:
                 async with transaction(store.session_factory) as session:
                     await _remove_rows(session, row.id, datetime.now(tz=UTC))
                 record_path(store, row.id).unlink(missing_ok=True)
+                if manifest.get("removed_reason") in OWNER_REMOVAL_REASONS:
+                    await asyncio.to_thread(_remove_archive, store, row.id)
                 counts["artifacts_removed"] += 1
                 continue
             document = read_record(store, row.id)

@@ -30,7 +30,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
 from coppermind.naming import sanitize_folder
-from coppermind.statefiles import StateStore
+from coppermind.statefiles import RevisionConflict, StateStore
 
 MIB = 1024 * 1024
 
@@ -359,30 +359,6 @@ class IndexerSettings(BaseModel):
     )
 
 
-class RetentionSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    count_interval_s: int = Field(
-        default=300,
-        ge=60,
-        le=86400,
-        strict=True,
-        description="Seconds between background clean-up counts.",
-    )
-
-    days: int = Field(
-        default=30,
-        ge=0,
-        le=36500,
-        strict=True,
-        description=(
-            "Days to keep deleted-note recovery copies and the stored files of removed "
-            "artifacts before a manual purge. Zero allows immediate purge. Git history is "
-            "retained."
-        ),
-    )
-
-
 class EventSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -467,7 +443,6 @@ class ProductSettings(BaseModel):
     indexer: IndexerSettings = Field(
         default_factory=IndexerSettings, description="Search indexing settings."
     )
-    retention: RetentionSettings = Field(default_factory=RetentionSettings)
     events: EventSettings = Field(
         default_factory=EventSettings, description="Event processing settings."
     )
@@ -481,7 +456,35 @@ def read_settings(store: StateStore) -> ProductSettings:
     """The one way `settings.yaml` becomes ProductSettings, for every reader."""
     body = dict(store.read("settings").body)
     body.pop("revision", None)
+    # A file written by an earlier release may still carry a section that no longer exists.
+    for key in RETIRED_SETTINGS:
+        body.pop(key, None)
     return ProductSettings.model_validate(body)
+
+
+# Sections an earlier release wrote that no longer exist. `retention` was the keep time for
+# deleted items.
+RETIRED_SETTINGS = ("retention",)
+
+
+def drop_retired_settings(store: StateStore) -> bool:
+    """Take a retired section out of `settings.yaml`. True when the file changed."""
+    for _ in range(3):
+        try:
+            state = store.read("settings")
+        except FileNotFoundError:
+            return False
+        body = dict(state.body)
+        if not any(key in body for key in RETIRED_SETTINGS):
+            return False
+        for key in RETIRED_SETTINGS:
+            body.pop(key, None)
+        try:
+            store.write("settings", body, if_revision=state.revision)
+        except RevisionConflict:
+            continue
+        return True
+    return False
 
 
 def default_settings() -> ProductSettings:

@@ -12,7 +12,6 @@ import contextlib
 import hashlib
 import io
 import json
-import os
 import re
 import wave
 from datetime import UTC, datetime, timedelta
@@ -21,6 +20,7 @@ import pytest
 from coppermind_store import filing, staged
 from coppermind_store.reconciler import reconcile_once
 from coppermind_store.recordings import render_transcript
+from coppermind_store.removal import remove_notes
 
 from coppermind.context_config import FeatureAssignment
 from coppermind.db.models import Note
@@ -28,12 +28,11 @@ from coppermind.store_protocol import (
     CreateArtifact,
     CreateNote,
     PatchFrontmatter,
-    RestoreNote,
     StagedReservation,
     ValidationFailed,
 )
 from services.store.tests.test_transcription_call import REPLY, Service
-from tests.integration.test_note_recovery import commit, git
+from tests.integration.test_delete_once import commit, git
 from tests.integration.test_review_filing import approve, drain
 
 AUDIO = bytes(range(256)) * 700
@@ -314,8 +313,8 @@ async def test_a_note_deleted_after_review_does_not_keep_the_audio(store):
         await context.recordings.tick()
     done = await context.recording_status({"id": accepted["id"]})
     await approve(store, done["note_id"])
-    async with store.session_factory() as session, session.begin():
-        (await session.get(Note, done["note_id"])).state = "deleted"
+    (store.notes_root / (await store.get_note(done["note_id"])).path).unlink()
+    await remove_notes(store, [done["note_id"]])
     assert await context.recordings.tick() is True
     assert not (store.artifacts_root / audio / "r0001" / "standup.m4a").exists()
     job = context.recordings.load(accepted["id"])
@@ -323,12 +322,7 @@ async def test_a_note_deleted_after_review_does_not_keep_the_audio(store):
     assert not [p for p in await store.get_problems() if p.kind == "recording"]
 
 
-async def set_note_state(store, note_id, state):
-    async with store.session_factory() as session, session.begin():
-        (await session.get(Note, note_id)).state = state
-
-
-async def test_a_note_deleted_before_review_keeps_its_audio_until_it_is_purged(store):
+async def test_a_note_deleted_before_review_takes_its_audio_with_it(store):
     async with Service() as service:
         context = await setup_transcription(store, service)
         audio = await store_audio(store)
@@ -336,22 +330,25 @@ async def test_a_note_deleted_before_review_keeps_its_audio_until_it_is_purged(s
         await context.recordings.tick()
     done = await context.recording_status({"id": accepted["id"]})
     archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
-    await set_note_state(store, done["note_id"], "deleted")
+    note = await store.get_note(done["note_id"])
+    git(store.notes_root, "init", "-q")
+    commit(store.notes_root)
+    (store.notes_root / note.path).unlink()
+    # Absent, with no record from Git yet: it may only be a device that has not synced.
+    await reconcile_once(store)
     for _ in range(2):
         assert await context.recordings.tick() is False
     assert archive.read_bytes() == AUDIO
     assert not context.recordings.load(accepted["id"]).audio_removed
-
-    await set_note_state(store, done["note_id"], "ok")
-    assert await context.recordings.tick() is False
-    assert archive.read_bytes() == AUDIO
-    await approve(store, done["note_id"])
+    commit(store.notes_root)
+    assert (await reconcile_once(store))["deleted"] == 1
     assert await context.recordings.tick() is True
     assert not archive.exists()
-    assert "Audio was removed after review" in (await store.get_note(done["note_id"])).body
+    assert context.recordings.load(accepted["id"]).audio_removed
+    assert not [p for p in await store.get_problems() if p.kind == "recording"]
 
 
-async def test_a_note_purged_before_review_takes_its_audio_with_it(store):
+async def test_a_note_removed_before_review_takes_its_audio_with_it(store):
     async with Service() as service:
         context = await setup_transcription(store, service)
         audio = await store_audio(store)
@@ -360,7 +357,6 @@ async def test_a_note_purged_before_review_takes_its_audio_with_it(store):
     done = await context.recording_status({"id": accepted["id"]})
     archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
     note_path = (await store.get_note(done["note_id"])).path
-    await set_note_state(store, done["note_id"], "deleted")
     assert await context.recordings.tick() is False
     assert archive.exists()
     (store.notes_root / note_path).unlink()
@@ -421,9 +417,7 @@ async def test_shared_audio_stays_while_the_other_note_has_no_row_but_still_has_
     assert not context.recordings.load(first["id"]).audio_removed
 
 
-async def test_a_purged_archive_still_settles_with_a_receipt_from_what_is_known(store):
-    import shutil
-
+async def test_a_removed_archive_still_settles_with_a_receipt_from_what_is_known(store):
     async with Service() as service:
         context = await setup_transcription(store, service)
         audio = await store_audio(store)
@@ -433,7 +427,7 @@ async def test_a_purged_archive_still_settles_with_a_receipt_from_what_is_known(
         await context.recordings.tick()
     done = await context.recording_status({"id": accepted["id"]})
     await store.remove_artifact(audio)
-    shutil.rmtree(store.artifacts_root / audio)
+    assert not (store.artifacts_root / audio).exists()
     await approve(store, done["note_id"])
     assert await context.recordings.tick() is True
     job = context.recordings.load(accepted["id"])
@@ -447,7 +441,9 @@ async def test_a_purged_archive_still_settles_with_a_receipt_from_what_is_known(
     assert not [p for p in await store.get_problems() if p.kind == "recording"]
 
 
-async def test_an_artifact_the_owner_removed_still_loses_its_audio_after_review(store):
+async def test_an_artifact_the_owner_removed_takes_its_audio_at_once_and_review_still_settles(
+    store,
+):
     async with Service() as service:
         context = await setup_transcription(store, service)
         audio = await store_audio(store)
@@ -456,19 +452,14 @@ async def test_an_artifact_the_owner_removed_still_loses_its_audio_after_review(
     done = await context.recording_status({"id": accepted["id"]})
     archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
     await store.remove_artifact(audio)
-    assert archive.read_bytes() == AUDIO
+    assert not archive.exists() and not (store.artifacts_root / audio).exists()
     assert await context.recordings.tick() is False
-    assert archive.read_bytes() == AUDIO
 
     await approve(store, done["note_id"])
     assert await context.recordings.tick() is True
-    assert not archive.exists()
     job = context.recordings.load(accepted["id"])
     assert job.audio_removed and not job.audio_removal_error
     assert not [p for p in await store.get_problems() if p.kind == "recording"]
-    manifest = json.loads((store.artifacts_root / audio / "manifest.json").read_text())
-    assert manifest["removed_reason"] != "recording removed after review"
-    assert manifest["revisions"][0]["sha256"] == hashlib.sha256(AUDIO).hexdigest()
     await store.rebuild_metadata()
 
 
@@ -526,7 +517,7 @@ async def test_audio_shared_with_another_unfinished_recording_is_kept_until_the_
     assert "Audio was removed after review" in (await store.get_note(two["note_id"])).body
 
 
-async def test_shared_audio_survives_deletion_and_restore_of_unreviewed_note(store):
+async def test_the_deletion_of_one_unreviewed_note_does_not_hold_back_the_others_audio(store):
     async with Service() as service:
         context = await setup_transcription(store, service)
         audio = await store_audio(store)
@@ -544,26 +535,19 @@ async def test_shared_audio_survives_deletion_and_restore_of_unreviewed_note(sto
     (store.notes_root / note.path).unlink()
     await reconcile_once(store)
     commit(store.notes_root)
-    await reconcile_once(store)
-    await approve(store, one["note_id"])
-    await context.recordings.tick()
+    assert (await reconcile_once(store))["deleted"] == 1
     archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
+    # The audio is shared, so it stays until the note that remains is reviewed.
+    await context.recordings.tick()
     assert archive.read_bytes() == AUDIO
-    for path in store.notes_root.rglob("*"):
-        if path.is_file() and ".git" not in path.relative_to(store.notes_root).parts:
-            os.utime(path, (1, 1))
-    preview = await store.preview_note_restore(note.id)
-    await store.restore_note(
-        note.id, RestoreNote(token=preview.token, confirmation=f"Restore {note.id}")
-    )
-    assert await drain(await store.get_artifact_bytes(audio)) == AUDIO
-    await approve(store, note.id)
+    await approve(store, one["note_id"])
     while await context.recordings.tick():
         pass
     assert not archive.exists()
+    assert context.recordings.load(first["id"]).audio_removed
 
 
-async def test_deleted_unreviewed_citing_note_keeps_audio_until_purged(store):
+async def test_an_unreviewed_citing_note_keeps_audio_until_it_is_gone(store):
     async with Service() as service:
         context = await setup_transcription(store, service)
         audio = await store_audio(store)
@@ -572,12 +556,12 @@ async def test_deleted_unreviewed_citing_note_keeps_audio_until_purged(store):
     other = await store.create_note(
         CreateNote(title="Other note", body="Shared", frontmatter={"artifacts": [audio]})
     )
-    await set_note_state(store, other.id, "deleted")
     done = await context.recording_status({"id": accepted["id"]})
     await approve(store, done["note_id"])
     assert await context.recordings.tick() is False
     archive = store.artifacts_root / audio / "r0001" / "standup.m4a"
     assert archive.read_bytes() == AUDIO
+    (store.notes_root / other.path).unlink()
     async with store.session_factory() as session, session.begin():
         await session.delete(await session.get(Note, other.id))
     assert await context.recordings.tick() is True
@@ -1239,7 +1223,7 @@ async def test_voice_pending_is_private_and_follows_recording_or_note_removal(st
     )
     assert "vector" not in source.content
     if removed == "note":
-        await set_note_state(store, job.note_id, "deleted")
+        await remove_notes(store, [job.note_id])
         await context.recordings.tick()
     else:
         await artifacts.remove_artifact(store, audio)
@@ -1258,7 +1242,7 @@ async def test_voice_pending_is_removed_for_a_deleted_note_with_a_stuck_review(s
         {**speakers[0], "label": "Unknown voice 1"}
     ]
     context.write("review-completions/" + job.note_id, {"state": "applying"})
-    await set_note_state(store, job.note_id, "deleted")
+    await remove_notes(store, [job.note_id])
     await context.recordings.tick()
     assert context.read("voice-pending/" + job.id, None) is None
 
@@ -2076,8 +2060,7 @@ async def test_a_service_answering_again_does_not_requeue_what_is_running_or_don
     assert (after.state, after.attempts) == ("running", 1)
 
 
-async def test_deleting_a_recording_removes_its_audio_for_good_and_it_cannot_come_back(store):
-    from coppermind_store import artifacts
+async def test_deleting_a_recording_removes_its_audio_for_good(store):
     from coppermind_store.recordings import DELETED_RULE
 
     async with Service(status=404, reply={"error": "nope"}) as service:
@@ -2090,8 +2073,6 @@ async def test_deleting_a_recording_removes_its_audio_for_good_and_it_cannot_com
     await store.admin.act("recording-delete", {"id": "r:" + accepted["id"]})
     assert not archive.exists()
     assert context.recordings.load(accepted["id"]).error_rule == DELETED_RULE
-    with pytest.raises(Exception, match=audio):
-        await artifacts.restore_artifact(store, audio)
 
 
 async def test_deleting_one_of_two_recordings_of_the_same_audio_leaves_it_for_the_other(store):

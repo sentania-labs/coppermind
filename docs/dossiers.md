@@ -187,14 +187,12 @@ Signatures and their vectors stay private and are never returned in API response
 
 ## Deletion and recovery
 
-Deleting a page in Obsidian retires the subject at the next reconciliation, index rebuild,
-retention preview or dossier change. It stays out of active queries and enrichment and is not recreated
-without an explicit restore. Retired dossiers join the existing retention
-preview and confirmed purge. The preview includes their pages, facts and
-relationships; other subjects' notes and shared sources stay. Purging a deleted
-supporting note removes its quoted claims and context records. An automatic
-subject with no remaining support, independent correction or personal writing
-can be purged with its last supporting notes. Minimal identity hashes suppress
+Deleting a page in Obsidian retires the subject at the next reconciliation, index rebuild
+or dossier change. It stays out of active queries and enrichment and is not recreated
+without an explicit restore. A retired dossier stays retired; nothing cleans it up later.
+Deleting a supporting note removes its quoted claims and context records at once. An
+automatic subject with no remaining support, independent correction or personal writing
+goes with its last supporting note. Minimal identity hashes suppress
 unwanted re-creation. Git history is never rewritten.
 
 Back up the complete notes filesystem and `/data/state/entities/`, alongside

@@ -52,7 +52,7 @@ from coppermind.db.session import transaction
 from coppermind.logging import get_logger
 from coppermind.naming import sanitize_folder
 from coppermind.settings import ProductSettings
-from coppermind.store_protocol import MetadataUnavailable, NotesFilesystemUnavailable
+from coppermind.store_protocol import MetadataUnavailable, NotesFilesystemUnavailable, StoreError
 from coppermind_store import indexer
 from coppermind_store.fs import content_hash, resolve
 from coppermind_store.maintenance import writer
@@ -115,7 +115,6 @@ _UNIDENTIFIED_LIMIT = 10_000
 _ADOPTIONS_PER_PASS = 50
 
 MISSING_REASON = "not observed during reconciliation"
-DELETED_REASON = "removal recorded in Git; recovery copy retained"
 UNPARSED_REASON = "frontmatter could not be parsed"
 UNREADABLE_REASON = "file could not be read"
 
@@ -403,16 +402,10 @@ async def reconcile_once(
                 unidentified=unidentified,
                 locked=True,
             )
-    from coppermind_store import note_history
-
-    await note_history.recover_rows(store)
     await reconcile_rejections(store.control.store.state_dir, store.session_factory)
     remembered = {} if unidentified is None else unidentified
     scan_started = datetime.now(tz=UTC)
-    from coppermind_store.purge import pending_ids
-
-    purging = pending_ids(store, "note")
-    by_id = {k: v for k, v in (await _mirror_index(store)).items() if k not in purging}
+    by_id = dict(await _mirror_index(store))
     by_path = _by_path(by_id)
     schema_doc = store.control.schema_document()
     schema = schema_doc.frontmatter_schema
@@ -543,6 +536,7 @@ async def reconcile_once(
         "excluded": len(scan.exclusions),
     }
     now = datetime.now(tz=UTC)
+    gone: list[str] = []
     try:
         async with transaction(store.session_factory) as session:
             # Collisions are recomputed on every pass, so the recorded set is
@@ -584,36 +578,26 @@ async def reconcile_once(
                 rows = (await session.scalars(sa.select(Note).where(Note.id.in_(chunk)))).all()
                 for row in rows:
                     observed = observations.get(row.id)
+                    if observed is None and row.updated_at > scan_started:
+                        continue  # Written since the scan began, so this pass cannot judge it.
                     retired = (
                         store.context.read("retired-recordings/" + row.id, {})
                         if observed is None
                         else {}
                     )
                     if retired.get("snapshot") and retired.get("source_id"):
-                        if row.state != "deleted" or row.state_reason != "Merged into another note":
-                            result = await session.execute(
-                                sa.update(Note)
-                                .where(Note.id == row.id, Note.updated_at <= scan_started)
-                                .values(
-                                    state="deleted",
-                                    state_reason="Merged into another note",
-                                    updated_at=now,
-                                )
-                                .returning(Note.id)
-                            )
-                            if result.scalar_one_or_none() is not None:
-                                await indexer.drop_note(session, row.id, now)
-                                counts["deleted"] += 1
+                        # A recording note merged into another: its records go with it.
+                        gone.append(row.id)
                         continue
                     values = _values_for(row, observed, schema)
-                    receipt = None
+                    removed = False
                     if observed is None:
-                        receipt = store.note_history.evidence(row.id, row.path, row.content_hash)
-                        if receipt is None:
-                            from coppermind_store.filing import vanished_receipt
+                        removal = store.note_history.evidence(row.id, row.path, row.content_hash)
+                        if removal is None:
+                            from coppermind_store.filing import vanished_removal
 
-                            receipt, reason = vanished_receipt(store, row)
-                            if receipt is None and reason:
+                            removal, reason = vanished_removal(store, row)
+                            if removal is None and reason:
                                 values = {
                                     key: value
                                     for key, value in {
@@ -622,42 +606,13 @@ async def reconcile_once(
                                     }.items()
                                     if getattr(row, key) != value
                                 }
-                        if receipt is not None:
-                            values = {
-                                "state": "deleted",
-                                "state_reason": DELETED_REASON,
-                            }
-                            retained = note_history.directory(store) / (
-                                f"{row.id}-{receipt.removal_commit}.json"
-                            )
-                            if row.state == "deleted" and retained.is_file():
-                                values = {}
-                        elif row.state == "deleted":
-                            candidates = store.note_history.removed.get(row.id, [])
-                            if candidates:
-                                # A return and a newer deletion can both occur
-                                # between scans. Never offer the older contents.
-                                _, _, latest_path, data = candidates[0]
-                                receipt = store.note_history.evidence(
-                                    row.id, latest_path, content_hash(data)
-                                )
-                                frontmatter, body = fm.parse(data.decode())
-                                values = {
-                                    "path": latest_path,
-                                    "content_hash": content_hash(data),
-                                    "size_bytes": len(data),
-                                    "title": _title_of(body, Path(latest_path)),
-                                    "frontmatter": _jsonable(frontmatter),
-                                    **_mirror_columns(frontmatter, schema),
-                                    "state": "deleted",
-                                    "state_reason": DELETED_REASON,
-                                }
-                            elif not store.note_history.status.available:
-                                # A Git outage cannot erase retained evidence.
-                                values = {}
-                            # Readable Git with no current removal leaves the
-                            # note missing, awaiting the next committed snapshot.
+                        if removal is not None:
+                            # Git records the removal: the note is gone, and so are its records.
+                            # It reads as missing until they are, which is only a moment.
+                            removed = True
                     if not values:
+                        if removed:
+                            gone.append(row.id)
                         continue
                     # The update writes through to this row, so what it used to
                     # say is read before the statement rather than after it.
@@ -671,11 +626,9 @@ async def reconcile_once(
                     )
                     if result.scalar_one_or_none() is None:
                         continue
+                    if removed:
+                        gone.append(row.id)
                     clear_path_notice(store, row.id)
-                    if receipt is not None:
-                        await asyncio.to_thread(note_history.save, store, receipt)
-                    elif observed is not None:
-                        await asyncio.to_thread(note_history.remember_return, store, row, values)
                     if (
                         "reviewed" in values
                         and observed is not None
@@ -688,7 +641,7 @@ async def reconcile_once(
                         session, row.id, observed, now, settings.notes.notes_folder
                     )
                     if observed is None:
-                        counts["deleted" if receipt is not None else "missing"] += 1
+                        counts["missing"] += 1
                     elif observed.state in {"unparsed", "unreadable"}:
                         counts["unparsed"] += 1
                     elif previous_path != observed.path:
@@ -697,6 +650,14 @@ async def reconcile_once(
                         counts["changed"] += 1
     except (SQLAlchemyError, OSError) as exc:
         raise MetadataUnavailable(str(exc)) from exc
+    if gone:
+        from coppermind_store.removal import remove_notes
+
+        try:
+            counts["deleted"] += len(await remove_notes(store, gone))
+        except (SQLAlchemyError, OSError, ValueError, StoreError) as exc:
+            # The rows are still there, so the next pass finds these notes absent and tries again.
+            log.warning("note removal deferred", notes=len(gone), reason=type(exc).__name__)
     store.control.write_reconciler_exclusions(scan.exclusions)
     try:
         await store.entities.refresh()
@@ -777,7 +738,7 @@ def _by_path(by_id: dict[str, MirrorEntry]) -> dict[str, MirrorEntry]:
     occupied: dict[str, MirrorEntry] = {}
     shared: set[str] = set()
     for entry in by_id.values():
-        if entry.state in {"missing", "deleted"}:
+        if entry.state == "missing":
             continue
         if entry.path in occupied:
             shared.add(entry.path)

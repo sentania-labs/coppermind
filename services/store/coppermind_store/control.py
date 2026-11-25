@@ -26,7 +26,12 @@ from coppermind.schema import (
     kind_key_definition,
     shipped_key_upgrades,
 )
-from coppermind.settings import ProductSettings, default_settings, read_settings
+from coppermind.settings import (
+    ProductSettings,
+    default_settings,
+    drop_retired_settings,
+    read_settings,
+)
 from coppermind.statefiles import RevisionConflict, StateStore
 from coppermind.store_protocol import SchemaDocument
 
@@ -55,6 +60,7 @@ class ControlState:
         """Create any missing control file at revision 1 with shipped defaults."""
         self.store.state_dir.mkdir(parents=True, exist_ok=True)
         self.store.ensure("settings", default_settings().model_dump(mode="json"))
+        drop_retired_settings(self.store)
         self.store.ensure("schema", default_schema().model_dump(mode="json"))
         self._upgrade_shipped_keys()
 

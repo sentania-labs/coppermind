@@ -1,4 +1,4 @@
-"""Let ordinary writers overlap, with an exclusive barrier for retention purge."""
+"""Let ordinary writers overlap, with an exclusive barrier for work that must run alone."""
 
 from __future__ import annotations
 

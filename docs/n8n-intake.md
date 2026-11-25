@@ -162,8 +162,8 @@ filed, including when another note cites it or a note's date is later
 corrected. All citing notes retain the same source link. Earlier revisions of a
 filed artifact stay in the artifact archive.
 Audio submitted through the recordings API is removed after its transcript is reviewed
-and filed, including when that note is later deleted. A note deleted before review keeps
-its audio until the note is permanently purged; other source audio remains in the source archive.
+and filed, including when that note is later deleted. A note deleted before review takes
+its audio with it once Git records the deletion; other source audio remains in the source archive.
 Audio that another unfinished recording still uses, or that any other note links to, is
 never removed by this clean-up. A removal that keeps failing becomes one Problems entry with a Retry action.
 Filing errors are Problems entries

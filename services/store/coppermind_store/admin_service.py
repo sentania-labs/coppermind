@@ -378,8 +378,6 @@ class AdminService:
                 apps = self.apps()
             with timing.step("waiting"):
                 waiting = await self.notes.waiting()
-            with timing.step("cleanup"):
-                cleanup = await self.storage.cleanup_count()
             return {
                 "sync": timing.call("sync", self.sync_status),
                 "services": services,
@@ -405,8 +403,6 @@ class AdminService:
                     "events": sum(item["adds"] for item in files),
                 },
                 "storage": {
-                    "interrupted": await timing.read("interrupted", self.storage.interrupted()),
-                    "cleanup": cleanup["count"],
                     "damaged": [
                         {"reference": problem.reference, "reason": problem.reason}
                         for problem in problems
@@ -831,7 +827,7 @@ class AdminService:
                 return f'You reviewed "{result["name"]}". Filed in {folder}.'
             return f'"{result["name"]}" was filed in {folder}.'
         if action == "note-restore" and result.get("title"):
-            return f'You brought back the deleted note "{result["title"]}".'
+            return f'You brought back the note "{result["title"]}".'
         if action == "incoming-retry" and result.get("title"):
             return f'You retried the recording "{result["title"]}". It is being written up.'
         if action == "service-save":
@@ -907,7 +903,6 @@ class AdminService:
             "search-on": features.search_on,
             "search-off": off(features.search_off),
             "notes-waiting": plain(notes.waiting),
-            "notes-deleted": plain(notes.deleted),
             "notes-alone": plain(notes.left_alone),
             "notes-find": lambda payload: notes.find(str(payload.get("q", ""))),
             "note": notes.detail,
@@ -915,10 +910,9 @@ class AdminService:
             "note-no-time": notes.no_set_time,
             "note-gone": notes.gone_on_purpose,
             "note-keep-both": notes.keep_both,
+            "note-restore": notes.restore,
             "note-replace": notes.replace,
             "note-copy": notes.resolve_copy,
-            "note-restore": notes.restore,
-            "note-delete-for-good": notes.delete_for_good,
             "incoming": plain(incoming.listing),
             "incoming-item": incoming.detail,
             "incoming-retry": incoming.retry,
@@ -945,12 +939,6 @@ class AdminService:
             "voice-recognition": people.voice_recognition,
             "voice-clip": people.clip,
             "storage": self.storage_view,
-            "storage-keep": storage.set_keep,
-            "storage-count-interval": storage.set_count_interval,
-            "cleanup": plain(storage.cleanup),
-            "cleanup-confirm": storage.cleanup_confirm,
-            "cleanup-cancel": storage.cleanup_cancel,
-            "cleanup-bring-back": storage.bring_back,
             "files": storage.files,
             "file-remove": storage.file_remove,
         }
@@ -959,10 +947,6 @@ class AdminService:
         files = await self.storage.files({"shown": 6})
         return {
             "usage": await self.storage.usage(),
-            "keep_days": self.storage.keep_days(),
-            "cleanup": (await self.storage.cleanup_count())["count"],
-            "interrupted": await self.storage.interrupted(),
-            "deleted": len(await self.notes.deleted()),
             "files": files["total"],
         }
 
