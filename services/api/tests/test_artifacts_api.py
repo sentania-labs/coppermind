@@ -308,7 +308,7 @@ def test_put_and_patch_on_an_artifact_are_refused(api):
     assert fake.removed == []
 
 
-def test_an_agent_removes_an_artifact_through_the_api_with_the_write_scope(api):
+def test_an_agent_removes_an_artifact_through_the_api_with_the_delete_scope(api):
     """Admin is break glass; everyday removal goes through the API an agent uses."""
     client, fake = api
     # `artifacts:write` alone (the hand-in key) no longer answers the DELETE route.
