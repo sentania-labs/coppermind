@@ -53,7 +53,6 @@ from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
 from coppermind.logging import get_logger
 from coppermind.naming import note_stem, sanitize_folder, unique_stem
-from coppermind.purge import AbandonPurge, ConfirmPurge, PurgeResult
 from coppermind.recording_writeup import has_references_block
 from coppermind.schema import (
     FrontmatterSchema,
@@ -418,21 +417,6 @@ class LocalStore:
         from coppermind_store.sources import get_note_sources
 
         return await get_note_sources(self, note_id)
-
-    async def preview_purge(self) -> PurgeResult:
-        from coppermind_store.purge import operation
-
-        return await operation(self)
-
-    async def confirm_purge(self, request: ConfirmPurge) -> PurgeResult:
-        from coppermind_store.purge import operation
-
-        return await operation(self, request)
-
-    async def abandon_purge(self, request: AbandonPurge) -> PurgeResult:
-        from coppermind_store.purge import operation
-
-        return await operation(self, request)
 
     async def get_problems(self) -> list[ProblemInfo]:
         from coppermind_store.sources import get_problems

@@ -256,18 +256,6 @@ def attention(view: dict[str, Any]) -> list[Item]:
                 to=note_path(note["id"]) + "/review",
             )
         )
-    interrupted = view["storage"]["interrupted"]
-    if interrupted:
-        out.append(
-            Item(
-                "A clean-up was interrupted",
-                f"{interrupted['done']} of {plural(interrupted['total'], 'item')} were deleted "
-                f"before it stopped. The {interrupted['left']} left are untouched.",
-                "Finish or cancel",
-                "storage",
-                to="/admin/storage/cleanup",
-            )
-        )
     for damaged in view["storage"]["damaged"]:
         out.append(
             Item(

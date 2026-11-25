@@ -107,7 +107,6 @@ async def test_a_fresh_store_counts_nothing(store: LocalStore):
         "artifacts": 0,
         "artifacts_returned": 0,
         "active_problems": 0,
-        "purge_problems": 0,
     }
 
 

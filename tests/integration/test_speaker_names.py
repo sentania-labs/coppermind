@@ -1270,10 +1270,9 @@ async def test_an_address_taken_after_validation_can_be_fixed_and_the_review_res
 
 
 async def deleted_note_voice(store, standin):
-    import sqlalchemy as sa
+    from coppermind_store.removal import remove_notes
     from coppermind_store.voice_store import VoiceStore
 
-    from coppermind.db.models import Note
     from coppermind.store_protocol import CreateNote
 
     transcript = {"segments": [{"start": 0, "speaker": "Unknown voice 1", "text": "Hello."}]}
@@ -1284,13 +1283,12 @@ async def deleted_note_voice(store, standin):
     assert voice.capture_unknown(earlier.id, "Speaker 1", "today", 30, [vector]) == "unknown:1"
     assert voice.capture_unknown(note.id, "Unknown voice 1", "today", 30, [vector]) == "unknown:1"
     voice.set_segments(note.id, transcript)
-    async with store.session_factory() as session:
-        await session.execute(sa.update(Note).where(Note.id == earlier.id).values(state="deleted"))
-        await session.commit()
+    # The earlier note is deleted: its records, its voice signature among them, go with it.
+    await remove_notes(store, [earlier.id])
     return context, result, note, earlier, voice
 
 
-async def test_naming_a_voice_still_holding_a_deleted_notes_signature_completes(store, standin):
+async def test_naming_a_voice_after_an_earlier_note_was_deleted_completes(store, standin):
     context, result, note, earlier, voice = await deleted_note_voice(store, standin)
     manual = (await context.lifecycle_detail({"note_id": note.id}))["manual_speaker_review"]
     contact = next(c for c in manual["candidates"] if c["id"].startswith("contact:"))
@@ -1316,26 +1314,8 @@ async def test_naming_a_voice_still_holding_a_deleted_notes_signature_completes(
     assert voice.unknown_summaries() == {}
 
 
-async def test_removing_a_deleted_notes_recording_drops_its_voice_data(store, standin):
+async def test_removing_a_note_drops_its_voice_data_at_once(store, standin):
     context, result, note, earlier, voice = await deleted_note_voice(store, standin)
-    context.recordings.save(
-        TranscriptionJob(
-            id="c" * 64,
-            artifact_id="d" * 64,
-            filename="earlier.wav",
-            mime_type="audio/wav",
-            size_bytes=1,
-            title="Earlier",
-            provider="test-audio",
-            external_source_id="earlier",
-            state="succeeded",
-            transcribed=True,
-            created_at="2026-10-13T14:00:00+00:00",
-            note_id=earlier.id,
-        )
-    )
-    job = next(j for j in context.recordings.jobs() if j.note_id == earlier.id)
-    await context.recordings.remove_reviewed_audio(job)
     kept = voice.unknown_summaries()["unknown:1"]
     assert [s["note_id"] for s in kept["signatures"]] == [note.id]
     assert [a["note_id"] for a in kept["assignments"]] == [note.id]

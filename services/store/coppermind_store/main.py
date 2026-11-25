@@ -35,13 +35,28 @@ from coppermind_store.entity_api import router as entity_router
 from coppermind_store.fs import is_writable
 from coppermind_store.internal_api import router as internal_router
 from coppermind_store.notes import LocalStore
-from coppermind_store.purge import scan_problems
 from coppermind_store.reconciler import ReconcilerStatus, run_reconciler
 from coppermind_store.request_timing import RequestTiming
 
 SERVICE = "coppermind-store"
 
 log = get_logger(SERVICE)
+
+
+async def _startup_scan(store: LocalStore) -> None:
+    """What start-up looks over once: damaged source copies, and removals left half done."""
+    from coppermind_store import artifacts, damaged_sources
+    from coppermind_store.removal import finish_upgrade_removals
+
+    for step in (
+        lambda: finish_upgrade_removals(store),
+        lambda: damaged_sources.scan(store),
+        lambda: artifacts.sweep_removed_archives(store),
+    ):
+        try:
+            await step()
+        except Exception as exc:  # noqa: BLE001 - a scan that cannot finish must not stop the store
+            log.warning("start-up scan deferred", reason=type(exc).__name__)
 
 
 def create_app(wiring: Wiring | None = None) -> FastAPI:
@@ -74,8 +89,8 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
             run_reconciler(app.state.store, app.state.reconcile_status),
             name="coppermind-reconciler",
         )
-        purge_scan_task = asyncio.create_task(
-            scan_problems(app.state.store), name="coppermind-purge-scan"
+        startup_task = asyncio.create_task(
+            _startup_scan(app.state.store), name="coppermind-startup-scan"
         )
         context_task = asyncio.create_task(app.state.store.context.run(), name="coppermind-context")
         field_index_task = asyncio.create_task(
@@ -83,9 +98,6 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         )
         embeddings_task = asyncio.create_task(
             app.state.store.embeddings.run(), name="coppermind-embeddings"
-        )
-        cleanup_count_task = asyncio.create_task(
-            app.state.store.admin.storage.run_cleanup_count(), name="coppermind-cleanup-count"
         )
         app.state.engine = engine
         log.info(
@@ -96,18 +108,15 @@ def create_app(wiring: Wiring | None = None) -> FastAPI:
         try:
             yield
         finally:
-            cleanup_count_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await cleanup_count_task
             embeddings_task.cancel()
             with suppress(asyncio.CancelledError):
                 await embeddings_task
             field_index_task.cancel()
             with suppress(asyncio.CancelledError):
                 await field_index_task
-            purge_scan_task.cancel()
+            startup_task.cancel()
             with suppress(asyncio.CancelledError):
-                await purge_scan_task
+                await startup_task
             context_task.cancel()
             with suppress(asyncio.CancelledError):
                 await context_task

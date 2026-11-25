@@ -349,6 +349,9 @@ def test_a_note_gone_on_purpose_can_be_said_to_be(admin):
     store.views["note"].update(stuck="missing", gone=False, recent=False, can_restore=False)
     page = client.get(f"/admin/notes/{NOTE}").text
     assert "It is gone on purpose" in page
+    # With no saved copy there is nothing to bring back.
+    assert "Bring back" not in page
+    assert "/admin/notes/restore" not in page
     store.answers["note-gone"] = {"title": "Vendor call"}
     page = follow(client, post(client, f"/admin/notes/{NOTE}/gone", page=f"/admin/notes/{NOTE}"))
     assert "is no longer listed as a problem. Nothing was deleted by this." in page
@@ -907,16 +910,6 @@ def test_a_model_that_failed_its_test_cannot_be_picked(admin):
     assert re.search(r'name="model" value="llama-3.1-8b"', final)
 
 
-def test_an_interrupted_clean_up_with_nothing_left_can_still_be_cleared(admin):
-    client, _, store = admin
-    store.views["cleanup"].update(
-        items=[], interrupted={"token": "t", "done": 2, "total": 2, "left": 0}
-    )
-    page = client.get("/admin/storage/cleanup").text
-    assert "Clear the interrupted clean-up" in page
-    assert 'action="/admin/storage/cleanup/cancel"' in page
-
-
 def test_a_files_page_address_with_a_bad_count_still_draws(admin):
     client, _, _ = admin
     for odd in ("abc", "\u00b2", "\u2460", "-3", ""):
@@ -1207,19 +1200,6 @@ def test_existing_cutoff_error_links_to_current_setting(admin):
     assert 'href="/admin/suggestions#answer-length">Longest answer the model may write</a>' in page
 
 
-def test_storage_shows_an_unknown_count_honestly_and_saves_its_interval(admin):
-    client, _, store = admin
-    store.views["storage"]["cleanup"] = None
-    page = client.get("/admin/storage")
-    assert page.status_code == 200
-    assert "Not yet counted" in page.text
-    assert "Nothing to clean up" not in page.text
-    store.answers["storage-count-interval"] = {"seconds": 900}
-    saved = post(client, "/admin/storage/count-interval", {"seconds": "900"})
-    assert store.asked("storage-count-interval") == [{"seconds": 900}]
-    assert "The clean-up count updates in the background" in follow(client, saved)
-
-
 @pytest.mark.parametrize("value,confidence", [(None, 0), ("person:alex", 0.4)])
 def test_uncertain_voice_links_to_naming_and_does_not_block_review(admin, value, confidence):
     client, _, store = admin
@@ -1269,3 +1249,131 @@ def test_failed_writeup_reason_is_shown_once_with_an_editor_link(admin):
     assert page.count("The writing service sent an answer") == 1
     assert 'href="/admin/transcription/writeup"' in page
     assert "boundary block" not in page
+
+
+# -- deleting is final: nothing is kept back to restore or clean up ---------------------------
+
+GONE_WORDS = (
+    "clean up",
+    "clean-up",
+    "keep time",
+    "kept for recovery",
+    "brought back",
+    "bring back",
+)
+
+
+def _shown(page: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", " ", page)).lower()
+
+
+def test_notes_has_no_deleted_tab_and_never_asks_for_deleted_notes(admin):
+    client, _, store = admin
+    page = client.get("/admin/notes").text
+    assert "tab=deleted" not in page
+    assert ">Deleted" not in page
+    # An old address falls back to the usual tab.
+    old = client.get("/admin/notes?tab=deleted").text
+    assert "Need you (" in old and "tab=deleted" not in old
+    assert store.asked("notes-deleted") == []
+    for words in GONE_WORDS:
+        assert words not in _shown(page)
+        assert words not in _shown(old)
+
+
+def test_storage_shows_space_and_files_and_nothing_about_keeping_deleted_things(admin):
+    client, _, store = admin
+    page = client.get("/admin/storage").text
+    shown = _shown(page)
+    assert "kb used" in shown and "recordings:" in shown and "notes:" in shown
+    assert "Files beside your notes" in page and 'href="/admin/storage/files"' in page
+    for words in (*GONE_WORDS, "keep deleted things", "count every", "deleted note"):
+        assert words not in shown, words
+    for gone in ("cleanup", "/admin/storage/deleted", "/admin/storage/keep", "count-interval"):
+        assert gone not in page
+    asked = {name for name, _ in store.calls}
+    assert asked.isdisjoint({"cleanup", "notes-deleted", "storage-keep"})
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/admin/storage/cleanup"),
+        ("get", "/admin/storage/deleted"),
+        ("post", "/admin/storage/keep"),
+        ("post", "/admin/storage/count-interval"),
+        ("post", "/admin/storage/cleanup/confirm"),
+        ("post", "/admin/storage/cleanup/cancel"),
+        ("post", "/admin/storage/cleanup/bring-back"),
+        ("post", "/admin/notes/delete-for-good"),
+    ],
+)
+def test_the_old_keep_and_clean_up_addresses_are_gone(admin, method, path):
+    client, _, _ = admin
+    answer = post(client, path) if method == "post" else client.get(path, follow_redirects=False)
+    assert answer.status_code in {404, 405}
+
+
+def test_home_has_no_clean_up_row(admin):
+    client, _, _ = admin
+    page = client.get("/admin").text
+    assert "/admin/storage/cleanup" not in page
+    for words in GONE_WORDS:
+        assert words not in _shown(page)
+
+
+def test_deleting_a_copy_or_replacing_a_file_says_it_is_final(admin):
+    client, _, store = admin
+    facts = {
+        "name": "Vendor call",
+        "folder": "Review",
+        "path": "Review/Vendor call.md",
+        "edited": "2026-11-12T17:22:40+00:00",
+        "words": 12,
+    }
+    store.views["note"].update(
+        stuck="copy",
+        original=facts,
+        copy={**facts, "name": "Vendor call 1", "path": "Review/Vendor call 1.md"},
+        difference={"same": True, "only_copy": [], "only_original": [], "more": 0},
+        original_filed=False,
+    )
+    asked = client.get(f"/admin/notes/{NOTE}?ask=original").text
+    dialog = asked.split('class="dialog"')[1]
+    assert "final in Coppermind" in dialog and "Git history" in dialog
+    for words in GONE_WORDS:
+        assert words not in _shown(asked)
+    store.answers["note-copy"] = {"choice": "original", "original": "Vendor call", "copy": "x"}
+    page = follow(
+        client,
+        post(client, f"/admin/notes/{NOTE}/copy", {"choice": "original"}, f"/admin/notes/{NOTE}"),
+    )
+    assert "The copy was deleted." in page
+    assert "under Notes" not in page
+
+
+@pytest.mark.parametrize("recent", [False, True])
+def test_a_missing_note_with_a_saved_copy_can_be_brought_back(admin, recent):
+    client, _, store = admin
+    here = f"/admin/notes/{NOTE}"
+    store.views["note"].update(stuck="missing", gone=False, recent=recent, can_restore=True)
+    page = client.get(here).text
+    assert "Missing" in page and "No longer in your vault" not in page
+    assert "Bring back the last version" in page
+    assert 'action="/admin/notes/restore"' in page
+    assert "Coppermind still has the last version it saw." in page
+    for words in ("keep time", "clean up", "under deleted", "deleted list", "moves to deleted"):
+        assert words not in _shown(page)
+    store.answers["note-restore"] = {"title": "Vendor call", "path": "Review/Vendor call.md"}
+    landed = follow(client, post(client, "/admin/notes/restore", {"id": NOTE, "back": here}, here))
+    assert store.asked("note-restore") == [{"id": NOTE}]
+    assert 'Brought back "Vendor call". It is in' in landed
+    assert "Deleted" not in landed.split("Brought back")[1].split("</")[0]
+
+
+def test_bringing_back_a_note_that_cannot_be_says_so(admin):
+    client, _, store = admin
+    here = f"/admin/notes/{NOTE}"
+    store.answers["note-restore"] = StoreError("no saved copy")
+    landed = follow(client, post(client, "/admin/notes/restore", {"id": NOTE, "back": here}, here))
+    assert "That note could not be brought back just now." in landed

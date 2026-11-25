@@ -16,7 +16,6 @@ from coppermind.settings import Wiring
 from coppermind.store_protocol import StoreError
 from coppermind_admin import ui
 from coppermind_admin.pages.common import obsidian
-from coppermind_admin.pages.notes import keep_words
 from coppermind_admin.shell import Ctx, explain
 from coppermind_admin.ui import e, plural, segment
 
@@ -418,7 +417,6 @@ name="new_name" aria-label="Name of the new person" placeholder="Their name"></s
         company = data["kind"] == "company"
         first = first_name(data["name"])
         editing = ctx.q("edit")
-        days = keep_words(ctx.settings().retention.days)
         rows = ""
         for fact in data["facts"]:
             source = (
@@ -561,8 +559,7 @@ place shows in both.</p>
                 f"Coppermind forgets what it knows about {e(data['name'])}"
                 + ("" if company else ", including any saved voice,")
                 + " and removes the page in Obsidian. Notes are not changed. If a later note "
-                f"mentions {'it' if company else 'them'}, {e(data['name'])} is learned again. "
-                f"It can be brought back for {days}.",
+                f"mentions {'it' if company else 'them'}, {e(data['name'])} is learned again.",
                 f"{here}/remove",
                 "Remove",
                 here,
@@ -657,15 +654,10 @@ place shows in both.</p>
     async def remove(identity: str, request: Request) -> Response:
         ctx = Ctx(request, wiring)
         await ctx.form()
-        days = keep_words(ctx.settings().retention.days)
         result = await done(ctx, "person-remove", {"id": identity}, person_path(identity))
         if result is None:
             return ctx.go(person_path(identity))
-        ctx.say(
-            "ok",
-            f"Removed {e(result['name'])}. It can be brought back for {days} under Storage, "
-            "Clean up.",
-        )
+        ctx.say("ok", f"Removed {e(result['name'])}.")
         return ctx.go(
             "/admin/people?tab=companies" if result["kind"] == "company" else "/admin/people"
         )
