@@ -32,11 +32,25 @@ if TYPE_CHECKING:
 log = logging.getLogger("coppermind.store.review_notes")
 
 STATE = "note-resummarize/"
+# The few facts the list needs about a recording's write-up, kept small so the list never opens
+# the saved write-up, which holds the whole transcript.
+STATUS = "recording-writeup-status/"
 PROPOSED = "recording-writeup-proposed/"
 LISTED = 200
 DIFF_LINES = 400
 EARLIER_KEPT = 5
 SAME_BODY = "The note already says what the new write-up says."
+
+
+def write_status(context: Any, recording_id: str, saved: dict[str, Any]) -> None:
+    """Record, when a write-up is made, whether it has suggestions or why it has none."""
+    context.write(
+        STATUS + recording_id,
+        {
+            "suggestions": bool(saved.get("suggestions")),
+            "suggestion_error": str(saved.get("suggestion_error") or ""),
+        },
+    )
 
 
 def _now() -> str:
@@ -159,8 +173,8 @@ class ReviewNotes:
             )
         if record.get("state") == "failed":
             return _step("failed", record.get("error", ""), record.get("finished_at", ""))
-        saved = self.context.read("recording-writeups/" + job.id, {})
-        if not saved.get("body"):
+        # A note filed from a write-up exists only once the write-up was written.
+        if job.state != "succeeded":
             return _step("missing")
         return _step("written", when=record.get("finished_at") or job.succeeded_at)
 
@@ -182,11 +196,11 @@ class ReviewNotes:
             if ended == "skipped":
                 return _step("missing", "There was nothing to suggest.", enrichment.finished_at)
         if job is not None and job.generation_mode == "markdown-v1":
-            saved = self.context.read("recording-writeups/" + job.id, {})
-            if saved.get("suggestions"):
+            status = self.context.read(STATUS + job.id, {})
+            if status.get("suggestions"):
                 return _step("written", when=job.succeeded_at)
-            if saved.get("suggestion_error"):
-                return _step("failed", saved["suggestion_error"], job.succeeded_at)
+            if status.get("suggestion_error"):
+                return _step("failed", status["suggestion_error"], job.succeeded_at)
         return _step("missing" if suggestions_on else "off")
 
     # -- resummarize ---------------------------------------------------------------------
@@ -354,6 +368,7 @@ class ReviewNotes:
             ReplaceNote(frontmatter=note.frontmatter, body=body),
             if_match=note.content_hash,
         )
+        write_status(context, job.id, fresh)
         context.write(
             "recording-writeups/" + job.id,
             {**fresh, "filed_body": body, "earlier_bodies": earlier[-EARLIER_KEPT:]},

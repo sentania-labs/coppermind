@@ -39,6 +39,7 @@ def build(tmp_path, *, body=OLD, baseline=OLD, mode="markdown-v1"):
         note_id=NOTE,
         source_id="s",
         generation_mode=mode,
+        state="succeeded",
         boundaries=[],
         captured_at="2026-11-02T10:00:00+00:00",
         succeeded_at="2026-11-02T11:00:00+00:00",
@@ -166,8 +167,8 @@ def test_where_a_write_up_stands(tmp_path):
     reviewer.live[NOTE] = SimpleNamespace()
     assert reviewer.writeup_step(NOTE, job, None)["state"] == "working"
     reviewer.live.clear()
-    memory.data.pop("recording-writeups/" + JOB)
     memory.data.pop(STATE + NOTE)
+    job.state = "running"
     assert reviewer.writeup_step(NOTE, job, None)["state"] == "missing"
 
 
@@ -231,3 +232,23 @@ async def test_rewrites_run_one_at_a_time(tmp_path, monkeypatch):
     monkeypatch.setattr("coppermind_store.recording_writeup.generate", slow)
     await asyncio.gather(*(reviewer.rewrite(NOTE, JOB) for _ in range(4)))
     assert peak == 1
+
+
+def test_the_list_never_opens_the_saved_write_up_with_its_transcript(tmp_path):
+    reviewer, memory, job, _, _ = build(tmp_path)
+    memory.data["recording-writeup-status/" + JOB] = {
+        "suggestions": False,
+        "suggestion_error": "The write-up did not include field suggestions.",
+    }
+    plain_read = memory.read
+
+    def read(name, default):
+        assert not name.startswith("recording-writeups/"), "the transcript was opened"
+        return plain_read(name, default)
+
+    memory.read = read
+    assert reviewer.writeup_step(NOTE, job, None)["state"] == "written"
+    step = reviewer.suggestions_step(NOTE, job, None, True)
+    assert step["state"] == "failed" and "field suggestions" in step["reason"]
+    memory.data["recording-writeup-status/" + JOB] = {"suggestions": True, "suggestion_error": ""}
+    assert reviewer.suggestions_step(NOTE, job, None, True)["state"] == "written"
