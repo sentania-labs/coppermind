@@ -40,7 +40,7 @@ async def test_a_note_without_a_summary_is_counted_listed_and_cleared_without_to
     waiting = await context.recordings.waiting()
     (missing,) = waiting["missing_summaries"]
     assert missing["id"] == note.id and missing["path"] == edited.path
-    assert missing["can_retry"] is True and "Retry" in missing["message"]
+    assert missing["can_retry"] is True and "Resummarize" in missing["message"]
 
     counters = (await store.get_status()).counters
     assert counters.notes_without_summary == 1 and counters.recordings_failed == 0
