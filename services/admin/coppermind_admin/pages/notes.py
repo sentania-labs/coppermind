@@ -47,6 +47,20 @@ ALONE_LEDE = (
 )
 
 
+def context_still_required(schema: Any, roles: dict[str, str], note_type: str) -> bool:
+    """Whether the saved schema asks for context on a note of this type. An installation
+    that edited its context definition may still require it everywhere."""
+    definition = next((k for k in schema.keys if k.name == roles["context_key"]), None)
+    if definition is None:
+        return False
+    if definition.required:
+        return True
+    return (
+        definition.required_when == roles["type_key"]
+        and note_type in definition.required_when_values
+    )
+
+
 def alone_why(reason: str) -> str:
     """Why a file is left alone, from the rule the last scan recorded for it."""
     if reason.startswith("folder: "):
@@ -1376,7 +1390,9 @@ name="csrf" value="{{csrf}}">Save</button>
             changes[roles["context_key"]] = form.get("context", "")
             changes[roles["account_key"]] = split(form.get("account", ""))
         elif (
-            front.get(roles["type_key"]) == "work" and front.get(roles["context_key"]) == "internal"
+            front.get(roles["type_key"]) == "work"
+            and front.get(roles["context_key"]) == "internal"
+            and not context_still_required(schema, roles, form.get("type", ""))
         ):
             unset_default.append(roles["context_key"])
         if "attendees" in form:

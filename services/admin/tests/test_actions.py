@@ -332,6 +332,23 @@ def test_a_recording_moved_off_work_drops_the_default_context(admin):
     assert "context" in patch.unset
 
 
+def test_a_saved_schema_that_still_requires_context_keeps_it_when_moving_off_work(admin):
+    client, wiring, store = admin
+    state = StateStore(wiring.state_dir)
+    record = state.read("schema")
+    body = dict(record.body)
+    for key in body["keys"]:
+        if key["name"] == "context":
+            key.update(required=True, required_when=None, required_when_values=[])
+    state.write("schema", body, if_revision=record.revision)
+    store.views["lifecycle"]["note"]["frontmatter"]["type"] = "work"
+    form = answers(type="personal")
+    del form["context"], form["account"]
+    follow(client, post(client, REVIEW, form, page=REVIEW))
+    (_, patch) = store.patches[0]
+    assert "context" not in patch.unset
+
+
 # -- notes ------------------------------------------------------------------------------------
 
 
