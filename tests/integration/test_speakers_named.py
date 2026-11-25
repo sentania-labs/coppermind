@@ -64,8 +64,12 @@ def reply(second):
 async def record(store, context, external_id, data):
     audio = await store_audio(store, name=external_id.replace("/", "-") + ".m4a", data=data)
     accepted = await context.accept_recording(request(audio, external_source_id=external_id))
-    await context.recordings.tick()
-    job = context.recordings.load(accepted["id"])
+    # A tick does one piece of work; earlier recordings' clean-up can come first.
+    for _ in range(5):
+        await context.recordings.tick()
+        job = context.recordings.load(accepted["id"])
+        if job.state == "succeeded":
+            break
     assert job.state == "succeeded", job.error
     return job, await store.get_note(job.note_id)
 
@@ -279,7 +283,33 @@ async def test_names_typed_in_the_note_are_applied_when_the_panel_finishes_revie
                 "selected": [],
             }
         )
+        await filing.file_reviewed(store)
         done = await store.get_note(note.id)
         assert done.frontmatter["reviewed"] is True
+        assert filing.filing_state(store, note.id)["filing_error"] is None and done.filed
         assert "Tom Reed]], 59 s. Named by you." in done.body
         assert {e.name for e in store.entities.load().entities.values()} == {"Tom Reed"}
+
+
+async def test_a_note_named_at_review_files_without_a_second_tick(store):
+    async with Service(reply=reply(TOM)) as service:
+        context = await lifecycle(store, service)
+        job, note = await record(store, context, "plaud/rec-1", AUDIO)
+        await type_into(
+            store,
+            note,
+            {
+                "Unknown voice 1": {"name": "Scott Bowe", "me": True},
+                "Unknown voice 2": {"name": "Tom Reed"},
+            },
+        )
+        before = (await store.get_source(job.source_id)).current_revision
+        filed = await mark_reviewed(store, context, note.id)
+        # Naming rewrote the transcript, which is a new source revision...
+        assert (await store.get_source(job.source_id)).current_revision > before
+        # ...and the one tick of reviewed was enough to name the voices and file the note.
+        assert filing.filing_state(store, note.id)["filing_error"] is None
+        assert filed.filed and not filed.path.startswith("Review/")
+        assert "Named by you." in filed.body
+        # Filing is settled: another pass has nothing left to do and no second tick is asked for.
+        assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 0}

@@ -141,25 +141,59 @@ class SourceRevisionNeedsReview(ValueError):
     """The current archive revision was not part of this note's approval."""
 
 
-def record_review(store: LocalStore, note_id: str, frontmatter: dict) -> None:
-    """Persist the revisions approved by an explicit review, independently of filing."""
+def source_revisions(store: LocalStore, frontmatter: dict) -> dict[str, int | None]:
+    """The current archive revision of each source a note cites (None when unreadable)."""
     from coppermind_store.sources import _manifest_document
 
-    schema = store.control.schema()
-    reviewed = frontmatter.get(schema.role("reviewed_key")) is True
-    revisions = {}
-    if reviewed:
-        for source_id in sorted(set(frontmatter.get(schema.role("sources_key"), []))):
-            try:
-                manifest = _manifest_document(store.sources_root / source_id / "manifest.json")
-                revisions[source_id] = manifest["current_revision"]
-            except (OSError, ValueError, StoreError):
-                # Missing evidence cannot become approved merely by appearing later.
-                revisions[source_id] = None
+    revisions: dict[str, int | None] = {}
+    for source_id in sorted(set(frontmatter.get(store.control.schema().role("sources_key"), []))):
+        try:
+            manifest = _manifest_document(store.sources_root / source_id / "manifest.json")
+            revisions[source_id] = manifest["current_revision"]
+        except (OSError, ValueError, StoreError):
+            # Missing evidence cannot become approved merely by appearing later.
+            revisions[source_id] = None
+    return revisions
+
+
+def record_review(store: LocalStore, note_id: str, frontmatter: dict) -> None:
+    """Persist the revisions approved by an explicit review, independently of filing."""
+    reviewed = frontmatter.get(store.control.schema().role("reviewed_key")) is True
     _save(
         store.control.store.state_dir / "reviews" / f"{note_id}.json",
-        {"reviewed": reviewed, "sources": revisions},
+        {"reviewed": reviewed, "sources": source_revisions(store, frontmatter) if reviewed else {}},
     )
+
+
+def carry_review(store: LocalStore, note_id: str, before: dict[str, int | None]) -> None:
+    """Keep a note's approval across a rewrite of its own transcript that the owner asked for.
+
+    Naming a voice from the note replaces speaker labels in the transcript, which makes a new
+    source revision after the owner marked the note reviewed. The owner approved that note
+    knowing the names would be applied, so each source the approval covered at `before` is
+    approved at its new revision. A source whose approval was not at `before`, or that
+    is not reviewed, is left alone.
+    """
+    path = store.control.store.state_dir / "reviews" / f"{note_id}.json"
+    if not path.exists():
+        return
+    receipt = json.loads(path.read_bytes())
+    if not receipt.get("reviewed"):
+        return
+    now = source_revisions(store, {store.control.schema().role("sources_key"): list(before)})
+    moved = False
+    for source_id, old in before.items():
+        new = now.get(source_id)
+        if (
+            old is not None
+            and new is not None
+            and new != old
+            and receipt.get("sources", {}).get(source_id) == old
+        ):
+            receipt["sources"][source_id] = new
+            moved = True
+    if moved:
+        _save(path, receipt)
 
 
 async def file_note(store: LocalStore, note_id: str) -> bool:

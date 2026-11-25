@@ -155,6 +155,9 @@ async def name_voices(context: Any, note: Any) -> Any:
                 "me": entry.me,
             }
         )
+    from coppermind_store import filing
+
+    before = filing.source_revisions(context.store, note.frontmatter)
     async with context.lock:
         for plan in plans:
             try:
@@ -162,6 +165,9 @@ async def name_voices(context: Any, note: Any) -> Any:
             except ValueError as exc:
                 problems.append((plan["label"], plan["typed"], _why(exc)))
                 plan["failed"] = True
+        # The owner marked this note reviewed and named the voices in it: the transcript
+        # rewrite that follows is part of that approval, not a new source to approve.
+        filing.carry_review(context.store, note.id, before)
         return await _write(context, note, plans, problems)
 
 
