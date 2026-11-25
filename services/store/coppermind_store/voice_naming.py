@@ -65,14 +65,24 @@ def _ambiguous(name: str, found: list[Any]) -> str:
     )
 
 
+def _once(found: Any) -> list[Any]:
+    """One entry per voice and typed name, however many Speakers sections repeat it."""
+    first: dict[tuple[str, str], Any] = {}
+    for entry in found:
+        first.setdefault((entry.label, sections.clean_name(entry.typed)), entry)
+    return list(first.values())
+
+
 async def name_voices(context: Any, note: Any) -> Any:
     """Apply every name typed into this note's Speakers section. Returns the note as it now
     stands. The caller holds the note lifecycle lock; the context lock is taken here."""
     from coppermind.entities import EntityInput
     from coppermind.store_protocol import ValidationFailed
 
-    typed = [e for e in sections.entries(note.body) if sections.clean_name(e.typed)]
-    ticked = [e for e in sections.entries(note.body) if e.me and not sections.clean_name(e.typed)]
+    typed = _once(e for e in sections.entries(note.body) if sections.clean_name(e.typed))
+    ticked = _once(
+        e for e in sections.entries(note.body) if e.me and not sections.clean_name(e.typed)
+    )
     if not typed and not ticked:
         return note
     problems: list[tuple[str, str, str]] = []

@@ -126,19 +126,19 @@ class Entry:
     lines: list[str] = field(default_factory=list)
 
 
-def _bounds(lines: list[str]) -> tuple[int, int] | None:
-    start = next(
-        (
-            i
-            for i, line in enumerate(lines)
-            if (m := _HEADING.match(line)) and m.group(1).strip().casefold() == "speakers"
-        ),
-        None,
-    )
-    if start is None:
-        return None
-    end = next((i for i in range(start + 1, len(lines)) if _HEADING.match(lines[i])), len(lines))
-    return start, end
+def _sections(lines: list[str]) -> list[tuple[int, int]]:
+    """Every Speakers section in the note. A recording merged into an existing note brings
+    its own, so there can be more than one."""
+    found: list[tuple[int, int]] = []
+    for start, line in enumerate(lines):
+        match = _HEADING.match(line)
+        if not match or match.group(1).strip().casefold() != "speakers":
+            continue
+        end = next(
+            (i for i in range(start + 1, len(lines)) if _HEADING.match(lines[i])), len(lines)
+        )
+        found.append((start, end))
+    return found
 
 
 def entries(body: str) -> list[Entry]:
@@ -146,9 +146,6 @@ def entries(body: str) -> list[Entry]:
     unidentified ones, and any that were relabelled since the section was written. Anything
     else in the section is not touched."""
     lines = body.split("\n")
-    bounds = _bounds(lines)
-    if bounds is None:
-        return []
     found: list[Entry] = []
     current: Entry | None = None
 
@@ -165,40 +162,40 @@ def entries(body: str) -> list[Entry]:
             found.append(current)
         current = None
 
-    for index in range(bounds[0] + 1, bounds[1]):
-        line = lines[index]
-        top = _TOP.match(line)
-        if top:
-            close(index)
-            text = top.group("text")
-            label = UNKNOWN.match(text)
-            current = Entry(
-                label=label.group(0) if label else text.split(",", 1)[0].strip(),
-                start=index,
-                end=bounds[1],
-            )
-            continue
-        if current is None:
-            continue
-        name = _NAME.match(line)
-        if name:
-            current.name_line, current.typed = index, name.group("name")
-        mark = _ME.match(line)
-        if mark and mark.group("mark") != " ":
-            current.me = True
-        if _PROBLEM.match(line):
-            current.problem_line = index
-    close(bounds[1])
+    for first, last in _sections(lines):
+        for index in range(first + 1, last):
+            line = lines[index]
+            top = _TOP.match(line)
+            if top:
+                close(index)
+                text = top.group("text")
+                label = UNKNOWN.match(text)
+                current = Entry(
+                    label=label.group(0) if label else text.split(",", 1)[0].strip(),
+                    start=index,
+                    end=last,
+                )
+                continue
+            if current is None:
+                continue
+            name = _NAME.match(line)
+            if name:
+                current.name_line, current.typed = index, name.group("name")
+            mark = _ME.match(line)
+            if mark and mark.group("mark") != " ":
+                current.me = True
+            if _PROBLEM.match(line):
+                current.problem_line = index
+        close(last)
     return found
 
 
-def _find(body: str, label: str, typed: str) -> Entry | None:
-    """The entry for this voice: by what was typed in it, which survives a relabel of its
-    first line, else by its label."""
+def _find(body: str, label: str, typed: str) -> list[Entry]:
+    """The entries for this voice, in order: by what was typed in them, which survives a
+    relabel of the first line, else by label."""
     every = entries(body)
-    return next((e for e in every if clean_name(e.typed) == typed and typed), None) or next(
-        (e for e in every if e.label == label), None
-    )
+    by_typed = [e for e in every if typed and clean_name(e.typed) == typed]
+    return by_typed or [e for e in every if e.label == label]
 
 
 def typed_names(body: str) -> dict[str, str]:
@@ -224,14 +221,6 @@ def read_name(text: str) -> tuple[str, str]:
     return clean_name(text), ""
 
 
-def _inside(body: str) -> tuple[list[str], tuple[int, int]]:
-    lines = body.split("\n")
-    bounds = _bounds(lines)
-    if bounds is None:
-        raise ValueError("the note has no Speakers section")
-    return lines, bounds
-
-
 def _with_problem(entry_lines: list[str], reason: str) -> list[str]:
     text = f"  - {PROBLEM_PREFIX} {reason}"
     kept = [line for line in entry_lines if not _PROBLEM.match(line)]
@@ -241,11 +230,9 @@ def _with_problem(entry_lines: list[str], reason: str) -> list[str]:
 
 def note_problem(body: str, label: str, typed: str, reason: str) -> str:
     """Say, under this voice, why it could not be named, and keep what was typed."""
-    lines, _ = _inside(body)
-    entry = _find(body, label, typed)
-    if entry is None:
-        return body
-    lines[entry.start : entry.end] = _with_problem(entry.lines, reason)
+    lines = body.split("\n")
+    for entry in reversed(_find(body, label, typed)):
+        lines[entry.start : entry.end] = _with_problem(entry.lines, reason)
     return "\n".join(lines)
 
 
@@ -259,25 +246,32 @@ def name_voice(
     owner: bool,
     how: str = "Named by you.",
 ) -> str:
-    """Replace one unidentified voice's entry with the person it now is. The talk time stays."""
-    lines, _ = _inside(body)
-    entry = _find(body, label, typed)
-    if entry is None:
-        return body
-    spent = re.match(r"^[-*][ \t]+" + re.escape(entry.label) + r",[ \t]*([^.]*?)\.", entry.lines[0])
-    duration = f", {spent.group(1)}" if spent else ""
-    who = person_text(name, link) + (" (you)" if owner else "")
-    named = f"- {who}{duration}. {how}"
-    if not owner:
-        lines[entry.start : entry.end] = [named]
-        return "\n".join(lines)
-    # The owner is listed first, wherever the voice stood.
-    del lines[entry.start : entry.end]
-    bounds = _bounds(lines)
-    assert bounds is not None
-    first = next((i for i in range(bounds[0] + 1, bounds[1]) if _TOP.match(lines[i])), bounds[1])
-    lines.insert(first, named)
-    return "\n".join(lines)
+    """Replace every entry of one unidentified voice with the person it now is. The talk time
+    stays."""
+    while found := _find(body, label, typed):
+        entry = found[0]
+        lines = body.split("\n")
+        spent = re.match(
+            r"^[-*][ \t]+" + re.escape(entry.label) + r",[ \t]*([^.]*?)\.", entry.lines[0]
+        )
+        duration = f", {spent.group(1)}" if spent else ""
+        who = person_text(name, link) + (" (you)" if owner else "")
+        named = f"- {who}{duration}. {how}"
+        if not owner:
+            lines[entry.start : entry.end] = [named]
+            body = "\n".join(lines)
+            continue
+        # The owner is listed first in the section the voice stood in.
+        section = next(b for b in _sections(lines) if b[0] < entry.start < b[1])
+        del lines[entry.start : entry.end]
+        end = section[1] - (entry.end - entry.start)
+        first = next(
+            (i for i in range(section[0] + 1, end) if _TOP.match(lines[i])),
+            end,
+        )
+        lines.insert(first, named)
+        body = "\n".join(lines)
+    return body
 
 
 def settle(body: str, name: str) -> str:
@@ -285,49 +279,54 @@ def settle(body: str, name: str) -> str:
     under this person's name, and that the owner has not typed into, becomes a plain line.
     The helper lines under it (quotes, the place to type a name) go, because the question
     they ask has been answered."""
-    lines = body.split("\n")
-    bounds = _bounds(lines)
-    if bounds is None or not name:
+    if not name:
         return body
+    lines = body.split("\n")
     header = re.compile(
         r"^[-*][ \t]+" + re.escape(name) + r",[ \t]*(?P<spent>[^.]*?)\.[ \t]+Not identified yet\.$"
     )
-    index, last = bounds[0] + 1, bounds[1]
     changed = False
-    while index < last:
-        found = header.match(lines[index])
-        if not found:
+    for first, last in reversed(_sections(lines)):
+        index = first + 1
+        while index < last:
+            found = header.match(lines[index])
+            if not found:
+                index += 1
+                continue
+            end = index + 1
+            while end < last and (lines[end].startswith((" ", "\t"))):
+                end += 1
+            typed = any(
+                (m := _NAME.match(line)) and clean_name(m.group("name"))
+                for line in lines[index + 1 : end]
+            )
+            if typed:
+                index = end
+                continue
+            lines[index:end] = [
+                f"- {name}, {found.group('spent')}. Named by you in another recording."
+            ]
+            last -= end - index - 1
             index += 1
-            continue
-        end = index + 1
-        while end < last and (lines[end].startswith((" ", "\t"))):
-            end += 1
-        typed = any(
-            (m := _NAME.match(line)) and clean_name(m.group("name"))
-            for line in lines[index + 1 : end]
-        )
-        if typed:
-            index = end
-            continue
-        lines[index:end] = [f"- {name}, {found.group('spent')}. Named by you in another recording."]
-        last -= end - index - 1
-        index += 1
-        changed = True
+            changed = True
     return tidy("\n".join(lines)) if changed else body
 
 
 def tidy(body: str) -> str:
-    """Once no voice in the section has a place to type a name, the line that explains how
-    to name one has nothing left to say."""
+    """Once no voice in a Speakers section has a place to type a name, the line that explains
+    how to name one has nothing left to say there."""
     lines = body.split("\n")
-    bounds = _bounds(lines)
-    if bounds is None or entries(body):
-        return body
-    at = next((i for i in range(*bounds) if lines[i] == INSTRUCTION), None)
-    if at is None:
-        return body
-    end = at + 1
-    if end < len(lines) and not lines[end].strip():
-        end += 1
-    del lines[at:end]
-    return "\n".join(lines)
+    open_at = [e.start for e in entries(body)]
+    changed = False
+    for first, last in reversed(_sections(lines)):
+        if any(first < at < last for at in open_at):
+            continue
+        at = next((i for i in range(first, last) if lines[i] == INSTRUCTION), None)
+        if at is None:
+            continue
+        end = at + 1
+        if end < len(lines) and not lines[end].strip():
+            end += 1
+        del lines[at:end]
+        changed = True
+    return "\n".join(lines) if changed else body

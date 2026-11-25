@@ -132,3 +132,32 @@ def test_naming_the_owner_moves_them_to_the_top_of_the_list():
         "- [[People/Scott Bowe|Scott Bowe]] (you)",
         "- Unknown voice 7",
     ]
+
+
+def test_a_recording_merged_into_a_note_with_its_own_speakers_section_is_still_read():
+    owners = "## Speakers\n\n- Ann Lee, 5 min. Named by you.\n\n"
+    merged = owners + "## Recording write-up\n\n" + section(owner_known=False)
+    body = type_name(merged, "Unknown voice 7", "Tom Reed")
+    assert sections.typed_names(body) == {"Unknown voice 7": "Tom Reed"}
+
+    named = sections.name_voice(
+        body, "Unknown voice 7", "Tom Reed", "Tom Reed", "", owner=False, how="Named by you."
+    )
+    assert "- Tom Reed, 8 min 20 s. Named by you." in named
+    assert named.startswith(owners)
+
+    problem = sections.note_problem(body, "Unknown voice 7", "Tom Reed", "two people match Tom.")
+    assert "  - Could not name this voice yet: two people match Tom.\n" in problem
+
+    settled = sections.settle(merged, "Tom Reed")
+    assert settled == merged
+
+    me = type_name(merged, "Unknown voice 8", "Scott Bowe", me=True)
+    top = sections.name_voice(
+        me, "Unknown voice 8", "Scott Bowe", "Scott Bowe", "", owner=True, how="Named by you."
+    )
+    lines = top.splitlines()
+    assert lines[0] == "## Speakers"
+    assert lines.index("- Scott Bowe (you), 1 min. Named by you.") > lines.index(
+        "## Recording write-up"
+    )
