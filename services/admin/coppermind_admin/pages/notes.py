@@ -1103,6 +1103,11 @@ name="csrf" value="{{csrf}}">Save</button>
             [kind] if kind and kind not in type_key.vocabulary else []
         )
 
+        def work_only(part: str) -> str:
+            """A field only a work note asks for: hidden for any other type."""
+            shown = values.get("type", kind) == "work"
+            return f'<div data-if="type=work"{"" if shown else " hidden"}>{part}</div>'
+
         def listed(name: str) -> str:
             value = front.get(name)
             if isinstance(value, list):
@@ -1201,19 +1206,24 @@ name="csrf" value="{{csrf}}">Save</button>
                 values.get("type", kind),
                 hint="Decides the folder. These are the types you already use.",
             )
-            + ui.select(
-                "context",
-                "Context",
-                [(item, item) for item in context_key.vocabulary],
-                values.get("context", str(front.get(roles["context_key"]) or "")),
+            + work_only(
+                ui.select(
+                    "context",
+                    "Context",
+                    [(item, item) for item in context_key.vocabulary],
+                    values.get("context", str(front.get(roles["context_key"]) or "")),
+                    hint="Work notes only: internal, or external for a customer.",
+                )
             )
         )
         right = (
-            field(
-                "account",
-                "Account",
-                listed(roles["account_key"]),
-                hint="Customers or companies, separated by commas.",
+            work_only(
+                field(
+                    "account",
+                    "Account",
+                    listed(roles["account_key"]),
+                    hint="Work notes only: customers or companies, separated by commas.",
+                )
             )
             + field("tags", "Tags", listed(roles["tags_key"]), hint="Separated by commas.")
             + (
@@ -1355,10 +1365,20 @@ name="csrf" value="{{csrf}}">Save</button>
         changes: dict[str, Any] = {
             roles["date_key"]: normalize_note_time(entered) if form.get("time") else entered,
             roles["type_key"]: form.get("type", ""),
-            roles["context_key"]: form.get("context", ""),
-            roles["account_key"]: split(form.get("account", "")),
             roles["tags_key"]: split(form.get("tags", "")),
         }
+        # Context and account belong to work notes. The page does not send them for any
+        # other type, so a note that is not work keeps whatever it carries, except the
+        # recording default (internal) a note arrives with as work, which is dropped when
+        # the note is moved off work. Notes that were never work are left as they are.
+        unset_default: list[str] = []
+        if form.get("type") == "work":
+            changes[roles["context_key"]] = form.get("context", "")
+            changes[roles["account_key"]] = split(form.get("account", ""))
+        elif (
+            front.get(roles["type_key"]) == "work" and front.get(roles["context_key"]) == "internal"
+        ):
+            unset_default.append(roles["context_key"])
         if "attendees" in form:
             changes["attendees"] = split(form["attendees"])
         if form.get("type") == "work":
@@ -1421,10 +1441,13 @@ name="csrf" value="{{csrf}}">Save</button>
 
         async def apply_edits() -> None:
             """The person's own corrections, then the meeting they picked."""
-            if changes:
+            if changes or unset_default:
                 await ctx.store.patch_frontmatter(
                     identity,
-                    PatchFrontmatter(set=changes, unset=[] if same_time else ["time", "timezone"]),
+                    PatchFrontmatter(
+                        set=changes,
+                        unset=unset_default + ([] if same_time else ["time", "timezone"]),
+                    ),
                     if_match=expected,
                 )
                 await fresh()
@@ -1466,7 +1489,7 @@ name="csrf" value="{{csrf}}">Save</button>
                     try:
                         await complete(selected, speakers, summary)
                     except StoreError:
-                        if not (changes or choose):
+                        if not (changes or unset_default or choose):
                             raise
                         await apply_edits()
                         ctx.say(

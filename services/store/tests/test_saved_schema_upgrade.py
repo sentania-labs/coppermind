@@ -140,3 +140,14 @@ def test_an_operator_who_renamed_the_citation_key_keeps_it(tmp_path):
     keys = saved_keys(control)
     assert "cites" in keys and "artifacts" not in keys
     assert control.schema().optional_role("artifacts_key") == "cites"
+
+
+def test_the_saved_context_that_every_note_needed_becomes_a_work_notes_field(tmp_path):
+    control = ControlState(tmp_path)
+    control.ensure_defaults()
+    save(control, UPGRADES["context"][0])
+    assert saved_keys(control)["context"].required is True
+
+    control.ensure_defaults()
+
+    assert saved_keys(control)["context"] == {k.name: k for k in default_schema().keys}["context"]

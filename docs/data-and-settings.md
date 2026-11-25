@@ -34,12 +34,12 @@ date: 2026-09-08T14:02:11
 
 | Rule | Value |
 |---|---|
-| Required keys | `schema_version` (int), `id` (ULID), `type`, `context`, `reviewed` (bool), `sources` (list of ULID) |
+| Required keys | `schema_version` (int), `id` (ULID), `type`, `reviewed` (bool), `sources` (list of ULID); `context` is also required when `type` is `work`, and only then |
 | Kind | `kind` is a declared enum, `note` or `artifact`, defaulting to `note` and written on every note Coppermind creates. A note is always `note`: a file declaring `kind: artifact` is refused on create, replace, patch and adoption, and an artifact is never a note. `artifacts` (list of ULID, optional, written only when present) names the artifacts the note cites |
 | Optional keys | `date` (`YYYY-MM-DD`, or a local date-and-time `YYYY-MM-DDTHH:MM:SS` with no UTC offset in the configured timezone, `general.timezone`, `America/Chicago` by default; the one field for a note's date and start time, written as a date-and-time on new notes; a UTC offset is rejected at review validation), `time_unknown` (bool; a work note with a date-only `date` needs it), `account` (a list of customer names; a plain string is read as a one-item list; at least one entry is required when `context: external`), `tags` (list), `title` (only when it differs from the heading), `external_refs` (a passthrough map), `unresolved` (set by the curator on an ambiguous filing), `managed` (projections only). A legacy `HH:MM` `time` beside a `date` still validates and files, and a legacy `timezone` is ignored; when a legacy `time` carries its own date and disagrees with `date`, `date` wins and Problems records a `date_mismatch` entry |
 | Shipped `type` suggestions | `work`, `personal`, `reference`, `journal` (default: `reference`); `type` is a free string, so any other value is accepted and files under a folder of that name |
 | Shipped listed tag | `reference`: reference material of either kind, a how-to you wrote or an upgrade deck; it changes nothing about storage or filing |
-| Shipped `context` vocabulary | `internal`, `external`, `personal` |
+| Shipped `context` vocabulary | `internal`, `external`, and `personal`, which is kept only so older notes still validate; a personal note is `type: personal`. `context` says whether a work note is internal or about a customer, and does not decide where a note files |
 | Filenames | Dated types: `YYYY-MM-DD Title.md`. Undated: `Title.md`. Journal: `Journal/YYYY/YYYY-MM-DD.md`. Names are Unicode-normalized, Windows-reserved characters and device names are stripped, capped at 120 characters, and a case-insensitive collision gets a numbered suffix |
 | Identity (`ETag`) | `"sha256:<hex of the file's bytes>"`. A move does not change it; a frontmatter write-back does |
 | Unparseable file | Left byte-for-byte untouched, recorded as `state: unparsed` with a reason, indexed by body if it can be decoded at all |
@@ -255,20 +255,12 @@ deterministic failure: its failed receipt stays until dismissed in Admin. Droppi
 the same export again re-runs it, so raise the budget first. Restarting does not
 automatically retry failed imports.
 
-## Filing rules (`/data/state/rules.yaml`)
+## Where a reviewed note files
 
-An ordered list of predicates on frontmatter, each mapping to a path
-template with placeholders for `{account}` (the first entry of the note's `account` list), `{yyyy}`, and `{type}`, plus a
-fallback for anything that matches nothing: leave it in place and mark it
-`unresolved: true` rather than guess. Shipped defaults:
-
-| When | Files to |
-|---|---|
-| `context: internal` | `Work/Internal/` |
-| `context: external` | `Work/External/` |
-| `context: personal` | `Personal/` |
-| `type: journal` | `Journal/{yyyy}/` |
-| `type: reference` | `Reference/` |
+A reviewed note files under the folder named for its `type`, then the year and month of
+its `date`: a `type: personal` note files under the personal folder, a `type: journal`
+note under the journal folder, and so on. `context` and `account` play no part. A type
+with no folder of its own files under its own name.
 
 ## Keys and Admin state
 

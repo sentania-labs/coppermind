@@ -134,8 +134,9 @@ Current replay behavior matters:
   of repeatedly resending an invalid package. Escalate other conflicts.
 
 New-install defaults suggest types `work`, `personal`, `reference`, and `journal`
-(default `reference`; any other type text is accepted and files under its own folder), and contexts `internal`, `external`, and `personal`
-(default `internal`). Workflow exports using `context: customer` should map
+(default `reference`; any other type text is accepted and files under its own folder), and, for work notes only, contexts `internal` and `external`
+(default `internal`). `context` is required only when `type` is `work`; any other type
+validates without it, and `personal` is accepted as a context only so older notes still read. Workflow exports using `context: customer` should map
 that to `external`, retaining the customer name in `account`, which is required
 when context is `external`. `account` is a list of customer names. A plain
 string is read as a one-item list, so `account: Acme` and `account: [Acme]`

@@ -83,7 +83,8 @@ def test_a_read_key_gets_fields_allowed_values_tags_aliases_and_guidance(schema_
     fields = {field["name"]: field for field in body["fields"]}
     assert [field["name"] for field in body["fields"]] == [k.name for k in default_schema().keys]
     assert fields["context"]["kind"] == "enum"
-    assert fields["context"]["required"] is True
+    assert fields["context"]["required"] is False
+    assert fields["context"]["required_when"] == {"key": "type", "values": ["work"]}
     assert fields["context"]["guidance"] == "Pick where the note files."
     assert fields["context"]["allowed_values"] == [
         {"value": "internal", "meaning": ""},

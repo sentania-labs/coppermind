@@ -190,6 +190,8 @@ async def test_adoption_rechecks_requirements_activated_by_applied_defaults(
     schema_body = dict(schema_record.body)
     roles = schema_body["roles"]
     for definition in schema_body["keys"]:
+        if definition["name"] == roles["type_key"]:
+            definition["default"] = "work"
         if definition["name"] == roles["context_key"]:
             definition["default"] = "external"
         if definition["name"] == roles["account_key"]:
