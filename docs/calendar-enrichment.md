@@ -200,9 +200,10 @@ New recording intake writes a complete Markdown document before calling ordinary
 It resolves stable speaker labels, uses a confidently matched calendar title (otherwise
 the supplied title and local date), and saves the accepted document before filing it.
 Without a match, a leading date the supplied title already carries (`YYYY-MM-DD`, `MM-DD`,
-`MM/DD`, `M-D`) and a bare `Meeting:` prefix are dropped, so the date is not doubled, and
-the note ends with one line giving the reason no event was chosen (no capture time, lookup
-failed, nothing overlapped the start, or several did and none stood out).
+`MM/DD`, `M-D`) and a bare `Meeting:` prefix are dropped, so the date is not doubled. The
+reference block (below) says whether a calendar event was matched and, when none was,
+why (no capture time, lookup failed, nothing overlapped the start, or several did and none
+stood out).
 The note arrives in Review with `reviewed: false`. Suggestions can be off; frontmatter
 review runs separately and never accepts or appends the generated body.
 
@@ -214,10 +215,55 @@ limit, wait limit and output token budget, initially copied from the summary set
 Legacy `summary_directions` remain saved for old jobs. Prompt changes affect new
 generations and failed write-up retries, never existing notes.
 
-The default document includes Top line, Action items and Executive summary, with Topics
-when useful. A clearly unrelated tail is excluded from the main write-up and flagged by
-timestamp under Recording boundaries. A second meeting gets a separate account in the
-same note. The model also returns a delimited JSON boundary block after the Markdown.
+The default directions write the note as the owner's own, from the vendor-side solution
+architect's point of view, with a different emphasis for a customer meeting (what was
+learned about their environment, plans and timelines, what they value and how they decide
+with verbatim timestamped quotes, what the owner told and promised, what they promised,
+open questions and risks), an internal meeting (decisions, what is asked of the owner,
+what the owner committed to, anything about a named account) and a personal recording (a
+plain summary with decisions, instructions and follow-ups, no account framing). The kind
+comes from the note's own account, context and type when set, and otherwise from the
+conversation, marked as inferred. Rules the owner cannot edit away apply to every
+write-up: a one or two sentence top line, a commitment is only what someone said they will
+do (ideas and offers go under Possible follow-ups, and no duration, deadline or owner is
+invented), relative dates resolve against the recording date, and inferences are marked.
+Product names and acronyms are corrected against the **Names and terms to get right**
+glossary on the same Admin page, one `heard = correct` per line, and each correction is
+noted. A clearly unrelated tail is excluded from the main write-up and flagged by
+timestamp. A second meeting gets a separate account in the same note.
+
+The application, not the model, lays the note out, so the order holds for any directions:
+**Speakers** (who was heard, by name where known), the top line, a **Recording boundaries**
+notice only when something was trimmed or a second meeting was found, the summary sections,
+and one **References** block at the very bottom (source transcript link, recording link,
+calendar match status). There is no title heading in the body: the file name and `title`
+carry it, and renaming the note leaves nothing stale. Notes already filed, and notes a
+person has edited, are never rewritten.
+
+An existing install picks up the new default without anyone doing anything, unless the
+directions were edited: saved directions that are exactly a default this product shipped
+earlier, or empty, use the current default; any other text is the owner's and is kept as it
+is (Reset to default adopts the new one). Saving the Admin page with the directions
+untouched keeps following the default. The glossary is saved on the same `writeup`
+assignment (`writeup_glossary`, up to 8,000 characters).
+
+The same answer carries suggested note fields. Each is read against what already exists
+and arrives in the ordinary review suggestions, with a short reason and a confidence:
+`account` only from an existing company (by name or alias), or offered as "New account?"
+below the confidence at which a field fills itself, never written silently; `context`
+`external` when an account is suggested or outside people are heard; `type` `personal`
+only for a recording that is clearly not a work meeting; `tags` only from the tag
+vocabulary (by name or alias); `attendees`, where the Suggestions page maps that field, are
+the people recognised by voice (names that were only mentioned are not attendees). A
+low-confidence field is left empty, and suggestions are made with or without a calendar
+match. They are saved with the write-up and added to the note's suggestion job when
+enrichment runs, whatever fields enrichment is set to fill for other notes. A block that
+cannot be read costs the note nothing: the note is filed, the problem is logged and kept
+as `suggestion_error` with the saved write-up.
+Offering facts to the account's dossier is not part of this: dossiers take evidenced claims
+directly and have no suggested state.
+
+The model also returns a delimited JSON boundary block after the Markdown.
 Intake validates its timestamp ranges, kind, evidence and confidence, saves it on the
 recording job and exposes it in recording status, then strips the block before filing.
 Intake does not split a recording into multiple notes or act on these boundaries.

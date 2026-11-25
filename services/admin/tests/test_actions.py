@@ -34,8 +34,9 @@ def test_old_summary_editor_redirects_to_document_editor(admin):
 def test_document_editor_has_one_prompt_and_readonly_rules(admin):
     client, _, store = admin
     page = client.get("/admin/transcription/writeup").text
-    assert page.count("<textarea") == 1
-    assert 'name="writeup_prompt"' in page
+    # One prompt, plus the short list of names and terms to get right.
+    assert page.count("<textarea") == 2
+    assert 'name="writeup_prompt"' in page and 'name="writeup_glossary"' in page
     assert "Locked rules (read-only)" in page
     assert html.escape(store.views["writeup-settings"]["locked"]) in page
 
@@ -44,6 +45,7 @@ def test_writeup_editor_saves_exact_text_and_separate_limits(admin):
     client, _, store = admin
     form = {
         "writeup_prompt": "Keep it short.\nInclude commitments.",
+        "writeup_glossary": "are back = RBAC",
         "connection": "writer",
         "model": "small",
         "enabled": "true",

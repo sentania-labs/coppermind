@@ -43,6 +43,7 @@ class FakeStore:
             "assignment": FeatureAssignment(enabled=True).model_dump(),
             "prompt": DEFAULT_PROMPT,
             "default": DEFAULT_PROMPT,
+            "glossary": "",
             "locked": DISPLAY_RULES,
             "services": [],
         }

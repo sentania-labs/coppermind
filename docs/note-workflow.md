@@ -171,8 +171,13 @@ invitation. Unchanged re-exports do not reopen the decision.
 
 ## Recording summaries
 
-New recordings produce their finished Markdown note before ordinary ingest. Suggestions
-may be off. Review handles frontmatter separately and never asks to accept the body.
+New recordings produce their finished Markdown note before ordinary ingest: speakers, a
+one or two sentence top line, the summary sections written from the owner's side of the
+table, and one references block at the bottom (source transcript, recording, calendar
+match), with no title heading. Suggestions may be off; when they are on, the write-up also
+suggests account, context, type, tags and attendees (see
+[calendar and enrichment](calendar-enrichment.md)). Review handles frontmatter separately
+and never asks to accept the body.
 A failed write-up retains the recording and transcript without creating a note; Retry on
 Recordings and imports resumes from the last saved stage. Configure the document prompt
 and model under **Transcription > How recordings are written up**. Existing notes are not

@@ -702,6 +702,16 @@ touched.</p>
         fields = ui.text_area(
             "writeup_prompt", "Directions", data["prompt"], rows=28, maxlength=20000
         )
+        fields += ui.text_area(
+            "writeup_glossary",
+            "Names and terms to get right",
+            data["glossary"],
+            rows=6,
+            maxlength=8000,
+            hint="One per line: what the transcript tends to say, an equals sign, then the "
+            "right spelling. For example: kubernetes cluster api = Cluster API. "
+            "A fix is noted in the write-up.",
+        )
         fields += ui.select(
             "connection",
             "AI service",
@@ -727,7 +737,7 @@ touched.</p>
 combined into one note. Set this to what the model you chose can take in one request.</p>
 <p>Changes apply to new generations and failed write-up retries. Existing notes stay as written.</p>
 <p>Reset to default restores only the Directions text.
-Your service, model and limits stay as set.</p>
+Your service, model, glossary and limits stay as set.</p>
 <div class="actions"><button class="lat-btn lat-btn--primary">Save</button>
 <button class="lat-btn" name="reset" value="true" formnovalidate>Reset to default</button>
 </div></form>"""
@@ -757,6 +767,7 @@ Your service, model and limits stay as set.</p>
                     "connection",
                     "model",
                     "writeup_prompt",
+                    "writeup_glossary",
                     "max_output_tokens",
                     "summary_max_input_chars",
                     "timeout_s",

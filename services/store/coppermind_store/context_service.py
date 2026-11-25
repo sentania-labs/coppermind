@@ -1273,7 +1273,7 @@ class ContextService:
         fields = [
             item.model_dump()
             for item in schema.keys
-            if item.name in self.allowed_fields() and blank(note.frontmatter.get(item.name))
+            if item.name in self.allowed_fields(note.id) and blank(note.frontmatter.get(item.name))
         ]
         transcripts = await self.source_text(job.note_id)
         versions = {
@@ -1411,18 +1411,164 @@ class ContextService:
             if s.kind == "speaker" and isinstance(s.value, str)
         }
 
-    def allowed_fields(self) -> set[str]:
+    def allowed_fields(self, note_id: str | None = None) -> set[str]:
         schema = self.store.control.schema()
         forbidden = {
             schema.role(role)
             for role in ("id_key", "reviewed_key", "sources_key", "schema_version_key")
         }
         assignment = self.config().assignments["enrichment"]
-        return ({key.name for key in schema.keys} - forbidden) & {
-            *assignment.fields,
-            assignment.attendees_field,
-            assignment.contacts_field,
-        } - {assignment.invitees_field, assignment.event_field}
+        wanted = {*assignment.fields, assignment.attendees_field, assignment.contacts_field}
+        if note_id and self.written_up(note_id):
+            # The write-up suggests these for every recording note, whatever fields the
+            # owner chose for other notes.
+            wanted |= set(self.WRITEUP_FIELDS.values()) & {key.name for key in schema.keys}
+        return ({key.name for key in schema.keys} - forbidden) & wanted - {
+            assignment.invitees_field,
+            assignment.event_field,
+        }
+
+    # What a write-up suggestion is called in the note schema.
+    WRITEUP_ROLES = {
+        "account": "account_key",
+        "context": "context_key",
+        "type": "type_key",
+        "tags": "tags_key",
+    }
+
+    @property
+    def WRITEUP_FIELDS(self) -> dict[str, str]:  # noqa: N802
+        roles = self.store.control.schema().roles
+        return {name: roles[role] for name, role in self.WRITEUP_ROLES.items() if role in roles}
+
+    def written_up(self, note_id: str) -> bool:
+        """Whether the note came from a recording that was written up in one step."""
+        return any(
+            r.note_id == note_id and r.source_id and r.generation_mode == "markdown-v1"
+            for r in self.recordings.jobs()
+        )
+
+    def checked_writeup_suggestions(
+        self, note: Any, existing: list[Suggestion], evidence: dict[str, Any]
+    ) -> list[Suggestion]:
+        """The write-up's suggestions that still fit the schema and the owner's records. One
+        that does not is left out on its own: it never costs the enrichment answer."""
+        kept: list[Suggestion] = []
+        # Each is checked as if the ones before it were accepted: a note whose context is
+        # external needs its account.
+        frontmatter = dict(evidence["note"]["frontmatter"])
+        for earlier in existing:
+            # What enrichment itself proposes counts too: its account is what makes
+            # `external` valid.
+            if earlier.kind == "field" and earlier.field and earlier.value is not None:
+                frontmatter = {**frontmatter, earlier.field: earlier.value}
+        for item in self.writeup_suggestions(note, existing):
+            current = {**evidence, "note": {**evidence["note"], "frontmatter": frontmatter}}
+            try:
+                self.validate_result(Suggestions(suggestions=[item]), current)
+            except (JobRejected, ValueError):
+                log.info("write-up suggestion for %s left out", item.field)
+                continue
+            kept.append(item)
+            frontmatter = {**frontmatter, item.field: item.value}
+        return kept
+
+    def guard_new_accounts(self, note_id: str, suggestions: list[Suggestion]) -> None:
+        """A company that does not exist is only ever offered as a new account. An account
+        the enrichment answer proposes for a recording note gets the same treatment as the
+        write-up's: below the confidence at which a field fills itself, and said so."""
+        from coppermind.recording_writeup import NEW_ACCOUNT_CAP
+        from coppermind_store.recording_writeup import vocabulary
+
+        key = self.store.control.schema().roles.get("account_key")
+        if not key or not self.written_up(note_id):
+            return
+        known = vocabulary(self)["accounts"]
+        for item in suggestions:
+            if item.kind != "field" or item.field != key:
+                continue
+            names = item.value if isinstance(item.value, list) else [item.value]
+            if all(isinstance(n, str) and n.casefold() in known for n in names):
+                continue
+            item.confidence = min(item.confidence, NEW_ACCOUNT_CAP)
+            if not item.reason.startswith("New account?"):
+                item.reason = ("New account? " + item.reason)[:2000]
+
+    def writeup_suggestions(self, note: Any, existing: list[Suggestion]) -> list[Suggestion]:
+        """The field suggestions made while the recording was written up, for the fields the
+        enrichment answer did not already suggest. A value the owner set themselves, or a
+        field that already holds tags or an account, is not suggested again."""
+        recording = next(
+            (
+                r
+                for r in self.recordings.jobs()
+                if r.note_id == note.id and r.source_id and r.generation_mode == "markdown-v1"
+            ),
+            None,
+        )
+        if recording is None:
+            return []
+        saved = self.read("recording-writeups/" + recording.id, {})
+        schema = self.store.control.schema()
+        taken = {s.field for s in existing if s.kind == "field"}
+        found: list[Suggestion] = []
+        for item in saved.get("suggestions", []):
+            field = self.WRITEUP_FIELDS.get(item.get("field", ""))
+            if (
+                not field
+                or field in taken
+                or field in recording.frontmatter
+                or note.frontmatter.get(field) == item.get("value")
+                or (
+                    field in {schema.roles.get("account_key"), schema.roles.get("tags_key")}
+                    and not blank(note.frontmatter.get(field))
+                )
+            ):
+                continue
+            try:
+                found.append(
+                    Suggestion(
+                        kind="field",
+                        field=field,
+                        value=item["value"],
+                        confidence=float(item["confidence"]),
+                        quote=item.get("quote", "")[:2000],
+                        reason=item["reason"],
+                        origin="writeup",
+                    )
+                )
+            except (KeyError, ValueError, TypeError):
+                continue
+        field = self.config().assignments["enrichment"].attendees_field
+        if field and field not in taken and blank(note.frontmatter.get(field)):
+            # People heard and recognised by their voice were there. Names only mentioned,
+            # and invitations, are not evidence of attendance.
+            heard = {name for name in saved.get("voice_map", {}).values()}
+            named: dict[str, list[Any]] = {}
+            for person in self.store.entities.load().entities.values():
+                if (
+                    person.kind == "person"
+                    and not person.retired_at
+                    and not person.redirect
+                    and person.name in heard
+                ):
+                    named.setdefault(person.name, []).append(person)
+            # A name two people share does not say which of them was heard.
+            people = [group[0] for group in named.values() if len(group) == 1]
+            if people:
+                found.append(
+                    Suggestion(
+                        kind="field",
+                        field=field,
+                        value=[f"[[{p.path.removesuffix('.md')}]]" for p in people],
+                        entity_ids=[p.id for p in people],
+                        confidence=0.9,
+                        quote=people[0].name,
+                        reason="Heard in the recording and recognised by voice.",
+                        origin="writeup",
+                    )
+                )
+        return found
 
     def validate_result(
         self,
@@ -1472,14 +1618,18 @@ class ContextService:
                     "it was not given",
                     RETRY,
                 )
-            if item.quote and item.quote not in text and item.quote not in dossier_text:
+            if item.origin == "writeup":
+                # Checked against the companies and tags that exist when it was made. It
+                # still has to be an allowed field that fits the schema, below.
+                pass
+            elif item.quote and item.quote not in text and item.quote not in dossier_text:
                 raise JobRejected(
                     "quote-not-found",
                     f"The model's {what} suggestion quoted text that is not in the note "
                     "or transcript",
                     RETRY,
                 )
-            if not item.quote and not item.event_ids:
+            if not item.quote and not item.event_ids and item.origin != "writeup":
                 raise JobRejected(
                     "no-evidence",
                     f"The model's {what} suggestion had no supporting quote or event",
@@ -1547,7 +1697,7 @@ class ContextService:
                     )
                 ):
                     raise JobRejected("attendance-evidence", "Attendance needs a note quote", RETRY)
-                if item.field not in self.allowed_fields() or (
+                if item.field not in self.allowed_fields(evidence["note"]["id"]) or (
                     item.field in mapped and not entity_mapping
                 ):
                     raise JobRejected(
@@ -1691,6 +1841,13 @@ class ContextService:
                 answer_shape.read_suggestions,
                 answer_shape.SUGGESTIONS_SCHEMA,
             )
+            self.guard_new_accounts(job.note_id, result.suggestions)
+            result.suggestions = (
+                result.suggestions
+                + self.checked_writeup_suggestions(
+                    await self.store.get_note(job.note_id), result.suggestions, evidence
+                )
+            )[:30]
             if len(evidence["events"]) > 1 and any(
                 r.note_id == job.note_id and r.source_id for r in self.recordings.jobs()
             ):
@@ -1742,7 +1899,12 @@ class ContextService:
                 )
             left = len(unnamed) - min(room, len(unnamed))
             job.notice = speaker_names.leftover_notice(left) if left else ""
-            self.validate_result(result, evidence, await self.source_text(job.note_id))
+            # The write-up's own suggestions were checked one by one when they were added.
+            self.validate_result(
+                Suggestions(suggestions=[s for s in result.suggestions if s.origin != "writeup"]),
+                evidence,
+                await self.source_text(job.note_id),
+            )
             # Only the separate full-transcript stage can supply meeting prose.
             result.meeting_summary, summary_usage = await meeting_summary.generate(
                 self, connection, assignment, transcript, job
@@ -1783,7 +1945,7 @@ class ContextService:
                             current_evidence,
                         )
                         job.reply = json.dumps(reply, ensure_ascii=False)[:4000]
-                        proposed = Suggestions.model_validate(reply)
+                        proposed, _ = answer_shape.read_suggestions(reply)
                         proposed.suggestions = self.usable_speakers(
                             [s for s in proposed.suggestions if s.kind == "speaker"],
                             current_evidence.get("speaker_review") or {},
