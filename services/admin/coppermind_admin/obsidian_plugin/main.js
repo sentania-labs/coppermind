@@ -575,9 +575,9 @@ class PeopleView extends ItemView {
       if(!voice){await this.show();return;}
       el.createEl('h3',{text:person.name});
       el.createEl('p',{text:voice.signatures.length+' saved voice signatures'});
-      const attended=new Set();
+      const attended=new Set();const attendeesKey=recognition.attendees_field||'';
       for(const assignment of voice.assignments||[]){const line=el.createDiv();
-        try{const note=await this.plugin.call('/v1/notes/'+encodeURIComponent(assignment.note_id));for(const v of Array.isArray(note.frontmatter?.attendees)?note.frontmatter.attendees:[])if(typeof v==='string')attended.add(v.trim().replace(/^\[\[|\]\]$/g,'').split('|')[0].replace(/\.md$/,'').toLowerCase());const a=line.createEl('a',{text:note.title,href:'#'});a.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(note.path,'',false);};}
+        try{const note=await this.plugin.call('/v1/notes/'+encodeURIComponent(assignment.note_id));for(const v of attendeesKey&&Array.isArray(note.frontmatter?.[attendeesKey])?note.frontmatter[attendeesKey]:[])if(typeof v==='string')attended.add(v.trim().replace(/^\[\[|\]\]$/g,'').split('|')[0].replace(/\.md$/,'').toLowerCase());const a=line.createEl('a',{text:note.title,href:'#'});a.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(note.path,'',false);};}
         catch{line.createSpan({text:'Source note unavailable'});}
         const split=line.createEl('button',{text:'This is not '+person.name});split.onclick=()=>new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call('/v1/entities/voice/voices/'+encodeURIComponent(person.unknown?person.id:'person:'+person.id)+'/split','POST',{note_id:assignment.note_id,label:assignment.label,source_id:assignment.source_id});await this.show(person);}catch(e){new Notice(e.message);}},{title:'Separate this recording?',text:'This recording will use a new unknown voice label. Other recordings stay with '+person.name+'. Your own writing in reviewed notes stays intact.',action:'Separate recording'}).open();
       }
