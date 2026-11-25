@@ -158,6 +158,11 @@ thresholds are 0.60 and 0.45 by default. For legacy recordings, a single strong 
 when the owner completes review. Ambiguous and conflicting matches
 remain for the owner to choose.
 
+The everyday way to name an unknown voice is in the recording note itself: type the name
+under the voice in its Speakers section and mark the note reviewed (see
+[the Speakers section](note-workflow.md#the-speakers-section)). That runs the same combine
+described next.
+
 In People, an unknown voice can be combined with another unknown voice or attached to
 a person. Its appearances are relabelled in recording transcripts; unchanged generated
 summary lines can also be updated. Owner-edited lines are left alone. When a voice left

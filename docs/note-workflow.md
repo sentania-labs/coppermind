@@ -171,9 +171,9 @@ invitation. Unchanged re-exports do not reopen the decision.
 
 ## Recording summaries
 
-New recordings produce their finished Markdown note before ordinary ingest: speakers, a
-one or two sentence top line, the summary sections written from the owner's side of the
-table, and one references block at the bottom (source transcript, recording, calendar
+New recordings produce their finished Markdown note before ordinary ingest: the Speakers
+section, a one or two sentence top line, the summary sections written from the owner's side
+of the table, and one references block at the bottom (source transcript, recording, calendar
 match), with no title heading. Suggestions may be off; when they are on, the write-up also
 suggests account, context, type, tags and attendees (see
 [calendar and enrichment](calendar-enrichment.md)). Review handles frontmatter separately
@@ -183,6 +183,56 @@ Recordings and imports resumes from the last saved stage. Configure the document
 and model under **Transcription > How recordings are written up**. Existing notes are not
 rewritten by a settings change. Unique strong known-voice matches use the person's name;
 other usable signatures keep stable Unknown voice N identities.
+
+### The Speakers section
+
+The Speakers section is the first thing in a recording note. It lists every voice heard,
+the owner first (marked "(you)"), then people the service recognised by voice, each linked
+to their dossier with how they were identified and how sure that is, then the voices nobody
+has identified. Talk time is shown for each. An unidentified voice shows up to three short
+lines it said, word for word, each with its time as a link to the transcript, and the
+owner's own place to put a name:
+
+```
+- Unknown voice 7, 8 min 20 s. Not identified yet.
+  - Said: "We run vSphere 7 on the older cluster." ([[Sources/talk|00:03:12]])
+  - Suggestion, not confirmed: Tom Reed, addressed as Tom at 00:04:12.
+  - [ ] This is me
+  - Name this voice:
+```
+
+A suggestion appears only when the transcript supports it (a known first name used to answer
+that voice, or any name used twice for it) and is never written as a name, an attendee or a
+speaker label. The "This is me" box appears until the owner is known. When a voice is in
+at least three recordings and most of them, the section says so ("Heard in 9 of your 10
+recordings, so this may be you"), which is the offer to enrol the owner.
+
+**Naming a voice is typing a name and marking the note reviewed.** Type the name after
+"Name this voice:" (a name completed from Obsidian's `[[` list works too) and mark the note
+reviewed, in the companion or by setting `reviewed` yourself. After the same
+30 second wait that finishing a review has always had, Coppermind does what combining the
+voice with a person in People does: the voice is attached to that person, so recordings to
+come recognise it; this note's transcript and every other note's that used the voice have
+the label replaced where the text was not hand-edited; and the person is added to this note's attendees when
+Model connections has an attendees property. The entry in this note becomes
+"Name, talk time. Named by you." Typing a name in a note that is already reviewed does the
+same when the note is next saved. Tick "This is me" with your name to make that person the
+owner: they are listed first and marked "(you)" in later notes, and the write-up treats
+them as "I". The companion's review panel does not ask again for a voice already named
+in the note.
+
+- A name that matches no one in People **creates that person**; the entry says "New person
+  added to People".
+- A name that matches more than one person (a first name shared by two people, say) names
+  nobody. The entry keeps what was typed and says which people matched; type the full name
+  and save the note.
+- A name matches exactly, by alias, by the page of a completed `[[link]]`, or for a single
+  word by first name. Nothing is guessed beyond that.
+- A voice with too little speech to keep a signature is named in this recording only, and
+  the entry says so.
+- An action item is given to a named person only when that speaker is identified. Otherwise
+  it stays with its Unknown voice label, marked "(speaker not identified)". A person who was
+  mentioned but not heard is not a speaker and not an attendee.
 
 The proposal behavior below applies only to legacy recording jobs accepted before the
 Markdown intake flow. Those jobs and review receipts finish under their original contract.

@@ -38,8 +38,9 @@ def test_speakers_come_first_then_the_top_line_and_no_title_or_owned_sections():
         "Customer meeting (inferred)\n\n## References\nold\n\n## Details\nOrbit 7.2.\n\n"
         "## Speakers\n- the model's own list\n\n## Top line\nHalcyon plans 8.0.\n"
     )
-    shaped = compose_body(body, ["Alex Example", "Unknown voice 1 (recording-local)"], None)
-    assert shaped.startswith("## Speakers\n\n- Alex Example\n- Unknown voice 1 (recording-local)\n")
+    section = "## Speakers\n\n- Alex Example, 5 min. Identified.\n- Unknown voice 1, 2 min.\n"
+    shaped = compose_body(body, section, None)
+    assert shaped.startswith(section)
     assert (
         shaped.index("## Top line") < shaped.index("Customer meeting") < shaped.index("## Details")
     )
@@ -49,12 +50,14 @@ def test_speakers_come_first_then_the_top_line_and_no_title_or_owned_sections():
 
 def test_a_clean_recording_prints_no_boundaries_even_when_the_model_wrote_one():
     body = "## Top line\nDone.\n\n## Recording boundaries\n[]\n\n## Notes\nBody.\n"
-    assert "boundaries" not in compose_body(body, [], None).lower()
+    assert "boundaries" not in compose_body(body, "", None).lower()
 
 
 def test_a_boundary_notice_sits_right_after_the_top_line():
     body = "## Top line\nDone.\n\n## Notes\nBody.\n"
-    shaped = compose_body(body, ["A"], "## Recording boundaries\n\n- 00:30:00 to 00:40:00: tail.\n")
+    shaped = compose_body(
+        body, "## Speakers\n\n- A\n", "## Recording boundaries\n\n- 00:30:00 to 00:40:00: tail.\n"
+    )
     assert (
         shaped.index("## Top line")
         < shaped.index("## Recording boundaries")
@@ -63,7 +66,9 @@ def test_a_boundary_notice_sits_right_after_the_top_line():
 
 
 def test_a_prompt_without_a_top_line_still_gets_speakers_first():
-    shaped = compose_body("## Summary\nText.\n", ["A"], "## Recording boundaries\n\nx\n")
+    shaped = compose_body(
+        "## Summary\nText.\n", "## Speakers\n\n- A\n", "## Recording boundaries\n\nx\n"
+    )
     assert (
         shaped.index("## Speakers")
         < shaped.index("## Recording boundaries")

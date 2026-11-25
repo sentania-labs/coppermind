@@ -176,6 +176,13 @@ test('failed suggestions show cause and retry and still permit manual speaker se
   const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
   assert.equal(body.manual_speakers['Speaker 1'],'person:a');assert.equal(body.manual_source_revision,2);
 });
+test('a voice named in the note is not asked for again, and the panel says it will be applied',async()=>{
+  const f=await fixture(undefined,{state:'failed',named_in_note:[{label:'Unknown voice 7',name:'Tom Reed'}],manual_speaker_review:{revision:2,speakers:['Unknown voice 7','Unknown voice 8'],candidates:[{id:'person:a',name:'Alex'}]}});
+  const all=f.view.contentEl.all();
+  assert.ok(all.some(e=>e.text==='In the note you named Unknown voice 7 as Tom Reed. Finishing review applies that name.'));
+  assert.ok(!all.some(e=>e.tag==='h3'&&e.text==='Unknown voice 7'));
+  assert.ok(all.some(e=>e.tag==='h3'&&e.text==='Unknown voice 8'));
+});
 test('empty candidates permit searching People and choosing a result',async()=>{
   const f=await fixture(undefined,{state:'failed',manual_speaker_review:{revision:1,speakers:['Speaker 1'],candidates:[]},peopleResults:{items:[{id:'b',name:'Blair',emails:[]}],next_cursor:null}});
   assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('No people suggested. Enter a name')));

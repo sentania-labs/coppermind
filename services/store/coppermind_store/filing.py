@@ -184,6 +184,8 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         or not await store.context.lifecycle.follow(note)
     ):
         await store.context.lifecycle.finalize(note)
+        # Naming a voice from the note rewrites it; filing carries on with what is there now.
+        note = await store.get_note(note_id)
     problem = date_field_problem(note.frontmatter, schema)
     if problem:
         raise ValueError(problem)
@@ -406,8 +408,12 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     body = note.body
     for item in plan["sources"]:
         for old_link in {item["link_from"], item["from"], *item.get("link_froms", [])}:
-            body = body.replace(
-                f"[[{old_link.removesuffix('.md')}]]", f"[[{item['to'].removesuffix('.md')}]]"
+            # A link with its own text ([[page|00:03:12]]) or a place in the page moves too.
+            moved = "[[" + item["to"].removesuffix(".md")
+            body = re.sub(
+                r"\[\[" + re.escape(old_link.removesuffix(".md")) + r"(?=[\]|#])",
+                moved.replace("\\", "\\\\"),
+                body,
             )
     body = rewrite_embeds(body, filed_images, attachments_folder=settings.notes.attachments_folder)
     before_filing_hash = note.content_hash

@@ -55,6 +55,14 @@ transcript. Proved by the rendered page and action tests under
 `services/admin/tests/`, `tests/integration/test_admin_service.py`,
 `tests/integration/test_recording_writeup.py` and
 `tests/integration/test_summary_directions.py`.
+A recording note opens with a Speakers section (issue 149): the owner first, people
+recognised by voice with their dossier, and each unidentified voice with its talk time, two
+or three word-for-word quotes that link to the transcript, a suggested name only when the
+transcript supports one, and a place to type a name. Typing the name and marking the note
+reviewed attaches the voice to that person as People's combine does, and a name nobody
+holds creates the person; a name two people hold names no one and says so in the note.
+Proved by `tests/integration/test_speakers_named.py` and `coppermind/tests/test_speakers_section.py`;
+the Obsidian side is proved only through the plugin harness, as there is no Obsidian on the build host.
 
 ## Working
 

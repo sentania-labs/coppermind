@@ -212,9 +212,12 @@ class ReviewView extends ItemView {
         const agreed=!!voiceKey&&voiceKey===modelKey;
         return {matches,strong,conflict,agreed,initial:conflict?'':voiceKey?(agreed?suggestion.value:strong[0].id):suggestion?.value||''};
       };
+      // Names typed in the note's Speakers section are applied when review finishes; do not ask twice.
+      const typedNames=Object.fromEntries((data.named_in_note||[]).map(t=>[t.label,t.name]));
+      for(const [label,name] of Object.entries(typedNames)){const note=el.createDiv({cls:'coppermind-card'});note.createEl('p',{text:'In the note you named '+label+' as '+name+'. Finishing review applies that name.'});}
       for(const s of data.suggestions){
         if(s.kind==='event'&&meeting?.candidates?.length>1)continue;
-        if(s.kind==='speaker'&&!ready)continue;
+        if(s.kind==='speaker'&&(!ready||typedNames[s.field]))continue;
         const card=el.createDiv({cls:'coppermind-card'});let toggle;
         const voice=s.kind==='speaker'?voicePlan(s.field,s):null;
         const initial=s.kind==='speaker'&&ready&&!voice.conflict&&!!voice.initial&&(voice.strong.length===1||s.confidence>=0.8);
@@ -244,7 +247,7 @@ class ReviewView extends ItemView {
       }
       const proposed=new Set(data.suggestions.filter(s=>s.kind==='speaker'&&ready).map(s=>s.field));
       for(const label of manual?.speakers||[]){
-        if(proposed.has(label))continue;
+        if(proposed.has(label)||typedNames[label])continue;
         const card=el.createDiv({cls:'coppermind-card'});card.createEl('h3',{text:label});
         if(label.startsWith('Unknown voice '))card.createEl('p',{text:'This voice will be remembered across recordings.'});
         if(manual?.voice_unavailable?.includes(label))card.createEl('p',{text:'There was too little speech to recognise this voice in later recordings. A name chosen here applies only to this recording.'});
