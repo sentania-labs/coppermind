@@ -163,6 +163,15 @@ async def summary_again(
     return await call(client, "note-summary-again", {"id": note_id})
 
 
+@router.post("/recordings/summaries-again")
+async def summaries_again(
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:write", "notes:read", "sources:read")),
+) -> Response:
+    """Write up every recording note that has no summary, in one step."""
+    return await call(client, "write-up-missing-summaries", {})
+
+
 @router.get("/dropbox")
 async def dropbox_list(
     client: HttpStoreClient = Depends(store),

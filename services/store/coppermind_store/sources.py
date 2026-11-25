@@ -1360,8 +1360,14 @@ async def get_status(store: LocalStore) -> StatusResponse:
         estimated_drain = None
     if not ready_depth and filing_queue_depth:
         estimated_drain = None
+    try:
+        owner_counts: dict[str, int | None] = dict(await store.context.alerts.counts())
+    except (OSError, ValueError, KeyError, StoreError):
+        logger.warning("recording counters could not be read")
+        owner_counts = {"recordings_failed": None, "notes_without_summary": None}
     return StatusResponse(
         counters=StatusCounters(
+            **owner_counts,
             filing_queue_depth=filing_queue_depth,
             filing_ready_depth=ready_depth,
             filing_last_progress_at=last_progress,

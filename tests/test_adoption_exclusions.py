@@ -39,6 +39,11 @@ def scan(root, *, settings=None, by_id=None, unidentified=None):
         ("Review/one.kanban.md", "# Board\n", "pattern: *.kanban.md"),
         ("drawing.md", "---\nexcalidraw-plugin: parsed\n---\n", "frontmatter: excalidraw-plugin"),
         ("board.md", "---\nkanban-plugin: basic\n---\n", "frontmatter: kanban-plugin"),
+        (
+            "Review/Needs attention.md",
+            "---\ncoppermind-generated: needs-attention\n---\n# Needs attention\n",
+            "frontmatter: coppermind-generated",
+        ),
         ("quoted.md", '---\n"kanban-plugin": board # marker\n---\n', "frontmatter: kanban-plugin"),
     ],
 )

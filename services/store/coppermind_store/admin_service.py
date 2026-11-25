@@ -893,6 +893,8 @@ class AdminService:
             "summary-directions-save": features.summary_directions_save,
             "note-summary": notes.summary,
             "note-summary-again": notes.summary_again,
+            "alerts": self.context.alerts.view,
+            "alerts-save": self.context.alerts.save,
             "transcription": plain(features.transcription),
             "transcription-save": features.transcription_save,
             "transcription-pause": features.transcription_pause,

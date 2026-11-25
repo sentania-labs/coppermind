@@ -454,6 +454,7 @@ class Recordings:
             "meetings": meetings,
             "failed": failed,
             "processing": processing,
+            "missing_summaries": await self.missing_summaries(jobs),
             "recordings": [
                 {
                     **self.report(job, latest),
@@ -464,6 +465,64 @@ class Recordings:
                 if not job.dismissed
             ],
         }
+
+    async def missing_summaries(
+        self, jobs: list[TranscriptionJob] | None = None
+    ) -> list[dict[str, Any]]:
+        """Notes written from a recording whose summary could not be written, newest first.
+
+        A note the owner has reviewed is theirs and is left alone, as is one a newer
+        recording note merged into; both are the rules Write the summary again keeps.
+        """
+        jobs = await asyncio.to_thread(self.jobs) if jobs is None else jobs
+        candidates = [
+            job
+            for job in jobs
+            if job.generation_mode != "markdown-v1"
+            and job.state == "succeeded"
+            and job.note_id
+            and job.source_id
+        ]
+        if not candidates:
+            return []
+        latest = self.latest_enrichment()
+        reviewed_key = self.context.store.control.schema().role("reviewed_key")
+        items: list[dict[str, Any]] = []
+        ready: bool | None = None
+        seen: set[str] = set()
+        for job in sorted(candidates, key=lambda item: item.created_at, reverse=True):
+            if job.note_id in seen or self.parent_note_id(job) != job.note_id:
+                continue
+            seen.add(job.note_id)
+            summary = self.summary_of(job, latest)
+            if summary["summary_state"] != "failed":
+                continue
+            try:
+                note = await self.context.store.get_note(job.note_id)
+            except StoreError:
+                continue
+            if note.frontmatter.get(reviewed_key) is True:
+                continue
+            if ready is None:
+                ready = self.context.store.admin.notes.summary_service_state() == "on"
+            why = summary["summary_error"] or "The AI service did not give a usable summary."
+            items.append(
+                {
+                    "id": note.id,
+                    "title": note.title,
+                    "path": note.path,
+                    "date": job.captured_at,
+                    "message": why
+                    + (
+                        " Retry writes it again from the same transcript."
+                        if ready
+                        else " Turn suggestions on and make sure the AI service answers, then "
+                        "retry."
+                    ),
+                    "can_retry": ready,
+                }
+            )
+        return items
 
     def progress_line(self, job: TranscriptionJob, *, ready: bool, paused: bool) -> dict[str, Any]:
         """One recording still on its way to a note, with its latest known state in plain words."""
