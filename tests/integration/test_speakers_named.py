@@ -174,6 +174,13 @@ async def test_a_first_name_alone_names_nobody_and_creates_nobody(store):
         assert "Could not name this voice yet: Tom could be Tom Lee, Tom Reed" in filed.body
         assert "Write the full name or the link to that person to confirm." in filed.body
         assert "  - Name this voice: Tom" in filed.body
+        assert "saving the note is enough" in filed.body
+        # The companion says the same after review, because the note has moved folders.
+        detail = await context.lifecycle.detail({"note_id": note.id})
+        assert [(o["label"], o["status"]) for o in detail["speaker_naming"]] == [
+            ("Unknown voice 2", "not-named")
+        ]
+        assert "saving the note is enough" in detail["speaker_naming"][0]["reason"]
         assert "Named by you" not in filed.body
         assert "Unknown voice 2" in VoiceStore(context).unknown_for_note(note.id)[0]["name"] or (
             len(VoiceStore(context).unknown_for_note(note.id)) == 2
@@ -204,6 +211,11 @@ async def test_a_first_name_with_one_match_in_people_is_not_taken_for_that_perso
         assert "  - Name this voice: Tom" in filed.body
         assert "Named by you" not in filed.body
         assert {e.name for e in store.entities.load().entities.values()} == {"Tom Reed"}
+        after = await context.lifecycle.detail({"note_id": note.id})
+        assert [(o["label"], o["status"]) for o in after["speaker_naming"]] == [
+            ("Unknown voice 2", "not-named")
+        ]
+        assert "saving the note is enough" in filed.body
         assert not VoiceStore(context).summary(reed["id"])["signatures"]
 
 
@@ -275,6 +287,7 @@ async def test_names_typed_in_the_note_are_applied_when_the_panel_finishes_revie
         typed = await type_into(store, note, {"Unknown voice 2": {"name": "Tom Reed"}})
         detail = await context.lifecycle.detail({"note_id": note.id})
         assert detail["named_in_note"] == [{"label": "Unknown voice 2", "name": "Tom Reed"}]
+        assert detail["speakers_in_note"] is True and detail["speaker_naming"] == []
         await context.lifecycle.complete(
             {
                 "note_id": note.id,
@@ -289,6 +302,10 @@ async def test_names_typed_in_the_note_are_applied_when_the_panel_finishes_revie
         assert filing.filing_state(store, note.id)["filing_error"] is None and done.filed
         assert "Tom Reed]], 59 s. Named by you." in done.body
         assert {e.name for e in store.entities.load().entities.values()} == {"Tom Reed"}
+        after = await context.lifecycle.detail({"note_id": note.id})
+        assert [(o["label"], o["status"], o["name"]) for o in after["speaker_naming"]] == [
+            ("Unknown voice 2", "named", "Tom Reed")
+        ]
 
 
 async def test_a_note_named_at_review_files_without_a_second_tick(store):

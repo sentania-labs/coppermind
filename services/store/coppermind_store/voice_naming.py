@@ -63,11 +63,17 @@ def _active_people(context: Any) -> list[Any]:
     ]
 
 
+# The note is already marked reviewed when a name is applied, so fixing the name is all it takes.
+SAVE_NOTE = (
+    " The note is already reviewed, so correcting the name here and saving the note is enough."
+)
+
+
 def _ambiguous(name: str, found: list[Any]) -> str:
     names = ", ".join(sorted({p.name for p in found})[:4])
     return (
         f"more than one person in People matches {name} ({names}). Type the full name "
-        "of the right one and save the note."
+        "of the right one." + SAVE_NOTE
     )
 
 
@@ -75,7 +81,7 @@ def _first_name(name: str, found: list[Any]) -> str:
     names = ", ".join(sorted({p.name for p in found})[:4])
     return (
         f"{name} could be {names}, but a first name alone is not enough to say so. Write the "
-        "full name or the link to that person to confirm."
+        "full name or the link to that person to confirm." + SAVE_NOTE
     )
 
 
@@ -110,7 +116,11 @@ async def name_voices(context: Any, note: Any) -> Any:
     plans: list[dict[str, Any]] = []
     for entry in ticked:
         problems.append(
-            (entry.label, entry.typed, 'Type your name after "Name this voice:" as well.')
+            (
+                entry.label,
+                entry.typed,
+                'Type your name after "Name this voice:" as well.' + SAVE_NOTE,
+            )
         )
     for entry in typed:
         if entry.label in repeated:
@@ -168,7 +178,38 @@ async def name_voices(context: Any, note: Any) -> Any:
         # The owner marked this note reviewed and named the voices in it: the transcript
         # rewrite that follows is part of that approval, not a new source to approve.
         filing.carry_review(context.store, note.id, before)
+        _record(context, note.id, plans, problems)
         return await _write(context, note, plans, problems)
+
+
+def _record(
+    context: Any, note_id: str, plans: list[dict[str, Any]], problems: list[tuple[str, str, str]]
+) -> None:
+    """What became of each name typed in the note, for the companion to say after review: the
+    note itself moves folders once it is filed."""
+    from coppermind_store.context_service import now
+
+    key = "speaker-naming/" + note_id
+    kept = {item["label"]: item for item in context.read(key, [])}
+    for plan in plans:
+        if not plan.get("failed"):
+            kept[plan["label"]] = {
+                "label": plan["label"],
+                "typed": plan["typed"],
+                "status": "named",
+                "name": plan["person"].name,
+                "created": plan["created"],
+                "at": now(),
+            }
+    for label, typed, reason in problems:
+        kept[label] = {
+            "label": label,
+            "typed": typed,
+            "status": "not-named",
+            "reason": reason,
+            "at": now(),
+        }
+    context.write(key, list(kept.values()))
 
 
 def _why(exc: Exception) -> str:

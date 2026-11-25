@@ -218,8 +218,13 @@ Model connections has an attendees property. The entry in this note becomes
 "Name, talk time. Named by you." Typing a name in a note that is already reviewed does the
 same when the note is next saved. Tick "This is me" with your name to make that person the
 owner: they are listed first and marked "(you)" in later notes, and the write-up treats
-them as "I". The companion's review panel does not ask again for a voice already named
-in the note.
+them as "I". On a recording note that has a Speakers section, the companion's review panel has no
+second place to name a voice: it points at the section, lists the names typed there in
+"What will change", and labels the second button "Mark reviewed, applying only the names
+typed in the note" because it applies them too. After review the panel states what happened
+to each typed name (named, or not named and why). The same reason is written under the
+voice in the note, and since the note is already reviewed, correcting the name there and
+saving the note is enough.
 
 - A name that matches no one in People **creates that person**; the entry says "New person
   added to People".

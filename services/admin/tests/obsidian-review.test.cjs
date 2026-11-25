@@ -179,9 +179,32 @@ test('failed suggestions show cause and retry and still permit manual speaker se
 test('a voice named in the note is not asked for again, and the panel says it will be applied',async()=>{
   const f=await fixture(undefined,{state:'failed',named_in_note:[{label:'Unknown voice 7',name:'Tom Reed'}],manual_speaker_review:{revision:2,speakers:['Unknown voice 7','Unknown voice 8'],candidates:[{id:'person:a',name:'Alex'}]}});
   const all=f.view.contentEl.all();
-  assert.ok(all.some(e=>e.text==='In the note you named Unknown voice 7 as Tom Reed. Finishing review applies that name.'));
+  assert.ok(all.some(e=>e.text==='Unknown voice 7 → Tom Reed (typed in the note)'));
   assert.ok(!all.some(e=>e.tag==='h3'&&e.text==='Unknown voice 7'));
   assert.ok(all.some(e=>e.tag==='h3'&&e.text==='Unknown voice 8'));
+});
+test('with names typed in the note the panel lists them and no longer promises no changes',async()=>{
+  const f=await fixture(undefined,{state:'suggested',speakers_in_note:true,named_in_note:[{label:'Unknown voice 7',name:'Tom Reed'}],manual_speaker_review:{revision:2,speakers:['Unknown voice 7'],candidates:[]}});
+  const all=f.view.contentEl.all();
+  assert.ok(all.some(e=>e.text==='Unknown voice 7 → Tom Reed (typed in the note)'));
+  assert.ok(!all.some(e=>e.text==='No speaker names selected.'));
+  assert.ok(!all.some(e=>e.tag==='button'&&e.text==='Mark reviewed without changes'));
+  assert.ok(all.some(e=>e.tag==='button'&&e.text==='Mark reviewed, applying only the names typed in the note'));
+});
+test('a note with a Speakers section is named in the note, not by a competing control here',async()=>{
+  const f=await fixture(undefined,{state:'suggested',speakers_in_note:true,manual_speaker_review:{revision:2,speakers:['Unknown voice 7'],candidates:[{id:'person:a',name:'Alex'}]}});
+  const all=f.view.contentEl.all();
+  assert.ok(all.some(e=>e.text?.includes('Name a voice in the Speakers section at the top of the note')));
+  assert.ok(!all.some(e=>e.tag==='select'));
+  assert.ok(!all.some(e=>e.tag==='h3'&&e.text==='Unknown voice 7'));
+  assert.ok(all.some(e=>e.text==='No voice has been named in the note.'));
+});
+test('after review the panel says what became of each name typed in the note',async()=>{
+  const f=await fixture(undefined,{note:{frontmatter:{reviewed:true}},named_in_note:[{label:'Unknown voice 2',name:'Tom'},{label:'Unknown voice 3',name:'Dana Lee'}],speaker_naming:[{label:'Unknown voice 1',typed:'Scott Bowe',status:'named',name:'Scott Bowe',created:true},{label:'Unknown voice 2',typed:'Tom',status:'not-named',reason:'Tom could be Tom Reed, but a first name alone is not enough to say so. The note is already reviewed, so correcting the name here and saving the note is enough.'}]});
+  const text=f.view.contentEl.all().map(e=>e.text||'');
+  assert.ok(text.includes('Unknown voice 1 is now Scott Bowe (added to People).'));
+  assert.ok(text.some(t=>t.startsWith('Unknown voice 2 was not named as Tom: Tom could be Tom Reed')&&t.includes('saving the note is enough')));
+  assert.ok(text.some(t=>t.includes('The name you typed for Unknown voice 3 (Dana Lee) is applied about 30 seconds after')));
 });
 test('empty candidates permit searching People and choosing a result',async()=>{
   const f=await fixture(undefined,{state:'failed',manual_speaker_review:{revision:1,speakers:['Speaker 1'],candidates:[]},peopleResults:{items:[{id:'b',name:'Blair',emails:[]}],next_cursor:null}});

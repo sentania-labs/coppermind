@@ -725,6 +725,10 @@ class NoteLifecycle:
                     "unnamed_voices": VoiceStore(self.context).unknown_for_note(note.id),
                     # Names the owner already typed into the note's Speakers section. Marking
                     # the note reviewed applies them, so the panel does not ask again.
+                    "speakers_in_note": recording is not None
+                    and recording.generation_mode == "markdown-v1"
+                    and speakers_section.has_section(note.body),
+                    "speaker_naming": self.context.read("speaker-naming/" + note.id, []),
                     "named_in_note": [
                         {"label": label, "name": name}
                         for label, name in speakers_section.typed_names(note.body).items()

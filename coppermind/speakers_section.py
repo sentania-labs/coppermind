@@ -143,6 +143,10 @@ def _sections(lines: list[str]) -> list[tuple[int, int]]:
     return found
 
 
+def has_section(body: str) -> bool:
+    return bool(_sections(body.split("\n")))
+
+
 def entries(body: str) -> list[Entry]:
     """The voices in the section that have a place to type a name, in order: the
     unidentified ones, and any that were relabelled since the section was written. Anything
