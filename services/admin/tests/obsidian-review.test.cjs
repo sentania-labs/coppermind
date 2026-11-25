@@ -460,6 +460,18 @@ test('People find-a-person shows results once, tells what will happen, and confi
   assert.ok(all().some(e=>e.text?.startsWith('Done: Unknown voice 7 is now Scott Bowe')));
 });
 
+test('typing a name narrows matching people without clicking Find, and says when nobody matches',async()=>{
+  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[]}};
+  const peopleResults=req=>{const q=decodeURIComponent(req.url.split('q=')[1]);return {items:q==='Sc'?[{id:'p1',name:'Scott Bowe',emails:[]}]:[],next_cursor:null};};
+  const f=await fixture(undefined,{unknownVoices,peopleResults});
+  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
+  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
+  input.value='Sc';input.oninput();await new Promise(r=>setTimeout(r,400));
+  assert.ok(all().some(e=>e.tag==='option'&&e.text==='Scott Bowe'));
+  input.value='Zz';input.oninput();await new Promise(r=>setTimeout(r,400));
+  assert.ok(all().some(e=>e.text==='No one named Zz found.'));assert.ok(!all().some(e=>e.tag==='option'&&e.text==='Scott Bowe'));
+});
+
 test('an older person search answering last does not replace the newer results',async()=>{
   const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[]}};
   const release={};

@@ -593,7 +593,7 @@ class PeopleView extends ItemView {
         const personLabel=(p,all)=>{const email=p.emails?.[0]||'';const clash=all.filter(x=>x.name===p.name).length>1;return p.name+(email?' ('+email+')':clash?' (no email, ID '+String(p.id).slice(0,8)+')':'');};
         let lookupId=0;
         lookup.onclick=async()=>{const mine=++lookupId;try{
-          const text=query.value.trim();if(!text){found.setText('Type a name first, then choose Find a person.');return;}
+          const text=query.value.trim();if(!text){for(const o of personOptions)o.remove();personOptions=[];for(const k of Object.keys(labels))if(k.startsWith('person:'))delete labels[k];target.value='';found.setText('Type a name first, then choose Find a person.');describe();return;}
           const page=await this.plugin.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(text));if(mine!==lookupId)return;const items=page.items||[];
           for(const o of personOptions)o.remove();personOptions=[];for(const k of Object.keys(labels))if(k.startsWith('person:'))delete labels[k];
           const seen=new Set();const unique=items.filter(p=>seen.has(p.id)?false:(seen.add(p.id),true));
@@ -602,6 +602,7 @@ class PeopleView extends ItemView {
           else{found.setText(unique.length===1?'Found 1 person. Check the summary below, then combine.':'Found '+unique.length+' people. Choose one from the list above.');if(unique.length===1)target.value='person:'+unique[0].id;}
           describe();
         }catch(e){if(mine===lookupId)new Notice(e.message);}};
+        let typing;query.oninput=()=>{clearTimeout(typing);if(!query.value.trim()){++lookupId;lookup.onclick();return;}found.setText('Searching…');typing=setTimeout(()=>lookup.onclick(),250);};
         const combine=el.createEl('button',{text:'Choose and combine',cls:'mod-cta'});combine.onclick=()=>{if(!target.value){found.setText('Choose a voice or person first.');return;}const chosen=target.value;const label=labels[chosen]||'the chosen voice';new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call(path+'/combine','POST',{target:chosen});await this.show();el.createEl('p',{text:'Done: '+person.name+' is now '+label+' in '+recordings+'.',cls:'coppermind-notice'});new Notice(person.name+' is now '+label+'.');}catch(e){new Notice(e.message);}},{title:'Combine these voices?',text:person.name+' will become '+label+' in '+recordings+'. Transcripts and unchanged generated labels will change; your own writing in reviewed notes stays intact.',action:'Combine voices'}).open();};
       }
       if(person.unknown||voice.signatures.length){const del=el.createEl('button',{text:'Delete voice data',cls:'mod-warning'});del.onclick=()=>new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call(path,'DELETE');await this.show(person.unknown?undefined:person);}catch(e){new Notice(e.message);}},{title:'Delete voice data?',text:'Delete '+voice.signatures.length+' saved voice signature'+(voice.signatures.length===1?'':'s')+' for '+person.name+'? Future recordings cannot be recognised from these signatures. This cannot be undone.',action:'Delete voice data'}).open();}
