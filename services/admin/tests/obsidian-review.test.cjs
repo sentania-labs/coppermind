@@ -451,7 +451,7 @@ test('People find-a-person shows results once, tells what will happen, and confi
   await lookup.onclick();await lookup.onclick();await lookup.onclick();
   const options=all().filter(e=>e.tag==='option').map(e=>e.text);
   assert.deepEqual(options.filter(t=>t.startsWith('Scott')),['Scott Bowe (scott@a.test)','Scott Bowe (scott@b.test)']);
-  assert.ok(all().some(e=>e.text==='Found 2 people. Choose one from the list above.'));
+  assert.ok(all().some(e=>e.text==='Found 2 people. Choose one from the list below.'));
   const select=all().find(e=>e.tag==='select');select.value='person:p1';select.onchange();
   assert.ok(all().some(e=>e.text==='Unknown voice 7 will become Scott Bowe (scott@a.test) in 2 recordings.'));
   all().find(e=>e.text==='Choose and combine').onclick();
@@ -485,6 +485,22 @@ test('an older person search answering last does not replace the newer results',
   release.Alex();await second;release.Al();await first;
   assert.deepEqual(all().filter(e=>e.tag==='option').map(e=>e.text).filter(t=>t.includes('A')&&t!=='Choose a voice or person'),['Alex New']);
   assert.equal(all().find(e=>e.tag==='select').value,'person:new');
+});
+
+test('people who attended the voice\'s meetings are listed first, marked, and a listed match can be chosen',async()=>{
+  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[{note_id:'n1',label:'Speaker 1'}]}};
+  const items=[{id:'a',name:'Sam Early',emails:['sam@a.test'],path:'People/Sam Early.md'},{id:'b',name:'Sam Linked',emails:['x@b.test'],path:'People/Sam Linked.md'},{id:'c',name:'Sam Mailed',emails:['mail@c.test'],path:'People/Sam Mailed.md'},{id:'d',name:'Sam Last',emails:[],path:'People/Sam Last.md'}];
+  const f=await fixture(undefined,{unknownVoices,title:'Planning',path:'Planning.md',frontmatter:{attendees:['[[People/Sam Linked]]','Mail@C.test',7]},peopleResults:{items,next_cursor:null}});
+  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
+  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
+  input.value='Sam';input.oninput();await new Promise(r=>setTimeout(r,400));
+  const listed=all().filter(e=>e.tag==='button'&&e.text?.startsWith('Sam')).map(e=>e.text);
+  assert.deepEqual(listed,['Sam Linked (x@b.test) · attended these meetings','Sam Mailed (mail@c.test) · attended these meetings','Sam Early (sam@a.test)','Sam Last']);
+  all().find(e=>e.text==='Sam Early (sam@a.test)'&&e.tag==='button').onclick();
+  assert.equal(all().find(e=>e.tag==='select').value,'person:a');
+  assert.ok(all().some(e=>e.text==='Unknown voice 7 will become Sam Early (sam@a.test) in 1 recording.'));
+  input.value='Samu';input.oninput();
+  assert.ok(!all().some(e=>e.tag==='button'&&e.text?.startsWith('Sam ')));
 });
 
 test('typing on while an earlier search is in flight never shows its results for the shorter entry',async()=>{

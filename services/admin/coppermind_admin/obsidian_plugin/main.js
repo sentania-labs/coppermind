@@ -575,8 +575,9 @@ class PeopleView extends ItemView {
       if(!voice){await this.show();return;}
       el.createEl('h3',{text:person.name});
       el.createEl('p',{text:voice.signatures.length+' saved voice signatures'});
+      const attended=new Set();
       for(const assignment of voice.assignments||[]){const line=el.createDiv();
-        try{const note=await this.plugin.call('/v1/notes/'+encodeURIComponent(assignment.note_id));const a=line.createEl('a',{text:note.title,href:'#'});a.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(note.path,'',false);};}
+        try{const note=await this.plugin.call('/v1/notes/'+encodeURIComponent(assignment.note_id));for(const v of Array.isArray(note.frontmatter?.attendees)?note.frontmatter.attendees:[])if(typeof v==='string')attended.add(v.trim().replace(/^\[\[|\]\]$/g,'').split('|')[0].replace(/\.md$/,'').toLowerCase());const a=line.createEl('a',{text:note.title,href:'#'});a.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(note.path,'',false);};}
         catch{line.createSpan({text:'Source note unavailable'});}
         const split=line.createEl('button',{text:'This is not '+person.name});split.onclick=()=>new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call('/v1/entities/voice/voices/'+encodeURIComponent(person.unknown?person.id:'person:'+person.id)+'/split','POST',{note_id:assignment.note_id,label:assignment.label,source_id:assignment.source_id});await this.show(person);}catch(e){new Notice(e.message);}},{title:'Separate this recording?',text:'This recording will use a new unknown voice label. Other recordings stay with '+person.name+'. Your own writing in reviewed notes stays intact.',action:'Separate recording'}).open();
       }
@@ -585,21 +586,23 @@ class PeopleView extends ItemView {
         const target=el.createEl('select');target.createEl('option',{text:'Choose a voice or person',value:''});const labels={};let personOptions=[];
         for(const [id,item] of Object.entries(unknowns))if(id!==person.id){target.createEl('option',{text:item.name,value:id});labels[id]=item.name;}
         const query=el.createEl('input',{attr:{type:'search',placeholder:'Type a name to find a person'}});const lookup=el.createEl('button',{text:'Find a person'});
-        const found=el.createEl('p');const summary=el.createEl('p',{cls:'coppermind-notice'});
+        const found=el.createEl('p');const matches=el.createDiv();const summary=el.createEl('p',{cls:'coppermind-notice'});
         const count=new Set((voice.assignments||[]).map(a=>a.note_id)).size;const recordings=count+' recording'+(count===1?'':'s');
         const describe=()=>{const label=labels[target.value]||'';
           summary.setText(target.value&&label?person.name+' will become '+label+' in '+recordings+'.':'Choose who '+person.name+' should be combined with.');};
         target.onchange=describe;describe();
         const personLabel=(p,all)=>{const email=p.emails?.[0]||'';const clash=all.filter(x=>x.name===p.name).length>1;return p.name+(email?' ('+email+')':clash?' (no email, ID '+String(p.id).slice(0,8)+')':'');};
-        let lookupId=0;const clearPeople=()=>{for(const o of personOptions)o.remove();personOptions=[];for(const k of Object.keys(labels))if(k.startsWith('person:'))delete labels[k];};
+        let lookupId=0;const attendedBefore=p=>[p.path&&String(p.path).replace(/\.md$/,''),p.name,...(p.emails||[])].some(k=>k&&attended.has(String(k).toLowerCase()));
+        const clearPeople=()=>{matches.empty();for(const o of personOptions)o.remove();personOptions=[];for(const k of Object.keys(labels))if(k.startsWith('person:'))delete labels[k];};
         lookup.onclick=async()=>{const mine=++lookupId;try{
           const text=query.value.trim();if(!text){clearPeople();target.value='';found.setText('Type a name first, then choose Find a person.');describe();return;}
           const page=await this.plugin.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(text));if(mine!==lookupId)return;const items=page.items||[];
           clearPeople();
-          const seen=new Set();const unique=items.filter(p=>seen.has(p.id)?false:(seen.add(p.id),true));
-          for(const p of unique){const text2=personLabel(p,unique);personOptions.push(target.createEl('option',{text:text2,value:'person:'+p.id}));labels['person:'+p.id]=text2;}
+          const seen=new Set();const unique=items.filter(p=>seen.has(p.id)?false:(seen.add(p.id),true)).map(p=>({p,here:attendedBefore(p)})).sort((a,b)=>b.here-a.here).map(x=>x.p);
+          for(const p of unique){const text2=personLabel(p,unique);personOptions.push(target.createEl('option',{text:text2,value:'person:'+p.id}));labels['person:'+p.id]=text2;
+            const pick=matches.createEl('button',{text:text2+(attendedBefore(p)?' · attended these meetings':'')});pick.onclick=()=>{target.value='person:'+p.id;describe();};}
           if(!unique.length){found.setText('No one named '+text+' found.');target.value='';}
-          else{found.setText(unique.length===1?'Found 1 person. Check the summary below, then combine.':'Found '+unique.length+' people. Choose one from the list above.');if(unique.length===1)target.value='person:'+unique[0].id;}
+          else{found.setText(unique.length===1?'Found 1 person. Check the summary below, then combine.':'Found '+unique.length+' people. Choose one from the list below.');if(unique.length===1)target.value='person:'+unique[0].id;}
           describe();
         }catch(e){if(mine===lookupId){found.setText('Could not search for people.');new Notice(e.message);}}};
         let typing;query.oninput=()=>{clearTimeout(typing);++lookupId;if(!query.value.trim()){lookup.onclick();return;}clearPeople();target.value='';describe();found.setText('Searching…');typing=setTimeout(()=>lookup.onclick(),250);};
