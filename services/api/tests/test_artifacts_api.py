@@ -63,12 +63,17 @@ class FakeStore:
         self.read_record, self.read_key = create_key(
             "reader", ["artifacts:read"], created_at=created
         )
+        self.delete_record, self.delete_key = create_key(
+            "deleter", ["artifacts:read", "artifacts:delete"], created_at=created
+        )
         self.notes_record, self.notes_key = create_key(
             "notes", ["notes:read", "notes:write"], created_at=created
         )
 
     async def get_api_keys(self) -> ApiKeySet:
-        return ApiKeySet(keys=[self.write_record, self.read_record, self.notes_record])
+        return ApiKeySet(
+            keys=[self.write_record, self.read_record, self.notes_record, self.delete_record]
+        )
 
     async def create_artifact(
         self, request: CreateArtifact, *, payload_size_bytes: int | None = None
@@ -145,7 +150,12 @@ def api(tmp_path: Path):
 
 
 def _as(fake: FakeStore, which: str) -> dict[str, str]:
-    key = {"write": fake.write_key, "read": fake.read_key, "notes": fake.notes_key}[which]
+    key = {
+        "write": fake.write_key,
+        "read": fake.read_key,
+        "notes": fake.notes_key,
+        "delete": fake.delete_key,
+    }[which]
     return {"Authorization": f"Bearer {key}"}
 
 
@@ -298,19 +308,20 @@ def test_put_and_patch_on_an_artifact_are_refused(api):
     assert fake.removed == []
 
 
-def test_an_agent_removes_an_artifact_through_the_api_with_the_write_scope(api):
+def test_an_agent_removes_an_artifact_through_the_api_with_the_delete_scope(api):
     """Admin is break glass; everyday removal goes through the API an agent uses."""
     client, fake = api
-    for which in ("read", "notes"):
+    # `artifacts:write` alone (the hand-in key) no longer answers the DELETE route.
+    for which in ("read", "notes", "write"):
         refused = client.delete(f"/v1/artifacts/{ARTIFACT_ID}", headers=_as(fake, which))
         assert refused.status_code == 403, which
     assert client.delete(f"/v1/artifacts/{ARTIFACT_ID}").status_code == 401
     assert fake.removed == []
-    removed = client.delete(f"/v1/artifacts/{ARTIFACT_ID}", headers=_as(fake, "write"))
+    removed = client.delete(f"/v1/artifacts/{ARTIFACT_ID}", headers=_as(fake, "delete"))
     assert removed.status_code == 204
     assert removed.content == b""
     assert fake.removed == [(ARTIFACT_ID, "api")]
-    missing = client.delete("/v1/artifacts/nope", headers=_as(fake, "write"))
+    missing = client.delete("/v1/artifacts/nope", headers=_as(fake, "delete"))
     assert missing.status_code == 404
     assert missing.json()["error"] == "not_found"
 
