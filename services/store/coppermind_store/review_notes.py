@@ -36,7 +36,8 @@ STATE = "note-resummarize/"
 # the saved write-up, which holds the whole transcript.
 STATUS = "recording-writeup-status/"
 PROPOSED = "recording-writeup-proposed/"
-LISTED = 200
+PAGE = 100
+MAX_PAGE = 200
 DIFF_LINES = 400
 EARLIER_KEPT = 5
 SAME_BODY = "The note already says what the new write-up says."
@@ -79,16 +80,30 @@ class ReviewNotes:
         """Every note in the Review folder, with where its write-up and suggestions stand."""
         context = self.context
         folder = sanitize_folder(context.store.control.settings().notes.review_folder)
+        limit, start = payload.get("limit", PAGE), payload.get("cursor") or "0"
+        if type(limit) is not int or not 1 <= limit <= MAX_PAGE:
+            raise ValueError(f"limit: use a number from 1 to {MAX_PAGE}")
+        if not str(start).isdigit():
+            raise ValueError("cursor: use the next_cursor an earlier answer gave")
         if not folder:
-            return {"notes": [], "suggestions_on": False, "writeup_on": False}
+            return {
+                "notes": [],
+                "total": 0,
+                "next_cursor": None,
+                "suggestions_on": False,
+                "writeup_on": False,
+            }
+        where = (Note.state == "ok", Note.path.startswith(f"{folder}/"))
         async with context.store.session_factory() as session:
+            total = await session.scalar(sa.select(sa.func.count()).select_from(Note).where(*where))
             rows = list(
                 (
                     await session.scalars(
                         sa.select(Note)
-                        .where(Note.state == "ok", Note.path.startswith(f"{folder}/"))
-                        .order_by(Note.first_seen_at.desc())
-                        .limit(LISTED)
+                        .where(*where)
+                        .order_by(Note.first_seen_at.desc(), Note.id)
+                        .offset(int(start))
+                        .limit(limit)
                     )
                 ).all()
             )
@@ -101,8 +116,11 @@ class ReviewNotes:
         for row in rows:
             job = recordings.get(row.id)
             notes.append(await self.row(row, job, latest.get(row.id), suggestions_on))
+        following = int(start) + len(rows)
         return {
             "notes": notes,
+            "total": total or 0,
+            "next_cursor": str(following) if following < (total or 0) and rows else None,
             "suggestions_on": suggestions_on,
             "writeup_on": self.writeup_ready(),
         }
@@ -329,6 +347,13 @@ class ReviewNotes:
 
         body = body.replace(SOURCE_LINK_TOKEN, f"[[{link}]]")
         note = await context.store.get_note(note_id)
+        if not self.in_review(note):
+            return {
+                "state": "failed",
+                "finished_at": _now(),
+                "error": "The note was reviewed or moved out of Review while it was being "
+                "written up, so the new write-up was not applied. The note is unchanged.",
+            }
         baseline = saved.get("voice_body", saved.get("filed_body", ""))
         finished = _now()
         if note.body.strip() == body.strip():
@@ -354,6 +379,13 @@ class ReviewNotes:
             }
         await self.put(note, job, saved, fresh, body)
         return {"state": "done", "finished_at": finished}
+
+    def in_review(self, note: Any) -> bool:
+        """Whether the note is still waiting in Review: not reviewed, not moved elsewhere."""
+        reviewed = self.context.store.control.schema().role("reviewed_key")
+        return note.frontmatter.get(reviewed) is not True and self.context.in_review_folder(
+            note.path
+        )
 
     async def put(
         self, note: Any, job: Any, saved: dict[str, Any], fresh: dict[str, Any], body: str
@@ -387,6 +419,10 @@ class ReviewNotes:
         note = await context.store.get_note(row.id)
         if note.content_hash != if_match or note.content_hash != record.get("if_match"):
             raise ValueError("The note changed since this write-up was made. Write it up again.")
+        if not self.in_review(note):
+            raise ValueError(
+                "This note has been reviewed or moved out of Review, so it is left as it is."
+            )
         saved = context.read("recording-writeups/" + job.id, {})
         body = proposed.pop("filed_body")
         await self.put(note, job, saved, proposed, body)

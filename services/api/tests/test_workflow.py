@@ -441,7 +441,9 @@ def test_the_list_of_notes_in_review_needs_only_reads(scopes, expected):
     with TestClient(app) as client:
         result = client.get("/v1/review/notes")
     assert result.status_code == expected
-    assert fake.calls == ([("review-notes", {})] if expected == 200 else [])
+    assert fake.calls == (
+        [("review-notes", {"cursor": None, "limit": 100})] if expected == 200 else []
+    )
 
 
 @pytest.mark.parametrize(
@@ -474,3 +476,17 @@ def test_resummarize_is_scoped_like_the_other_review_writes(scopes, expected):
         if expected == 200
         else []
     )
+
+
+def test_the_review_list_passes_its_page_and_refuses_a_page_too_large():
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal(
+        "test", frozenset({"notes:read", "sources:read"})
+    )
+    with TestClient(app) as client:
+        assert client.get("/v1/review/notes?cursor=100&limit=50").status_code == 200
+        assert client.get("/v1/review/notes?limit=201").status_code == 422
+    assert fake.calls == [("review-notes", {"cursor": "100", "limit": 50})]

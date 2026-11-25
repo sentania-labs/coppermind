@@ -2301,3 +2301,32 @@ async def test_notes_in_review_writes_a_recording_up_again_without_losing_hand_e
         assert "stopped before finishing" in failed["writeup"]["reason"]
         assert failed["writeup"]["reason"].endswith("The note is unchanged.")
         assert len(service.requests) == transcriptions
+
+
+async def test_notes_in_review_pages_so_no_note_is_left_out(store):
+    async with Service(delay=0.1) as service:
+        context = await setup_transcription(store, service)
+        for number in (1, 2, 3):
+            audio = await store_audio(
+                store, name=f"call-{number}.m4a", data=AUDIO + bytes([number])
+            )
+            await context.accept_recording(
+                request(audio, external_source_id=f"plaud/rec-{number}", title=f"Call {number}")
+            )
+            assert await context.recordings.tick() is True
+        seen: list[str] = []
+        cursor = None
+        pages = 0
+        while True:
+            page = await context.review_note_list({"limit": 2, "cursor": cursor})
+            assert page["total"] == 3 and len(page["notes"]) <= 2
+            seen += [item["id"] for item in page["notes"]]
+            pages += 1
+            cursor = page["next_cursor"]
+            if cursor is None:
+                break
+        assert pages == 2 and len(seen) == len(set(seen)) == 3
+        with pytest.raises(ValueError, match="cursor"):
+            await context.review_note_list({"cursor": "later"})
+        with pytest.raises(ValueError, match="limit"):
+            await context.review_note_list({"limit": 0})

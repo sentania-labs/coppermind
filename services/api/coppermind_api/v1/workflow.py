@@ -172,11 +172,14 @@ class Resummarize(BaseModel):
 
 @router.get("/review/notes")
 async def review_notes(
+    cursor: str | None = Query(default=None, max_length=20),
+    limit: int = Query(default=100, ge=1, le=200),
     client: HttpStoreClient = Depends(store),
     _: Principal = Depends(require_scopes("notes:read", "sources:read")),
 ) -> Response:
-    """Every note in the Review folder, with where its write-up and suggestions stand."""
-    return await call(client, "review-notes", {})
+    """Every note in the Review folder, a page at a time, with where its write-up and
+    suggestions stand. Send `next_cursor` back as `cursor` until it is null."""
+    return await call(client, "review-notes", {"cursor": cursor, "limit": limit})
 
 
 @router.post("/notes/{note_id}/resummarize")

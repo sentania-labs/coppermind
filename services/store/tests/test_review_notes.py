@@ -17,6 +17,7 @@ class Memory:
         self.data: dict[str, Any] = {}
         self.recordings: Any = None
         self.store: Any = None
+        self.in_review_folder: Any = None
 
     def read(self, name, default):
         return self.data.get(name, default)
@@ -63,7 +64,10 @@ def build(tmp_path, *, body=OLD, baseline=OLD, mode="markdown-v1"):
         with_references=references,
         jobs=lambda: [job],
     )
+    memory.in_review_folder = lambda path: path.startswith("Review/")
+    note.path = "Review/Call.md"
     memory.store = SimpleNamespace(
+        control=SimpleNamespace(schema=lambda: SimpleNamespace(role=lambda _: "reviewed")),
         get_note=lambda _: asyncio.sleep(0, note),
         get_source=lambda _: asyncio.sleep(0, SimpleNamespace(projection_path="Sources/call.md")),
         replace_note=replace_note,
@@ -252,3 +256,39 @@ def test_the_list_never_opens_the_saved_write_up_with_its_transcript(tmp_path):
     assert step["state"] == "failed" and "field suggestions" in step["reason"]
     memory.data["recording-writeup-status/" + JOB] = {"suggestions": True, "suggestion_error": ""}
     assert reviewer.suggestions_step(NOTE, job, None, True)["state"] == "written"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["reviewed", "moved"])
+async def test_a_note_reviewed_while_it_was_being_written_up_is_left_alone(
+    tmp_path, monkeypatch, change
+):
+    reviewer, memory, job, note, replaced = build(tmp_path)
+    fake_generate(monkeypatch)
+    # The owner marks the note reviewed (or it leaves Review) after the rewrite started.
+    if change == "reviewed":
+        note.frontmatter = {**note.frontmatter, "reviewed": True}
+    else:
+        note.path = "Meetings/Call.md"
+    memory.data[STATE + NOTE] = {"state": "running", "started_at": review_notes._now()}
+    await reviewer.rewrite(NOTE, JOB)
+    assert replaced == []
+    record = memory.data[STATE + NOTE]
+    assert record["state"] == "failed"
+    assert "reviewed or moved out of Review" in record["error"]
+    assert "PROPOSED" not in memory.data and not any(
+        k.startswith("recording-writeup-proposed") for k in memory.data
+    )
+    assert reviewer.writeup_step(NOTE, job, None)["reason"] == record["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_held_rewrite_is_not_applied_to_a_note_reviewed_since(tmp_path, monkeypatch):
+    reviewer, memory, job, note, replaced = build(tmp_path, body=OLD + "\nMine\n")
+    fake_generate(monkeypatch)
+    outcome = await reviewer.write_again(NOTE, JOB)
+    memory.data[STATE + NOTE] = outcome
+    note.frontmatter = {**note.frontmatter, "reviewed": True}
+    with pytest.raises(ValueError, match="reviewed or moved"):
+        await reviewer.replace(SimpleNamespace(id=NOTE, reviewed=True), job, outcome["if_match"])
+    assert replaced == []

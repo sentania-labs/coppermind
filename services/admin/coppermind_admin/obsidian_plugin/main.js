@@ -529,7 +529,7 @@ class NotesView extends ItemView {
     else if(!quiet&&this.stamp)this.stamp.setText('Refreshing…');
     try{
       let data;
-      try{data=await this.plugin.call('/v1/review/notes','GET',undefined,true);}
+      try{data=await this.loadAll();}
       catch(e){
         if(generation!==this.generation)return;
         const problem=e.status===403?KEY_MISSING:NOT_ANSWERING;
@@ -545,6 +545,16 @@ class NotesView extends ItemView {
       this.noteFinished(data);
       this.fingerprint=fingerprint;this.data=data;this.loaded=true;this.render();
     }finally{if(generation===this.generation)this.refreshing=false;}
+  }
+  // Every note in Review, a page at a time, so none is left out of the count, the failures or the bulk button.
+  async loadAll(){
+    let cursor='',data=null;const notes=[];
+    for(let pages=0;pages<100;pages++){
+      const page=await this.plugin.call('/v1/review/notes'+(cursor?'?cursor='+encodeURIComponent(cursor):''),'GET',undefined,true);
+      data=page;notes.push(...(page.notes||[]));cursor=page.next_cursor||'';
+      if(!cursor)break;
+    }
+    return {...data,notes};
   }
   // A step that was being written and no longer is has just finished: say so on its row.
   noteFinished(data){
