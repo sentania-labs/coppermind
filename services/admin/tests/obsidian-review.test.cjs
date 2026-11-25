@@ -487,6 +487,24 @@ test('an older person search answering last does not replace the newer results',
   assert.equal(all().find(e=>e.tag==='select').value,'person:new');
 });
 
+test('typing on while an earlier search is in flight never shows its results for the shorter entry',async()=>{
+  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[]}};
+  const release={};
+  const peopleResults=req=>new Promise((resolve,reject)=>{const q=decodeURIComponent(req.url.split('q=')[1]);release[q]={ok:()=>resolve({items:[{id:'s',name:'Sam Short',emails:[]}],next_cursor:null}),fail:()=>reject(new Error('down'))};});
+  const f=await fixture(undefined,{unknownVoices,peopleResults});
+  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
+  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
+  input.value='S';input.oninput();await new Promise(r=>setTimeout(r,400));
+  input.value='Sc';input.oninput();
+  release.S.ok();await new Promise(r=>setTimeout(r,0));
+  assert.ok(!all().some(e=>e.tag==='option'&&e.text==='Sam Short'));
+  assert.equal(all().find(e=>e.tag==='select').value,'');
+  assert.ok(all().some(e=>e.text==='Searching…'));
+  await new Promise(r=>setTimeout(r,400));release.Sc.fail();await new Promise(r=>setTimeout(r,0));
+  assert.ok(!all().some(e=>e.text==='Searching…'));
+  assert.ok(!all().some(e=>e.tag==='option'&&e.text==='Sam Short'));
+});
+
 test('strong voice suggestion explains confirmation and earlier appearances',async()=>{
   const manual={speakers:['Unknown voice 12'],candidates:[],voice_matches:{'Unknown voice 12':[match('a','Alex')]},voice_appearances:{'Unknown voice 12':3}};
   const f=await fixture(undefined,{manual_speaker_review:manual});
