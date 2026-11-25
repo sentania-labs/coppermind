@@ -20,6 +20,9 @@ class Suggestion(ContextModel):
     contact_ids: list[str] = Field(default_factory=list, max_length=50)
     quote: str = Field(default="", max_length=2000)
     reason: str = Field(min_length=1, max_length=2000)
+    # `writeup` marks a suggestion made while the recording was written up. It was checked
+    # there against the companies and tags that exist, so it needs no quote of its own here.
+    origin: Literal["", "writeup"] = ""
 
 
 class Suggestions(ContextModel):

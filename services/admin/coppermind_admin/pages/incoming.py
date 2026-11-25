@@ -344,7 +344,40 @@ def file_dialog(
 def router(wiring: Wiring) -> APIRouter:
     routes = APIRouter()
 
-    def drop_row(ctx: Ctx, folder: str) -> str:
+    def alert_row(alerts: dict[str, Any] | None, ask: str, problem: str) -> str:
+        """Where Coppermind sends word that a recording failed, if the owner wants that."""
+        label = "Tell another system when a recording fails"
+        if not alerts or "on" not in alerts:
+            return ""
+        if ask == "webhook":
+            return ui.row(
+                label,
+                f"""<form class="act" method="post" action="/admin/incoming/alerts">
+<input class="lat-input inline" style="min-width:280px" type="url" name="url"
+placeholder="https://example.com/hook" aria-label="Address to send to" autofocus>
+Stuck after <input class="lat-input inline narrow" type="number" min="1" max="168"
+name="stuck_hours" value="{alerts["stuck_hours"]}" aria-label="Hours before a recording is stuck">
+hours {ui.submit("Save", busy="Saving…")} {ui.go("Cancel", "/admin/incoming")}
+{ui.field_error(problem)}</form>""",
+            )
+        if not alerts["on"]:
+            return ui.row(
+                label,
+                "Off. Failures and notes without a summary are always shown in Obsidian "
+                "and in a note in your review folder. Turn this on to also send a message to "
+                "an address you choose when a recording fails for good, a summary fails for "
+                "good, or a recording is stuck.",
+                ui.go("Set an address", "/admin/incoming?ask=webhook"),
+            )
+        return ui.row(
+            label,
+            f"Sending to {e(alerts['where'])} when a recording or a summary fails for good, "
+            f"or a recording has been stuck for {plural(alerts['stuck_hours'], 'hour')}.",
+            ui.go("Change", "/admin/incoming?ask=webhook")
+            + ui.btn("Turn off", "/admin/incoming/alerts", fields={"url": ""}),
+        )
+
+    def drop_row(ctx: Ctx, folder: str, alerts: dict[str, Any] | None = None) -> str:
         limits = ctx.settings().limits
         return ui.card(
             ui.rows(
@@ -374,6 +407,7 @@ def router(wiring: Wiring) -> APIRouter:
                     )
                     + ". Anything larger is refused with a message saying so.",
                 ),
+                alert_row(alerts, ctx.q("ask"), ctx.q("problem")),
             )
         )
 
@@ -389,6 +423,10 @@ def router(wiring: Wiring) -> APIRouter:
             return await ctx.unavailable("Recordings and imports", LEDE, "incoming")
         folder = view["drop_folder"]
         transcription = view["trans"]["state"]
+        try:
+            alerts: dict[str, Any] | None = await ctx.act("alerts", {})
+        except StoreError:
+            alerts = None
         tab = ctx.q("tab") or "all"
         here = ui.url("/admin/incoming", tab=tab if tab != "all" else "")
         add = ui.go("Add a file", ui.url(here, ask="add"), "" if items else "primary")
@@ -444,7 +482,7 @@ def router(wiring: Wiring) -> APIRouter:
                         add,
                     )
                 )
-            }{drop_row(ctx, folder)}</div>"""
+            }{drop_row(ctx, folder, alerts)}</div>"""
             return await ctx.page("Recordings and imports", body, "incoming", dialog=dialog)
 
         def matches(item: dict[str, Any], key: str) -> bool:
@@ -546,7 +584,7 @@ def router(wiring: Wiring) -> APIRouter:
         )
         body = f"""{ui.head("Recordings and imports", LEDE)}<div class="stack">{flash}{off}
 <div data-live class="stack"><div class="spread">{tabs}{add}</div>{watching}{ui.card(table)}</div>
-{drop_row(ctx, folder)}</div>"""
+{drop_row(ctx, folder, alerts)}</div>"""
         return await ctx.page(
             "Recordings and imports",
             body,
@@ -634,6 +672,28 @@ def router(wiring: Wiring) -> APIRouter:
                 f'Saved. Coppermind now picks up files dropped into "{e(picked)}". Anything '
                 f'still in "{e(result["was"]["drop"])}" is left where it is.',
             )
+        return ctx.go("/admin/incoming")
+
+    @routes.post("/admin/incoming/alerts", include_in_schema=False)
+    async def alerts_save(request: Request) -> Response:
+        ctx = Ctx(request, wiring)
+        form = await ctx.form()
+        payload = {key: form[key].strip() for key in ("url", "stuck_hours") if key in form}
+        if form.get("url") is not None and not payload["url"] and "stuck_hours" in form:
+            # The form was sent with the address left empty: nothing to turn on.
+            payload.pop("url")
+        try:
+            result = await ctx.act("alerts-save", payload)
+        except StoreError as exc:
+            return await ctx.refused(exc, "/admin/incoming")
+        if "refused" in result:
+            return ctx.go(
+                ui.url("/admin/incoming", ask="webhook", problem=result["refused"]["message"])
+            )
+        if result["on"]:
+            ctx.say("ok", f"Saved. Coppermind will send to {e(result['where'])}.")
+        else:
+            ctx.say("ok", "Turned off. Coppermind sends nothing to another system.")
         return ctx.go("/admin/incoming")
 
     @routes.post("/admin/incoming/limits", include_in_schema=False)

@@ -34,8 +34,9 @@ def test_old_summary_editor_redirects_to_document_editor(admin):
 def test_document_editor_has_one_prompt_and_readonly_rules(admin):
     client, _, store = admin
     page = client.get("/admin/transcription/writeup").text
-    assert page.count("<textarea") == 1
-    assert 'name="writeup_prompt"' in page
+    # One prompt, plus the short list of names and terms to get right.
+    assert page.count("<textarea") == 2
+    assert 'name="writeup_prompt"' in page and 'name="writeup_glossary"' in page
     assert "Locked rules (read-only)" in page
     assert html.escape(store.views["writeup-settings"]["locked"]) in page
 
@@ -44,6 +45,7 @@ def test_writeup_editor_saves_exact_text_and_separate_limits(admin):
     client, _, store = admin
     form = {
         "writeup_prompt": "Keep it short.\nInclude commitments.",
+        "writeup_glossary": "are back = RBAC",
         "connection": "writer",
         "model": "small",
         "enabled": "true",
@@ -1247,6 +1249,67 @@ def test_failed_writeup_reason_is_shown_once_with_an_editor_link(admin):
     assert page.count("The writing service sent an answer") == 1
     assert 'href="/admin/transcription/writeup"' in page
     assert "boundary block" not in page
+
+
+# -- telling another system when a recording fails ------------------------------------------
+
+
+def test_the_alert_address_is_off_until_the_owner_sets_one(admin):
+    client, _, store = admin
+    page = client.get("/admin/incoming").text
+    assert "Tell another system when a recording fails" in page
+    assert "Off. Failures and notes without a summary are always shown in Obsidian" in page
+    assert "/admin/incoming?ask=webhook" in page
+    asking = client.get("/admin/incoming?ask=webhook").text
+    assert 'name="url"' in asking and 'name="stuck_hours"' in asking and 'value="6"' in asking
+
+
+def test_saving_an_alert_address_shows_where_it_goes_and_never_the_secret(admin):
+    client, _, store = admin
+    store.answers["alerts-save"] = lambda payload: {
+        "on": True,
+        "where": "https://hooks.example",
+        "stuck_hours": int(payload.get("stuck_hours", 6)),
+        "recent": [],
+    }
+    page = "/admin/incoming"
+    sent = post(
+        client,
+        page + "/alerts",
+        {"url": "https://hooks.example/a/secret?t=1", "stuck_hours": "3"},
+        page=page,
+    )
+    assert sent.status_code == 303
+    assert store.asked("alerts-save") == [
+        {"url": "https://hooks.example/a/secret?t=1", "stuck_hours": "3"}
+    ]
+    shown = follow(client, sent)
+    assert "Saved. Coppermind will send to https://hooks.example." in shown
+    store.views["alerts"] = {
+        "on": True,
+        "where": "https://hooks.example",
+        "stuck_hours": 3,
+        "recent": [],
+    }
+    on = client.get("/admin/incoming").text
+    assert "Sending to https://hooks.example" in on and "3 hours" in on
+    assert "secret" not in on
+
+
+def test_a_bad_alert_address_is_explained_beside_the_field_and_turning_it_off_works(admin):
+    client, _, store = admin
+    store.answers["alerts-save"] = {
+        "refused": {"field": "url", "message": "Use a full web address.", "id": ""}
+    }
+    page = "/admin/incoming"
+    sent = post(client, page + "/alerts", {"url": "nope", "stuck_hours": "6"}, page=page)
+    assert sent.status_code == 303
+    assert "ask=webhook" in sent.headers["location"]
+    assert "Use a full web address." in client.get(sent.headers["location"]).text
+    store.answers["alerts-save"] = {"on": False, "where": "", "stuck_hours": 6, "recent": []}
+    off = post(client, page + "/alerts", {"url": ""}, page=page)
+    assert store.asked("alerts-save")[-1] == {"url": ""}
+    assert "Turned off. Coppermind sends nothing to another system." in follow(client, off)
 
 
 # -- deleting is final: nothing is kept back to restore or clean up ---------------------------

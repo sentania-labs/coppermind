@@ -49,6 +49,7 @@ from coppermind.db.models import (
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
 from coppermind.naming import sanitize_folder, unique_stem
+from coppermind.recording_writeup import SOURCE_LINK_TOKEN
 from coppermind.schema import FrontmatterSchema, note_date, note_date_mismatch
 from coppermind.settings import ProductSettings
 from coppermind.statefiles import RevisionConflict
@@ -321,7 +322,16 @@ async def _ingest_new(
         if projection_link_target.endswith(NOTE_SUFFIX):
             projection_link_target = projection_link_target[: -len(NOTE_SUFFIX)]
         trimmed_body = note_request.body.lstrip("\n") if note_request.body else ""
-        body_with_link = f"# {note_request.title}\n\n[[{projection_link_target}]]\n{trimmed_body}"
+        if SOURCE_LINK_TOKEN in trimmed_body:
+            # A recording's own write-up places the link itself, in its references block,
+            # and carries no title heading: the file name and `title` already say it.
+            body_with_link = trimmed_body.replace(
+                SOURCE_LINK_TOKEN, f"[[{projection_link_target}]]"
+            )
+        else:
+            body_with_link = (
+                f"# {note_request.title}\n\n[[{projection_link_target}]]\n{trimmed_body}"
+            )
         note_data = fm.compose(frontmatter, body_with_link).encode("utf-8")
         note_digest = content_hash(note_data)
         session.add_all(
@@ -1360,8 +1370,14 @@ async def get_status(store: LocalStore) -> StatusResponse:
         estimated_drain = None
     if not ready_depth and filing_queue_depth:
         estimated_drain = None
+    try:
+        owner_counts: dict[str, int | None] = dict(await store.context.alerts.counts())
+    except (OSError, ValueError, KeyError, StoreError):
+        logger.warning("recording counters could not be read")
+        owner_counts = {"recordings_failed": None, "notes_without_summary": None}
     return StatusResponse(
         counters=StatusCounters(
+            **owner_counts,
             filing_queue_depth=filing_queue_depth,
             filing_ready_depth=ready_depth,
             filing_last_progress_at=last_progress,

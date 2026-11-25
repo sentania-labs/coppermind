@@ -339,10 +339,10 @@ class HomeView extends ItemView {
   getIcon(){return 'list-checks';}
   async onOpen(){this.timer=setInterval(()=>this.refresh(true),HOME_POLL_MS);await this.refresh();}
   async onClose(){clearInterval(this.timer);this.generation++;}
-  async refresh(quiet){
+  async refresh(quiet,keep){
     // A quiet refresh is the timer: it never interrupts an open confirmation and redraws only when something changed.
     if(quiet&&(this.refreshing||this.busy))return;
-    const generation=++this.generation, el=this.contentEl;this.refreshing=true;
+    const generation=++this.generation, el=this.contentEl;this.refreshing=true;if(!quiet&&!keep)this.flash='';
     if(!this.loaded){el.empty();el.createEl('h2',{text:'Needs you'});el.createEl('p',{text:'Loading what needs you…'});}
     else if(!quiet&&this.stamp)this.stamp.setText('Refreshing…');
     try{
@@ -371,26 +371,33 @@ class HomeView extends ItemView {
   }
   render(){
     const el=this.contentEl, {waiting,drop}=this.data;el.empty();this.busy=false;el.createEl('h2',{text:'Needs you'});
-    const meetings=waiting?.meetings||[], failed=waiting?.failed||[], processing=waiting?.processing||[];
+    const meetings=waiting?.meetings||[], failed=waiting?.failed||[], processing=waiting?.processing||[], missing=waiting?.missing_summaries||[];
     const imports=drop?.items||[];
     const failedImports=imports.filter(i=>['failed','unsupported'].includes(i.state));
     const activeImports=imports.filter(i=>IMPORT_ACTIVE.has(i.state));
     const finishedImports=imports.filter(i=>IMPORT_FINISHED.has(i.state)).sort((a,b)=>(Number(b.completed_at)||0)-(Number(a.completed_at)||0));
     const parts=[];
     if(waiting)parts.push(`${plural(meetings.length,'meeting')} to review`,`${plural(failed.length,'recording')} failed`);
+    if(missing.length)parts.push(`${plural(missing.length,'note')} without a summary`);
     const busy=processing.length+activeImports.length;
     if(busy)parts.push(`${busy} in progress`);
     if(failedImports.length)parts.push(`${plural(failedImports.length,'import')} could not be stored`);
     el.createEl('p',{text:parts.join(' · ')||'Nothing to show yet.'});
     const bar=el.createDiv();const refresh=bar.createEl('button',{text:'Refresh'});refresh.onclick=()=>this.refresh();
     this.stamp=bar.createEl('span',{cls:'coppermind-stamp'});this.showStale();
+    if(this.flash)el.createEl('p',{text:this.flash,cls:'coppermind-notice'});
     if(this.data.waitingError)el.createEl('p',{text:this.data.waitingError,cls:'coppermind-notice'});
     if(this.data.dropError)el.createEl('p',{text:this.data.dropError,cls:'coppermind-notice'});
     if(waiting){
-      if(!meetings.length&&!failed.length&&!busy&&!failedImports.length&&!this.data.dropError)el.createEl('p',{text:'You are all caught up. Nothing is waiting for you.'});
+      if(!meetings.length&&!failed.length&&!missing.length&&!busy&&!failedImports.length&&!this.data.dropError)el.createEl('p',{text:'You are all caught up. Nothing is waiting for you.'});
       else{
         if(meetings.length){el.createEl('h3',{text:`Ready to review (${meetings.length})`});for(const meeting of meetings)this.meetingCard(meeting);}
         if(failed.length){el.createEl('h3',{text:`Recordings needing attention (${failed.length})`});for(const recording of failed)this.failedCard(recording);}
+        if(missing.length){
+          el.createEl('h3',{text:`Notes without a summary (${missing.length})`});
+          if(missing.length>1)this.writeUpAll(missing);
+          for(const note of missing)this.missingCard(note);
+        }
       }
     }
     if(processing.length||activeImports.length){
@@ -424,6 +431,37 @@ class HomeView extends ItemView {
       const file=this.app.vault.getAbstractFileByPath(meeting.path);
       if(!file){let notice=card.querySelector('.coppermind-notice');if(!notice)notice=card.createEl('p',{cls:'coppermind-notice'});notice.setText('That note is not in this vault yet. Wait for sync, then refresh.');return;}
       await this.app.workspace.getLeaf(false).openFile(file);this.plugin.noteFile=file;await this.plugin.open();
+    };
+  }
+  missingCard(note){
+    const card=this.contentEl.createDiv({cls:'coppermind-card'});
+    const open=card.createEl('button',{text:note.title});
+    if(note.date){const date=new Date(note.date);if(!isNaN(date))card.createEl('p',{text:date.toLocaleDateString()});}
+    card.createEl('p',{text:'The summary of this note could not be written. '+note.message});
+    open.onclick=async()=>{
+      const file=this.app.vault.getAbstractFileByPath(note.path);
+      if(!file){let notice=card.querySelector('.coppermind-notice');if(!notice)notice=card.createEl('p',{cls:'coppermind-notice'});notice.setText('That note is not in this vault yet. Wait for sync, then refresh.');return;}
+      await this.app.workspace.getLeaf(false).openFile(file);
+    };
+    if(!note.can_retry)return;
+    const button=card.createEl('button',{text:'Retry'}), feedback=card.createEl('p');
+    button.onclick=async()=>{button.disabled=true;feedback.setText('Asking Coppermind to write the summary again…');
+      try{
+        await this.plugin.call('/v1/notes/'+encodeURIComponent(note.id)+'/summary-again','POST',{});
+        this.flash='Writing the summary of "'+note.title+'" again. It joins the note when you review it.';await this.refresh(false,true);
+      }catch(e){feedback.setText(e.status===403?KEY_MISSING:e.status===422||e.status===404?e.message:'Could not start a new summary. Check your connection, then try again.');button.disabled=false;}
+    };
+  }
+  writeUpAll(missing){
+    const el=this.contentEl;
+    const button=el.createEl('button',{text:'Write up every note without a summary',cls:'mod-cta'}), feedback=el.createEl('p');
+    button.onclick=async()=>{button.disabled=true;feedback.setText('Asking Coppermind to write them up…');
+      try{
+        const result=await this.plugin.call('/v1/recordings/summaries-again','POST',{});
+        const started=result.queued+result.already;
+        this.flash=started?`Writing ${plural(started,'summary','summaries')}. Each one joins its note when you review it; nothing in a note you edited is changed.`+(result.skipped?` ${plural(result.skipped,'note')} could not be started.`:''):'No summary could be started.';
+        await this.refresh(false,true);
+      }catch(e){feedback.setText(e.status===403?KEY_MISSING:e.status===422?e.message:'Could not start the summaries. Check your connection, then try again.');button.disabled=false;}
     };
   }
   failedCard(recording){

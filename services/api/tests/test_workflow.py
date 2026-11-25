@@ -401,3 +401,24 @@ def test_a_refused_summary_comes_back_as_the_plain_message():
         result = client.post("/v1/notes/note/summary-again")
     assert result.status_code == 422
     assert "already been reviewed" in result.text
+
+
+@pytest.mark.parametrize(
+    "scopes,expected",
+    [
+        (["notes:read", "sources:read"], 403),
+        (["notes:write", "sources:read"], 403),
+        (["notes:write", "notes:read"], 403),
+        (["notes:read", "notes:write", "sources:read"], 200),
+    ],
+)
+def test_writing_up_every_note_without_a_summary_is_scoped_like_writing_one_again(scopes, expected):
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    with TestClient(app) as client:
+        result = client.post("/v1/recordings/summaries-again")
+    assert result.status_code == expected
+    assert fake.calls == ([("write-up-missing-summaries", {})] if expected == 200 else [])

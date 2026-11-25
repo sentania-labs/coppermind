@@ -191,6 +191,7 @@
   ],
   "total": 4
  },
+ "alerts": {"on": false, "where": "", "stuck_hours": 6, "recent": []},
  "folders": {
   "current": {
    "drop": "To Coppermind",

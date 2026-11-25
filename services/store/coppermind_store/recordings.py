@@ -454,6 +454,7 @@ class Recordings:
             "meetings": meetings,
             "failed": failed,
             "processing": processing,
+            "missing_summaries": await self.missing_summaries(jobs),
             "recordings": [
                 {
                     **self.report(job, latest),
@@ -464,6 +465,64 @@ class Recordings:
                 if not job.dismissed
             ],
         }
+
+    async def missing_summaries(
+        self, jobs: list[TranscriptionJob] | None = None
+    ) -> list[dict[str, Any]]:
+        """Notes written from a recording whose summary could not be written, newest first.
+
+        A note the owner has reviewed is theirs and is left alone, as is one a newer
+        recording note merged into; both are the rules Write the summary again keeps.
+        """
+        jobs = await asyncio.to_thread(self.jobs) if jobs is None else jobs
+        candidates = [
+            job
+            for job in jobs
+            if job.generation_mode != "markdown-v1"
+            and job.state == "succeeded"
+            and job.note_id
+            and job.source_id
+        ]
+        if not candidates:
+            return []
+        latest = self.latest_enrichment()
+        reviewed_key = self.context.store.control.schema().role("reviewed_key")
+        items: list[dict[str, Any]] = []
+        ready: bool | None = None
+        seen: set[str] = set()
+        for job in sorted(candidates, key=lambda item: item.created_at, reverse=True):
+            if job.note_id in seen or self.parent_note_id(job) != job.note_id:
+                continue
+            seen.add(job.note_id)
+            summary = self.summary_of(job, latest)
+            if summary["summary_state"] != "failed":
+                continue
+            try:
+                note = await self.context.store.get_note(job.note_id)
+            except StoreError:
+                continue
+            if note.frontmatter.get(reviewed_key) is True:
+                continue
+            if ready is None:
+                ready = self.context.store.admin.notes.summary_service_state() == "on"
+            why = summary["summary_error"] or "The AI service did not give a usable summary."
+            items.append(
+                {
+                    "id": note.id,
+                    "title": note.title,
+                    "path": note.path,
+                    "date": job.captured_at,
+                    "message": why
+                    + (
+                        " Retry writes it again from the same transcript."
+                        if ready
+                        else " Turn suggestions on and make sure the AI service answers, then "
+                        "retry."
+                    ),
+                    "can_retry": ready,
+                }
+            )
+        return items
 
     def progress_line(self, job: TranscriptionJob, *, ready: bool, paused: bool) -> dict[str, Any]:
         """One recording still on its way to a note, with its latest known state in plain words."""
@@ -1361,6 +1420,36 @@ class Recordings:
         self.save(job)
         return transcript
 
+    async def with_references(
+        self, job: TranscriptionJob, writeup: dict[str, Any], body: str
+    ) -> str:
+        """The write-up followed by its references, one block at the very bottom. The link to
+        the transcript is placed when the note is filed, once its place is known."""
+        from coppermind.recording_writeup import SOURCE_LINK_TOKEN, references_block
+
+        audio = None
+        try:
+            paths = await artifacts.known_paths(self.context.store, [job.artifact_id])
+            manifest = await asyncio.to_thread(
+                artifacts.read_manifest, self.context.store, job.artifact_id
+            )
+            audio = artifacts.link_for(
+                paths.get(job.artifact_id), str(manifest["title"]), manifest.get("url")
+            )
+        except (ValidationFailed, KeyError, OSError):
+            # Filing reports a missing recording itself, as it always has.
+            pass
+        return (
+            body.rstrip("\n")
+            + "\n\n"
+            + references_block(
+                transcript=SOURCE_LINK_TOKEN,
+                audio=audio,
+                calendar=writeup.get("calendar_status")
+                or "not matched, the recording title was used",
+            )
+        )
+
     async def file_note(self, job: TranscriptionJob, transcript: dict[str, Any]) -> None:
         """File the transcript as a source and a note in Review, and cite the recording."""
         from coppermind_store.speaker_names import rename_speakers, speaker_labels
@@ -1443,6 +1532,7 @@ class Recordings:
             self.save(job)
             writeup = await generate(self.context, job, transcript, voice_map)
             title, body, transcript = writeup["title"], writeup["body"], writeup["transcript"]
+            body = await self.with_references(job, writeup, body)
             job.boundaries = [RecordingBoundary.model_validate(b) for b in writeup["boundaries"]]
             job.stage = "Saving note"
             self.save(job)

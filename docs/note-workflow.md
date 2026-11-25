@@ -41,15 +41,22 @@ Run **Coppermind Review: Needs you** (or use the list icon in the ribbon). It is
 home screen. It lists the meetings waiting for review, each opening its note for review; the
 recordings that failed, each saying why in plain words and offering Retry when a retry can
 help and Dismiss when the app is not going to retry it by itself (Dismiss only takes the
-entry off the list and deletes nothing); and what is still processing, with its latest known
+entry off the list and deletes nothing); the notes whose summary could not be written (their count shows beside the others),
+each opening its note and offering Retry, with one button above them to write up every
+note without a summary at once (nothing in a note you edited is changed: each new summary
+joins the note when you review it); and what is still processing, with its latest known
 state: recordings being transcribed and files still being imported. Files put in the
 Dropbox folder also appear here. A file that could not be imported says what to do, and a
 recently finished import says what was imported (a calendar export says how many events)
 and offers Open only when there is a note or file to open. Dismiss removes an import's
 entry from the list; what was imported stays. The screen says when it was last updated and,
 when Coppermind does not answer, shows what it last said. It needs `notes:read` and
-`sources:read`; Retry also needs `sources:write`, `notes:write` and `artifacts:read`, and
-Dismiss needs `sources:write`. The calls are in [the API reference](api.md#recordings-audio-on-its-own).
+`sources:read`; Retry on a recording also needs `sources:write`, `notes:write` and `artifacts:read`,
+Dismiss needs `sources:write`, and writing a summary again (one note or all of them) needs
+`notes:write`, `notes:read` and `sources:read`.
+
+The same list is kept as a note called `Needs attention` in the review folder, which reads on
+a phone with no plugin and goes away when nothing needs attention. The calls are in [the API reference](api.md#recordings-audio-on-its-own).
 
 In the review panel, a note written from a recording has **Write the summary again** beside
 its summary. It writes a new summary from the same transcript without sending the recording
@@ -164,8 +171,13 @@ invitation. Unchanged re-exports do not reopen the decision.
 
 ## Recording summaries
 
-New recordings produce their finished Markdown note before ordinary ingest. Suggestions
-may be off. Review handles frontmatter separately and never asks to accept the body.
+New recordings produce their finished Markdown note before ordinary ingest: speakers, a
+one or two sentence top line, the summary sections written from the owner's side of the
+table, and one references block at the bottom (source transcript, recording, calendar
+match), with no title heading. Suggestions may be off; when they are on, the write-up also
+suggests account, context, type, tags and attendees (see
+[calendar and enrichment](calendar-enrichment.md)). Review handles frontmatter separately
+and never asks to accept the body.
 A failed write-up retains the recording and transcript without creating a note; Retry on
 Recordings and imports resumes from the last saved stage. Configure the document prompt
 and model under **Transcription > How recordings are written up**. Existing notes are not
