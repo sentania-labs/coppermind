@@ -63,9 +63,14 @@ def _recent(since: datetime) -> bool:
     return datetime.now(UTC) - since < MISSING_GRACE
 
 
+# The two ways a note's date stops it being filed. A date edited while filing was under way
+# ("note review or date changed during filing") is a short race, not a missing date.
+DATE_PROBLEMS = ("a note date is required in date", "UTC offset", "expected a valid date")
+
+
 def why_not_filed(error: str) -> tuple[str, str]:
     """Why a reviewed note was not filed: a short code Admin can act on, and plain words."""
-    if "date" in error and error.startswith("ValueError"):
+    if error.startswith("ValueError") and any(said in error for said in DATE_PROBLEMS):
         return "date", "It has no date Coppermind can read, and notes are filed by date."
     if error == "SourceRevisionNeedsReview":
         return "source", (

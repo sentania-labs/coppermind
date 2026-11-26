@@ -348,6 +348,57 @@ async def test_approval_does_not_cover_a_revision_arriving_before_filing(store):
     assert (await store.search(SearchQuery(q="aardvark"))).items
 
 
+async def test_a_filed_note_that_gains_a_new_association_is_not_unticked(store):
+    from coppermind import frontmatter as fm
+
+    first = await store.ingest(ingest_request("filed-then-associated"))
+    other = await store.ingest(ingest_request("a-second-recording"))
+    await approve(store, first.note.id)
+    filed = await store.get_note(first.note.id)
+    assert filed.path.startswith("work/2026/2026-09/")
+    path = store.notes_root / filed.path
+    metadata, body = fm.parse(path.read_text())
+    metadata["sources"].append(other.source.id)
+    path.write_text(fm.compose(metadata, body))
+    await reconcile_once(store)
+    # The new association needs a deliberate review, and the filed note keeps its mark and place.
+    assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 1}
+    after = await store.get_note(first.note.id)
+    assert after.frontmatter["reviewed"] is True
+    assert after.path == filed.path
+
+
+async def test_a_filed_note_with_a_pending_revision_keeps_its_mark_and_place(store):
+    request = ingest_request("filed-then-revised")
+    result = await store.ingest(request)
+    await approve(store, result.note.id)
+    filed = await store.get_note(result.note.id)
+    request.source.artifacts[0].content = "A later transcript"
+    await store.ingest(request)
+    assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 1}
+    after = await store.get_note(result.note.id)
+    assert after.frontmatter["reviewed"] is True
+    assert after.path == filed.path
+
+
+async def test_a_filed_note_with_a_pending_revision_and_a_new_month_keeps_its_mark(store):
+    request = ingest_request("filed-revised-and-redated")
+    result = await store.ingest(request)
+    await approve(store, result.note.id)
+    filed = await store.get_note(result.note.id)
+    request.source.artifacts[0].content = "A later transcript"
+    await store.ingest(request)
+    await store.patch_frontmatter(
+        filed.id, PatchFrontmatter(set={"date": "2026-10-05"}), filed.content_hash
+    )
+    assert await filing.file_reviewed(store) == {"filed": 0, "filing_failed": 1}
+    after = await store.get_note(result.note.id)
+    # Still reviewed, still where it was filed, and still listed as a failure, not dropped.
+    assert after.frontmatter["reviewed"] is True
+    assert after.path == filed.path
+    assert any(p.kind == "filing" for p in await store.get_problems())
+
+
 async def test_recovery_does_not_approve_pending_source_revision(store):
     request = ingest_request("restore-review")
     result = await store.ingest(request)

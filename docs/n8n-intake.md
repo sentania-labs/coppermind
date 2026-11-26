@@ -167,15 +167,21 @@ its audio with it once Git records the deletion; other source audio remains in t
 Audio that another unfinished recording still uses, or that any other note links to, is
 never removed by this clean-up. A removal that keeps failing becomes one Problems entry with a Retry action.
 Filing errors are Problems entries
-and retry automatically. Human edits of a filed note retain review and update search.
+and retry automatically; on the companion a reviewed note that could not be filed is a row on
+Notes in Review with one sentence and Try again. Human edits of a filed note retain review and
+update search.
 
 A changed payload under the same external ID creates an archive revision and
 preserves the existing note. It does not silently publish the new source text.
 To approve a revision, review the current source page and explicitly PATCH the
-note's reviewed field to true again. In Obsidian, change reviewed to false,
-allow it to sync and reconcile, then change it to true. Ordinary body, date,
-and association edits never approve a newer source revision. New associations
-on an already reviewed note also require that deliberate review action.
+note's reviewed field to true again. A note that is not yet filed when its source
+changes has its reviewed mark cleared by Coppermind (the note and its review receipt), so
+it is an ordinary note waiting for review: tick reviewed and it files. A note that is already
+filed is not pulled back: in Obsidian, change reviewed to false, allow it to sync and
+reconcile, then change it to true. Ordinary body, date, and association edits never approve a
+newer source revision. New associations on an already reviewed note also require that
+deliberate review action; a filed note that gains one keeps its mark and shows as a filing
+error until it is reviewed again.
 Approval records pin the exact source revisions; restore cannot advance them.
 Use a distinct submission ID for new material that needs its own reviewable note.
 

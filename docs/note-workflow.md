@@ -113,7 +113,10 @@ folder that cannot be written to, a note that cannot be read) leaves the note in
 a row on the companion's Notes in Review screen with one plain sentence and Try again;
 Coppermind also keeps trying by itself. A note held by one of the earlier rules (a work note with no
 start time, a customer note with no account, a name already taken) files on the next
-pass after an upgrade, with nothing for the owner to do.
+pass after an upgrade, with nothing for the owner to do. When a recording changes after a
+note was marked reviewed but before it was filed, Coppermind clears the note's reviewed mark
+itself, so the note waits in Review like any other and ticking Reviewed files it with the new
+material; a note that is already filed is left where it is.
 
 For a recording, the review panel also shows each diarized speaker with a proposed
 person, confidence and reason. Candidates are the linked calendar attendees, or people

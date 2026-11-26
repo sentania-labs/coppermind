@@ -281,14 +281,16 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         review["sources"].get(source_id) != manifest["current_revision"]
         for source_id, manifest in manifests.items()
     ):
-        if not same_filing:
+        if not (plan and plan.get("complete")):
+            # Never filed: the review no longer covers the new revision, so the note is an
+            # ordinary note waiting for review again. An already filed note is not pulled back.
             await store.patch_frontmatter(
                 note_id,
                 PatchFrontmatter(set={schema.role("reviewed_key"): False}),
                 if_match=note.content_hash,
             )
             return False
-        if review.get("reviewed"):
+        if same_filing and review.get("reviewed"):
             # A pending source revision does not revoke the human note's review.
             # Its source association still authorizes only the earlier revision.
             await _publish(store, note)
